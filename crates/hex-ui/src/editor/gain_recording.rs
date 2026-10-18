@@ -530,6 +530,101 @@ mod tests {
     use std::sync::Arc;
 
     #[gpui::test]
+    fn header_volume_begin_obeys_recording_fence_even_before_next_render(cx: &mut TestAppContext) {
+        let mut model = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+        let Created::Track(track) = model
+            .execute(Command::AddTrack {
+                name: "record guard".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        struct BrowserDirectory(std::path::PathBuf);
+        impl Drop for BrowserDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory =
+            std::env::temp_dir().join(format!("hex-header-volume-record-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let browser = BrowserDirectory(directory);
+        std::fs::create_dir(browser.0.join("samples")).unwrap();
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let service = hex_session::service::Service::new(48_000, 32, 8_000_000).unwrap();
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new_for_test_with_browser_directory(window, cx, service, &browser.0)
+                });
+                editor.update(cx, |view, cx| {
+                    assert_eq!(view.browser.directory, browser.0.join("samples"));
+                    assert_eq!(view.browser.places, vec![browser.0.join("samples")]);
+                    view.state = Some(Arc::new(hex_session::service::ViewState {
+                        canonical_audio_source: None,
+                        project: Arc::new(model.project().clone()),
+                        waveforms: Default::default(),
+                        audio_clip_waveforms: Default::default(),
+                        midi_preview: Arc::default(),
+                        gain_preview: Ok(Arc::default()),
+                        timeline_frames: 384_000,
+                        can_undo: false,
+                        can_redo: false,
+                        revision: 1,
+                        unsaved: false,
+                        document_path: None,
+                    }));
+                    cx.notify();
+                });
+                editor
+            })
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let rail = visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        // The widget was enabled at the last render. Arming can happen before
+        // its next render; admission must still reject the direct gesture.
+        editor.update(cx, |view, _| {
+            view.gain_recorder.mode = Mode::Ready;
+        });
+        visual.simulate_mouse_down(
+            rail.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        visual.simulate_mouse_move(
+            gpui::point(rail.right(), rail.center().y),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        visual.simulate_mouse_up(
+            rail.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        editor.read_with(cx, |view, _| {
+            assert!(view.device_gesture.snapshot().is_none());
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(view.pending_requests.is_empty());
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .gain(),
+                1.0
+            );
+        });
+    }
+
+    #[gpui::test]
     fn unavailable_output_discards_uncommitted_take_and_releases_edit_fence(
         cx: &mut TestAppContext,
     ) {
