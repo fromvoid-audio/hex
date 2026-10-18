@@ -90,12 +90,11 @@ pub(super) fn beats(
     if matches!(
         request.mode,
         Mode::Beats {
-            division_frames: None,
             tail: Tail::Forward,
-            decay: 100
+            decay: 100,
+            ..
         }
-    ) && request.attacks.is_empty()
-    {
+    ) {
         return crate::beats::render(request, pitch, work);
     }
     let Mode::Beats {

@@ -12,7 +12,7 @@ pub const MAX_SCRATCH_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_MAP_SEGMENTS: usize = 8_192;
 pub const MAX_POINTS: usize = 1_024;
 pub const MAX_WORK_UNITS: u64 = 1_000_000_000;
-pub const ALGORITHM_VERSION: u32 = 4;
+pub const ALGORITHM_VERSION: u32 = 5;
 const Q32: i128 = 1_i128 << 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

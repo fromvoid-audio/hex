@@ -1,6 +1,7 @@
 //! Transient-anchored, stereo-linked control-side WSOLA.
-//! First vertical slice: automatic Transients / Forward / envelope100.
+//! Forward / envelope100: scheduling boundaries do not manufacture attacks.
 mod analysis;
+mod onsets;
 mod synthesis;
 use super::*;
 use resample::{BANK_BYTES, Bandlimited};
@@ -19,6 +20,15 @@ pub(super) fn render(
     pitch: f64,
     work: &mut Work<'_>,
 ) -> Result<Vec<Frame>, Error> {
+    if request.attacks.is_empty()
+        && let Mode::Beats {
+            division_frames: Some(division),
+            ..
+        } = request.mode
+        && (division == 0 || (request.input.region_length - 1) / division + 1 > MAX_POINTS as u64)
+    {
+        return Err(Error::Invalid("beat divisions exceed bounded source plan"));
+    }
     // Untouched unity is waveform-exact, including arbitrary authored source
     // attacks, trim/phase/loop edges. No analysis may manufacture grid fades.
     if pitch == 1.0
@@ -46,7 +56,9 @@ pub(super) fn render(
         + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>();
     // Work::scratch is a maximum recorder, not an adder. Quote the complete
     // concurrently live plan/search/filter/ring family before its first Vec.
-    work.scratch(plan_bytes + BANK_BYTES + ring * 24 + 4096)?;
+    work.scratch(
+        plan_bytes + onsets::scratch(request.input.sample_rate) + BANK_BYTES + ring * 24 + 4096,
+    )?;
     let anchors = analysis::prepare(request, pitch, work)?;
     let bank = Bandlimited::new(pitch, work)?;
     let mut acc = Accumulator::new(

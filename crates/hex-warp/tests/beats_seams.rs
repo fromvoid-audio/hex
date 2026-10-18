@@ -234,7 +234,7 @@ fn beats_tail_modes_keep_fractional_attack_times_and_stereo_schedule() {
 }
 
 #[test]
-fn beats_work_budget_charges_overlap_reads_without_doubling_stop_playback() {
+fn beats_work_budget_charges_wsola_analysis_search_and_selected_reconstruction() {
     let source = vec![[0.1; 2]; 4_000];
     let map = TimeMap::new(
         vec![MapSegment {
@@ -278,8 +278,15 @@ fn beats_work_budget_charges_overlap_reads_without_doubling_stop_playback() {
         forward.work_units > stop.work_units,
         "the additional tail reads must be charged"
     );
-    assert!(
-        forward.work_units < stop.work_units * 2,
-        "single-read playback must not pay for a second read on every frame"
-    );
+    // Forward is now an analysis/search/overlap-add reconstruction, not the
+    // old single-read copier with a short tail crossfade. Its FFT, candidate
+    // search and selected overlapping grains must all remain charged. Stop
+    // still pays only for its actual one-shot path; a two-copier cost bound
+    // would certify the previous algorithm rather than this implementation.
+    assert!(forward.work_units > 8_000 * 64);
+    assert!(forward.work_units <= MAX_WORK_UNITS);
+    assert!(forward.peak_scratch_bytes <= MAX_SCRATCH_BYTES);
+    let repeat = prepare(Tail::Forward);
+    assert_eq!(repeat.work_units, forward.work_units);
+    assert_eq!(repeat.frames, forward.frames);
 }

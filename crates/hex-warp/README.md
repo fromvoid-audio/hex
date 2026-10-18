@@ -21,20 +21,29 @@ retirement, cache lifetime, device I/O, or foreign algorithms/binaries.
 
 ## Beats redesign checkpoint (Pulse 2847)
 
-The first WSOLA slice covers automatic Transients, Forward, envelope100.
+The WSOLA path covers Forward, envelope100, for Transients and fixed Preserve grids.
 Detected attack neighborhoods remain at the exact inverse-map positions; the
 intervening bed uses one stereo-linked similarity search and normalized overlap
 ring. Candidate scoring uses inexpensive samples; only selected grains use the
 bandlimited reconstruction. Coherent overlaps preserve DC and low-confidence
 noise uses bounded shared energy compensation. The combined plan, filter bank,
 search allowance and ring are quoted before allocation under the existing caps.
-Algorithm version4 invalidates older prepared PCM.
+Algorithm version5 invalidates older prepared PCM.
 
-This is deliberately a partial checkpoint. Analysis currently uses the bounded
-energy detector. Multiband onset refinement, fixed-grid boundaries independent
-of physical attacks, adaptive grain sizing, Alternating/Stop/envelope integration
-and the full musical/listening matrix remain open. Other control combinations
-still use the prior Beats path. Tones and Texture retain their own algorithms.
+Physical analysis combines a fast energy-rise path with streaming four-band
+spectral increase and stereo complex-phase prediction. A spectral novelty peak
+must also pass a sample-level innovation-concentration check before local onset
+refinement; changing FFT leakage in a sustained tone is not an attack. Stereo
+evidence adds independent channel magnitudes instead of summing opposite phases.
+FFT/window/two-generation stereo history storage joins the summed scratch quote.
+Fixed-grid points are scheduling boundaries, not physical attacks or filter
+clamps. At Forward100, no grid-triggered envelope or traversal reset is needed.
+The authored grid-density limits still validate before analysis or output birth.
+
+This remains a partial checkpoint. Adaptive grain sizing, the complete short-edge
+and variable-rate matrix, Alternating/Stop/envelope integration and the full
+musical/listening matrix remain open. Other control combinations still use the
+prior Beats path. Tones and Texture retain their own algorithms.
 There is no commercial-reference or listening acceptance claim.
 
 `beats_wsola` checks phase-independent pitch/RMS, linked stereo, DC/noise energy,

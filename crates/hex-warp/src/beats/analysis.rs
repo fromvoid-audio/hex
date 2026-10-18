@@ -1,4 +1,4 @@
-//! Initial bounded energy anchors; multiband detector is the next checkpoint.
+//! Distinct physical attacks and exact-map protected neighborhoods.
 use super::*;
 fn push(anchors: &mut Vec<Anchor>, source: f64, output: usize, attack: bool) -> Result<(), Error> {
     if let Some(last) = anchors.last() {
@@ -30,13 +30,17 @@ pub(super) fn prepare(
     work: &mut Work<'_>,
 ) -> Result<Vec<Anchor>, Error> {
     let rate = request.input.sample_rate;
-    let separation = u64::from((rate / 200).max(1));
+    let separation = u64::from((rate / 1000).max(1));
     let mut starts = Vec::new();
     starts
         .try_reserve_exact(MAX_POINTS)
         .map_err(|_| Error::Allocation)?;
     starts.push(0_u64);
-    let warmup = request.input.region_length.min(separation).max(1);
+    let warmup = request
+        .input
+        .region_length
+        .min(u64::from((rate / 200).max(1)))
+        .max(1);
     let mut slow = 0.0;
     for i in 0..warmup {
         if i % 1024 == 0 {
@@ -62,6 +66,7 @@ pub(super) fn prepare(
         }
         slow += (energy - slow) * coefficient;
     }
+    onsets::detect(request.input, &mut starts, work)?;
     let first = request.map.segments()[0].source_start_q32;
     let end = request.map.segments().last().unwrap().source_end_q32;
     let region = i128::from(request.input.region_length);
