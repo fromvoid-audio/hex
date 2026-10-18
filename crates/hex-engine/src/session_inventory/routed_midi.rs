@@ -15,12 +15,27 @@ impl RoutedMidiPlan {
                 template_count: 0,
             });
         }
-        let mut counts = BTreeMap::<TrackId, (usize, usize)>::new();
+        // One capacity-visible scalar backing, reserved before counting cells.
+        // Avoid opaque tree-node allocations in the closed compiler's quote.
+        let mut count_entries = Vec::new();
+        count_entries
+            .try_reserve_exact(project.tracks().len())
+            .map_err(|_| crate::Invalid("could not reserve Session MIDI source counts"))?;
+        for track in project.tracks() {
+            count_entries.push((track.id(), (0usize, 0usize)));
+        }
+        let mut counts = hex_project::SortedEntries::try_from_unsorted_on_control(
+            count_entries,
+            hex_project::MAX_TRACKS,
+        )
+        .map_err(|_| crate::Invalid("Session MIDI source counts are invalid"))?;
         let mut templates = 0usize;
         let mut notes = 0usize;
         for cell in project.session_cells() {
             if let SessionCellContent::Midi(clip) = cell.content() {
-                let count = counts.entry(cell.track()).or_default();
+                let count = counts
+                    .get_mut(&cell.track())
+                    .ok_or(crate::Invalid("Session MIDI source track is missing"))?;
                 count.0 = count
                     .0
                     .checked_add(1)

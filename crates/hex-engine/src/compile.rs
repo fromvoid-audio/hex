@@ -289,8 +289,14 @@ fn compile_project<'a>(
     >,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
-    let fallback = crate::audio_transform::AudioTransformPreparation::default();
-    let transforms = transforms.unwrap_or(&fallback);
+    let fallback;
+    let transforms = match transforms {
+        Some(transforms) => transforms,
+        None => {
+            fallback = crate::audio_transform::AudioTransformPreparation::default();
+            &fallback
+        }
+    };
     transforms.compile_transaction(|| {
         compile_project_inner(
             snapshot,

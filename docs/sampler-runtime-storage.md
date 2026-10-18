@@ -110,3 +110,15 @@ only successfully compiled present clips in the same order, removing the
 temporary `Vec<Option<Clip>>` and flatten/collect overlap. Transformed waveform
 sidecars and ordinary error cleanup keep their existing behavior. This makes
 one backing explicit; it is not the missing whole retained/scratch/overlap quote.
+
+Routed Session MIDI counting likewise uses a single reserved scalar Vec, bulk
+sorted once through the existing `SortedEntries`, rather than a temporary tree
+map. Every canonical track has one row, including empty source tracks; chained
+fanout and weighted template/note limits keep the existing behavior. Its actual
+capacity is visible and no tree-node layout estimate is needed. The Arrangement
+compiler now constructs its legacy transform fallback only when no preparation
+was supplied; the closed caller's supplied preparation no longer causes an
+unused cancellation-owner allocation. Routing/PCM/source-isolation and exact
+fanout-limit regressions cover the lookup change, and the existing transform
+suite covers both legacy and supplied preparation behavior. These helper bounds
+still do not supply the complete preconstruction quote or private custody entry.
