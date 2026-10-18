@@ -227,26 +227,16 @@ impl EditorView {
         if !self.comparison_ready(target, cx) {
             return;
         }
-        let previous_card_focused = self.device_panel.selected_device.is_some_and(|device| {
-            self.device_panel
-                .chain_window
-                .device_is_focused(device, window)
-        });
+        let card_focus = self
+            .device_panel
+            .comparison_return_focus(target.owner.device, window, cx);
         self.device_panel.selected_device = Some(target.owner.device);
         let previous_focus = self
             .context_menu
             .take()
             .and_then(|menu| menu.previous_focus)
             .or_else(|| window.focused(cx));
-        let previous_focus = if previous_card_focused {
-            Some(
-                self.device_panel
-                    .chain_window
-                    .focus(target.owner.device, cx),
-            )
-        } else {
-            previous_focus
-        };
+        let previous_focus = card_focus.or(previous_focus);
         let focus = cx.focus_handle();
         focus.focus(window);
         let labels = match target.expected {

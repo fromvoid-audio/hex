@@ -161,6 +161,19 @@ pub(super) enum DevicePanelOwner {
 }
 
 impl DevicePanelState {
+    /// A menu selecting another card restores that card only when a card owned
+    /// focus. Nested numeric/text/graph and browser focus remain untouched.
+    pub(super) fn comparison_return_focus(
+        &mut self,
+        device: DeviceId,
+        window: &Window,
+        cx: &App,
+    ) -> Option<gpui::FocusHandle> {
+        let previous = self.selected_device?;
+        self.chain_window
+            .device_is_focused(previous, window)
+            .then(|| self.chain_window.focus(device, cx))
+    }
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn has_control_for(&self, device: DeviceId) -> bool {
         self.controls.keys().any(|key| key.device == device)
