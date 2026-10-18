@@ -1616,7 +1616,6 @@ fn eq_status_review_off_sparse_preserves_legacy_public_target_and_clears_own(
     );
 }
 
-
 // Exercise the production recovery transition using a real guarded headless
 // control; Service::new has no OS audio adapter. No callback render is needed.
 fn recovery_retires_endpoint_status(cx: &mut TestAppContext, setup_failure: bool) {
@@ -1666,7 +1665,10 @@ fn recovery_retires_endpoint_status(cx: &mut TestAppContext, setup_failure: bool
                 view.device_panel.message = Some("could not save project: disk full".into());
             }
             view.recover_audio();
-            assert!(view.audio.is_none(), "real recovery retires the old endpoint");
+            assert!(
+                view.audio.is_none(),
+                "real recovery retires the old endpoint"
+            );
             cx.notify();
         });
         visual.run_until_parked();
@@ -1674,8 +1676,11 @@ fn recovery_retires_endpoint_status(cx: &mut TestAppContext, setup_failure: bool
         editor.read_with(cx, |view, _| {
             assert_eq!(view.project_generation, generation);
             assert_eq!(view.device_panel.selected_device, Some(device));
-            assert_eq!(view.device_panel.message.as_deref(), expected_pending,
-                "retired endpoint: setup={setup_failure}, unrelated={unrelated}");
+            assert_eq!(
+                view.device_panel.message.as_deref(),
+                expected_pending,
+                "retired endpoint: setup={setup_failure}, unrelated={unrelated}"
+            );
             assert_eq!(view.state.as_ref().unwrap().project, before);
             assert!(view.device_panel.spectrum_result.is_none());
             assert!(eq_panel::spectrum_intent_for_test(view, device).0);
@@ -1700,7 +1705,14 @@ fn recovery_retires_endpoint_status(cx: &mut TestAppContext, setup_failure: bool
             visual.run_until_parked();
             editor.update(cx, |view, cx| {
                 assert_eq!(view.device_panel.message.as_deref(), expected_pending);
-                assert!(view.audio.as_ref().unwrap().control.spectrum_desired().is_none());
+                assert!(
+                    view.audio
+                        .as_ref()
+                        .unwrap()
+                        .control
+                        .spectrum_desired()
+                        .is_none()
+                );
                 assert_eq!(view.state.as_ref().unwrap().project, before);
                 cx.notify();
             });
@@ -1711,7 +1723,10 @@ fn recovery_retires_endpoint_status(cx: &mut TestAppContext, setup_failure: bool
         completed += 1;
         eprintln!("recovery status completed setup={setup_failure}, unrelated={unrelated}");
     }
-    assert_eq!(completed, 2, "owned and unrelated status variants completed");
+    assert_eq!(
+        completed, 2,
+        "owned and unrelated status variants completed"
+    );
 }
 
 #[gpui::test]
@@ -1720,6 +1735,8 @@ fn eq_status_recovery_retires_setup_failure_while_preserving_newer_error(cx: &mu
 }
 
 #[gpui::test]
-fn eq_status_recovery_retires_closed_endpoint_while_preserving_newer_error(cx: &mut TestAppContext) {
+fn eq_status_recovery_retires_closed_endpoint_while_preserving_newer_error(
+    cx: &mut TestAppContext,
+) {
     recovery_retires_endpoint_status(cx, false);
 }
