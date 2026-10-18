@@ -18,6 +18,77 @@ fn loaded() -> NativeDeviceState {
 }
 
 #[test]
+fn source_and_loop_flags_change_audible_frames_without_discarding_markers_or_binding() {
+    let original = loaded();
+    let region = METADATA
+        .patch_parameter(&original, START, ParameterValue::Float(1.0))
+        .unwrap();
+    let region = METADATA
+        .patch_parameter(&region, END, ParameterValue::Float(3.0))
+        .unwrap();
+    let looped = METADATA
+        .patch_parameter(&region, LOOP, ParameterValue::Bool(true))
+        .unwrap();
+    let looped = METADATA
+        .patch_parameter(&looped, LOOP_START, ParameterValue::Float(2.0))
+        .unwrap();
+    let authored = SamplerState::from_native(&looped).unwrap();
+    let coefficients = PreparedSamplerPlan::new(
+        SampleShape::new(4, 48_000, SampleChannels::Stereo).unwrap(),
+        48_000,
+        authored.settings(),
+    )
+    .unwrap()
+    .prepare_voice_coefficients(60, 127)
+    .unwrap()
+    .unwrap();
+    let pcm = [[0.0, 1.0], [0.25, -0.25], [0.5, -0.5], [1.0, 0.0]];
+    let mut output = [[0.0; 2]; 5];
+    coefficients.render(DeviceResourcePcm::Stereo(&pcm), 0, 16, &mut output);
+    assert_eq!(output, [pcm[1], pcm[2], pcm[2], pcm[2], pcm[2]]);
+    assert!(looped.shares_asset_reference_storage_with(&original));
+    assert_eq!(looped.output_gain_millidb(), -600);
+    assert!(
+        METADATA
+            .patch_parameter(&looped, END, ParameterValue::Float(2.0))
+            .is_err()
+    );
+    assert!(
+        METADATA
+            .patch_parameter(&looped, LOOP_START, ParameterValue::Float(f32::NAN))
+            .is_err()
+    );
+    assert!(!METADATA.parameter_enabled(&original, LOOP_END).unwrap());
+    let mut slice = SamplerState::from_native(&original).unwrap();
+    slice.mode = AuthoredMode::Slice {
+        starts: vec![0, 2],
+        base_note: 60,
+        gate: GateMode::Trigger,
+    };
+    let slice = slice.replace_in(&original).unwrap();
+    let moved = METADATA
+        .patch_parameter(&slice, START, ParameterValue::Float(1.0))
+        .unwrap();
+    assert!(
+        matches!(SamplerState::from_native(&moved).unwrap().mode, AuthoredMode::Slice { starts, .. } if starts == [1, 2])
+    );
+    assert!(
+        METADATA
+            .patch_parameter(&slice, START, ParameterValue::Float(2.0))
+            .is_err()
+    );
+    assert!(
+        METADATA
+            .patch_parameter(&slice, END, ParameterValue::Float(2.0))
+            .is_err()
+    );
+    assert_eq!(
+        METADATA.read_parameter(&slice, START).unwrap(),
+        ParameterValue::Float(0.0)
+    );
+}
+
+#[test]
 fn empty_controls_are_disabled_and_malformed_or_nonfinite_changes_refuse() {
     let empty = METADATA.default_state().unwrap();
     assert!(empty.asset_references().is_empty());

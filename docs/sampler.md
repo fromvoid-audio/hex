@@ -139,6 +139,14 @@ The current sampler state codec now retains mode, source-frame bounds, loop and
 slice markers, reverse, pitch/root, gain/pan/velocity, amplitude envelope and voice
 count in a bounded payload (96-byte prefix plus at most 128 four-byte markers).
 Settings edits preserve the actual host gains and asset-reference allocation.
+The unregistered control metadata exposes exact source-frame start/end and
+enabled Classic loop start/end bindings. Finite values round to integer frames;
+every integer through the bounded 2^24 source extent is exactly representable.
+Moving Slice start moves its first marker with the region flag. Edits that cross
+later slice markers or invalidate an existing loop refuse instead of discarding
+markers or silently changing the loop. Actual source extent is revalidated by
+prepared playback before canonical publication. These bindings drive the existing
+PCM kernel; a functional native interaction overlay/panel remains required.
 Only the current version is accepted; truncation, reserved encodings, nonfinite
 values and unsupported versions refuse. No old-alpha conversion is provided.
 Authored preparation requires exactly the matching source slot/asset in the host

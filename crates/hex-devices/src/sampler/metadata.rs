@@ -29,6 +29,10 @@ pub mod parameter {
     pub const LOOP: ParameterId = ParameterId::from_static(14);
     pub const GATE: ParameterId = ParameterId::from_static(15);
     pub const SLICE_BASE: ParameterId = ParameterId::from_static(16);
+    pub const START: ParameterId = ParameterId::from_static(17);
+    pub const END: ParameterId = ParameterId::from_static(18);
+    pub const LOOP_START: ParameterId = ParameterId::from_static(19);
+    pub const LOOP_END: ParameterId = ParameterId::from_static(20);
 }
 const fn float(
     id: ParameterId,
@@ -69,7 +73,7 @@ const fn choice(
     }
 }
 use parameter::*;
-static PARAMETERS: [ParameterDescriptor; 16] = [
+static PARAMETERS: [ParameterDescriptor; 20] = [
     choice(MODE, "mode", &["classic", "one-shot", "slice"]),
     boolean(REVERSE, "reverse"),
     float(ROOT, "root", 0.0, 127.0, Some("note"), 60.0),
@@ -89,6 +93,40 @@ static PARAMETERS: [ParameterDescriptor; 16] = [
     boolean(LOOP, "loop"),
     choice(GATE, "playback", &["trigger", "gate"]),
     float(SLICE_BASE, "first key", 0.0, 127.0, Some("note"), 60.0),
+    // Every integer source frame through the bounded 2^24 limit is exactly
+    // representable in f32. Actual asset extent is checked during preparation.
+    float(
+        START,
+        "start",
+        0.0,
+        (super::MAX_SAMPLE_FRAMES - 1) as f32,
+        Some("frames"),
+        0.0,
+    ),
+    float(
+        END,
+        "end",
+        1.0,
+        super::MAX_SAMPLE_FRAMES as f32,
+        Some("frames"),
+        1.0,
+    ),
+    float(
+        LOOP_START,
+        "loop start",
+        0.0,
+        (super::MAX_SAMPLE_FRAMES - 1) as f32,
+        Some("frames"),
+        0.0,
+    ),
+    float(
+        LOOP_END,
+        "loop end",
+        1.0,
+        super::MAX_SAMPLE_FRAMES as f32,
+        Some("frames"),
+        1.0,
+    ),
 ];
 fn descriptor(id: ParameterId) -> Result<&'static ParameterDescriptor, Error> {
     PARAMETERS
@@ -99,6 +137,12 @@ fn descriptor(id: ParameterId) -> Result<&'static ParameterDescriptor, Error> {
 fn enabled(state: &SamplerState, id: ParameterId) -> bool {
     match id {
         LOOP => matches!(state.mode, AuthoredMode::Classic { .. }),
+        LOOP_START | LOOP_END => matches!(
+            state.mode,
+            AuthoredMode::Classic {
+                loop_region: Some(_)
+            }
+        ),
         GATE => !matches!(state.mode, AuthoredMode::Classic { .. }),
         SLICE_BASE => matches!(state.mode, AuthoredMode::Slice { .. }),
         _ => true,
@@ -183,6 +227,21 @@ impl NativeDeviceMetadata for SamplerMetadata {
                 AuthoredMode::Slice { base_note, .. } => f32::from(base_note),
                 _ => 60.0,
             }),
+            START => ParameterValue::Float(state.region.start as f32),
+            END => ParameterValue::Float(state.region.end as f32),
+            LOOP_START | LOOP_END => {
+                let region = match state.mode {
+                    AuthoredMode::Classic {
+                        loop_region: Some(region),
+                    } => region,
+                    _ => state.region,
+                };
+                ParameterValue::Float(if id == LOOP_START {
+                    region.start
+                } else {
+                    region.end
+                } as f32)
+            }
             _ => return Err(Error::UnknownParameter),
         })
     }
@@ -266,6 +325,30 @@ impl NativeDeviceMetadata for SamplerMetadata {
                 AuthoredMode::Slice { base_note, .. } => *base_note = value.round() as u8,
                 _ => return Err(Error::InvalidParameterValue),
             },
+            (START, ParameterValue::Float(value)) => {
+                let start = value.round() as usize;
+                state.region.start = start;
+                // The first slice starts at the region flag. Move those two
+                // canonical coordinates together; never delete later markers.
+                if let AuthoredMode::Slice { starts, .. } = &mut state.mode {
+                    let first = starts.first_mut().ok_or(Error::MalformedState)?;
+                    *first = start;
+                }
+            }
+            (END, ParameterValue::Float(value)) => state.region.end = value.round() as usize,
+            (LOOP_START | LOOP_END, ParameterValue::Float(value)) => {
+                let AuthoredMode::Classic {
+                    loop_region: Some(region),
+                } = &mut state.mode
+                else {
+                    return Err(Error::InvalidParameterValue);
+                };
+                if id == LOOP_START {
+                    region.start = value.round() as usize;
+                } else {
+                    region.end = value.round() as usize;
+                }
+            }
             _ => return Err(Error::UnknownParameter),
         }
         state.to_native()?.with_host_metadata_from(native)
