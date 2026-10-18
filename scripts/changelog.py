@@ -161,7 +161,7 @@ def load_dataset(path):
 def validate_history(root, dataset):
     previous = []
     for batch in dataset['batches']:
-        if not isinstance(batch, dict) or set(batch) != {'input', 'input_sha256', 'generated_at', 'generator', 'result'}:
+        if not isinstance(batch, dict) or set(batch) not in ({'input', 'input_sha256', 'generated_at', 'generator', 'result'}, {'input', 'input_sha256', 'generated_at', 'generator', 'result', 'execution'}):
             raise Refusal('invalid changelog batch')
         identity = batch['input']
         packet = input_packet(root, identity['base'], identity['source'])
@@ -169,6 +169,13 @@ def validate_history(root, dataset):
             raise Refusal('retained notes do not match their original named Git input')
         if batch['generator'] != 'configured codex cli' or not isinstance(batch['generated_at'], str):
             raise Refusal('invalid generation provenance')
+        if 'execution' in batch:
+            proof = batch['execution']
+            if (not isinstance(proof, dict) or set(proof) != {'origin', 'result_sha256', 'execution_sha256', 'evidence_commit'}
+                    or proof['origin'] != 'configured mac codex cli'
+                    or not SHA.fullmatch(proof['evidence_commit'])
+                    or any(not isinstance(proof[key], str) or not re.fullmatch(r'[0-9a-f]{64}', proof[key]) for key in ('result_sha256', 'execution_sha256'))):
+                raise Refusal('invalid imported generation evidence')
         validate_response(batch['result'], packet, previous)
         previous.extend(entry['text'] for entry in batch['result']['entries'])
     return previous
@@ -252,6 +259,55 @@ def prepare(root, base=None, *, source='HEAD', model=infer, timeout=120):
     return True
 
 
+def import_result(root, directory, result_path, execution_path, evidence_commit):
+    """Consume an actual configured Mac execution of the exact exported input.
+
+    Supplementary transport, not a replacement for automatic `prepare` inference.
+    The original result and execution report remain immutable evidence.
+    """
+    if not evidence_commit or not SHA.fullmatch(evidence_commit):
+        raise Refusal('import requires the immutable execution evidence commit')
+    dataset = load_dataset(root / DATASET)
+    previous = validate_history(root, dataset)
+    supplied = json.loads((directory / 'input.json').read_bytes())
+    existing = None
+    for index, batch in enumerate(dataset['batches']):
+        if batch['input']['source'] == supplied['source']:
+            existing = batch
+            previous = [entry['text'] for old in dataset['batches'][:index] for entry in old['result']['entries']]
+            break
+    packet = input_packet(root, supplied['base'], supplied['source'])
+    git(root, 'merge-base', '--is-ancestor', packet['source'], 'HEAD')
+    if (directory / 'input.json').read_bytes() != encode(packet):
+        raise Refusal('exported input differs from the declared Git range')
+    if ((directory / 'schema.json').read_bytes() != encode(SCHEMA)
+            or (directory / 'prompt.txt').read_bytes() != prompt(packet, previous).encode()):
+        raise Refusal('exported schema or prompt differs from this preparation')
+    raw = result_path.read_bytes()
+    if len(raw) > 64 * 1024:
+        raise Refusal('model output exceeds 64 KiB')
+    execution_raw = execution_path.read_bytes()
+    execution = json.loads(execution_raw)
+    if (execution.get('exit_code') != 0 or execution.get('timed_out') is not False
+            or execution.get('attempts') != 1 or execution.get('result_exists') is not True
+            or execution.get('result_sha256') != digest(raw)):
+        raise Refusal('execution did not successfully produce these exact result bytes')
+    result = validate_response(json.loads(raw), packet, previous)
+    identity = packet_identity(packet, previous)
+    if existing is not None:
+        if existing['input'] == identity and existing['result'] == result:
+            return False
+        raise Refusal('different result for an already retained input; original notes preserved')
+    if len(dataset['batches']) >= MAX_BATCHES:
+        raise Refusal('retained changelog history is full')
+    dataset['batches'].append({'input': identity, 'input_sha256': digest(encode(packet)),
+        'generated_at': execution['completed_utc'], 'generator': 'configured codex cli', 'result': result,
+        'execution': {'origin': 'configured mac codex cli', 'result_sha256': digest(raw),
+            'execution_sha256': digest(execution_raw), 'evidence_commit': evidence_commit}})
+    atomic_dataset(root / DATASET, dataset)
+    return True
+
+
 def validate_current(root, through=None, if_present=False):
     dataset = load_dataset(root / DATASET)
     validate_history(root, dataset)
@@ -269,11 +325,15 @@ def validate_current(root, through=None, if_present=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['prepare', 'validate', 'export'])
+    parser.add_argument('operation', choices=['prepare', 'validate', 'export', 'import-result'])
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument('--base')
     parser.add_argument('--source', default='HEAD')
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--packet', type=Path)
+    parser.add_argument('--result', type=Path)
+    parser.add_argument('--execution', type=Path)
+    parser.add_argument('--evidence-commit')
     parser.add_argument('--through', help='require coverage through this immutable end revision')
     parser.add_argument('--if-present', action='store_true', help='offline validation only; missing notes are not generation success')
     parser.add_argument('--timeout', type=int, default=120)
@@ -284,6 +344,11 @@ def main(argv=None):
         if args.operation == 'prepare':
             changed = prepare(args.root, args.base, source=args.source, timeout=args.timeout)
             print('notes prepared; commit the dataset before candidate checks' if changed else 'exact input already generated; original bytes retained')
+        elif args.operation == 'import-result':
+            if not all((args.packet, args.result, args.execution, args.evidence_commit)):
+                parser.error('import-result requires --packet, --result, --execution, --evidence-commit')
+            changed = import_result(args.root, args.packet, args.result, args.execution, args.evidence_commit)
+            print('actual configured Mac result imported; commit before candidate checks' if changed else 'exact result already retained')
         elif args.operation == 'validate':
             data = validate_current(args.root, args.through, args.if_present)
             print('declared changelog input verified: ' + data['batches'][-1]['input']['source'] if data['batches'] else 'changelog unavailable: no generated coverage (not a generation success)')

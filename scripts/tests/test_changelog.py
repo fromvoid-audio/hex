@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-spec = importlib.util.spec_from_file_location('changelog', Path(__file__).with_name('changelog.py'))
+spec = importlib.util.spec_from_file_location('changelog', Path(__file__).resolve().parent.parent / 'changelog.py')
 notes = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(notes)
 
@@ -146,6 +146,60 @@ class ChangelogTests(unittest.TestCase):
         with self.assertRaisesRegex(notes.Refusal, 'exit 7'):
             notes.infer(output, timeout=2, executable=str(executable))
         self.assertIn('transport fixture refusal', (output / 'generation.stderr').read_text())
+
+    def test_actual_result_transport_checks_original_input_execution_and_idempotence(self):
+        packet = notes.input_packet(self.root, self.base, self.source)
+        directory = self.root / 'packet'
+        notes.export_packet(directory, packet)
+        response = self.model(directory, 1)
+        result = self.root / 'result.json'
+        result.write_bytes(notes.encode(response))
+        execution = self.root / 'execution.json'
+        proof = {'exit_code': 0, 'timed_out': False, 'attempts': 1, 'result_exists': True,
+                 'result_sha256': notes.digest(result.read_bytes()), 'completed_utc': '2026-10-18T18:23:00+00:00'}
+        execution.write_bytes(notes.encode(proof))
+        self.assertTrue(notes.import_result(self.root, directory, result, execution, 'a' * 40))
+        before = (self.root / notes.DATASET).read_bytes()
+        self.assertFalse(notes.import_result(self.root, directory, result, execution, 'a' * 40))
+        notes.validate_current(self.root, self.source)
+        proof['exit_code'] = 1
+        execution.write_bytes(notes.encode(proof))
+        with self.assertRaisesRegex(notes.Refusal, 'execution did not'):
+            notes.import_result(self.root, directory, result, execution, 'a' * 40)
+        self.assertEqual((self.root / notes.DATASET).read_bytes(), before)
+        (directory / 'prompt.txt').write_text('different prompt')
+        with self.assertRaisesRegex(notes.Refusal, 'schema or prompt'):
+            notes.import_result(self.root, directory, result, execution, 'a' * 40)
+        self.assertEqual((self.root / notes.DATASET).read_bytes(), before)
+
+    def test_package_payload_retains_exact_generated_bytes_and_rejects_tampering(self):
+        import sys
+        spec = importlib.util.spec_from_file_location('changelog_package_fixture', Path(__file__).resolve().parent.parent / 'hex-test-build.py')
+        package = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = package
+        spec.loader.exec_module(package)
+        self.assertEqual(package.changelog_payload(self.root), (None, {'status': 'unavailable', 'coverage': []}))
+        notes.prepare(self.root, self.base, model=self.model)
+        raw, identity = package.changelog_payload(self.root)
+        self.assertEqual(raw, (self.root / notes.DATASET).read_bytes())
+        self.assertEqual(identity['sha256'], notes.digest(raw))
+        self.assertEqual(identity['coverage'], [self.source])
+        (self.root / notes.DATASET).write_bytes(raw.replace(b'fixes', b'wrong'))
+        with self.assertRaises(package.DeliveryError):
+            package.changelog_payload(self.root)
+
+    def test_pipeline_preparation_exits_before_sealed_runner_and_propagates_failure(self):
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('changelog_ci_fixture', Path(__file__).resolve().parent.parent / 'local-ci.py')
+        pipeline = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = pipeline
+        spec.loader.exec_module(pipeline)
+        with patch.object(pipeline, 'LocalCiRunner', side_effect=AssertionError('sealed runner started during preparation')), patch.object(pipeline.subprocess, 'run', return_value=SimpleNamespace(returncode=7)) as command:
+            self.assertEqual(pipeline.main(['--prepare-changelog', '--changelog-base', self.base, '--changelog-through', self.source]), 7)
+            args = command.call_args.args[0]
+            self.assertEqual(args[-4:], ['--source', self.source, '--base', self.base])
 
 
 if __name__ == '__main__':
