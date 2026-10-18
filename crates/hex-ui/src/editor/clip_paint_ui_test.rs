@@ -275,8 +275,22 @@ fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestA
         assert_eq!(bounds[1].1, bounds[2].0);
         let after = canonical.project().tracks().to_vec();
         // All three canonical fragments expose independent real header targets.
+        let media = canonical
+            .project()
+            .assets()
+            .map(|asset| {
+                (
+                    asset.id(),
+                    hex_engine::Audio::new(48_000, vec![[0.0; 2]; asset.frames() as usize])
+                        .unwrap(),
+                )
+            })
+            .collect();
+        let (_, result_preview) =
+            hex_engine::compile::project_with_midi_preview(canonical.project(), &media)
+                .expect("prepared hybrid fragments");
         let (result_handle, result_editor) =
-            editor_window(cx, canonical.project().clone(), Arc::default());
+            editor_window(cx, canonical.project().clone(), Arc::new(result_preview));
         let mut result_visual = VisualTestContext::from_window(result_handle, cx);
         result_visual.run_until_parked();
         for (_, _, id) in bounds {
