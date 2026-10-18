@@ -520,3 +520,97 @@ fn pending_resize_correlates_real_fifo_acceptance_failure_and_deferred_submissio
         );
     });
 }
+
+#[gpui::test]
+fn browser_release_commits_last_shown_audio_resize_after_actual_child_routing(
+    cx: &mut TestAppContext,
+) {
+    for (edge, stretch, child, moved) in [
+        (TrimEdge::Right, false, "browser-section-samples", true),
+        (TrimEdge::Left, false, "browser-audition-waveform", true),
+        (TrimEdge::Right, true, "browser-audition-waveform", false),
+        (TrimEdge::Left, true, "browser-section-samples", true),
+    ] {
+        let (_files, handle, editor, clip) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let name = if edge == TrimEdge::Right {
+            "right"
+        } else {
+            "left"
+        };
+        let selector = Box::leak(format!("clip-trim-{name}-{}", clip.value()).into_boxed_str());
+        let down = visual.debug_bounds(selector).unwrap().center();
+        let modifiers = Modifiers {
+            shift: stretch,
+            ..Modifiers::default()
+        };
+        let direction = if edge == TrimEdge::Right && !stretch {
+            -1.0
+        } else {
+            1.0
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0 * direction), down.y),
+            MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        visual.simulate_mouse_move(
+            point(down.x + px(50.0 * direction), down.y),
+            MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        let desired = editor.read_with(&visual, |v, _| {
+            v.active_trim_drag
+                .as_ref()
+                .unwrap()
+                .preview
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .clip
+                .clone()
+        });
+        assert_ne!(desired.duration(), 96_000);
+        let browser = visual
+            .debug_bounds(child)
+            .expect("real rendered browser child")
+            .center();
+        if moved {
+            visual.simulate_mouse_move(browser, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+        }
+        let entry_preview = editor.read_with(&visual, |v, _| {
+            v.active_trim_drag
+                .as_ref()
+                .and_then(|d| d.preview.borrow().as_ref().map(|p| p.clip.clone()))
+        });
+        visual.simulate_mouse_up(browser, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        pump(&editor, &mut visual);
+        editor.read_with(&visual,|v,_|{
+            let state=v.state.as_ref().unwrap();
+            eprintln!("browser release edge={edge:?} stretch={stretch} child={child} moved={moved} held={}..{} entry={:?} actual={:?} command={:?}",desired.start(),desired.start()+desired.duration(),entry_preview.as_ref().map(|p|(p.start(),p.duration())),state.project.clip(clip).map(|c|(c.start(),c.duration())),v.last_enqueued_edit);
+            assert_eq!(state.project.clip(clip),Some(&desired),"release over real browser must retain last timeline preview");
+            assert!(v.active_trim_drag.is_none()&&v.active_midi_trim_drag.is_none()&&v.pending_trim.is_none());
+            assert!(v.active_browser_audio_drag.is_none()&&v.active_native_device_drag.is_none());
+            assert_eq!(v.worker_requests_pending,0);
+            assert!(v.pending_requests.is_empty());
+            assert!(v.error.is_none(),"{:?}",v.error);
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.clip(clip), Some(&desired))
+        });
+    }
+}
