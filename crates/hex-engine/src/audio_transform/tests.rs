@@ -1441,7 +1441,12 @@ fn retained_transform_long_fade_scan_observes_direct_query_without_lookup_guard(
         worker: &worker,
         polls: Cell::new(0),
     };
-    let (editor, clip, _) = fixture(false);
+    let (mut editor, clip, _) = fixture(false);
+    // Ordinary container fades do not create an authored root edit. Use the
+    // canonical nonzero pitch edit, which captures the existing fade domain.
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
     let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
     let mut frames = vec![[1.0, 1.0]; 8000];
     assert_eq!(

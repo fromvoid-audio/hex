@@ -663,3 +663,11 @@ or family guard around long work. Production Service currently still calls its
 explicit raw branch; changing that startup path and completing all owners remain
 required. These constructors do not qualify the transform cache, channels,
 worker body or complete startup construction peak.
+
+The first retained long-fade fixture failed before scanning: ordinary container
+fades leave `clip.audio_edit()` absent. Its focused repair creates the authored
+root via canonical nonzero SetAudioClipPitch, whose AudioClipEdit::capture keeps
+the existing fade. Cancellation on query four and processed-prefix/untouched-
+suffix assertions remain intact. This is a fixture repair, not a change to fade
+production semantics. The earlier accepted-PCM case passed at d5e817b8; runtime
+qualification of the repaired long scan remains separate.
