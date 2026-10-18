@@ -1,0 +1,14 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error: type `gpui::window::DispatchEventResult` is private
+   --> crates/hex-ui/src/editor/browser_focus_ui_test.rs:328:17
+    |
+328 | /                 window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+329 | |                     position: row.center(), button: MouseButton::Left, click_count: 2,
+330 | |                     first_mouse: false, modifiers: Modifiers::default(),
+331 | |                 }), cx);
+    | |_______________________^ private type
+
+error: could not compile `hex-ui` (lib test) due to 1 previous error

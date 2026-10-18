@@ -1,0 +1,14 @@
+{
+  "crates/hex-ui/src/editor/browser.rs": {
+    "before_git_blob": "89381cfa3086df7396ea37dc8ea58bdfa35813f9",
+    "before_sha256": "e6d4d968fca921557c1a5cd6cd00f8686bdf6a4cad9a4262e70283a3c4128d3d",
+    "after_git_blob": "943093527686b7c15fb612d8348e01cf3b951cae",
+    "after_sha256": "28229763d055da2c7810d57ed1c6cbf08b6dd65f1e99ac5b01eb7dfc8fce6fd2"
+  },
+  "crates/hex-ui/src/editor/browser_focus_ui_test.rs": {
+    "before_git_blob": "5d6a82fa7c11fdab6a3de3d6379c5a1fbcfd4951",
+    "before_sha256": "0ceeb869df74b5de790dbcb19cb80359ff47cdcbf568db95f5537e4988287daf",
+    "after_git_blob": "a414bda0ea6dc064a1b1ee1d2a9706f4676adafe",
+    "after_sha256": "13002c7b5ec2aaeb26954b6c53d83416de67418057b0498673fa4cb95f174d6c"
+  }
+}

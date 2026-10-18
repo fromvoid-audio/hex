@@ -1,0 +1,11 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.63s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+test editor::browser::ui_test::explicit_focus::browser_stale_unavailable_row_click_leaves_query_focus_without_action ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 753 filtered out; finished in 1.04s
+

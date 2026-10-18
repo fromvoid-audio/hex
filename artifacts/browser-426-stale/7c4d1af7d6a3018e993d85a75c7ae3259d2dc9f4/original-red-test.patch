@@ -1,0 +1,67 @@
+--- a/crates/hex-ui/src/editor/browser_focus_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_focus_ui_test.rs
+@@ -293,3 +293,64 @@
+         assert_eq!(view.browser.search.read(cx).content, "loop")
+     });
+ }
++
++#[gpui::test]
++fn browser_stale_unavailable_row_click_leaves_query_focus_without_action(cx: &mut TestAppContext) {
++    let (handle, editor, _directory, samples) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    for mode in [crate::editor::EditorMode::Arrangement, crate::editor::EditorMode::Session] {
++        for loading in [true, false] {
++            editor.update(visual, |view, cx| {
++                view.mode = mode;
++                view.browser.auto_audition = true;
++                view.select_browser_source(BrowserSection::Place(samples.clone()), cx);
++            });
++            visual.run_until_parked();
++            let search = visual.debug_bounds("browser-search").unwrap();
++            visual.simulate_click(search.center(), Modifiers::default());
++            visual.simulate_keystrokes("cmd-a");
++            visual.simulate_input("loop");
++            let row = visual.debug_bounds("browser-entry-0").expect("available sample row must actually be painted");
++            let before = visual.update(|window, cx| {
++                editor.update(cx, |view, cx| {
++                    assert!(view.browser.search.read(cx).focus_handle().is_focused(window));
++                    assert!(!view.browser_place_unavailable());
++                    assert_eq!(view.browser_visible_entries(cx)[0].path, samples.join("loop.wav"));
++                    let before = (view.browser.playback_generation, view.browser.preview_preparations, view.browser.selected_index, view.browser.results_focused);
++                    // Change live availability between paint and native event dispatch;
++                    // do not repaint or substitute a freshly rendered blank hit target.
++                    view.browser.loading = loading;
++                    view.browser.error = (!loading).then(|| "offline test Place".into());
++                    assert!(view.browser_place_unavailable());
++                    before
++                })
++            });
++            // VisualTestContext dispatches the native event before parking workers;
++            // there is deliberately no draw/notify between mutation and dispatch.
++            visual.simulate_event(gpui::MouseDownEvent {
++                position: row.center(), button: MouseButton::Left, click_count: 2,
++                first_mouse: false, modifiers: Modifiers::default(),
++            });
++            visual.update(|window, cx| {
++                editor.read_with(cx, |view, cx| {
++                    assert!(!view.browser.search.read(cx).focus_handle().is_focused(window), "stale row refusal must leave actual query focus; mode={mode:?}, loading={loading}");
++                    assert!(view.browser.results_focus.is_focused(window));
++                    assert_eq!(view.browser_key_context(window,cx), "hex_browser");
++                    assert_eq!((view.browser.playback_generation, view.browser.preview_preparations, view.browser.selected_index, view.browser.results_focused), before, "refused stale row must not select, audition, or prepare");
++                    assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
++                });
++            });
++            visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
++            visual.simulate_input("qxj");
++            visual.run_until_parked();
++            visual.executor().advance_clock(std::time::Duration::from_millis(32));
++            visual.run_until_parked();
++            visual.update(|window, cx| editor.read_with(cx, |view, cx| {
++                assert_eq!(view.browser.search.read(cx).content, "loop");
++                assert!(view.browser.results_focus.is_focused(window));
++                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
++            }));
++        }
++    }
++}

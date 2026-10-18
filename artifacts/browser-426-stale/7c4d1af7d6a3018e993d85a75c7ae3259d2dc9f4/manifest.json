@@ -1,0 +1,55 @@
+{
+  "canonical_pr": 426,
+  "ticket": 2820,
+  "review_return": 24909,
+  "head": "7c4d1af7d6a3018e993d85a75c7ae3259d2dc9f4",
+  "tree": "527a25d5ce3cd2dd52fa680b607b1d1921ae2fdb",
+  "expected_before": "db83a0a356412c470cc2d086a7a5c9a7adcdd9da",
+  "expected_before_tree": "bc5008722dcc53db770b3cdbad3a5dafa5446946",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser_focus_ui_test.rs"
+  ],
+  "original_red": {
+    "source": "db83a0a356412c470cc2d086a7a5c9a7adcdd9da",
+    "result": "0PASS1FAIL stale painted available row, actual loading change before nativeMouseDown leaves SearchFocus;426-stale-original-red.log",
+    "reproduction": "original-red-test.patch, no production instrumentation"
+  },
+  "final_results": {
+    "focused": "1PASS0failed0ignored753filtered1.04s covering4loading/error\u00d7modecases",
+    "browser": "87PASS0failed0ignored667filtered24.74s, unchanged original34matrix and4offsetaudition cases included",
+    "clippy": "UIalltargetsui-test-support-DwarningsPASS",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "commands": "426-stale-final-checks.json",
+    "source_identity": "checkedworkingtreeunchangedthroughfreeze;commitafterchecks",
+    "fullCI": "notrun;solemergernewprospectivequalification"
+  },
+  "retained_diagnostics": {
+    "426-stale-event-api-compile.log": "test tried directwindow.dispatch_event whose returntypeGPUIprivate; corrected to existing publicVisualTestContext.simulate_event, no vendor/visibilitychange; originalproductRED thenproved ondb83"
+  },
+  "scope": "Realnontextfocusbeforestaleavailabilityrefusalonly, availabilityblockingstillintact. Originaldb83green/evidencepreserved.",
+  "known_limits": [
+    "Nativeoptimizedphysicalpointer/IME/GPUacceptanceopen",
+    "Separate2794/400oppositefieldclickfocuslossunresolved",
+    "ExistingPCMdeclaredArcUnknownwarningretained"
+  ],
+  "files": {
+    "426-stale-event-api-compile.log": "50c7ac8e31e8ef6d7c668886015ab50a2ca27354208d5ecc2fb4b2d0cae94707",
+    "426-stale-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "426-stale-final-browser.log": "cb436671f8911d303b3ce6a96cd42f1f8bf70b22caeeb37ef8b7d47c9898c363",
+    "426-stale-final-checks.json": "ae2904a13cfd74e643b51c17cb8d39788b51ff73806ba4106371e281f035efa1",
+    "426-stale-final-clippy.log": "b8a5d4af2a691049d2e8c501bac7662a5ae27cb73380857148a40c4eb2f3a143",
+    "426-stale-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "426-stale-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "426-stale-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "426-stale-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "426-stale-focused-green.log": "c50ff20b101b6b4efc62adbb8870dcbc29c275bb3696ca38d7db518697b0567a",
+    "426-stale-original-red.log": "ea21eef7708f8c690426636d190122b3658fb8443f9ee6c5be9332453b299a21",
+    "426-stale-original-test.rs": "c5dea9a7c7bbccc06da8c2861604c07dc73c4a7dffe717a871f5ca448cd4b4a6",
+    "before-after-hashes.json": "e6743949747616a98c39ee77312f43abe0ab52e1725df89147b99ac50ea7be09",
+    "integration-note.md": "7d9b4aa5730b406b3fa7a0196c247af4150b697ec5aade694ed902c2d0bd45c2",
+    "native-checklist.md": "cfbfd7705d2a252e008b230ef548548a7ec8e92d8fd9e6ed5f7f3c8a305d6779",
+    "original-red-test.patch": "2a1dfb5bd07da6441e526452efed41c0010918f1acda1acc5b357b6f7a6fa09b",
+    "source.patch": "454b9d83c18dc8796933e54d4c34aa86611f6e0925c025690831312d30dbe0b8"
+  }
+}
