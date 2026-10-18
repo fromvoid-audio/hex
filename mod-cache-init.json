@@ -1,0 +1,11 @@
+{
+  "status": "ONLY frozen private mod hunks; whole volume feature WIP/live route pending, not buildable standalone evidence",
+  "baseline_main": "04e6e4f2095cb93e2b206c8b564c0da03b9907ce",
+  "before_blob": "7cd91969",
+  "after_blob": "150f22f25d06fbad0acc503427082a708dd90926",
+  "before_sha256": "c5435674fdbf574fc4b4dc0b01e9d4211ad690e21c861ee524b084d54da50c8e",
+  "after_sha256": "9daeab2e598661eaf427498ef93a85d634373d559d1fdad21dea3dad548fe75c",
+  "patch_sha256": "bf1dda869b6a2ee80cd9d1eea3f4b3a8001bd89fb051d1978cb2f2d6f7789d1e",
+  "scope": "Only mod track_gain, cache field and default init. No action/keybinding/loop/render/constructor-body edits. Rustfmt places module alphabetically; hunks now frozen.",
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/331"
+}
