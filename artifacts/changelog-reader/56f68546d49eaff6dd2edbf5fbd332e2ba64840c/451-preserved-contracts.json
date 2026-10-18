@@ -1,0 +1,14 @@
+{
+  "keybindings": {
+    "unchanged": true,
+    "before_sha256": "f64198763d664ed1b76c1c95e5e009474149d960f1f0f6259751835012c28af5",
+    "after_sha256": "f64198763d664ed1b76c1c95e5e009474149d960f1f0f6259751835012c28af5"
+  },
+  "open-close": {
+    "unchanged": true,
+    "before_sha256": "d498bf0cb313035edfc1cf2c3f80fd768694ed60c7f7bba7a666ba8af4cf6a04",
+    "after_sha256": "d498bf0cb313035edfc1cf2c3f80fd768694ed60c7f7bba7a666ba8af4cf6a04"
+  },
+  "dataset_sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc",
+  "expected_dataset_sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc"
+}

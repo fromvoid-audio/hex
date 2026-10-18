@@ -1,0 +1,204 @@
+{
+  "schema": 1,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/451",
+  "ticket": 2849,
+  "source_head": "56f68546d49eaff6dd2edbf5fbd332e2ba64840c",
+  "tree": "fd9c76d4eedac72d09b11291e352f74e3d20299c",
+  "own_parent": "b03443a2a99dfa635524d00df39367573ec0c8c9",
+  "own_parent_tree": "cc857a6fc2702d9edab2f4ca53c17d38216db816",
+  "base_main": "78b14aadd8899197c9e7b4be0b4044c03a767998",
+  "files": [
+    "crates/hex-ui/src/editor/changelog.rs",
+    "docs/changelog.md",
+    "scripts/check-ui-style.py"
+  ],
+  "checks": [
+    {
+      "name": "reader",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "editor::changelog::",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-reader.log"
+    },
+    {
+      "name": "operator",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "operator_tab",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-operator.log"
+    },
+    {
+      "name": "generation-contract",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_changelog.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-generation-contract.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-clippy.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/451-final-diff.log"
+    }
+  ],
+  "results": {
+    "reader": "12 PASS,0failed/0ignored,805filtered,0.92s",
+    "operator": "9 PASS,0failed/0ignored,808filtered,16.49s",
+    "generation-contract": "33 PASS,3.203s,offline temporary fixtures, no real AI invocation",
+    "strict_clippy": "hex-ui all-targets/ui-test-support PASS20.31s",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "fullCI": "NOTRUN bysourceowner; exclusively solemerger prospective candidate"
+  },
+  "original_red": {
+    "log": "451-original-red.log",
+    "result": "0PASS1FAIL original renderer lacked a grouped features heading",
+    "reproduce": "On parentb034 apply original-red-test.patch; run cargo test -p hex-ui --features ui-test-support --locked --lib changelog_grouped_headings -- --nocapture. Original parent production renderer unchanged."
+  },
+  "diagnostics": {
+    "451-first-check.log": "compile E0599/E0282: coverage tooltip initially attached to stateless Div; added only stable coverage id, no action/focus/tab target",
+    "451-check2.log": "first8 reader cases PASS0.59s before expanded coverage",
+    "451-check3.log": "expanded12 reader cases PASS0.91s before final finite-loop test cleanup",
+    "451-unregistered-style.log": "raw four exact unknown native composition expressions, no uppercase/font/direct label finding; resolved only by explicit component registration",
+    "451-pre-registration-checks.json": "reader12/Operator9/generation33/strictClippy/architecture/GPUI0, style1; final style/fmt/diff rerun after registration",
+    "451-final-clippy.log": "exit0 strictClippy includes existing hex-engine build-script observation PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags; no engine edits or unsupported-proof reclassification"
+  },
+  "content_proof": {
+    "dataset_sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc",
+    "dataset_git_blob_before": "93a2c7b31a44a77286f1e00b2b873ab6c268b47f",
+    "dataset_git_blob_after": "93a2c7b31a44a77286f1e00b2b873ab6c268b47f",
+    "count": 7,
+    "coverage_base": "cdba26a815a2286ed43c2a6ed5089f5c9b88613f",
+    "coverage_source": "cb8befc4f2dd19d0af1fd02932cb52941653b479"
+  },
+  "coverage": "3 parser/model and9 actual GPUI cases, including all5 original interaction cases: grouped completed text paint/color/font; complete/order-preserved7notes/provenance; whole wrapped/padded row pointer enter/move/leave; neighbours/headings/geometry/scroll stable; actual stationary-pointer wheel hover and reused row ID clearing; 480/880/1280 geometry and long/unbroken text; unavailable/malformed/empty update/empty group; opener/close EnterSpace/TabShiftTab/Escape/editor focus/scroll isolation. Separate9OperatorTab and33 generation contracts retained.",
+  "limits": [
+    "Final runtime/test module content unchanged after focused runs; only explicit style registration and docs spacing followed. No full-run receipt qualifies future combined tree.",
+    "Checks ran on final dirty source content before commit, not a native exactbuild provenance claim.",
+    "Actual screenshot was described in originating merger chat, no screenshot bytes or native screen inspection available here.",
+    "No hostedCI/selfmerge/Mac/app/build-package/install/launch/quit/permissions/userdata operations or new AI/network generation.",
+    "Pulse remains InProgress until authenticatedactualmerge; source ready is not installed/user accepted."
+  ],
+  "payloads": {
+    "451-check2.log": "4cf69573ff68e8def7d10192c55a452b62bb6bcd7b6691d7d2c23a43bd300331",
+    "451-check3.log": "c3b865f4d0c090209137e60828faac983a17f4e4d7f9da7c9bf4f7848cdbf693",
+    "451-edit.py": "af903557444b4cb01b8919f35df388d8200c91129a70df6fa455786d3ffa18c0",
+    "451-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "451-final-checks.json": "03689af71d73803d120d7ac29d6328c59cdad4c54ed7520ea53f748d52c4a668",
+    "451-final-clippy.log": "2f2d96b2ad6b1cc264f994e81f7d7aa220d958e93515d6c39a8b9c0039080bb4",
+    "451-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "451-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "451-final-generation-contract.log": "0bec3db175fdcb6fc0f659bbdf8a5af70bf0777f30737cc70923fd7687806770",
+    "451-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "451-final-operator.log": "04306328c0d1f742d3ff018d40bdecd4c4fe22f72a0f4f069561ab81ddb7d922",
+    "451-final-reader.log": "d861abf12614755afb798d7ca036c4b9f0c7aec8e1740b19a5a657b619384784",
+    "451-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "451-first-check.log": "3d9c815f329e8668f5db1d672c9346f979ce074cf0d354ae36944de9b93d4213",
+    "451-more-tests.py": "b9f3ce75d2f21ab5d49aab7b8538fadf95e2145bafca8d8760f16e597202ed9c",
+    "451-original-changelog.rs": "c379414bcd0288b4956a3a1430c7166f689b91638c54ad3b7d4c5ef6923a49ff",
+    "451-original-red-changelog.rs": "3ae98e7cab37426bf7013adfc6b4745e313ad0f8f470c67bb7de2aa4ec979c59",
+    "451-original-red.log": "927ded3b83d3a24bfc419f53852ef18202ee96b855c9a38309cf4a4879711cb0",
+    "451-original-style-guard.py": "3f65c47809b7cb5f38ee206c8f4adb96e681002d1a22e9ce8febbc2d10f7c72c",
+    "451-pre-registration-checks.json": "bb8ad3af8e86996eefdbeb14f597198dd6524cb58ebc176c7bf2a858ba7d15fc",
+    "451-pre-registration-source.patch": "f6afcfe944cc85595cab28a0af15e684e7b9bf545254ab1b4e1e40c28be7936a",
+    "451-preserved-contracts.json": "294a5a46269ae1131a8aa867de0c7027424edcbf3f9252bcf1d70b09254a65c2",
+    "451-publish-evidence.py": "81495ec4ff1d9ba5549b1f1d721d59311c585c2903a3defb641891f0cc99a16b",
+    "451-unregistered-style.log": "cb87c0c3a468eef1e944a5ca08c90eae797bb35c857d24f6a97e8a605d0c057c",
+    "before-after-hashes.json": "bd137d5e51176bd4fb790dfb2b68fad70904af1964106093d78dff9825f40105",
+    "finite-native-checklist.md": "7563eeecb7c091a75467a91bc5df944979dff01fd028a893e438c8d53db2641b",
+    "integration-note.md": "34838f0453e5bf26684158f501cea0b937ca4cf32015fa5d055cbc73d26b58cc",
+    "original-red-test.patch": "aed598490c42d8d25f90ae6bb9218becc265c3da47a5c3d41eb5a2db24f3a789",
+    "source.patch": "9eec1da89f7aeb1c725df5f1cdca363e3bfbab3577dcefcab8ae0085ebf34d95",
+    "unchanged-generated.json": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc"
+  }
+}

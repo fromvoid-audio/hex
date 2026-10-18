@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.57s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-0fb9a42c4f4a32cc)
+
+running 1 test
+
+thread 'editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently' (121577) panicked at crates/hex-ui/src/editor/changelog.rs:464:9:
+render one real features heading instead of repeating prefixes in paragraphs
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently ... FAILED
+
+failures:
+
+failures:
+    editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 812 filtered out; finished in 0.22s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,19 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.42s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-0fb9a42c4f4a32cc)
+
+running 9 tests
+test editor::device_panel::tests::operator_tab_tests::operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_filter_shared_controls_focus_commit_undo_and_redo ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_lfo_and_routing_widgets_have_one_focus_group_and_release_previous_group ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_preview_invalid_drafts_refuse_forward_and_reverse_tab ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_section_activation_and_invalid_draft_keep_focus_and_state ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_shell_controls_precede_selectors_and_sections_follow_child_focus ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_tab_targets_retire_on_track_owner_change ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_tab_cycle_with_saved_places_excludes_unrelated_cached_media ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 808 filtered out; finished in 16.49s
+

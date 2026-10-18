@@ -1,0 +1,20 @@
+{
+  "crates/hex-ui/src/editor/changelog.rs": {
+    "before_git_blob": "7e77325a3730db348aaf2d8344d75b4406aa75ff",
+    "before_sha256": "c379414bcd0288b4956a3a1430c7166f689b91638c54ad3b7d4c5ef6923a49ff",
+    "after_git_blob": "33a00391fe2f251c8da18728cb81e2f867cd0bc5",
+    "after_sha256": "b89033680d17b083e77e1607bbe43159bec4b67746b2f0c2d8c7270f82396ae7"
+  },
+  "docs/changelog.md": {
+    "before_git_blob": "7e79b17777e4699545e06508e808c6e6f2a90b40",
+    "before_sha256": "c3d92831d1056b3f8efc4356513dca33836fba997906cbf6856ef04e54a842e3",
+    "after_git_blob": "8bc395551fe6cc3d1a91c51394cb4627720d3429",
+    "after_sha256": "c7e86b8f1e7a44e6150e66d1e8544b88f803d19a662197141e2290ab5c36b03c"
+  },
+  "scripts/check-ui-style.py": {
+    "before_git_blob": "b6226f045657807b1687740e324ec28eee609b4d",
+    "before_sha256": "3f65c47809b7cb5f38ee206c8f4adb96e681002d1a22e9ce8febbc2d10f7c72c",
+    "after_git_blob": "671fd94302e3beeb0c1daf06b336122e57cfaafa",
+    "after_sha256": "6df69c90b17607f14eff2db42129fae461fe3db1093856ab75702ec661954c79"
+  }
+}

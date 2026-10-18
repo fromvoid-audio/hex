@@ -1,0 +1,15 @@
+--- a/crates/hex-ui/src/editor/changelog.rs
++++ b/crates/hex-ui/src/editor/changelog.rs
+@@ -457,4 +457,11 @@
+         click(&mut visual, "close-changelog");
+         editor.read_with(&visual, |view, _| assert!(!view.changelog.open));
+     }
+-}
++    #[gpui::test]
++    fn changelog_grouped_headings_render_once_and_rows_hover_independently(cx: &mut TestAppContext) {
++        let (_directory, mut visual, _editor) = fixture(cx);
++        click(&mut visual, "open-changelog");
++        assert!(visual.debug_bounds("changelog-heading-0-features").is_some(), "render one real features heading instead of repeating prefixes in paragraphs");
++    }
++
++}

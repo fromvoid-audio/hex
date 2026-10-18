@@ -1,0 +1,9 @@
+.....changelog refused: changelog continuation must start at the previous covered source
+changelog refused: changelog continuation must start at the previous covered source
+............................
+----------------------------------------------------------------------
+Ran 33 tests in 3.203s
+
+OK
+/tmp/hex-changelog-test-p8gi5cqr/second-packet
+/tmp/hex-changelog-test-p8gi5cqr/repeated-second-packet

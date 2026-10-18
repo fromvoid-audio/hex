@@ -1,0 +1,32 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0599]: no method named `tooltip` found for struct `gpui::Div` in the current scope
+   --> crates/hex-ui/src/editor/changelog.rs:364:26
+    |
+343 | /                     div()
+344 | |                         .flex()
+345 | |                         .flex_wrap()
+346 | |                         .items_center()
+...   |
+364 | |                         .tooltip(move |_, cx| {
+    | |                         -^^^^^^^ method not found in `gpui::Div`
+    | |_________________________|
+    |
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/changelog.rs:364:43
+    |
+364 |                         .tooltip(move |_, cx| {
+    |                                           ^^
+365 |                             cx.new(|_| super::transport::MiniTooltip {
+    |                             -- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+364 |                         .tooltip(move |_, cx: /* Type */| {
+    |                                             ++++++++++++
+
+Some errors have detailed explanations: E0282, E0599.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `hex-ui` (lib test) due to 2 previous errors

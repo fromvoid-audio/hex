@@ -1,0 +1,4 @@
+crates/hex-ui/src/editor/changelog.rs:272: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/changelog.rs:294: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/changelog.rs:381: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/changelog.rs:460: route text through theme::text or add an explicit view component

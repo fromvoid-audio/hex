@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.56s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-0fb9a42c4f4a32cc)
+
+running 12 tests
+test editor::changelog::tests::unavailable_and_malformed_notes_are_distinct_from_generated_empty_updates ... ok
+test editor::changelog::tests::category_projection_preserves_validation_and_group_order ... ok
+test editor::changelog::tests::notes_show_user_text_and_honest_coverage_not_private_diff_or_commit_references ... ok
+test editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently ... ok
+test editor::changelog::ui_tests::changelog_empty_groups_unavailable_and_malformed_render_truthfully ... ok
+test editor::changelog::ui_tests::changelog_long_note_wraps_at_compact_and_normal_width_without_hover_reflow ... ok
+test editor::changelog::ui_tests::changelog_scrolling_and_reused_rows_do_not_retain_old_item_hover ... ok
+test editor::changelog::ui_tests::header_button_opens_offline_notes_next_to_log_and_escape_restores_editor ... ok
+test editor::changelog::ui_tests::shortcut_opens_actual_embedded_generated_notes_without_network_or_files ... ok
+test editor::changelog::ui_tests::long_notes_scroll_panel_is_bounded_and_close_does_not_edit_project ... ok
+test editor::changelog::ui_tests::overlay_close_is_reachable_by_tab_shift_tab_and_activates_without_document_edits ... ok
+test editor::changelog::ui_tests::toolbar_keyboard_entry_activates_with_enter_and_space_then_escape_restores_focus ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 805 filtered out; finished in 0.91s
+
