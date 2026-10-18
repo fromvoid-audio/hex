@@ -562,8 +562,13 @@ fn eq_option_drag_refused_begin_preserves_the_other_canonical_gesture_key(cx: &m
 
 #[gpui::test]
 fn eq_review_option_q_moves_both_ways_at_both_gain_boundaries(cx: &mut TestAppContext) {
-    cx.update(hex_widgets::bind_numeric_control_keys);
+    let mut completed = 0;
     for gain in [-24.0_f32, 24.0] {
+        // Native text selection is strict before the first window of each app.
+        // Gain variants must not reuse a context with earlier open windows.
+        let cx = &mut cx.new_app();
+        cx.update(hex_widgets::bind_numeric_control_keys);
+        eprintln!("EQ relative-Q boundary variant: gain={gain}");
         let (handle, editor, _root, device) = node_window(cx, 0.5);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -621,7 +626,12 @@ fn eq_review_option_q_moves_both_ways_at_both_gain_boundaries(cx: &mut TestAppCo
                 settled(view) && read(view, device) == before
             });
         }
+        completed += 1;
     }
+    assert_eq!(
+        completed, 2,
+        "both gain boundaries completed both drag directions"
+    );
 }
 
 #[gpui::test]
