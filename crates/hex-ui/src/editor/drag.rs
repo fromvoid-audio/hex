@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 #[derive(Default, Debug)]
 pub(super) struct ClipDragGroup {
+    pub(super) selection_epoch: Option<u64>,
     pub(super) ids: Vec<ClipId>,
     pub(super) previews: Vec<hex_project::ClipGroupPreview>,
 }
@@ -572,6 +573,11 @@ impl super::EditorView {
     }
 
     pub(super) fn drag_start_is_current(&self, drag: &ClipDrag) -> bool {
+        if drag.group.borrow().ids.len() > 1
+            && drag.group.borrow().selection_epoch != Some(self.clip_selection.epoch)
+        {
+            return false;
+        }
         if self.opening_project
             || self.close_prompt_open
             || self.worker_requests_pending != 0
@@ -642,18 +648,6 @@ impl super::EditorView {
             position
         };
         preview_for(&state.project, target_track, position)
-    }
-
-    pub(super) fn group_move_hides_clip(&self, id: ClipId) -> bool {
-        self.active_clip_drag.as_ref().is_some_and(|drag| {
-            if drag.copy_modifier.get() || !self.drag_start_is_current(drag) {
-                return false;
-            }
-            let group = drag.group.borrow();
-            group.ids.len() > 1
-                && !group.previews.is_empty()
-                && group.ids.binary_search(&id).is_ok()
-        })
     }
 
     pub(super) fn clip_drag_drop_position(
@@ -744,6 +738,7 @@ impl super::EditorView {
             } else {
                 vec![drag.clip]
             };
+            drag.group.borrow_mut().selection_epoch = Some(self.clip_selection.epoch);
         }
         self.active_native_device_drag = None;
         self.active_clip_drag = Some(drag.clone());

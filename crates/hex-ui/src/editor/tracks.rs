@@ -509,6 +509,9 @@ impl EditorView {
                                             preview: c,
                                             tempo: state.project.tempo_map(),
                                             asset: state.waveforms.get(&c.asset()),
+                                            prepared: state
+                                                .audio_clip_waveforms
+                                                .get(&original.id()),
                                         },
                                         start,
                                         end,
@@ -1076,8 +1079,18 @@ impl EditorView {
         let mut clip_area = div().size_full().relative();
         let move_display = self.time_range_move_display();
         let exclusions = move_exclusions(move_display.as_ref(), track_id, track_index);
+        let group_owner = self
+            .active_clip_drag
+            .as_ref()
+            .filter(|d| !d.copy_modifier.get() && self.drag_start_is_current(d));
+        let group = group_owner.map(|d| d.group.borrow());
+        let hides_group_member = |id| {
+            group.as_ref().is_some_and(|g| {
+                g.ids.len() > 1 && !g.previews.is_empty() && g.ids.binary_search(&id).is_ok()
+            })
+        };
         for clip in track.clips() {
-            if self.group_move_hides_clip(clip.id()) {
+            if hides_group_member(clip.id()) {
                 continue;
             }
             let Some(end) = clip.start().checked_add(clip.duration()) else {
@@ -1126,7 +1139,7 @@ impl EditorView {
         }
         let mut midi_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         for clip in track.midi_clips() {
-            if self.group_move_hides_clip(clip.id()) {
+            if hides_group_member(clip.id()) {
                 continue;
             }
             let Some(preview) = state.midi_preview.get(clip.id()) else {
