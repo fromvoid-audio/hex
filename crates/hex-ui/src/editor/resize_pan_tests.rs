@@ -288,10 +288,19 @@ fn resize_edge_cancel_and_stale_owners_cannot_scroll_or_commit(cx: &mut TestAppC
             }
             held_tick(&editor, &mut visual, now + Duration::from_millis(100));
             editor.read_with(&visual, |v, _| {
-                assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+                assert!(
+                    v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none(),
+                    "retire midi={midi} stale={stale}"
+                );
                 assert!(v.last_enqueued_edit.is_none());
                 assert!(v.trim_display_end().is_none());
             });
+            visual.simulate_mouse_move(
+                point(edge.x - px(6.0), edge.y),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
             let viewport = editor.read_with(&visual, |v, _| v.viewport);
             held_tick(&editor, &mut visual, now + Duration::from_secs(10));
             editor.read_with(&visual, |v, _| {

@@ -70,6 +70,7 @@ pub(super) struct TrimDrag {
 /// through one `Rc`; pointer updates and previews never clone the note list.
 #[derive(Clone, Debug)]
 pub(super) struct MidiTrimDrag {
+    canceled: Rc<Cell<bool>>,
     pub(super) project_generation: u64,
     pub(super) revision: u64,
     pub(super) source_track: TrackId,
@@ -167,7 +168,8 @@ fn midi_payload_is_current(
     viewport: Viewport,
     source_lane: Option<LaneBounds>,
 ) -> bool {
-    drag.project_generation == generation
+    !drag.canceled.get()
+        && drag.project_generation == generation
         && drag.revision == state.revision
         && drag.viewport().start == viewport.start
         && drag.viewport().length == viewport.length
@@ -390,6 +392,7 @@ impl EditorView {
             return Vec::new();
         };
         let drag = MidiTrimDrag {
+            canceled: Rc::new(Cell::new(false)),
             project_generation: self.project_generation,
             revision: state.revision,
             source_track: track,
@@ -692,13 +695,21 @@ impl EditorView {
     }
 
     pub(super) fn cancel_trim_gesture(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(drag) = self.active_trim_drag.take() else {
-            return false;
-        };
-        drag.canceled.set(true);
-        drag.preview.borrow_mut().take();
-        cx.notify();
-        true
+        let audio = self.active_trim_drag.take();
+        let midi = self.active_midi_trim_drag.take();
+        let canceled = audio.is_some() || midi.is_some();
+        if let Some(drag) = audio {
+            drag.canceled.set(true);
+            drag.preview.borrow_mut().take();
+        }
+        if let Some(drag) = midi {
+            drag.canceled.set(true);
+            drag.preview.borrow_mut().take();
+        }
+        if canceled {
+            cx.notify();
+        }
+        canceled
     }
 
     pub(super) fn begin_trim_drag(&mut self, drag: &TrimDrag) {
@@ -777,7 +788,10 @@ impl EditorView {
         if self.active_midi_trim_drag.as_ref().is_some_and(|active| {
             active.project_generation == generation && active.clip.id() == clip
         }) {
-            self.active_midi_trim_drag = None;
+            if let Some(drag) = self.active_midi_trim_drag.take() {
+                drag.canceled.set(true);
+                drag.preview.borrow_mut().take();
+            }
             cx.notify();
         }
     }
