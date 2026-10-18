@@ -1,0 +1,25 @@
+//! Local selection policy shared by text fields; no timers or global input hooks.
+
+/// Remembers selection before the first click of a platform double-click pair.
+#[derive(Clone, Copy, Default)]
+pub struct TextClickSelection {
+    before_all: Option<bool>,
+}
+
+impl TextClickSelection {
+    /// Returns the requested Select All state on the paired click, otherwise
+    /// records the pre-gesture state. Rapid pairs may arrive as 1/2 then 3/4.
+    pub fn selection_for_down(&mut self, click_count: usize, all: bool) -> Option<bool> {
+        if click_count >= 2 && click_count % 2 == 0 {
+            Some(!self.before_all.take().unwrap_or(all))
+        } else {
+            self.before_all = Some(all);
+            None
+        }
+    }
+
+    /// Invalidate a pair when text, keyboard selection, composition or focus changes.
+    pub fn clear(&mut self) {
+        self.before_all = None;
+    }
+}

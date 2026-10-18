@@ -1,0 +1,945 @@
+diff --git a/crates/hex-ui/src/editor/browser_input.rs b/crates/hex-ui/src/editor/browser_input.rs
+index 1c3dd232..af1d8356 100644
+--- a/crates/hex-ui/src/editor/browser_input.rs
++++ b/crates/hex-ui/src/editor/browser_input.rs
+@@ -42,6 +42,7 @@ pub(super) struct BrowserSearch {
+     reversed: bool,
+     marked: Option<Range<usize>>,
+     mouse_selection: Option<MouseSelection>,
++    text_click: hex_widgets::TextClickSelection,
+     last_layout: Option<ShapedLine>,
+     last_bounds: Option<Bounds<Pixels>>,
+     last_origin_x: Option<Pixels>,
+@@ -57,6 +58,7 @@ impl BrowserSearch {
+             reversed: false,
+             marked: None,
+             mouse_selection: None,
++            text_click: hex_widgets::TextClickSelection::default(),
+             last_layout: None,
+             last_bounds: None,
+             last_origin_x: None,
+@@ -79,6 +81,7 @@ impl BrowserSearch {
+     }
+     pub(super) fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         self.mouse_selection = None;
++        self.text_click.clear();
+         self.focus(window);
+         self.unmark_text(window, cx);
+         self.select_all(&BrowserSelectAll, window, cx);
+@@ -86,6 +89,7 @@ impl BrowserSearch {
+ 
+     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
+         self.mouse_selection = None;
++        self.text_click.clear();
+         self.content.clear();
+         self.selected = 0..0;
+         self.reversed = false;
+@@ -123,6 +127,7 @@ impl BrowserSearch {
+ 
+     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+         self.mouse_selection = None;
++        self.text_click.clear();
+         let offset = offset.min(self.content.len());
+         if self.reversed {
+             self.selected.start = offset;
+@@ -138,6 +143,7 @@ impl BrowserSearch {
+ 
+     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+         self.mouse_selection = None;
++        self.text_click.clear();
+         let offset = offset.min(self.content.len());
+         self.selected = offset..offset;
+         self.reversed = false;
+@@ -192,6 +198,7 @@ impl BrowserSearch {
+ 
+     fn select_all(&mut self, _: &BrowserSelectAll, _: &mut Window, cx: &mut Context<Self>) {
+         self.mouse_selection = None;
++        self.text_click.clear();
+         self.selected = 0..self.content.len();
+         self.reversed = false;
+         cx.notify();
+@@ -279,6 +286,19 @@ impl BrowserSearch {
+     }
+ 
+     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
++        let focused = self.focus.is_focused(window);
++        let mut gesture = self.text_click;
++        if !focused || event.modifiers.shift {
++            gesture.clear();
++        }
++        let toggle = (!event.modifiers.shift)
++            .then(|| {
++                gesture.selection_for_down(
++                    event.click_count,
++                    focused && !self.content.is_empty() && self.selected == (0..self.content.len()),
++                )
++            })
++            .flatten();
+         let offset = self.index_for_point(event.position);
+         let anchor = if event.modifiers.shift && self.focus.is_focused(window) {
+             if self.reversed {
+@@ -292,11 +312,18 @@ impl BrowserSearch {
+         self.unmark_text(window, cx);
+         if !self.clip_name && !self.focus.is_focused(window) {
+             self.focus_and_select_all(window, cx);
++        } else if let Some(all) = toggle {
++            if all {
++                self.select_all(&BrowserSelectAll, window, cx);
++            } else {
++                self.move_to(offset, cx);
++            }
+         } else if event.modifiers.shift {
+             self.select_to(offset, cx);
+         } else {
+             self.move_to(offset, cx);
+         }
++        self.text_click = gesture;
+         self.focus.focus(window);
+         self.mouse_selection = Some(MouseSelection {
+             anchor,
+@@ -318,6 +345,7 @@ impl BrowserSearch {
+         };
+         if event.pressed_button != Some(MouseButton::Left) || !self.focus.is_focused(window) {
+             self.mouse_selection = None;
++            self.text_click.clear();
+             return;
+         }
+         // A focus click stays Select All through ordinary pointer jitter. A
+@@ -328,6 +356,7 @@ impl BrowserSearch {
+         {
+             return;
+         }
++        self.text_click.clear();
+         if let Some(selection) = self.mouse_selection.as_mut() {
+             selection.dragging = true;
+         }
+@@ -374,6 +403,7 @@ impl EntityInputHandler for BrowserSearch {
+ 
+     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+         self.marked = None;
++        self.text_click.clear();
+     }
+ 
+     fn replace_text_in_range(
+@@ -384,6 +414,7 @@ impl EntityInputHandler for BrowserSearch {
+         cx: &mut Context<Self>,
+     ) {
+         self.mouse_selection = None;
++        self.text_click.clear();
+         let range = range
+             .as_ref()
+             .map(|range| self.range_from_utf16(range))
+@@ -417,6 +448,7 @@ impl EntityInputHandler for BrowserSearch {
+         cx: &mut Context<Self>,
+     ) {
+         self.mouse_selection = None;
++        self.text_click.clear();
+         let range = range
+             .as_ref()
+             .map(|range| self.range_from_utf16(range))
+diff --git a/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+index 73f002f3..235fd1de 100644
+--- a/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+@@ -295,3 +295,165 @@ fn search_selection_clipboard_ime_empty_and_long_query_keep_text_ownership(
+         assert_eq!(view.browser.playback_generation, 0);
+     });
+ }
++
++// Only the new toggle regressions use this bounded pre-worker seam. Existing
++// legacy fixtures remain separate from the queued broader sandbox work.
++fn toggle_fixture(
++    cx: &mut TestAppContext,
++) -> (
++    gpui::AnyWindowHandle,
++    gpui::Entity<EditorView>,
++    PreferencesTestDirectory,
++    std::path::PathBuf,
++) {
++    let directory = PreferencesTestDirectory::new();
++    let samples = directory.0.join("samples");
++    std::fs::create_dir_all(&samples).unwrap();
++    std::fs::write(samples.join("loop.wav"), mono_pcm_wav(24)).unwrap();
++    let handle = *cx.add_window(|_, _| Empty);
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.replace_root(cx, |window, cx| {
++                EditorView::new_for_test_with_browser_directory(
++                    window,
++                    cx,
++                    Service::new(48_000, 32, 8_000_000).unwrap(),
++                    &directory.0,
++                )
++            })
++        })
++        .unwrap();
++    editor.read_with(cx, |view, _| {
++        assert_eq!(view.browser.directory, samples);
++        assert_eq!(view.browser.places, vec![samples.clone()]);
++        assert_eq!(view.sample_roots(), vec![samples.clone()]);
++    });
++    (handle, editor, directory, samples)
++}
++
++fn double_click_at(
++    visual: &mut VisualTestContext,
++    at: gpui::Point<gpui::Pixels>,
++    first_count: usize,
++) {
++    for click_count in [first_count, first_count + 1] {
++        visual.simulate_event(gpui::MouseDownEvent {
++            position: at,
++            button: MouseButton::Left,
++            modifiers: Modifiers::default(),
++            click_count,
++            first_mouse: false,
++        });
++        visual.simulate_event(gpui::MouseUpEvent {
++            position: at,
++            button: MouseButton::Left,
++            modifiers: Modifiers::default(),
++            click_count,
++        });
++    }
++}
++
++#[gpui::test]
++fn search_double_click_toggles_against_selection_before_first_click(cx: &mut TestAppContext) {
++    cx.update(super::super::super::bind_editor_keys);
++    let (handle, editor, _directory, samples) = toggle_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("kick hats");
++    visual.simulate_keystrokes("cmd-f");
++    assert_eq!(selection(&editor, visual), 0..9);
++    let at = caret_point(&editor, visual, 4);
++    let before_requests = editor.read_with(visual, |view, _| {
++        (
++            view.browser.playback_generation,
++            view.browser.preview_preparations,
++            view.browser.tree.requests_started,
++        )
++    });
++    for (count, expected) in [(1, 4..4), (3, 0..9), (1, 4..4), (1, 0..9)] {
++        double_click_at(visual, at, count);
++        assert_eq!(
++            selection(&editor, visual),
++            expected,
++            "double gesture starting with click_count {count}"
++        );
++        editor.read_with(visual, |view, cx| {
++            assert_eq!(view.browser.search.read(cx).content, "kick hats");
++            assert_eq!(
++                (
++                    view.browser.playback_generation,
++                    view.browser.preview_preparations,
++                    view.browser.tree.requests_started
++                ),
++                before_requests,
++                "selection-only gesture emitted browser work"
++            );
++        });
++    }
++    // The first click has collapsed selection, but actual filesystem completions
++    // and repaint between the clicks must not change the pre-gesture snapshot.
++    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
++    workers_and_ticks(&editor, visual, &samples);
++    visual.simulate_event(gpui::MouseDownEvent {
++        position: at,
++        button: MouseButton::Left,
++        modifiers: Modifiers::default(),
++        click_count: 2,
++        first_mouse: false,
++    });
++    visual.simulate_event(gpui::MouseUpEvent {
++        position: at,
++        button: MouseButton::Left,
++        modifiers: Modifiers::default(),
++        click_count: 2,
++    });
++    assert_eq!(selection(&editor, visual), 4..4);
++    double_click_at(visual, at, 1);
++    assert_eq!(selection(&editor, visual), 0..9);
++    visual.simulate_resize(gpui::size(px(1100.0), px(800.0)));
++    visual.run_until_parked();
++    let start = caret_point(&editor, visual, 1);
++    let end = caret_point(&editor, visual, 4);
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    assert_eq!(selection(&editor, visual), 1..4);
++    let at = caret_point(&editor, visual, 2);
++    double_click_at(visual, at, 1);
++    assert_eq!(
++        selection(&editor, visual),
++        0..9,
++        "partial selection doubleclick selects all"
++    );
++    visual.simulate_mouse_move(end, None, Modifiers::default());
++    assert_eq!(
++        selection(&editor, visual),
++        0..9,
++        "released hover cannot toggle"
++    );
++    workers_and_ticks(&editor, visual, &samples);
++    assert_eq!(selection(&editor, visual), 0..9);
++    editor.read_with(visual, |view, _| {
++        assert!(view.pending_audio_commands.is_empty());
++        assert!(view.pending_requests.is_empty());
++    });
++}
++
++#[gpui::test]
++fn search_empty_double_click_is_selection_only(cx: &mut TestAppContext) {
++    cx.update(super::super::super::bind_editor_keys);
++    let (handle, editor, _directory, _samples) = toggle_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.simulate_keystrokes("cmd-f");
++    let field = visual.debug_bounds("browser-search").unwrap();
++    for count in [1, 3, 1] {
++        double_click_at(visual, field.center(), count);
++        assert_eq!(selection(&editor, visual), 0..0);
++    }
++    editor.read_with(visual, |view, cx| {
++        assert!(view.browser.search.read(cx).content.is_empty());
++        assert_eq!(view.browser.playback_generation, 0);
++        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
++    });
++}
+diff --git a/crates/hex-ui/src/editor/name_case_ui_test.rs b/crates/hex-ui/src/editor/name_case_ui_test.rs
+index 83a37f5f..0aec078a 100644
+--- a/crates/hex-ui/src/editor/name_case_ui_test.rs
++++ b/crates/hex-ui/src/editor/name_case_ui_test.rs
+@@ -136,3 +136,97 @@ fn name_case_marked_unicode_and_scrolled_caret_use_original_utf16(cx: &mut TestA
+         })
+     });
+ }
++
++#[gpui::test]
++fn name_case_double_click_and_composition_keep_raw_unicode_selection(cx: &mut TestAppContext) {
++    let original = "İAe\u{301}🎛";
++    let (handle, input) = fixture(cx, original);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let at = visual.update(|window, cx| {
++        input.update(cx, |input, cx| {
++            input
++                .bounds_for_range(1..1, input.last_bounds.unwrap(), window, cx)
++                .unwrap()
++                .center()
++        })
++    });
++    for (count, expected) in [(1, 1..1), (3, 0..6), (1, 1..1), (1, 0..6)] {
++        for click_count in [count, count + 1] {
++            visual.simulate_event(gpui::MouseDownEvent {
++                position: at,
++                button: gpui::MouseButton::Left,
++                modifiers: gpui::Modifiers::default(),
++                click_count,
++                first_mouse: false,
++            });
++            visual.simulate_event(gpui::MouseUpEvent {
++                position: at,
++                button: gpui::MouseButton::Left,
++                modifiers: gpui::Modifiers::default(),
++                click_count,
++            });
++        }
++        visual.update(|window, cx| {
++            input.update(cx, |input, cx| {
++                assert_eq!(input.content, original);
++                assert_eq!(
++                    input.selected_text_range(false, window, cx).unwrap().range,
++                    expected
++                );
++                assert!(
++                    input.content.is_char_boundary(input.selected.start)
++                        && input.content.is_char_boundary(input.selected.end)
++                );
++            })
++        });
++    }
++    visual.update(|window, cx| {
++        input.update(cx, |input, cx| {
++            input.replace_and_mark_text_in_range(Some(0..6), "İ🎛", Some(0..1), window, cx)
++        })
++    });
++    visual.run_until_parked();
++    let at = visual.update(|window, cx| {
++        input.update(cx, |input, cx| {
++            input
++                .bounds_for_range(1..1, input.last_bounds.unwrap(), window, cx)
++                .unwrap()
++                .center()
++        })
++    });
++    for click_count in [1, 2] {
++        visual.simulate_event(gpui::MouseDownEvent {
++            position: at,
++            button: gpui::MouseButton::Left,
++            modifiers: gpui::Modifiers::default(),
++            click_count,
++            first_mouse: false,
++        });
++        visual.simulate_event(gpui::MouseUpEvent {
++            position: at,
++            button: gpui::MouseButton::Left,
++            modifiers: gpui::Modifiers::default(),
++            click_count,
++        });
++    }
++    visual.update(|window, cx| {
++        input.update(cx, |input, cx| {
++            assert_eq!(input.content, "İ🎛");
++            assert_eq!(
++                input.selected_text_range(false, window, cx).unwrap().range,
++                0..3
++            );
++            assert_eq!(input.marked_text_range(window, cx), None);
++        })
++    });
++    visual.simulate_keystrokes("cmd-c");
++    visual.update(|_, cx| {
++        assert_eq!(
++            cx.read_from_clipboard()
++                .and_then(|item| item.text())
++                .as_deref(),
++            Some("İ🎛")
++        )
++    });
++}
+diff --git a/crates/hex-widgets/README.md b/crates/hex-widgets/README.md
+index cf9f2e71..389d74c2 100644
+--- a/crates/hex-widgets/README.md
++++ b/crates/hex-widgets/README.md
+@@ -232,3 +232,11 @@ Editable text presentation is caller-selected through `ControlStyle::text_case`.
+ input handlers, IME UTF-16 ranges, clipboard and numeric parsers retain original
+ source text. Hex injects lowercase; neutral widget fixtures can preserve case.
+ This is display styling, not content normalization or a project edit.
++
++Editable value text uses the same local `TextClickSelection` policy as Hex's
++query/name fields: keep the selection from before the first click, toggle all vs
++clicked caret on the paired click, and invalidate on typing/IME/keyboard/drag.
++The snapshot survives mouse-up and repaint; it owns no timer or global input hook.
++An already edited numeric value keeps its raw draft during text clicks/drag;
++selection emits no numeric events. Nonediting value drag and knob reset retain
++separate adjustment gestures and existing finalization/cancellation contracts.
+diff --git a/crates/hex-widgets/src/lib.rs b/crates/hex-widgets/src/lib.rs
+index aed0ff38..add932b0 100644
+--- a/crates/hex-widgets/src/lib.rs
++++ b/crates/hex-widgets/src/lib.rs
+@@ -21,10 +21,12 @@ mod response_graph;
+ mod spectrum_plot;
+ mod style;
+ mod text_case;
++mod text_click_selection;
+ pub use spectrum_plot::{
+     MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
+ };
+ pub use text_case::TextCase;
++pub use text_click_selection::TextClickSelection;
+ 
+ pub use color_picker::{
+     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
+diff --git a/crates/hex-widgets/src/numeric_control.rs b/crates/hex-widgets/src/numeric_control.rs
+index ace68e24..e56f5667 100644
+--- a/crates/hex-widgets/src/numeric_control.rs
++++ b/crates/hex-widgets/src/numeric_control.rs
+@@ -172,6 +172,13 @@ struct Press {
+ }
+ 
+ /// One reusable knob/slider and its independently editable numeric value.
++#[derive(Clone, Copy)]
++struct TextMouseSelection {
++    anchor: usize,
++    origin: Point<Pixels>,
++    dragging: bool,
++}
++
+ pub struct NumericControl {
+     accessibility_binding: Option<gpui::AccessibilityBinding>,
+     accessibility_pending: bool,
+@@ -194,6 +201,8 @@ pub struct NumericControl {
+     pub(crate) last_bounds: Option<Bounds<Pixels>>,
+     pub(crate) last_origin_x: Option<Pixels>,
+     press: Option<Press>,
++    text_mouse: Option<TextMouseSelection>,
++    pub(crate) text_click: crate::TextClickSelection,
+     pub(crate) style: ControlStyle,
+     meter_readout: crate::DeviceMeterReadout,
+     appearance: NumericControlAppearance,
+@@ -286,6 +295,8 @@ impl NumericControl {
+             last_bounds: None,
+             last_origin_x: None,
+             press: None,
++            text_mouse: None,
++            text_click: crate::TextClickSelection::default(),
+             style,
+             appearance,
+             dial_layout,
+@@ -384,6 +395,8 @@ impl NumericControl {
+ 
+     /// Call before removing an active control so its caller can cancel the edit.
+     pub fn cancel(&mut self, cx: &mut Context<Self>) {
++        self.text_mouse = None;
++        self.text_click.clear();
+         if let Some(press) = self.press.take() {
+             if press.dragging {
+                 self.value = press.start_value;
+@@ -429,6 +442,8 @@ impl NumericControl {
+     }
+ 
+     fn reset(&mut self, cx: &mut Context<Self>) {
++        self.text_mouse = None;
++        self.text_click.clear();
+         let start = self.draft;
+         let value = self.spec.default();
+         // Reset finishes the local edit even when the value is already at its
+@@ -516,12 +531,79 @@ impl NumericControl {
+             })
+     }
+ 
++    fn text_index_for_point(&self, at: Point<Pixels>) -> usize {
++        let (Some(bounds), Some(line)) = (self.last_bounds, self.last_layout.as_ref()) else {
++            return 0;
++        };
++        if at.y < bounds.top() {
++            return 0;
++        }
++        if at.y > bounds.bottom() {
++            return self.text.len();
++        }
++        let shaped = line.closest_index_for_x(at.x - self.last_origin_x.unwrap_or(bounds.left()));
++        self.style.text_case.source_offset(&self.text, shaped)
++    }
++
+     fn value_mouse_down(
+         &mut self,
+         event: &MouseDownEvent,
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if !self.enabled {
++            return;
++        }
++        let focused = self.focus.is_focused(window);
++        if !focused || event.modifiers.shift {
++            self.text_click.clear();
++        }
++        let mut gesture = self.text_click;
++        let toggle = (!event.modifiers.shift)
++            .then(|| {
++                gesture.selection_for_down(
++                    event.click_count,
++                    focused
++                        && self.editing
++                        && !self.text.is_empty()
++                        && self.selected == (0..self.text.len()),
++                )
++            })
++            .flatten();
++        if self.editing {
++            let offset = self.text_index_for_point(event.position);
++            let anchor = if event.modifiers.shift && focused {
++                if self.reversed {
++                    self.selected.end
++                } else {
++                    self.selected.start
++                }
++            } else {
++                offset
++            };
++            self.marked = None;
++            if !focused || toggle == Some(true) {
++                self.selected = 0..self.text.len();
++                self.reversed = false;
++            } else if event.modifiers.shift {
++                self.select_to(offset);
++            } else {
++                self.move_to(offset);
++            }
++            self.press = None;
++            self.text_mouse = Some(TextMouseSelection {
++                anchor,
++                origin: event.position,
++                dragging: false,
++            });
++            self.text_click = gesture;
++            self.focus.focus(window);
++            cx.stop_propagation();
++            cx.notify();
++            return;
++        }
++        self.text_mouse = None;
++        self.text_click = gesture;
+         self.begin_press(PressTarget::Value, event, cx);
+         self.focus.focus(window);
+     }
+@@ -532,11 +614,40 @@ impl NumericControl {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        self.text_mouse = None;
++        self.text_click.clear();
+         self.begin_press(PressTarget::Control, event, cx);
+         self.focus.focus(window);
+     }
+ 
+     fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> (bool, bool) {
++        if let Some(mut selection) = self.text_mouse {
++            if !self.editing || event.pressed_button != Some(MouseButton::Left) {
++                self.text_mouse = None;
++                self.text_click.clear();
++                return (true, false);
++            }
++            if !selection.dragging
++                && f32::from(event.position.x - selection.origin.x)
++                    .hypot(f32::from(event.position.y - selection.origin.y))
++                    < 2.0
++            {
++                return (true, false);
++            }
++            selection.dragging = true;
++            self.text_mouse = Some(selection);
++            self.text_click.clear();
++            let offset = self.text_index_for_point(event.position);
++            let selected = selection.anchor.min(offset)..selection.anchor.max(offset);
++            let reversed = offset < selection.anchor;
++            let changed = self.selected != selected || self.reversed != reversed;
++            self.selected = selected;
++            self.reversed = reversed;
++            if changed {
++                cx.notify();
++            }
++            return (true, changed);
++        }
+         let Some(mut press) = self.press else {
+             return (false, false);
+         };
+@@ -620,6 +731,10 @@ impl NumericControl {
+         if event.button != MouseButton::Left {
+             return false;
+         }
++        if self.text_mouse.take().is_some() {
++            cx.notify();
++            return true;
++        }
+         let Some(press) = self.press.take() else {
+             return false;
+         };
+@@ -723,6 +838,8 @@ impl NumericControl {
+     }
+ 
+     fn enter(&mut self, _: &NumericEnter, _: &mut Window, cx: &mut Context<Self>) {
++        self.text_mouse = None;
++        self.text_click.clear();
+         cx.stop_propagation();
+         if !self.editing {
+             return;
+@@ -763,6 +880,8 @@ impl NumericControl {
+     /// owner hides or removes the control. Invalid text remains visible and
+     /// editing so the owner can refuse that lifecycle change.
+     pub fn finish_edit(&mut self, cx: &mut Context<Self>) -> Result<(), NumericError> {
++        self.text_mouse = None;
++        self.text_click.clear();
+         if let Some(press) = self.press.take() {
+             if press.dragging {
+                 cx.emit(NumericControlEvent {
+@@ -868,6 +987,8 @@ impl NumericControl {
+         finalized: NumericControlFinalValue,
+         cx: &mut Context<Self>,
+     ) {
++        self.text_mouse = None;
++        self.text_click.clear();
+         if let Some(press) = self.press.take() {
+             if press.dragging {
+                 self.value = finalized.value;
+@@ -901,6 +1022,8 @@ impl NumericControl {
+     }
+ 
+     fn escape(&mut self, _: &NumericEscape, _: &mut Window, cx: &mut Context<Self>) {
++        self.text_mouse = None;
++        self.text_click.clear();
+         if self.press.is_some() {
+             self.cancel(cx);
+         } else if self.editing {
+@@ -944,6 +1067,7 @@ impl NumericControl {
+     }
+ 
+     fn select_all(&mut self, _: &NumericSelectAll, _: &mut Window, cx: &mut Context<Self>) {
++        self.text_click.clear();
+         cx.stop_propagation();
+         if self.editing {
+             self.selected = 0..self.text.len();
+@@ -1046,12 +1170,14 @@ impl NumericControl {
+     }
+ 
+     pub(crate) fn move_to(&mut self, offset: usize) {
++        self.text_click.clear();
+         let offset = offset.min(self.text.len());
+         self.selected = offset..offset;
+         self.reversed = false;
+     }
+ 
+     pub(crate) fn select_to(&mut self, offset: usize) {
++        self.text_click.clear();
+         let offset = offset.min(self.text.len());
+         if self.reversed {
+             self.selected.start = offset;
+@@ -1516,7 +1642,7 @@ impl gpui::Render for NumericControl {
+                 })
+                 .unwrap_or(false)
+         });
+-        if self.press.is_some() {
++        if self.press.is_some() || self.text_mouse.is_some() {
+             root.child(GestureCaptureElement {
+                 move_entity: entity.clone(),
+                 up_entity: entity,
+diff --git a/crates/hex-widgets/src/numeric_text.rs b/crates/hex-widgets/src/numeric_text.rs
+index 87b24a67..c5c03a71 100644
+--- a/crates/hex-widgets/src/numeric_text.rs
++++ b/crates/hex-widgets/src/numeric_text.rs
+@@ -46,6 +46,7 @@ impl EntityInputHandler for NumericControl {
+ 
+     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+         self.marked = None;
++        self.text_click.clear();
+     }
+ 
+     fn replace_text_in_range(
+@@ -55,6 +56,7 @@ impl EntityInputHandler for NumericControl {
+         _: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        self.text_click.clear();
+         let new_text = new_text.replace(['\n', '\r'], "");
+         let range = range
+             .map(|range| range_utf16_to_bytes(&self.text, range))
+@@ -92,6 +94,7 @@ impl EntityInputHandler for NumericControl {
+         _: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        self.text_click.clear();
+         let new_text = new_text.replace(['\n', '\r'], "");
+         let range = range
+             .map(|range| range_utf16_to_bytes(&self.text, range))
+diff --git a/crates/hex-widgets/src/tests.rs b/crates/hex-widgets/src/tests.rs
+index 9a39e304..9fba3552 100644
+--- a/crates/hex-widgets/src/tests.rs
++++ b/crates/hex-widgets/src/tests.rs
+@@ -2335,3 +2335,164 @@ fn lowercase_numeric_presentation_preserves_raw_clipboard_parser_and_ime_offsets
+     visual.simulate_keystrokes("escape");
+     control.read_with(visual, |control, _| assert_eq!(control.value(), 0.5));
+ }
++
++#[gpui::test]
++fn numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_events(
++    cx: &mut TestAppContext,
++) {
++    use gpui::EntityInputHandler;
++    let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
++    let events = Rc::new(RefCell::new(Vec::new()));
++    let output = events.clone();
++    let _subscription = cx.update(|app| {
++        app.subscribe(&control, move |_, event, _| {
++            output.borrow_mut().push(event.phase)
++        })
++    });
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let field = visual.debug_bounds("test-control-value").unwrap();
++    visual.simulate_click(field.center(), Modifiers::default());
++    visual.simulate_input("0.625");
++    visual.simulate_keystrokes("cmd-a");
++    let at = visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            control
++                .bounds_for_range(2..2, field, window, cx)
++                .unwrap()
++                .center()
++        })
++    });
++    for (first_count, expected) in [(1, 2..2), (3, 0..5), (1, 2..2), (1, 0..5)] {
++        for click_count in [first_count, first_count + 1] {
++            visual.simulate_event(gpui::MouseDownEvent {
++                position: at,
++                button: MouseButton::Left,
++                modifiers: Modifiers::default(),
++                click_count,
++                first_mouse: false,
++            });
++            visual.simulate_event(gpui::MouseUpEvent {
++                position: at,
++                button: MouseButton::Left,
++                modifiers: Modifiers::default(),
++                click_count,
++            });
++        }
++        control.read_with(visual, |control, _| {
++            assert_eq!(
++                control.text, "0.625",
++                "text selection must not reformat raw uncommitted draft"
++            );
++            assert_eq!(control.selected, expected);
++            assert!(control.is_editing());
++            assert_eq!(control.value(), 0.0);
++        });
++        assert!(
++            events.borrow().is_empty(),
++            "text doubleclick is not numeric reset/adjustment/commit"
++        );
++    }
++    let start = visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            control
++                .bounds_for_range(1..1, field, window, cx)
++                .unwrap()
++                .center()
++        })
++    });
++    let end = visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            control
++                .bounds_for_range(3..3, field, window, cx)
++                .unwrap()
++                .center()
++        })
++    });
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    control.read_with(visual, |control, _| {
++        assert_eq!(control.selected, 1..3);
++        assert_eq!(control.text, "0.625");
++        assert_eq!(control.value(), 0.0);
++    });
++    visual.simulate_mouse_move(start, None, Modifiers::default());
++    control.read_with(visual, |control, _| assert_eq!(control.selected, 1..3));
++    assert!(events.borrow().is_empty());
++    // Invalid composition remains raw text and selection-only, never a value edit.
++    visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            control.style.text_case = crate::TextCase::Lowercase;
++            control.replace_and_mark_text_in_range(Some(0..5), "İA🎛", Some(0..1), window, cx);
++        })
++    });
++    visual.run_until_parked();
++    let at = visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            control
++                .bounds_for_range(1..1, field, window, cx)
++                .unwrap()
++                .center()
++        })
++    });
++    for click_count in [1, 2] {
++        visual.simulate_event(gpui::MouseDownEvent {
++            position: at,
++            button: MouseButton::Left,
++            modifiers: Modifiers::default(),
++            click_count,
++            first_mouse: false,
++        });
++        visual.simulate_event(gpui::MouseUpEvent {
++            position: at,
++            button: MouseButton::Left,
++            modifiers: Modifiers::default(),
++            click_count,
++        });
++    }
++    visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            assert_eq!(control.text, "İA🎛");
++            assert_eq!(
++                control
++                    .selected_text_range(false, window, cx)
++                    .unwrap()
++                    .range,
++                0..4
++            );
++            assert_eq!(control.marked_text_range(window, cx), None);
++        })
++    });
++    assert!(events.borrow().is_empty());
++    // Text/IME replacement while a pointer is held invalidates the old anchor.
++    let at = visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            control
++                .bounds_for_range(4..4, field, window, cx)
++                .unwrap()
++                .center()
++        })
++    });
++    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
++    visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            control.replace_and_mark_text_in_range(Some(0..4), "1", Some(1..1), window, cx)
++        })
++    });
++    visual.simulate_mouse_move(
++        field.origin + point(px(2.0), field.size.height / 2.0),
++        MouseButton::Left,
++        Modifiers::default(),
++    );
++    control.read_with(visual, |control, _| {
++        assert_eq!(control.text, "1");
++        assert_eq!(
++            control.selected,
++            1..1,
++            "IME replacement must invalidate held pointer anchor"
++        );
++    });
++    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
++    assert!(events.borrow().is_empty());
++}
+diff --git a/docs/browser-places.md b/docs/browser-places.md
+index b69d63e8..a7ecc43b 100644
+--- a/docs/browser-places.md
++++ b/docs/browser-places.md
+@@ -139,3 +139,23 @@ handlers run in their local browser scope; painting/workers never restore focus.
+ Close returns focus to the editor. This is separate from the unresolved native
+ field-click focus-loss report2794 and the future double-click refinement2817.
+ Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
++
++## repeated text double-click selection — pulse2817 / PR423
++
++First query focus click and Command-F still select all. In focused editable text,
++a double-click on a full selection collapses to the clicked caret; the next
++selects all again. Partial/collapsed selections double-click to select all. The
++local gesture remembers selection before the first click, so its ordinary caret
++placement cannot erase the toggle's starting state. Native 1/2 and rapid 3/4 click
++pairs share that policy; no timer/global mouse hook is added. Single clicks,
++Shift selection, held drag and release keep their usual semantics. Keyboard,
++text/IME replacement and focus entry invalidate stale gesture snapshots; worker
++completion/paint does not. Selection alone changes no query, preview or project.
++
++Shared name fields preserve original Unicode/raw paths and the presentation-only
++lowercase mapping; clipboard/IME ranges remain source UTF-16. Already edited
++numeric text uses the same toggle without reformatting its draft or emitting a
++value edit. Knob reset and nonediting numeric adjustment remain separate gestures.
++Rendered tests exercise actual down/up click counts, partial/drag/release,
++filesystem worker/tick/resize updates, Unicode composition and empty text. Native
++physical mouse/IME/accessibility acceptance remains coordinator-owned and open.
+diff --git a/todo.md b/todo.md
+index 23ce9532..d89ff076 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5179,3 +5179,17 @@ startup-root rendered matrix checks both layouts, typing isolation, workers/tick
+ explicit return and close; prior focus assertions now reflect this new contract
+ while retaining their audition/generation/device/drag assertions. Native acceptance
+ and final prospective full CI/integration remain with root/sole merger.
++
++## shared text double-click toggle — pulse2817 / PR423, 18 october 2026
++
++Original actual input regressions showed repeated query double-clicks never
++select all again and numeric draft clicks reformat the uncommitted text. A tiny
++local shared snapshot now toggles against pre-first-click selection, surviving
++release/repaint and invalidating on text/IME/keyboard/drag. Query/name caret and
++raw Unicode mapping remain; numeric editing-only selection retains draft and
++emits no value events, using the existing active gesture capture. Existing knob
++reset/adjustment/finalization and browser no-doubleclick-import remain separate.
++Focused source tests cover real click pairs, rapid pairs, partial drag/release,
++workers/window resize, composition and empty text. Frozen426+returned7c4d is a
++material input dependency, not new main integration. Sole merger owns final
++prospective full CI/integration; native physical mouse/IME acceptance stays open.

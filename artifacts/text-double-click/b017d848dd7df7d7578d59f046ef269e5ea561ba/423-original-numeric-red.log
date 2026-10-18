@@ -1,0 +1,21 @@
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.30s
+     Running unittests src/lib.rs (target/debug/deps/hex_widgets-ba49dcf5db2a657f)
+
+running 1 test
+
+thread 'tests::numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_events' (92689) panicked at crates/hex-widgets/src/tests.rs:2359:13:
+assertion `left == right` failed: text selection must not reformat raw uncommitted draft
+  left: "0.00"
+ right: "0.625"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_events ... FAILED
+
+failures:
+
+failures:
+    tests::numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_events
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p hex-widgets --lib`

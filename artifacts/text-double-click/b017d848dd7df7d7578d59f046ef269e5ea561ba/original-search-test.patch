@@ -1,0 +1,36 @@
+--- a/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+@@ -295,3 +295,33 @@
+         assert_eq!(view.browser.playback_generation, 0);
+     });
+ }
++
++fn double_click_at(visual: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>, first_count: usize) {
++    for click_count in [first_count, first_count + 1] {
++        visual.simulate_event(gpui::MouseDownEvent {position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count, first_mouse: false});
++        visual.simulate_event(gpui::MouseUpEvent {position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count});
++    }
++}
++
++#[gpui::test]
++fn search_double_click_toggles_against_selection_before_first_click(cx: &mut TestAppContext) {
++    cx.update(super::super::super::bind_editor_keys);
++    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("kick hats");
++    visual.simulate_keystrokes("cmd-f");
++    assert_eq!(selection(&editor, visual), 0..9);
++    let at = caret_point(&editor, visual, 4);
++    for (count, expected) in [(1, 4..4), (3, 0..9), (1, 4..4), (1, 0..9)] {
++        double_click_at(visual, at, count);
++        assert_eq!(selection(&editor, visual), expected, "double gesture starting with click_count {count}");
++        editor.read_with(visual, |view, cx| assert_eq!(view.browser.search.read(cx).content, "kick hats"));
++    }
++    workers_and_ticks(&editor, visual, &directory.0);
++    assert_eq!(selection(&editor, visual), 0..9);
++    editor.read_with(visual, |view, _| {
++        assert!(view.pending_audio_commands.is_empty());
++        assert!(view.pending_requests.is_empty());
++    });
++}

@@ -1,0 +1,83 @@
+{
+  "canonical_pr": 423,
+  "ticket": 2817,
+  "head": "b017d848dd7df7d7578d59f046ef269e5ea561ba",
+  "tree": "5887d251da55c2989f597cc2979a8d24418c9472",
+  "expected_before": "0bbbbf173f06ca92e049347e9f6e7f1f27d18d84",
+  "expected_before_tree": "527a25d5ce3cd2dd52fa680b607b1d1921ae2fdb",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser_input.rs",
+    "crates/hex-ui/src/editor/browser_search_selection_ui_test.rs",
+    "crates/hex-ui/src/editor/name_case_ui_test.rs",
+    "crates/hex-widgets/README.md",
+    "crates/hex-widgets/src/lib.rs",
+    "crates/hex-widgets/src/numeric_control.rs",
+    "crates/hex-widgets/src/numeric_text.rs",
+    "crates/hex-widgets/src/tests.rs",
+    "crates/hex-widgets/src/text_click_selection.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "original_red": {
+    "source": "0bbbbf173f06ca92e049347e9f6e7f1f27d18d84",
+    "search": "0PASS1FAIL repeatedactualdoubleclick caret4..4 expectedSelectAll0..9;423-original-search-red.log + original-search-test.patch",
+    "numeric": "0PASS1FAIL actualeditednumericclick changedraw0.625 toformatted0.00;423-original-numeric-red.log +original-numeric-test.patch"
+  },
+  "final_results": {
+    "widgets": "62PASS0failed0ignored0filtered +0doctests; knobreset/adjustment/cursor/cancellation/finalization originals retained",
+    "browser": "90PASS0failed0ignored667filtered24.91s, includes unchanged42634matrix/stalerow/audition plusnewworkers/resize/empty/queryrequestcounts/nameUnicodecomposition",
+    "name": "20PASS0failed0ignored737filtered5.46s; overlapsbrowser/sharedname cases",
+    "clippy": "UI+widgetsalltargets UI/ui-test-support-DwarningsPASS",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "commands": "423-final-checks.json",
+    "source_identity": "finalworkingtreeunchangedthroughfreeze;commitafterchecks",
+    "fullCI": "notrun;solemergeractualprospectivequalification"
+  },
+  "retained_diagnostics": {
+    "423-widgets-green.log": "61PASS1FAIL newtextdraglistener missing; existingGestureCaptureElement gatedonlynumericpress, correctedactiveTextMousecondition declared25029",
+    "423-msrv-clippy.log": "is_multiple_of newerthanrepoMSRV1.85; replacedcompatiblemodulo, no lint waiver",
+    "423-held-ime-red.log": "introducedcandidate actualIMEreplacementwhileheld leftstaleanchor raw0..7 ontextlen1; newlocalinvalidatepointer calledbykeyboard/text/IME, finalallchecksrerungreen",
+    "423-held-ime-candidate.patch": "complete trackedcandidate diff on parent plus423-held-ime-helper.rs installed atcrates/hex-widgets/src/text_click_selection.rs reconstructsdiagnosticcandidate; unpublished snapshot, not anothercanonicalPR",
+    "423-pre-lifecycle-checks.json": "initialPASSbeforeadditionalheldIMEregression; not claimedfinalqualification",
+    "423-initial-browser-green.log": "prior90pass retained, finalrun reranafterboundedfixture/heldanchorcorrection"
+  },
+  "scope": "Selection-onlylocalsharedsnapshot and numericediting-onlycaret/drag preservingrawdraft. No textnormalization/pathschema/model/audio/backend/prefs/vendor/RT edits or newdependency; existingknobreset/noneditingadjustment retained. Newtestfixtures boundedbeforeworkers only, no broader414globalresolver/custodyclaim.",
+  "known_limits": [
+    "Nativephysicalpointer/click_count/IME/clipboard/GPU/accessibilityacceptanceopen",
+    "ActualrequiredprospectivefullCI/review/integration/merge belongssolemerger",
+    "Separate2794/400fieldclickfocusloss unresolved",
+    "ExistingPCMdeclaredArcUnknownwarningretained"
+  ],
+  "files": {
+    "423-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "423-final-browser.log": "b1e539cc6be2cfcd6e88567a586ed38ce0e6d04c3d36b9e0948039ff38b798c6",
+    "423-final-checks.json": "6ffa755f9ef2f37778cd39913b5b49eff25926f96781f3dc8bc5d2b8b045918a",
+    "423-final-clippy.log": "266f4650ebbff77a77d961be9605c08bfad3f561d9a6b3991cb962eb1a0bf104",
+    "423-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "423-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "423-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "423-final-name.log": "1199f2f959a37031c06219ef62605ccd576dc38024771de7eb26a49c9860e1d4",
+    "423-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "423-final-widgets.log": "3940517a3d60a9e5f901ac057e3fd3313e1d852e751b9dff3b416330c1b9094d",
+    "423-held-ime-candidate.patch": "167738470c459e7ba72598831a4af1b77ab596cafb58b7ce0481aee8df1d6def",
+    "423-held-ime-helper.rs": "9216ced4a60d6785210144063e54b4e4b3a75df454fc36b429c1317e307ff691",
+    "423-held-ime-red.log": "e0855d0c5aec02a91330310fe83d4c67557015187a2138b911b1d3e128c60af6",
+    "423-initial-browser-green.log": "aea7a137cd0eb8c71abdd2712dcc3678566838da15ef758e70b932826d4da3e7",
+    "423-initial-name-green.log": "0a4b7ad75defc33ddbefeaf832f563d222470d226745fdd2d6a2578ffe3332b8",
+    "423-msrv-clippy.log": "36704c22d0aaecf8be43d9ccbf55ece9b7e47b3fab8164f80a9435f08607c40f",
+    "423-numeric-green.log": "621e7124aaf93356ce475a0d8e255e86064642c311b69c201336e628b2c56ac0",
+    "423-original-numeric-red.log": "584917fcc6bb663744f2f8737fb4aa0cd10cf52d7e3e59c2e7348205385dd829",
+    "423-original-numeric-test.rs": "de839d140a74703a63d4febb28c867c3498c38a8678d11b313ca5122d9e8f9a2",
+    "423-original-search-red.log": "aaf0a74678cbaab7478acfd210f6ecf049195cc0c149328755583f184b9e13e1",
+    "423-original-search-test.rs": "2994f307ed8c53e02956790b3c55c155eacc9c5b7a56d448dfa2c75765bfea7c",
+    "423-pre-lifecycle-checks.json": "6ffa755f9ef2f37778cd39913b5b49eff25926f96781f3dc8bc5d2b8b045918a",
+    "423-widgets-green-v2.log": "dade6a5f554bb5fb4fd2f488900c99e3b593eeb52571139b825622cd4174e484",
+    "423-widgets-green.log": "e5b3967a7a5ca6aef5325e5ca8180b748db59259c1fc01fb34656d8d87aef2a1",
+    "before-after-hashes.json": "40964cf1a36125139d73622835339cda0aa457dd9e794d2efb16c3b230718b8e",
+    "integration-note.md": "d49a2c0bc4b800b66c3e1ac87ce2566eabf097008ed735dc090dadb22568580e",
+    "native-checklist.md": "bd712234c425f770a74acf7931998c918417e4ab2ff32b6edf1d3ba7e1062dbd",
+    "original-numeric-test.patch": "1f4ee8982fa7d52ae8286d0d777234183ebd7ffe2fbe4af8c2608904f210c9d5",
+    "original-search-test.patch": "3054a56f777a11664bd80b9524aeb1055f2e80655db3cd0b2a110ecaaa40f16d",
+    "source.patch": "29c7434ab6281ec6b96e40c1b537afd4299a2174eb165d21f82d07870a9ffbfa"
+  }
+}

@@ -1,0 +1,35 @@
+--- a/crates/hex-widgets/src/tests.rs
++++ b/crates/hex-widgets/src/tests.rs
+@@ -2335,3 +2335,32 @@
+     visual.simulate_keystrokes("escape");
+     control.read_with(visual, |control, _| assert_eq!(control.value(), 0.5));
+ }
++
++#[gpui::test]
++fn numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_events(cx: &mut TestAppContext) {
++    use gpui::EntityInputHandler;
++    let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
++    let events = Rc::new(RefCell::new(Vec::new()));
++    let output = events.clone();
++    let _subscription = cx.update(|app| app.subscribe(&control, move |_, event, _| output.borrow_mut().push(event.phase)));
++    let visual = &mut VisualTestContext::from_window(handle,cx);
++    visual.run_until_parked();
++    let field = visual.debug_bounds("test-control-value").unwrap();
++    visual.simulate_click(field.center(), Modifiers::default());
++    visual.simulate_input("0.625");
++    visual.simulate_keystrokes("cmd-a");
++    let at = visual.update(|window,cx| control.update(cx, |control,cx| control.bounds_for_range(2..2,field,window,cx).unwrap().center()));
++    for (first_count,expected) in [(1,2..2),(3,0..5),(1,2..2),(1,0..5)] {
++        for click_count in [first_count,first_count+1] {
++            visual.simulate_event(gpui::MouseDownEvent {position:at,button:MouseButton::Left,modifiers:Modifiers::default(),click_count,first_mouse:false});
++            visual.simulate_event(gpui::MouseUpEvent {position:at,button:MouseButton::Left,modifiers:Modifiers::default(),click_count});
++        }
++        control.read_with(visual, |control,_| {
++            assert_eq!(control.text,"0.625","text selection must not reformat raw uncommitted draft");
++            assert_eq!(control.selected,expected);
++            assert!(control.is_editing());
++            assert_eq!(control.value(),0.0);
++        });
++        assert!(events.borrow().is_empty(),"text doubleclick is not numeric reset/adjustment/commit");
++    }
++}
