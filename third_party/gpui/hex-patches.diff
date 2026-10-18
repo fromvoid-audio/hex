@@ -306,7 +306,7 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +    /// Pure NSURL roundtrip in the Mac dependency; no panel is shown or configured.
 +    #[cfg(target_os = "macos")]
 +    pub fn picker_directory_url_roundtrip(&self, directory: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
-+        crate::platform::mac::MacPlatform::picker_directory_url_for_test(directory)
++        crate::MacPlatform::picker_directory_url_for_test(directory)
 +    }
 +
 @@ -677,0 +722,89 @@

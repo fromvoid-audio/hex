@@ -346,7 +346,7 @@ impl TestAppContext {
     /// Pure NSURL roundtrip in the Mac dependency; no panel is shown or configured.
     #[cfg(target_os = "macos")]
     pub fn picker_directory_url_roundtrip(&self, directory: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
-        crate::platform::mac::MacPlatform::picker_directory_url_for_test(directory)
+        crate::MacPlatform::picker_directory_url_for_test(directory)
     }
 
     /// Simulates clicking a button in an platform-level alert dialog.
