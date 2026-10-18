@@ -1,6 +1,7 @@
 //! Transient-anchored, stereo-linked control-side WSOLA.
-//! Forward / envelope100: scheduling boundaries do not manufacture attacks.
+//! Forward: physical guards and logical envelopes have separate schedules.
 mod analysis;
+mod envelope;
 mod onsets;
 mod synthesis;
 use super::*;
@@ -29,37 +30,35 @@ pub(super) fn render(
     {
         return Err(Error::Invalid("beat divisions exceed bounded source plan"));
     }
-    // Untouched unity is waveform-exact, including arbitrary authored source
-    // attacks, trim/phase/loop edges. No analysis may manufacture grid fades.
-    if pitch == 1.0
+    let Mode::Beats { decay, .. } = request.mode else {
+        return Err(Error::Invalid("Beats mode mismatch"));
+    };
+    let unity = pitch == 1.0
         && request.map.segments().iter().all(|s| {
             s.source_end_q32 - s.source_start_q32 == i128::from(s.output_end - s.output_start) * Q32
         })
-        && request.map.segments()[0].source_start_q32.rem_euclid(Q32) == 0
-    {
-        let mut out = buffer(request.output_frames, [0.0; 2])?;
-        for (i, frame) in out.iter_mut().enumerate() {
-            if i % 1024 == 0 {
-                work.check(1024)?;
-            }
-            *frame = finite(
-                request
-                    .input
-                    .frame(request.map.position_q32(i as i128)? / Q32),
-            )?;
-        }
-        return Ok(out);
+        && request.map.segments()[0].source_start_q32.rem_euclid(Q32) == 0;
+    // Untouched unity is waveform-exact, including arbitrary authored source
+    // attacks, trim/phase/loop edges. No analysis may manufacture grid fades.
+    if unity && decay == 100 {
+        return copy(request, work);
     }
     let max_grain = (request.input.sample_rate as usize / 20).max(4);
     let ring = max_grain * 2 + 4;
     let plan_bytes = MAX_POINTS * std::mem::size_of::<u64>()
-        + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>();
+        + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>()
+        + envelope::scratch(decay);
     // Work::scratch is a maximum recorder, not an adder. Quote the complete
     // concurrently live plan/search/filter/ring family before its first Vec.
     work.scratch(
         plan_bytes + onsets::scratch(request.input.sample_rate) + BANK_BYTES + ring * 24 + 4096,
     )?;
     let anchors = analysis::prepare(request, pitch, work)?;
+    if unity {
+        let mut pcm = copy(request, work)?;
+        envelope::apply(request, &anchors, &mut pcm, decay, work)?;
+        return Ok(pcm);
+    }
     let bank = Bandlimited::new(pitch, work)?;
     let mut acc = Accumulator::new(
         request.output_frames,
@@ -123,5 +122,21 @@ pub(super) fn render(
         },
         pitch,
     )?;
-    acc.finish()
+    let mut pcm = acc.finish()?;
+    envelope::apply(request, &anchors, &mut pcm, decay, work)?;
+    Ok(pcm)
+}
+fn copy(request: &Request<'_>, work: &mut Work<'_>) -> Result<Vec<Frame>, Error> {
+    let mut out = buffer(request.output_frames, [0.0; 2])?;
+    for (i, frame) in out.iter_mut().enumerate() {
+        if i % 1024 == 0 {
+            work.check(1024)?;
+        }
+        *frame = finite(
+            request
+                .input
+                .frame(request.map.position_q32(i as i128)? / Q32),
+        )?;
+    }
+    Ok(out)
 }

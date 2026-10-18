@@ -21,14 +21,14 @@ retirement, cache lifetime, device I/O, or foreign algorithms/binaries.
 
 ## Beats redesign checkpoint (Pulse 2847)
 
-The WSOLA path covers Forward, envelope100, for Transients and fixed Preserve grids.
+The WSOLA path covers Forward with all envelope settings, for Transients and fixed Preserve grids.
 Detected attack neighborhoods remain at the exact inverse-map positions; the
 intervening bed uses one stereo-linked similarity search and normalized overlap
 ring. Candidate scoring uses inexpensive samples; only selected grains use the
 bandlimited reconstruction. Coherent overlaps preserve DC and low-confidence
 noise uses bounded shared energy compensation. The combined plan, filter bank,
 search allowance and ring are quoted before allocation under the existing caps.
-Algorithm version5 invalidates older prepared PCM.
+Algorithm version6 invalidates older prepared PCM.
 
 Physical analysis combines a fast energy-rise path with streaming four-band
 spectral increase and stereo complex-phase prediction. A spectral novelty peak
@@ -37,11 +37,14 @@ refinement; changing FFT leakage in a sustained tone is not an attack. Stereo
 evidence adds independent channel magnitudes instead of summing opposite phases.
 FFT/window/two-generation stereo history storage joins the summed scratch quote.
 Fixed-grid points are scheduling boundaries, not physical attacks or filter
-clamps. At Forward100, no grid-triggered envelope or traversal reset is needed.
+clamps. Lower envelope settings apply the authored exponential gain once after
+normalization, across each logical Preserve interval. Physical attacks inside a
+fixed interval do not reset that envelope; overlap grains never restart it.
+Unity time/pitch copies the original waveform before any authored decay. At Forward100, no grid-triggered envelope or traversal reset is needed.
 The authored grid-density limits still validate before analysis or output birth.
 
 This remains a partial checkpoint. Adaptive grain sizing, the complete short-edge
-and variable-rate matrix, Alternating/Stop/envelope integration and the full
+and variable-rate matrix, Alternating/Stop integration and the full
 musical/listening matrix remain open. Other control combinations still use the
 prior Beats path. Tones and Texture retain their own algorithms.
 There is no commercial-reference or listening acceptance claim.

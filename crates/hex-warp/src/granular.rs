@@ -91,7 +91,6 @@ pub(super) fn beats(
         request.mode,
         Mode::Beats {
             tail: Tail::Forward,
-            decay: 100,
             ..
         }
     ) {

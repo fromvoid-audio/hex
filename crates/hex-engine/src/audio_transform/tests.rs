@@ -1370,6 +1370,49 @@ fn beats_actual_preparation_joins_cache_parameters_version_and_undo_match_render
     let repeated = prepare(&editor, &media, &context);
     assert!(context.cache_hits() > hits);
     assert_eq!(render(&repeated, 0, length, 63), pcm);
+    let mut gated = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap()
+        .clone();
+    gated.mode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+        tail: BeatsTail::Forward,
+        decay: 25,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(gated),
+        })
+        .unwrap();
+    let low_hits = context.cache_hits();
+    let decayed = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        low_hits,
+        "envelope edit must invalidate prepared PCM"
+    );
+    let low_pcm = render(&decayed, 0, length, 63);
+    for (at, frame) in low_pcm.iter().enumerate() {
+        let gain = (-9.0 * (at % 4_000) as f64 / 4_000.0).exp();
+        assert!((f64::from(frame[0]) - 0.5 * gain).abs() < 1e-7);
+        assert!((f64::from(frame[1]) + 0.25 * gain).abs() < 1e-7);
+    }
+    assert!(editor.undo());
+    let full_again = prepare(&editor, &media, &context);
+    assert_eq!(render(&full_again, 0, length, 257), pcm);
+    assert_eq!(
+        render(&decayed, 0, length, 513),
+        low_pcm,
+        "retained lower-envelope revision is immutable"
+    );
     let mut off = editor
         .project()
         .clip(clip)

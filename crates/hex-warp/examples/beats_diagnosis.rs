@@ -78,6 +78,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("pass a new output directory")?;
     let automatic = std::env::args().nth(2).as_deref() == Some("transients");
+    let decay: u8 = std::env::args()
+        .nth(3)
+        .map(|x| x.parse())
+        .transpose()?
+        .unwrap_or(100);
     let directory = Path::new(&directory);
     std::fs::create_dir(directory)?;
     let mut metrics = std::fs::File::create_new(directory.join("metrics.csv"))?;
@@ -88,13 +93,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut settings = std::fs::File::create_new(directory.join("settings.txt"))?;
     writeln!(
         settings,
-        "algorithm_version={}\noriginal synthetic fixtures; Preserve={}; pitch0; envelope100; no source/clip fade; nonlooping root; PCM16 fixed32767 quantisation, no per-file normalisation; before/after use same listening gain",
+        "algorithm_version={}\noriginal synthetic fixtures; Preserve={}; pitch0; envelope{}; no source/clip fade; nonlooping root; PCM16 fixed32767 quantisation, no per-file normalisation; before/after use same listening gain",
         ALGORITHM_VERSION,
         if automatic {
             "automatic Transients"
         } else {
             "4 fixed divisions"
-        }
+        },
+        decay
     )?;
     let kinds: &[&str] = if automatic {
         &[
@@ -150,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             mode: Mode::Beats {
                                 division_frames: (!automatic).then_some((source.len() / 4) as u64),
                                 tail,
-                                decay: 100,
+                                decay,
                             },
                         },
                         &mut || false,
