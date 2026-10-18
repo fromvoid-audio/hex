@@ -1,6 +1,6 @@
 //! Track-header focus and view-only name drafts over canonical RenameTrack.
 use super::{
-    CancelTrackName, CommitTrackName, EditorView, RemoveTrack, RenameTrack, browser_input::*,
+    CancelTrackName, CommitTrackName, EditorView, RemoveHeaderTracks, RenameTrack, browser_input::*,
 };
 use crate::theme;
 use gpui::{
@@ -39,7 +39,7 @@ pub(super) fn bind_keys(cx: &mut App) {
         ),
         KeyBinding::new(
             "backspace",
-            RemoveTrack,
+            RemoveHeaderTracks,
             Some("hex_track_header && !hex_text_editing"),
         ),
         KeyBinding::new("enter", CommitTrackName, Some("hex_track_name")),

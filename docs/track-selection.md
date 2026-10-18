@@ -51,3 +51,13 @@ Undo/Redo, numeric editing, rename/browser text, clip deletion and an empty
 explicit selection. Model tests cover reference cleanup, survivor preservation,
 invalid/stale/duplicate IDs and retained redo. Optimized native physical input
 acceptance is still open; source tests do not establish it.
+
+The toolbar's existing remove control keeps its single focused-track semantics,
+including when that header has been toggled out of the explicit selection.
+Toolbar `RemoveTrack` and header-key `RemoveHeaderTracks` actions are distinct:
+a toolbar click does not change focus and must not inherit the header-key
+no-op or multi-selection contract. The rendered real-worker regression clicks
+the actual toolbar after both toggled-out and multi-header selection, preserves
+header Backspace's no-op, and checks single-track removal plus one Undo/Redo.
+Source repair/final integration qualification receipts remain separate from the
+original09c/native4 evidence in Pulse2721/PR337.
