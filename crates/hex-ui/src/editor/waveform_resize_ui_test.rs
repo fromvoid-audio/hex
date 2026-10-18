@@ -6,7 +6,7 @@ use hex_session::{
     CachedPeak, CachedWaveform,
     service::{AudioClipWaveform, ViewState},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 #[gpui::test]
 fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppContext) {
@@ -248,17 +248,20 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                 } else {
                     &prepared_peaks
                 };
-                let mut prepared = BTreeMap::new();
+                let mut prepared = hex_project::SortedEntries::new();
                 if let Some(edit) = original.clip(clip).unwrap().audio_edit() {
                     let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
-                    prepared.insert(
-                        clip,
-                        AudioClipWaveform {
-                            waveform: Arc::clone(&prepared_peaks),
-                            offset,
-                            length: original.clip(clip).unwrap().duration(),
-                        },
-                    );
+                    prepared
+                        .try_insert_on_control(
+                            clip,
+                            AudioClipWaveform {
+                                waveform: Arc::clone(&prepared_peaks),
+                                offset,
+                                length: original.clip(clip).unwrap().duration(),
+                            },
+                            hex_project::MAX_CLIPS,
+                        )
+                        .unwrap();
                 }
                 let (handle, editor) = editor_window(cx, original.clone(), Arc::default());
                 editor.update(cx, |view, cx| {
@@ -266,7 +269,11 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
                         project: Arc::clone(&old.project),
-                        waveforms: BTreeMap::from([(asset, Arc::clone(&peaks))]),
+                        waveforms: hex_project::SortedEntries::try_from_unsorted_on_control(
+                            vec![(asset, Arc::clone(&peaks))],
+                            hex_project::MAX_ASSETS,
+                        )
+                        .unwrap(),
                         audio_clip_waveforms: prepared,
                         midi_preview: Arc::clone(&old.midi_preview),
                         gain_preview: old.gain_preview.clone(),
