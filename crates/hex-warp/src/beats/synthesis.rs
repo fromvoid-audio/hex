@@ -33,6 +33,21 @@ const _: () = assert!(
     std::mem::size_of::<Search<'static, 'static>>() * 2 + std::mem::size_of::<Match>() * 3 <= 4096
 );
 impl Search<'_, '_> {
+    fn can_improve(
+        &self,
+        position: f64,
+        nominal: f64,
+        selected_score: f64,
+        work: &mut Work<'_>,
+    ) -> Result<bool, Error> {
+        work.check(16)?;
+        let displacement = (position - nominal) / self.range.max(1.0);
+        // Correlation is clamped to <=1 and the energy penalty is >=0.
+        // Use the same operation order as score(). If even this upper bound
+        // cannot win its strict comparison, no waveform read can change the
+        // selected candidate. This does not approximate or thin the search.
+        Ok(1.0 - 0.002 * displacement * displacement > selected_score)
+    }
     fn score(&self, position: f64, nominal: f64, work: &mut Work<'_>) -> Result<Match, Error> {
         let Self {
             request,
@@ -229,18 +244,22 @@ pub(super) fn bed(
             let hi = (lo + 2.0 * range).min(maximum);
             let mut candidate = lo;
             while candidate <= hi {
-                let next = search.score(candidate, nominal, work)?;
-                if next.score > selected.score {
-                    selected = next;
+                if search.can_improve(candidate, nominal, selected.score, work)? {
+                    let next = search.score(candidate, nominal, work)?;
+                    if next.score > selected.score {
+                        selected = next;
+                    }
                 }
                 candidate += step;
             }
             let best = selected.position;
             let mut candidate = (best - step).max(lo);
             while candidate <= (best + step).min(hi) {
-                let next = search.score(candidate, nominal, work)?;
-                if next.score > selected.score {
-                    selected = next;
+                if search.can_improve(candidate, nominal, selected.score, work)? {
+                    let next = search.score(candidate, nominal, work)?;
+                    if next.score > selected.score {
+                        selected = next;
+                    }
                 }
                 candidate += 0.125;
             }
