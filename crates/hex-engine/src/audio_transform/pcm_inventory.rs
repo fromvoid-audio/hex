@@ -9,6 +9,11 @@ pub struct AudioTransformPcmInventory<'a> {
     pending: Ref<'a, Option<Vec<Entry>>>,
     tempo: Ref<'a, Option<Arc<hex_project::TempoMap>>>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OriginalOnlyStorageCost {
+    pub(crate) existing_backing_bytes: usize,
+    pub(crate) transaction_new_backing_bytes: usize,
+}
 impl AudioTransformPreparation {
     /// Control-only scoped borrow. The callback cannot return or retain its
     /// cache guards/borrowed ledger. Busy storage refuses before mutation.
@@ -42,6 +47,59 @@ impl AudioTransformPreparation {
     }
 }
 impl AudioTransformPcmInventory<'_> {
+    /// Allocation-free facts from the SAME guarded fields subsequently visited.
+    /// Cache-growth size follows the pinned std RawVec::grow_amortized policy
+    /// used by transaction(), not an estimate derived from entry count alone.
+    /// Original backing is already in the old union; replacement backing is
+    /// additional and may coexist with it. No approval/constructor token escapes.
+    pub(crate) fn original_only_storage_cost(
+        &self,
+    ) -> Result<OriginalOnlyStorageCost, AudioStorageError> {
+        self.require_original_only()?;
+        if !crate::audio_storage_constructor_layout_supported() {
+            return Err(AudioStorageError::UnsupportedConstructor);
+        }
+        // Raw cancellation ingress remains unqualified before any allocation.
+        if !matches!(self.owner.shutdown, TransformCancellation::Retained(_)) {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        let bytes = |capacity: usize| {
+            capacity
+                .checked_mul(size_of::<Entry>())
+                .ok_or(AudioStorageError::Overflow)
+        };
+        let existing = bytes(self.cache.entries.capacity())?
+            .checked_add(bytes(self.pending.as_ref().map_or(0, Vec::capacity))?)
+            .ok_or(AudioStorageError::Overflow)?;
+        let required = self.owner.entry_limit;
+        let capacity = self.cache.entries.capacity();
+        let growth = if capacity < required {
+            let minimum = if size_of::<Entry>() == 1 {
+                8
+            } else if size_of::<Entry>() <= 1024 {
+                4
+            } else {
+                1
+            };
+            let target = capacity
+                .checked_mul(2)
+                .ok_or(AudioStorageError::Overflow)?
+                .max(required)
+                .max(minimum);
+            std::alloc::Layout::array::<Entry>(target).map_err(|_| AudioStorageError::Overflow)?;
+            bytes(target)?
+        } else {
+            0
+        };
+        let cost = OriginalOnlyStorageCost {
+            existing_backing_bytes: existing,
+            transaction_new_backing_bytes: growth,
+        };
+        cost.existing_backing_bytes
+            .checked_add(cost.transaction_new_backing_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        Ok(cost)
+    }
     /// The first original-only graph still owns the actual reserved EMPTY cache
     /// backing. Observe it, pending empty capacity and the actual cancellation
     /// field under the same guards. Nonempty domains/tempo/derived entries and
@@ -51,6 +109,17 @@ impl AudioTransformPcmInventory<'_> {
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
+        // Validate the same guarded original-only class and checked metadata
+        // sizing before recording its existing fields. The future transaction
+        // overlap is NOT inserted into an observed current DATA summary.
+        self.original_only_storage_cost()?;
+        ledger.borrow_metadata_vec_backing_on_control(&self.cache.entries)?;
+        if let Some(pending) = self.pending.as_ref() {
+            ledger.borrow_metadata_vec_backing_on_control(pending)?;
+        }
+        self.owner.visit_cancellation_storage_on_control(ledger)
+    }
+    fn require_original_only(&self) -> Result<(), AudioStorageError> {
         let AudioTransformPreparation {
             cache: _,
             pending: _,
@@ -87,11 +156,7 @@ impl AudioTransformPcmInventory<'_> {
         {
             return Err(AudioStorageError::UnknownStorage);
         }
-        ledger.borrow_metadata_vec_backing_on_control(entries)?;
-        if let Some(pending) = self.pending.as_ref() {
-            ledger.borrow_metadata_vec_backing_on_control(pending)?;
-        }
-        self.owner.visit_cancellation_storage_on_control(ledger)
+        Ok(())
     }
     /// Actual embedded fields when composing with other root/model visitors.
     /// Repeated visits of the SAME field deduplicate; another physical handle

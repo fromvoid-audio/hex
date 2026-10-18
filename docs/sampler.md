@@ -1185,3 +1185,32 @@ failure correctly returned UnknownStorage until those actual snapshot fields
 were visited. The closure check was preserved. The exact selected reservation
 then succeeds with original owners unchanged. These are selected context costs,
 not a complete compiler prequote, candidate-union observation or native permit.
+
+The aggregate bootstrap is still under construction. Its next two private
+building blocks now expose allocation-free metadata facts. Inspection ledgers
+reject a requested row/body lower bound exceeding either byte limit before the
+first backing reservation; their existing post-allocation actual-capacity check
+remains. This early negative decision is valid even without a supported layout
+upper bound and does not establish any external root binding.
+
+The guarded original-only transform sizing shares its class predicate with the
+actual metadata visitor and includes reserved empty cache/pending capacities.
+It also calculates the additional cache backing requested by the unchanged
+transaction's amortized reservation. The input union must keep the old backing
+charged while adding that replacement. The pinned Rust 1.94.0 commit
+`4a4ef493e3a1488c6e321570238084b38948f6db` uses
+`max(2 * capacity, len + additional, minimum_non_zero_capacity)` in
+`library/alloc/src/raw_vec/mod.rs::grow_amortized`, and `grow_exact` uses the
+requested capacity. These are requested-layout declarations for the existing
+supported native std/Global selector, not allocator RSS measurements.
+
+Tests independently compare five actual transaction capacities, including
+129 -> 258, distinguish reuse and replacement, retain empty pending capacity,
+and prove error/panic releases all inventory guards before the same persistent
+preparation obtains mutable transaction borrows again. No paired owners are
+born or cloned by sizing. Actual current DATA observations do not include the
+predicted future cache allocation. Original ledger/input binding, precharging
+a fresh callback-local ledger alongside the still-live original, remaining
+selector/compiler cost helpers, and the closed pre-selector construction call
+remain required; these components do not open runtime admission or close the
+aggregate quote, unwind custody, Service or native publication work.

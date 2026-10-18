@@ -121,3 +121,87 @@ fn original_only_transform_inventory_charges_reserved_empty_cache_and_pending_ba
         })
         .unwrap();
 }
+
+#[test]
+fn original_only_bootstrap_cost_tracks_actual_cache_growth_and_releases_guards() {
+    assert!(
+        crate::audio_storage_constructor_layout_supported(),
+        "this oracle must execute on the supported pinned native std"
+    );
+    let signal = crate::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+    let job = crate::RetainedControlJob::try_from_owned_on_control(
+        &mut Some(0_u8),
+        usize::MAX,
+        |_: &mut u8| Ok::<_, ()>(crate::RetainedControlJobProgress::Pending),
+    )
+    .unwrap();
+    let worker = signal.bind_worker_on_control(job.route());
+    for capacity in [0, 1, 129, 256, 400] {
+        let context =
+            AudioTransformPreparation::with_retained_cancellation_on_control(worker.clone());
+        context.cache.borrow_mut().entries.reserve_exact(capacity);
+        let old_capacity = context.cache.borrow().entries.capacity();
+        let old_bytes = old_capacity * size_of::<Entry>();
+        let cost = context
+            .with_pcm_inventory_on_control(|inventory| {
+                let cost = inventory.original_only_storage_cost()?;
+                assert_eq!(cost.existing_backing_bytes, old_bytes);
+                assert!(context.cache.try_borrow_mut().is_err());
+                assert!(context.pending.try_borrow_mut().is_err());
+                assert!(context.tempo.try_borrow_mut().is_err());
+                Ok(cost)
+            })
+            .unwrap();
+        crate::owned_shared::reset_birth_count();
+        crate::owned_shared::reset_clone_count();
+        context.transaction(|| Ok::<_, Invalid>(())).unwrap();
+        let actual = context.cache.borrow().entries.capacity() * size_of::<Entry>();
+        assert!(actual >= MAX_CACHED_TRANSFORMS * size_of::<Entry>());
+        if old_capacity < MAX_CACHED_TRANSFORMS {
+            assert_eq!(cost.transaction_new_backing_bytes, actual);
+            // Old allocation is STILL part of the preconstruction union.
+            assert_eq!(
+                cost.existing_backing_bytes + cost.transaction_new_backing_bytes,
+                old_bytes + actual
+            );
+        } else {
+            assert_eq!(cost.transaction_new_backing_bytes, 0);
+            assert_eq!(actual, old_bytes);
+        }
+        assert_eq!(crate::owned_shared::birth_count(), 0);
+        assert_eq!(crate::owned_shared::clone_count(), 0);
+        *context.pending.borrow_mut() = Some(Vec::with_capacity(17));
+        let pending_bytes =
+            context.pending.borrow().as_ref().unwrap().capacity() * size_of::<Entry>();
+        context
+            .with_pcm_inventory_on_control(|inventory| {
+                assert_eq!(
+                    inventory
+                        .original_only_storage_cost()?
+                        .existing_backing_bytes,
+                    actual + pending_bytes
+                );
+                Ok(())
+            })
+            .unwrap();
+        let failed_visit: Result<(), AudioStorageError> =
+            context.with_pcm_inventory_on_control(|_| Err(AudioStorageError::Capacity));
+        assert_eq!(failed_visit, Err(AudioStorageError::Capacity));
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<(), AudioStorageError> = context.with_pcm_inventory_on_control(|_| {
+                panic!("injected scoped inventory panic");
+            });
+        }));
+        assert!(panic.is_err());
+        // No guard/reference escaped either error path. This SAME persistent
+        // preparation subsequently obtains the mutable transaction borrows.
+        *context.pending.borrow_mut() = None;
+        context.transaction(|| Ok::<_, Invalid>(())).unwrap();
+        assert!(context.cache.try_borrow_mut().is_ok());
+        assert!(context.pending.try_borrow_mut().is_ok());
+        assert!(context.tempo.try_borrow_mut().is_ok());
+        eprintln!(
+            "SUPPORTED guarded metadata capacity={old_capacity} old={old_bytes} actual={actual} pending={pending_bytes}"
+        );
+    }
+}

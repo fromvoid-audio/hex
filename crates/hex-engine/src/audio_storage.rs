@@ -7,8 +7,14 @@ pub use canonical_state::canonical_native_state_storage_layout_supported;
 mod model_buffers;
 mod models;
 pub use models::canonical_midi_storage_layout_supported;
+#[cfg(test)]
+mod construction_tests;
 mod sources;
 mod values;
+#[cfg(test)]
+thread_local! {
+    static BACKING_RESERVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioStorageRole {
@@ -221,18 +227,16 @@ impl<'a> AudioRootStorageLedger<'a> {
     pub fn try_new_on_control(
         reservation: AudioStorageLedgerReservation,
     ) -> Result<Self, AudioStorageError> {
-        reservation
-            .data_rows
-            .checked_mul(std::mem::size_of::<Data<'_>>())
-            .ok_or(AudioStorageError::Overflow)?;
-        reservation
-            .handle_rows
-            .checked_mul(std::mem::size_of::<Handle<'_>>())
-            .ok_or(AudioStorageError::Overflow)?;
-        reservation
-            .root_rows
-            .checked_mul(std::mem::size_of::<Root<'_>>())
-            .ok_or(AudioStorageError::Overflow)?;
+        // This lower bound is sufficient for a negative decision on every
+        // allocator: each Vec must hold at least its requested rows. In the
+        // pinned native std Global/RawVec::grow_exact family it is the exact
+        // requested backing. It is NOT an external input-union allowance.
+        let requested = Self::requested_metadata_bytes(reservation)?;
+        if requested > reservation.max_retained_bytes
+            || requested > reservation.max_construction_peak_bytes
+        {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
         let mut result = Self {
             data: Vec::new(),
             handles: Vec::new(),
@@ -242,6 +246,8 @@ impl<'a> AudioRootStorageLedger<'a> {
             unknown: 0,
             valid: false,
         };
+        #[cfg(test)]
+        BACKING_RESERVATIONS.with(|count| count.set(count.get() + 1));
         result
             .data
             .try_reserve_exact(reservation.data_rows)
@@ -257,6 +263,23 @@ impl<'a> AudioRootStorageLedger<'a> {
         result.valid = true;
         result.summary()?;
         Ok(result)
+    }
+    /// No allocation or owning observation. Includes this ledger's inline body.
+    /// A bootstrap must still bind/charge ALL old inputs and overlap separately;
+    /// an unsupported allocator cannot use this requested size as an upper bound.
+    pub(crate) fn requested_metadata_bytes(
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<usize, AudioStorageError> {
+        [
+            reservation.data_rows.checked_mul(size_of::<Data<'_>>()),
+            reservation.handle_rows.checked_mul(size_of::<Handle<'_>>()),
+            reservation.root_rows.checked_mul(size_of::<Root<'_>>()),
+        ]
+        .into_iter()
+        .try_fold(size_of::<Self>(), |sum, bytes| {
+            sum.checked_add(bytes.ok_or(AudioStorageError::Overflow)?)
+                .ok_or(AudioStorageError::Overflow)
+        })
     }
     pub fn borrow_custody_on_control(
         &mut self,
