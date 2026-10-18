@@ -5013,3 +5013,12 @@ folder snapshots. Collection assignments remain explicitly pending; no tag/histo
 or neutral shared-library implementation is claimed. Source checks and native
 coordinator-only acceptance recorded separately; inline tree2728 follows this
 checked/reviewed foundation.
+
+## command-d time range — pulse2759 / PR367, 18 october2026
+
+Arrangement Command-D uses existing atomic time-chunk copy at the range end,
+normal overwrite semantics, retained gaps/audio source windows/MIDI fragments
+and main-track scope. Successful selection feedback supports repeated copies;
+clipboard and other-editor shortcuts are preserved. Rendered key/real-worker
+regression covers one Undo/Redo and text focus. Exact source checks and native
+input acceptance remain pending; no installed app changes.
