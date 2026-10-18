@@ -10,6 +10,7 @@ gpui::actions!(hex_changelog, [OpenChangelog, CloseChangelog]);
 pub(super) struct State {
     open: bool,
     focus: FocusHandle,
+    close_focus: FocusHandle,
     lines: Vec<String>,
     scroll: gpui::ScrollHandle,
 }
@@ -75,6 +76,7 @@ impl State {
         Self {
             open: false,
             focus: cx.focus_handle(),
+            close_focus: cx.focus_handle(),
             lines,
             scroll: gpui::ScrollHandle::new(),
         }
@@ -92,6 +94,10 @@ pub(super) fn bind_keys(cx: &mut App) {
         CloseChangelog,
         Some("hex_changelog"),
     )]);
+    cx.bind_keys([
+        KeyBinding::new("enter", CloseChangelog, Some("hex_changelog_close")),
+        KeyBinding::new("space", CloseChangelog, Some("hex_changelog_close")),
+    ]);
     // This reader must not dispatch document editing/transport keys behind it.
     cx.bind_keys(
         [
@@ -147,7 +153,15 @@ impl EditorView {
                 .bg(rgb(theme::color(PaletteRole::Background)))
                 .track_focus(&self.changelog.focus)
                 .key_context("hex_changelog")
-                .on_key_down(|_, _, cx| cx.stop_propagation())
+                .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "tab" {
+                        // Exactly one control in this reader. Keep either Tab
+                        // direction inside the overlay, away from the editor.
+                        view.changelog.close_focus.focus(window);
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                }))
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
                     div()
@@ -168,6 +182,12 @@ impl EditorView {
                                     div()
                                         .id("close-changelog")
                                         .debug_selector(|| "close-changelog".into())
+                                        .track_focus(&self.changelog.close_focus)
+                                        .tab_index(0)
+                                        .key_context("hex_changelog_close")
+                                        .focus(|style| {
+                                            style.bg(rgb(theme::color(PaletteRole::Hover)))
+                                        })
                                         .px_2()
                                         .py_1()
                                         .cursor_pointer()
@@ -359,6 +379,36 @@ mod ui_tests {
             editor.update_in(&mut visual, |view, window, _cx| {
                 assert!(!view.changelog.open);
                 assert!(view.focus.is_focused(window));
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn overlay_close_is_reachable_by_tab_shift_tab_and_activates_without_document_edits(
+        cx: &mut TestAppContext,
+    ) {
+        let (_directory, mut visual, editor) = fixture(cx);
+        let before = editor.read_with(&visual, |view, _| view.worker_requests_pending);
+        for (tab, activate) in [("tab", "enter"), ("shift-tab", "space")] {
+            click(&mut visual, "open-changelog");
+            visual.simulate_keystrokes(tab);
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_background("close-changelog"),
+                Some(gpui::Background::from(rgb(theme::color(
+                    PaletteRole::Hover
+                )))),
+                "close must expose visible keyboard focus within the overlay"
+            );
+            // The overlay has exactly one interactive control; repeated Tab
+            // must remain inside it rather than reach transport/toolbar fields.
+            visual.simulate_keystrokes(tab);
+            visual.simulate_keystrokes(activate);
+            visual.run_until_parked();
+            editor.update_in(&mut visual, |view, window, _| {
+                assert!(!view.changelog.open);
+                assert!(view.focus.is_focused(window));
+                assert_eq!(view.worker_requests_pending, before);
             });
         }
     }

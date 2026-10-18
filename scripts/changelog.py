@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import fcntl
+import stat
 import gzip
 import hashlib
 import io
@@ -12,6 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import selectors
 import subprocess
 import sys
 import tarfile
@@ -52,11 +55,36 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def git(root, *argv):
-    result = subprocess.run(['git', '-C', str(root), *argv], capture_output=True)
-    if result.returncode:
-        raise Refusal('git input unavailable: ' + ' '.join(argv[:2]))
-    return result.stdout
+def git(root, *argv, max_bytes=8 * MAX_DATASET):
+    # Drain both pipes concurrently. Keep bounded stderr diagnostics, discarding
+    # excess without blocking the child; stdout refuses on the first excess byte.
+    with subprocess.Popen(['git', '-C', str(root), *argv], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE) as process:
+        output, errors = bytearray(), bytearray()
+        try:
+            with selectors.DefaultSelector() as streams:
+                streams.register(process.stdout, selectors.EVENT_READ, 'output')
+                streams.register(process.stderr, selectors.EVENT_READ, 'errors')
+                while streams.get_map():
+                    for key, _ in streams.select():
+                        limit = min(8192, max_bytes + 1 - len(output)) if key.data == 'output' else 8192
+                        raw = os.read(key.fd, limit)
+                        if not raw:
+                            streams.unregister(key.fileobj)
+                        elif key.data == 'output':
+                            output.extend(raw)
+                            if len(output) > max_bytes:
+                                raise Refusal('Git input limit exceeded; no input was truncated or sent')
+                        else:
+                            errors.extend(raw[:max(0, 8192 - len(errors))])
+            code = process.wait()
+            if code:
+                raise Refusal(f'git input unavailable (exit {code}): ' + errors.decode('utf-8', errors='replace').strip())
+            return bytes(output)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
 
 
 def revision(root, value):
@@ -111,7 +139,7 @@ def input_packet(root, base, source):
                 '--src-prefix=a/', '--dst-prefix=b/', '--line-prefix=', '--full-index',
                 '--output-indicator-new=+', '--output-indicator-old=-', '--output-indicator-context= ',
                 '--unified=3', '--inter-hunk-context=0', '-O' + os.devnull,
-                base, source, '--', '.', ':!' + DATASET)
+                base, source, '--', '.', ':!' + DATASET, max_bytes=MAX_INPUT)
     # Normalize only Git's index metadata to the original fixed-eight convention.
     # Hunk lines always have an explicit space/+/- prefix and cannot match.
     patch = re.sub(rb'(?m)^index ([0-9a-f]{40})\.\.([0-9a-f]{40})( [0-7]{6})?$',
@@ -174,20 +202,22 @@ def validate_response(value, packet, previous=()):
     return value
 
 
-def load_dataset(path):
+def load_dataset(path, *, snapshot=False):
     if not path.exists() and not path.is_symlink():
-        return {'format': 1, 'batches': []}
+        value = {'format': 1, 'batches': []}
+        return (value, None) if snapshot else value
     if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_DATASET:
         raise Refusal('changelog dataset is not a bounded regular file')
     try:
-        value = json.loads(path.read_bytes())
+        raw = path.read_bytes()
+        value = json.loads(raw)
     except (ValueError, UnicodeError) as error:
         raise Refusal('invalid changelog JSON; previous file preserved') from error
     if not isinstance(value, dict) or set(value) != {'format', 'batches'} or value['format'] != 1:
         raise Refusal('unsupported changelog format')
     if not isinstance(value['batches'], list) or len(value['batches']) > MAX_BATCHES:
         raise Refusal('invalid retained changelog history')
-    return value
+    return (value, raw) if snapshot else value
 
 
 def completion_timestamp(value):
@@ -202,10 +232,14 @@ def completion_timestamp(value):
 
 def validate_history(root, dataset):
     previous = []
+    previous_source = None
     for batch in dataset['batches']:
         if not isinstance(batch, dict) or set(batch) not in ({'input', 'input_sha256', 'generated_at', 'generator', 'result'}, {'input', 'input_sha256', 'generated_at', 'generator', 'result', 'execution'}):
             raise Refusal('invalid changelog batch')
         identity = batch['input']
+        if previous_source is not None and identity['base'] != previous_source:
+            raise Refusal('changelog continuation must start at the previous covered source')
+        previous_source = identity['source']
         try:
             git(root, 'merge-base', '--is-ancestor', identity['source'], 'HEAD')
         except Refusal as error:
@@ -228,22 +262,45 @@ def validate_history(root, dataset):
     return previous
 
 
-def atomic_dataset(path, dataset):
+def atomic_dataset(path, dataset, *, expected=None):
     if path.parent.is_symlink():
         raise Refusal('changelog directory is a symlink; previous files preserved')
     raw = encode(dataset)
     if len(raw) > MAX_DATASET:
         raise Refusal('retained notes exceed 1 MiB; previous file preserved')
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix='.changelog-', dir=path.parent)
-    try:
-        with os.fdopen(descriptor, 'wb') as output:
-            output.write(raw)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    # Persistent cooperative lock belongs to this checkout's Git metadata, not
+    # tracked source. Never unlink it (that would allow two different lock inodes).
+    root = path.parent.parent
+    identity = digest(os.fsencode(path.resolve()))
+    lock_path = Path(os.fsdecode(git(root, 'rev-parse', '--git-path', f'hex-changelog-{identity}.lock').strip()))
+    if not lock_path.is_absolute():
+        lock_path = root / lock_path
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'rb') as lock:
+        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+            raise Refusal('changelog publication lock is not a regular file')
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise Refusal('changelog publisher is active; retry after it finishes') from error
+        _, actual = load_dataset(path, snapshot=True)
+        if actual != expected:
+            raise Refusal('changelog changed during preparation; previous successful notes preserved; retry from current history')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix='.changelog-', dir=path.parent)
+        try:
+            with os.fdopen(descriptor, 'wb') as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def require_continuation(dataset, packet):
+    if dataset['batches'] and packet['base'] != dataset['batches'][-1]['input']['source']:
+        raise Refusal('changelog continuation must start at the previous covered source')
 
 
 def export_packet(directory, packet, previous=()):
@@ -287,7 +344,7 @@ def prepare(root, base=None, *, source='HEAD', model=infer, timeout=120):
     path = root / DATASET
     if git(root, 'status', '--porcelain', '--untracked-files=normal', '--', '.', ':!' + DATASET).strip():
         raise Refusal('commit candidate source before changelog preparation; no tracked source is changed after qualification')
-    dataset = load_dataset(path)
+    dataset, expected = load_dataset(path, snapshot=True)
     previous = validate_history(root, dataset)
     requested_base = base
     if base is None:
@@ -303,6 +360,7 @@ def prepare(root, base=None, *, source='HEAD', model=infer, timeout=120):
         last = dataset['batches'][-1]['input']
         if last['input_tree'] == packet['input_tree'] and last['version'] == packet['version'] and last['prompt_version'] == PROMPT_VERSION and (requested_base is None or last['base'] == packet['base']):
             return False
+    require_continuation(dataset, packet)
     if len(dataset['batches']) >= MAX_BATCHES:
         raise Refusal('retained changelog history is full; previous notes preserved')
     owned_directory = Path(tempfile.mkdtemp(prefix='hex-changelog-generation-'))
@@ -313,7 +371,7 @@ def prepare(root, base=None, *, source='HEAD', model=infer, timeout=120):
         dataset['batches'].append({'input': packet_identity(packet, previous), 'input_sha256': digest(encode(packet)),
                                    'generated_at': datetime.now(timezone.utc).isoformat(),
                                    'generator': 'configured codex cli', 'result': result})
-        atomic_dataset(path, dataset)
+        atomic_dataset(path, dataset, expected=expected)
     except (Refusal, OSError, ValueError) as error:
         raise Refusal(f'{error}; diagnostics: {directory}') from error
     try:
@@ -376,7 +434,7 @@ def import_result(root, directory, result_path, execution_path, evidence_commit,
     """
     if not evidence_commit or not SHA.fullmatch(evidence_commit):
         raise Refusal('import requires the immutable execution evidence commit')
-    dataset = load_dataset(root / DATASET)
+    dataset, expected = load_dataset(root / DATASET, snapshot=True)
     previous = validate_history(root, dataset)
     supplied = json.loads((directory / 'input.json').read_bytes())
     existing = None
@@ -398,8 +456,8 @@ def import_result(root, directory, result_path, execution_path, evidence_commit,
     execution_raw = execution_path.read_bytes()
     verify_import_evidence(root, evidence_commit, evidence_archive, directory, raw, execution_raw)
     execution = json.loads(execution_raw)
-    if (not isinstance(execution, dict) or execution.get('exit_code') != 0 or execution.get('timed_out') is not False
-            or execution.get('attempts') != 1 or execution.get('result_exists') is not True
+    if (not isinstance(execution, dict) or type(execution.get('exit_code')) is not int or execution.get('exit_code') != 0 or execution.get('timed_out') is not False
+            or type(execution.get('attempts')) is not int or execution.get('attempts') != 1 or execution.get('result_exists') is not True
             or execution.get('result_sha256') != digest(raw)):
         raise Refusal('execution did not successfully produce these exact result bytes')
     completed = completion_timestamp(execution.get('completed_utc'))
@@ -409,13 +467,14 @@ def import_result(root, directory, result_path, execution_path, evidence_commit,
         if existing['input'] == identity and existing['result'] == result:
             return False
         raise Refusal('different result for an already retained input; original notes preserved')
+    require_continuation(dataset, packet)
     if len(dataset['batches']) >= MAX_BATCHES:
         raise Refusal('retained changelog history is full')
     dataset['batches'].append({'input': identity, 'input_sha256': digest(encode(packet)),
         'generated_at': completed, 'generator': 'configured codex cli', 'result': result,
         'execution': {'origin': 'configured mac codex cli', 'result_sha256': digest(raw),
             'execution_sha256': digest(execution_raw), 'evidence_commit': evidence_commit}})
-    atomic_dataset(root / DATASET, dataset)
+    atomic_dataset(root / DATASET, dataset, expected=expected)
     return True
 
 
@@ -474,6 +533,8 @@ def main(argv=None):
                 if batch['input']['source'] == packet['source']:
                     previous = [entry['text'] for old in dataset['batches'][:index] for entry in old['result']['entries']]
                     break
+            else:
+                require_continuation(dataset, packet)
             export_packet(args.output, packet, previous)
             print(args.output)
     except (Refusal, OSError, UnicodeError, KeyError, TypeError) as error:

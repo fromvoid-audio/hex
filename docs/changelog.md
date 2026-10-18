@@ -2,7 +2,9 @@
 
 The editor's **changelog** button beside the log control reads notes embedded at
 build time. `cmd-shift-l` opens the same reader; Escape closes it and returns
-focus to the editor. It performs no network or model calls. Notes show their declared
+focus to the editor. Tab or Shift-Tab reaches the visibly focused close control;
+Enter or Space activates it without moving focus into controls behind the reader.
+It performs no network or model calls. Notes show their declared
 coverage revision; later unrelated changes do not silently extend that coverage.
 Missing notes are visibly unavailable rather than a fabricated release summary.
 
@@ -14,7 +16,9 @@ python3 scripts/changelog.py validate --through END_COMMIT
 ```
 
 The first preparation requires an explicit baseline. Later preparations default
-to the preceding coverage end. The existing configured `codex exec` performs the
+to the preceding coverage end. An explicit follow-up baseline must equal that
+end; gaps and overlapping retained batches are refused before inference and
+independently during offline history validation. The existing configured `codex exec` performs the
 AI generation with a bounded Git diff, schema, and prompt; no provider or model
 configuration is changed. Generation failures retain previous valid notes and
 print the retained diagnostic directory. Commit `changelog/generated.json` before
@@ -62,3 +66,13 @@ IDs first; only exact Git index header lines are shortened, so object-database
 ambiguity cannot extend them and source hunk content is untouched. The original 274,953-byte
 configured-Mac input is byte-identical under these settings; retained input,
 prompt, schema and real generated notes are not rewritten or regenerated.
+
+Git output is capped while reading the subprocess stream, before the complete
+patch can be buffered. Imported exit codes and attempt counts must be JSON
+integers, not boolean aliases. Publication captures the exact previous dataset
+bytes before generation or import verification, then takes a nonblocking
+checkout-local Git-metadata lock and compares those bytes before atomic replace.
+The lock is never held during inference. A competing successful publication or
+active publisher produces a visible retry refusal and preserves successful notes;
+retry from the now-current history rather than forcing an overwrite. This lock
+does not affect audio callbacks, app state or unrelated local CI.
