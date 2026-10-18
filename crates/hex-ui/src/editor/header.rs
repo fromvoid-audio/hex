@@ -116,7 +116,7 @@ pub(super) fn title_bar(
                 .h_full()
                 .flex()
                 .items_center()
-                .child(crate::build_info::label()),
+                .child(crate::build_info::editor_label()),
         )
         .child(
             div()
