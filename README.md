@@ -170,10 +170,11 @@ Click the timeline ruler to seek; splitting waits for seek acknowledgment.
 Up/Down selects tracks; S toggles exclusive solo and Shift-S additive solo.
 Compact zoom buttons change the viewport; Alt-Left/Right pans and Command-0 fits.
 Command-Plus zooms in and Command-Minus zooms out (also bound to Command-Equal
-where the keyboard layout delivers it). Command-L sets/enables the loop from the
-selected audio clip; in Arrangement, L sets and enables the explicit time selection
-or outer bounds of selected audio/MIDI clips. Repeated L reasserts the range; the
-loop toolbar toggles it. Session L retains toggle behavior. Native loop playback honors this region; CLI export
+where the keyboard layout delivers it). In Arrangement, Command-L sets/enables
+an active explicit time selection first, otherwise the outer bounds of every
+selected audio/MIDI clip, including gaps. Plain L is an alias while musical typing
+is off. Repeated shortcuts reassert the range without an extra Undo; the loop
+toolbar toggles it. Session L retains toggle behavior; Command-L is Arrangement-only. Native loop playback honors this region; CLI export
 renders the linear arrangement.
 Command-Shift-E exports the current linear Arrangement to a new stereo PCM16 WAV
 in the background. It captures the latest compiled revision, writes from frame

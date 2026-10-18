@@ -5,45 +5,38 @@ use hex_project::Command;
 use hex_session::service::Request;
 
 impl EditorView {
-    pub(super) fn set_loop_from_clip(&mut self) {
-        if self.selected_midi_clip_data().is_some() {
-            self.error = Some("looping a midi clip is not supported yet".into());
-            return;
+    /// Existing Command-L action now owns the complete Arrangement selection.
+    pub(super) fn set_loop_from_clip(&mut self, window: &Window) {
+        if self.mode == EditorMode::Arrangement && self.loop_shortcut_context(window) {
+            self.set_selection_loop();
         }
-        let Some((_, _, start, duration, ..)) = self.selected_clip_data() else {
-            self.error = Some("select a clip to set the loop region".into());
-            return;
-        };
-        let Some(end) = start.checked_add(duration) else {
-            self.error = Some("loop region exceeds the timeline".into());
-            return;
-        };
-        self.enqueue(Request::Edit(Command::SetLoopRegion {
-            start,
-            end,
-            enabled: true,
-        }));
     }
 
-    /// Plain L belongs to the focused Arrangement, except while it is a musical note.
-    /// Other views retain their existing toggle command; Command-L is unchanged.
+    /// Plain L remains a musical note while typing is enabled, and retains its
+    /// existing Session toggle. Command-L is the explicit modified shortcut.
     pub(super) fn loop_selection_key(&mut self, window: &Window) {
-        if !self.focus.is_focused(window)
-            || self.computer_keyboard.enabled
-            || self.track_name.is_editing()
-            || self.clip_name_edit.is_some()
-            || self.context_menu.is_some()
-            || self.theme_settings.open
-            || self.tuning.open
-            || self.save_dialog_open
-            || self.export_dialog_open
-        {
+        if self.computer_keyboard.enabled || !self.loop_shortcut_context(window) {
             return;
         }
         if self.mode != EditorMode::Arrangement {
             self.toggle_loop();
-            return;
+        } else {
+            self.set_selection_loop();
         }
+    }
+
+    fn loop_shortcut_context(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+            && !self.track_name.is_editing()
+            && self.clip_name_edit.is_none()
+            && self.context_menu.is_none()
+            && !self.theme_settings.open
+            && !self.tuning.open
+            && !self.save_dialog_open
+            && !self.export_dialog_open
+    }
+
+    fn set_selection_loop(&mut self) {
         if self.edit_pending()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
