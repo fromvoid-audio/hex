@@ -92,3 +92,68 @@ release executable SHA-256 is
 `6f1f674387054ad4fa40e1c4bb6b6075dc7738b74d19c7ebcf3a20afec71d4ed`. Both
 were built with `CARGO_INCREMENTAL=0`, the `instrument-test-support` feature,
 and `--locked` in the assigned local target directory.
+
+## Detached-effect fixture residency, 17 October 2026
+
+Pulse2787 / PR393 addresses a separate default-debug-stack overflow in
+`session_playback::tests::detached_arrangement_effect_suffix_renders_after_its_source_ends`.
+Both clean combined parent327ebe98 and spectrum repair96ee313a reproduce the same
+SIGABRT with `RUST_MIN_STACK` unset on Linux x86-64/Rust1.94. Their independently
+built engine test binaries are byte-identical:22042888bytes,
+SHA25636245a4db3e0a247fec7c47e5183dd0369da1962bb9b76c5930f75a32d8e35a4.
+The parent release version of this exact fixture passes on default test stacks.
+
+The original debug fixture reserves1537288bytes in its own function frame,
+keeping a reference and four old/new playback transition pairs as inline locals.
+Its helper reserves227096bytes and the shared `new_with_policy` constructor
+247896bytes, before deeper calls. These are compiler prologue observations, not
+peak/high-water stack measurements. Test source first appeared in41ce6c5f,
+Pulse2203/PR93; the cloud16MiB fixture setting documented by2348/PR160 predates
+this repair and does not prove default-stack/native qualification.
+
+The test now constructs and renders each unchanged transition in one helper
+invocation. All source projects, partitioned reference output, unchanged-edit,
+bypass, configuration and mix cases, retained-group/active flags and PCM
+comparisons remain. The debug top-level fixture frame shrinks to31016bytes and
+its largest transition helper reserves350312bytes. No production constructor,
+callback storage, allocation, lifetime or stack reservation changes. The exact
+fixture passes in debug and release without a stack override after this change.
+This demonstrates the fixture correction; it does not guarantee every graph's
+production stack usage or establish physical deadlines.
+
+A broader default-stack engine diagnostic passes the repaired fixture, then
+aborts in the separate harmonic fixture
+`routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and_undo`.
+That original diagnostic is retained as negative evidence; the focused follow-up
+below resolves the same fixture-residency cause without changing production. Original negative logs,
+source/binary hashes and the supported production8MiB seek/export reservations
+remain preserved. Coordinator ownership and exact combined qualification must
+resolve outstanding blockers before delivery.
+
+
+### Routed harmonic fixture, same construction cause
+
+The routed Session harmonic import/first-paint/Undo fixture also keeps seven
+actual `SessionPlayback` owners inline. On the unchanged harmonic source blob
+`b0f3b9da7ace265ac5208c0e96c0c2b9c107689f`, its default-stack debug version
+aborts while release passes. Its debug function frame reserves1636376bytes
+before calling the unchanged shared constructors. The two other largest observed
+fixture frames pass on default stacks, so static frame size alone was not used
+to declare additional defects or rewrite their tests.
+
+A helper local to this one test now constructs each identical runtime in a Box.
+All seven owners still coexist, and every source project, routing/launch, loop,
+held/releasing note proof, first-paint comparison, refused StopTrack, subsequent
+PCM comparison and Undo assertion remains. No shared fixture helper, tuning,
+resource, production constructor, callback, admission or lifetime contract changes.
+The caller frame is now51448bytes; the test-local constructor helper reserves
+226504bytes. No stack-size wrapper or environment override is used.
+
+With both fixture corrections, broad default-stack engine library coverage passes
+527tests with zero failures and seven existing ignored profiles. Both original
+cases also pass in release mode on default test stacks. These scoped results are
+separate from repository full-CI qualification and do not establish production
+peak stack use or native hardware deadlines. Preserve the failed pre-fix default
+receipts and the documented normal cloud `RUST_MIN_STACK=16777216` configuration
+as distinct evidence. Final integration with the independently tracked spectrum
+factory repair requires its own exact-source checks and coordinated Mac cohort.

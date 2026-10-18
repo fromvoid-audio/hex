@@ -174,6 +174,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         })
         .collect();
     let full = Project::from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

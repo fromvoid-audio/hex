@@ -126,7 +126,7 @@ impl SessionPlayback {
 }
 fn chain_storage<'a>(
     chain: &'a hex_lattice::NativeRuntimeChain,
-    prepared: &'a [hex_lattice::PreparedProcessorInstance],
+    prepared: &'a [hex_lattice::PreparedRuntimeInstance],
     l: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
     let view = chain.storage_view();
@@ -141,7 +141,7 @@ fn chain_storage<'a>(
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
         if prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID
-            || !entry.matches_prepared_storage(prepared)
+            || !entry.matches_prepared_runtime_storage(prepared)
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }

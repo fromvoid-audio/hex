@@ -37,10 +37,10 @@ pub(crate) fn validate_constructor_project(
     project: &hex_project::Project,
 ) -> Result<(), AudioStorageError> {
     if project.tracks().iter().any(|t| {
-        t.devices()
-            .iter()
-            .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-            || t.instrument().is_some()
+        t.devices().iter().any(|d| {
+            d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                || !d.state().asset_references().is_empty()
+        }) || t.instrument().is_some()
             || !t.midi_clips().is_empty()
     }) || project
         .return_tracks()

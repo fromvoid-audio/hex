@@ -538,7 +538,7 @@ impl SignalRuntime {
         mut generator: Frame,
         offset: usize,
         metered: bool,
-        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<Frame, Invalid> {
         audio = self.edge(self.graph.tracks[index].source_input, audio)?;
         audio[0] += self.inputs[index][0];
@@ -592,20 +592,21 @@ impl SignalRuntime {
         start: usize,
         frame: &mut Frame,
         offset: usize,
-        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
         for (local, &node) in nodes.iter().enumerate() {
             let clock = OriginClock(self.delays.node_input_stamp(node).map_err(error)?);
             let frames = std::slice::from_mut(frame);
             if let Some(observer) = observer.as_mut() {
-                chain.process_range_observed_with_clock(
+                chain.process_range_tapped_with_clock(
                     start + local..start + local + 1,
                     frames,
                     offset,
                     Some(&clock),
-                    &mut |owner, device, kind, offset, frames| {
+                    &mut |owner, device, kind, phase, offset, frames| {
                         observer(
                             crate::PostNodeIdentity::new(owner, device, kind),
+                            phase,
                             offset,
                             frames,
                         )

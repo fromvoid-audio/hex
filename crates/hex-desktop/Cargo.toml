@@ -10,6 +10,7 @@ publish.workspace = true
 allocation-probe = ["hex-audio/allocation-probe"]
 
 [dependencies]
+hex-mts = { path = "../hex-mts" }
 hex-midi = { path = "../hex-midi" }
 hex-diagnostics = { path = "../hex-diagnostics" }
 hex-ui = { path = "../hex-ui" }
