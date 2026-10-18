@@ -1120,8 +1120,14 @@ fn eq_review_selection_of_non_eq_retires_actual_public_capture_target(cx: &mut T
 fn eq_review_new_and_open_empty_projects_retire_only_owned_analyzer_status(
     cx: &mut TestAppContext,
 ) {
+    let mut completed = 0;
     for open in [false, true] {
         for status in ["waiting", "closed", "unrelated"] {
+            // Every variant owns an independent app. bounded_window selects the
+            // real native text system before that app's first window; earlier
+            // variants must never force a replacement under existing windows.
+            let cx = &mut cx.new_app();
+            eprintln!("EQ document status variant: Open={open}, old status={status}");
             let (service, state, track, device) = fixture(false);
             let (handle, editor, root) = bounded_window(cx, service, state, track);
             let mut backend_owners = None;
@@ -1203,8 +1209,10 @@ fn eq_review_new_and_open_empty_projects_retire_only_owned_analyzer_status(
                 view.device_panel.eq_spectrum.test_client.take();
             });
             drop(backend_owners);
+            completed += 1;
         }
     }
+    assert_eq!(completed, 6, "all New/Open status variants completed");
 }
 
 #[gpui::test]
