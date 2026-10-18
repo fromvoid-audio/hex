@@ -305,6 +305,7 @@ actions!(
         AddMidiTrack,
         AddMidiClip,
         RemoveTrack,
+        RemoveHeaderTracks,
         SelectAllMidiNotes,
         ToggleMidiDrawMode,
         MidiOctaveUp,
