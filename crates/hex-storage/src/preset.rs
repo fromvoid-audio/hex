@@ -104,6 +104,15 @@ impl From<serde_json::Error> for Error {
 }
 
 pub fn encode(preset: &Preset) -> Result<Vec<u8>, Error> {
+    if preset
+        .comparison
+        .as_ref()
+        .is_some_and(|comparison| comparison.inactive().type_id() != preset.state.type_id())
+    {
+        return Err(Error::Invalid(
+            "comparison provider does not match device preset",
+        ));
+    }
     if !preset.state.asset_references().is_empty()
         || preset
             .comparison
@@ -273,6 +282,40 @@ mod tests {
         assert!(bytes.len() <= MAX_PRESET_BYTES);
         assert_eq!(decode(&bytes).unwrap(), preset);
     }
+    #[test]
+    fn complete_maximum_pair_roundtrips_and_wrong_provider_never_publishes() {
+        let mut preset = fixture();
+        let inactive = NativeDeviceState::new(
+            preset.state.type_id(),
+            9,
+            vec![255; MAX_NATIVE_DEVICE_STATE_BYTES],
+        )
+        .unwrap();
+        preset.comparison = Some(hex_project::DeviceComparison::new(
+            hex_project::DeviceVariant::B,
+            inactive,
+        ));
+        let bytes = encode(&preset).unwrap();
+        assert!(bytes.len() <= MAX_PRESET_BYTES);
+        assert_eq!(decode(&bytes).unwrap(), preset);
+        let directory = std::env::temp_dir().join(format!(
+            "hex-invalid-pair-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("invalid.hex-device-preset.json");
+        preset.comparison = Some(hex_project::DeviceComparison::new(
+            hex_project::DeviceVariant::A,
+            NativeDeviceState::new(DeviceTypeId::from_static("other.provider"), 1, vec![1])
+                .unwrap(),
+        ));
+        assert!(save_new(&path, &preset).is_err());
+        assert!(!path.exists());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        fs::remove_dir(&directory).unwrap();
+    }
+
     #[test]
     fn malformed_unknown_newer_and_unbounded_envelopes_refuse() {
         let bytes = encode(&fixture()).unwrap();

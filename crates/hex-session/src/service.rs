@@ -23,6 +23,7 @@ mod audio_sink;
 mod canonical_audio_source;
 pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
+mod device_comparison;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -351,6 +352,11 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: Box<hex_lattice_contract::DeviceTypeId>,
     },
+    CompareDevice {
+        owner: preset::Owner,
+        expected: hex_project::DeviceVariant,
+        action: hex_project::DeviceComparisonAction,
+    },
     SetDeviceParameter {
         device: hex_project::DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -455,6 +461,7 @@ impl Request {
                 | Request::SaveCurrent
                 | Request::SaveDevicePreset { .. }
                 | Request::LoadDevicePreset { .. }
+                | Request::CompareDevice { .. }
                 | Request::Export(_)
                 | Request::ExportRange { .. }
                 | Request::ConvertClip { .. }
@@ -1303,8 +1310,22 @@ fn run_worker(
         let mut preview_prepared = None;
         let mut preview_project = None;
         let barrier = request.finalizes_parameter_gesture();
-        let mut barrier_failure = None;
-        if barrier {
+        // Reject stale comparison ownership before a barrier could commit an
+        // unrelated live draft. Valid requests still use the existing barrier.
+        let mut barrier_failure = match &request {
+            Request::CompareDevice {
+                owner, expected, ..
+            } => device_comparison::preflight(
+                &session,
+                project_generation,
+                revision,
+                *owner,
+                *expected,
+            )
+            .err(),
+            _ => None,
+        };
+        if barrier && barrier_failure.is_none() {
             if let Some(outcome) = device_gesture.finish(
                 &mut session,
                 compiled.as_ref().map(|(_, artifact)| artifact),
@@ -2127,6 +2148,48 @@ fn run_worker(
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                     status = Some("device replaced".into());
+                                }
+                                Ok(_) => status = Some("no change".into()),
+                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            }
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::CompareDevice {
+                    owner,
+                    expected,
+                    action,
+                } => {
+                    let command = device_comparison::command(
+                        &session,
+                        project_generation,
+                        revision,
+                        owner,
+                        expected,
+                        action,
+                    );
+                    match command {
+                        Ok(command) => {
+                            let before = session.project().clone();
+                            match session.command_prepared_revision(
+                                command,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok((_, prepared)) if session.project() != &before => {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                    status = Some(
+                                        match action {
+                                            hex_project::DeviceComparisonAction::Switch => {
+                                                "device comparison switched"
+                                            }
+                                            hex_project::DeviceComparisonAction::CopyToInactive => {
+                                                "device comparison copied"
+                                            }
+                                        }
+                                        .into(),
+                                    );
                                 }
                                 Ok(_) => status = Some("no change".into()),
                                 Err(reason) => error = Some(reason.to_string().to_lowercase()),

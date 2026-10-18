@@ -1,7 +1,7 @@
 # shared device a/b comparison
 
-Approved implementation contract for Pulse2845 / PR447. The model checkpoint
-implements canonical comparison; persistence, service/UI and complete acceptance
+Approved implementation contract for Pulse2845 / PR447. The model and storage checkpoints
+implement canonical comparison and pair persistence; service/UI and complete acceptance
 remain in progress. This is not a claim that the end-user feature is qualified. Audited source: main `bc06d7573ffa7f4d989bdff9553ed3108f4f0818`,
 canonical intake retained in source checkpoint `38b008c859f3662787f3757a865071eebeec72be`.
 
@@ -17,9 +17,9 @@ canonical intake retained in source checkpoint `38b008c859f3662787f3757a865071ee
   authored state through the class-specific registered definition and existing
   prepared transaction. Failure must precede canonical history/publication.
 - `DeviceSnapshot` and the shared project storage Device DTO carry one state.
-  Generic preset schema1 stores class/type/version/payload, deliberately preserves
+  Generic preset schema2 stores the active and optional inactive class/type/version/payload, deliberately preserves
   the target device's host trims, and refuses asset-bound presets without a
-  portable asset manifest. It does not currently store an A/B pair.
+  portable asset manifest. Both slots refuse asset-backed portable presets without a manifest.
 - Project automation currently owns track gain envelopes/lanes. This feature
   must not invent a device-parameter automation family or claim one exists.
 - `computer_keyboard.rs::NOTE_KEYS` includes plain `p`; device comparison must
