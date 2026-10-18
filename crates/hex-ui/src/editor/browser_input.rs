@@ -6,6 +6,14 @@ use gpui::{
     UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, rgba, size,
 };
 use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
+
+#[derive(Clone, Copy)]
+struct MouseSelection {
+    anchor: usize,
+    origin: Point<Pixels>,
+    dragging: bool,
+}
 
 gpui::actions!(
     hex_browser_search,
@@ -32,6 +40,7 @@ pub(super) struct BrowserSearch {
     selected: Range<usize>,
     reversed: bool,
     marked: Option<Range<usize>>,
+    mouse_selection: Option<MouseSelection>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     last_origin_x: Option<Pixels>,
@@ -46,6 +55,7 @@ impl BrowserSearch {
             selected: 0..0,
             reversed: false,
             marked: None,
+            mouse_selection: None,
             last_layout: None,
             last_bounds: None,
             last_origin_x: None,
@@ -67,12 +77,26 @@ impl BrowserSearch {
         self.focus.focus(window);
     }
     pub(super) fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mouse_selection = None;
         self.focus(window);
         self.unmark_text(window, cx);
         self.select_all(&BrowserSelectAll, window, cx);
     }
 
+    // Results share this input's FocusHandle. Their explicit mouse entry into
+    // text mode selects all too, while retaining the current down-point for drag.
+    pub(super) fn select_all_on_mouse_entry(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selection = self.mouse_selection;
+        self.focus_and_select_all(window, cx);
+        self.mouse_selection = selection;
+    }
+
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
+        self.mouse_selection = None;
         self.content.clear();
         self.selected = 0..0;
         self.reversed = false;
@@ -90,20 +114,21 @@ impl BrowserSearch {
 
     fn previous_boundary(&self, offset: usize) -> usize {
         self.content[..offset.min(self.content.len())]
-            .char_indices()
-            .last()
+            .grapheme_indices(true)
+            .next_back()
             .map_or(0, |(index, _)| index)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
         let offset = offset.min(self.content.len());
-        self.content[offset..]
-            .char_indices()
-            .nth(1)
-            .map_or(self.content.len(), |(index, _)| offset + index)
+        self.content
+            .grapheme_indices(true)
+            .find(|(index, _)| *index > offset)
+            .map_or(self.content.len(), |(index, _)| index)
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.mouse_selection = None;
         let offset = offset.min(self.content.len());
         if self.reversed {
             self.selected.start = offset;
@@ -118,6 +143,7 @@ impl BrowserSearch {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.mouse_selection = None;
         let offset = offset.min(self.content.len());
         self.selected = offset..offset;
         self.reversed = false;
@@ -171,6 +197,7 @@ impl BrowserSearch {
     }
 
     fn select_all(&mut self, _: &BrowserSelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.mouse_selection = None;
         self.selected = 0..self.content.len();
         self.reversed = false;
         cx.notify();
@@ -245,19 +272,80 @@ impl BrowserSearch {
         if point.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(point.x - self.last_origin_x.unwrap_or(bounds.left()))
+        let index = line.closest_index_for_x(point.x - self.last_origin_x.unwrap_or(bounds.left()));
+        if index == self.content.len() {
+            return index;
+        }
+        self.content
+            .grapheme_indices(true)
+            .take_while(|(boundary, _)| *boundary <= index)
+            .last()
+            .map_or(0, |(boundary, _)| boundary)
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if event.modifiers.shift {
-            self.select_to(self.index_for_point(event.position), cx);
+        let offset = self.index_for_point(event.position);
+        let anchor = if event.modifiers.shift && self.focus.is_focused(window) {
+            if self.reversed {
+                self.selected.end
+            } else {
+                self.selected.start
+            }
         } else {
-            self.move_to(self.index_for_point(event.position), cx);
+            offset
+        };
+        self.unmark_text(window, cx);
+        if !self.clip_name && !self.focus.is_focused(window) {
+            self.focus_and_select_all(window, cx);
+        } else if event.modifiers.shift {
+            self.select_to(offset, cx);
+        } else {
+            self.move_to(offset, cx);
         }
         self.focus.focus(window);
+        self.mouse_selection = Some(MouseSelection {
+            anchor,
+            origin: event.position,
+            dragging: false,
+        });
         if self.clip_name {
             cx.stop_propagation();
         }
+    }
+
+    fn mouse_move(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self.mouse_selection else {
+            return;
+        };
+        if event.pressed_button != Some(MouseButton::Left) || !self.focus.is_focused(window) {
+            self.mouse_selection = None;
+            return;
+        }
+        // A focus click stays Select All through ordinary pointer jitter. A
+        // deliberate held drag selects from its down-point, even outside bounds.
+        if !selection.dragging
+            && f32::from(event.position.x - selection.origin.x).abs() < 2.0
+            && f32::from(event.position.y - selection.origin.y).abs() < 2.0
+        {
+            return;
+        }
+        if let Some(selection) = self.mouse_selection.as_mut() {
+            selection.dragging = true;
+        }
+        let offset = self.index_for_point(event.position);
+        let selected = selection.anchor.min(offset)..selection.anchor.max(offset);
+        let reversed = offset < selection.anchor;
+        if self.selected != selected || self.reversed != reversed {
+            self.selected = selected;
+            self.reversed = reversed;
+            cx.notify();
+        }
+        cx.stop_propagation();
     }
 }
 
@@ -301,6 +389,7 @@ impl EntityInputHandler for BrowserSearch {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.mouse_selection = None;
         let range = range
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -333,6 +422,7 @@ impl EntityInputHandler for BrowserSearch {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.mouse_selection = None;
         let range = range
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -637,6 +727,23 @@ impl Element for BrowserSearchElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let pointer = self.input.clone();
+        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+            if phase.bubble() {
+                pointer.update(cx, |input, cx| input.mouse_move(event, window, cx));
+            }
+        });
+        let release = self.input.clone();
+        window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, cx| {
+            if phase.bubble() && event.button == MouseButton::Left {
+                let owned = release.update(cx, |input, _| {
+                    input.mouse_selection.take().is_some() && input.focus.is_focused(window)
+                });
+                if owned {
+                    cx.stop_propagation();
+                }
+            }
+        });
         let focus = self.input.read(cx).focus.clone();
         window.handle_input(
             &focus,
