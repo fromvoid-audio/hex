@@ -3724,22 +3724,31 @@ fn browser_place_icon_popup_outside_click_does_not_start_arrangement_gesture(
 
 fn place_icon_preferences_window(
     cx: &mut TestAppContext,
+    directory: &PreferencesTestDirectory,
     config: &std::path::Path,
     recent: &std::path::Path,
 ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
+    let home = directory.0.join("icon-home");
+    let music = home.join("Music");
+    std::fs::create_dir_all(&music).unwrap();
+    std::fs::write(music.join("fixture.wav"), mono_pcm_wav(24)).unwrap();
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
             let service = Service::new(48_000, 32, 8_000_000).unwrap();
             window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test(
+                EditorView::new_with_browser_paths(
                     window,
                     cx,
                     service,
                     Err("offline icon test".into()),
-                    config.to_owned(),
-                    recent.to_owned(),
+                    (
+                        config.to_owned(),
+                        recent.to_owned(),
+                        directory.0.join("icon-theme.json"),
+                    ),
+                    Some(home),
                 )
             })
         })
@@ -3761,7 +3770,7 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
             .unwrap();
     saved.set_icon(&unknown, Some("future-icon")).unwrap();
     hex_preferences::save(&config, &saved).unwrap();
-    let (handle, editor) = place_icon_preferences_window(cx, &config, &recent);
+    let (handle, editor) = place_icon_preferences_window(cx, &directory, &config, &recent);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.read_with(visual, |view, _| {
@@ -3864,7 +3873,8 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
         assert_eq!(view.browser.section, BrowserSection::Place(first.clone()))
     });
     // Recreate the actual editor/preferences load path, using only disposable test files.
-    let (reopened_handle, reopened) = place_icon_preferences_window(cx, &config, &recent);
+    let (reopened_handle, reopened) =
+        place_icon_preferences_window(cx, &directory, &config, &recent);
     let reopened_visual = &mut VisualTestContext::from_window(reopened_handle, cx);
     reopened_visual.run_until_parked();
     reopened.read_with(reopened_visual, |view, _| {
@@ -3887,7 +3897,7 @@ fn browser_place_icons_coalesced_save_errors_and_stale_menu_are_bounded(cx: &mut
     let saved = hex_preferences::BrowserPlaces::new([path.clone()]).unwrap();
     hex_preferences::save(&config, &saved).unwrap();
     let (handle, editor) =
-        place_icon_preferences_window(cx, &config, &directory.0.join("recent.json"));
+        place_icon_preferences_window(cx, &directory, &config, &directory.0.join("recent.json"));
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.update(visual, |view, cx| {
@@ -3943,8 +3953,12 @@ fn browser_place_icons_coalesced_save_errors_and_stale_menu_are_bounded(cx: &mut
     visual.run_until_parked();
     editor.read_with(visual, |view, _| assert!(view.context_menu.is_none()));
     std::fs::write(&config, &corrupt).unwrap();
-    let (other_handle, other) =
-        place_icon_preferences_window(cx, &config, &directory.0.join("other-recent.json"));
+    let (other_handle, other) = place_icon_preferences_window(
+        cx,
+        &directory,
+        &config,
+        &directory.0.join("other-recent.json"),
+    );
     let other_visual = &mut VisualTestContext::from_window(other_handle, cx);
     other_visual.run_until_parked();
     let status_row = other_visual.debug_bounds("browser-places-status").unwrap();
@@ -4068,4 +4082,52 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
             );
         }
     }
+}
+
+#[gpui::test]
+fn browser_place_icons_preference_fixture_bounds_startup_before_workers(cx: &mut TestAppContext) {
+    let directory = PreferencesTestDirectory::new();
+    let config = directory.0.join("missing-browser.json");
+    let recent = directory.0.join("recent.json");
+    let (handle, editor) = place_icon_preferences_window(cx, &directory, &config, &recent);
+    // Check before parking/running any newly scheduled filesystem work.
+    editor.read_with(cx, |view, _| {
+        for path in [
+            &view.browser.home,
+            &view.browser.music,
+            &view.browser.directory,
+        ] {
+            assert!(
+                path.starts_with(&directory.0),
+                "startup browser root escaped private fixture: {path:?}"
+            );
+        }
+        assert_eq!(
+            view.browser.places,
+            vec![view.browser.music.clone(), view.browser.home.clone()]
+        );
+        assert_eq!(view.browser.preferences_path, config);
+    });
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.read_with(visual, |view, _| {
+        assert!(!view.browser.loading);
+        assert!(!view.browser.preferences_loading);
+        assert_eq!(view.browser.samples.catalog.entries().len(), 1);
+        assert!(
+            view.sample_roots()
+                .iter()
+                .all(|path| path.starts_with(&directory.0))
+        );
+        assert_eq!(view.browser.listing.as_ref().unwrap().entries.len(), 1);
+        assert_eq!(
+            view.browser.listing.as_ref().unwrap().entries[0].path,
+            view.browser.music.join("fixture.wav")
+        );
+    });
+    assert!(config.with_extension("samples-v1.db").is_file());
+    assert!(
+        !config.exists(),
+        "missing explicit preferences must not be manufactured"
+    );
 }

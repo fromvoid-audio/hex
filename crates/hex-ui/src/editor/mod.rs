@@ -793,6 +793,32 @@ impl EditorView {
         recent_projects_path: std::path::PathBuf,
         theme_preferences_path: std::path::PathBuf,
     ) -> Self {
+        Self::new_with_browser_paths(
+            window,
+            cx,
+            service,
+            output,
+            (
+                preferences_path,
+                recent_projects_path,
+                theme_preferences_path,
+            ),
+            #[cfg(all(test, feature = "ui-test-support"))]
+            None,
+        )
+    }
+
+    fn new_with_browser_paths(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        output: Result<crate::EditorAudio, String>,
+        paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+        #[cfg(all(test, feature = "ui-test-support"))] test_browser_home: Option<
+            std::path::PathBuf,
+        >,
+    ) -> Self {
+        let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
             Err(error) => (
@@ -907,7 +933,12 @@ impl EditorView {
             }
         });
         focus.focus(window);
-        let browser = browser::BrowserState::new(cx, preferences_path);
+        let browser = browser::BrowserState::new(
+            cx,
+            preferences_path,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            test_browser_home,
+        );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
