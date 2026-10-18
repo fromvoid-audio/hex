@@ -19,6 +19,9 @@ pub struct GestureKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GestureTarget {
+    TrackGain {
+        track: TrackId,
+    },
     DeviceParameter {
         device: DeviceId,
         parameter: ParameterId,
@@ -817,6 +820,7 @@ struct Active {
 
 #[derive(Clone, Copy)]
 enum ActiveKind {
+    TrackGain,
     Device {
         class: NativeDeviceClass,
         type_id: DeviceTypeId,
@@ -1091,6 +1095,11 @@ impl GestureMachine {
                             Some(second_value),
                         )
                     }
+                    GestureTarget::TrackGain { track } => (
+                        ActiveKind::TrackGain,
+                        ParameterValue::Float(static_track_gain(session, track)?),
+                        None,
+                    ),
                     GestureTarget::ReturnSend {
                         track,
                         return_track,
@@ -1216,6 +1225,9 @@ impl GestureMachine {
             .as_ref()
             .ok_or(SessionError::Invalid("device gesture is no longer active"))?;
         match (snapshot.target, active.kind) {
+            (GestureTarget::TrackGain { track }, ActiveKind::TrackGain) => {
+                static_track_gain(session, track)?;
+            }
             (
                 GestureTarget::DeviceParameterSnapshot { device },
                 ActiveKind::Device { class, type_id },
@@ -1412,6 +1424,9 @@ fn preview_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
     match target {
+        GestureTarget::TrackGain { track } => {
+            session.preview_track_gain(track, track_gain_value(value)?, previous)
+        }
         GestureTarget::DeviceParameter { device, parameter } => {
             session.preview_device_parameter(device, parameter, value, previous)
         }
@@ -1433,6 +1448,9 @@ fn commit_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
     match target {
+        GestureTarget::TrackGain { track } => {
+            session.commit_track_gain(track, track_gain_value(value)?, previous)
+        }
         GestureTarget::DeviceParameter { device, parameter } => {
             session.commit_device_parameter(device, parameter, value, previous)
         }
@@ -1490,6 +1508,33 @@ fn commit_pair_target(
         _ => Err(SessionError::Invalid(
             "paired values require a paired device gesture",
         )),
+    }
+}
+
+fn static_track_gain(session: &Session, track: TrackId) -> Result<f32, SessionError> {
+    if session.audio_mode() != crate::DocumentAudioMode::Resident {
+        return Err(SessionError::Invalid(
+            "held track gain requires resident audio mode",
+        ));
+    }
+    let source = session
+        .project()
+        .track(track)
+        .ok_or(SessionError::Invalid("track gain target no longer exists"))?;
+    if !source.gain_envelope().is_empty() || !source.gain_lane().spans().is_empty() {
+        return Err(SessionError::Invalid("track gain is owned by automation"));
+    }
+    let gain = source.gain();
+    if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+        return Err(SessionError::Invalid("gain must be finite and within 0..2"));
+    }
+    Ok(gain)
+}
+
+fn track_gain_value(value: ParameterValue) -> Result<f32, SessionError> {
+    match value {
+        ParameterValue::Float(gain) => Ok(gain),
+        _ => Err(SessionError::Invalid("track gain must be numeric")),
     }
 }
 

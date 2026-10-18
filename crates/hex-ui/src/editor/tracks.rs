@@ -322,6 +322,18 @@ impl EditorView {
             },
             cx,
         );
+        // The row separator is a background surface. Painting it after the
+        // clips would cover their bottom selection stroke at the row boundary.
+        clip_area = clip_area.child(
+            div()
+                .debug_selector(|| format!("lane-separator-{}", track_id.value()))
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(1.0))
+                .bg(rgb(theme::color(theme::PaletteRole::Border))),
+        );
         clip_area = clip_area.child(content);
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
@@ -680,16 +692,6 @@ impl EditorView {
                 }
             }
         }
-        clip_area = clip_area.child(
-            div()
-                .debug_selector(|| format!("lane-separator-{}", track_id.value()))
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(px(1.0))
-                .bg(rgb(theme::color(theme::PaletteRole::Border))),
-        );
         clip_area = clip_area
             .on_drop(cx.listener(move |view, drag: &ClipDrag, window, cx| {
                 view.drop_clip(drag, track_id, window, cx);
@@ -744,6 +746,7 @@ impl EditorView {
                 })
                 .into()
             });
+        let live_volume = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         let track_controls = div()
             .id(("arrangement-track-controls", track_id.value()))
             .debug_selector(move || format!("track-controls-{}", track_id.value()))
@@ -751,6 +754,7 @@ impl EditorView {
             .flex()
             .items_center()
             .gap_1()
+            .when(live_volume, |row| row.w_full().gap(px(1.0)))
             .child(
                 button(
                     "a",
@@ -762,58 +766,64 @@ impl EditorView {
                     view.show_gain_lane(track_id, window, cx);
                 })),
             )
-            .child(
-                button("+", "increase track gain", ("gain-up", track_id.value())).on_click(
-                    cx.listener(move |view, _, window, cx| {
-                        if view
-                            .state
-                            .as_ref()
-                            .and_then(|state| state.project.track(track_id))
-                            .is_some_and(|track| {
-                                !track.gain_envelope().is_empty()
-                                    || !track.gain_lane().spans().is_empty()
-                            })
-                        {
-                            view.show_gain_lane(track_id, window, cx);
-                        }
-                        view.gain_by(track_id, 0.1);
-                        cx.notify();
-                    }),
-                ),
-            )
-            .child(
-                button("−", "decrease track gain", ("gain-down", track_id.value())).on_click(
-                    cx.listener(move |view, _, window, cx| {
-                        if view
-                            .state
-                            .as_ref()
-                            .and_then(|state| state.project.track(track_id))
-                            .is_some_and(|track| {
-                                !track.gain_envelope().is_empty()
-                                    || !track.gain_lane().spans().is_empty()
-                            })
-                        {
-                            view.show_gain_lane(track_id, window, cx);
-                        }
-                        view.gain_by(track_id, -0.1);
-                        cx.notify();
-                    }),
-                ),
-            )
-            .child(
-                div()
-                    .w(px(34.0))
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(
-                        if track.gain_envelope().is_empty() && track.gain_lane().spans().is_empty()
-                        {
-                            format!("{:.0}%", track.gain() * 100.0)
-                        } else {
-                            "auto".into()
-                        },
-                    )),
-            )
+            .when(live_volume, |row| row.child(self.track_volume(track, cx)))
+            // VerifiedStreaming keeps its functional explicit controls until
+            // the typed transient-source route can make held drags audible.
+            .when(!live_volume, |row| {
+                row.child(
+                    button("+", "increase track gain", ("gain-up", track_id.value()))
+                        .debug_selector(move || format!("track-gain-up-{}", track_id.value()))
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            if view
+                                .state
+                                .as_ref()
+                                .and_then(|state| state.project.track(track_id))
+                                .is_some_and(|track| {
+                                    !track.gain_envelope().is_empty()
+                                        || !track.gain_lane().spans().is_empty()
+                                })
+                            {
+                                view.show_gain_lane(track_id, window, cx);
+                            }
+                            view.gain_by(track_id, 0.1);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    button("−", "decrease track gain", ("gain-down", track_id.value()))
+                        .debug_selector(move || format!("track-gain-down-{}", track_id.value()))
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            if view
+                                .state
+                                .as_ref()
+                                .and_then(|state| state.project.track(track_id))
+                                .is_some_and(|track| {
+                                    !track.gain_envelope().is_empty()
+                                        || !track.gain_lane().spans().is_empty()
+                                })
+                            {
+                                view.show_gain_lane(track_id, window, cx);
+                            }
+                            view.gain_by(track_id, -0.1);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .w(px(34.0))
+                        .text_xs()
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                        .child(theme::text(
+                            if track.gain_envelope().is_empty()
+                                && track.gain_lane().spans().is_empty()
+                            {
+                                format!("{:.0}%", track.gain() * 100.0)
+                            } else {
+                                "auto".into()
+                            },
+                        )),
+                )
+            })
             .child(
                 button(
                     "●",
@@ -824,6 +834,7 @@ impl EditorView {
                     },
                     ("track-mute", track_id.value()),
                 )
+                .debug_selector(move || format!("track-mute-{}", track_id.value()))
                 .text_color(rgb(if track.muted() {
                     theme::color(theme::PaletteRole::Primary)
                 } else {
@@ -840,6 +851,7 @@ impl EditorView {
                     "solo track · s · cmd+click additive",
                     ("track-solo", track_id.value()),
                 )
+                .debug_selector(move || format!("track-solo-{}", track_id.value()))
                 .text_color(rgb(if track.soloed() {
                     theme::color(theme::PaletteRole::Primary)
                 } else {
