@@ -716,11 +716,7 @@ impl VisualTestContext {
     pub fn rendered_border(
         &mut self,
         selector: &'static str,
-    ) -> Option<(
-        crate::Hsla,
-        crate::Edges<crate::ScaledPixels>,
-        Bounds<crate::ScaledPixels>,
-    )> {
+    ) -> Option<(crate::Hsla, crate::Edges<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
         self.update(|window, _| {
             let bounds = window.rendered_frame.debug_bounds.get(selector)?;
             let scaled = bounds.scale(window.scale_factor());
@@ -731,13 +727,7 @@ impl VisualTestContext {
                 .iter()
                 .rev()
                 .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
-                .map(|quad| {
-                    (
-                        quad.border_color,
-                        quad.border_widths,
-                        quad.content_mask.bounds,
-                    )
-                })
+                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
         })
     }
 
@@ -770,10 +760,7 @@ impl VisualTestContext {
     pub fn rendered_surface_geometry(
         &mut self,
         selector: &'static str,
-    ) -> Option<(
-        crate::Corners<crate::ScaledPixels>,
-        Bounds<crate::ScaledPixels>,
-    )> {
+    ) -> Option<(crate::Corners<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
         self.update(|window, _| {
             let bounds = window.rendered_frame.debug_bounds.get(selector)?;
             let scaled = bounds.scale(window.scale_factor());

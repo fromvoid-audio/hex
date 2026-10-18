@@ -413,7 +413,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                         && scaled.right() <= mask.right()
                         && scaled.top() >= mask.top()
                         && scaled.bottom() <= mask.bottom(),
-                    "all four painted strips inside actual ancestor mask"
+                    "all four painted strips inside actual ancestor mask: scaled={scaled:?} mask={mask:?}"
                 );
                 assert!(
                     current.bottom() > separator.top() && current.bottom() <= separator.bottom(),
