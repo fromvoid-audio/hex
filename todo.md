@@ -5015,6 +5015,17 @@ handlers unchanged. Native double-click behavior remains coordinator-serial.
   refusal; focused three-case real-worker regression passes d6babcc0. New
   dialogs defer and failed writes retire. Fresh final full CI remains pending.
 
+
+18 October 2026 — Pulse2732 / PR345: shared device header source places canonical
+bypass before name, removes movement buttons while retaining title drag reorder,
+orders Load↓/Save↑ before the far-right remove×, and uses the same leading-control
+frame API for Track/Return and specialized/descriptor panels. Rendered/header
+command/history regressions pass; the first full CI stopped on an older test
+expecting the removed movement button. That fixture now drives a real title drag
+and asserts its complete canonical drop request; fresh exact-source full CI is
+being run. Native
+Load dialog, glyph/input/compact layout acceptance remains coordinator-owned.
+
 ## one active browser source — pulse2727 / PR340, 18 october 2026
 
 Replace independently selected category/directory/Samples-root filters with one
@@ -5030,17 +5041,6 @@ or neutral shared-library implementation is claimed. Source checks and native
 coordinator-only acceptance recorded separately; inline tree2728 follows this
 checked/reviewed foundation.
 
-
-18 October 2026 — Pulse2732 / PR345: shared device header source places canonical
-bypass before name, removes movement buttons while retaining title drag reorder,
-orders Load↓/Save↑ before the far-right remove×, and uses the same leading-control
-frame API for Track/Return and specialized/descriptor panels. Rendered/header
-command/history regressions pass; the first full CI stopped on an older test
-expecting the removed movement button. That fixture now drives a real title drag
-and asserts its complete canonical drop request; fresh exact-source full CI is
-being run. Native
-Load dialog, glyph/input/compact layout acceptance remains coordinator-owned.
-
 ## command-d time range — pulse2759 / PR367, 18 october2026
 
 Arrangement Command-D uses existing atomic time-chunk copy at the range end,
@@ -5049,6 +5049,12 @@ and main-track scope. Successful selection feedback supports repeated copies;
 clipboard and other-editor shortcuts are preserved. Rendered key/real-worker
 regression covers one Undo/Redo and text focus. Exact source checks and native
 input acceptance remain pending; no installed app changes.
+
+- pulse2721 / pr337: focused Arrangement header Backspace removes the explicit
+  regular-track selection with canonical cleanup and one Undo/Redo. Model and
+  rendered key/real-worker regressions added; exact-source validation is recorded
+  in PR337. Native optimized physical header/clip/text/numeric acceptance remains
+  open through the coordinator; no installed-app change is implied.
 
 ## project bpm input — pulse2720 / pr336
 
