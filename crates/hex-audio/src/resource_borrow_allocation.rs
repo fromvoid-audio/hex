@@ -9,13 +9,17 @@ use hex_lattice_contract::{
 
 #[test]
 fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
-    sampler_filter_allocation_probe(false);
+    sampler_filter_allocation_probe(false, false);
 }
 #[test]
 fn sampler_lfo_filter_pair_runtime_queries_allocate_and_free_nothing() {
-    sampler_filter_allocation_probe(true);
+    sampler_filter_allocation_probe(true, false);
 }
-fn sampler_filter_allocation_probe(modulated: bool) {
+#[test]
+fn sampler_filter_envelope_pair_runtime_queries_allocate_and_free_nothing() {
+    sampler_filter_allocation_probe(false, true);
+}
+fn sampler_filter_allocation_probe(modulated: bool, enveloped: bool) {
     use hex_lattice::{
         NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
     };
@@ -25,13 +29,27 @@ fn sampler_filter_allocation_probe(modulated: bool) {
     let k = (std::f64::consts::PI / 8.0).tan();
     let norm = 1.0 / (1.0 + std::f64::consts::SQRT_2 * k + k * k);
     let mut history = [0.0; 4];
+    let mut integrators = [0.0; 2];
     let mut expected = [[0.0; 2]; 16];
     for age in 0..8 {
         let input = f64::from(mono[age % 4]);
         let [x1, x2, y1, y2] = history;
-        let output = k * k * norm * (input + 2.0 * x1 + x2)
-            - 2.0 * (k * k - 1.0) * norm * y1
-            - (1.0 - std::f64::consts::SQRT_2 * k + k * k) * norm * y2;
+        let output = if enveloped {
+            // Independent 2x2 nodal solve for the moving TPT integrators.
+            let frequency = 1000.0 * 2.0_f64.powf(age as f64 / 8.0);
+            let g = (std::f64::consts::PI * frequency / 8000.0).tan();
+            let matrix = [[1.0 + std::f64::consts::SQRT_2 * g, g], [-g, 1.0]];
+            let rhs = [g * input + integrators[0], integrators[1]];
+            let determinant = matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
+            let band = (rhs[0] * matrix[1][1] - matrix[0][1] * rhs[1]) / determinant;
+            let low = (matrix[0][0] * rhs[1] - rhs[0] * matrix[1][0]) / determinant;
+            integrators = [2.0 * band - integrators[0], 2.0 * low - integrators[1]];
+            low
+        } else {
+            k * k * norm * (input + 2.0 * x1 + x2)
+                - 2.0 * (k * k - 1.0) * norm * y1
+                - (1.0 - std::f64::consts::SQRT_2 * k + k * k) * norm * y2
+        };
         history = [input, x1, output, y1];
         expected[age] = if modulated {
             // At100 Hz /8kHz, the independent triangle's first8 frames are
@@ -62,7 +80,9 @@ fn sampler_filter_allocation_probe(modulated: bool) {
             pcm,
         }];
         let resources = BorrowedDeviceResources(&views);
-        let prepared = if modulated {
+        let prepared = if enveloped {
+            hex_engine::sampler_filter_envelope_runtime_for_allocation_probe(views[0], 8000)
+        } else if modulated {
             hex_engine::sampler_modulated_runtime_for_allocation_probe(views[0], 8000)
         } else {
             hex_engine::sampler_clean_filter_runtime_for_allocation_probe(views[0], 8000)
@@ -79,7 +99,7 @@ fn sampler_filter_allocation_probe(modulated: bool) {
         )
         .unwrap();
         eprintln!(
-            "SUPPORTED actual enabled clean-filter sampler lfo={modulated} Mono/Stereo pair rollback, PCM oracle and128 allocation queries"
+            "SUPPORTED actual enabled clean-filter sampler lfo={modulated} filter_envelope={enveloped} Mono/Stereo pair rollback, PCM oracle and128 allocation queries"
         );
         let sign = if matches!(pcm, DeviceResourcePcm::Mono(_)) {
             1.0

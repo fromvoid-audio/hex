@@ -53,6 +53,11 @@ pub mod parameter {
     pub const LFO_RETRIGGER: ParameterId = ParameterId::from_static(35);
     pub const LFO_AMPLITUDE: ParameterId = ParameterId::from_static(36);
     pub const LFO_PAN: ParameterId = ParameterId::from_static(37);
+    pub const FILTER_ENVELOPE: ParameterId = ParameterId::from_static(38);
+    pub const FILTER_ATTACK: ParameterId = ParameterId::from_static(39);
+    pub const FILTER_DECAY: ParameterId = ParameterId::from_static(40);
+    pub const FILTER_SUSTAIN: ParameterId = ParameterId::from_static(41);
+    pub const FILTER_RELEASE: ParameterId = ParameterId::from_static(42);
 }
 const fn float(
     id: ParameterId,
@@ -93,7 +98,7 @@ const fn choice(
     }
 }
 use parameter::*;
-static PARAMETERS: [ParameterDescriptor; 37] = [
+static PARAMETERS: [ParameterDescriptor; 42] = [
     choice(MODE, "mode", &["classic", "one-shot", "slice"]),
     boolean(REVERSE, "reverse"),
     float(ROOT, "root", 0.0, 127.0, Some("note"), 60.0),
@@ -164,6 +169,11 @@ static PARAMETERS: [ParameterDescriptor; 37] = [
     super::modulation::descriptors()[5],
     super::modulation::descriptors()[6],
     super::modulation::descriptors()[7],
+    super::filter_envelope::descriptors()[0],
+    super::filter_envelope::descriptors()[1],
+    super::filter_envelope::descriptors()[2],
+    super::filter_envelope::descriptors()[3],
+    super::filter_envelope::descriptors()[4],
 ];
 fn descriptor(id: ParameterId) -> Result<&'static ParameterDescriptor, Error> {
     PARAMETERS
@@ -241,6 +251,9 @@ impl NativeDeviceMetadata for SamplerMetadata {
         let DeviceStateRead::Sample(state) = DeviceStateRead::from_native(native)? else {
             return Ok(descriptor.default);
         };
+        if id.value() >= super::filter_envelope::FIRST {
+            return state.filter_envelope().read_parameter(id);
+        }
         if id.value() >= super::modulation::FIRST {
             return state.modulation().read_parameter(id);
         }
@@ -346,6 +359,9 @@ fn patch_authored(
 ) -> Result<(), Error> {
     if !enabled(state, id) {
         return Err(Error::InvalidParameterValue);
+    }
+    if id.value() >= super::filter_envelope::FIRST {
+        return state.filter_envelope.patch_parameter(id, value);
     }
     if id.value() >= super::modulation::FIRST {
         return state.modulation.patch_parameter(id, value);

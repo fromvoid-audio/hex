@@ -4,9 +4,9 @@ use super::*;
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sampler");
-pub const STATE_VERSION: u32 = 4;
+pub const STATE_VERSION: u32 = 5;
 pub const SOURCE_SLOT: u32 = 1;
-const PREFIX: usize = 112 + filter::BYTES + modulation::BYTES;
+const PREFIX: usize = 112 + filter::BYTES + modulation::BYTES + filter_envelope::BYTES;
 mod read;
 mod slice_edit;
 pub use read::{DeviceStateRead, SamplerReadMode, SamplerStateRead};
@@ -114,7 +114,11 @@ pub fn prepare_runtime_on_control(
         .map_err(|_| Error::AssetResourcesUnavailable)?
         .prepare_runtime_on_control(usize::from(authored.voices), max_events, context.tuning)
         .map_err(|_| Error::InvalidParameterValue)?
-        .with_filter_on_control(authored.filter, context.sample_rate)?
+        .with_filter_envelope_on_control(
+            authored.filter,
+            authored.filter_envelope,
+            context.sample_rate,
+        )?
         .with_modulation_on_control(authored.modulation)
 }
 
@@ -151,6 +155,7 @@ pub struct SamplerState {
     pub voices: u8,
     pub filter: FilterSettings,
     pub modulation: ModulationSettings,
+    pub filter_envelope: FilterEnvelopeSettings,
 }
 impl SamplerState {
     /// Source replacement starts with the whole original source and no loop.
@@ -174,6 +179,7 @@ impl SamplerState {
             voices: 16,
             filter: FilterSettings::default(),
             modulation: ModulationSettings::default(),
+            filter_envelope: FilterEnvelopeSettings::default(),
         };
         state.validate()?;
         Ok(state)
@@ -210,6 +216,7 @@ impl SamplerState {
     fn validate(&self) -> Result<(), Error> {
         self.filter.validate()?;
         self.modulation.validate()?;
+        self.filter_envelope.validate()?;
         if !(1..=MAX_SAMPLER_RUNTIME_VOICES as u8).contains(&self.voices) {
             return Err(Error::InvalidParameterValue);
         }
@@ -278,6 +285,7 @@ impl SamplerState {
         }
         self.filter.append(&mut bytes);
         self.modulation.append(&mut bytes);
+        self.filter_envelope.append(&mut bytes);
         for &start in starts {
             bytes.extend_from_slice(&(start as u32).to_le_bytes());
         }

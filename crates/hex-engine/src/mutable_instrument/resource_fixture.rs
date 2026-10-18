@@ -13,6 +13,7 @@ pub fn sampler_clean_filter_runtime_for_allocation_probe(
         view,
         output_rate,
         hex_devices::sampler::ModulationSettings::default(),
+        hex_devices::sampler::FilterEnvelopeSettings::default(),
     )
 }
 /// Actual enabled amplitude/pan LFO and clean filter; headless allocation only.
@@ -34,12 +35,40 @@ pub fn sampler_modulated_runtime_for_allocation_probe(
             .patch_parameter(id, value)
             .map_err(|_| hex_devices::Invalid("sampler modulation allocation fixture refused"))?;
     }
-    filtered_sampler_fixture(view, output_rate, modulation)
+    filtered_sampler_fixture(
+        view,
+        output_rate,
+        modulation,
+        hex_devices::sampler::FilterEnvelopeSettings::default(),
+    )
+}
+/// Actual moving filter-envelope coefficient lookup; allocation fixture only.
+pub fn sampler_filter_envelope_runtime_for_allocation_probe(
+    view: hex_lattice::DeviceResourceView<'_>,
+    output_rate: u32,
+) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, hex_devices::Invalid> {
+    use hex_devices::sampler::metadata::parameter::*;
+    use hex_lattice_contract::ParameterValue;
+    let mut envelope = hex_devices::sampler::FilterEnvelopeSettings::default();
+    for (id, value) in [(FILTER_ENVELOPE, 12.0), (FILTER_ATTACK, 0.001)] {
+        envelope
+            .patch_parameter(id, ParameterValue::Float(value))
+            .map_err(|_| {
+                hex_devices::Invalid("sampler filter envelope allocation fixture refused")
+            })?;
+    }
+    filtered_sampler_fixture(
+        view,
+        output_rate,
+        hex_devices::sampler::ModulationSettings::default(),
+        envelope,
+    )
 }
 fn filtered_sampler_fixture(
     view: hex_lattice::DeviceResourceView<'_>,
     output_rate: u32,
     modulation: hex_devices::sampler::ModulationSettings,
+    envelope: hex_devices::sampler::FilterEnvelopeSettings,
 ) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, hex_devices::Invalid> {
     use hex_devices::sampler::{
         metadata::parameter,
@@ -53,6 +82,7 @@ fn filtered_sampler_fixture(
     };
     state.voices = 4;
     state.modulation = modulation;
+    state.filter_envelope = envelope;
     state
         .filter
         .patch_parameter(parameter::FILTER_ENABLED, ParameterValue::Bool(true))

@@ -7,6 +7,7 @@
 mod binding;
 mod envelope;
 mod filter;
+mod filter_envelope;
 pub mod metadata;
 mod modulation;
 mod plan;
@@ -16,6 +17,7 @@ mod voice;
 pub use binding::{BorrowedSamplerVoice, BoundSamplerPlan};
 pub use envelope::Envelope;
 pub use filter::FilterSettings;
+pub use filter_envelope::FilterEnvelopeSettings;
 pub use modulation::ModulationSettings;
 pub use plan::{PreparedSamplerPlan, SampleChannels, SampleShape};
 pub use runtime::{MAX_SAMPLER_RUNTIME_VOICES, PreparedSamplerRuntime};

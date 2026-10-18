@@ -89,12 +89,13 @@ impl SamplerRuntime {
                     voice.modulation_phase.advance(delta);
                 }
                 let gate = voice.gate.unwrap_or(u64::MAX);
-                let sample = if let Some(filter) = self.prepared.filter {
+                let sample = if let Some(filter) = self.prepared.filter.as_ref() {
                     let Some(input) = note.interpolated_source(view.pcm, voice.age) else {
                         continue;
                     };
+                    let coefficients = filter.frame(voice.age, gate);
                     let filtered = std::array::from_fn(|channel| {
-                        voice.filter[channel].process(input[channel], filter)
+                        voice.filter[channel].process(input[channel], coefficients)
                     });
                     note.apply_amplitude(filtered, note.envelope_gain(voice.age, gate))
                 } else {

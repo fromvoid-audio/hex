@@ -214,6 +214,13 @@ pub(crate) struct Frame {
     cascade: f64,
 }
 impl Frame {
+    pub(crate) const fn prepared_integrator(self) -> f64 {
+        self.g
+    }
+    /// Install an already control-prepared coefficient, never design one here.
+    pub(crate) const fn with_prepared_integrator(self, g: f64) -> Self {
+        Self { g, ..self }
+    }
     pub(crate) fn audit_scalar_storage(&self) {
         let Self {
             g,

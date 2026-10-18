@@ -615,7 +615,7 @@ musical workflow above remain the deliverable.
 
 ## clean sampler filter
 
-Sampler's current authored format is version4. It retains bounded clean filter
+Sampler's current authored format is version5. It retains bounded clean filter
 settings to version2's controls; historical alpha payloads are explicitly refused
 rather than converted. Current read/patch/save and source replacement preserve
 the filter, source binding and host gains. Empty devices still have no invented
@@ -721,3 +721,32 @@ unavailable registry type. Both layouts now cover bypass silence, malformed
 state/missing-resource refusal, Undo of invalid replacement, then re-enable with
 the same PCM address and independent playback after editor/bank retirement.
 This fixes headless preparation behavior; it opens no registry/native admission.
+
+## sampler filter envelope
+
+The current format adds a separate linear filter ADSR and bipolar envelope
+amount (-48..48st). Attack, decay and release accept0..60s; sustain is0..1.
+Default amount0 preserves the existing enabled-filter PCM exactly. The envelope
+uses each voice's actual output age and gate, so it follows retrigger, Gate versus
+Trigger and loop behavior without transposing or copying the original sample.
+The amp envelope still controls voice lifetime; a filter release does not invent
+an additional tail after the voice ends. All five controls round-trip through the
+same metadata and preserve sample binding and host gains on edits/replacement.
+Unsupported historical alpha state versions return explicit errors, not migration.
+
+Control preparation builds257 scalar integrator coefficients for the authored
+cutoff/depth/rate law. Callback processing only interpolates that fixed lookup,
+clamped to exact precomputed20hz/rate-ceiling bounds, and runs the existing shared
+clean filter kernel. Packing lookup values as f32 keeps the actual prepared
+factory within the existing4KiB limit; no cap, heap owner, PCM derivative or
+callback coefficient design was added. The compact filter control adapter keeps
+the same shared filter codec, float bits, validation and continuation flag.
+
+Tests use an independent time-varying2x2 nodal PCM oracle for both depth signs,
+Mono/Stereo, ADSR/release and asymmetric lanes; exact partition/rollback/reset
+and amount0 identity; bounded cutoff error across rates/extremes; and strict
+current metadata/binding round-trips. An enabled-envelope128-query pair probe
+checks real PCM and zero total/net allocations/frees. This remains a source/DSP
+component: the functional panel, live parameter transitions, remaining modulation
+and Warp, actual admitted loading/registration and the complete musical workflow
+are still open; native listening/reference parity is not claimed.

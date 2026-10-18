@@ -56,6 +56,7 @@ pub struct SamplerStateRead<'a> {
     bytes: &'a [u8],
     filter: FilterSettings,
     modulation: ModulationSettings,
+    filter_envelope: FilterEnvelopeSettings,
 }
 impl<'a> SamplerStateRead<'a> {
     pub fn from_native(state: &'a NativeDeviceState) -> Result<Self, Error> {
@@ -84,7 +85,12 @@ impl<'a> SamplerStateRead<'a> {
         let read = Self {
             bytes,
             filter: FilterSettings::decode(&bytes[112..112 + filter::BYTES])?,
-            modulation: ModulationSettings::decode(&bytes[112 + filter::BYTES..PREFIX])?,
+            modulation: ModulationSettings::decode(
+                &bytes[112 + filter::BYTES..112 + filter::BYTES + modulation::BYTES],
+            )?,
+            filter_envelope: FilterEnvelopeSettings::decode(
+                &bytes[112 + filter::BYTES + modulation::BYTES..PREFIX],
+            )?,
         };
         let loop_region = Region {
             start: read.frame(16),
@@ -203,6 +209,9 @@ impl<'a> SamplerStateRead<'a> {
     pub fn filter(self) -> FilterSettings {
         self.filter
     }
+    pub fn filter_envelope(self) -> FilterEnvelopeSettings {
+        self.filter_envelope
+    }
     fn settings(self, starts: &[usize]) -> Settings<'_> {
         Settings {
             region: self.region(),
@@ -258,6 +267,7 @@ impl<'a> SamplerStateRead<'a> {
             one_shot_fades_seconds: self.one_shot_fades_seconds(),
             filter: self.filter,
             modulation: self.modulation,
+            filter_envelope: self.filter_envelope,
         })
     }
 }

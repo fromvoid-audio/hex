@@ -27,7 +27,7 @@ pub struct PreparedSamplerRuntime {
     tail: u64,
     velocity_amount: f64,
     max_events: usize,
-    filter: Option<crate::operator_filter::Frame>,
+    filter: Option<super::filter::PreparedFilter>,
     modulation: ModulationSettings,
     output_rate: u32,
 }
@@ -93,13 +93,21 @@ impl PreparedSamplerRuntime {
             output_rate: 48_000,
         })
     }
+    #[cfg(test)]
     pub(super) fn with_filter_on_control(
-        mut self,
+        self,
         filter: FilterSettings,
         rate: u32,
     ) -> Result<Self, hex_lattice_contract::DeviceContractError> {
-        let frame = filter.prepare(rate)?;
-        self.filter = (frame.wet != 0.0).then_some(frame);
+        self.with_filter_envelope_on_control(filter, FilterEnvelopeSettings::default(), rate)
+    }
+    pub(super) fn with_filter_envelope_on_control(
+        mut self,
+        filter: FilterSettings,
+        envelope: FilterEnvelopeSettings,
+        rate: u32,
+    ) -> Result<Self, hex_lattice_contract::DeviceContractError> {
+        self.filter = super::filter::PreparedFilter::prepare(filter, envelope, rate)?;
         Ok(self)
     }
     pub(super) fn with_modulation_on_control(
@@ -431,6 +439,8 @@ impl MutableInstrumentRuntime for SamplerRuntime {
     }
 }
 
+#[cfg(test)]
+mod filter_envelope_tests;
 #[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
