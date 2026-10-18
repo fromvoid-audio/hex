@@ -5106,6 +5106,17 @@ Dedicated merger owns final prospective full CI/integration/merge. Optimized nat
 availability/query and unchanged audition/drag acceptance remain coordinator-owned;
 no installed app or user files changed during this source work.
 
+### pulse2753 — bounded operator tab fixture
+
+The Operator Tab focus regression now uses private disposable browser/preferences/
+cache inputs before discovery starts, retaining its entire original traversal and
+project-state assertion body. Missing/saved-place variants pass at checkpoint
+ac4807f4; an unrelated disposable-root negative control fails both isolation
+assertions and is restored. See [fixture contract](docs/operator-tab-fixture.md)
+for original failed/green/control evidence and native limits. Canonical PR363;
+final focused checks and dedicated-merger prospective-tree full CI remain
+separate, with no production browser/Tab/audition or installed-app change.
+
 ### inline-tree refresh of query-hidden expansions — pulse2728 / PR341
 
 Returned review PRRT_kwDOVB_C-s6trg4M reproduced on canonical29d97330: refresh during
