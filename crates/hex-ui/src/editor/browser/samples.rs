@@ -195,13 +195,21 @@ impl EditorView {
             .browser
             .preferences_path
             .with_extension("samples-v1.db");
+        #[cfg(test)]
+        let test_environment = Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             if load {
                 let path = database.clone();
+                #[cfg(test)]
+                let load_environment = Arc::clone(&test_environment);
                 let cached = cx
                     .background_executor()
-                    .spawn(async move { SampleCatalog::load(&path) })
+                    .spawn(async move {
+                        #[cfg(test)]
+                        let _test_environment = load_environment;
+                        SampleCatalog::load(&path)
+                    })
                     .await;
                 if this
                     .update(cx, |view, cx| {
@@ -232,7 +240,13 @@ impl EditorView {
                 .background_executor()
                 .spawn(async move {
                     let scan = scan_samples(&scan_roots);
+                    #[cfg(test)]
+                    let gate = test_environment.before_catalog_save().await;
                     let saved = scan.catalog.save(&database);
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        gate.did_save(saved.is_ok(), test_environment.root().is_dir());
+                    }
                     (scan, saved)
                 })
                 .await;

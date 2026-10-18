@@ -5230,3 +5230,13 @@ covers long Place names, zero label space, both settings states and resize back
 to normal; existing selection/hover/focus/audition regressions remain applicable.
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
+
+- 18 October 2026 — Pulse2808 / PR414: common cfg(test) editor resolver allocates
+  unique private Home/Music/config before discovery, preserving explicit fixture
+  paths; no process environment or application feature-only behavior change.
+  Arc guards live in actual inner filesystem jobs, and owned-root cleanup is off
+  the UI thread after the last guard. Original ordinary-constructor RED configured
+  /home/agent. Five new regressions cover two-editor startup/catalog isolation,
+  missing-Music private fallback, explicit missing/corrupt/populated preferences,
+  and a real held catalog save after actual view release then cleanup. Session
+  worker joining/native delivery are not claimed; final candidate CI belongs to merger.
