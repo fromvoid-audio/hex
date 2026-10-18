@@ -56,6 +56,21 @@ fn header_backspace_removes_selected_tracks_and_restores_contents_in_one_undo(
         let imported = next(&service);
         let audio = imported.state.project.tracks()[0].id();
         service
+            .submit(Request::AddNativeDevice {
+                track: audio,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(
+                    hex_engine::native_device_catalog()
+                        .unwrap()
+                        .remove(0)
+                        .type_id,
+                ),
+                before: None,
+            })
+            .unwrap();
+        let with_device = next(&service);
+        let device = with_device.state.project.track(audio).unwrap().devices()[0].id();
+        service
             .submit(Request::Edit(Command::AddMidiTrack {
                 name: "midi".into(),
             }))
@@ -78,6 +93,25 @@ fn header_backspace_removes_selected_tracks_and_restores_contents_in_one_undo(
             .unwrap();
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
+        header(&mut visual, audio, Modifiers::default());
+        // A real device numeric field takes focus from the selected header.
+        let numeric = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-1-value", device.value()).into_boxed_str(),
+            ))
+            .expect("utility gain numeric field");
+        visual.simulate_click(numeric.center(), Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("12");
+        visual.simulate_keystrokes("backspace");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(
+                !view.edit_pending(),
+                "numeric Backspace must not submit a track edit"
+            );
+        });
+        visual.simulate_keystrokes("escape");
         header(&mut visual, audio, Modifiers::default());
         if multiple {
             header(
@@ -116,4 +150,71 @@ fn header_backspace_removes_selected_tracks_and_restores_contents_in_one_undo(
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
         });
     }
+}
+
+#[gpui::test]
+fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut TestAppContext) {
+    use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
+    use std::sync::Arc;
+    cx.update(crate::editor::bind_editor_keys);
+    let (project, track, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    // Platform-toggle off the only selected header: focus alone cannot delete.
+    header(&mut visual, track, Modifiers::default());
+    header(
+        &mut visual,
+        track,
+        Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+    );
+    visual.simulate_keystrokes("backspace");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.selected_track_ids().is_empty());
+        assert!(view.last_enqueued_edit.is_none());
+    });
+    header(&mut visual, track, Modifiers::default());
+    visual.simulate_keystrokes("cmd-r");
+    visual.simulate_input("draft");
+    visual.simulate_keystrokes("backspace");
+    editor.read_with(&visual, |view, cx| {
+        assert!(view.track_name.edit.is_some());
+        assert_eq!(
+            view.track_name
+                .edit
+                .as_ref()
+                .unwrap()
+                .input
+                .read(cx)
+                .content,
+            "draf"
+        );
+        assert!(view.last_enqueued_edit.is_none());
+    });
+    visual.simulate_keystrokes("escape");
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window))
+    });
+    visual.simulate_input("abc");
+    visual.simulate_keystrokes("backspace");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "ab");
+        assert!(view.last_enqueued_edit.is_none());
+    });
+    let b = visual
+        .debug_bounds(Box::leak(
+            format!("clip-name-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(b.center(), Modifiers::default());
+    visual.simulate_keystrokes("backspace");
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            matches!(view.last_enqueued_edit,Some(Command::RemoveClip(id)) if id==clip),
+            "clip focus keeps clip deletion"
+        );
+    });
 }

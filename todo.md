@@ -5007,3 +5007,9 @@ and main-track scope. Successful selection feedback supports repeated copies;
 clipboard and other-editor shortcuts are preserved. Rendered key/real-worker
 regression covers one Undo/Redo and text focus. Exact source checks and native
 input acceptance remain pending; no installed app changes.
+
+- pulse2721 / pr337: focused Arrangement header Backspace removes the explicit
+  regular-track selection with canonical cleanup and one Undo/Redo. Model and
+  rendered key/real-worker regressions added; exact-source validation is recorded
+  in PR337. Native optimized physical header/clip/text/numeric acceptance remains
+  open through the coordinator; no installed-app change is implied.
