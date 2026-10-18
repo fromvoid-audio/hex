@@ -35,7 +35,6 @@ fn frequencies(state: &EqState, rate: u32) -> Vec<f32> {
 
 pub(super) fn curves(authored: &NativeDeviceState, state: &EqState, rate: u32) -> Option<Curves> {
     let frequencies = frequencies(state, rate);
-    let upper = (rate as f32 * 0.49).min(20000.0);
     let response =
         hex_engine::native_effect_frequency_response(authored, rate, &frequencies).ok()??;
     Some(std::array::from_fn(|channel| {
@@ -44,7 +43,7 @@ pub(super) fn curves(authored: &NativeDeviceState, state: &EqState, rate: u32) -
             .zip(&response)
             .map(|(frequency, m)| {
                 [
-                    ((frequency / 20.0).ln() / (upper / 20.0).ln()).clamp(0.0, 1.0),
+                    super::axes::x(*frequency, rate),
                     ((m[channel].max(0.00001).log10() * 20.0 + 24.0) / 48.0).clamp(0.0, 1.0),
                 ]
             })
