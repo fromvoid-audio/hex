@@ -480,6 +480,8 @@ impl EditorView {
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
             let path = place.clone();
             let icon_path = place.clone();
+            let row_bounds = Rc::new(std::cell::Cell::new(None::<gpui::Bounds<gpui::Pixels>>));
+            let measured_bounds = Rc::clone(&row_bounds);
             let name = if *place == self.browser.music {
                 "music"
             } else if *place == self.browser.home {
@@ -497,6 +499,7 @@ impl EditorView {
             );
             sidebar = sidebar.child(
                 div()
+                    .relative()
                     .id(("browser-place", index))
                     .debug_selector(move || format!("browser-place-{index}"))
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
@@ -530,13 +533,23 @@ impl EditorView {
                         cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                             view.open_browser_place_icons(
                                 icon_path.clone(),
-                                event.position,
+                                row_bounds.get().map_or(event.position, |bounds| {
+                                    gpui::point(bounds.left(), bounds.bottom())
+                                }),
                                 window,
                                 cx,
                             );
                             window.prevent_default();
                             cx.stop_propagation();
                         }),
+                    )
+                    .child(
+                        canvas(
+                            move |bounds, _, _| measured_bounds.set(Some(bounds)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
                     )
                     .child(icon)
                     .child(

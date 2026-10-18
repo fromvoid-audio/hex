@@ -5183,6 +5183,18 @@ integration/full checks/merge. Native optimized picker/font/reopen acceptance
 remains open. PR #400 mouse-search diagnostics are frozen separately; this work
 does not claim to resolve the native focus report.
 
+## Place icon context grid — pulse2826 / PR430, 18 october 2026
+
+Reused merged326 path-keyed bundled icon persistence and shared popup. Custom
+Place right-click now anchors to the row, presents explicit Default Icon/reset
+and seven compact grid cells with current/hover/keyboard states and name tooltips.
+Normal track/clip/device list popups retain their layout. Actual pointer choices,
+keyboard grid navigation, same-named paths, compact geometry, reset/reopen and
+prior text/non-text focus regression cover the flow; original missing-grid red
+is retained. Home/Music and Library/Collections remain outside current custom
+identity support. Sole merger owns full prospective checks/integration; native
+physical appearance/accessibility/relaunch acceptance remains open.
+
 ## consistent live input casing — pulse2810 / PR416, 18 october 2026
 
 Actual track rename shaped uppercase while editing and lowercase after commit.
