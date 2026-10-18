@@ -24,6 +24,7 @@ struct PreparedTrackInstrumentConfig {
     track: TrackId,
     config: Option<Box<dyn PreparedNativeInstrument>>,
     device_id: Option<DeviceId>,
+    tuning_identity: crate::shared_analytic::TuningIdentity,
     state: Option<hex_lattice_contract::NativeDeviceState>,
     bypassed: bool,
     note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
@@ -135,6 +136,7 @@ pub struct PreparedSessionMidiClip {
     instrument: Arc<PreparedMidiInstrumentTemplate>,
     instrument_id: Option<DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
+    tuning_identity: crate::shared_analytic::TuningIdentity,
     instrument_enabled: bool,
     // Registry declarations affect event/voice admission even when the saved
     // device identity and state are unchanged, so they are part of template
@@ -244,7 +246,8 @@ impl PreparedSessionMidiClip {
     }
 
     pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
-        self.instrument_id == other.instrument_id
+        self.tuning_identity == other.tuning_identity
+            && self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
             && self.instrument_enabled == other.instrument_enabled
             && self.mutable_limits == other.mutable_limits
@@ -472,7 +475,14 @@ impl PreparedSessionInventory {
             let config = slot
                 .map(|device| {
                     instrument_registry
-                        .prepare_instrument(device.state(), project.sample_rate())
+                        .prepare_instrument(
+                            device.state(),
+                            &hex_lattice::DevicePreparationContext {
+                                sample_rate: project.sample_rate(),
+                                tuning: shared_contexts.tuning(),
+                                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                            },
+                        )
                         .map_err(|_| crate::Invalid("track instrument state is unsupported"))
                 })
                 .transpose()?;
@@ -510,6 +520,7 @@ impl PreparedSessionInventory {
                 track: track.id(),
                 config,
                 device_id: slot.map(|device| device.id()),
+                tuning_identity: shared_contexts.tuning_identity(),
                 state: slot.map(|device| device.state().clone().without_host_gains()),
                 bypassed: slot.is_some_and(hex_project::Device::bypassed),
                 note_bank: None,
@@ -568,6 +579,7 @@ impl PreparedSessionInventory {
                         && old.source_identity == clip.source_identity()
                         && old.instrument_id == config.device_id
                         && old.instrument_state == config.state
+                        && old.tuning_identity == config.tuning_identity
                         && old.instrument_enabled == enabled
                         && old.instrument.note_bank().context_matches(shared_context)
                 });
@@ -712,6 +724,7 @@ impl PreparedSessionInventory {
                                 clip.track == config.track
                                     && clip.instrument_id == config.device_id
                                     && clip.instrument_state == config.state
+                                    && clip.tuning_identity == config.tuning_identity
                                     && clip.instrument_enabled == enabled
                             })
                     })
@@ -736,6 +749,7 @@ impl PreparedSessionInventory {
                                 clip.track == config.track
                                     && clip.instrument_id == config.device_id
                                     && clip.instrument_state == config.state
+                                    && clip.tuning_identity == config.tuning_identity
                                     && clip.instrument_enabled == enabled
                             })
                             .map(|clip| Arc::clone(clip.instrument.note_bank()))
@@ -1124,6 +1138,23 @@ impl PreparedSessionInventory {
     }
 
     /// MIDI templates sorted by globally unique clip ID.
+    pub(crate) fn tuning_source_facts_match(&self, other: &Self) -> bool {
+        self.midi_clips.len() == other.midi_clips.len()
+            && self.routed_midi_clips.len() == other.routed_midi_clips.len()
+            && self
+                .midi_clips
+                .iter()
+                .zip(&other.midi_clips)
+                .chain(self.routed_midi_clips.iter().zip(&other.routed_midi_clips))
+                .all(|(a, b)| {
+                    a.id == b.id
+                        && a.scene == b.scene
+                        && a.source_content_matches(b)
+                        && a.instrument_id == b.instrument_id
+                        && a.instrument_state == b.instrument_state
+                        && a.instrument_enabled == b.instrument_enabled
+                })
+    }
     pub fn midi_clips(&self) -> &[PreparedSessionMidiClip] {
         &self.midi_clips
     }

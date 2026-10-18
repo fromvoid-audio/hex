@@ -272,7 +272,7 @@ impl EditorView {
         else {
             return false;
         };
-        let handle = self.track_scroll.0.borrow().base_handle.clone();
+        let handle = self.track_scroll.clone();
         let offset = handle.offset();
         let max_offset = handle.max_offset();
         let Some(next_y) = next_track_offset(

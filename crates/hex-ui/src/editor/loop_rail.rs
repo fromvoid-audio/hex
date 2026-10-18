@@ -412,7 +412,7 @@ pub(super) fn view(
                     .inset_0(),
                 ),
         )
-        .child(div().w(px(super::tracks::TRACK_HEADER_WIDTH)).h_full());
+        .child(div().w(px(view.track_header_width())).h_full());
     #[cfg(feature = "ui-test-support")]
     let rail = rail.debug_selector(|| "arrangement-loop-rail-row".into());
     rail

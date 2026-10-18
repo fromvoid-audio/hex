@@ -1,5 +1,64 @@
 use super::*;
 use std::sync::atomic::Ordering;
+
+#[test]
+fn unresolved_device_asset_resources_refuse_actual_preparation_without_committing_history() {
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    for bypassed in [false, true] {
+        let (mut session, _, previous) = fixture();
+        let (Created::Track(track), previous) = session
+            .command_prepared_revision(
+                Command::AddMidiTrack {
+                    name: "unused instrument".into(),
+                },
+                Some(&previous),
+            )
+            .unwrap()
+        else {
+            panic!("instrument track")
+        };
+        let device = session
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let (_, previous) = session
+            .command_prepared_revision(
+                Command::SetDeviceBypass { device, bypassed },
+                Some(&previous),
+            )
+            .unwrap();
+        let asset = session.project().assets().next().unwrap().id();
+        let before = session.project().snapshot();
+        let history = (session.can_undo(), session.can_redo());
+        let resident_frames = session.resident_frames;
+        let state = session
+            .project()
+            .device(device)
+            .unwrap()
+            .state()
+            .clone()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(asset.value()).unwrap(),
+            }])
+            .unwrap();
+        let result = session.command_prepared_revision(
+            Command::ReplaceDeviceState { device, state },
+            Some(&previous),
+        );
+        assert!(
+            result.is_err(),
+            "unused/bypassed slots still require admitted resources"
+        );
+        assert_eq!(session.project().snapshot(), before);
+        assert_eq!((session.can_undo(), session.can_redo()), history);
+        assert_eq!(session.resident_frames, resident_frames);
+    }
+}
+
 fn fixture() -> (
     Session,
     hex_project::ClipId,
@@ -22,6 +81,7 @@ fn fixture() -> (
         source_sample_rate: 16_000,
         source_frames: 8_000,
         conversion_version: hex_project::IDENTITY_CONVERSION,
+        source_audio: audio.clone(),
         audio,
         waveform,
     };
@@ -97,4 +157,25 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
     let mut actual = [[0.0; 2]; 31];
     renderer.render(&mut actual).unwrap();
     assert!(actual.iter().any(|frame| frame[0] != 0.0));
+}
+
+#[test]
+fn excessive_stretch_is_refused_before_project_or_undo_commit() {
+    let (mut session, clip, previous) = fixture();
+    let before = session.project().snapshot();
+    let history = (session.can_undo(), session.can_redo());
+    let result = session.command_prepared_revision(
+        Command::StretchAudioClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            frame: 80_000,
+        },
+        Some(&previous),
+    );
+    assert!(
+        result.is_err(),
+        "tenfold output exceeds the existing warp ratio limit"
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!((session.can_undo(), session.can_redo()), history);
 }

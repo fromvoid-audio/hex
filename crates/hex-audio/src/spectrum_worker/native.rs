@@ -6,6 +6,7 @@ pub(crate) struct NativeSpectrumIdentity {
     capture_buffer: usize,
     stop: usize,
     pub(super) sample_rate: u32,
+    project: Option<(usize, usize)>,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct NativeSpectrumReceipt {
@@ -18,6 +19,8 @@ impl NativeSpectrumReceipt {
         stop: &Arc<AtomicBool>,
         core: &SpectrumCore,
         sample_rate: u32,
+        project_capture: Option<&project::ProjectCapture>,
+        project_worker: Option<&project::ProjectWorker>,
     ) -> Option<Self> {
         use crate::native_callback_owner::ChannelStorage;
         // Capture and Reader inline values are already in their actual callback
@@ -25,13 +28,21 @@ impl NativeSpectrumReceipt {
         let data_bytes = core
             .data_bytes()?
             .checked_add(std::mem::size_of::<Option<SpectrumReaper>>())?;
-        let storage = ChannelStorage::ring(producer.buffer())?
+        let mut storage = ChannelStorage::ring(producer.buffer())?
             .plus(ChannelStorage::paired_payload(stop.as_ref()))?
             .plus(ChannelStorage {
                 data_bytes,
                 shared_groups: 1,
                 shared_handles: 2,
             })?;
+        let project = match (project_capture, project_worker) {
+            (Some(capture), Some(worker)) => {
+                storage = storage.plus(worker.storage(capture)?)?;
+                Some(worker.ring_identity(capture)?)
+            }
+            (None, None) => None,
+            _ => return None,
+        };
         // The std result channel is one bounded RESOURCE group with its actual
         // sender/receiver, not an estimate of its opaque allocation layout.
         Some(Self {
@@ -39,6 +50,7 @@ impl NativeSpectrumReceipt {
                 capture_buffer: producer.buffer() as *const _ as usize,
                 stop: Arc::as_ptr(stop) as usize,
                 sample_rate,
+                project,
             },
             storage,
         })
@@ -51,10 +63,12 @@ impl SpectrumCapture {
             next_sequence: _,
             exhausted: _,
             native,
+            project,
         } = self;
         let receipt = (*native)?;
-        (receipt.identity.capture_buffer == producer.buffer() as *const _ as usize)
-            .then_some(receipt)
+        (receipt.identity.capture_buffer == producer.buffer() as *const _ as usize
+            && receipt.identity.project == project.as_ref().map(|project| project.ring_identity()))
+        .then_some(receipt)
     }
 }
 impl SpectrumReader {
@@ -63,8 +77,9 @@ impl SpectrumReader {
             results: _,
             latest: _,
             native,
+            project,
         } = self;
-        *native
+        native.filter(|identity| identity.project == project.as_ref().map(|p| p.ring_identity()))
     }
 }
 impl SpectrumReaper {
@@ -90,17 +105,24 @@ impl SpectrumCore {
             kernel_rate: _,
             rolling,
             ordered,
+            input_rolling,
+            input_ordered,
             write_index: _,
             filled: _,
             last_sequence: _,
             latest_stamp: _,
             captured_at: _,
             last_analysis_at: _,
+            output_envelope: _,
+            input_envelope: _,
+            envelope_at: _,
             dirty_since_analysis: _,
         } = self;
         std::mem::size_of_val(self)
             .checked_add(std::mem::size_of_val(rolling.as_ref()))?
             .checked_add(std::mem::size_of_val(ordered.as_ref()))?
+            .checked_add(std::mem::size_of_val(input_rolling.as_ref()))?
+            .checked_add(std::mem::size_of_val(input_ordered.as_ref()))?
             .checked_add(kernel.as_ref()?.heap_data_bytes()?)
     }
 }
@@ -123,9 +145,8 @@ mod tests {
         }
     }
     #[test]
-    fn fixed_factory_declares_actual_six_boxes_and_rejects_wrong_rate_without_queue_admission() {
-        let (mut capture, mut reader, mut reaper) =
-            spawn_native_spectrum_worker(stamp(48000)).unwrap();
+    fn fixed_factory_declares_actual_eight_boxes_and_rejects_wrong_rate_without_queue_admission() {
+        let (mut capture, reader, mut reaper) = spawn_native_spectrum_worker(stamp(48000)).unwrap();
         let receipt = capture.native_receipt().unwrap();
         assert_eq!(reader.native_identity(), Some(receipt.identity));
         assert_eq!(reaper.native_identity(), Some(receipt.identity));
@@ -134,9 +155,14 @@ mod tests {
                 receipt.storage.shared_groups,
                 receipt.storage.shared_handles
             ),
-            (3, 6)
+            (6, 12)
         );
-        assert!(receipt.storage.data_bytes > 6 * FFT_SIZE * std::mem::size_of::<f32>());
+        // Four stereo signal-window boxes plus the kernel's window, real,
+        // imaginary and one-sided power boxes, excluding headers and queue.
+        let worker_payload = 4 * FFT_SIZE * std::mem::size_of::<[f32; 2]>()
+            + 3 * FFT_SIZE * std::mem::size_of::<f64>()
+            + (FFT_SIZE / 2 + 1) * std::mem::size_of::<f64>();
+        assert!(receipt.storage.data_bytes > worker_payload);
         let mut submit = || {
             assert_eq!(
                 capture.submit(stamp(44100), &[[0.5; 2]; 32]),
@@ -145,7 +171,7 @@ mod tests {
             assert_eq!(capture.next_sequence, 1); // refusal deliberately leaves a gap
             for sequence in 1..=16 {
                 assert_eq!(
-                    capture.submit(stamp(48000), &[[0.5; 2]; 256]),
+                    capture.submit_pair(stamp(48000), &[[0.2, -0.2]; 256], &[[0.5; 2]; 256]),
                     CaptureOutcome::Queued { sequence }
                 );
             }
@@ -167,8 +193,12 @@ mod tests {
         submit();
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if let Some(frame) = reader.try_latest() {
-                assert_eq!(frame.stamp.sample_rate_hz, 48000);
+            // This checks constructor/worker delivery, not UI freshness. A
+            // loaded test host may observe the actual result after 100 ms;
+            // the reader's independent capture-age regression owns expiry.
+            if let Ok(pair) = reader.results.try_recv() {
+                assert_eq!(pair.output.stamp.sample_rate_hz, 48000);
+                assert!(pair.input.is_some());
                 break;
             }
             assert!(
@@ -192,6 +222,24 @@ mod tests {
         drop(capture);
         drop(reader);
         reaper.shutdown_and_join().unwrap();
+    }
+    #[test]
+    fn project_capture_and_reader_cannot_borrow_another_factory_receipt() {
+        let (mut a, mut ar, ap) = spawn_native_spectrum_worker(stamp(48000)).unwrap();
+        let (mut b, mut br, bp) = spawn_native_spectrum_worker(stamp(48000)).unwrap();
+        std::mem::swap(&mut ar.project, &mut br.project);
+        assert!(ar.native_identity().is_none() && br.native_identity().is_none());
+        std::mem::swap(&mut ar.project, &mut br.project);
+        std::mem::swap(&mut a.project, &mut b.project);
+        assert!(a.native_receipt().is_none() && b.native_receipt().is_none());
+        std::mem::swap(&mut a.project, &mut b.project);
+        assert!(a.native_receipt().is_some() && ar.native_identity().is_some());
+        drop(a);
+        drop(b);
+        drop(ar);
+        drop(br);
+        ap.shutdown_and_join().unwrap();
+        bp.shutdown_and_join().unwrap();
     }
     #[test]
     fn actual_factory_worker_join_retains_first_payload_and_never_retries() {

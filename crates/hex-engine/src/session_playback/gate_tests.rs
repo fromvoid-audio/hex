@@ -69,7 +69,14 @@ fn runtime(
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Box<dyn hex_lattice::NativeProcessorRuntime> {
     GATE_DEFINITION
-        .prepare_processor(state, 48_000)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("prepared Gate")
         .expect("stateful Gate")
         .create_runtime()
@@ -105,9 +112,15 @@ fn gate_processes_ordered_track_and_return_routes_and_bypass_is_transparent() {
     for (dry_frame, actual) in dry.iter().zip(&combined) {
         let raw = [dry_frame[0] / 1.375, dry_frame[1] / 1.375];
         let mut direct = raw;
-        track.process_block(std::slice::from_mut(&mut direct));
+        track.process_block(
+            std::slice::from_mut(&mut direct),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let mut send = [direct[0] * 0.5, direct[1] * 0.5];
-        return_.process_block(std::slice::from_mut(&mut send));
+        return_.process_block(
+            std::slice::from_mut(&mut send),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let expected = [direct[0] + send[0] * 0.75, direct[1] + send[1] * 0.75];
         assert!((actual[0] - expected[0]).abs() < 2.0e-6);
         assert!((actual[1] - expected[1]).abs() < 2.0e-6);
@@ -198,9 +211,15 @@ fn live_parameter_revision_keeps_track_and_return_gate_ramp_history() {
     let mut prior_track = runtime(&previous_states[0]);
     let mut prior_return = runtime(&previous_states[1]);
     for frame in &mut dry_all[..24] {
-        prior_track.process_block(std::slice::from_mut(frame));
+        prior_track.process_block(
+            std::slice::from_mut(frame),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let mut sent = [frame[0] * 0.5, frame[1] * 0.5];
-        prior_return.process_block(std::slice::from_mut(&mut sent));
+        prior_return.process_block(
+            std::slice::from_mut(&mut sent),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
     }
     expected_track.copy_history_from(prior_track.as_ref());
     expected_return.copy_history_from(prior_return.as_ref());
@@ -208,9 +227,15 @@ fn live_parameter_revision_keeps_track_and_return_gate_ramp_history() {
         .iter()
         .copied()
         .map(|mut frame| {
-            expected_track.process_block(std::slice::from_mut(&mut frame));
+            expected_track.process_block(
+                std::slice::from_mut(&mut frame),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
             let mut sent = [frame[0] * 0.5, frame[1] * 0.5];
-            expected_return.process_block(std::slice::from_mut(&mut sent));
+            expected_return.process_block(
+                std::slice::from_mut(&mut sent),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
             [frame[0] + sent[0] * 0.75, frame[1] + sent[1] * 0.75]
         })
         .collect::<Vec<_>>();
@@ -221,9 +246,15 @@ fn live_parameter_revision_keeps_track_and_return_gate_ramp_history() {
     let mut fresh_track = runtime(&new_states[0]);
     let mut fresh_return = runtime(&new_states[1]);
     let mut fresh_first = dry_all[24];
-    fresh_track.process_block(std::slice::from_mut(&mut fresh_first));
+    fresh_track.process_block(
+        std::slice::from_mut(&mut fresh_first),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let mut fresh_send = [fresh_first[0] * 0.5, fresh_first[1] * 0.5];
-    fresh_return.process_block(std::slice::from_mut(&mut fresh_send));
+    fresh_return.process_block(
+        std::slice::from_mut(&mut fresh_send),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let fresh_first = [
         fresh_first[0] + fresh_send[0] * 0.75,
         fresh_first[1] + fresh_send[1] * 0.75,

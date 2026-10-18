@@ -25,6 +25,7 @@ struct ContentKey {
     scale: u32,
     palette: hex_preferences::ThemePreferences,
     selected_clip: Option<ClipId>,
+    selected_clips_epoch: u64,
     lane: Option<LaneBounds>,
     drag_available: bool,
     fade_key_held: bool,
@@ -135,6 +136,7 @@ impl Render for ClipContents {
 impl EditorView {
     fn clip_content_cache_allowed(&self) -> bool {
         self.clip_name_edit.is_none()
+            && !self.track_name.is_editing()
             && !self.edit_pending()
             && !self.opening_project
             && !self.close_prompt_open
@@ -189,6 +191,7 @@ impl EditorView {
             scale: timeline.scale_factor.to_bits(),
             palette: theme::preferences(),
             selected_clip: self.selected_clip(),
+            selected_clips_epoch: self.clip_selection.epoch,
             lane: self.drag_lanes.get(&track.id()).copied(),
             fade_key_held: self.fade_key_held,
             drag_available: self.worker_requests_pending == 0 && self.pending_requests.is_empty(),
