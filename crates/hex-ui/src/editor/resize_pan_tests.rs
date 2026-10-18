@@ -457,3 +457,88 @@ fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &m
         });
     }
 }
+
+#[gpui::test]
+fn canceled_fitted_resize_does_not_resurrect_hidden_pan_after_project_growth(
+    cx: &mut TestAppContext,
+) {
+    check_retired_pan_then_growth(cx, false);
+}
+#[gpui::test]
+fn stale_fitted_resize_does_not_resurrect_hidden_pan_after_project_growth(cx: &mut TestAppContext) {
+    check_retired_pan_then_growth(cx, true);
+}
+fn check_retired_pan_then_growth(cx: &mut TestAppContext, stale: bool) {
+    for midi in [false, true] {
+        let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let (original_view, original_audio, original_midi) = editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            assert!(v.viewport.is_none(), "genuine fitted view");
+            (
+                v.visible_viewport(state.timeline_frames),
+                state.project.clip(clip).cloned(),
+                state.project.midi_clip(clip).cloned(),
+            )
+        });
+        let down = capture(&mut visual, clip, midi, false);
+        let edge = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            point(px(lane.left + lane.width - 3.0), down.y)
+        });
+        visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let now = Instant::now();
+        held_tick(&editor, &mut visual, now);
+        let owned_pan = editor.read_with(&visual, |v, _| {
+            let pan = v.viewport.expect("actual edge-pan stored viewport");
+            assert!(
+                pan.start > 0 && pan.end().unwrap() > v.state.as_ref().unwrap().timeline_frames
+            );
+            pan
+        });
+        if stale {
+            // A real independent edit changes the canonical revision while the
+            // pointer gesture is still held. Its subsequent tick must retire it.
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::Gain { track, gain: 0.75 })));
+            });
+            pump(&editor, &mut visual);
+            held_tick(&editor, &mut visual, now + Duration::from_millis(100));
+        } else {
+            visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+        }
+        visual.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let stored_after_cancel = editor.read_with(&visual, |v, _| {
+            assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+            assert!(v.trim_display_end().is_none());
+            assert_eq!(
+                v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+                original_view,
+                "the immediate fitted clamp can conceal a stale stored offset"
+            );
+            v.viewport
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(48).unwrap(),
+                length: BeatTime::from_quarters(4).unwrap(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            assert!(state.timeline_frames > owned_pan.end().unwrap());
+            let visible = v.visible_viewport(state.timeline_frames);
+            eprintln!("retired pan midi={midi} stale={stale} original={original_view:?} held={owned_pan:?} stored_after_cancel={stored_after_cancel:?} grown_visible={visible:?}");
+            assert_eq!(state.project.clip(clip), original_audio.as_ref());
+            assert_eq!(state.project.midi_clip(clip), original_midi.as_ref());
+            assert_eq!(visible, original_view, "a canceled/stale resize must not reappear when unrelated content grows");
+        });
+    }
+}
