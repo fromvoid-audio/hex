@@ -20,7 +20,7 @@ impl EditorView {
         if event.keystroke.key != "tab"
             || event.keystroke.modifiers != Modifiers::default()
             || event.is_held
-            || !self.focus.is_focused(window)
+            || !(self.focus.is_focused(window) || self.track_header_focused(window))
             || self.track_name.is_editing()
             || self.clip_name_edit.is_some()
             || self.tuning.open
@@ -50,6 +50,8 @@ impl EditorView {
             EditorMode::Arrangement => EditorMode::Session,
             EditorMode::Session => EditorMode::Arrangement,
         });
+        // A focused track header leaves the tree when Console mounts.
+        self.focus.focus(window);
         cx.notify();
         true
     }

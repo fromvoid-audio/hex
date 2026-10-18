@@ -1,9 +1,19 @@
 //! Workspace Tab dispatch uses an isolated browser before worker startup.
 use super::{EditorMode, EditorView};
-use gpui::{
-    AppContext, Entity, Focusable, Modifiers, MouseButton, TestAppContext, VisualTestContext,
-};
-use hex_session::service::Service;
+use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
+use hex_session::service::{Event, Request, Service};
+
+fn next(service: &Service) -> Event {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(event) = service.try_event() {
+            assert!(event.error.is_none());
+            return event;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
 use std::time::{Duration, Instant};
 
 fn fixture(
@@ -19,14 +29,9 @@ fn fixture(
     let directory = path.parent().unwrap();
     std::fs::create_dir(directory.join("samples")).unwrap();
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let event = loop {
-        if let Ok(event) = service.try_event() {
-            break event;
-        }
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(2));
-    };
+    next(&service);
+    service.submit(Request::Import(path.clone())).unwrap();
+    let event = next(&service);
     let handle = *cx.add_window(|_, _| gpui::Empty);
     let editor = cx
         .update_window(handle, |_, window, cx| {
@@ -36,6 +41,18 @@ fn fixture(
             editor.update(cx, |v, cx| {
                 assert_eq!(v.browser.directory, directory.join("samples"));
                 assert_eq!(v.browser.places, vec![directory.join("samples")]);
+                let track = &event.state.project.tracks()[0];
+                let track_id = track.id();
+                let clip = track.clips()[0].id();
+                v.selected_track = Some(track_id);
+                v.selected_clip = Some(clip);
+                v.clip_selection.only(track_id, clip);
+                v.time_selection = Some(super::time_selection::TimeSelection {
+                    anchor_track: track_id,
+                    end_track: track_id,
+                    anchor_frame: 2,
+                    end_frame: 6,
+                });
                 v.state = Some(event.state);
                 v.focus.focus(window);
                 cx.notify();
@@ -52,6 +69,7 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    let selection = editor.read_with(&visual, |v, _| (v.selected_clip_ids(), v.time_selection));
     editor.update(&mut visual, |v, cx| {
         v.viewport = Some(super::viewport::Viewport {
             start: 1000,
@@ -80,6 +98,7 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
         );
         assert_eq!(v.session_track_start, 2);
         assert!(!v.clip_view_open);
+        assert_eq!((v.selected_clip_ids(), v.time_selection), selection);
         assert_eq!(v.state.as_ref().unwrap().project, before.project);
         assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
         assert_eq!(v.worker_requests_pending, 0);
@@ -93,7 +112,9 @@ fn workspace_tab_leaves_browser_numeric_and_nested_focus_in_charge(cx: &mut Test
     let (_files, handle, editor) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let browser = editor.read_with(&visual, |v, cx| v.browser.search.read(cx).focus_handle());
+    let browser = editor.read_with(&visual, |v, cx| {
+        v.browser.search.read(cx).focus_handle().clone()
+    });
     visual.update(|window, _| browser.focus(window));
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
@@ -163,4 +184,30 @@ fn workspace_tab_respects_modifiers_and_retained_root_modal_state(cx: &mut TestA
     }
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+}
+
+#[gpui::test]
+fn workspace_tab_from_track_header_preserves_rename_input_and_returns_to_workspace(
+    cx: &mut TestAppContext,
+) {
+    let (_files, handle, editor) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let track = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
+    let selector =
+        Box::leak(format!("arrangement-track-header-{}", track.value()).into_boxed_str());
+    let point = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(point, Modifiers::default());
+    visual
+        .update(|window, cx| editor.read_with(cx, |v, _| assert!(v.track_header_focused(window))));
+    visual.simulate_keystrokes("cmd-r");
+    editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
+    visual.simulate_keystrokes("escape");
+    editor.read_with(&visual, |v, _| assert!(!v.track_name.is_editing()));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
 }
