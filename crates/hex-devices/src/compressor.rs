@@ -11,11 +11,12 @@ use hex_lattice_contract::{
 use std::any::Any;
 
 pub const COMPRESSOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.compressor");
-pub const COMPRESSOR_STATE_VERSION: u32 = 2;
-const STATE_BYTES: usize = 28;
+pub const COMPRESSOR_STATE_VERSION: u32 = 3;
+const STATE_BYTES: usize = 32;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
 const GAIN_SMOOTH_MS: f64 = 5.0;
+const RMS_INTEGRATION_SECONDS: f64 = 0.010;
 const SILENCE_FLOOR_DB: f64 = -120.0;
 
 pub mod parameter {
@@ -28,6 +29,7 @@ pub mod parameter {
     pub const KNEE: ParameterId = ParameterId::from_static(5);
     pub const MAKEUP: ParameterId = ParameterId::from_static(6);
     pub const DRY_WET: ParameterId = ParameterId::from_static(7);
+    pub const DETECTOR: ParameterId = ParameterId::from_static(8);
 }
 
 const DESCRIPTORS: &[ParameterDescriptor] = &[
@@ -108,7 +110,32 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
         default: ParameterValue::Float(1.0),
         presentation: ParameterPresentation::Linear,
     },
+    ParameterDescriptor {
+        id: parameter::DETECTOR,
+        label: "detector",
+        kind: ParameterKind::Choice {
+            labels: &["peak", "rms"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum Detector {
+    Peak,
+    Rms,
+}
+impl Detector {
+    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+        match value {
+            0 => Ok(Self::Peak),
+            1 => Ok(Self::Rms),
+            _ => Err(DeviceContractError::InvalidParameterValue),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CompressorSettings {
@@ -119,6 +146,7 @@ struct CompressorSettings {
     knee_db: f32,
     makeup_db: f32,
     dry_wet: f32,
+    detector: Detector,
 }
 
 impl Default for CompressorSettings {
@@ -131,6 +159,7 @@ impl Default for CompressorSettings {
             knee_db: 6.0,
             makeup_db: 0.0,
             dry_wet: 1.0,
+            detector: Detector::Peak,
         }
     }
 }
@@ -162,6 +191,11 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
         knee_db: read(16),
         makeup_db: read(20),
         dry_wet: read(24),
+        detector: Detector::from_choice(u32::from_le_bytes(
+            bytes[28..32]
+                .try_into()
+                .map_err(|_| DeviceContractError::MalformedState)?,
+        ))?,
     };
     validate(settings)?;
     Ok(settings)
@@ -200,6 +234,7 @@ fn encode(settings: CompressorSettings) -> Result<NativeDeviceState, DeviceContr
     ] {
         payload.extend_from_slice(&value.to_le_bytes());
     }
+    payload.extend_from_slice(&(settings.detector as u32).to_le_bytes());
     NativeDeviceState::new(COMPRESSOR_TYPE_ID, COMPRESSOR_STATE_VERSION, payload)
 }
 
@@ -236,6 +271,9 @@ impl NativeDeviceMetadata for CompressorDefinition {
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = decode(state)?;
+        if id == parameter::DETECTOR {
+            return Ok(ParameterValue::Choice(settings.detector as u32));
+        }
         let value = match id {
             parameter::THRESHOLD => settings.threshold_db,
             parameter::RATIO => settings.ratio,
@@ -260,6 +298,13 @@ impl NativeDeviceMetadata for CompressorDefinition {
             .find(|descriptor| descriptor.id == id)
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
+        if id == parameter::DETECTOR {
+            let ParameterValue::Choice(value) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            settings.detector = Detector::from_choice(value)?;
+            return encode(settings);
+        }
         let ParameterValue::Float(value) = value else {
             return Err(DeviceContractError::InvalidParameterValue);
         };
@@ -306,12 +351,14 @@ impl NativeDeviceDefinition for CompressorDefinition {
         let attack_alpha = (-1.0 / (f64::from(settings.attack_ms) * samples_per_ms)).exp();
         let release_alpha = (-1.0 / (f64::from(settings.release_ms) * samples_per_ms)).exp();
         let gain_alpha = (-1.0 / (GAIN_SMOOTH_MS * samples_per_ms)).exp();
+        let rms_alpha = (-1.0 / (RMS_INTEGRATION_SECONDS * f64::from(sample_rate))).exp();
         Ok(Some(Box::new(PreparedCompressor {
             settings,
             sample_rate,
             attack_alpha,
             release_alpha,
             gain_alpha,
+            rms_alpha,
         })))
     }
 }
@@ -322,6 +369,7 @@ struct PreparedCompressor {
     attack_alpha: f64,
     release_alpha: f64,
     gain_alpha: f64,
+    rms_alpha: f64,
 }
 
 impl PreparedNativeProcessor for PreparedCompressor {
@@ -338,6 +386,10 @@ impl PreparedNativeProcessor for PreparedCompressor {
             attack_alpha: self.attack_alpha,
             release_alpha: self.release_alpha,
             gain_alpha: self.gain_alpha,
+            rms_alpha: self.rms_alpha,
+            energy: [0.0; 2],
+            detector_mix: f64::from(self.settings.detector == Detector::Rms),
+            detector_remaining: 0,
             envelope: 0.0,
             gain_db: f64::from(self.settings.makeup_db),
             mix: f64::from(self.settings.dry_wet),
@@ -358,6 +410,10 @@ struct CompressorRuntime {
     attack_alpha: f64,
     release_alpha: f64,
     gain_alpha: f64,
+    rms_alpha: f64,
+    energy: [f64; 2],
+    detector_mix: f64,
+    detector_remaining: u32,
     envelope: f64,
     gain_db: f64,
     mix: f64,
@@ -366,6 +422,9 @@ struct CompressorRuntime {
 
 impl CompressorRuntime {
     fn reset_history(&mut self) {
+        self.energy = [0.0; 2];
+        self.detector_mix = f64::from(self.settings.detector == Detector::Rms);
+        self.detector_remaining = 0;
         self.envelope = 0.0;
         self.gain_db = f64::from(self.settings.makeup_db);
         self.mix = f64::from(self.settings.dry_wet);
@@ -379,12 +438,35 @@ impl CompressorRuntime {
             return;
         }
         let peak = left.abs().max(right.abs());
-        let coefficient = if peak > self.envelope {
+        // Independent mean-square histories stay warm even while Peak is selected.
+        for (energy, input) in self.energy.iter_mut().zip([left, right]) {
+            *energy = self.rms_alpha * *energy + (1.0 - self.rms_alpha) * input * input;
+        }
+        if self.detector_remaining > 0 {
+            let target = f64::from(self.settings.detector == Detector::Rms);
+            self.detector_mix += (target - self.detector_mix) / f64::from(self.detector_remaining);
+            self.detector_remaining -= 1;
+            if self.detector_remaining == 0 {
+                self.detector_mix = target;
+            }
+        }
+        // Exact Peak fast path retains the original amplitude-follower arithmetic.
+        let detector = if self.detector_mix == 0.0 {
+            peak
+        } else {
+            let rms = self.energy[0].max(self.energy[1]).sqrt();
+            if self.detector_mix == 1.0 {
+                rms
+            } else {
+                (1.0 - self.detector_mix) * peak + self.detector_mix * rms
+            }
+        };
+        let coefficient = if detector > self.envelope {
             self.attack_alpha
         } else {
             self.release_alpha
         };
-        self.envelope = coefficient * self.envelope + (1.0 - coefficient) * peak;
+        self.envelope = coefficient * self.envelope + (1.0 - coefficient) * detector;
         let level_db = if self.envelope > 0.0 {
             20.0 * self.envelope.log10()
         } else {
@@ -459,6 +541,15 @@ impl NativeProcessorRuntime for CompressorRuntime {
             .downcast_ref::<Self>()
             .filter(|previous| self.sample_rate == previous.sample_rate)
         {
+            self.energy = previous.energy;
+            self.detector_mix = previous.detector_mix;
+            self.detector_remaining = if self.settings.detector == previous.settings.detector {
+                previous.detector_remaining
+            } else if self.detector_mix != f64::from(self.settings.detector == Detector::Rms) {
+                self.sample_rate.div_ceil(200)
+            } else {
+                0
+            };
             self.envelope = previous.envelope;
             self.gain_db = previous.gain_db;
             self.mix = previous.mix;

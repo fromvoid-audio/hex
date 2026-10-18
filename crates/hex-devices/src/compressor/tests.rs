@@ -32,7 +32,7 @@ fn runtime(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn NativeProcess
 }
 
 #[test]
-fn defaults_and_generic_codec_roundtrip_all_seven_parameters() {
+fn defaults_and_generic_codec_roundtrip_seven_floats_and_mode() {
     let registry = registry();
     let state = registry
         .default_state(COMPRESSOR_TYPE_ID)
@@ -623,4 +623,433 @@ fn fully_dry_and_bypassed_mix_edits_still_advance_detector_and_smoothing() {
     bypassed.process_block(&mut other, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(next, other);
     assert_eq!(next, [[-0.3, 0.07]; 23]);
+}
+
+#[test]
+fn rms_choice_reduces_actual_short_burst_compression() {
+    let base = patch(
+        &patch(
+            &patch(
+                &COMPRESSOR_DEFINITION.default_state().unwrap(),
+                parameter::ATTACK,
+                0.1,
+            ),
+            parameter::THRESHOLD,
+            -30.0,
+        ),
+        parameter::KNEE,
+        0.0,
+    );
+    let rms = COMPRESSOR_DEFINITION
+        .patch_parameter(
+            &base,
+            ParameterId::from_static(8),
+            ParameterValue::Choice(1),
+        )
+        .expect("select actual RMS");
+    let mut peak_signal = [[1.0, -0.25]; 48];
+    let mut rms_signal = peak_signal;
+    runtime(&base, 48000).process_block(&mut peak_signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    runtime(&rms, 48000).process_block(&mut rms_signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(
+        rms_signal[47][0] > peak_signal[47][0] + 0.01,
+        "RMS really changes transient gain"
+    );
+}
+
+fn mode(state: &NativeDeviceState, value: u32) -> NativeDeviceState {
+    registry()
+        .patch_parameter(state, parameter::DETECTOR, ParameterValue::Choice(value))
+        .unwrap()
+}
+fn history(value: &dyn NativeProcessorRuntime) -> &CompressorRuntime {
+    value.as_any().downcast_ref::<CompressorRuntime>().unwrap()
+}
+
+#[test]
+fn rms_energy_matches_dc_impulse_and_burst_closed_forms_at_six_rates() {
+    let state = mode(
+        &patch(
+            &COMPRESSOR_DEFINITION.default_state().unwrap(),
+            parameter::DRY_WET,
+            0.0,
+        ),
+        1,
+    );
+    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
+        let a = (-100.0 / f64::from(rate)).exp();
+        let n = rate as usize / 100;
+        let mut dc = runtime(&state, rate);
+        dc.process_block(
+            &mut vec![[0.5, -0.25]; n],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        let expected = 0.25 * (1.0 - a.powi(n as i32));
+        assert!((history(dc.as_ref()).energy[0] - expected).abs() < 2e-14);
+        assert!((history(dc.as_ref()).energy[1] - expected / 4.0).abs() < 2e-14);
+        let mut impulse = runtime(&state, rate);
+        impulse.process_block(&mut [[0.5, -0.25]], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        impulse.process_block(&mut vec![[0.0; 2]; n], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert!(
+            (history(impulse.as_ref()).energy[0] - (1.0 - a) * 0.25 * a.powi(n as i32)).abs()
+                < 2e-14
+        );
+        dc.process_block(&mut vec![[0.0; 2]; n], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert!((history(dc.as_ref()).energy[0] - expected * a.powi(n as i32)).abs() < 2e-14);
+        assert_eq!(history(dc.as_ref()).detector_mix, 1.0);
+    }
+}
+
+#[test]
+fn rms_periodic_sine_uses_mean_square_not_mean_absolute_and_preserves_phase_ripple() {
+    let state = mode(
+        &patch(
+            &COMPRESSOR_DEFINITION.default_state().unwrap(),
+            parameter::DRY_WET,
+            0.0,
+        ),
+        1,
+    );
+    let cycle: Vec<f32> = (0..48)
+        .map(|i| (0.5 * (std::f64::consts::TAU * i as f64 / 48.0).sin()) as f32)
+        .collect();
+    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
+        let a = (-100.0 / f64::from(rate)).exp();
+        let mut pan = runtime(&state, rate);
+        let count = (rate as usize / 2).div_ceil(48) * 48;
+        let mut warm: Vec<_> = (0..count)
+            .map(|i| [cycle[i % 48], -cycle[i % 48]])
+            .collect();
+        pan.process_block(&mut warm, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let mut sum = 0.0;
+        for phase in 0..48 {
+            pan.process_block(
+                &mut [[cycle[phase], -cycle[phase]]],
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
+            // Closed periodic convolution; independent of the streaming implementation.
+            let expected = (1.0 - a) / (1.0 - a.powi(48))
+                * (0..48)
+                    .map(|k| a.powi(k as i32) * f64::from(cycle[(phase + 48 - k) % 48]).powi(2))
+                    .sum::<f64>();
+            let e = history(pan.as_ref()).energy;
+            assert!((e[0] - expected).abs() < 2e-13, "rate{rate} phase{phase}");
+            assert_eq!(e[0], e[1]);
+            sum += e[0];
+        }
+        assert!(
+            (sum / 48.0 - 0.125).abs() < 1e-8,
+            "sine mean energy, not squared mean absolute"
+        );
+    }
+}
+
+#[test]
+fn rms_links_max_after_channel_averaging_and_not_instantaneous_max() {
+    let state = mode(
+        &patch(
+            &COMPRESSOR_DEFINITION.default_state().unwrap(),
+            parameter::DRY_WET,
+            0.0,
+        ),
+        1,
+    );
+    let mut alternating = runtime(&state, 48000);
+    let mut input: Vec<_> = (0..24000)
+        .map(|i| if i % 2 == 0 { [1.0, 0.0] } else { [0.0, -1.0] })
+        .collect();
+    alternating.process_block(&mut input, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    let e = history(alternating.as_ref()).energy;
+    let a = (-100.0_f64 / 48000.0).exp();
+    assert!((e[0] - a / (1.0 + a)).abs() < 1e-13);
+    assert!((e[1] - 1.0 / (1.0 + a)).abs() < 1e-13);
+    assert!(
+        e[0].max(e[1]) < 0.501,
+        "max before averaging would incorrectly give1"
+    );
+    let mut left = runtime(&state, 48000);
+    let mut dual = runtime(&state, 48000);
+    left.process_block(
+        &mut [[0.8, 0.0]; 1000],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    dual.process_block(
+        &mut [[-0.8, 0.8]; 1000],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    assert_eq!(
+        history(left.as_ref()).envelope,
+        history(dual.as_ref()).envelope
+    );
+    assert_eq!(
+        history(left.as_ref()).gain_db,
+        history(dual.as_ref()).gain_db
+    );
+}
+
+#[test]
+fn rms_mode_history_ramps_survive_partitions_bypass_rapid_retarget_and_reset() {
+    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
+        let base = patch(
+            &COMPRESSOR_DEFINITION.default_state().unwrap(),
+            parameter::DRY_WET,
+            0.0,
+        );
+        let changed = mode(&patch(&base, parameter::DRY_WET, 0.75), 1);
+        let mut committed = runtime(&base, rate);
+        committed.process_block(
+            &mut [[0.7, -0.23]; 1021],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        let count = rate.div_ceil(200) as usize;
+        let mut whole = runtime(&changed, rate);
+        whole.copy_history_from(committed.as_ref());
+        let mut split = runtime(&changed, rate);
+        split.copy_history_from(committed.as_ref());
+        let energy = history(committed.as_ref()).energy;
+        assert_eq!(
+            history(whole.as_ref()).energy,
+            energy,
+            "warm energy survives Peak→RMS"
+        );
+        let mut a = vec![[0.8, -0.27]; count + 13];
+        let mut b = a.clone();
+        whole.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let mut start = 0;
+        for len in [1, 7, 31, 2, 503].into_iter().cycle() {
+            if start == b.len() {
+                break;
+            }
+            let end = (start + len).min(b.len());
+            let mut twin = runtime(&changed, rate);
+            twin.copy_history_from(split.as_ref());
+            twin.process_block(&mut b[start..end], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            assert!(
+                (history(twin.as_ref()).detector_mix - ((end as f64 / count as f64).min(1.0)))
+                    .abs()
+                    < 3e-14
+            );
+            split = twin;
+            start = end;
+        }
+        assert_eq!(a, b);
+        assert_eq!(
+            history(whole.as_ref()).energy,
+            history(split.as_ref()).energy
+        );
+        assert_eq!(history(whole.as_ref()).detector_remaining, 0);
+        assert_eq!(
+            history(committed.as_ref()).energy,
+            energy,
+            "scratch did not mutate committed"
+        );
+        let mut bypass = runtime(&changed, rate);
+        bypass.copy_history_from(committed.as_ref());
+        let mut dry = vec![[0.8, -0.27]; count + 13];
+        bypass.process_bypassed_block(&mut dry, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert!(dry.iter().all(|s| *s == [0.8, -0.27]));
+        let mut next = [[0.4, -0.2]; 23];
+        let mut other = next;
+        bypass.process_block(&mut next, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        whole.process_block(&mut other, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(next, other);
+        let mut partial = runtime(&changed, rate);
+        partial.copy_history_from(committed.as_ref());
+        partial.process_block(&mut [[0.8, -0.2]], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let previous = history(partial.as_ref());
+        let fraction = previous.detector_mix;
+        let mut reverse = runtime(&base, rate);
+        reverse.copy_history_from(partial.as_ref());
+        assert_eq!(history(reverse.as_ref()).detector_mix, fraction);
+        assert_eq!(history(reverse.as_ref()).detector_remaining, count as u32);
+        reverse.process_block(
+            &mut vec![[0.8, -0.2]; count],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        assert_eq!(history(reverse.as_ref()).detector_mix, 0.0);
+        split.reset();
+        assert_eq!(history(split.as_ref()).energy, [0.0; 2]);
+        assert_eq!(history(split.as_ref()).detector_mix, 1.0);
+        let mut reset = [[0.8, -0.2]; 19];
+        let mut fresh = reset;
+        split.process_block(&mut reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        runtime(&changed, rate).process_block(&mut fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(reset, fresh);
+    }
+}
+
+#[test]
+fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful() {
+    let base = COMPRESSOR_DEFINITION.default_state().unwrap();
+    assert_eq!(base.payload().len(), 32);
+    assert_eq!(
+        COMPRESSOR_DEFINITION
+            .read_parameter(&base, parameter::DETECTOR)
+            .unwrap(),
+        ParameterValue::Choice(0)
+    );
+    for value in [
+        ParameterValue::Choice(2),
+        ParameterValue::Choice(u32::MAX),
+        ParameterValue::Float(f32::NAN),
+        ParameterValue::Float(1.0),
+        ParameterValue::Bool(true),
+    ] {
+        assert!(
+            registry()
+                .patch_parameter(&base, parameter::DETECTOR, value)
+                .is_err()
+        );
+    }
+    for (version, len) in [(1, 24), (2, 28)] {
+        assert_eq!(
+            registry().migrate_state(
+                &NativeDeviceState::new(COMPRESSOR_TYPE_ID, version, vec![0; len]).unwrap()
+            ),
+            Err(DeviceContractError::UnsupportedStateVersion)
+        );
+    }
+    let rms = mode(&base, 1);
+    assert_eq!(registry().migrate_state(&rms).unwrap(), rms);
+    assert_eq!(
+        transfer_curve(&base).unwrap(),
+        transfer_curve(&rms).unwrap(),
+        "same steady detector-level curve; no fictitious3dBshift"
+    );
+    let mut corrupt = rms.payload().to_vec();
+    corrupt[28..32].copy_from_slice(&2_u32.to_le_bytes());
+    assert!(
+        transfer_curve(&NativeDeviceState::new(COMPRESSOR_TYPE_ID, 3, corrupt).unwrap()).is_err()
+    );
+    let mut pan = runtime(&patch(&rms, parameter::DRY_WET, 0.0), 48000);
+    pan.process_block(&mut [[0.8, -0.2]; 9], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    let before = history(pan.as_ref());
+    let saved = (
+        before.energy,
+        before.envelope,
+        before.gain_db,
+        before.detector_mix,
+        before.detector_remaining,
+    );
+    for frame in [[f32::NAN, 1.0], [1.0, f32::INFINITY]] {
+        pan.process_block(&mut [frame], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let h = history(pan.as_ref());
+        assert_eq!(
+            (
+                h.energy,
+                h.envelope,
+                h.gain_db,
+                h.detector_mix,
+                h.detector_remaining
+            ),
+            saved
+        );
+    }
+    for frame in [[f32::MAX, -f32::MAX], [f32::from_bits(1), 0.0], [0.0, 0.0]] {
+        let mut sample = [frame];
+        pan.process_block(&mut sample, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(sample[0], frame, "dry exact");
+        let h = history(pan.as_ref());
+        assert!(
+            h.energy.iter().all(|v| v.is_finite())
+                && h.envelope.is_finite()
+                && h.gain_db.is_finite()
+        );
+    }
+}
+
+#[test]
+fn rms_pcm_matches_analytic_dc_burst_energy_then_original_attack_release_and_makeup_mix() {
+    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
+        for (attack, release) in [(0.1_f32, 5.0_f32), (100.0, 1000.0)] {
+            let mut state = mode(&COMPRESSOR_DEFINITION.default_state().unwrap(), 1);
+            for (id, value) in [
+                (parameter::THRESHOLD, -24.0),
+                (parameter::KNEE, 0.0),
+                (parameter::MAKEUP, 6.0),
+                (parameter::DRY_WET, 0.375),
+                (parameter::ATTACK, attack),
+                (parameter::RELEASE, release),
+            ] {
+                state = patch(&state, id, value);
+            }
+            let mut actual = runtime(&state, rate);
+            let a = (-100.0 / f64::from(rate)).exp();
+            let attack_a = (-1000.0 / (f64::from(attack) * f64::from(rate))).exp();
+            let release_a = (-1000.0 / (f64::from(release) * f64::from(rate))).exp();
+            let gain_a = (-200.0 / f64::from(rate)).exp();
+            let burst = rate as usize / 100;
+            let mut env = 0.0;
+            let mut gain_db = 6.0;
+            for n in 1..=2 * burst {
+                let e = if n <= burst {
+                    0.25 * (1.0 - a.powi(n as i32))
+                } else {
+                    0.25 * (1.0 - a.powi(burst as i32)) * a.powi((n - burst) as i32)
+                };
+                let detector = e.sqrt();
+                let coefficient = if detector > env { attack_a } else { release_a };
+                env = coefficient * env + (1.0 - coefficient) * detector;
+                let level = if env > 0.0 {
+                    20.0 * env.log10()
+                } else {
+                    -120.0
+                };
+                let target = 6.0 - 0.75 * (level + 24.0).max(0.0);
+                gain_db = gain_a * gain_db + (1.0 - gain_a) * target;
+                let input = if n <= burst { [0.5, -0.25] } else { [0.0, 0.0] };
+                let mut frame = [input];
+                actual.process_block(&mut frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                let h = history(actual.as_ref());
+                assert!((h.envelope - env).abs() < 2e-12);
+                assert!((h.gain_db - gain_db).abs() < 2e-9);
+                for c in 0..2 {
+                    let x = f64::from(input[c]);
+                    let expected = x * 0.625 + x * 10.0_f64.powf(gain_db / 20.0) * 0.375;
+                    assert!(
+                        (f64::from(frame[0][c]) - expected).abs() < 1e-7,
+                        "actual PCM rate{rate} frame{n}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rms_quadrature_channels_have_independently_averaged_energy_and_choice_preserves_host_metadata() {
+    let base = COMPRESSOR_DEFINITION
+        .default_state()
+        .unwrap()
+        .with_input_gain_millidb(-3210)
+        .unwrap()
+        .with_output_gain_millidb(1234)
+        .unwrap();
+    let state = mode(&base, 1);
+    assert_eq!(state.input_gain_millidb(), -3210);
+    assert_eq!(state.output_gain_millidb(), 1234);
+    let mut pan = runtime(&patch(&state, parameter::DRY_WET, 0.0), 48000);
+    let cycle: Vec<_> = (0..48)
+        .map(|i| {
+            let phase = std::f64::consts::TAU * i as f64 / 48.0;
+            [phase.sin() as f32, phase.cos() as f32]
+        })
+        .collect();
+    pan.process_block(
+        &mut (0..24000).map(|i| cycle[i % 48]).collect::<Vec<_>>(),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    let a = (-100.0_f64 / 48000.0).exp();
+    for phase in 0..48 {
+        pan.process_block(&mut [cycle[phase]], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let e = history(pan.as_ref()).energy;
+        for c in 0..2 {
+            let expected = (1.0 - a) / (1.0 - a.powi(48))
+                * (0..48)
+                    .map(|k| a.powi(k as i32) * f64::from(cycle[(phase + 48 - k) % 48][c]).powi(2))
+                    .sum::<f64>();
+            assert!((e[c] - expected).abs() < 1e-13);
+        }
+        assert!(e[0].max(e[1]) < 0.51, "not instantaneous stereo-max power");
+    }
 }

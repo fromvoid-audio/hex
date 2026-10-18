@@ -2,11 +2,11 @@
 
 The registered `hex.compressor` is an original zero-lookahead, stereo-linked
 feed-forward processor using the shared Lattice stateful effect contract. Its
-version-2 opaque state contains seven finite `f32` controls (28 bytes). Generic device
+version-3 opaque state contains seven finite `f32` controls and a detector choice (32 bytes). Generic device
 metadata supplies catalog display, editing, persistence, history, and parameter
 publication.
 
-The detector follows the larger absolute channel sample. Its envelope uses a
+The default peak detector follows the larger absolute channel sample. Its envelope uses a
 one-pole coefficient prepared from attack time while the input rises and release
 time while it falls. The detector level is `20 * log10(envelope)`, with a
 documented `-120 db` floor at silence. For delta equal to level minus threshold,
@@ -32,8 +32,8 @@ Finite values that overflow during gain multiplication are not silently clipped.
 
 The processor uses an original standard soft-knee law; settings and numeric
 responses have not been measured against Ableton Live's Compressor. There is no
-lookahead, external sidechain, detector filter, auto mode, RMS path or metering
-in this DSP slice. The dedicated compact panel uses shared native controls;
+lookahead, external sidechain, detector filter, auto mode or metering
+in the original DSP slice. The RMS addition is specified below. The dedicated compact panel uses shared native controls;
 native pointer and listening acceptance remain open.
 
 ## verification
@@ -86,7 +86,7 @@ PCM buffer or host registry is introduced; only scalar runtime state and math.
 The static curve and effective pending-draft cache use the same post-makeup blend;
 it is a steady target preview, not a live detector/ramp/meter display.
 
-Codec version 1 is explicitly unsupported, including prior alpha payloads; no
+Codec versions 1 and 2 are explicitly unsupported, including prior alpha payloads; no
 historical conversion or automatic user-file rewrite is provided. Current state
 continues through generic opaque preset/project/history operations. Independent
 current payloads carry mix without a provider-specific A/B model. Actual combined
@@ -109,3 +109,45 @@ reset and history transfer for six sample rates and three mix values, with an
 allocation-positive/net-zero sensitivity calibration. The existing actual routed
 Track/Return callback allocation test also remains green at default mix. This is
 finite source/runtime evidence, not a universal native audio deadline claim.
+
+## peak / rms detector — focused w12 slice
+
+Choice parameter 8 selects peak (default) or rms. Codec 3 contains the seven
+existing finite float controls plus a checked `u32` mode, 32 bytes total.
+Unsupported alpha versions 1 and 2 are refused, without conversion or file
+rewriting. Dry/wet parameter 7 and its post-makeup law remain unchanged.
+
+This is an original Hex law: each channel's mean-square history uses a fixed
+10 ms exponential integration time, `a = exp(-1/(0.010*sample_rate))` and
+`E[n] = a*E[n-1] + (1-a)*x[n]^2`. RMS detector input is
+`sqrt(max(E_left,E_right))`: channels are averaged independently before taking
+max, not summed or combined by instantaneous sample maxima. It is not a finite
+rectangular-window RMS or a loudness meter. Periodic low-frequency signals retain
+energy ripple. The fixed measurement time adds response lag before the existing
+attack/release amplitude follower; it adds no audio delay or lookahead.
+
+Peak keeps `max(abs(left),abs(right))` and its original arithmetic fast path.
+Both energies stay warm in peak mode, fully dry output and bypass. A mode edit
+interpolates the detector input over `ceil(sample_rate/200)` valid frames, with
+exact endpoints, before the unchanged amplitude follower, knee/ratio, makeup,
+gain-dB smoothing and parallel blend. The amplitude envelope is never reinterpreted
+as squared energy. History transfer copies energy, current mode fraction and
+remaining transition frames; repeated same-target speculative copies do not
+restart the ramp. Rapid edits start at the current fraction. Reset clears energies
+and envelope and uses authored mode immediately. Invalid frames advance no state.
+
+The static curve's input axis is selected detector amplitude level referenced to
+1 (dBFS), and output uses the corresponding steady constant-gain level after
+makeup and dry/wet. Constant DC calibration gives equal peak/rms transfer curves;
+there is no arbitrary 3 dB threshold correction. The curve does not predict a
+waveform's peak level, time envelope, low-frequency ripple, startup or mode ramp.
+Its caption follows effective pending mode. The existing 326px panel retains all
+seven controls, adding a shared detector selector and reducing only plot height.
+
+The [official Live 12 manual](https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#compressor)
+documents peak/rms functionality and qualitative transient differences. It does
+not establish Hex's integration time, stereo aggregation, transition law or
+numeric equivalence. No native reference or listening parity is claimed. Sidechain,
+lookahead, auto release, alternate follower modes and full Compressor/W12 completion
+remain outside this slice. Combined generic A/B requires its actual integration
+and tests; no provider-specific bank owner is introduced.
