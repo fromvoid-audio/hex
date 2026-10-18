@@ -122,3 +122,12 @@ unused cancellation-owner allocation. Routing/PCM/source-isolation and exact
 fanout-limit regressions cover the lookup change, and the existing transform
 suite covers both legacy and supplied preparation behavior. These helper bounds
 still do not supply the complete preconstruction quote or private custody entry.
+
+Arrangement MIDI onset-density, voice-density edges and interval-tree nodes now
+reserve their scalar backings fallibly and explicitly before population. Edge
+count multiplication is checked. Onset scratch is destroyed before the voice
+edge reservation; stable span/event ordering, half-open event windows and voice
+limits are unchanged. Ordinary allocation refusal returns through the existing
+transaction rather than adding a panic path. The existing boundary/density and
+real Sampler revision-host tests cover this change; allocator requested capacity
+still needs validation inside the eventual whole construction allowance.

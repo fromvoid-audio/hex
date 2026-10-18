@@ -413,7 +413,10 @@ pub(crate) fn compile_instrument_track(
         )
     });
     validate_density(&spans, mutable_limits)?;
-    let mut nodes = Vec::with_capacity(spans.len());
+    let mut nodes = Vec::new();
+    nodes
+        .try_reserve_exact(spans.len())
+        .map_err(|_| Invalid("could not reserve instrument span index"))?;
     let root = build_interval_tree(&spans, 0, spans.len(), &mut nodes);
     Ok(Some(crate::InstrumentTrack {
         spans,
@@ -448,10 +451,22 @@ fn validate_density<S: DensitySpan>(
     spans: &[S],
     mutable_limits: Option<MutableInstrumentLimits>,
 ) -> Result<(), Invalid> {
-    let onset_frames = spans.iter().map(DensitySpan::start).collect::<Vec<_>>();
+    let mut onset_frames = Vec::new();
+    onset_frames
+        .try_reserve_exact(spans.len())
+        .map_err(|_| Invalid("could not reserve midi onset density"))?;
+    onset_frames.extend(spans.iter().map(DensitySpan::start));
     validate_onset_density(&onset_frames)?;
-
-    let mut edges = Vec::with_capacity(spans.len() * 2);
+    // Only scalar scratch: retire it before reserving the next density backing.
+    drop(onset_frames);
+    let edge_count = spans
+        .len()
+        .checked_mul(2)
+        .ok_or(Invalid("midi voice density edge count overflow"))?;
+    let mut edges = Vec::new();
+    edges
+        .try_reserve_exact(edge_count)
+        .map_err(|_| Invalid("could not reserve midi voice density"))?;
     for span in spans {
         edges.push((span.start(), true));
         edges.push((span.end(), false));
