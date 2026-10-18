@@ -695,16 +695,47 @@ impl EditorView {
     }
 
     pub(super) fn cancel_trim_gesture(&mut self, cx: &mut Context<Self>) -> bool {
+        self.retire_trim_gesture(true, cx)
+    }
+
+    fn normalize_canceled_trim_viewport(&mut self, generation: u64, owned: Option<Viewport>) {
+        if generation == self.project_generation
+            && owned.is_some()
+            && self.viewport == owned
+            && self.active_trim_drag.is_none()
+            && self.active_midi_trim_drag.is_none()
+            && let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames)
+        {
+            // The active display-horizon owner is already retired. Persist the
+            // actual canonical clamp so later unrelated growth cannot resurrect
+            // an offset that was concealed by visible_viewport's current clamp.
+            self.viewport = Some(self.visible_viewport(horizon));
+        }
+    }
+
+    fn retire_trim_gesture(&mut self, canceled_view: bool, cx: &mut Context<Self>) -> bool {
         let audio = self.active_trim_drag.take();
         let midi = self.active_midi_trim_drag.take();
         let canceled = audio.is_some() || midi.is_some();
         if let Some(drag) = audio {
             drag.canceled.set(true);
             drag.preview.borrow_mut().take();
+            if canceled_view {
+                self.normalize_canceled_trim_viewport(
+                    drag.project_generation,
+                    drag.scroll.get().viewport,
+                );
+            }
         }
         if let Some(drag) = midi {
             drag.canceled.set(true);
             drag.preview.borrow_mut().take();
+            if canceled_view {
+                self.normalize_canceled_trim_viewport(
+                    drag.project_generation,
+                    drag.scroll.get().viewport,
+                );
+            }
         }
         if canceled {
             cx.notify();
@@ -791,6 +822,10 @@ impl EditorView {
             if let Some(drag) = self.active_midi_trim_drag.take() {
                 drag.canceled.set(true);
                 drag.preview.borrow_mut().take();
+                self.normalize_canceled_trim_viewport(
+                    drag.project_generation,
+                    drag.scroll.get().viewport,
+                );
             }
             cx.notify();
         }
@@ -888,12 +923,12 @@ impl EditorView {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        self.enqueue(Request::Edit(Command::TrimMidiClipEdge {
+        let accepted = self.enqueue(Request::Edit(Command::TrimMidiClipEdge {
             clip: drag.clip.id(),
             edge: drag.edge,
             beat,
         }));
-        self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+        self.retire_trim_gesture(!accepted, cx);
         cx.notify();
     }
 
@@ -1049,7 +1084,7 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        self.enqueue(Request::Edit(if drag.stretch_modifier.get() {
+        let accepted = self.enqueue(Request::Edit(if drag.stretch_modifier.get() {
             Command::StretchAudioClipEdge {
                 clip: drag.clip.id(),
                 edge: drag.edge,
@@ -1062,7 +1097,7 @@ impl EditorView {
                 frame,
             }
         }));
-        self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
+        self.retire_trim_gesture(!accepted, cx);
         cx.notify();
     }
 }
