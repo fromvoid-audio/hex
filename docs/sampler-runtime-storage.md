@@ -356,3 +356,25 @@ renderer fields, independent missing aliases, exact/minus-one, normal control
 retirement, stable allocation identity and unchanged raw-ingress refusal. This
 removes one retained child obstacle; it does not supply the aggregate quote or
 private complete-compiler ingress and does not open Sampler admission.
+
+
+Concrete Utility child preparation now computes a private requested-layout
+allowance before reserving Entry backing or creating its first child. It uses
+the codec's shared current-payload constant and existing paired layout helpers
+for payload/configuration/meter/filter/outer-chain bodies and headers. The
+optional filter is conservatively reserved even for a memoryless or bypassed
+state. Existing empty Entry capacity stays charged; growth includes the old
+backing alongside the replacement, and construction overlap also includes the
+Vec-to-slice input and one codec input buffer. These are scope ceilings and
+conservative temporary allowances, not observed simultaneous allocations or a
+unique whole-root budget.
+
+The constructor rejects unexpected backing capacity and verifies actual retained
+children against that allowance. Invalid authored state refuses before any
+Entry/child mutation. Tests cover fresh/growing/reused/reserved-empty backing,
+filtered and bypassed combinations, source handle counts, host gains, actual
+concrete child prices and unchanged destination on refusal. This private quote
+is available to the aggregate compiler calculation; it does not itself reserve
+the required global old/current/history/candidate union or authorize ingress,
+registration or publication. The enclosing same-ceiling preconstruction and
+actual final ledger checks remain mandatory.

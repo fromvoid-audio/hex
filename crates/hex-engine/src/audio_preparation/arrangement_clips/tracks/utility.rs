@@ -25,6 +25,7 @@ pub(in crate::audio_preparation::arrangement_clips) struct UtilityCustody {
     entries: Vec<Entry>,
     construction_overlap: usize,
 }
+mod allowance;
 impl UtilityCustody {
     pub(in crate::audio_preparation::arrangement_clips) fn prepare(
         &mut self,
@@ -40,16 +41,35 @@ impl UtilityCustody {
         if !self.entries.is_empty() {
             return Err(AudioStorageError::SourceMismatch);
         }
+        // Compute requested-layout allowance before backing/child births. The
+        // whole compiler still needs its enclosing same-ceiling reservation.
+        let allowance = self.construction_allowance(devices, owner)?;
+        let old_entries = self.metadata_bytes()?;
+        let replacing_entries = devices.len() > self.entries.capacity();
         self.entries
             .try_reserve_exact(devices.len())
             .map_err(|_| AudioStorageError::Allocation)?;
+        if self.entries.capacity() > allowance.entry_capacity {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(devices.len())
             .map_err(|_| AudioStorageError::Allocation)?;
+        if prepared.capacity() > devices.len() {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
         self.construction_overlap = prepared
             .capacity()
             .checked_mul(std::mem::size_of::<crate::PreparedEffectInstance>())
+            .and_then(|bytes| bytes.checked_add(if replacing_entries { old_entries } else { 0 }))
+            .and_then(|bytes| {
+                bytes.checked_add(if devices.is_empty() {
+                    0
+                } else {
+                    hex_devices::utility::UTILITY_STATE_PAYLOAD_BYTES
+                })
+            })
             .ok_or(AudioStorageError::Overflow)?;
         let mut admission = StereoMatrix::identity();
         for device in devices {
@@ -134,11 +154,27 @@ impl UtilityCustody {
                 resources: None,
             });
         }
-        Ok(if prepared.is_empty() {
+        let owner = if prepared.is_empty() {
             OwnedShared::new_owned_empty_slice()
         } else {
             OwnedShared::from_owned_vec(prepared)
-        })
+        };
+        let (body, header) = owner
+            .parts()
+            .ok_or(AudioStorageError::UnsupportedConstructor)?;
+        let actual = self
+            .bytes(owner.arc())?
+            .checked_add(body)
+            .and_then(|bytes| bytes.checked_add(header))
+            .ok_or(AudioStorageError::Overflow)?;
+        if actual > allowance.retained_bytes
+            || actual
+                .checked_add(self.construction_overlap)
+                .is_none_or(|bytes| bytes > allowance.construction_peak_bytes)
+        {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+        Ok(owner)
     }
     fn validate(&self, chain: &[crate::PreparedEffectInstance]) -> Result<(), AudioStorageError> {
         if chain.len() != self.entries.len() {
