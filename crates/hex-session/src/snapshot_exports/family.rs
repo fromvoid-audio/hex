@@ -149,6 +149,33 @@ impl SessionExportFamily {
         }
         records.reserve_read(snapshot)
     }
+    /// Atomically root an already prepared owned worker view and reserve its
+    /// initial Event read. Persistent registration and the caller's actual
+    /// construction/union reservation must precede this call. Refusal leaves
+    /// the exact pending view untouched. Success retires the record for cleanup
+    /// after its initial/derived reads ACK; it exports no owning model/PCM.
+    /// Transport binding is still fallible: retain the pending read on refusal
+    /// and durably release it through the registered adapter before discarding.
+    pub fn insert_event_read_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+        source: &mut Option<ViewState>,
+    ) -> Result<SnapshotReadStamp, ExportRecordError> {
+        if key.family != self.identity {
+            return Err(ExportRecordError::Stale);
+        }
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        let mut records = self.records.try_write().map_err(|error| match error {
+            TryLockError::WouldBlock => ExportRecordError::Busy,
+            TryLockError::Poisoned(_) => ExportRecordError::Stale,
+        })?;
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        records.insert_event_read_on_control(source)
+    }
     pub fn retire_on_control(
         &self,
         key: &SnapshotProducerKey,

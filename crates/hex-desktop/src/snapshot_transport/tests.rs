@@ -52,7 +52,7 @@ fn wait_derive(base: &SnapshotReadCapability) -> SnapshotReadCapability {
         }
     }
 }
-fn revision(read: &SnapshotReadCapability) -> u64 {
+pub(super) fn revision(read: &SnapshotReadCapability) -> u64 {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match read.read_with(|snapshot| snapshot.revision()) {

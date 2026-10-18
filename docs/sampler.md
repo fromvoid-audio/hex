@@ -85,6 +85,18 @@ records, not three admitted Sampler graphs. Desktop compilation and these new
 runtime cases remain unqualified until executed on their exact source; selected
 child union still leaves legacy Event parents and worker/native roots open.
 
+The worker-to-Event preparation route now also has a typed atomic snapshot/read
+operation: it preflights a free physical snapshot record, free read record and
+their generations before consuming the prepared owned view. It roots that view
+and reserves its initial read together; read exhaustion preserves the pending
+view rather than leaving a half-published snapshot. The record becomes eligible
+for existing persistent cleanup only after its initial/derived reads ACK. The
+Desktop helper retains an unbound stamp in the caller's bounded pending cell on
+binding refusal. This is a route component, not production `WorkerEvents::send`
+wiring, a new owner system or admission. Actual caller construction reservation,
+worker/native joining and replacement of the legacy owning Event/UI fields
+remain mandatory before this route enables registration.
+
 The official interaction reference is Live12 manual section31.11/31.11.1,
 [Simpler](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#simpler),
 as verified by the coordinating lane. This cloud's direct request returned403;

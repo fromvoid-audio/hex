@@ -87,6 +87,37 @@ pub fn bind_registered_read_on_control(
     let route = hex_audio::retained_family_route_on_control(family).map_err(family_error)?;
     SnapshotReadCapability::try_bind_on_control(route, pending, &OPERATIONS)
 }
+/// Worker-only owned-view staging, before Event insertion. The family must be
+/// registered and all old/new/input storage quoted by the actual control owner.
+/// No raw Arc adoption or owning UI field is introduced. Insertion/read-slot
+/// refusal preserves the view. A later binding refusal keeps the exact stamp
+/// in the caller's bounded pending cell for retry or durable cancellation.
+/// Neither this component nor a successful binding proves graph admission.
+pub fn publish_pending_snapshot_on_control(
+    family: RetainedFamilyId<SessionExportFamily>,
+    producer: &hex_session::snapshot_exports::SnapshotProducerKey,
+    pending_view: &mut Option<hex_session::service::ViewState>,
+    pending_read: &mut Option<SnapshotReadStamp>,
+) -> Result<SnapshotReadCapability, Error> {
+    if pending_read.is_some() {
+        if pending_view.is_some() {
+            return Err(Error::Protocol);
+        }
+    } else {
+        if pending_view.is_none() {
+            return Err(Error::Protocol);
+        }
+        let read = hex_audio::read_retained_family(family, |family| {
+            family.insert_event_read_on_control(producer, pending_view)
+        })
+        .map_err(family_error)?
+        .map_err(record_error)?;
+        *pending_read = Some(read);
+    }
+    // Release the actual writer/outer inspection from insertion BEFORE the
+    // binder takes shared guards. Never ACK/drop under that same-thread writer.
+    bind_registered_read_on_control(family, pending_read)
+}
 /// Cancel a binding refusal. Failure before actual dispatch preserves pending.
 pub fn release_pending_on_control(
     family: RetainedFamilyId<SessionExportFamily>,
@@ -137,6 +168,8 @@ mod tests;
 mod storage_tests;
 
 mod inventory;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod publication_tests;
 pub use inventory::{
     SnapshotFamilyInventory, SnapshotFamilyInventoryError,
     with_snapshot_family_inventory_on_control,
