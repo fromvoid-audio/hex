@@ -5086,3 +5086,22 @@ A focused rendered-model regression covers empty roots, expansion with only dire
 rows, and flat search. Source fix is handed to the dedicated merger separately from
 Place correctness2791/397; final combined full CI and optimized native checks remain
 open.
+- pulse2718 / pr334: interior body painting uses one canonical hybrid overwrite
+  plus empty MIDI placement, retaining independently selectable before/after
+  fragments and one Undo/Redo. Focused geometry/source/boundary/refusal regressions
+  are added; exact-source results follow in PR334/Pulse2718. Native optimized
+  audio/MIDI/looped painting acceptance remains coordinator-owned and open.
+
+## Place availability and query correctness — pulse2791 / PR397, 18 october 2026
+
+Focused follow-up to merged2727/340: pending or failed Place validation hides cached
+folder/indexed rows and blocks stale row, audition-offset, import and project-open
+callbacks. Fresh validation cancels queued/active Place audition. Successful current
+scans restore surviving selection by native path, including a concurrent catalog
+publication; source/query changes discard the saved identity. Scoped folder additions
+use indexed whitespace-term/full-path matching without changing All composition.
+Three targeted regressions fail on original dc70 and integrated cf410 tree sources;
+source repair and browser contract checks are recorded separately in Pulse2791.
+Dedicated merger owns final prospective full CI/integration/merge. Optimized native
+availability/query and unchanged audition/drag acceptance remain coordinator-owned;
+no installed app or user files changed during this source work.

@@ -1135,12 +1135,16 @@ impl Render for EditorView {
                 view.add_midi_clip();
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &RemoveTrack, window, cx| {
-                if !view.remove_header_tracks(window, cx) {
-                    view.remove_track(cx);
-                }
+            .on_action(cx.listener(|view, _: &RemoveTrack, _, cx| {
+                view.remove_track(cx);
                 cx.notify();
             }))
+            .on_action(
+                cx.listener(|view, _: &super::RemoveHeaderTracks, window, cx| {
+                    view.remove_header_tracks(window, cx);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &Quit, window, cx| {
                 view.request_quit(window, cx);
             }))
