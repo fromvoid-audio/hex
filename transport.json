@@ -1,0 +1,9 @@
+{
+  "kind": "evidence-only-never-build",
+  "source": "82adfad380cbf29eca9fa64c7ef68dd33c239fe5",
+  "tree": "c21959e31bc8f57a82c5bd9a82834ef68148c187",
+  "archive": "2715-resident-handoff-v1.tar.gz",
+  "bytes": 371794,
+  "sha256": "03683cf59ad2fb0ff036e693a65e44075508711f4f10a66737b46130d7fdee36",
+  "payloads": 61
+}
