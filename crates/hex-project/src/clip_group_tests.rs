@@ -408,3 +408,48 @@ fn clip_limit_uses_complete_final_group_and_refuses_atomically_before_preparatio
         }
     }
 }
+
+#[test]
+fn canonical_subframe_midi_member_is_retained_in_whole_group_move() {
+    let mut f = fixture();
+    let start = f.editor.project().midi_clip(f.midi).unwrap().start();
+    f.editor
+        .execute(Command::TrimMidiClipEdge {
+            clip: f.midi,
+            edge: crate::TrimEdge::Right,
+            beat: BeatTime::from_raw(start.raw() + 1),
+        })
+        .unwrap();
+    let before = f.editor.project().clone();
+    let destination = BeatTime::from_quarters(9).unwrap();
+    // The existing canonical single-clip overwrite accepts this positive beat
+    // extent despite both endpoints projecting to the same integer frame.
+    let mut control = Editor::new(before.clone(), 8).unwrap();
+    control
+        .execute(Command::MoveMidiClipWithOverwrite {
+            clip: f.midi,
+            track: f.tracks[1],
+            start: destination,
+        })
+        .unwrap();
+    assert_eq!(
+        control.project().midi_clip(f.midi).unwrap().length().raw(),
+        1
+    );
+    let edit = command(&f, f.audio, f.tracks[0], ClipGroupPosition::Audio(72_000));
+    f.editor
+        .execute(edit)
+        .expect("a legal subframe member must not block or disappear from the group");
+    let after = f.editor.project();
+    assert_eq!(after.clip(f.audio).unwrap().start(), 72_000);
+    let midi = after.midi_clip(f.midi).unwrap();
+    assert_eq!(midi.start(), destination);
+    assert_eq!(midi.length().raw(), 1);
+    assert!(std::sync::Arc::ptr_eq(
+        &midi.source,
+        &before.midi_clip(f.midi).unwrap().source
+    ));
+    assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), *after);
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project(), &before);
+}
