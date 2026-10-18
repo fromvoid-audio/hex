@@ -1,0 +1,14 @@
+{
+  "source": "fcce1e199435a1f7252146ecde870ba4ff84ac61",
+  "tree": "ebc31a86d8f5dc25f120a5c23b029ea01df69e56",
+  "parent": "7204ce91856a2fab5fe5aa73da075df040d4edc3",
+  "files": {
+    "crates/hex-ui/src/editor/clip_name.rs": "7ad3f575b878ffdfc31820db2a02dd3ae4d78bcde61169616623c9c35b69b1a6",
+    "crates/hex-ui/src/editor/tracks.rs": "a9d1db9725e7d76e3ba35d3875aa65515730f3fe6191e12b9cb1628019d8a205",
+    "crates/hex-ui/src/editor/waveform.rs": "16d0a206c0361524c01cca9b5e0a53ff623a5b850b6fc3b7bfd6c6bf4cd596d1",
+    "crates/hex-ui/src/editor/waveform_geometry.rs": "a7beaee96e320592ddb71741c470bc3aecb0864f9e4bb219f219f30a894330f8",
+    "crates/hex-ui/src/editor/waveform_header_ui_test.rs": "73567f859c19b4ca0facf7c12eee0abd80be1026ccabd2b1e931ed73c039380d",
+    "docs/clip-waveform-body.md": "432aaf411884a6509692b318dd95a575f28f41cad783de28e12fab8b1c413446",
+    "scripts/check-ui-style.py": "33953ea51f8ad5264c21233c587fe5b301c9eafb895035e2f34227d6270fe846"
+  }
+}
