@@ -85,48 +85,50 @@ impl EditorView {
         let Some(state) = &self.state else {
             return Ok(None);
         };
-        let ids = self.selected_clip_ids();
-        if ids.is_empty() {
+        let mut remaining = self
+            .selected_clip_ids()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if remaining.is_empty() {
             return Ok(None);
         }
         let mut start = u64::MAX;
         let mut end = 0;
-        for id in ids {
-            let bounds = state
-                .project
-                .tracks()
-                .iter()
-                .find_map(|track| {
-                    if let Some(clip) = track.clips().iter().find(|clip| clip.id() == id) {
-                        return Some(
-                            clip.start()
-                                .checked_add(clip.duration())
-                                .map(|end| (clip.start(), end)),
-                        );
-                    }
-                    track
-                        .midi_clips()
-                        .iter()
-                        .find(|clip| clip.id() == id)
-                        .map(|clip| {
-                            let end = clip.start().raw().checked_add(clip.length().raw())?;
-                            Some((
-                                state.project.tempo_map().beat_to_frame(clip.start()).ok()?,
-                                state
-                                    .project
-                                    .tempo_map()
-                                    .beat_to_frame(hex_project::BeatTime::from_raw(end))
-                                    .ok()?,
-                            ))
-                        })
-                })
-                .flatten()
-                .ok_or("selected clip no longer has valid timeline bounds")?;
-            if bounds.0 >= bounds.1 {
+        let mut include = |clip_start: u64, clip_end: Option<u64>| {
+            let clip_end = clip_end.ok_or("selected clip exceeds the timeline")?;
+            if clip_start >= clip_end {
                 return Err("selected clip has an empty loop range");
             }
-            start = start.min(bounds.0);
-            end = end.max(bounds.1);
+            start = start.min(clip_start);
+            end = end.max(clip_end);
+            Ok(())
+        };
+        // Visit the bounded clip collection once, rather than rescanning it per selection.
+        for track in state.project.tracks() {
+            for clip in track.clips() {
+                if remaining.remove(&clip.id()) {
+                    include(clip.start(), clip.start().checked_add(clip.duration()))?;
+                }
+            }
+            for clip in track.midi_clips() {
+                if remaining.remove(&clip.id()) {
+                    let error = "selected midi clip exceeds the timeline";
+                    let beat_end = clip
+                        .start()
+                        .raw()
+                        .checked_add(clip.length().raw())
+                        .ok_or(error)?;
+                    let map = state.project.tempo_map();
+                    let clip_start = map.beat_to_frame(clip.start()).map_err(|_| error)?;
+                    let clip_end = map
+                        .beat_to_frame(hex_project::BeatTime::from_raw(beat_end))
+                        .ok();
+                    include(clip_start, clip_end)?;
+                }
+            }
+        }
+        if !remaining.is_empty() {
+            return Err("selected clip no longer belongs to the arrangement");
         }
         Ok(Some((start, end)))
     }

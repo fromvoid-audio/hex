@@ -211,22 +211,15 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
-    // Browser results and search share a focused input but distinct key contexts.
-    for results in [false, true] {
-        visual.update(|window, cx| {
-            editor.update(cx, |v, cx| {
-                v.browser.results_focused = results;
-                v.browser.search.read(cx).focus(window);
-                cx.notify();
-            })
-        });
-        visual.run_until_parked();
-        visual.simulate_keystrokes("l");
-        pump(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| {
-            assert_eq!(v.state.as_ref().unwrap().revision, revision)
-        });
-    }
+    // Browser search owns its input and enclosing browser key context.
+    visual
+        .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
     visual.run_until_parked();
     visual.simulate_keystrokes("l");
@@ -251,11 +244,15 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     });
     let header = visual
         .debug_bounds(Box::leak(
-            format!("track-header-{}", track.value()).into_boxed_str(),
+            format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
         ))
         .unwrap();
-    visual.simulate_mouse_down(header.center(), MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(header.center(), MouseButton::Left, Modifiers::default());
+    let header_point = gpui::point(
+        header.right() - gpui::px(12.0),
+        header.top() + gpui::px(1.0),
+    );
+    visual.simulate_mouse_down(header_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(header_point, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-r");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
