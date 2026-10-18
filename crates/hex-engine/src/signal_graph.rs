@@ -6,6 +6,7 @@ use hex_project::{ReturnId, RoutingOwner, TrackId};
 use std::mem::size_of;
 #[cfg(test)]
 use std::sync::Arc;
+mod construction;
 pub(crate) mod storage;
 mod typed_inputs;
 
@@ -110,6 +111,15 @@ impl SignalGraph {
         feeds: &[(usize, usize, f32)],
         canonical: &hex_project::Project,
     ) -> Result<Option<OwnedShared<Self>>, Invalid> {
+        // The ordinary compiler still permits unqualified legacy owners on
+        // unsupported std targets. Do not turn a local cost assertion into a
+        // new public admission gate. The private aggregate quote must call the
+        // fallible construction_cost directly and refuse unsupported layouts.
+        let cost = if crate::audio_storage_constructor_layout_supported() {
+            Some(Self::construction_cost(canonical)?)
+        } else {
+            None
+        };
         let (node_count, edge_count) =
             typed_inputs::counts(project, feeds.len(), canonical.audio_feeds().len())?;
         let mut builder = Builder {
@@ -286,6 +296,10 @@ impl SignalGraph {
         } = typed_inputs::prepare(&builder)?;
         let plan =
             LatencyPlan::build(&nodes, &edges, CompensationLimits::default()).map_err(error)?;
+        #[cfg(test)]
+        construction::observe_before_zero_latency_return(
+            &builder, &tracks, &returns, &inputs, &typed, &nodes, &edges, &edge_keys, &plan,
+        );
         if plan.max_latency_frames() == 0 && canonical.audio_feeds().is_empty() {
             return Ok(None);
         }
@@ -365,6 +379,20 @@ impl SignalGraph {
             owner_order,
             typed,
         });
+        if let Some(cost) = cost {
+            let (_, header) = graph
+                .parts()
+                .ok_or(Invalid("signal graph constructor layout is unsupported"))?;
+            let actual = graph
+                .table_bytes()
+                .and_then(|bytes| bytes.checked_add(header))
+                .ok_or(Invalid("signal graph backing cost overflow"))?;
+            if actual > cost.retained_bytes || actual > cost.construction_peak_bytes {
+                return Err(Invalid(
+                    "signal graph constructor exceeded its backing bound",
+                ));
+            }
+        }
         // Charge actual prepared table capacity before admitting runtime owners.
         if graph
             .runtime_preflight_bytes()

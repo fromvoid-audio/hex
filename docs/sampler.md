@@ -1248,3 +1248,16 @@ independent empty/base/touch/combined cases compare real capacities and values;
 existing dense-tempo, touch, partition and transport integration tests remain.
 This component does not charge the canonical input lane or other compiler work
 by itself and supplies no aggregate approval or runtime ownership authority.
+
+The private canonical topology cost now includes graph/table/owner storage and
+conservative builder, typed-key, latency-plan, indegree, Return-input and
+owner-order scratch. Canonical effect counts can overestimate a fused prepared
+chain; actual prepared counts still enforce graph policy. Even a zero-latency
+constructor that returns no graph builds real temporary vectors first. Four
+actual zero/positive-latency and Return-routing cases observe nonzero backing
+before that return and compare retained graph storage against the local bound.
+The observation is partial requested backing, not sampled instantaneous peak.
+The ordinary unsupported-target legacy compiler remains unqualified and keeps
+its behavior; the future private aggregate operation must call the fallible
+cost helper directly and refuse unsupported construction layouts. No selected
+input union, guarded bootstrap or native admission follows from this local cost.
