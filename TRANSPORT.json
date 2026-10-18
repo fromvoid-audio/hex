@@ -1,0 +1,66 @@
+{
+  "source": "affa5d97c6b4582de1b324d568a4ef2af7312a9b",
+  "tree": "7a6ae04044b5139a68863f6862c0a491bc26dabe",
+  "base": "f2ea030993fd107f183996bb5a06bf5200f8ce0a",
+  "archive": "/workspace/hex-eq-layout/artifacts/evidence/hex-2800-affa5d97-recovery-evidence-v1.tar.gz",
+  "filename": "hex-2800-affa5d97-recovery-evidence-v1.tar.gz",
+  "bytes": 41023,
+  "sha256": "5e6b9633d03322ab6c5462ad7e16b626e3168f9b84c667830c1dcf27d7ef963e",
+  "members": 32,
+  "hashed_payloads": 31,
+  "ledger": [
+    {
+      "run_id": "20261018T211324Z-83a5da43",
+      "commit": "7701779c0825d1ea1fd667561de14224c22b2202",
+      "mode": "focused",
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 0.505,
+      "exit_code": 2
+    },
+    {
+      "run_id": "20261018T211350Z-9c1f21d7",
+      "commit": "633f34b52ed09aaac9ea5e3d69cce4bd2b69ec90",
+      "mode": "focused",
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 73.353,
+      "exit_code": 1
+    },
+    {
+      "run_id": "20261018T211530Z-7ca9f398",
+      "commit": "189ebcbe59d7f8e66dcbee91871abca28ce6eb3c",
+      "mode": "focused",
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 52.654,
+      "exit_code": 0
+    },
+    {
+      "run_id": "20261018T211645Z-0253bf88",
+      "commit": "affa5d97c6b4582de1b324d568a4ef2af7312a9b",
+      "mode": "focused",
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 154.068,
+      "exit_code": 0
+    }
+  ],
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs",
+      "before_sha256": "49c39aae2f424faabcf0fd6b8be49077f7ccd122fb1892e78c7866ebd0850b85",
+      "after_sha256": "d27d7cb3657ae6a40b59ff3b3162c1e331fea02cdc150afdb2f4302ae349a685"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs",
+      "before_sha256": "e23fb7e8f17dd053e0e5b5ba74b7da2400ee0c1cd168f0db2957272984742996",
+      "after_sha256": "a71211557555fb9333d015cdb7282b188348e3cbc4f621a7e624550479e4f35a"
+    },
+    {
+      "path": "docs/eq-graph-layout.md",
+      "before_sha256": "5937a225a65582210185037e1cc913ffb3c05e05979dcbeab0a393985b2f7f0b",
+      "after_sha256": "48336a10a96ae844f8c4ac579617b06f74d27e10a2f89a8581beadb9842ac11a"
+    }
+  ]
+}
