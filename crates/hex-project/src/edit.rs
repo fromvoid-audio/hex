@@ -758,9 +758,7 @@ pub(crate) fn insert_track_before(
             .ok_or(Invalid("track insertion anchor no longer exists"))?,
         None => project.tracks.len(),
     };
-    let instrument_state = crate::default_instrument_state()?;
-    let (first_id, instrument_id) = project.allocate_id_range(2)?;
-    let id = TrackId(first_id);
+    let id = TrackId(project.allocate_id()?);
     project.tracks.insert(
         index,
         Track {
@@ -773,12 +771,8 @@ pub(crate) fn insert_track_before(
             muted: false,
             soloed: false,
             devices: Vec::new(),
-            instrument: Some(crate::Device {
-                id: DeviceId(instrument_id),
-                state: instrument_state,
-                bypassed: false,
-            }),
-            instrument_position: Some(0),
+            instrument: None,
+            instrument_position: None,
             content: TrackContent::default(),
             sends: Vec::new(),
         },
@@ -1613,12 +1607,7 @@ impl Project {
                 let track = insert_track_before(self, name, before_track)?;
                 match slot {
                     TrackDeviceSlot::Instrument => {
-                        let device = self
-                            .track(track)
-                            .and_then(|track| track.instrument())
-                            .ok_or(Invalid("new track has no default instrument"))?
-                            .id();
-                        self.apply(Command::ReplaceDeviceState { device, state })?;
+                        self.apply(Command::InsertInstrument { track, state })?;
                     }
                     TrackDeviceSlot::Effect => {
                         self.apply(Command::InsertDevice {

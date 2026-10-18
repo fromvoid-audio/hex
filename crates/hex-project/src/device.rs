@@ -7,7 +7,7 @@ pub const MAX_DEVICES: usize = crate::MAX_TRACKS * (MAX_DEVICES_PER_TRACK + 1)
 pub const DEFAULT_INSTRUMENT_TYPE_ID: DeviceTypeId =
     DeviceTypeId::from_static("hex.instrument.sine");
 
-/// Neutral default envelope shared by new tracks and legacy-schema migration.
+/// Neutral envelope for explicit Sine insertion and existing legacy-schema readers.
 /// Project/storage do not depend on the DSP definition or its implementation.
 pub fn default_instrument_state() -> Result<NativeDeviceState, Invalid> {
     NativeDeviceState::new(DEFAULT_INSTRUMENT_TYPE_ID, 1, Vec::new())
@@ -476,7 +476,12 @@ mod tests {
     }
     fn track_id(editor: &mut crate::Editor, name: &str) -> TrackId {
         match editor
-            .execute(Command::AddTrack { name: name.into() })
+            .execute(Command::InsertTrackWithDevice {
+                name: name.into(),
+                before_track: None,
+                slot: crate::TrackDeviceSlot::Instrument,
+                state: crate::default_instrument_state().unwrap(),
+            })
             .unwrap()
         {
             crate::Created::Track(id) => id,
