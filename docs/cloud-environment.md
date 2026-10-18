@@ -136,3 +136,30 @@ appended to live Pulse 2348, revision 21. Runtime HTTP policy enforcement was
 reported unknown; the browser's preserved policy settings are configuration
 evidence, not proof of enforcement. Native macOS/audio acceptance and complete
 Linux workspace CI are not established by this probe.
+
+### editor test filesystem sandbox — pulse2808 / PR414
+
+Only `cfg(test)` editor construction resolves default filesystem paths into one
+fresh, exclusively created temporary root per editor. Its Home/Music, browser
+start directory and Places are resolved before startup jobs; default browser,
+sample catalog, recent-project and theme files live there too. Missing Music
+falls back to that private Home. Explicit populated, missing or malformed fixture
+paths and explicit browser directories/Homes are preserved exactly; the resolver
+never adopts them or derives scan roots from an arbitrary preference-file parent.
+Creation errors fail clearly without ambient Home fallback or environment overrides.
+The `ui-test-support` feature by itself does not change application startup.
+
+An Arc guard belongs to the editor and each actual filesystem job, including
+inner directory/tree scans, preview preparation, preference load/save and catalog
+load/scan/save futures. A view's outer awaiting future is insufficient custody:
+real I/O can finish after the view is gone. Only after the last guard is released
+is the exclusively owned root removed on an independent cleanup thread, without
+blocking UI Drop. Explicit caller-owned directories remain the caller's responsibility
+and are never deleted by the sandbox. This does not join Session workers or promise
+all application workers have stopped.
+
+A test-only asynchronous gate inside the real catalog save job verifies that the
+editor can be released while the job is held, the real save retains its root,
+and cleanup happens afterward without recreation. GPUI deferred Entity releases
+are flushed explicitly in that test. This is filesystem lifetime evidence, not a
+native-app or audio-listening acceptance result; older runs are not retroqualified.
