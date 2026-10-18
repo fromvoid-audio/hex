@@ -549,7 +549,7 @@ impl EditorView {
                             }
                         }
                     }
-                    clip_area = clip_area.child(overlay);
+                    clip_area = clip_area.children([overlay]);
                 }
             }
         }
