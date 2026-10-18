@@ -10,7 +10,10 @@ bound clamps the entire set at frame zero, instead of clamping members separatel
 Audio placement uses canonical move/source mapping. MIDI keeps its authored beat
 length and shared immutable notes/expressions; the common frame displacement is
 projected through the current tempo map. The picked MIDI anchor retains its exact
-chosen beat when no common boundary clamp is needed. No new tempo, routing,
+chosen beat when no common boundary clamp is needed. A positive canonical MIDI
+extent smaller than one integer frame remains in the group; the existing painter
+may omit that zero-frame rectangle. No new rendering or model minimum is added.
+No new tempo, routing,
 track type, PCM render or per-member snap policy is introduced.
 
 All members are projected before any preview is returned. A vertical destination

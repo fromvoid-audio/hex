@@ -136,9 +136,11 @@ impl Project {
                         .checked_add(clip.length().raw())
                         .ok_or(Invalid("midi group end overflow"))?,
                 );
-                if self.tempo_map().beat_to_frame(start)? >= self.tempo_map().beat_to_frame(end)? {
-                    return Err(Invalid("midi group extent collapsed"));
-                }
+                crate::midi::validate_clip(start, clip.length())?;
+                // A canonical positive beat extent may be smaller than one
+                // integer frame. Retain it just as single-clip movement does;
+                // projection still refuses an unrepresentable endpoint.
+                self.tempo_map().beat_to_frame(end)?;
                 let mut projected = clip.clone();
                 projected.start = start;
                 result.push(ClipGroupPreview {
