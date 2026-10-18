@@ -245,10 +245,11 @@ impl EditorView {
     }
 
     pub(super) fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
-        let remap = matches!(
-            self.browser.section,
-            BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
-        );
+        let remap = !self.browser_place_unavailable()
+            && matches!(
+                self.browser.section,
+                BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
+            );
         let selection = remap.then(|| self.browser_selected_item(cx)).flatten();
         if self.browser.samples.replace(catalog) && remap {
             self.restore_browser_selection(selection, cx);
