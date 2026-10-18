@@ -369,7 +369,8 @@ fn with_audio_neighbor(
 
 #[test]
 fn midi_single_loop_growth_carves_audio_and_midi_neighbors_at_final_capacity_in_one_undo() {
-    for at_capacity in [false, true] {
+    for (at_capacity, edited_audio) in [(false, false), (false, true), (true, false), (true, true)]
+    {
         let (mut editor, clip) = fixture(2 * Q, 2 * Q, false);
         let track = editor.project().tracks()[0].id();
         let Created::Clip(victim) = editor
@@ -393,6 +394,21 @@ fn midi_single_loop_growth_carves_audio_and_midi_neighbors_at_final_capacity_in_
             })
             .unwrap();
         let audio = with_audio_neighbor(&mut editor, track, 13 * Q, 17 * Q);
+        if edited_audio {
+            editor
+                .execute(Command::SetAudioClipPitch {
+                    clip: audio,
+                    cents: 200,
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetClipFades {
+                    clip: audio,
+                    fade_in: 100,
+                    fade_out: 200,
+                })
+                .unwrap();
+        }
         let mut project = editor.project().clone();
         if at_capacity {
             let mut snapshot = project.snapshot();
@@ -438,10 +454,23 @@ fn midi_single_loop_growth_carves_audio_and_midi_neighbors_at_final_capacity_in_
                 let tail = candidate.clip(audio).unwrap();
                 let new_start = candidate.tempo_map().beat_to_frame(beat(15 * Q)).unwrap();
                 assert_eq!(tail.start(), new_start);
-                assert_eq!(
-                    tail.source_offset(),
-                    old_audio.source_offset() + new_start - old_audio.start()
-                );
+                if let Some(old_root) = old_audio.audio_edit() {
+                    let new_root = tail.audio_edit().unwrap();
+                    assert!(std::sync::Arc::ptr_eq(&new_root.domain, &old_root.domain));
+                    let (_, _, old_start, old_end) =
+                        old_root.projected_domain(candidate.tempo_map()).unwrap();
+                    let (_, _, new_first, new_end) =
+                        new_root.projected_domain(candidate.tempo_map()).unwrap();
+                    assert_eq!(new_first, old_start + new_start - old_audio.start());
+                    assert_eq!(new_end, old_end);
+                    assert_eq!(new_root.domain.pitch_cents, 200);
+                    assert_eq!(new_root.domain.fade, old_root.domain.fade);
+                } else {
+                    assert_eq!(
+                        tail.source_offset(),
+                        old_audio.source_offset() + new_start - old_audio.start()
+                    );
+                }
                 assert_eq!(
                     tail.start() + tail.duration(),
                     old_audio.start() + old_audio.duration()
@@ -465,7 +494,7 @@ fn midi_single_loop_growth_carves_audio_and_midi_neighbors_at_final_capacity_in_
                 .sum::<usize>()
         };
         println!(
-            "loop_growth capacity={at_capacity} before={} after={} tail_source_offset={}",
+            "loop_growth capacity={at_capacity} retained_root={edited_audio} before={} after={} tail_source_offset={}",
             count(&before),
             count(&after),
             after.clip(audio).unwrap().source_offset()
