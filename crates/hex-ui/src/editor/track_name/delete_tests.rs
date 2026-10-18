@@ -293,7 +293,12 @@ fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
         visual.simulate_click(button.center(), Modifiers::default());
         visual.update(|window, cx| {
             editor.read_with(cx, |view, _| {
-                eprintln!("toolbar immediate focus={} pending={} edit={:?}",view.track_name.focuses[&focused].is_focused(window),view.edit_pending(),view.last_enqueued_edit);
+                eprintln!(
+                    "toolbar immediate focus={} pending={} edit={:?}",
+                    view.track_name.focuses[&focused].is_focused(window),
+                    view.edit_pending(),
+                    view.last_enqueued_edit
+                );
             })
         });
         pump(&editor, &mut visual);
