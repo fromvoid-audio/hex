@@ -816,34 +816,50 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
     let second = std::path::PathBuf::from("/tmp/second.hex");
 
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(first.clone(), cx));
+        editor.update(cx, |view, cx| {
+            view.open_browser_project(first.clone(), cx);
+            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert!(view.pending_requests.is_empty());
+        });
     })
     .expect("editor window");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.pending_open_path.as_ref(), Some(&first));
-        assert!(view.pending_requests.is_empty());
-    });
-
+    assert!(
+        cx.has_pending_prompt(),
+        "the first selection reaches confirmation"
+    );
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(second.clone(), cx));
+        editor.update(cx, |view, cx| {
+            view.open_browser_project(second.clone(), cx);
+            assert!(!view.opening_project);
+            assert!(view.pending_requests.is_empty());
+            assert!(
+                view.error.is_some(),
+                "another path cannot replace an active intent"
+            );
+        });
     })
     .expect("editor window");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.pending_open_path.as_ref(), Some(&second));
-        assert!(view.pending_requests.is_empty());
-    });
-
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(second.clone(), cx));
+        editor.update(cx, |view, cx| {
+            assert!(!view.project_open.busy());
+            assert!(view.pending_open_path.is_none());
+            view.open_browser_project(second.clone(), cx);
+            assert_eq!(view.pending_open_path.as_ref(), Some(&second));
+            assert!(view.pending_requests.is_empty());
+        });
     })
     .expect("editor window");
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(!view.opening_project);
-        assert_eq!(view.pending_open_path.as_ref(), Some(&second));
-        assert!(
-            view.pending_requests.is_empty(),
-            "confirmation must precede replacement"
-        );
+        assert!(!view.project_open.busy());
+        assert!(view.pending_open_path.is_none());
+        assert!(view.state.as_ref().unwrap().unsaved);
+        assert!(view.pending_requests.is_empty());
     });
 }
 
