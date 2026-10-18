@@ -4,10 +4,16 @@ use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 4 {
+    if args.len() != 4 && args.len() != 6 {
         return Err(
             "pass interleaved stereo f32 input, sample rate, and new output directory".into(),
         );
+    }
+    if args.len() == 6
+        && (!matches!(args[4].as_str(), "0.5" | "1.375" | "2")
+            || !matches!(args[5].as_str(), "stop" | "forward" | "alternating"))
+    {
+        return Err("optional case must name an existing ratio and tail".into());
     }
     let input = std::path::Path::new(&args[1]);
     // The six authorised originals are at most 16.821 seconds. Decoded f32 is
@@ -44,6 +50,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     )?;
     for ratio in [0.5, 1.375, 2.0] {
+        if args.len() == 6 && args[4].parse::<f64>()? != ratio {
+            continue;
+        }
         let output = (source.len() as f64 * ratio).round() as usize;
         let map = TimeMap::new(
             vec![MapSegment {
@@ -59,6 +68,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (Tail::Forward, "forward"),
             (Tail::Alternating, "alternating"),
         ] {
+            if args.len() == 6 && args[5] != name {
+                continue;
+            }
             let result = render(
                 &Request {
                     input: Input {

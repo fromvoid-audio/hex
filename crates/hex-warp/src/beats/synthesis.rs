@@ -17,43 +17,50 @@ fn linear(input: Input<'_>, position: f64, lower: i128, upper: i128) -> [f64; 2]
 }
 struct Search<'r, 'a> {
     request: &'r Request<'a>,
-    acc: &'r Accumulator,
-    out: i128,
     step: f64,
     overlap: usize,
     range: f64,
     lower: i128,
     upper: i128,
+    previous: [Option<[f64; 2]>; 64],
+    previous_sum: [f64; 2],
+    previous_square: f64,
+    count: f64,
 }
+// The existing 4096-byte search quote covers both construction storage and
+// the live search plus comparison records, including the new overlap array.
+const _: () = assert!(
+    std::mem::size_of::<Search<'static, 'static>>() * 2 + std::mem::size_of::<Match>() * 3 <= 4096
+);
 impl Search<'_, '_> {
     fn score(&self, position: f64, nominal: f64, work: &mut Work<'_>) -> Result<Match, Error> {
         let Self {
             request,
-            acc,
-            out,
             step,
             overlap,
             range,
             lower,
             upper,
+            ref previous,
+            previous_sum,
+            previous_square,
+            count,
         } = *self;
         let points = overlap.clamp(1, 64);
-        work.check(points as u64 * 16)?;
-        let mut count = 0.0;
-        let mut sx = [0.0; 2];
+        // The previous overlap's six units per point are computed once when
+        // constructing Search. Only the ten candidate-dependent units repeat.
+        work.check(points as u64 * 10)?;
+        let sx = previous_sum;
         let mut sy = [0.0; 2];
-        let mut xx = 0.0;
+        let mut xx = previous_square;
         let mut yy = 0.0;
         let mut xy = 0.0;
-        for i in 0..points {
+        for (i, previous) in previous.iter().enumerate().take(points) {
             let at = i * overlap / points;
-            if let Some(x) = acc.preview(out + at as i128) {
+            if let Some(x) = previous {
                 let y = linear(request.input, position + at as f64 * step, lower, upper);
-                count += 1.0;
                 for c in 0..2 {
-                    sx[c] += x[c];
                     sy[c] += y[c];
-                    xx += x[c] * x[c];
                     yy += y[c] * y[c];
                     xy += x[c] * y[c];
                 }
@@ -181,15 +188,36 @@ pub(super) fn bed(
         let range = (f64::from(request.input.sample_rate) * 0.012 * pitch)
             .min((source_end - source_start) * 0.25)
             .max(1.0);
+        // Every candidate compares against the same immutable overlap. Cache
+        // its actual samples and statistics on bounded stack scratch; preserve
+        // the original summation order and candidate scoring exactly.
+        let points = hop.clamp(1, 64);
+        work.check(points as u64 * 6)?;
+        let mut previous = [None; 64];
+        let mut previous_sum = [0.0; 2];
+        let mut previous_square = 0.0;
+        let mut count = 0.0;
+        for (i, value) in previous.iter_mut().enumerate().take(points) {
+            *value = acc.preview(out + (i * hop / points) as i128);
+            if let Some(x) = value {
+                count += 1.0;
+                for c in 0..2 {
+                    previous_sum[c] += x[c];
+                    previous_square += x[c] * x[c];
+                }
+            }
+        }
         let search = Search {
             request,
-            acc,
-            out,
             step,
             overlap: hop,
             range,
             lower,
             upper,
+            previous,
+            previous_sum,
+            previous_square,
+            count,
         };
         let mut selected = search.score(nominal, nominal, work)?;
         if !forced && acc.preview(out + hop as i128 / 2).is_some() {
