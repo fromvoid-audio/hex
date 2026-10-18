@@ -1,5 +1,6 @@
 //! Borrowed canonical-input constructor; no snapshot clone/local owning graph.
 use super::*;
+mod construction;
 use crate::AudioStorageError as Error;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReturnFeedCapacity {
@@ -140,7 +141,7 @@ impl FeedPlanCustody {
         c.bytes()?;
         Ok(c)
     }
-    pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
+    fn require_vacant(&self) -> Result<(), Error> {
         if self.phase != Phase::Vacant
             || self.plan.is_some()
             || !self.order.is_empty()
@@ -152,6 +153,11 @@ impl FeedPlanCustody {
         {
             return Err(Error::Capacity);
         }
+        Ok(())
+    }
+    pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
+        let before = self.capacity_at(false, None)?.bytes()?;
+        let additional = self.construction_cost(project)?;
         let returns = project.return_tracks();
         let feeds = project.authored_routing();
         if returns.len() > hex_project::MAX_RETURN_TRACKS
@@ -197,6 +203,14 @@ impl FeedPlanCustody {
         self.incoming.resize(count, 0);
         self.visited.resize(count, false);
         self.active = count;
+        let actual = self.capacity_at(true, None)?;
+        let peak = actual
+            .bytes()?
+            .checked_add(actual.previous_growth_backing_bytes)
+            .ok_or(Error::Overflow)?;
+        if peak > before.checked_add(additional).ok_or(Error::Overflow)? {
+            return Err(Error::UnknownStorage);
+        }
         Ok(())
     }
     pub(crate) fn prepare(&mut self, project: &hex_project::Project) -> Result<(), Error> {

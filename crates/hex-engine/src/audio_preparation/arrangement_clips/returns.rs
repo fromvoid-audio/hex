@@ -1,5 +1,6 @@
 //! Private actual Return buses + feed plan in the existing preparation root.
 use super::tracks::utility::UtilityCustody;
+mod selector_cost;
 use super::*;
 pub use crate::return_feed_plan::persistent::ReturnFeedCapacity;
 use crate::{ReturnBus, owned_shared::OwnedShared, return_feed_plan::persistent::FeedPlanCustody};
@@ -216,10 +217,7 @@ impl ReturnAssembly {
         c.bytes()?;
         Ok(c)
     }
-    pub(super) fn reserve(
-        &mut self,
-        project: &hex_project::Project,
-    ) -> Result<(), AudioStorageError> {
+    fn require_vacant_rows(&self) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
                 r.id.is_some()
@@ -232,6 +230,14 @@ impl ReturnAssembly {
         {
             return Err(AudioStorageError::Capacity);
         }
+        Ok(())
+    }
+    pub(super) fn reserve(
+        &mut self,
+        project: &hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        let cost = self.selector_construction_cost(project)?;
+        let before = self.capacity_at(false, &[], None)?.bytes()?;
         if project.return_tracks().len() > hex_project::MAX_RETURN_TRACKS
             || project.return_tracks().iter().any(|b| {
                 b.devices().iter().any(|device| {
@@ -303,6 +309,22 @@ impl ReturnAssembly {
                 .ok_or(AudioStorageError::UnsupportedConstructor)?;
         }
         self.feed.prepare(project)?;
+        let actual = self.capacity_at(true, &[], None)?;
+        let retained = actual.bytes()?;
+        let peak = retained
+            .checked_add(actual.previous_growth_backing_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        if retained
+            > before
+                .checked_add(cost.additional_retained_bytes)
+                .ok_or(AudioStorageError::Overflow)?
+            || peak
+                > before
+                    .checked_add(cost.additional_peak_bytes)
+                    .ok_or(AudioStorageError::Overflow)?
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         Ok(())
     }
     pub(super) fn construct(&mut self) -> Result<(), AudioStorageError> {

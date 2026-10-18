@@ -1225,3 +1225,16 @@ metadata while sizing preserves row addresses and performs no paired births or
 clones. This is a selector-local bound: a future closed aggregate operation must
 still add it to the actual old/input union before either Track or Return
 selection, context construction, cache reservation or compiler entry.
+
+The paired Return feed constructor and Return selector now have separate local
+additional-backing costs. They read the actual vacant destinations, including
+spare row/header/nested feed capacities, before reservation. Reused backing adds
+no second retained charge; replacement is additional while old backing remains
+in the input union. Return selectors also compose the existing Utility costs.
+Actual reservation/preparation/installation is checked against these local
+bounds. The paired routing constructor uses its existing in-place validation;
+the separate fresh compiler plan still pays its own six-vector validation and
+fresh backing cost. Six feed and twelve Return selector/filter/routing variants,
+and the existing combined restoration tests, exercise these distinct plans.
+These do not complete the combined pre-selector operation or qualify unvisited
+model, resource, compiler scratch, failure-parent or publication contracts.
