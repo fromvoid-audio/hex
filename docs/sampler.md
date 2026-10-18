@@ -11,50 +11,79 @@ native interaction/listening acceptance is claimed.
 
 The user's next deliverable is a playable, high-quality **Simpler-style** sampler
 with a clean native panel; the other goal3 devices and Instrument Grid do not
-gate it. Pulse2679 revision16 preserves the full existing feature acceptance.
+gate it. Pulse2679 revision17 preserves the full existing feature acceptance.
 PR296 and PR369 remain merged kernel/lifetime prerequisites. PR389 remains the
 canonical resource foundation; selected storage/ABI proofs do not complete it.
 
-The finite critical path, in dependency order, is:
+Remaining critical path (source checkpoint 898e, with the approved Vec extension
+and concrete batch adapter currently under implementation):
 
-1. Close the actual Sampler host graph. Finish prepared graph/container and
-   model/history/media ownership union, source scopes through Arrangement,
-   Session, keyboard and export, old/new preparation peak, atomic candidate
-   publication and saturated existing reaper/control final-drop proof. Qualify
-   actual supported constructors rather than raw Arc/count identities. Keep
-   unsupported referenced graph classes refused. Do not wait for unrelated
-   device algorithms or add a generic owner/cache framework.
-2. Adapt the existing kernel into a real registered device. Prepared notes and
-   mutable voices retain only bounded coefficients/slot facts; callbacks borrow
-   typed original Mono/Stereo PCM from the actual host configuration. No borrowed
-   `Voice` may be made self-referential or stored with a forged static lifetime.
-   Retain Classic, One-Shot and Slice, checked Trigger/Gate lifetime, voices,
-   retrigger/glide, pitch/tuning, region/loop/reverse and amplitude envelope.
-   Complete the required filter/LFO/modulation and warp with actual DSP;
-   quality includes meaningful downsampling/alias, loop seam, transient/stereo
-   and partition oracles, not a claim that linear interpolation is sufficient.
-3. Connect current-format authored state and loading. Use the existing neutral
-   asset references, bounded original media worker/source plan, accepted
-   immutable waveform backing and canonical prepared edits. Load/replace plus
-   assignment is one Undo; preserve asset identity+tuning on save/reopen/preset.
-   Missing/unsupported media, stale/canceled preparation and failed replacement
-   keep the last valid audio and expose a recoverable error. No alpha migration
-   or embedded PCM payload is needed. Warp uses the implemented stretch boundary
-   and prepared worker lifecycle; it must not silently become resampling.
-4. Land the functional panel in `hex-ui/src/editor/device_panel/sampler_panel.rs`
-   beside existing native panels, using `hex-widgets` and Hex theme typography.
-   Put sample identity/load/replace and Classic/One-Shot/Slice above a central
-   waveform; expose direct bounds/loop/slice edits and clear selected/playback
-   state. Group legible pitch/tuning, amplitude/envelope, filter and modulation
-   controls below it, with focused mode-specific controls and an expanded view.
-   Reuse the accepted waveform cache/geometry; no pointer-motion decode/DSP.
-   Use visible loading/empty/missing/disabled states and discoverable essential
-   actions. Every control must reach canonical state, DSP and Undo; no panel or
-   catalog claim before functioning host playback/loading.
-5. Freeze the combined source, run meaningful device/host/session/storage/UI
-   regressions, callback allocation/lifetime and dense-voice release profiling,
-   then the required exact-source local CI. Send one bounded optimized native
-   build/acceptance request to the coordinator, preserving launcher delivery.
+1. **Ownership and publication blocking registration.** Selected PCM, canonical
+   model/state, waveform, gain/MIDI preview, retained-record and pending-decoder
+   child proofs exist; they do not qualify the whole graph. Finish the approved
+   all-slot outer guards (including vacancies), concrete inner guards and actual
+   nonstatic guard-Vec accounting in one ledger. Join EVERY actual worker/native
+   current/candidate/outgoing/carried/history/pending/unreclaimed owner, including
+   legacy Event/UI/canvas fields still unqualified. Reserve old/new/input/temp
+   construction overlap before work, revalidate actual source/candidate/cancel
+   using existing publication linearization under the native barrier LAST, and
+   prove saturated control/reaper final drop while native retirement stays
+   independent of retained UI reads. Unknown/refusal preserves last valid audio;
+   the registry remains closed until this actual admission proof. No unrelated
+   provider/catalog or new owner/cache framework is a prerequisite.
+2. **Real load and host path.** The compact loaded/empty mutable adapter and
+   actual project/Arrangement/Session retained-factory slice exist. Complete
+   actual keyboard/export host preparation and admit that supported graph.
+   Wire a worker load/replace request through existing bounded original decode,
+   resource bank, waveform and ImportDeviceAsset staging into ONE prepared
+   model/media/audio/Undo transaction. Staging alone is not this commit. Keep
+   missing/error/cancel/stale replacement recoverable and the accepted sample
+   playable. Register/select Sampler only with actual host admission in place.
+3. **DSP/state still missing from the full request.** Classic/One-Shot/Slice,
+   source/loop/reverse, pitch/tuning/gain, ADSR, bounded voices/Trigger/Gate and
+   rollback/partition kernels exist. Canonical manual Slice insert/move/remove
+   now changes real note regions without pitch transposition. Finish real
+   filter/envelope modulation, LFO/modulation, retrigger/glide/voice behavior,
+   fades/crop and prepared pitch-independent Warp through the implemented stretch
+   boundary. Complete high-quality rate/pitch resampling and independent alias,
+   transient/stereo/loop/partition tests; linear interpolation is not a quality
+   acceptance claim. New parameters must reach current state/preparation/Undo,
+   not just metadata. No historical-alpha conversion is required.
+4. **Functional clean native UI is not implemented yet.** Borrowed authored
+   reads, exact source-bound waveform queries, geometry reuse and canonical
+   Slice edit primitives are preparation, not a panel. Build the actual compact
+   and expanded sampler panel using Hex theme/widgets: central waveform,
+   obvious load/drop/replace, mode choice, source/loop/slice handles and legible
+   pitch/amplitude/filter/modulation groups. Use sealed nonowning capabilities;
+   no canvas-owned waveform/PCM. Wire controls and marker gestures to actual DSP
+   and one canonical Undo, with focus protection, Escape/context cancellation,
+   clear empty/loading/missing/disabled/selection/playback states. No decorative
+   selector or unimplemented mode claim.
+5. **Musical workflow qualification and delivery.** Finish Undo/Redo, current
+   save/preset/reopen with assets+tuning, keyboard plus Arrangement/Session MIDI,
+   Stop/seek and matching export. Freeze the combined candidate; run meaningful
+   PCM/lifetime/allocation/UI and dense-voice release checks plus required exact
+   local CI. Coordinator's serial Mac lane owns optimized build/delivery and
+   finite native UI/listening acceptance; launcher keeps combined app ownership.
+
+The next source milestone is the concrete guarded all-family/native admission
+and atomic sample replacement path, alongside the functional source-region
+controls. That enables registration/loading to become a real musical workflow;
+more isolated metadata proofs alone do not make the sampler usable. Full2679
+scope stays open, and remaining goal3 catalog work follows the first usable
+Sampler rather than gating it. No ETA, percentage or acceptance is inferred from
+these intermediate checkpoints.
+
+The next guarded-union checkpoint adds the actual nonstatic Vec field observer
+and a concrete Desktop adapter with separate outer/inner lists. It acquires all
+configured outer slots before concrete Session guards, charges actual list
+capacities, and keeps those guards alive for the ledger continuation. A real
+record insertion invalidates a prior preparation revision. The new three-family
+oracle also checks a protected vacancy, durable release, exact scratch refusal
+and allocation-free repeated visits. Those families are retained Session export
+records, not three admitted Sampler graphs. Desktop compilation and these new
+runtime cases remain unqualified until executed on their exact source; selected
+child union still leaves legacy Event parents and worker/native roots open.
 
 The official interaction reference is Live12 manual section31.11/31.11.1,
 [Simpler](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#simpler),

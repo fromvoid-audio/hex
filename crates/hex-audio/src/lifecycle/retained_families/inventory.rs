@@ -157,6 +157,18 @@ pub fn try_retained_family_inventory_on_control(
     RetainedFamilyInventory::try_from_table(persistent_table(&TABLE)?, max_scratch_bytes)
 }
 
+/// Conservative preconstruction quote from the ACTUAL immutable configured
+/// table: slot count and requested outer guard/header bytes. No allocation,
+/// locking, ownership transfer or publication authority.
+pub fn retained_family_inventory_reservation_quote_on_control()
+-> Result<(usize, usize), RetainedFamilyError> {
+    let table = persistent_table(&TABLE)?;
+    Ok((
+        table.slots.len(),
+        RetainedFamilyInventory::quote_for_slots(table.slots.len())?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

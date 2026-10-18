@@ -140,7 +140,26 @@ impl<'a> crate::AudioRootStorageLedger<'a> {
     /// Actual requested backing for a borrowed Vec field. Its inline header
     /// belongs to the enclosing body; nested values require their own traversal.
     /// No caller byte count, len estimate or allocator/RSS declaration is used.
-    pub fn borrow_metadata_vec_backing_on_control<T: 'static>(
+    /// Actual elements may borrow control guards; no Any/static widening occurs.
+    /// ```compile_fail
+    /// let mut values = vec![1_u8];
+    /// let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+    ///     hex_engine::AudioStorageLedgerReservation { data_rows: 8, handle_rows: 8,
+    ///         root_rows: 4, max_retained_bytes: 100000, max_construction_peak_bytes: 100000 }).unwrap();
+    /// ledger.borrow_metadata_vec_backing_on_control(&values).unwrap();
+    /// values.push(2);
+    /// let _ = ledger.summary();
+    /// ```
+    /// ```compile_fail
+    /// let values = vec![1_u8];
+    /// let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+    ///     hex_engine::AudioStorageLedgerReservation { data_rows: 8, handle_rows: 8,
+    ///         root_rows: 4, max_retained_bytes: 100000, max_construction_peak_bytes: 100000 }).unwrap();
+    /// ledger.borrow_metadata_vec_backing_on_control(&values).unwrap();
+    /// drop(values);
+    /// let _ = ledger.summary();
+    /// ```
+    pub fn borrow_metadata_vec_backing_on_control<T>(
         &mut self,
         value: &'a Vec<T>,
     ) -> Result<(), crate::AudioStorageError> {

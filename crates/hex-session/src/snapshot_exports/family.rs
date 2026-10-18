@@ -30,6 +30,16 @@ pub struct SessionExportFamily {
 ///     std::thread::spawn(move || drop(guard));
 /// }
 /// ```
+/// ```compile_fail
+/// fn widen<'a>(guards: &'a Vec<hex_session::snapshot_exports::SnapshotFamilyInventoryGuard<'a>>)
+///     -> hex_engine::AudioRootStorageLedger<'static> {
+///     let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+///         hex_engine::AudioStorageLedgerReservation { data_rows: 8, handle_rows: 8,
+///             root_rows: 4, max_retained_bytes: 100000, max_construction_peak_bytes: 100000 }).unwrap();
+///     ledger.borrow_metadata_vec_backing_on_control(guards).unwrap();
+///     ledger
+/// }
+/// ```
 pub struct SnapshotFamilyInventoryGuard<'a> {
     records: RwLockReadGuard<'a, SnapshotExportRecords>,
 }
@@ -63,7 +73,13 @@ impl SessionExportFamily {
     pub fn try_inventory_guard_on_control(
         &self,
     ) -> Result<SnapshotFamilyInventoryGuard<'_>, ExportRecordError> {
-        let records = self.records.try_read().map_err(|error| match error {
+        let Self {
+            identity,
+            records,
+            abandoned,
+        } = self;
+        let _: (&u64, &AtomicBool) = (identity, abandoned);
+        let records = records.try_read().map_err(|error| match error {
             TryLockError::WouldBlock => ExportRecordError::Busy,
             TryLockError::Poisoned(_) => ExportRecordError::Stale,
         })?;
@@ -464,5 +480,79 @@ mod inventory_guard_tests {
             Ok(SnapshotFamilyCleanup::Disposed)
         );
         assert!(refused.is_some());
+    }
+}
+
+#[cfg(test)]
+mod nonstatic_vec_tests {
+    use super::*;
+    #[test]
+    fn actual_nonstatic_snapshot_guard_vec_backing_is_measured_without_owner_escape() {
+        let (family, producer) =
+            SessionExportFamily::try_new_on_control(SnapshotExportReservation {
+                snapshot_records: 2,
+                read_records: 2,
+                max_bookkeeping_bytes: 16_384,
+            })
+            .unwrap();
+        let session = crate::Session::new(48_000, 8, 1024).unwrap();
+        let view = crate::service::view_state_owned(
+            &session,
+            hex_engine::empty_midi_preview_on_control(),
+            7,
+            1,
+            false,
+            None,
+        );
+        family
+            .insert_on_control(&producer, &mut Some(view))
+            .unwrap();
+        let mut guards = Vec::with_capacity(3);
+        guards.push(family.try_inventory_guard_on_control().unwrap());
+        let budget = hex_engine::AudioStorageLedgerReservation {
+            data_rows: 128,
+            handle_rows: 128,
+            root_rows: 8,
+            max_retained_bytes: 2_000_000,
+            max_construction_peak_bytes: 2_000_000,
+        };
+        let measure = |budget| -> Result<_, hex_engine::AudioStorageError> {
+            let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(budget)?;
+            ledger.borrow_metadata_vec_backing_on_control(&guards)?;
+            ledger.borrow_metadata_vec_backing_on_control(&guards)?;
+            let summary = ledger.summary()?;
+            assert_eq!(
+                summary.data_bytes,
+                guards.capacity() * std::mem::size_of::<SnapshotFamilyInventoryGuard<'_>>()
+            );
+            assert_eq!(summary.data_allocations, 1);
+            assert_eq!(guards[0].snapshot_count(), 1);
+            assert!(summary.require_complete().is_err());
+            Ok(summary)
+        };
+        let measured = measure(budget).unwrap();
+        let mut exact = budget;
+        exact.max_retained_bytes = measured.retained_bytes;
+        exact.max_construction_peak_bytes = measured.construction_peak_bytes;
+        assert_eq!(measure(exact).unwrap(), measured);
+        exact.max_retained_bytes -= 1;
+        assert!(measure(exact).is_err());
+        if hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!(
+                "SUPPORTED actual nonstatic Session guard Vec and separately traversed snapshot children"
+            );
+            let mut ledger =
+                hex_engine::AudioRootStorageLedger::try_new_on_control(budget).unwrap();
+            ledger
+                .borrow_metadata_vec_backing_on_control(&guards)
+                .unwrap();
+            guards[0]
+                .visit_selected_storage_on_control(&mut ledger)
+                .unwrap();
+            assert!(
+                ledger.summary().unwrap().data_bytes > measured.data_bytes,
+                "guard references do not certify or silently charge nested owned data"
+            );
+        }
     }
 }

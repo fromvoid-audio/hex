@@ -642,5 +642,6 @@ mod tests;
 mod inventory;
 pub use inventory::{
     RetainedFamilyInventory, RetainedFamilyInventoryIncarnation, RetainedFamilyInventoryPhase,
-    RetainedFamilyInventorySlot, try_retained_family_inventory_on_control,
+    RetainedFamilyInventorySlot, retained_family_inventory_reservation_quote_on_control,
+    try_retained_family_inventory_on_control,
 };

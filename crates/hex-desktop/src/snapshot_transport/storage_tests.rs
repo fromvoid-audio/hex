@@ -17,11 +17,7 @@ fn registered_snapshot_job_and_guarded_children_inspection_allocates_and_frees_n
     eprintln!(
         "SUPPORTED actual registered job, persistent table and guarded Session snapshot inventory"
     );
-    hex_audio::reserve_retained_families_on_control(hex_audio::RetainedFamilyReservation {
-        family_slots: 2,
-        max_table_bytes: 16_384,
-    })
-    .unwrap();
+    tests::initialize_test_table();
     let service = Service::new(48_000, 8, 1024).unwrap();
     let initial = tests::receive(&service);
     let (family, key) = SessionExportFamily::try_new_on_control(SnapshotExportReservation {

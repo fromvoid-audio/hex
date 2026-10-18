@@ -17,6 +17,7 @@ fn observation(value: &dyn Any) -> Option<MidiSourceStorageObservation<'_>> {
 }
 fn source(value: &dyn Any) -> Owner<'_> {
     Owner {
+        vec_field: None,
         domain: OwnerDomain::CanonicalMidiSource,
         value,
         compare: |a, b| {
@@ -29,6 +30,7 @@ fn source(value: &dyn Any) -> Owner<'_> {
 }
 fn field(value: &dyn Any) -> Owner<'_> {
     Owner {
+        vec_field: None,
         domain: OwnerDomain::CanonicalMidiField,
         value,
         compare: |a, b| {

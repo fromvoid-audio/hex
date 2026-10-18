@@ -135,3 +135,9 @@ mod tests;
 
 #[cfg(all(test, feature = "allocation-probe"))]
 mod storage_tests;
+
+mod inventory;
+pub use inventory::{
+    SnapshotFamilyInventory, SnapshotFamilyInventoryError,
+    with_snapshot_family_inventory_on_control,
+};

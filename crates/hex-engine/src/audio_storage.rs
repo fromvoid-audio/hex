@@ -65,10 +65,16 @@ enum OwnerDomain {
     DeviceAssetReferences,
     CanonicalMidiSource,
     CanonicalMidiField,
+    ExclusiveVec,
 }
+// Actual borrowed Vec OBJECT identity only. This private trait permits element
+// types containing non-static guards without widening Any or copying a header.
+trait PrivateVecField {}
+impl<T> PrivateVecField for Vec<T> {}
 #[derive(Clone, Copy)]
 pub(crate) struct Owner<'a> {
     domain: OwnerDomain,
+    vec_field: Option<&'a (dyn PrivateVecField + 'a)>,
     value: &'a dyn Any,
     compare: fn(&dyn Any, &dyn Any) -> bool,
     counts: Option<SharedCounts>,
@@ -76,6 +82,7 @@ pub(crate) struct Owner<'a> {
 impl<'a> Owner<'a> {
     pub(crate) fn exclusive<T: 'static>(value: &'a T) -> Self {
         Self {
+            vec_field: None,
             domain: OwnerDomain::Exclusive,
             value,
             counts: None,
@@ -86,8 +93,18 @@ impl<'a> Owner<'a> {
             },
         }
     }
+    fn exclusive_vec<T>(value: &'a Vec<T>) -> Self {
+        Self {
+            domain: OwnerDomain::ExclusiveVec,
+            vec_field: Some(value), // the REAL lifetime-bound Vec field
+            value: &(),             // unused in this domain; never identity/provenance
+            compare: |_, _| false,
+            counts: None,
+        }
+    }
     pub(crate) fn shared<T: 'static + ?Sized>(value: &'a Arc<T>) -> Self {
         Self {
+            vec_field: None,
             domain: OwnerDomain::Shared,
             value,
             counts: Some(|value| {
@@ -104,6 +121,7 @@ impl<'a> Owner<'a> {
     }
     pub(crate) fn device_payload(value: &'a hex_lattice_contract::NativeDeviceState) -> Self {
         Self {
+            vec_field: None,
             domain: OwnerDomain::DevicePayload,
             value,
             counts: Some(|value| {
@@ -125,6 +143,7 @@ impl<'a> Owner<'a> {
         value: &'a hex_lattice_contract::NativeDeviceState,
     ) -> Self {
         Self {
+            vec_field: None,
             domain: OwnerDomain::DeviceAssetReferences,
             value,
             counts: Some(|value| {
@@ -144,7 +163,14 @@ impl<'a> Owner<'a> {
         }
     }
     fn same(self, other: Self) -> bool {
-        self.domain == other.domain && (self.compare)(self.value, other.value)
+        if self.domain != other.domain {
+            return false;
+        }
+        match (self.vec_field, other.vec_field) {
+            (Some(a), Some(b)) => std::ptr::addr_eq(a, b),
+            (None, None) => (self.compare)(self.value, other.value),
+            _ => false,
+        }
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -467,13 +493,13 @@ impl<'a> AudioRootStorageLedger<'a> {
             None,
         )
     }
-    pub(crate) fn vec<T: 'static>(&mut self, value: &'a Vec<T>) -> Result<(), AudioStorageError> {
+    pub(crate) fn vec<T>(&mut self, value: &'a Vec<T>) -> Result<(), AudioStorageError> {
         let bytes = value
             .capacity()
             .checked_mul(std::mem::size_of::<T>())
             .ok_or(AudioStorageError::Overflow)?;
         self.data(
-            Owner::exclusive(value),
+            Owner::exclusive_vec(value),
             Location("vec-buffer", 0),
             Declaration {
                 bytes,
@@ -659,3 +685,6 @@ pub fn audio_storage_constructor_layout_supported() -> bool {
 #[cfg(test)]
 #[path = "audio_storage/state_metadata_tests.rs"]
 mod state_metadata_tests;
+
+#[cfg(test)]
+mod vec_backing_tests;

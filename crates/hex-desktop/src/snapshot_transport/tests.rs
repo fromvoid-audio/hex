@@ -11,6 +11,17 @@ use std::{
 
 pub(super) static TABLE_TEST_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub(super) fn initialize_test_table() {
+    static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| {
+        hex_audio::reserve_retained_families_on_control(hex_audio::RetainedFamilyReservation {
+            family_slots: 4,
+            max_table_bytes: 16_384,
+        })
+        .unwrap();
+    });
+}
+
 pub(super) fn copy_view(source: &ViewState) -> ViewState {
     // Fresh owned view with actual producer child handles; no raw Arc adoption.
     // Legacy preview/parent custody remains unqualified outside this protocol oracle.
@@ -123,11 +134,7 @@ fn verify_two_free(base: &SnapshotReadCapability) {
 fn actual_registered_event_transport_releases_discarded_queued_preview_and_unpainted_reads() {
     let _serial = TABLE_TEST_GATE.lock().unwrap();
     let failures = failed_release_count();
-    hex_audio::reserve_retained_families_on_control(hex_audio::RetainedFamilyReservation {
-        family_slots: 2,
-        max_table_bytes: 16_384,
-    })
-    .unwrap(); // existing lifecycle worker, no device/output/native lease
+    initialize_test_table(); // existing lifecycle worker, no device/output/native lease
     let service = Service::new(48_000, 8, 1024).unwrap();
     let initial = receive(&service);
     let (family, key) = SessionExportFamily::try_new_on_control(SnapshotExportReservation {
