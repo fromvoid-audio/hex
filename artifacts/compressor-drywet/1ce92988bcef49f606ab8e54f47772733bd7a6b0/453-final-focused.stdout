@@ -1,0 +1,15 @@
+[1/7] provider: running
+[1/7] provider: passed
+[2/7] panel: running
+[2/7] panel: passed
+[3/7] engine-compressor: running
+[3/7] engine-compressor: passed
+[4/7] conformance: running
+[4/7] conformance: passed
+[5/7] allocation-lock: running
+[5/7] allocation-lock: passed
+[6/7] mix-allocation: running
+[6/7] mix-allocation: passed
+[7/7] host-compressor-allocation: running
+[7/7] host-compressor-allocation: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/compressor-453-final-focused/summary.json

@@ -1,0 +1,167 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.53s
+     Running unittests src/lib.rs (target/debug/deps/hex_engine-5ab7741602b2157c)
+
+running 2 tests
+test session_playback::tests::compressor_tests::compressor_parameter_revisions_keep_detector_and_gain_history_live ... ok
+test session_playback::tests::compressor_tests::compressor_renders_on_track_and_return_in_send_order_and_bypass_is_transparent ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 537 filtered out; finished in 0.01s
+
+     Running tests/clip_fades.rs (target/debug/deps/clip_fades-2244060143a09f8a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/clip_gain.rs (target/debug/deps/clip_gain-7176882383b2ff2a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/compile_project.rs (target/debug/deps/compile_project-99f9ef6693a73d06)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/compile_streamed_sources.rs (target/debug/deps/compile_streamed_sources-7b4c17f0aa6a6293)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/device_chain.rs (target/debug/deps/device_chain-48acd7227d75c147)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/fm4_native_admission.rs (target/debug/deps/fm4_native_admission-fee87b6dfa65e614)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/gain_envelope.rs (target/debug/deps/gain_envelope-f86ca966e88df3b9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running tests/latency_layout.rs (target/debug/deps/latency_layout-6eab0a3ef9dc0bdf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/loop_playback.rs (target/debug/deps/loop_playback-b82149121cb6848f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/midi_activity.rs (target/debug/deps/midi_activity-fa7f23d3b10cc19f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/midi_compile.rs (target/debug/deps/midi_compile-d6ffb974aadbc606)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+     Running tests/midi_template.rs (target/debug/deps/midi_template-ca7510595c3b1c59)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+     Running tests/mix_controls.rs (target/debug/deps/mix_controls-893265b663a9e15a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/observed_pages.rs (target/debug/deps/observed_pages-a5002e3ee53df93e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/operator_native_admission.rs (target/debug/deps/operator_native_admission-99a6ab64e8b75c70)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/project_tuning.rs (target/debug/deps/project_tuning-368dd677ed6a66d0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/registered_instrument.rs (target/debug/deps/registered_instrument-82e53f6941ea459d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/render_spans.rs (target/debug/deps/render_spans-d5645cead0e13cb2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/return_routes.rs (target/debug/deps/return_routes-d004716ac6087d1a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+     Running tests/session_audio_large.rs (target/debug/deps/session_audio_large-0734ac3e0d7687aa)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/session_playback.rs (target/debug/deps/session_playback-d2aee4ae90d5114e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.00s
+
+     Running tests/session_profile_oracle.rs (target/debug/deps/session_profile_oracle-70d60592b0b751a9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/session_streamed_audio.rs (target/debug/deps/session_streamed_audio-97589ebf86147c6c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+     Running tests/streamed_render.rs (target/debug/deps/streamed_render-6dd15aafd2a69eb7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/track_mix.rs (target/debug/deps/track_mix-7fa29431f8a9584c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/tuning_admission.rs (target/debug/deps/tuning_admission-5751e76326f1cb71)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+

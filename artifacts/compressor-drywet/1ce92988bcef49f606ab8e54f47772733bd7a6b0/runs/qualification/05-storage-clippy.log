@@ -1,0 +1,5 @@
+    Checking libc v0.2.190
+    Checking serde_json v1.0.151
+    Checking fs2 v0.4.3
+    Checking hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.56s

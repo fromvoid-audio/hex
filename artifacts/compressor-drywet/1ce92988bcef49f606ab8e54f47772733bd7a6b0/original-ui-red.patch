@@ -1,0 +1,11 @@
+--- a/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs
+@@ -65,7 +65,7 @@
+     );
+     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
+     assert!(graph.size.height >= px(50.0));
+-    for parameter in 1..=6 {
++    for parameter in 1..=7 {
+         let control = visual
+             .debug_bounds(Box::leak(
+                 format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),

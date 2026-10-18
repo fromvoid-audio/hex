@@ -1,0 +1,926 @@
+diff --git a/crates/hex-devices/src/compressor.rs b/crates/hex-devices/src/compressor.rs
+index c56699df..b7508adf 100644
+--- a/crates/hex-devices/src/compressor.rs
++++ b/crates/hex-devices/src/compressor.rs
+@@ -11,8 +11,8 @@ use hex_lattice_contract::{
+ use std::any::Any;
+ 
+ pub const COMPRESSOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.compressor");
+-pub const COMPRESSOR_STATE_VERSION: u32 = 1;
+-const STATE_BYTES: usize = 24;
++pub const COMPRESSOR_STATE_VERSION: u32 = 2;
++const STATE_BYTES: usize = 28;
+ const MIN_SAMPLE_RATE: u32 = 8_000;
+ const MAX_SAMPLE_RATE: u32 = 192_000;
+ const GAIN_SMOOTH_MS: f64 = 5.0;
+@@ -27,6 +27,7 @@ pub mod parameter {
+     pub const RELEASE: ParameterId = ParameterId::from_static(4);
+     pub const KNEE: ParameterId = ParameterId::from_static(5);
+     pub const MAKEUP: ParameterId = ParameterId::from_static(6);
++    pub const DRY_WET: ParameterId = ParameterId::from_static(7);
+ }
+ 
+ const DESCRIPTORS: &[ParameterDescriptor] = &[
+@@ -96,6 +97,17 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
+         default: ParameterValue::Float(0.0),
+         presentation: ParameterPresentation::Linear,
+     },
++    ParameterDescriptor {
++        id: parameter::DRY_WET,
++        label: "dry/wet",
++        kind: ParameterKind::Float {
++            min: 0.0,
++            max: 1.0,
++            unit: None,
++        },
++        default: ParameterValue::Float(1.0),
++        presentation: ParameterPresentation::Linear,
++    },
+ ];
+ 
+ #[derive(Clone, Copy, Debug, PartialEq)]
+@@ -106,6 +118,7 @@ struct CompressorSettings {
+     release_ms: f32,
+     knee_db: f32,
+     makeup_db: f32,
++    dry_wet: f32,
+ }
+ 
+ impl Default for CompressorSettings {
+@@ -117,6 +130,7 @@ impl Default for CompressorSettings {
+             release_ms: 100.0,
+             knee_db: 6.0,
+             makeup_db: 0.0,
++            dry_wet: 1.0,
+         }
+     }
+ }
+@@ -147,6 +161,7 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
+         release_ms: read(12),
+         knee_db: read(16),
+         makeup_db: read(20),
++        dry_wet: read(24),
+     };
+     validate(settings)?;
+     Ok(settings)
+@@ -160,6 +175,7 @@ fn validate(settings: CompressorSettings) -> Result<(), DeviceContractError> {
+         (parameter::RELEASE, settings.release_ms),
+         (parameter::KNEE, settings.knee_db),
+         (parameter::MAKEUP, settings.makeup_db),
++        (parameter::DRY_WET, settings.dry_wet),
+     ] {
+         let descriptor = DESCRIPTORS
+             .iter()
+@@ -180,6 +196,7 @@ fn encode(settings: CompressorSettings) -> Result<NativeDeviceState, DeviceContr
+         settings.release_ms,
+         settings.knee_db,
+         settings.makeup_db,
++        settings.dry_wet,
+     ] {
+         payload.extend_from_slice(&value.to_le_bytes());
+     }
+@@ -226,6 +243,7 @@ impl NativeDeviceMetadata for CompressorDefinition {
+             parameter::RELEASE => settings.release_ms,
+             parameter::KNEE => settings.knee_db,
+             parameter::MAKEUP => settings.makeup_db,
++            parameter::DRY_WET => settings.dry_wet,
+             _ => return Err(DeviceContractError::UnknownParameter),
+         };
+         Ok(ParameterValue::Float(value))
+@@ -252,6 +270,7 @@ impl NativeDeviceMetadata for CompressorDefinition {
+             parameter::RELEASE => settings.release_ms = value,
+             parameter::KNEE => settings.knee_db = value,
+             parameter::MAKEUP => settings.makeup_db = value,
++            parameter::DRY_WET => settings.dry_wet = value,
+             _ => return Err(DeviceContractError::UnknownParameter),
+         }
+         encode(settings)
+@@ -321,6 +340,8 @@ impl PreparedNativeProcessor for PreparedCompressor {
+             gain_alpha: self.gain_alpha,
+             envelope: 0.0,
+             gain_db: f64::from(self.settings.makeup_db),
++            mix: f64::from(self.settings.dry_wet),
++            mix_remaining: 0,
+         })
+     }
+     fn algorithmic_latency_frames(&self) -> Option<u32> {
+@@ -339,12 +360,16 @@ struct CompressorRuntime {
+     gain_alpha: f64,
+     envelope: f64,
+     gain_db: f64,
++    mix: f64,
++    mix_remaining: u32,
+ }
+ 
+ impl CompressorRuntime {
+     fn reset_history(&mut self) {
+         self.envelope = 0.0;
+         self.gain_db = f64::from(self.settings.makeup_db);
++        self.mix = f64::from(self.settings.dry_wet);
++        self.mix_remaining = 0;
+     }
+ 
+     fn process_frame(&mut self, frame: &mut StereoFrame) {
+@@ -374,8 +399,24 @@ impl CompressorRuntime {
+         let target_gain_db = reduction_db + f64::from(self.settings.makeup_db);
+         self.gain_db = self.gain_alpha * self.gain_db + (1.0 - self.gain_alpha) * target_gain_db;
+         let gain = 10.0_f64.powf(self.gain_db / 20.0);
+-        frame[0] = (left * gain) as f32;
+-        frame[1] = (right * gain) as f32;
++        // A finite 5 ms ramp reaches exact endpoints, independently of block
++        // partitions. Detector/gain history advances even at fully dry output.
++        if self.mix_remaining > 0 {
++            self.mix +=
++                (f64::from(self.settings.dry_wet) - self.mix) / f64::from(self.mix_remaining);
++            self.mix_remaining -= 1;
++            if self.mix_remaining == 0 {
++                self.mix = f64::from(self.settings.dry_wet);
++            }
++        }
++        if self.mix == 1.0 {
++            // Preserve the original fully-wet operation order and rounding.
++            frame[0] = (left * gain) as f32;
++            frame[1] = (right * gain) as f32;
++        } else if self.mix != 0.0 {
++            frame[0] = (left * (1.0 - self.mix) + left * gain * self.mix) as f32;
++            frame[1] = (right * (1.0 - self.mix) + right * gain * self.mix) as f32;
++        }
+     }
+ }
+ 
+@@ -420,6 +461,16 @@ impl NativeProcessorRuntime for CompressorRuntime {
+         {
+             self.envelope = previous.envelope;
+             self.gain_db = previous.gain_db;
++            self.mix = previous.mix;
++            self.mix_remaining = if self.settings.dry_wet == previous.settings.dry_wet {
++                // Scratch/rollback twins copy the trajectory without restarting it.
++                previous.mix_remaining
++            } else if self.mix != f64::from(self.settings.dry_wet) {
++                // Same preparation/history handoff as the existing gain smoother.
++                self.sample_rate.div_ceil(200)
++            } else {
++                0
++            };
+         }
+     }
+     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+@@ -469,14 +520,20 @@ pub fn transfer_curve(
+     let points = std::array::from_fn(|index| {
+         let x = index as f64 / 128.0;
+         let input_db = -60.0 + x * 60.0;
+-        let output_db = input_db
+-            + gain_reduction_db(
+-                input_db,
+-                f64::from(settings.threshold_db),
+-                f64::from(settings.ratio),
+-                f64::from(settings.knee_db),
+-            )
+-            + f64::from(settings.makeup_db);
++        let wet_gain_db = gain_reduction_db(
++            input_db,
++            f64::from(settings.threshold_db),
++            f64::from(settings.ratio),
++            f64::from(settings.knee_db),
++        ) + f64::from(settings.makeup_db);
++        let mix = f64::from(settings.dry_wet);
++        let output_db = if mix == 1.0 {
++            input_db + wet_gain_db
++        } else if mix == 0.0 {
++            input_db
++        } else {
++            input_db + 20.0 * ((1.0 - mix) + mix * 10.0_f64.powf(wet_gain_db / 20.0)).log10()
++        };
+         [x as f32, ((output_db + 66.0) / 90.0) as f32]
+     });
+     Ok(CompressorTransferCurve { points })
+diff --git a/crates/hex-devices/src/compressor/tests.rs b/crates/hex-devices/src/compressor/tests.rs
+index f72880ee..f6ed9fbc 100644
+--- a/crates/hex-devices/src/compressor/tests.rs
++++ b/crates/hex-devices/src/compressor/tests.rs
+@@ -32,12 +32,12 @@ fn runtime(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn NativeProcess
+ }
+ 
+ #[test]
+-fn defaults_and_generic_codec_roundtrip_all_six_parameters() {
++fn defaults_and_generic_codec_roundtrip_all_seven_parameters() {
+     let registry = registry();
+     let state = registry
+         .default_state(COMPRESSOR_TYPE_ID)
+         .expect("compressor defaults");
+-    assert_eq!(state.state_version(), 1);
++    assert_eq!(state.state_version(), COMPRESSOR_STATE_VERSION);
+     assert_eq!(state.payload().len(), STATE_BYTES);
+     assert_eq!(registry.migrate_state(&state).expect("migration"), state);
+     for (id, expected) in [
+@@ -47,6 +47,7 @@ fn defaults_and_generic_codec_roundtrip_all_six_parameters() {
+         (parameter::RELEASE, 100.0),
+         (parameter::KNEE, 6.0),
+         (parameter::MAKEUP, 0.0),
++        (parameter::DRY_WET, 1.0),
+     ] {
+         assert_eq!(
+             COMPRESSOR_DEFINITION.read_parameter(&state, id),
+@@ -91,15 +92,23 @@ fn malformed_states_parameters_and_sample_rates_are_rejected() {
+         registry.migrate_state(&wrong_type),
+         Err(DeviceContractError::WrongDeviceType)
+     );
+-    let future = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 2, state.payload().to_vec())
+-        .expect("future version");
++    let future = NativeDeviceState::new(
++        COMPRESSOR_TYPE_ID,
++        COMPRESSOR_STATE_VERSION + 1,
++        state.payload().to_vec(),
++    )
++    .expect("future version");
+     assert_eq!(
+         registry.migrate_state(&future),
+         Err(DeviceContractError::UnsupportedStateVersion)
+     );
+     for length in [STATE_BYTES - 1, STATE_BYTES + 1] {
+-        let malformed = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 1, vec![0; length])
+-            .expect("bounded malformed state");
++        let malformed = NativeDeviceState::new(
++            COMPRESSOR_TYPE_ID,
++            COMPRESSOR_STATE_VERSION,
++            vec![0; length],
++        )
++        .expect("bounded malformed state");
+         assert_eq!(
+             registry.migrate_state(&malformed),
+             Err(DeviceContractError::MalformedState)
+@@ -107,8 +116,9 @@ fn malformed_states_parameters_and_sample_rates_are_rejected() {
+     }
+     let mut invalid_number = state.payload().to_vec();
+     invalid_number[0..4].copy_from_slice(&f32::NAN.to_le_bytes());
+-    let malformed = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 1, invalid_number)
+-        .expect("bounded non-finite state");
++    let malformed =
++        NativeDeviceState::new(COMPRESSOR_TYPE_ID, COMPRESSOR_STATE_VERSION, invalid_number)
++            .expect("bounded non-finite state");
+     assert_eq!(
+         registry.migrate_state(&malformed),
+         Err(DeviceContractError::InvalidParameterValue)
+@@ -363,9 +373,254 @@ fn static_transfer_preview_matches_known_knee_anchors_and_validates_state() {
+             .iter()
+             .all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
+     );
+-    let malformed = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 1, vec![0]).expect("state");
++    let malformed = NativeDeviceState::new(COMPRESSOR_TYPE_ID, COMPRESSOR_STATE_VERSION, vec![0])
++        .expect("state");
+     assert_eq!(
+         transfer_curve(&malformed),
+         Err(DeviceContractError::MalformedState)
+     );
+ }
++
++#[test]
++fn parallel_mix_uses_original_dry_and_post_makeup_wet() {
++    let defaults = COMPRESSOR_DEFINITION.default_state().unwrap();
++    let makeup = patch(&defaults, parameter::MAKEUP, 12.0);
++    let input = [[0.9, -0.23], [0.1, 0.7], [-0.4, 0.03], [-0.0, 0.0]];
++    for mix in [0.0, 0.25, 0.75, 1.0] {
++        let state = patch(&makeup, ParameterId::from_static(7), mix);
++        let mut wet = input;
++        runtime(&makeup, 48_000).process_block(&mut wet, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++        let mut actual = input;
++        runtime(&state, 48_000).process_block(&mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++        for (index, frame) in actual.iter().enumerate() {
++            for (channel, sample) in frame.iter().enumerate() {
++                let expected = if mix == 0.0 {
++                    input[index][channel]
++                } else if mix == 1.0 {
++                    wet[index][channel]
++                } else {
++                    (f64::from(input[index][channel]) * (1.0 - f64::from(mix))
++                        + f64::from(wet[index][channel]) * f64::from(mix))
++                        as f32
++                };
++                assert!((*sample - expected).abs() < 2.0e-7);
++                if mix == 0.0 || mix == 1.0 {
++                    assert_eq!(sample.to_bits(), expected.to_bits());
++                }
++            }
++        }
++    }
++}
++
++#[test]
++fn default_wet_preserves_original_asymmetric_pcm_bitwise() {
++    let defaults = COMPRESSOR_DEFINITION.default_state().unwrap();
++    for (rate, expected) in [
++        (8000, 0xcf6d824693b1be4f_u64),
++        (22050, 0xfe0ada58f8009c0c_u64),
++        (44100, 0x513115d068c7dd07_u64),
++        (48000, 0x877a97d4e417b766_u64),
++        (96000, 0xaec3c632695233f7_u64),
++        (192000, 0xb575c8d16138de5_u64),
++    ] {
++        let mut signal: Vec<_> = (0..2049)
++            .map(|n| {
++                let value = ((n * 97 % 521) as f32 - 260.0) / 270.0;
++                [value, value * -0.173 + (n % 7) as f32 * 0.013]
++            })
++            .collect();
++        runtime(&defaults, rate).process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++        let mut hash = 0xcbf29ce484222325_u64;
++        for value in signal.iter().flatten() {
++            for byte in value.to_bits().to_le_bytes() {
++                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
++            }
++        }
++        assert_eq!(hash, expected, "pre-mix fully-wet PCM at {rate}");
++    }
++}
++
++#[test]
++fn mix_codec_rejects_legacy_nonfinite_and_preserves_host_metadata() {
++    let registry = registry();
++    let original = COMPRESSOR_DEFINITION
++        .default_state()
++        .unwrap()
++        .with_input_gain_millidb(-3210)
++        .unwrap()
++        .with_output_gain_millidb(1234)
++        .unwrap();
++    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.001, 1.001] {
++        assert!(
++            registry
++                .patch_parameter(&original, parameter::DRY_WET, ParameterValue::Float(value))
++                .is_err()
++        );
++    }
++    assert!(
++        registry
++            .patch_parameter(&original, parameter::DRY_WET, ParameterValue::Bool(true))
++            .is_err()
++    );
++    let legacy = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 1, vec![0; 24]).unwrap();
++    assert_eq!(
++        registry.migrate_state(&legacy),
++        Err(DeviceContractError::UnsupportedStateVersion)
++    );
++    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.1] {
++        let mut bytes = original.payload().to_vec();
++        bytes[24..28].copy_from_slice(&value.to_le_bytes());
++        let invalid =
++            NativeDeviceState::new(COMPRESSOR_TYPE_ID, COMPRESSOR_STATE_VERSION, bytes).unwrap();
++        assert_eq!(
++            registry.migrate_state(&invalid),
++            Err(DeviceContractError::InvalidParameterValue)
++        );
++    }
++    let changed = registry
++        .patch_parameter(&original, parameter::DRY_WET, ParameterValue::Float(0.375))
++        .unwrap();
++    assert_eq!(changed.input_gain_millidb(), -3210);
++    assert_eq!(changed.output_gain_millidb(), 1234);
++    assert_eq!(registry.migrate_state(&changed).unwrap(), changed);
++    assert_eq!(
++        COMPRESSOR_DEFINITION
++            .read_parameter(&changed, parameter::DRY_WET)
++            .unwrap(),
++        ParameterValue::Float(0.375)
++    );
++    // Independently owned opaque states can represent either generic A/B payload;
++    // patching one never mutates the other. No bank owner is added to the provider.
++    assert_eq!(
++        COMPRESSOR_DEFINITION
++            .read_parameter(&original, parameter::DRY_WET)
++            .unwrap(),
++        ParameterValue::Float(1.0)
++    );
++}
++
++#[test]
++fn mixed_static_curve_blends_after_makeup_in_linear_amplitude() {
++    let original = patch(
++        &patch(
++            &COMPRESSOR_DEFINITION.default_state().unwrap(),
++            parameter::RATIO,
++            1.0,
++        ),
++        parameter::MAKEUP,
++        12.0,
++    );
++    for mix in [0.0, 0.25, 0.75, 1.0] {
++        let state = patch(&original, parameter::DRY_WET, mix);
++        let curve = transfer_curve(&state).unwrap();
++        let gain_db =
++            20.0 * ((1.0 - f64::from(mix)) + f64::from(mix) * 10.0_f64.powf(12.0 / 20.0)).log10();
++        for (index, [_, y]) in curve.points.iter().enumerate() {
++            let input_db = -60.0 + index as f64 / 128.0 * 60.0;
++            assert!((f64::from(*y) * 90.0 - 66.0 - input_db - gain_db).abs() < 4.0e-6);
++        }
++    }
++}
++
++#[test]
++fn mix_edits_ramp_to_exact_endpoints_and_twin_copies_do_not_restart_it() {
++    for rate in [8_000_u32, 22_050, 44_100, 48_000, 96_000, 192_000] {
++        let defaults = COMPRESSOR_DEFINITION.default_state().unwrap();
++        let unity = patch(
++            &patch(&defaults, parameter::RATIO, 1.0),
++            parameter::MAKEUP,
++            12.0,
++        );
++        for (from, to) in [(0.0, 1.0), (1.0, 0.0), (0.2, 0.7)] {
++            let old = runtime(&patch(&unity, parameter::DRY_WET, from), rate);
++            let state = patch(&unity, parameter::DRY_WET, to);
++            let mut whole = runtime(&state, rate);
++            let mut partitioned = runtime(&state, rate);
++            whole.copy_history_from(old.as_ref());
++            partitioned.copy_history_from(old.as_ref());
++            let ramp = rate.div_ceil(200) as usize;
++            let input = [0.25, -0.125];
++            let mut a = vec![input; ramp + 17];
++            let mut b = a.clone();
++            whole.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            let mut start = 0;
++            for length in [1, 7, 31, 2, 503].into_iter().cycle() {
++                if start == b.len() {
++                    break;
++                }
++                let end = (start + length).min(b.len());
++                // Same-settings scratch runtime copied for each speculative block.
++                let mut twin = runtime(&state, rate);
++                twin.copy_history_from(partitioned.as_ref());
++                twin.process_block(&mut b[start..end], &hex_lattice::EMPTY_DEVICE_RESOURCES);
++                partitioned = twin;
++                start = end;
++            }
++            assert_eq!(a, b, "partition/twin agreement at {rate}");
++            let wet_gain = 10.0_f64.powf(12.0 / 20.0);
++            for (index, actual) in a.iter().enumerate() {
++                let progress = ((index + 1) as f64 / ramp as f64).min(1.0);
++                let mix = f64::from(from) + (f64::from(to) - f64::from(from)) * progress;
++                let gain = (1.0 - mix) + mix * wet_gain;
++                for (channel, sample) in actual.iter().enumerate() {
++                    assert!((f64::from(*sample) - f64::from(input[channel]) * gain).abs() < 2.0e-7);
++                }
++            }
++            if to == 0.0 {
++                assert_eq!(a[ramp], input, "finite ramp reaches exact dry endpoint");
++            }
++            // An abandoned candidate must not alter its committed source.
++            let source = old.as_any().downcast_ref::<CompressorRuntime>().unwrap();
++            assert_eq!(source.mix, f64::from(from));
++            assert_eq!(source.mix_remaining, 0);
++            whole.reset();
++            let mut reset = [input];
++            let mut fresh = reset;
++            whole.process_block(&mut reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            runtime(&state, rate).process_block(&mut fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            assert_eq!(reset, fresh);
++        }
++    }
++}
++
++#[test]
++fn fully_dry_and_bypassed_mix_edits_still_advance_detector_and_smoothing() {
++    let state = patch(
++        &COMPRESSOR_DEFINITION.default_state().unwrap(),
++        parameter::MAKEUP,
++        9.0,
++    );
++    let dry = patch(&state, parameter::DRY_WET, 0.0);
++    let mut wet_runtime = runtime(&state, 48_000);
++    let mut dry_runtime = runtime(&dry, 48_000);
++    let signal = [[0.9, -0.11]; 337];
++    let mut a = signal;
++    let mut b = signal;
++    wet_runtime.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    dry_runtime.process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    assert_eq!(b, signal);
++    let w = wet_runtime
++        .as_any()
++        .downcast_ref::<CompressorRuntime>()
++        .unwrap();
++    let d = dry_runtime
++        .as_any()
++        .downcast_ref::<CompressorRuntime>()
++        .unwrap();
++    assert_eq!((w.envelope, w.gain_db), (d.envelope, d.gain_db));
++    let mut active = runtime(&dry, 48_000);
++    let mut bypassed = runtime(&dry, 48_000);
++    active.copy_history_from(wet_runtime.as_ref());
++    bypassed.copy_history_from(wet_runtime.as_ref());
++    let mut x = signal;
++    let mut y = signal;
++    active.process_block(&mut x, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    bypassed.process_bypassed_block(&mut y, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    assert_eq!(y, signal);
++    let mut next = [[-0.3, 0.07]; 23];
++    let mut other = next;
++    active.process_block(&mut next, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    bypassed.process_block(&mut other, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    assert_eq!(next, other);
++    assert_eq!(next, [[-0.3, 0.07]; 23]);
++}
+diff --git a/crates/hex-storage/src/files.rs b/crates/hex-storage/src/files.rs
+index 16d20466..7ec1ae60 100644
+--- a/crates/hex-storage/src/files.rs
++++ b/crates/hex-storage/src/files.rs
+@@ -296,8 +296,8 @@ mod tests {
+         };
+         let mut snapshot = editor.project().snapshot();
+         let device_id = snapshot.next_id;
+-        let mut payload = Vec::with_capacity(24);
+-        for value in [-42.0_f32, 8.0, 0.5, 250.0, 9.0, 3.0] {
++        let mut payload = Vec::with_capacity(28);
++        for value in [-42.0_f32, 8.0, 0.5, 250.0, 9.0, 3.0, 0.375] {
+             payload.extend_from_slice(&value.to_le_bytes());
+         }
+         let track_snapshot = snapshot
+@@ -308,7 +308,7 @@ mod tests {
+         track_snapshot.devices.push(DeviceSnapshot {
+             id: device_id,
+             bypassed: false,
+-            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 1, payload)
++            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 2, payload)
+                 .expect("bounded opaque native state"),
+         });
+         snapshot.next_id = device_id + 1;
+@@ -324,7 +324,8 @@ mod tests {
+             .and_then(|candidate| candidate.devices().first())
+             .expect("saved Compressor");
+         assert_eq!(device.state().type_id().as_str(), Ok("hex.compressor"));
+-        assert_eq!(device.state().state_version(), 1);
++        assert_eq!(device.state().state_version(), 2);
++        assert_eq!(&device.state().payload()[24..28], &0.375_f32.to_le_bytes());
+         assert_eq!(
+             device.state().payload(),
+             project.tracks()[0].devices()[0].state().payload()
+diff --git a/crates/hex-ui/src/editor/device_panel/compressor_panel.rs b/crates/hex-ui/src/editor/device_panel/compressor_panel.rs
+index d370e996..84330776 100644
+--- a/crates/hex-ui/src/editor/device_panel/compressor_panel.rs
++++ b/crates/hex-ui/src/editor/device_panel/compressor_panel.rs
+@@ -17,11 +17,12 @@ const ATTACK: ParameterId = ParameterId::from_static(3);
+ const RELEASE: ParameterId = ParameterId::from_static(4);
+ const KNEE: ParameterId = ParameterId::from_static(5);
+ const OUTPUT: ParameterId = ParameterId::from_static(6);
+-const PARAMETERS: [ParameterId; 4] = [THRESHOLD, RATIO, KNEE, OUTPUT];
++const MIX: ParameterId = ParameterId::from_static(7);
++const PARAMETERS: [ParameterId; 5] = [THRESHOLD, RATIO, KNEE, OUTPUT, MIX];
+ 
+ pub(super) struct PreviewCache {
+     state: NativeDeviceState,
+-    values: [ParameterValue; 4],
++    values: [ParameterValue; 5],
+     curve: Result<CompressorTransferCurve, String>,
+ }
+ 
+@@ -44,7 +45,7 @@ fn preview(
+     state: &NativeDeviceState,
+     device_view: &NativeDeviceView,
+ ) -> Result<CompressorTransferCurve, String> {
+-    let mut values = [ParameterValue::Float(0.0); 4];
++    let mut values = [ParameterValue::Float(0.0); 5];
+     for (index, id) in PARAMETERS.iter().enumerate() {
+         let parameter = device_view
+             .parameters
+@@ -120,7 +121,11 @@ pub(super) fn render_body(
+             parameter,
+             presentation,
+             ControlText {
+-                codec: (id == RATIO).then_some(NumericDisplayCodec::Ratio),
++                codec: match id {
++                    RATIO => Some(NumericDisplayCodec::Ratio),
++                    MIX => Some(NumericDisplayCodec::Percent),
++                    _ => None,
++                },
+                 ..ControlText::default()
+             },
+         ),
+@@ -132,6 +137,7 @@ pub(super) fn render_body(
+     let threshold = control(THRESHOLD, ControlPresentation::InlineValue);
+     let output = control(OUTPUT, ControlPresentation::InlineValue);
+     let knee = control(KNEE, ControlPresentation::InlineValue);
++    let mix = control(MIX, ControlPresentation::InlineValue);
+     let mut graph = div()
+         .id(ElementId::Name(
+             format!("compressor-transfer-{}", device.value()).into(),
+@@ -183,7 +189,7 @@ pub(super) fn render_body(
+                 .flex_shrink_0()
+                 .text_size(px(7.0))
+                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+-                .child(theme::text("in -60…0 db · out -66…24 db")),
++                .child(theme::text("static · in -60…0 db · out -66…24 db")),
+         )
+         .child(
+             div()
+@@ -193,7 +199,7 @@ pub(super) fn render_body(
+                 .items_center()
+                 .justify_between()
+                 .child(field("knee", knee))
+-                .child(theme::text("static curve")),
++                .child(field("mix", mix)),
+         );
+     let main = crate::device_composition::plot_column(toolbar, graph, footer).text_size(px(8.0));
+     crate::device_composition::split_body(rail, main)
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs
+index d0de6d47..2c515cad 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs
+@@ -65,7 +65,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
+     );
+     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
+     assert!(graph.size.height >= px(50.0));
+-    for parameter in 1..=6 {
++    for parameter in 1..=7 {
+         let control = visual
+             .debug_bounds(Box::leak(
+                 format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),
+@@ -286,3 +286,202 @@ fn removing_return_compressor_retires_preview_without_changing_owner(cx: &mut Te
+             .is_none()
+     );
+ }
++
++#[gpui::test]
++fn compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open(
++    cx: &mut TestAppContext,
++) {
++    cx.update(hex_widgets::bind_numeric_control_keys);
++    let (service, _, track, return_track, return_device, _) = actor_return_utility_fixture();
++    let original = hex_engine::default_native_device_state(
++        hex_lattice_contract::DeviceTypeId::from_static("hex.compressor"),
++    )
++    .unwrap();
++    service
++        .submit(Request::Edit(Command::ReplaceDeviceState {
++            device: return_device,
++            state: original.clone(),
++        }))
++        .unwrap();
++    assert!(receive_service_event(&service).error.is_none());
++    service
++        .submit(Request::Edit(Command::InsertDevice {
++            track,
++            before: None,
++            state: original.clone(),
++        }))
++        .unwrap();
++    let state = receive_service_event(&service).state;
++    let track_device = state.project.track(track).unwrap().devices()[0].id();
++    let (handle, editor) = actor_editor_window(cx, service, state, track);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    let mix_id = hex_lattice_contract::ParameterId::from_static(7);
++    for (owner, device) in [(None, track_device), (Some(return_track), return_device)] {
++        editor.update(cx, |view, cx| {
++            view.focused_return = owner;
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let selector = Box::leak(format!("device-{}-parameter-7", device.value()).into_boxed_str());
++        let before = editor.read_with(cx, |view, _| {
++            view.state
++                .as_ref()
++                .unwrap()
++                .project
++                .device(device)
++                .unwrap()
++                .state()
++                .clone()
++        });
++        let start = visual
++            .debug_bounds(selector)
++            .expect("real mix control")
++            .center();
++        let moved = point(start.x, start.y + px(35.0));
++        // Actual pointer Begin/Change, followed by the existing cancellation path.
++        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
++        visual.run_until_parked();
++        editor.read_with(cx, |view, _| {
++            let gesture = view.device_gesture.snapshot().expect("real mix gesture");
++            assert_ne!(gesture.value, ParameterValue::Float(1.0));
++            let expected =
++                hex_engine::patch_native_device_parameter(&before, mix_id, gesture.value).unwrap();
++            assert_eq!(
++                compressor_panel::cached_curve(view, device),
++                Some(&hex_engine::native_compressor_transfer_curve(&expected).unwrap())
++            );
++        });
++        editor.update(cx, |view, _| view.cancel_device_gesture().unwrap());
++        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
++        pump_until(&editor, cx, |view| {
++            view.worker_requests_pending == 0
++                && view.pending_requests.is_empty()
++                && view.device_gesture.snapshot().is_none()
++                && view.device_gesture_barriers.is_empty()
++        });
++        editor.read_with(cx, |view, _| {
++            assert_eq!(
++                view.state
++                    .as_ref()
++                    .unwrap()
++                    .project
++                    .device(device)
++                    .unwrap()
++                    .state(),
++                &before
++            )
++        });
++        visual.run_until_parked();
++        let value_selector =
++            Box::leak(format!("device-{}-parameter-7-value", device.value()).into_boxed_str());
++        for invalid in ["nan", "inf", "101%"] {
++            let value = visual
++                .debug_bounds(value_selector)
++                .expect("real editable percentage");
++            visual.simulate_click(value.center(), Modifiers::default());
++            visual.simulate_keystrokes("cmd-a");
++            visual.simulate_input(invalid);
++            visual.simulate_keystrokes("enter");
++            visual.run_until_parked();
++            editor.read_with(cx, |view, _| {
++                assert_eq!(
++                    view.state
++                        .as_ref()
++                        .unwrap()
++                        .project
++                        .device(device)
++                        .unwrap()
++                        .state(),
++                    &before
++                );
++                assert!(
++                    view.device_gesture.snapshot().is_none(),
++                    "invalid text cannot begin an edit"
++                );
++            });
++            visual.simulate_keystrokes("escape");
++            visual.run_until_parked();
++        }
++        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
++        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
++        pump_until(&editor, cx, |view| {
++            view.worker_requests_pending == 0
++                && view.pending_requests.is_empty()
++                && view.device_gesture.snapshot().is_none()
++                && view.device_gesture_barriers.is_empty()
++        });
++        let changed = editor.read_with(cx, |view, _| {
++            view.state
++                .as_ref()
++                .unwrap()
++                .project
++                .device(device)
++                .unwrap()
++                .state()
++                .clone()
++        });
++        assert_ne!(changed, before);
++        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |view| {
++            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++        });
++        editor.read_with(cx, |view, _| {
++            assert_eq!(
++                view.state
++                    .as_ref()
++                    .unwrap()
++                    .project
++                    .device(device)
++                    .unwrap()
++                    .state(),
++                &before
++            )
++        });
++        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
++        pump_until(&editor, cx, |view| {
++            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++        });
++        editor.read_with(cx, |view, _| {
++            assert_eq!(
++                view.state
++                    .as_ref()
++                    .unwrap()
++                    .project
++                    .device(device)
++                    .unwrap()
++                    .state(),
++                &changed
++            )
++        });
++    }
++    let expected = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++    let path = std::env::temp_dir().join(format!(
++        "hex-compressor-mix-{}-{}.hex",
++        std::process::id(),
++        track_device.value()
++    ));
++    assert!(!path.exists(), "disposable create-new fixture");
++    editor.update(cx, |view, _| {
++        assert!(view.enqueue(Request::SaveNew(path.clone())))
++    });
++    pump_until(&editor, cx, |view| {
++        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++    });
++    editor.read_with(cx, |view, _| {
++        assert!(view.error.is_none(), "save must succeed")
++    });
++    let reload = Service::new(48_000, 8, 8_000_000).unwrap();
++    let _ = receive_service_event(&reload);
++    reload.submit(Request::Open(path.clone())).unwrap();
++    let reopened = receive_service_event(&reload);
++    assert!(reopened.error.is_none());
++    for device in [track_device, return_device] {
++        assert_eq!(
++            reopened.state.project.device(device).unwrap().state(),
++            expected.device(device).unwrap().state()
++        );
++    }
++    std::fs::remove_file(path).unwrap();
++}
+diff --git a/docs/compressor.md b/docs/compressor.md
+index 74a0d1ab..671eadd8 100644
+--- a/docs/compressor.md
++++ b/docs/compressor.md
+@@ -2,7 +2,7 @@
+ 
+ The registered `hex.compressor` is an original zero-lookahead, stereo-linked
+ feed-forward processor using the shared Lattice stateful effect contract. Its
+-version-1 opaque state contains six finite `f32` controls. Generic device
++version-2 opaque state contains seven finite `f32` controls (28 bytes). Generic device
+ metadata supplies catalog display, editing, persistence, history, and parameter
+ publication.
+ 
+@@ -16,11 +16,11 @@ the uncompressed region has zero gain reduction. Above a hard knee, reduction is
+ gain. Makeup is added to the reduction target.
+ 
+ Current gain in dB follows the target through a control-prepared 5 ms one-pole
+-smoother, then multiplies both channels by the same linear gain. Runtime state is
+-only the scalar detector envelope and gain value. Parameter revisions can carry
++smoother, then multiplies both channels by the same linear gain. Runtime state contains the scalar detector envelope, gain value, current mix
++and remaining mix-ramp frame count. Parameter revisions can carry
+ these histories between same-rate compatible instances while keeping the
+ candidate's new settings and coefficients. Reset restores zero envelope and the
+-configured makeup gain. Bypass advances the same state while preserving the
++configured makeup gain and authored mix. Bypass advances the same state while preserving the
+ input.
+ 
+ The effect declares zero algorithmic latency and a zero-frame finite output
+@@ -52,10 +52,10 @@ establish native UI or listening acceptance.
+ 
+ The 326px panel uses the shared rounded fixed-height frame and shared editable
+ controls. Ratio, attack and release form the left column; threshold and manual
+-output (makeup) are inline fields above the curve, with knee below. Ratio uses
++output (makeup) are inline fields above the curve, with knee and a percentage dry/wet field below. Ratio uses
+ the shared typed `n:1` display/parse codec; plain numeric entry remains accepted. The read-only
+ static curve comes from the actual original gain-reduction law at steady detector
+-levels. Input is -60..0 db and output is -66..24 db, including the soft-knee
++levels. Input is -60..0 db and output is -66..24 db, including makeup, the amplitude-domain dry/wet blend and the soft-knee
+ dip at the lowest threshold. It is explicitly a static preview, not a live
+ gain-reduction meter or timing display. No unsupported modes or lookahead
+ controls are drawn. Track and Return instances share the same body.
+@@ -64,3 +64,48 @@ Curve samples are bounded and cached by device state and effective local values;
+ drafts update before worker acknowledgement. Owner/project/removal retire cached
+ state. Headless tests cover Track/Return dimensions, a real Undoable parameter
+ drag and pending-draft retirement; visual/listening acceptance awaits the user.
++
++## parallel dry/wet — pulse2851
++
++Stable provider parameter 7, `dry/wet`, is a finite fraction from 0 to 1, default
++1. For original device-input sample `x`, compressed post-makeup sample `w`, and
++current mix `m`, output is `(1-m)*x + m*w`, computed in double precision before
++conversion to PCM. This is an original linear-amplitude law, not a measured Live
++law. At exactly 0 the original input is retained bitwise, including signed zero;
++at exactly 1 the original fully-wet operation order/rounding is retained. Host
++input trim precedes the device and output trim follows it, through unchanged
++host processing. Detector and gain history still advance while fully dry or
++bypassed. Invalid input retains the existing visible fault behavior.
++
++A compatible parameter revision copies the current mix and ramps to its new
++target over `ceil(sample_rate/200)` valid frames (at least 5 ms). The finite ramp
++reaches exact endpoints. Same-settings speculative/scratch history copies also
++copy remaining frames, so block boundaries and rollback do not restart the ramp.
++Fresh/reset runtimes start at authored mix. No callback allocation, queue, extra
++PCM buffer or host registry is introduced; only scalar runtime state and math.
++The static curve and effective pending-draft cache use the same post-makeup blend;
++it is a steady target preview, not a live detector/ramp/meter display.
++
++Codec version 1 is explicitly unsupported, including prior alpha payloads; no
++historical conversion or automatic user-file rewrite is provided. Current state
++continues through generic opaque preset/project/history operations. Independent
++current payloads carry mix without a provider-specific A/B model. Actual combined
++A/B UI acceptance requires the generic A/B integration, absent from the source
++base for this slice; no unmerged A/B branch is imported here.
++
++Focused verification covers dry/wet/intermediate PCM with nonzero makeup,
++asymmetric stereo and signed zero, original fully-wet PCM fingerprints at six
++rates, analytic mix ramps and irregular speculative twin partitions, reset and
++bypass/dry history, current codec/host-trim preservation and invalid/legacy
++refusal. Actual canonical Track/Return tests exercise rendered mix gestures,
++Change/Commit/Cancel, draft preview, Undo/Redo and disposable current save/open.
++These source checks do not establish native musical listening or full Compressor,
++W12 or Ableton parity. Root owns future finite native control/listening checks;
++sole merger owns final prospective full local CI and merge.
++
++A disposable, non-repository allocation-counter 0.8.1 fixture measured zero total
++allocations/bytes and zero signed-net allocations/bytes across process, bypass,
++reset and history transfer for six sample rates and three mix values, with an
++allocation-positive/net-zero sensitivity calibration. The existing actual routed
++Track/Return callback allocation test also remains green at default mix. This is
++finite source/runtime evidence, not a universal native audio deadline claim.

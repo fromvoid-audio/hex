@@ -1,0 +1,914 @@
+{
+  "schema": 1,
+  "ticket": 2851,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/453",
+  "source": {
+    "parent": "c772974cf590a6aea32720cd4b4ab425731a613c",
+    "parent_tree": "f06676cac3bdb008b08d397dc0a6e9a6b7510a4a",
+    "head": "1ce92988bcef49f606ab8e54f47772733bd7a6b0",
+    "tree": "2bf02b3cb6121f8b11cb5c6deca86e138e4e520c",
+    "branch": "pulse/task-2851-g1-d42fe5d48b55",
+    "files": [
+      "crates/hex-devices/src/compressor.rs",
+      "crates/hex-devices/src/compressor/tests.rs",
+      "crates/hex-storage/src/files.rs",
+      "crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+      "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+      "docs/compressor.md"
+    ]
+  },
+  "own_diff": {
+    "insertions": 601,
+    "deletions": 38
+  },
+  "file_hashes": {
+    "crates/hex-devices/src/compressor.rs": {
+      "before_blob": "c56699df3c7a9a684ab599ac9111fa9cc1eb75ff",
+      "before_sha256": "b1aafedf9b675de092712de9f3bdcbabba58e31248a068ecf0e9059e36ea5045",
+      "after_sha256": "ead6c0e6788f4acce75314b443bd8379ebd2c5c2b27dfc65f59c927555dfc786",
+      "after_blob": "b7508adf39f853772a228c136ae3a3ddc77bb3f2"
+    },
+    "crates/hex-devices/src/compressor/tests.rs": {
+      "before_blob": "f72880eee1f09625dbb5832be3d61c4202e376bf",
+      "before_sha256": "f14bc2507b696bfc25857a8e38a7c6ff5261393a4889955b414c6339a8f3ae88",
+      "after_sha256": "d308d2f5cfc9bd137561a2ff18fd874d654b3c9ccf3f4e2b1e1c83735ca14486",
+      "after_blob": "f6ed9fbc1584a9fa1001c5205addc997244b28ea"
+    },
+    "crates/hex-storage/src/files.rs": {
+      "before_blob": "16d2046644994215b006a087c806dbb3da14bc43",
+      "before_sha256": "ab6d46db9b85975b7ab22744a4be366c861b0c880b3799cb80bcf4e3c02492c3",
+      "after_sha256": "36ef60dc6fe66d22b8b27424b6ffec4976a6b91073bf7beaef4a8d9e054a8c05",
+      "after_blob": "7ec1ae60ab939cff1645d98c72dd344b6697ccba"
+    },
+    "crates/hex-ui/src/editor/device_panel/compressor_panel.rs": {
+      "before_blob": "d370e99676ea83fb6da4f2cf66dc0c31714795b0",
+      "before_sha256": "5474d0b8ac255d30119923cebea1f426a404df9aae5bcdaa0bac0358cfb8e80a",
+      "after_sha256": "847efe9339d9dc7a3e0b47e347ae5b82136c84d240dc476288ea8a2af3f0a31f",
+      "after_blob": "843307762a2bef369d8ea7a86183aae5b44b3e8c"
+    },
+    "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs": {
+      "before_blob": "d0de6d47d84ebf03d4444db9518192a708ea3bfc",
+      "before_sha256": "fc250737f343de2c8218e323e28d318161dfa79595a2ada2b082c0eb7b392f80",
+      "after_sha256": "d77c67b213f81aed3a21f5e9fbdfb07fc3306c69a8da0018cf55c4830cc3a175",
+      "after_blob": "2c515cadb4af9b0035eebdcdc354dc85e320be3d"
+    },
+    "docs/compressor.md": {
+      "before_blob": "74a0d1ab11398327050202dc28836455264a3e91",
+      "before_sha256": "667e2c5779a115f837de802bc817a2eceac2c4295ab1c49f41cbdbc5ac63decb",
+      "after_sha256": "7749d424842eaf90d6c34e51eda54b885fd3d5a1253d20da97462db71b90cff9",
+      "after_blob": "671eadd8831ed22084704b3379a38fd7474929f9"
+    }
+  },
+  "runs": {
+    "red-provider": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 5.588,
+      "start_tree": {
+        "commit": "c772974cf590a6aea32720cd4b4ab425731a613c",
+        "content_sha256": "f9df2d8f0c66e07050b9407a38733522f1e6b51b9b390089249765cc8b4cd677",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "parallel_mix_uses_original_dry",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:25:21Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/compressor-453-red-provider/01-provider-red.log",
+          "started_at": "2026-10-18T22:25:16Z",
+          "status": "failed",
+          "step_id": "provider-red"
+        }
+      ]
+    },
+    "red-ui": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 48.912,
+      "start_tree": {
+        "commit": "c772974cf590a6aea32720cd4b4ab425731a613c",
+        "content_sha256": "f9df2d8f0c66e07050b9407a38733522f1e6b51b9b390089249765cc8b4cd677",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_shared_panel_fits",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:26:26Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/compressor-453-red-ui/01-panel-red.log",
+          "started_at": "2026-10-18T22:25:38Z",
+          "status": "failed",
+          "step_id": "panel-red"
+        }
+      ]
+    },
+    "original-wet": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 5.115,
+      "start_tree": {
+        "commit": "c772974cf590a6aea32720cd4b4ab425731a613c",
+        "content_sha256": "b4a39a99566eaa8875b9e187930ce3e2556f14946431edee54a5b298577f4eeb",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "default_wet_preserves_original",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:26:42Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-original-wet/01-wet-baseline.log",
+          "started_at": "2026-10-18T22:26:37Z",
+          "status": "passed",
+          "step_id": "wet-baseline"
+        }
+      ]
+    },
+    "provider-green1": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 5.13,
+      "start_tree": {
+        "commit": "c772974cf590a6aea32720cd4b4ab425731a613c",
+        "content_sha256": "3166dfe10e9ec9310935e156f9f19ade9a8ca881b8f2ffb1d92e39c0ba52dc62",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "compressor::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:27:21Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-provider-green1/01-provider.log",
+          "started_at": "2026-10-18T22:27:16Z",
+          "status": "passed",
+          "step_id": "provider"
+        }
+      ]
+    },
+    "focused1": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 3.061,
+      "start_tree": {
+        "commit": "c772974cf590a6aea32720cd4b4ab425731a613c",
+        "content_sha256": "7e36a6b0697faaf2ac797acc2e55b8abc372fa1f581640586f43bcda6c61db4d",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "compressor::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:28:40Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/compressor-453-focused1/01-provider.log",
+          "started_at": "2026-10-18T22:28:38Z",
+          "status": "failed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "panel"
+        }
+      ]
+    },
+    "focused2": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 44.795,
+      "start_tree": {
+        "commit": "c772974cf590a6aea32720cd4b4ab425731a613c",
+        "content_sha256": "c50e7222e128b1ef5b12d49c0cbf01be0fe623a376eff9443250cc4bbc769027",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+          " M docs/compressor.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "compressor::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:29:34Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-focused2/01-provider.log",
+          "started_at": "2026-10-18T22:29:29Z",
+          "status": "passed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:30:14Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-focused2/02-panel.log",
+          "started_at": "2026-10-18T22:29:34Z",
+          "status": "passed",
+          "step_id": "panel"
+        }
+      ]
+    },
+    "final-focused": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 73.565,
+      "start_tree": {
+        "commit": "c772974cf590a6aea32720cd4b4ab425731a613c",
+        "content_sha256": "c4c8fea87aaf823a545765a63fd56da58fa4f2e5b44c3e7736340dd4d73bb691",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+          " M docs/compressor.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "compressor::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:31:17Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-final-focused/01-provider.log",
+          "started_at": "2026-10-18T22:31:12Z",
+          "status": "passed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:31:51Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-final-focused/02-panel.log",
+          "started_at": "2026-10-18T22:31:17Z",
+          "status": "passed",
+          "step_id": "panel"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-engine",
+            "--locked",
+            "compressor_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:32:09Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-final-focused/03-engine-compressor.log",
+          "started_at": "2026-10-18T22:31:51Z",
+          "status": "passed",
+          "step_id": "engine-compressor"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--test",
+            "authoring_conformance",
+            "registered_default_states",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:32:10Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-final-focused/04-conformance.log",
+          "started_at": "2026-10-18T22:32:09Z",
+          "status": "passed",
+          "step_id": "conformance"
+        },
+        {
+          "argv": [
+            "cargo",
+            "generate-lockfile",
+            "--offline",
+            "--manifest-path",
+            "/tmp/hex-compressor-allocation-453/Cargo.toml"
+          ],
+          "ended_at": "2026-10-18T22:32:10Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-final-focused/05-allocation-lock.log",
+          "started_at": "2026-10-18T22:32:10Z",
+          "status": "passed",
+          "step_id": "allocation-lock"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "--offline",
+            "--locked",
+            "--manifest-path",
+            "/tmp/hex-compressor-allocation-453/Cargo.toml",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:32:13Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-final-focused/06-mix-allocation.log",
+          "started_at": "2026-10-18T22:32:10Z",
+          "status": "passed",
+          "step_id": "mix-allocation"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-audio",
+            "--features",
+            "allocation-probe",
+            "--locked",
+            "compressor_track_and_return_revision_admission_and_render_allocate_nothing",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:32:26Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-final-focused/07-host-compressor-allocation.log",
+          "started_at": "2026-10-18T22:32:13Z",
+          "status": "passed",
+          "step_id": "host-compressor-allocation"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 59.947,
+      "start_tree": {
+        "commit": "c772974cf590a6aea32720cd4b4ab425731a613c",
+        "content_sha256": "e4a376a60f3f4bf2d5820fb88c0f841ccb3787e52852e6a78c9c50df039b48db",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+          " M docs/compressor.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "compressor::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:33:03Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/01-provider.log",
+          "started_at": "2026-10-18T22:32:59Z",
+          "status": "passed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "opaque_compressor_state_survives_project_save_and_load",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:33:13Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/02-storage.log",
+          "started_at": "2026-10-18T22:33:03Z",
+          "status": "passed",
+          "step_id": "storage"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-devices",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T22:33:18Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/03-devices-clippy.log",
+          "started_at": "2026-10-18T22:33:13Z",
+          "status": "passed",
+          "step_id": "devices-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T22:33:47Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/04-ui-clippy.log",
+          "started_at": "2026-10-18T22:33:18Z",
+          "status": "passed",
+          "step_id": "ui-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-storage",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T22:33:52Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/05-storage-clippy.log",
+          "started_at": "2026-10-18T22:33:47Z",
+          "status": "passed",
+          "step_id": "storage-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-18T22:33:52Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/06-architecture.log",
+          "started_at": "2026-10-18T22:33:52Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-18T22:33:52Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/07-gpui-patch.log",
+          "started_at": "2026-10-18T22:33:52Z",
+          "status": "passed",
+          "step_id": "gpui-patch"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-18T22:33:52Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/08-ui-style.log",
+          "started_at": "2026-10-18T22:33:52Z",
+          "status": "passed",
+          "step_id": "ui-style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-18T22:33:53Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/09-device-layout.log",
+          "started_at": "2026-10-18T22:33:52Z",
+          "status": "passed",
+          "step_id": "device-layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-18T22:33:58Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/10-format.log",
+          "started_at": "2026-10-18T22:33:53Z",
+          "status": "passed",
+          "step_id": "format"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-18T22:33:58Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-453-qualification/11-diff.log",
+          "started_at": "2026-10-18T22:33:58Z",
+          "status": "passed",
+          "step_id": "diff"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Only focused component runs; no full21/native/merge qualification.",
+    "No actual A/Bbank API in base; combined A/B UI acceptance explicitly open.",
+    "Codec2 refuses oldalpha1; no conversion/destructive file actions.",
+    "Temporary allocation fixture uses existing pinnedallocation-counter0.8.1, no repository dependency change.",
+    "No feature expansion RMS/AutoPan/sharedmodels/Engine/Sampler."
+  ],
+  "dataset_sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc",
+  "payloads": {
+    "453-before-after.json": {
+      "bytes": 1765,
+      "sha256": "4fe07340c73535d9c42244803f3e32ed05199264007f84d52020d67519e5a4b6"
+    },
+    "453-component.py": {
+      "bytes": 543,
+      "sha256": "72b266d6e29712ed97c4bd2505f98264f1c05863ffc8b42a20bc4f850b870980"
+    },
+    "453-final-focused.stdout": {
+      "bytes": 508,
+      "sha256": "a834255e7ef24bdd6204407337e76e512b64be823831fb714b507f5806e212a5"
+    },
+    "453-focused1.stdout": {
+      "bytes": 141,
+      "sha256": "d73a31c3a132dbccbb2ea2c8fdd8e4a6936ff1eed31074ce3a187c42349aa7fb"
+    },
+    "453-focused2.stdout": {
+      "bytes": 182,
+      "sha256": "18807e5aeb854bd99e1bcced551c73846a9bcfc0e1e3b76279e1837c9433a43c"
+    },
+    "453-original-wet.stdout": {
+      "bytes": 153,
+      "sha256": "fa7319428b507e2b00fa5ee184e7da7975e4c1216c65be72c7e3497cfee3ce5a"
+    },
+    "453-provider-green1.stdout": {
+      "bytes": 148,
+      "sha256": "9f9dc4260f714ab91e033a140b701a31aaac2f897d31d8bbd33d630071821743"
+    },
+    "453-publish-evidence.py": {
+      "bytes": 9626,
+      "sha256": "559033d39a6dd42d5459135af80cee603e50c5eda4e004e9df6190c268899ac0"
+    },
+    "453-qualification.stdout": {
+      "bytes": 676,
+      "sha256": "252f6e8ed2ad1c481534dd190de47974d53c180234d62c27138bb5299264f9fa"
+    },
+    "453-red-provider.stdout": {
+      "bytes": 153,
+      "sha256": "a4abcddc522e50550bd74f6e1d0aaf190c87a21ccbcaf3fc12edebec89795f59"
+    },
+    "453-red-ui.stdout": {
+      "bytes": 141,
+      "sha256": "5c06040693f139d46cfa854c433ecb2a977003da9b5279515988a2593979749d"
+    },
+    "453-source.json": {
+      "bytes": 590,
+      "sha256": "c23ca47cc79e8be555cc2c4f375b44a90f52f237b444b38335b0eff39993d5df"
+    },
+    "allocation-fixture/Cargo.lock": {
+      "bytes": 885,
+      "sha256": "3e1f3eac7cbf99a114ef8ddaa8de03bce6336f0a625e2bb465f5c0c153079e64"
+    },
+    "allocation-fixture/Cargo.toml": {
+      "bytes": 370,
+      "sha256": "85518cba9f64417dd6107b120d873afc65dce7565da86943613e3eb7efd9e384"
+    },
+    "allocation-fixture/probe.rs": {
+      "bytes": 2402,
+      "sha256": "6f038bc814189e7cd9f9c1897d6b2ed7f430015c27db0e0341ff87383e5b15f0"
+    },
+    "before-after-hashes.json": {
+      "bytes": 2137,
+      "sha256": "3d11cc3e277fa6007f6eca8eec398c955ae39cdd289011f94f67545044abe750"
+    },
+    "finite-native-plan.md": {
+      "bytes": 1308,
+      "sha256": "4a1ab21f7a2599fc53dcf300330717ef28c3e3f3a270c66ba1b063332c150969"
+    },
+    "integration-note.md": {
+      "bytes": 4016,
+      "sha256": "0182f99a93a911278d5d0c954245a646293eacbd8644b95c9ca7fb64c8912dac"
+    },
+    "original-ui-red.patch": {
+      "bytes": 499,
+      "sha256": "cf1db60c6a095d736a0c46e6659a766985d7f81806a14bb101a4e1f22f482a47"
+    },
+    "runs/final-focused/01-provider.log": {
+      "bytes": 1862,
+      "sha256": "b5bf14aa35d94e43221914d9c4ed34a9dcc64fdfca21a786af3e971133f5143f"
+    },
+    "runs/final-focused/02-panel.log": {
+      "bytes": 980,
+      "sha256": "b0732ac10f13744ad9aae493c80c00dfd4ab555e1ebe2012e9e3fbe14369d2dd"
+    },
+    "runs/final-focused/03-engine-compressor.log": {
+      "bytes": 5990,
+      "sha256": "a45b704524f25c1c606b4bcf3536cfd360008f72e66d139e0d34d2a1c26ca5ab"
+    },
+    "runs/final-focused/04-conformance.log": {
+      "bytes": 425,
+      "sha256": "0dcfe6188583024ce6a9b923b14fe4e0869968cd18b796f35c27a40a9856c8aa"
+    },
+    "runs/final-focused/05-allocation-lock.log": {
+      "bytes": 66,
+      "sha256": "6f13257613dd29f847af42943544e419290df7edb669dda96145e6e9a30b50f1"
+    },
+    "runs/final-focused/06-mix-allocation.log": {
+      "bytes": 977,
+      "sha256": "0c8f2ce6bd4726481f54f722e798edf4d78606652c374192e7711925c5fca7d7"
+    },
+    "runs/final-focused/07-host-compressor-allocation.log": {
+      "bytes": 4883,
+      "sha256": "75f0ca48a54d886a3bf5f86c5ad504690ee04bc0f6c9b9702930398a378fa68e"
+    },
+    "runs/final-focused/summary.json": {
+      "bytes": 14721,
+      "sha256": "fd0e46470deb5deaeb3023c135355a1ac18c02b8e276a82a8e6fee138d881fd9"
+    },
+    "runs/focused1/01-provider.log": {
+      "bytes": 968,
+      "sha256": "026f8e2f2cd6217af72b7e88fef0909ad2eed11ef242247488b38ad699944815"
+    },
+    "runs/focused1/summary.json": {
+      "bytes": 11147,
+      "sha256": "8a8fc59a50fcc426778865266fdd222857f08ad40eaf6f74814192fae607c64d"
+    },
+    "runs/focused2/01-provider.log": {
+      "bytes": 1862,
+      "sha256": "5b2686805049253605176765d1b73621ff2b0ea5c146127e188959fba058a6c8"
+    },
+    "runs/focused2/02-panel.log": {
+      "bytes": 1312,
+      "sha256": "57a9e3895917f1970fbb5a5205b206ea2639e01c9715f44a13eca21ab59c6508"
+    },
+    "runs/focused2/summary.json": {
+      "bytes": 11322,
+      "sha256": "558892f9259928af67efc99ba878dd08486a508b9bd897514b6b563930c934ec"
+    },
+    "runs/original-wet/01-wet-baseline.log": {
+      "bytes": 650,
+      "sha256": "90c8cfc8e5510e519aa696262b70d0e03a1c00458016dfce4554cb47c4c479a9"
+    },
+    "runs/original-wet/summary.json": {
+      "bytes": 10123,
+      "sha256": "6a425183a260c0d1a87b4d0424df50c8c130b9e0fd98d62674827edfe5afbee1"
+    },
+    "runs/provider-green1/01-provider.log": {
+      "bytes": 1478,
+      "sha256": "37b7a2580b879a873b6e5325015e725e3dab6323f4d77960f62daf4513dec945"
+    },
+    "runs/provider-green1/summary.json": {
+      "bytes": 10555,
+      "sha256": "e263e6e0869de939bdb75244b14d8600bfb92462b5bff3f599c8a2a8c6bd1981"
+    },
+    "runs/qualification/01-provider.log": {
+      "bytes": 1862,
+      "sha256": "4d7ccedac7716977ea4339971986a351ddf255e292c3ac0cc6412ea256e8821e"
+    },
+    "runs/qualification/02-storage.log": {
+      "bytes": 3579,
+      "sha256": "df281479f759cca47ae00cab2f7d0000239c8b63aa637b2d086805d22c7c638a"
+    },
+    "runs/qualification/03-devices-clippy.log": {
+      "bytes": 208,
+      "sha256": "aeee64bcce7f7ed119ba47c744f8d5149d831fe78a50ae4f6545ce6e1bf79b87"
+    },
+    "runs/qualification/04-ui-clippy.log": {
+      "bytes": 887,
+      "sha256": "b61c4c0789534e35de0319b4d005e4b73cac71fc481317533a061ee8b2f09149"
+    },
+    "runs/qualification/05-storage-clippy.log": {
+      "bytes": 224,
+      "sha256": "20680f001e8e965847177f1cefb061b714b3f4f56ba1bffafcaf651e78472f78"
+    },
+    "runs/qualification/06-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/07-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/08-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/09-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/10-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/11-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 15874,
+      "sha256": "a76dd695d8ca09c1dbb6fd53d0d366f954a5ea2a0cce5f39a75e7e4f8b296894"
+    },
+    "runs/red-provider/01-provider-red.log": {
+      "bytes": 923,
+      "sha256": "23b90a1d0083564e042fbafadef3742c3bf9f32a58ba96f5ceafbfb1b7e2d78a"
+    },
+    "runs/red-provider/summary.json": {
+      "bytes": 10125,
+      "sha256": "74638234168c31ada427a04e0e4ddfe571097acf0616d3a21c724502d34594eb"
+    },
+    "runs/red-ui/01-panel-red.log": {
+      "bytes": 1483,
+      "sha256": "3f0e5a4844dc29460661fae3a886624d15b1b9eb0f814ee5eb9bb9cc9270a074"
+    },
+    "runs/red-ui/summary.json": {
+      "bytes": 10169,
+      "sha256": "b14a97747aaf80f183973bb52406e084029b4ed6c613b502b2e4bf7e62417678"
+    },
+    "source.patch": {
+      "bytes": 41205,
+      "sha256": "c1f8160e8f385d6a79ccecbbfb31ee297572ac16ac5b3d17c33a267b5c4f76b3"
+    }
+  }
+}

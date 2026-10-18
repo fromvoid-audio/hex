@@ -1,0 +1,32 @@
+{
+  "crates/hex-devices/src/compressor.rs": {
+    "before_blob": "c56699df3c7a9a684ab599ac9111fa9cc1eb75ff",
+    "before_sha256": "b1aafedf9b675de092712de9f3bdcbabba58e31248a068ecf0e9059e36ea5045",
+    "after_sha256": "ead6c0e6788f4acce75314b443bd8379ebd2c5c2b27dfc65f59c927555dfc786"
+  },
+  "crates/hex-devices/src/compressor/tests.rs": {
+    "before_blob": "f72880eee1f09625dbb5832be3d61c4202e376bf",
+    "before_sha256": "f14bc2507b696bfc25857a8e38a7c6ff5261393a4889955b414c6339a8f3ae88",
+    "after_sha256": "d308d2f5cfc9bd137561a2ff18fd874d654b3c9ccf3f4e2b1e1c83735ca14486"
+  },
+  "crates/hex-storage/src/files.rs": {
+    "before_blob": "16d2046644994215b006a087c806dbb3da14bc43",
+    "before_sha256": "ab6d46db9b85975b7ab22744a4be366c861b0c880b3799cb80bcf4e3c02492c3",
+    "after_sha256": "36ef60dc6fe66d22b8b27424b6ffec4976a6b91073bf7beaef4a8d9e054a8c05"
+  },
+  "crates/hex-ui/src/editor/device_panel/compressor_panel.rs": {
+    "before_blob": "d370e99676ea83fb6da4f2cf66dc0c31714795b0",
+    "before_sha256": "5474d0b8ac255d30119923cebea1f426a404df9aae5bcdaa0bac0358cfb8e80a",
+    "after_sha256": "847efe9339d9dc7a3e0b47e347ae5b82136c84d240dc476288ea8a2af3f0a31f"
+  },
+  "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs": {
+    "before_blob": "d0de6d47d84ebf03d4444db9518192a708ea3bfc",
+    "before_sha256": "fc250737f343de2c8218e323e28d318161dfa79595a2ada2b082c0eb7b392f80",
+    "after_sha256": "d77c67b213f81aed3a21f5e9fbdfb07fc3306c69a8da0018cf55c4830cc3a175"
+  },
+  "docs/compressor.md": {
+    "before_blob": "74a0d1ab11398327050202dc28836455264a3e91",
+    "before_sha256": "667e2c5779a115f837de802bc817a2eceac2c4295ab1c49f41cbdbc5ac63decb",
+    "after_sha256": "7749d424842eaf90d6c34e51eda54b885fd3d5a1253d20da97462db71b90cff9"
+  }
+}

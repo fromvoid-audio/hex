@@ -1,0 +1,15 @@
+{
+  "parent": "c772974cf590a6aea32720cd4b4ab425731a613c",
+  "parent_tree": "f06676cac3bdb008b08d397dc0a6e9a6b7510a4a",
+  "head": "1ce92988bcef49f606ab8e54f47772733bd7a6b0",
+  "tree": "2bf02b3cb6121f8b11cb5c6deca86e138e4e520c",
+  "branch": "pulse/task-2851-g1-d42fe5d48b55",
+  "files": [
+    "crates/hex-devices/src/compressor.rs",
+    "crates/hex-devices/src/compressor/tests.rs",
+    "crates/hex-storage/src/files.rs",
+    "crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+    "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+    "docs/compressor.md"
+  ]
+}

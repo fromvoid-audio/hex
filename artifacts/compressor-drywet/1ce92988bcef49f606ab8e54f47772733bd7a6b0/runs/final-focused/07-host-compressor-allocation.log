@@ -1,0 +1,126 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.93s
+     Running unittests src/lib.rs (target/debug/deps/hex_audio-29df7945f4bb2e11)
+
+running 1 test
+test prepared::tests::compressor_track_and_return_revision_admission_and_render_allocate_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 0.01s
+
+     Running tests/allocation_probe_calibration.rs (target/debug/deps/allocation_probe_calibration-4c68adfd1645470b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/callback_allocations.rs (target/debug/deps/callback_allocations-6b5bfdee2c16e624)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.00s
+
+     Running tests/controller_keyboard_allocations.rs (target/debug/deps/controller_keyboard_allocations-c7da6077f4f286be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/eq8_audition_allocations.rs (target/debug/deps/eq8_audition_allocations-c3ac0e061f9fd7b3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/eq8_oversampling_study.rs (target/debug/deps/eq8_oversampling_study-d8fc59ddf3f1af58)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/fresh_publication_cancellation.rs (target/debug/deps/fresh_publication_cancellation-820e6a260c6f9d0a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/gain_recording_native.rs (target/debug/deps/gain_recording_native-e1e25488dbb214b5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/operator_filter_proof_allocations.rs (target/debug/deps/operator_filter_proof_allocations-f0beae49a07b6201)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/operator_fixed_allocations.rs (target/debug/deps/operator_fixed_allocations-9d4c525784650bf6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+     Running tests/pitch_multiplier_allocations.rs (target/debug/deps/pitch_multiplier_allocations-e2da51675c1c60ff)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/prepared.rs (target/debug/deps/prepared-b92c4b8313f525cc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running tests/return_feed_allocations.rs (target/debug/deps/return_feed_allocations-fdae0a0d03f587e4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/routed_midi_allocations.rs (target/debug/deps/routed_midi_allocations-c06bd1555f6016e9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/session_silence_effect_allocations.rs (target/debug/deps/session_silence_effect_allocations-9afe7caca9aa2056)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/signed_envelope_allocations.rs (target/debug/deps/signed_envelope_allocations-3231b45bd4f189ca)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/spectrum_capture_allocations.rs (target/debug/deps/spectrum_capture_allocations-4794b09c8bdd6850)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/stream_publication.rs (target/debug/deps/stream_publication-c411ab7b7f0b5d9a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/track_gain_allocations.rs (target/debug/deps/track_gain_allocations-31f9cdb5098aeb6f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/vector_global_allocations.rs (target/debug/deps/vector_global_allocations-d84d1baf60f7833e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+

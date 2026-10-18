@@ -1,0 +1,24 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.74s
+     Running unittests src/lib.rs (target/debug/deps/hex_devices-97060e49b4b449d0)
+
+running 16 tests
+test compressor::tests::compatible_retarget_copies_only_history_and_rejects_a_different_rate ... ok
+test compressor::tests::defaults_and_generic_codec_roundtrip_all_seven_parameters ... ok
+test compressor::tests::invalid_frames_are_visible_and_do_not_poison_valid_following_history ... ok
+test compressor::tests::fully_dry_and_bypassed_mix_edits_still_advance_detector_and_smoothing ... ok
+test compressor::tests::knee_law_hits_independent_known_points_and_is_continuous ... ok
+test compressor::tests::linked_peak_detector_preserves_stereo_balance_and_ratio_one_is_uncompressed ... ok
+test compressor::tests::malformed_states_parameters_and_sample_rates_are_rejected ... ok
+test compressor::tests::mix_codec_rejects_legacy_nonfinite_and_preserves_host_metadata ... ok
+test compressor::tests::mixed_static_curve_blends_after_makeup_in_linear_amplitude ... ok
+test compressor::tests::one_sample_step_matches_an_independent_detector_and_gain_smoothing_calculation ... ok
+test compressor::tests::parallel_mix_uses_original_dry_and_post_makeup_wet ... ok
+test compressor::tests::mix_edits_ramp_to_exact_endpoints_and_twin_copies_do_not_restart_it ... ok
+test compressor::tests::release_and_makeup_controls_change_the_audible_envelope ... ok
+test compressor::tests::static_transfer_preview_matches_known_knee_anchors_and_validates_state ... ok
+test compressor::tests::reset_partitioning_and_bypass_preserve_the_fixed_runtime_lifecycle ... ok
+test compressor::tests::default_wet_preserves_original_asymmetric_pcm_bitwise ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 318 filtered out; finished in 0.00s
+

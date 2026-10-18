@@ -1,0 +1,20 @@
+   Compiling hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-compressor-allocation-fixture v0.0.0 (/tmp/hex-compressor-allocation-453)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s
+     Running unittests probe.rs (target/debug/deps/hex_compressor_allocation_fixture-37b8c6e64ef3829a)
+
+running 1 test
+test tests::mix_processing_bypass_reset_history_transfer_allocate_and_free_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests hex_compressor_allocation_fixture
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

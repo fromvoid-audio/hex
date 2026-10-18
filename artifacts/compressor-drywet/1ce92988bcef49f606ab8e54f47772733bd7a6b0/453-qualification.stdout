@@ -1,0 +1,23 @@
+[1/11] provider: running
+[1/11] provider: passed
+[2/11] storage: running
+[2/11] storage: passed
+[3/11] devices-clippy: running
+[3/11] devices-clippy: passed
+[4/11] ui-clippy: running
+[4/11] ui-clippy: passed
+[5/11] storage-clippy: running
+[5/11] storage-clippy: passed
+[6/11] architecture: running
+[6/11] architecture: passed
+[7/11] gpui-patch: running
+[7/11] gpui-patch: passed
+[8/11] ui-style: running
+[8/11] ui-style: passed
+[9/11] device-layout: running
+[9/11] device-layout: passed
+[10/11] format: running
+[10/11] format: passed
+[11/11] diff: running
+[11/11] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/compressor-453-qualification/summary.json

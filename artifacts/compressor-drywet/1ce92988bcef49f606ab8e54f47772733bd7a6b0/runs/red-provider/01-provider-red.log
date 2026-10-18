@@ -1,0 +1,20 @@
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.26s
+     Running unittests src/lib.rs (target/debug/deps/hex_devices-97060e49b4b449d0)
+
+running 1 test
+
+thread 'compressor::tests::parallel_mix_uses_original_dry_and_post_makeup_wet' (127669) panicked at crates/hex-devices/src/compressor/tests.rs:13:10:
+valid compressor parameter: UnknownParameter
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test compressor::tests::parallel_mix_uses_original_dry_and_post_makeup_wet ... FAILED
+
+failures:
+
+failures:
+    compressor::tests::parallel_mix_uses_original_dry_and_post_makeup_wet
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 328 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p hex-devices --lib`

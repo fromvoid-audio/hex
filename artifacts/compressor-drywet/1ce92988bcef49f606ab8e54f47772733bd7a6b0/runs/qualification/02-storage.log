@@ -1,0 +1,105 @@
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.77s
+     Running unittests src/lib.rs (target/debug/deps/hex_storage-457c375e3b9af02a)
+
+running 1 test
+test files::tests::opaque_compressor_state_survives_project_save_and_load ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+     Running tests/appearance.rs (target/debug/deps/appearance-a77c84e1538bc592)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/audio_edit.rs (target/debug/deps/audio_edit-395c7a2cbffd1de2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/audio_events.rs (target/debug/deps/audio_events-f40f50e1b0d0020f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/beats_warp.rs (target/debug/deps/beats_warp-18c8adc24a7e0288)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/clip_names.rs (target/debug/deps/clip_names-16aa4b9d73265db4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/device_assets.rs (target/debug/deps/device_assets-a889886f619de3fe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/gain_envelope.rs (target/debug/deps/gain_envelope-76c1e272c400cdfc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/musical_routing.rs (target/debug/deps/musical_routing-a3bbe684073a3903)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/persistence.rs (target/debug/deps/persistence-c158500b6de11d55)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+     Running tests/playable_routing.rs (target/debug/deps/playable_routing-f9a296da24498ce2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/provenance.rs (target/debug/deps/provenance-2b06c11196fe845e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/return_feeds.rs (target/debug/deps/return_feeds-9e042e1b4f1f1290)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/routing.rs (target/debug/deps/routing-21899ceab836995d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/sample_bpm_stretch.rs (target/debug/deps/sample_bpm_stretch-1ee0be2e87da5ef5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/schema_lineages.rs (target/debug/deps/schema_lineages-0cc50df5670ffd93)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/tuning.rs (target/debug/deps/tuning-f952cefbe085ecb5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+

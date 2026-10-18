@@ -1,0 +1,21 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+error[E0599]: no method named `read_parameter` found for struct `NativeDeviceRegistry<'a>` in the current scope
+   --> crates/hex-devices/src/compressor/tests.rs:478:14
+    |
+477 | /         registry
+478 | |             .read_parameter(&changed, parameter::DRY_WET)
+    | |             -^^^^^^^^^^^^^^ method not found in `NativeDeviceRegistry<'_>`
+    | |_____________|
+    |
+
+error[E0599]: no method named `read_parameter` found for struct `NativeDeviceRegistry<'a>` in the current scope
+   --> crates/hex-devices/src/compressor/tests.rs:486:14
+    |
+485 | /         registry
+486 | |             .read_parameter(&original, parameter::DRY_WET)
+    | |             -^^^^^^^^^^^^^^ method not found in `NativeDeviceRegistry<'_>`
+    | |_____________|
+    |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `hex-devices` (lib test) due to 2 previous errors
