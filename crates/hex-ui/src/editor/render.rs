@@ -404,6 +404,8 @@ impl Render for EditorView {
                 "hex_controller_input"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
+            } else if self.project_tempo_editing(cx) {
+                "hex_project_tempo_editor hex_text_editing"
             } else if self.gain_numeric_editing(cx) || self.sample_bpm_editing(cx) {
                 "hex_gain_numeric_editor"
             } else {
@@ -962,6 +964,20 @@ impl Render for EditorView {
                 }),
             )
             .on_action(cx.listener(|view, _: &DuplicateClip, window, cx| {
+                if window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("hex_text_editing"))
+                {
+                    return;
+                }
+                if view.duplicate_time_selection(window) {
+                    cx.notify();
+                    return;
+                }
+                if !view.focus.is_focused(window) && !view.midi_focus.is_focused(window) {
+                    return;
+                }
                 if view.mode == super::EditorMode::Session
                     && !view.midi_focus.is_focused(window)
                     && view.selected_cell.is_none()

@@ -525,3 +525,10 @@ shares the same effective width. GPUI's variable-height list retains logical
 scroll anchors; it prepares the bounded row set on structural/viewport-width changes and only
 invalidates the resized row during a height drag. Native smoothness, physical
 pointer capture and minimum-size control acceptance require the finite Mac check.
+
+## project tempo entry
+
+The canonical project toolbar begins with the shared numeric BPM input, replacing
+its tempo plus/minus controls. Range, precision, focus/lifecycle behavior and the
+finite native checklist are recorded in [project tempo input](project-tempo-input.md).
+Native physical acceptance remains open until user verification.

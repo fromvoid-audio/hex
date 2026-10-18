@@ -5024,3 +5024,33 @@ Source regression/check evidence belongs to Pulse/PR; native optimized interacti
 and actual installed-Live comparison remain open. Official Live12 documented
 gestures guide this change; the read-only reference attempt found Live closed
 and the Mac locked, so no gestures/parity were observed and no app was launched.
+
+
+18 October 2026 — Pulse2732 / PR345: shared device header source places canonical
+bypass before name, removes movement buttons while retaining title drag reorder,
+orders Load↓/Save↑ before the far-right remove×, and uses the same leading-control
+frame API for Track/Return and specialized/descriptor panels. Rendered/header
+command/history regressions pass; the first full CI stopped on an older test
+expecting the removed movement button. That fixture now drives a real title drag
+and asserts its complete canonical drop request; fresh exact-source full CI is
+being run. Native
+Load dialog, glyph/input/compact layout acceptance remains coordinator-owned.
+
+## command-d time range — pulse2759 / PR367, 18 october2026
+
+Arrangement Command-D uses existing atomic time-chunk copy at the range end,
+normal overwrite semantics, retained gaps/audio source windows/MIDI fragments
+and main-track scope. Successful selection feedback supports repeated copies;
+clipboard and other-editor shortcuts are preserved. Rendered key/real-worker
+regression covers one Undo/Redo and text focus. Exact source checks and native
+input acceptance remain pending; no installed app changes.
+
+## project bpm input — pulse2720 / pr336
+
+- Implemented compact top-left shared numeric tempo entry in both project modes;
+  removed canonical BPM +/- while preserving meter and SetTempoPoint semantics.
+- Six focused range/input/layout/lifecycle/blur regressions cover the control;
+  final source validation is recorded in PR336/Pulse2720. Required exact-source
+  full local CI is recorded in PR336/Pulse2720, not inferred from focused tests.
+- Native optimized physical input, listening and current-format save/reopen remain
+  open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.
