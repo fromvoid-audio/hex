@@ -2,6 +2,7 @@
 //! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
 //! destroys its contents. Receiving a carrier is not final-active quiescence.
 use crate::prepared::{Callback, Status};
+mod allocations;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod endpoint_tests;
 mod resources;

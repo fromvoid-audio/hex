@@ -757,3 +757,32 @@ ordering and the reserved queue-write frontier still need integration. The actua
 preallocated wrapper must join that union and peak; its layout query is not an
 observed whole-graph budget or a reusable scalar permit. Existing native stage
 still invokes its legacy convenience path and is not claimed compliant/admitted.
+
+### Fresh native carrier allocation conservation
+
+The callback cannot lend its live owning fields to a control-side inventory.
+Under primary decision2783/22638, the existing Root boundary now retains sealed
+constructor records for the actual fresh data/error callback Boxes and, on the
+worker path, the actual client/publication endpoint Boxes. Each record captures
+the private constructor's Box identity/layout and paired terminal-cell identity
+and requested sized-Arc layout before either carrier escapes. Anchoring checks
+the actual terminal fields. No public constructor, owning clone, raw adoption,
+caller-authored size or synthesized borrowed owner is exposed.
+
+A separate `native-carrier-sized-box-arc-new-v1` build selector qualifies pinned
+Rust1.94.0/4a4ef493 on native Linux x86_64 and macOS arm64. Unsupported compiler,
+wrapper, flags, install or target refuses this constructor boundary. Requested
+Arc storage uses checked header-layout extension and alignment, rather than a
+universal header constant. The boundary charges the actual Box and complete
+terminal Arc allocation once; its old payload-only amount is replaced, not added
+a second time. Inline Guard/Terminal/receipt storage stays in the existing parent
+accounting. The fixed records require no allocation and remain with existing Root
+custody through close/return/failure; observing a close or an ACK does not release
+the reservation. Actual terminal recovery preserves the original Box address.
+
+This is only the fixed carrier allocation lineage. It does not certify Status or
+channel headers, synchronization-internal allocations, OS storage, callback child
+fields, preview PCM ingress, variable owning-handle destinations or the complete
+retained/peak ledger. Those remain explicit qualification obligations under the
+same ceilings. No live location, strong-count closure or whole-graph admission is
+inferred from the record. Registry processing stays closed.

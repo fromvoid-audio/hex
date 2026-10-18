@@ -1,6 +1,7 @@
 //! Constructor-bound payload and opaque-resource declaration for these exact
-//! coupled carriers. No Arc-header/OS byte estimate, arbitrary Arc adoption or
-//! backend-stop claim is made here.
+//! coupled carriers. Fresh carrier Box/cell lineage has separate pinned layout
+//! qualification. Channel/Status headers and other children remain separate;
+//! this is not a full DATA closure or a backend-stop claim.
 use super::*;
 /// Known payloads and bounded shared groups from one exact private channel
 /// factory. Arc control blocks/allocator overhead stay opaque RESOURCE costs.
@@ -41,9 +42,8 @@ impl ChannelStorage {
 #[derive(Clone, Copy)]
 pub(crate) struct NativeCandidateBoundary {
     root: u64,
-    data_cell: usize,
-    error_cell: usize,
-    endpoint_cells: Option<[usize; 2]>,
+    carriers: [super::allocations::CarrierAllocation; 2],
+    endpoint_carriers: Option<[super::allocations::CarrierAllocation; 2]>,
     data_bytes: usize,
     anchored: bool,
     channels: ChannelStorage,
@@ -57,10 +57,13 @@ impl NativeCandidateBoundary {
         data: &mut Guard<NativeCallbackOwner>,
         errors: &mut Guard<ErrorCallbackOwner>,
     ) -> Option<Self> {
-        let data_cell = Arc::as_ptr(data.shared_cell()?) as usize;
-        let error_cell = Arc::as_ptr(errors.shared_cell()?) as usize;
-        let cell_data = std::mem::size_of_val(data.shared_cell()?.as_ref())
-            .checked_add(std::mem::size_of_val(errors.shared_cell()?.as_ref()))?;
+        let carriers = [
+            super::allocations::CarrierAllocation::capture(data)?,
+            super::allocations::CarrierAllocation::capture(errors)?,
+        ];
+        let carrier_bytes = carriers[0]
+            .requested_bytes()?
+            .checked_add(carriers[1].requested_bytes()?)?;
         let data = data.owner_ref()?;
         let errors = errors.owner_ref()?;
         if !data.callback.belongs_to_candidate_root(root)
@@ -76,9 +79,10 @@ impl NativeCandidateBoundary {
         } else {
             channels
         };
-        let data_bytes = std::mem::size_of_val(data)
-            .checked_add(std::mem::size_of_val(errors))?
-            .checked_add(cell_data)?
+        if !carriers[0].matches_body(data) || !carriers[1].matches_body(errors) {
+            return None;
+        }
+        let data_bytes = carrier_bytes
             // Actual persistent retirement destinations and the captured guard
             // values are distinct from their separately allocated owner Boxes.
             .checked_add(std::mem::size_of::<NativeRetirement>())?
@@ -88,9 +92,8 @@ impl NativeCandidateBoundary {
             .checked_add(channels.data_bytes)?;
         Some(Self {
             root: root.root_id(),
-            data_cell,
-            error_cell,
-            endpoint_cells: None,
+            carriers,
+            endpoint_carriers: None,
             data_bytes,
             anchored: false,
             channels,
@@ -104,6 +107,10 @@ impl NativeCandidateBoundary {
         client: &crate::prepared::Client,
         publication: &crate::prepared::WorkerControl,
     ) -> Option<Self> {
+        let endpoint_carriers = [
+            super::allocations::CarrierAllocation::capture(client.guard())?,
+            super::allocations::CarrierAllocation::capture(publication.guard())?,
+        ];
         let control = publication.owner_ref()?;
         if control.native_candidate_root().root_id() != self.root
             || !client.owner_ref()?.matches(&control.status)
@@ -119,18 +126,11 @@ impl NativeCandidateBoundary {
         self.channels = self.channels.plus(forwarding)?;
         self.data_bytes = self.data_bytes.checked_add(forwarding.data_bytes)?;
         self.spectrum_reader_bound = true;
-        let client_cell = client.guard().shared_cell()?;
-        let publication_cell = publication.guard().shared_cell()?;
-        self.endpoint_cells = Some([
-            Arc::as_ptr(client_cell) as usize,
-            Arc::as_ptr(publication_cell) as usize,
-        ]);
+        self.endpoint_carriers = Some(endpoint_carriers);
         self.data_bytes = self
             .data_bytes
-            .checked_add(std::mem::size_of_val(client.owner_ref()?))?
-            .checked_add(std::mem::size_of_val(control))?
-            .checked_add(std::mem::size_of_val(client_cell.as_ref()))?
-            .checked_add(std::mem::size_of_val(publication_cell.as_ref()))?
+            .checked_add(endpoint_carriers[0].requested_bytes()?)?
+            .checked_add(endpoint_carriers[1].requested_bytes()?)?
             .checked_add(std::mem::size_of::<crate::prepared::Client>())?
             .checked_add(std::mem::size_of::<crate::prepared::WorkerControl>())?;
         // Two actual terminal cells each have a guard and receiver handle.
@@ -143,33 +143,19 @@ impl NativeCandidateBoundary {
         Some(self)
     }
     pub(crate) fn anchor(&mut self, root: u64, terminals: &NativeTerminals) -> bool {
-        let Some(data) = terminals.data.cell.as_ref() else {
-            return false;
-        };
-        let Some(errors) = terminals.errors.cell.as_ref() else {
-            return false;
-        };
-        let endpoint_match = match (self.endpoint_cells, terminals.endpoints.as_ref()) {
+        let endpoint_match = match (self.endpoint_carriers, terminals.endpoints.as_ref()) {
             (None, None) => true,
-            (Some(expected), Some(endpoints)) => endpoints
-                .client
-                .cell
-                .as_ref()
-                .zip(endpoints.publication.cell.as_ref())
-                .is_some_and(|(client, publication)| {
-                    expected
-                        == [
-                            Arc::as_ptr(client) as usize,
-                            Arc::as_ptr(publication) as usize,
-                        ]
-                }),
+            (Some(expected), Some(endpoints)) => {
+                expected[0].matches_terminal(&endpoints.client)
+                    && expected[1].matches_terminal(&endpoints.publication)
+            }
             _ => false,
         };
         if !endpoint_match
             || self.anchored
             || self.root != root
-            || self.data_cell != Arc::as_ptr(data) as usize
-            || self.error_cell != Arc::as_ptr(errors) as usize
+            || !self.carriers[0].matches_terminal(&terminals.data)
+            || !self.carriers[1].matches_terminal(&terminals.errors)
         {
             return false;
         }
