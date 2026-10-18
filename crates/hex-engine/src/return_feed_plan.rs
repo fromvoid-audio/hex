@@ -130,6 +130,29 @@ impl ReturnFeedPlan {
 }
 
 impl ReturnFeedPlan {
+    /// Exact requested backing bytes of the actual retained scalar vectors.
+    pub(crate) fn backing_bytes(&self) -> Result<usize, crate::AudioStorageError> {
+        let overflow = crate::AudioStorageError::Overflow;
+        let mut bytes = self
+            .order
+            .capacity()
+            .checked_mul(std::mem::size_of::<usize>())
+            .and_then(|n| {
+                self.outgoing
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Vec<Feed>>())
+                    .and_then(|m| n.checked_add(m))
+            })
+            .ok_or(overflow)?;
+        for feeds in &self.outgoing {
+            bytes = feeds
+                .capacity()
+                .checked_mul(std::mem::size_of::<Feed>())
+                .and_then(|n| bytes.checked_add(n))
+                .ok_or(overflow)?;
+        }
+        Ok(bytes)
+    }
     pub(crate) fn visit_audio_storage<'a>(
         &'a self,
         l: &mut crate::AudioRootStorageLedger<'a>,
@@ -154,6 +177,40 @@ impl ReturnFeedPlan {
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project};
+    #[test]
+    fn fresh_feed_backing_counts_reserved_empty_and_nested_capacity() {
+        let mut plan = ReturnFeedPlan::default();
+        plan.order.try_reserve_exact(7).unwrap();
+        plan.outgoing.try_reserve_exact(5).unwrap();
+        let mut edges = Vec::new();
+        edges.try_reserve_exact(11).unwrap();
+        plan.outgoing.push(edges);
+        let expected = plan.order.capacity() * std::mem::size_of::<usize>()
+            + plan.outgoing.capacity() * std::mem::size_of::<Vec<Feed>>()
+            + plan.outgoing[0].capacity() * std::mem::size_of::<Feed>();
+        assert_eq!(plan.backing_bytes().unwrap(), expected);
+        assert!(expected > 0);
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+            crate::AudioStorageLedgerReservation {
+                data_rows: 16,
+                handle_rows: 16,
+                root_rows: 4,
+                max_retained_bytes: 65_536,
+                max_construction_peak_bytes: 65_536,
+            },
+        )
+        .unwrap();
+        ledger
+            .root(&plan, crate::AudioStorageRole::Current)
+            .unwrap();
+        let before = ledger.summary().unwrap();
+        plan.visit_audio_storage(&mut ledger).unwrap();
+        let after = ledger.summary().unwrap();
+        assert_eq!(after.data_bytes - before.data_bytes, expected);
+        assert_eq!(after.data_allocations - before.data_allocations, 3);
+        plan.visit_audio_storage(&mut ledger).unwrap();
+        assert_eq!(ledger.summary().unwrap(), after);
+    }
     #[test]
     fn complete_sixteen_return_dag_has_bounded_deterministic_plan_and_safe_scratch() {
         let mut editor = Editor::new(Project::new(48000).unwrap(), 1).unwrap();

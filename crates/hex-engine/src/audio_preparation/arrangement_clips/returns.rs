@@ -483,16 +483,21 @@ impl ArrangementReturnMetadata<'_> {
         })
     }
     pub fn order(&self) -> impl Iterator<Item = usize> + '_ {
-        self.owner.feed.order().chain(
-            self.feed
-                .into_iter()
-                .flat_map(|p| p.order().iter().copied()),
-        )
+        self.owner
+            .feed
+            .order()
+            .filter(|_| self.feed.is_none())
+            .chain(
+                self.feed
+                    .into_iter()
+                    .flat_map(|p| p.order().iter().copied()),
+            )
     }
     pub fn feeds(&self) -> impl Iterator<Item = (usize, usize, u64, f32)> + '_ {
         self.owner
             .feed
             .feeds()
+            .filter(|_| self.feed.is_none())
             .chain(self.feed.into_iter().flat_map(|p| p.edges()))
     }
 }

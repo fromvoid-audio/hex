@@ -6,7 +6,8 @@ use crate::audio_only_inputs::*;
 mod arrangement_clips;
 mod original_resources;
 mod storage;
-pub(crate) use arrangement_clips::ArrangementClips;
+pub(crate) use arrangement_clips::tracks::CompilerTrackChildren;
+pub(crate) use arrangement_clips::{ArrangementClips, CompilerReturnChildren};
 #[cfg(test)]
 #[path = "session_inventory_assembly_tests.rs"]
 mod assembly_tests;

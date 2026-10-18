@@ -1770,3 +1770,154 @@ fn selected_track_children_missing_or_stale_sampler_context_refuses_before_child
         assert!(rows.tracks.rows.is_empty());
     }
 }
+
+#[test]
+fn selected_joint_children_keep_both_feed_plans_in_actual_root_and_retire_fresh_metadata() {
+    if !supported("selected_joint_children_root") {
+        return;
+    }
+    for filtered in [false, true] {
+        eprintln!("SUPPORTED selected_joint_children_root filtered={filtered}");
+        let project = compiler_track_child_fixture(filtered, false, true);
+        let mut snapshot = project.snapshot();
+        let second = snapshot.next_id;
+        snapshot.next_id += 1;
+        let mut bus = snapshot.return_tracks[0].clone();
+        bus.id = second;
+        bus.name = "second".into();
+        bus.devices.push(snapshot.tracks[0].devices[0].clone());
+        bus.devices[0].id = snapshot.next_id;
+        snapshot.next_id += 1;
+        snapshot.return_tracks.push(bus);
+        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+        let snapshot = project
+            .snapshot()
+            .with_return_feed(
+                project.return_tracks()[0].id(),
+                project.return_tracks()[1].id(),
+                0.5,
+            )
+            .unwrap();
+        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+        let original = project.snapshot();
+        let mut rows = ArrangementClips::default();
+        rows.returns.reserve(&project).unwrap();
+        rows.returns.construct().unwrap();
+        let retained_feed = rows.returns.capacity(false).unwrap().feed;
+        let mut shared = crate::session_shared_preparation::SessionSharedConstruction::default();
+        shared.reserve(0, 3).unwrap();
+        shared.construct().unwrap();
+        let mut contexts = None;
+        shared.commit_arrangement_transfer(&mut contexts);
+        let effects = hex_devices::native_registry().unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let returns =
+            super::super::CompilerReturnChildren::from_rows(&mut rows.returns, &project).unwrap();
+        let tracks = CompilerTrackChildren::prepare(
+            &mut rows.tracks,
+            &project,
+            contexts.as_ref().map(|v| v.as_ref()),
+        )
+        .unwrap();
+        transforms
+            .compile_transaction(|| {
+                crate::compile::compile_project_into_selected_children(
+                    &project,
+                    |_, _| panic!("no audio clips"),
+                    None,
+                    &effects,
+                    &instruments,
+                    &mut contexts,
+                    &transforms,
+                    rows.root.compiler_destination_on_control(),
+                    None,
+                    Some(returns),
+                    Some(tracks),
+                )
+            })
+            .unwrap();
+        assert!(contexts.is_none());
+        let actual = rows.root.project().unwrap();
+        assert_eq!(actual.tracks.len(), 2);
+        assert_eq!(actual.return_buses.len(), 2);
+        let chain = Arc::as_ptr(&actual.tracks[0].device_chain);
+        let fresh_bytes = actual.return_feed_plan.backing_bytes().unwrap();
+        assert!(fresh_bytes > 0);
+        let capacity = rows.capacity_at(false, None, None).unwrap();
+        assert_eq!(capacity.root.fresh_feed_backing_bytes, fresh_bytes);
+        assert_eq!(capacity.returns.feed, retained_feed);
+        assert_eq!(rows.return_metadata().unwrap().order().count(), 2);
+        assert_eq!(
+            rows.return_metadata().unwrap().feeds().collect::<Vec<_>>(),
+            vec![(0, 1, actual.return_feed_plan.edges().next().unwrap().2, 0.5)]
+        );
+        // The old paired construction plan and the fresh active plan coexist.
+        // Directly presenting both as one paired plan must still refuse.
+        assert_eq!(
+            rows.returns
+                .capacity_at(false, &actual.return_buses, Some(&actual.return_feed_plan)),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        let collect = |limit| {
+            let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+                crate::AudioStorageLedgerReservation {
+                    data_rows: 1024,
+                    handle_rows: 1024,
+                    root_rows: 64,
+                    max_retained_bytes: limit,
+                    max_construction_peak_bytes: limit,
+                },
+            )?;
+            ledger.root(&rows, crate::AudioStorageRole::Current)?;
+            ledger.root(&shared, crate::AudioStorageRole::Current)?;
+            let contexts = rows.visit_audio_storage(&mut ledger, None, None)?;
+            shared.visit_audio_storage(
+                &mut ledger,
+                contexts,
+                crate::session_shared_preparation::InventorySharedView {
+                    sine: None,
+                    contexts: None,
+                },
+            )?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            let summary = ledger.summary()?;
+            summary.require_known_storage().unwrap();
+            assert!(summary.require_complete().is_err());
+            Ok::<_, AudioStorageError>(summary)
+        };
+        let report = collect(2 * 1024 * 1024).unwrap();
+        assert_eq!(collect(report.construction_peak_bytes).unwrap(), report);
+        assert_eq!(
+            collect(report.retained_bytes - 1),
+            Err(AudioStorageError::ReservationExceeded)
+        );
+        rows.root
+            .restore(&mut rows.tracks, &mut rows.returns, &mut shared)
+            .unwrap();
+        assert!(rows.root.project().is_none());
+        assert_eq!(
+            Arc::as_ptr(&rows.tracks.rows[0].track.as_ref().unwrap().device_chain),
+            chain
+        );
+        assert_eq!(
+            rows.root.capacity(false).unwrap().fresh_feed_backing_bytes,
+            fresh_bytes
+        );
+        assert_eq!(rows.returns.capacity(false).unwrap().feed, retained_feed);
+        while rows.tracks.has_next() {
+            rows.tracks.dispose_next(&mut rows.rows).unwrap();
+        }
+        while rows.returns.has_next() {
+            rows.returns.dispose_next().unwrap();
+        }
+        assert!(rows.root.has_metadata_disposal());
+        rows.root.dispose_metadata_on_control().unwrap();
+        assert!(!rows.root.has_metadata_disposal());
+        assert_eq!(
+            rows.root.capacity(false).unwrap().fresh_feed_backing_bytes,
+            0
+        );
+        assert_eq!(project.snapshot(), original);
+    }
+}

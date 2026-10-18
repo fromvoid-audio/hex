@@ -358,8 +358,8 @@ pub(crate) fn compile_project_into<'a>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_project_into_with_children<'a>(
     snapshot: &'a hex_project::Project,
-    mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
-    mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
+    resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
+    previews: Option<&mut Vec<crate::MidiClipPreview>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: &mut Option<
@@ -384,11 +384,11 @@ pub(crate) fn compile_project_into_with_children<'a>(
     {
         return Err(Invalid("compiler row selections overlap"));
     }
-    let mut paired_returns = return_children
+    let paired_returns = return_children
         .map(|rows| rows.compiler_return_children_on_control(snapshot))
         .transpose()
         .map_err(|_| Invalid("compiler paired Return children are unavailable"))?;
-    let mut paired_tracks = track_children
+    let paired_tracks = track_children
         .map(|rows| {
             rows.compiler_track_children_on_control(
                 snapshot,
@@ -397,6 +397,46 @@ pub(crate) fn compile_project_into_with_children<'a>(
         })
         .transpose()
         .map_err(|_| Invalid("compiler paired Track children are unavailable"))?;
+    compile_project_into_selected_children(
+        snapshot,
+        resolve_source,
+        previews,
+        registry,
+        instrument_registry,
+        shared_contexts,
+        transforms,
+        destination,
+        compiler_bindings,
+        paired_returns,
+        paired_tracks,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compile_project_into_selected_children<'a>(
+    snapshot: &'a hex_project::Project,
+    mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
+    mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+    shared_contexts: &mut Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
+    transforms: &crate::audio_transform::AudioTransformPreparation,
+    destination: &mut Option<Project>,
+    compiler_bindings: Option<(
+        &mut crate::audio_preparation::ArrangementClips,
+        &crate::OwnedAudioInputs,
+    )>,
+    mut paired_returns: Option<crate::audio_preparation::CompilerReturnChildren<'_>>,
+    mut paired_tracks: Option<crate::audio_preparation::CompilerTrackChildren<'_>>,
+) -> Result<(), Invalid> {
+    if destination.is_some() || previews.as_ref().is_some_and(|clips| !clips.is_empty()) {
+        return Err(Invalid("compiler destination is not vacant"));
+    }
+    if compiler_bindings.is_some() && (paired_returns.is_some() || paired_tracks.is_some()) {
+        return Err(Invalid("compiler row selections overlap"));
+    }
     // Private optional correlation only: actual installed rows plus actual bank,
     // never a caller-authored provenance flag or output-adoption permit.
     let mut compiler_bindings = compiler_bindings

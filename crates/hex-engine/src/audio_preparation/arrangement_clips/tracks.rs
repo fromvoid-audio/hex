@@ -1241,13 +1241,19 @@ impl super::ArrangementClips {
         project: &hex_project::Project,
         contexts: Option<&crate::shared_analytic::SharedAnalyticContextTable>,
     ) -> Result<CompilerTrackChildren<'a>, AudioStorageError> {
-        self.tracks.reserve_compiler_children(project, contexts)?;
-        Ok(CompilerTrackChildren {
-            rows: &mut self.tracks,
-        })
+        CompilerTrackChildren::prepare(&mut self.tracks, project, contexts)
     }
 }
-impl CompilerTrackChildren<'_> {
+impl<'a> CompilerTrackChildren<'a> {
+    pub(super) fn prepare(
+        rows: &'a mut TrackAssembly,
+        project: &hex_project::Project,
+        contexts: Option<&crate::shared_analytic::SharedAnalyticContextTable>,
+    ) -> Result<Self, AudioStorageError> {
+        rows.reserve_compiler_children(project, contexts)?;
+        Ok(Self { rows })
+    }
+
     pub(crate) fn chain(
         &self,
         index: usize,

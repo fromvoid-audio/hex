@@ -315,3 +315,60 @@ fn paired_signal_topology_retains_actual_compiler_runtime_aliases_and_control_de
     assert!(failed.capacity(false).is_err());
     assert_eq!(std::sync::Arc::strong_count(graph.arc()), 1);
 }
+
+#[test]
+fn fresh_feed_metadata_remains_charged_and_refuses_retry_after_disposal_panic() {
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    for _ in 0..2 {
+        editor
+            .execute(Command::AddReturnTrack { name: "bus".into() })
+            .unwrap();
+    }
+    let snapshot = editor
+        .project()
+        .snapshot()
+        .with_return_feed(
+            editor.project().return_tracks()[0].id(),
+            editor.project().return_tracks()[1].id(),
+            0.5,
+        )
+        .unwrap();
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let mut root = ArrangementRootAssembly {
+        feed: ReturnFeedPlan::prepare(&project).unwrap(),
+        ..Default::default()
+    };
+    let bytes = root.feed.backing_bytes().unwrap();
+    assert!(bytes > 0);
+    assert_eq!(
+        root.capacity(false).unwrap().fresh_feed_backing_bytes,
+        bytes
+    );
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
+    ledger.root(&root, AudioStorageRole::Current).unwrap();
+    let before = ledger.summary().unwrap();
+    root.visit_audio_storage(&mut ledger, None).unwrap();
+    let after = ledger.summary().unwrap();
+    assert_eq!(after.data_bytes - before.data_bytes, bytes);
+    assert_eq!(after.data_allocations - before.data_allocations, 3);
+    root.visit_audio_storage(&mut ledger, None).unwrap();
+    assert_eq!(ledger.summary().unwrap(), after);
+    drop(ledger);
+    root.panic_after_metadata_take = true;
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || root.dispose_metadata_on_control()
+        ))
+        .is_err()
+    );
+    assert_eq!(root.feed.backing_bytes().unwrap(), bytes);
+    assert!(root.has_metadata_disposal());
+    assert_eq!(root.capacity(false), Err(AudioStorageError::UnknownStorage));
+    root.panic_after_metadata_take = false;
+    assert_eq!(
+        root.dispose_metadata_on_control(),
+        Err(AudioStorageError::UnknownStorage)
+    );
+    // Fixture owns the latched root until control teardown; no production reset.
+}

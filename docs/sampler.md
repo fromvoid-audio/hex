@@ -1119,8 +1119,24 @@ renderer, callback, final-drop-panic or peak certificate.
 
 This private Track route currently refuses authored Arrangement audio clips and
 non-Sampler instrument providers. The ordinary public compiler retains their
-existing behavior. Track-only and Return-only selections are not yet the single
-combined private ingress. Their combined child projection, aggregate quote before
-any new owner, complete compiler products/failure custody, Service current/pending
-binding and guarded native publication remain required before registration. The
-full playable UI/loading/music workflow remains open.
+existing behavior. The common compiler now also accepts separate affine loans
+of both actual row fields, so their child selections can populate the same
+persistent root destination without borrowing the whole family twice. This is
+one compiler algorithm; no public output adoption or new child constructor is
+introduced.
+
+The old paired Return construction plan and the fresh active compiler plan are
+independent live allocations. Root inspection charges the fresh plan's actual
+order, outer-vector and nested-vector capacities while Return custody continues
+to visit its original plan. Metadata exposes only the active plan. Restoration
+keeps both plans in their existing destinations; the fresh plan participates in
+pending-before-drop metadata retirement, including reserved empty backings.
+An abnormal retirement refuses inspection and retry while retaining its charge.
+Tests cover combined Track/Return selection, exact selected budgets, original
+child restoration, both feed plans, empty reserved backing and caught retirement
+panic. These are selected storage tests, not an aggregate construction quote.
+
+The aggregate quote before any new owner, complete compiler products/failure
+custody, Service current/pending binding and guarded native publication remain
+required before registration. The full playable UI/loading/music workflow
+remains open.

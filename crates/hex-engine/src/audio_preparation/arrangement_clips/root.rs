@@ -12,6 +12,7 @@ pub struct ArrangementRootCapacity {
     pub tempo_backing_bytes: usize,
     pub midi_routing_backing_bytes: usize,
     pub signal_topology_bytes: usize,
+    pub fresh_feed_backing_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub installed_tracks: usize,
     pub installed_returns: usize,
@@ -24,6 +25,7 @@ impl ArrangementRootCapacity {
             .and_then(|n| n.checked_add(self.tempo_backing_bytes))
             .and_then(|n| n.checked_add(self.midi_routing_backing_bytes))
             .and_then(|n| n.checked_add(self.signal_topology_bytes))
+            .and_then(|n| n.checked_add(self.fresh_feed_backing_bytes))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -38,6 +40,12 @@ pub(super) struct RootStorageView<'a> {
     pub(super) tracks: &'a [Track],
     pub(super) returns: &'a [ReturnBus],
     pub(super) feed: Option<&'a ReturnFeedPlan>,
+    feed_is_paired: bool,
+}
+impl<'a> RootStorageView<'a> {
+    pub(super) fn paired_feed(&self) -> Option<&'a ReturnFeedPlan> {
+        self.feed.filter(|_| self.feed_is_paired)
+    }
 }
 #[derive(Default)]
 pub(super) struct ArrangementRootAssembly {
@@ -86,7 +94,10 @@ impl ArrangementRootAssembly {
             && self.feed.has_no_owned_storage()
     }
     pub(super) fn restore_project(&mut self, source: &mut Option<Project>) {
-        self.project = source.take();
+        *self.compiler_destination_on_control() = source.take();
+    }
+    pub(super) fn compiler_destination_on_control(&mut self) -> &mut Option<Project> {
+        &mut self.project
     }
     pub(super) fn reserve(
         &mut self,
@@ -198,12 +209,14 @@ impl ArrangementRootAssembly {
                 tracks: &project.tracks,
                 returns: &project.return_buses,
                 feed: Some(&project.return_feed_plan),
+                feed_is_paired: self.has_feed,
             })
         } else {
             Ok(RootStorageView {
                 tracks: &self.tracks,
                 returns: &self.returns,
                 feed: self.has_feed.then_some(&self.feed),
+                feed_is_paired: self.has_feed,
             })
         }
     }
@@ -269,7 +282,17 @@ impl ArrangementRootAssembly {
             })
             .transpose()?
             .unwrap_or(0);
+        let fresh_feed_backing_bytes = if self.has_feed {
+            0
+        } else {
+            self.project
+                .as_ref()
+                .or(external)
+                .map_or(&self.feed, |project| &project.return_feed_plan)
+                .backing_bytes()?
+        };
         Ok(ArrangementRootCapacity {
+            fresh_feed_backing_bytes,
             signal_topology_bytes,
             tempo_backing_bytes,
             midi_routing_backing_bytes: routes
@@ -423,6 +446,7 @@ impl ArrangementRootAssembly {
             || self.tempo_map.is_some()
             || self.topology.is_some()
             || self.midi_routing.capacity() != 0
+            || !self.feed.has_no_owned_storage()
     }
     pub(super) fn dispose_metadata_on_control(&mut self) -> Result<(), AudioStorageError> {
         if self.metadata_drop_pending {
@@ -458,6 +482,7 @@ impl ArrangementRootAssembly {
             "persistent Arrangement metadata drop panic"
         );
         drop(mem::take(&mut self.midi_routing));
+        drop(mem::take(&mut self.feed));
         self.metadata_drop_pending = false;
         Ok(())
     }
@@ -526,7 +551,7 @@ impl ArrangementRootAssembly {
                 sample_rate: _,
                 tracks,
                 return_buses,
-                return_feed_plan: _,
+                return_feed_plan,
                 signal_graph,
                 tempo_map,
                 midi_routing,
@@ -538,6 +563,9 @@ impl ArrangementRootAssembly {
             } = project;
             if let Some(graph) = signal_graph {
                 crate::signal_graph::storage::visit(graph, l)?;
+            }
+            if !self.has_feed {
+                return_feed_plan.visit_audio_storage(l)?;
             }
             l.vec(audio_clip_views)?;
             l.vec(tracks)?;

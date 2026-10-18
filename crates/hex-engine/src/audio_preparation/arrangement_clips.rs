@@ -112,7 +112,9 @@ impl ArrangementClips {
         Ok(ArrangementClipCapacity {
             tracks: self.tracks.capacity_at(growth, root.tracks)?,
             root: self.root.capacity_at(growth, project)?,
-            returns: self.returns.capacity_at(growth, root.returns, root.feed)?,
+            returns: self
+                .returns
+                .capacity_at(growth, root.returns, root.paired_feed())?,
             preview: self.preview.capacity_at(preview)?,
             pair_backing_bytes: self
                 .rows
@@ -134,7 +136,7 @@ impl ArrangementClips {
                     .and_then(|n| {
                         n.checked_add(
                             self.returns
-                                .capacity_at(true, root.returns, root.feed)
+                                .capacity_at(true, root.returns, root.paired_feed())
                                 .ok()?
                                 .previous_growth_backing_bytes,
                         )
@@ -696,7 +698,7 @@ impl ArrangementClips {
         l.growth(*growth)?;
         let view = root.visit_audio_storage(l, project)?;
         tracks.visit_audio_storage(l, view.tracks)?;
-        returns.visit_audio_storage(l, view.returns, view.feed)?;
+        returns.visit_audio_storage(l, view.returns, view.paired_feed())?;
         preview.visit_audio_storage(l, external_preview)?;
         for Pair {
             transferred: _,
@@ -743,14 +745,19 @@ impl ArrangementClips {
         &'a mut self,
         project: &hex_project::Project,
     ) -> Result<CompilerReturnChildren<'a>, AudioStorageError> {
-        self.returns.preflight_root_move()?;
-        self.returns.compiler_preflight(project)?;
-        Ok(CompilerReturnChildren {
-            rows: &mut self.returns,
-        })
+        CompilerReturnChildren::from_rows(&mut self.returns, project)
     }
 }
-impl CompilerReturnChildren<'_> {
+impl<'a> CompilerReturnChildren<'a> {
+    fn from_rows(
+        rows: &'a mut returns::ReturnAssembly,
+        project: &hex_project::Project,
+    ) -> Result<Self, AudioStorageError> {
+        rows.preflight_root_move()?;
+        rows.compiler_preflight(project)?;
+        Ok(Self { rows })
+    }
+
     pub(crate) fn chain(
         &self,
         index: usize,
