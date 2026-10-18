@@ -5148,3 +5148,10 @@ clicks, inert hover, focus and resize state across those widths. Targeted result
 and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
 full CI/integration/merge; optimized native drag/hover/optical acceptance remains
 open. No installed app, persisted schema or user files changed.
+18 October 2026 — Pulse #2805 / canonical PR #411: browser search selects its
+query on mouse focus entry and Command-F, retains normal focused caret/partial
+mouse/keyboard selection, and keeps deliberate initial held-drag selection across
+release and async/layout updates. Unicode grapheme boundaries reuse the locked
+segmentation package. Source selection work is separate from unresolved #2794
+native focus diagnostics. Dedicated merger owns integration/full CI/merge;
+root owns native optimized acceptance and the current app remains untouched.

@@ -4129,3 +4129,6 @@ fn browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query(cx: &mut
         assert!(view.last_enqueued_import_to_track.is_none());
     });
 }
+
+#[path = "browser_search_selection_ui_test.rs"]
+mod search_selection;
