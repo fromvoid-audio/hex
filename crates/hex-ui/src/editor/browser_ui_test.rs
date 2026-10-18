@@ -2146,7 +2146,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             metadata: Rc::new(RefCell::new(Some(Rc::new(AudioPreview {
                 playback_frames: 480,
                 sample_rate: current.project.sample_rate(),
-                waveform: Arc::new(
+                waveform: hex_media::waveform::SharedWaveform::new_on_control(
                     Waveform::from_peaks(
                         480,
                         vec![

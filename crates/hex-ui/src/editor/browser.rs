@@ -1461,7 +1461,7 @@ impl EditorView {
             cx.processor(move |view, range: std::ops::Range<usize>, _window, cx| {
                 range
                     .filter_map(|index| {
-                        if let Some(entry) = entries.getindex.cloned() {
+                        if let Some(entry) = entries.get(index).cloned() {
                             Some(view.browser_row(index, entry, cx))
                         } else {
                             devices.get(index.saturating_sub(file_count)).cloned().map(
@@ -1590,7 +1590,7 @@ impl EditorView {
                                         move |view, range: std::ops::Range<usize>, _window, cx| {
                                             range
                                                 .filter_map(|index| {
-                                                    entries.getindex.cloned().map(
+                                                    entries.get(index).cloned().map(
                                                         |(class, entry)| {
                                                             view.browser_device_row(
                                                                 index, class, entry, cx,

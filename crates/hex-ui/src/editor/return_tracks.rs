@@ -24,7 +24,7 @@ impl EditorView {
         }
         let track_id = self.send_menu_track?;
         let state = self.state.as_ref().cloned()?;
-        let Some(track) = state.project.tracktrack_id.cloned() else {
+        let Some(track) = state.project.track(track_id).cloned() else {
             super::device_panel::retire_removed_send_controls(self, cx);
             self.send_menu_track = None;
             self.focus.focus(window);
