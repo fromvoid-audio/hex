@@ -150,6 +150,11 @@ impl EditorView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| {
+                            if view.browser.results_focused {
+                                view.browser.search.update(cx, |input, cx| {
+                                    input.select_all_on_mouse_entry(window, cx)
+                                });
+                            }
                             view.browser.results_focused = false;
                             window.prevent_default();
                             cx.notify();
