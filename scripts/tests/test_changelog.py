@@ -39,7 +39,7 @@ class ChangelogTests(unittest.TestCase):
         self.assertEqual(data['base'], self.base)
         return {'entries': [{'category': 'fixes', 'text': 'clip selection stays consistent.', 'commits': [self.source]}], 'reason': 'fixture response, not live inference'}
 
-    def evidence(self, directory, result, execution, overrides=None, corrupt_manifest=False, link=False):
+    def evidence(self, directory, result, execution, overrides=None, corrupt_manifest=False, link=False, duplicate=False, unmanifested=False):
         import io
         import tarfile
         payloads = {'result.json': result.read_bytes(), 'execution.json': execution.read_bytes()}
@@ -62,6 +62,10 @@ class ChangelogTests(unittest.TestCase):
                 member.type = tarfile.SYMTYPE
                 member.linkname = '/foreign/user/file'
                 archive.addfile(member)
+            for name, raw in ([('result.json', result.read_bytes())] if duplicate else []) + ([('unmanifested-proof.json', b'{}')] if unmanifested else []):
+                member = tarfile.TarInfo(name)
+                member.size = len(raw)
+                archive.addfile(member, io.BytesIO(raw))
         def git_input(args, raw):
             return subprocess.check_output(['git', '-C', str(self.root), *args], input=raw).decode().strip()
         blob = git_input(['hash-object', '-w', '--stdin'], buffer.getvalue())
@@ -447,7 +451,7 @@ runpy.run_path(entry,run_name='__main__')
                 with self.assertRaisesRegex(notes.Refusal, 'evidence'):
                     notes.import_result(self.root, directory, result, execution, *evidence)
                 self.assertEqual((self.root / notes.DATASET).read_bytes(), old)
-        for options in [{'corrupt_manifest': True}, {'link': True}]:
+        for options in [{'corrupt_manifest': True}, {'link': True}, {'duplicate': True}, {'unmanifested': True}]:
             with self.subTest(options=options):
                 evidence = self.evidence(directory, result, execution, **options)
                 with self.assertRaisesRegex(notes.Refusal, 'evidence'):
