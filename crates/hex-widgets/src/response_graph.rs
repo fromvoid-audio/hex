@@ -1,6 +1,7 @@
 //! Bounded response graph with reusable node hit targets and pointer capture.
 use crate::ControlStyle;
 use crate::focus_marker::corner_markers;
+use crate::spectrum_painter::{self, Layer as SpectrumLayer, Pass as SpectrumPass};
 use gpui::{
     App, Bounds, Context, CursorStyle, Element, ElementId, Entity, EventEmitter, FocusHandle,
     Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -809,6 +810,22 @@ fn paint_graph(
         return;
     }
     let origin = point(bounds.origin.x + inset, bounds.origin.y + inset);
+    let plot = Bounds::new(origin, gpui::size(width, height));
+    let spectra = [
+        input_analyzer.map(|points| SpectrumLayer {
+            points,
+            color: analyzer_style.input,
+            stroke_width: px(0.7),
+        }),
+        analyzer.map(|points| SpectrumLayer {
+            points,
+            color: analyzer_style.output,
+            stroke_width: px(0.9),
+        }),
+    ]
+    .into_iter()
+    .flatten();
+    spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Fill, window);
     let mut grid = PathBuilder::stroke(px(0.5));
     for division in 1..4 {
         let y = origin.y + height * division as f32 / 4.0;
@@ -823,28 +840,7 @@ fn paint_graph(
     if let Ok(grid) = grid.build() {
         window.paint_path(grid, rgb(style.rail));
     }
-    if let Some(input) = input_analyzer {
-        paint_curve(
-            origin,
-            width,
-            height,
-            input,
-            px(0.7),
-            analyzer_style.input,
-            window,
-        );
-    }
-    if let Some(analyzer) = analyzer {
-        paint_curve(
-            origin,
-            width,
-            height,
-            analyzer,
-            px(0.9),
-            analyzer_style.output,
-            window,
-        );
-    }
+    spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
     paint_curve(
         origin,
         width,

@@ -807,6 +807,44 @@ impl Session {
             .map(|(_, prepared)| prepared)
     }
 
+    /// Prepare a static track-gain overlay through the existing resident preview
+    /// path. Only accepted coalesced changes prepare; canonical history is untouched.
+    pub fn preview_track_gain(
+        &self,
+        track: hex_project::TrackId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let media = self.media_bank();
+        let sine_table = self.sine_table();
+        let (_, prepared) =
+            preview.execute_prepared(Command::Gain { track, gain }, |candidate| {
+                prepare_with_waveforms(
+                    candidate,
+                    &media,
+                    Arc::clone(&sine_table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                )
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            })?;
+        Ok((Arc::new(preview.project().clone()), prepared))
+    }
+
+    /// Publish the final absolute value as one ordinary canonical gain command.
+    pub fn commit_track_gain(
+        &mut self,
+        track: hex_project::TrackId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        self.command_prepared_revision(Command::Gain { track, gain }, previous)
+            .map(|(_, prepared)| prepared)
+    }
+
     /// Prepare a sparse return-send overlay without changing canonical project
     /// state, dirty metadata or history.
     pub fn preview_return_send(
