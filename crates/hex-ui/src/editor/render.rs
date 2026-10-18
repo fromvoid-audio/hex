@@ -957,6 +957,20 @@ impl Render for EditorView {
                 }),
             )
             .on_action(cx.listener(|view, _: &DuplicateClip, window, cx| {
+                if window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("hex_text_editing"))
+                {
+                    return;
+                }
+                if view.duplicate_time_selection(window) {
+                    cx.notify();
+                    return;
+                }
+                if !view.focus.is_focused(window) && !view.midi_focus.is_focused(window) {
+                    return;
+                }
                 if view.mode == super::EditorMode::Session
                     && !view.midi_focus.is_focused(window)
                     && view.selected_cell.is_none()

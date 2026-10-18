@@ -5009,3 +5009,12 @@ expecting the removed movement button. That fixture now drives a real title drag
 and asserts its complete canonical drop request; fresh exact-source full CI is
 being run. Native
 Load dialog, glyph/input/compact layout acceptance remains coordinator-owned.
+
+## command-d time range — pulse2759 / PR367, 18 october2026
+
+Arrangement Command-D uses existing atomic time-chunk copy at the range end,
+normal overwrite semantics, retained gaps/audio source windows/MIDI fragments
+and main-track scope. Successful selection feedback supports repeated copies;
+clipboard and other-editor shortcuts are preserved. Rendered key/real-worker
+regression covers one Undo/Redo and text focus. Exact source checks and native
+input acceptance remain pending; no installed app changes.
