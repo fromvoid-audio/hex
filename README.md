@@ -1,21 +1,8 @@
-# Immutable evidence only — never build or merge this ref
+# Evidence only — never build or merge this ref
 
-Actual application source: 7fe4f48f95a23123981f41bdc4fa934f3d3d091b
-Original full-CI candidate: f55122c99bdbcb73d65ca6b1761c1180c509d6bc
-Identical source tree: c0a7f9fbd28e7c6f51e693f0e3d63e22b8b95f72
-Archive: hex-goal4-tuning-353-f55122c9-evidence-v1.tar.gz
-Bytes: 3254031
-SHA256: 5cae1a265e15d83fe595635cb3f9a2de72bdcc2627c9fe614870d028f987c2b6
-Payloads: 854; members: 855
-Included heads: 48, independently checked unique and ancestral.
+Application source 5bd4220d08f37f422eb17561bc4a350620e0c4ef; checked candidate 3219f059d0f84d52806f652d1b5b53098c135937; identical tree cabfdd2ed5b11c4307d9c088f5fbfd2d844a2e45.
+Archive hex-tempo-2720-3219f059-evidence-v1.tar.gz
+Bytes 377781
+SHA256 3f8f5b7eb0a3121d4fc513819cd71aceca357acbc90d0964dd7fa80f24d0afe0
 
-Fetch this evidence ref into an existing authenticated private repository, then
-git show EVIDENCE_COMMIT:hex-goal4-tuning-353-f55122c9-evidence-v1.tar.gz into a new file. Verify byte count and SHA256
-before reading/extracting. Reject absolute/parent/duplicate/nonregular members;
-then verify every file-manifest.json payload size/hash. Application source and
-original CI identity are inside source-identity.json and final-qualification.json.
-Every retained report/log is original; historical/failed/quick runs are distinguished.
-The root USER-TEST.md and NATIVE-REQUEST.md are the finite coordinator-owned packet.
-Native platform, installed real library/client, physical UI/audio/listening are
-separate acceptance, never implied by Linux source checks or a merge. No binaries,
-user data, credentials, source code, ownership files or caches are on this ref.
+15 original CI summaries plus ALL adjacent logs, focused failures/passes/stale/lock/control history and actual merge proof. 92 payloads/93 regular members,1873 source byte/mode inputs. Fetch this ref without checkout; git show EVIDENCE_COMMIT:hex-tempo-2720-3219f059-evidence-v1.tar.gz into a new file; verify bytes/SHA, reject unsafe/duplicate/link/nonregular members, then verify every file-manifest payload. Only finalfull20 is qualification; all other report identity/status remains original. No native report bytes/PASS implied. Native Mac7 separately coordinator-owned; physical UI/listening/save-reopen open. No application source, binary, user projects or credentials on this ref.
