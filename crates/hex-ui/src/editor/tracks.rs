@@ -14,7 +14,7 @@ use crate::theme;
 use gpui::{
     Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
 };
-use hex_project::{BeatTime, Clip, MidiClip, MidiClipTrim, MidiSourcePlayback, Track};
+use hex_project::{BeatTime, Clip, MidiClip, MidiClipTrim, Track};
 
 struct ClipGhostGeometry {
     left: f32,
@@ -94,13 +94,7 @@ fn midi_trim_note_shapes(
     visible_start: u64,
     visible_end: u64,
 ) -> Vec<(f32, f32, u8)> {
-    let playback = MidiSourcePlayback::new(
-        clip.source_length(),
-        trim.source_start(),
-        clip.looping()
-            .then_some((clip.loop_start(), clip.loop_end())),
-        trim.length(),
-    );
+    let playback = trim.source_playback();
     let Ok(playback) = playback else {
         return Vec::new();
     };
@@ -1853,6 +1847,100 @@ impl gpui::Render for ClipDragGhost {
             .debug_selector(|| "clip-drag-ghost".to_owned())
             .w(px(0.0))
             .h(px(0.0))
+    }
+}
+
+#[cfg(test)]
+mod midi_loop_preview_tests {
+    use super::midi_trim_note_shapes;
+    use hex_project::{BeatTime, ClipId, Command, Created, Editor, Project, TrimEdge};
+
+    fn beat(value: u64) -> BeatTime {
+        BeatTime::from_quarters(value).unwrap()
+    }
+
+    fn fixture() -> (Editor, ClipId) {
+        let mut e = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = e
+            .execute(Command::AddTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = e
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: beat(1),
+                length: beat(12),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        for (start, duration, pitch) in [(4, 5, 60), (6, 1, 61), (10, 2, 62)] {
+            e.execute(Command::AddMidiNote {
+                clip,
+                start: beat(start),
+                duration: beat(duration),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        e.execute(Command::SetMidiClipSourceWithOverwrite {
+            clip,
+            source_length: beat(12),
+            source_start: beat(2),
+            loop_start: beat(2),
+            loop_end: beat(6),
+            looping: false,
+            length: beat(20),
+        })
+        .unwrap();
+        (e, clip)
+    }
+
+    #[test]
+    fn consumed_once_preview_paints_no_hidden_notes_in_silent_tail() {
+        let (e, clip) = fixture();
+        let c = e.project().midi_clip(clip).unwrap();
+        let preview = c.preview_edge_trim(TrimEdge::Left, beat(7)).unwrap();
+        let start = e.project().tempo_map().beat_to_frame(beat(7)).unwrap();
+        let end = e.project().tempo_map().beat_to_frame(beat(21)).unwrap();
+        let shapes = midi_trim_note_shapes(e.project(), c, preview, start, end);
+        assert!(
+            shapes.is_empty(),
+            "consumed Once must not paint hidden authored notes: {shapes:?}"
+        );
+    }
+
+    #[test]
+    fn loop_preview_paints_prospective_repetitions_with_selected_cycle_gates() {
+        let (e, clip) = fixture();
+        let c = e.project().midi_clip(clip).unwrap();
+        let preview = c.preview_loop_outer_resize(beat(13)).unwrap();
+        let start = e.project().tempo_map().beat_to_frame(beat(1)).unwrap();
+        let end = e.project().tempo_map().beat_to_frame(beat(13)).unwrap();
+        let shapes = midi_trim_note_shapes(e.project(), c, preview, start, end);
+        assert_eq!(
+            shapes.len(),
+            3,
+            "three audible repeated notes in twelve beats"
+        );
+        for ((x, width, pitch), onset) in shapes.iter().zip([2.0_f32, 6.0, 10.0]) {
+            assert_eq!(
+                *pitch, 60,
+                "notes at/after the selected cycle end must stay hidden"
+            );
+            assert!((*x - onset / 12.0).abs() < 1e-6);
+            assert!(
+                (*width - 2.0 / 12.0).abs() < 1e-6,
+                "gate must end at the selected cycle end"
+            );
+        }
     }
 }
 

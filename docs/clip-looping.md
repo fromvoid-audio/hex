@@ -53,6 +53,12 @@ command/FIFO/generation/owned-viewport record. Do not introduce another counter,
 request key or preview owner. Source/start/track/generation identity and exact
 terminal outcome remain authoritative; previews cannot synthesize a commit.
 
+The existing Copy-only `MidiClipTrim` also carries prospective source/loop
+scalars for loop resizing. Its `source_playback()` uses the same checked policy
+mapping as a committed `MidiSource`, while authored notes remain borrowed from
+the original source. Loop preview and command queries share one calculation.
+These model queries alone do not wire pointer gestures or note painting.
+
 The existing lower fade-out control occupies the literal 8×8 bottom-right
 corner. Overlaying a loop control there would hide that accepted trim/fade
 interaction. The proposed separate inboard bottom-corner slot preserves this

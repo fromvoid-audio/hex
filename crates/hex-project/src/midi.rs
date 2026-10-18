@@ -103,30 +103,19 @@ impl MidiSource {
     }
     /// Shared finite playback mapping for Arrangement and Session compilers.
     pub fn source_playback(&self, duration: BeatTime) -> Result<MidiSourcePlayback, Invalid> {
-        validate_source_boundary(
-            self.source_length,
-            self.source_start,
-            self.loop_start,
-            self.loop_end,
-            self.looping,
-            self.one_shot_boundary,
-        )?;
-        if !self.looping && self.one_shot_boundary == MidiOneShotBoundary::LoopEnd {
-            return MidiSourcePlayback::new_bounded_one_shot(
-                self.source_length,
-                self.source_start,
-                duration,
-                self.loop_end,
-            );
+        MidiClipTrim {
+            start: BeatTime::ZERO,
+            length: duration,
+            source_start: self.source_start,
+            source_length: self.source_length,
+            loop_start: self.loop_start,
+            loop_end: self.loop_end,
+            looping: self.looping,
+            one_shot_boundary: self.one_shot_boundary,
         }
-        MidiSourcePlayback::new_with_initial_end(
-            self.source_length,
-            self.source_start,
-            self.looping.then_some((self.loop_start, self.loop_end)),
-            duration,
-            self.effective_end(),
-        )
+        .source_playback()
     }
+
     pub(crate) fn defaults(length: BeatTime) -> Self {
         Self {
             source_length: length,
@@ -150,12 +139,19 @@ pub struct MidiClip {
     pub(crate) length: BeatTime,
     pub(crate) source: Arc<MidiSource>,
 }
-/// Metadata-only edge candidate. Notes, IDs and source/loop bounds are retained.
+/// Copy-only resize candidate; authored notes and IDs remain in the original
+/// source. Ordinary edge trims retain its loop window, while loop handles may
+/// change the prospective window without detaching the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiClipTrim {
     start: BeatTime,
     length: BeatTime,
     source_start: BeatTime,
+    source_length: BeatTime,
+    loop_start: BeatTime,
+    loop_end: BeatTime,
+    looping: bool,
+    one_shot_boundary: MidiOneShotBoundary,
 }
 impl MidiClipTrim {
     pub fn start(self) -> BeatTime {
@@ -167,6 +163,66 @@ impl MidiClipTrim {
     pub fn source_start(self) -> BeatTime {
         self.source_start
     }
+    pub fn source_length(self) -> BeatTime {
+        self.source_length
+    }
+    pub fn loop_start(self) -> BeatTime {
+        self.loop_start
+    }
+    pub fn loop_end(self) -> BeatTime {
+        self.loop_end
+    }
+    pub fn looping(self) -> bool {
+        self.looping
+    }
+    pub fn one_shot_boundary(self) -> MidiOneShotBoundary {
+        self.one_shot_boundary
+    }
+
+    /// The same allocation-free mapping used by committed sources. Notes stay
+    /// borrowed from the original owner; this value owns only prospective scalars.
+    pub fn source_playback(self) -> Result<MidiSourcePlayback, Invalid> {
+        validate_source_boundary(
+            self.source_length,
+            self.source_start,
+            self.loop_start,
+            self.loop_end,
+            self.looping,
+            self.one_shot_boundary,
+        )?;
+        if !self.looping && self.one_shot_boundary == MidiOneShotBoundary::LoopEnd {
+            return MidiSourcePlayback::new_bounded_one_shot(
+                self.source_length,
+                self.source_start,
+                self.length,
+                self.loop_end,
+            );
+        }
+        let end = if self.looping {
+            self.loop_end
+        } else {
+            self.source_length
+        };
+        MidiSourcePlayback::new_with_initial_end(
+            self.source_length,
+            self.source_start,
+            self.looping.then_some((self.loop_start, self.loop_end)),
+            self.length,
+            end,
+        )
+    }
+
+    fn loop_command(self, clip: ClipId) -> Command {
+        Command::SetMidiClipSourceWithOverwrite {
+            clip,
+            source_length: self.source_length,
+            source_start: self.source_start,
+            loop_start: self.loop_start,
+            loop_end: self.loop_end,
+            looping: self.looping,
+            length: self.length,
+        }
+    }
 }
 
 impl MidiClip {
@@ -175,16 +231,24 @@ impl MidiClip {
     /// Once sources retain their cycle and explicitly resume at modulo phase.
     /// The returned canonical overwrite command owns the eventual transaction.
     pub fn loop_outer_resize_command(&self, end: BeatTime) -> Result<Command, Invalid> {
-        self.loop_resize_command(end, false)
+        Ok(self.preview_loop_outer_resize(end)?.loop_command(self.id))
     }
 
     /// Plan the first repeat marker independently from the positive outer span.
     /// A non-repeating source has no active repeat marker to edit.
     pub fn loop_cycle_resize_command(&self, end: BeatTime) -> Result<Command, Invalid> {
-        self.loop_resize_command(end, true)
+        Ok(self.preview_loop_cycle_resize(end)?.loop_command(self.id))
     }
 
-    fn loop_resize_command(&self, end: BeatTime, cycle: bool) -> Result<Command, Invalid> {
+    pub fn preview_loop_outer_resize(&self, end: BeatTime) -> Result<MidiClipTrim, Invalid> {
+        self.preview_loop_resize(end, false)
+    }
+
+    pub fn preview_loop_cycle_resize(&self, end: BeatTime) -> Result<MidiClipTrim, Invalid> {
+        self.preview_loop_resize(end, true)
+    }
+
+    fn preview_loop_resize(&self, end: BeatTime, cycle: bool) -> Result<MidiClipTrim, Invalid> {
         self.source_playback()?;
         let offset = end
             .raw()
@@ -227,21 +291,18 @@ impl MidiClip {
             BeatTime::from_raw(offset)
         };
         validate_clip(self.start, length)?;
-        MidiSourcePlayback::new(
-            source_length,
-            source_start,
-            Some((loop_start, loop_end)),
-            length,
-        )?;
-        Ok(Command::SetMidiClipSourceWithOverwrite {
-            clip: self.id,
+        let preview = MidiClipTrim {
+            start: self.start,
             source_length,
             source_start,
             loop_start,
             loop_end,
             looping: true,
             length,
-        })
+            one_shot_boundary: MidiOneShotBoundary::LoopEnd,
+        };
+        preview.source_playback()?;
+        Ok(preview)
     }
 
     pub fn name(&self) -> &str {
@@ -315,16 +376,14 @@ impl MidiClip {
             start: BeatTime::from_raw(new_start),
             length: BeatTime::from_raw(new_end - new_start),
             source_start: BeatTime::from_raw(new_source),
+            source_length: self.source_length(),
+            loop_start: self.loop_start(),
+            loop_end: self.loop_end(),
+            looping: self.looping(),
+            one_shot_boundary: self.source.one_shot_boundary,
         };
         validate_clip(preview.start, preview.length)?;
-        validate_source_boundary(
-            self.source_length(),
-            preview.source_start,
-            self.loop_start(),
-            self.loop_end(),
-            self.looping(),
-            self.source.one_shot_boundary,
-        )?;
+        preview.source_playback()?;
         Ok(preview)
     }
     pub fn id(&self) -> ClipId {
