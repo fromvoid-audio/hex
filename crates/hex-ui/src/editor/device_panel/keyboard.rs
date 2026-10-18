@@ -12,6 +12,15 @@ pub(in crate::editor) fn bind_keys(cx: &mut App) {
     )]);
 }
 
+pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -> Div {
+    let focus = view.device_panel.chain_window.selection_focus(cx);
+    rail.track_focus(&focus)
+        .key_context("hex_device_selection")
+        // A removed card must not blur the window or retarget held Backspace.
+        // Other actions, including Undo and transport, still reach the editor.
+        .on_action(cx.listener(|_, _: &RemoveSelectedDevice, _, cx| cx.stop_propagation()))
+}
+
 fn removal(
     project: &hex_project::Project,
     owner: DevicePanelOwner,
@@ -91,7 +100,12 @@ pub(super) fn card(
                 if finalize_controls(view, cx) {
                     // Canonical reconciliation clears selection only after removal.
                     // Pending work refuses repeat; no next device is selected.
-                    view.enqueue_device_barrier(Request::Edit(command));
+                    if view.enqueue_device_barrier(Request::Edit(command)) {
+                        view.device_panel
+                            .chain_window
+                            .selection_focus(cx)
+                            .focus(window);
+                    }
                 }
                 cx.notify();
             }),

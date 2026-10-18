@@ -71,7 +71,11 @@ its canonical instrument/effect removal command, including Return effects. The
 existing draft finalization and terminal barrier precede removal; pending work,
 recording, replaced owners and stale selection refuse it. Canonical reconciliation
 retires the removed card and caches without selecting another device for a held
-key. One Undo restores its full chain state; Redo removes the same device.
+key. Accepted removal transfers focus to a persistent neutral chain container,
+so retiring the card (including the last Return effect) leaves real keyboard Undo
+and transport reachable. The neutral container consumes device Backspace without
+retargeting a restored or neighboring card. One Undo restores its full chain state;
+Redo removes the same device.
 
 Numeric/text/browser editors and EQ graph nodes retain their own Backspace.
 Title focus deliberately leaves nested control pointer handlers alone and keeps

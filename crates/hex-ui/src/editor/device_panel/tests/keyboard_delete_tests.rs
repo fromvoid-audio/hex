@@ -65,7 +65,7 @@ fn settled(view: &EditorView) -> bool {
 }
 
 #[gpui::test]
-fn device_header_backspace_removes_only_selected_effect_and_history_restores_exact_chain(
+fn device_header_backspace_keeps_real_keyboard_undo_redo_and_focus_after_reconcile(
     cx: &mut TestAppContext,
 ) {
     let browser = BrowserDirectory::new();
@@ -78,7 +78,10 @@ fn device_header_backspace_removes_only_selected_effect_and_history_restores_exa
     visual.run_until_parked();
     let point = title(&mut visual, device);
     visual.simulate_click(point, Modifiers::default());
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        is_held: false,
+    });
     pump_until(&editor, cx, |view| {
         settled(view)
             && view
@@ -105,7 +108,15 @@ fn device_header_backspace_removes_only_selected_effect_and_history_restores_exa
             "settled normal removal is not a stale-target warning"
         );
     });
-    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+    });
+    let focus_after_removal = visual.update(|window, cx| window.focused(cx).is_some());
+    visual.simulate_keystrokes("cmd-z");
+    assert!(
+        focus_after_removal,
+        "focused device removal blurred the window before real Cmd-Z"
+    );
     pump_until(&editor, cx, |view| {
         settled(view)
             && view
@@ -119,7 +130,27 @@ fn device_header_backspace_removes_only_selected_effect_and_history_restores_exa
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original)
     });
-    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    // Restoring a card never makes a still-held key remove it again.
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        is_held: true,
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+    });
+    editor.update(cx, |view, _| view.last_transport_command = None);
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.last_transport_command.is_some(),
+            "real Space reaches transport"
+        )
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
     pump_until(&editor, cx, |view| {
         settled(view)
             && view
@@ -224,7 +255,9 @@ fn device_header_backspace_removes_return_effect_with_one_undo(cx: &mut TestAppC
             original.track(track)
         )
     });
-    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    visual.run_until_parked();
+    assert!(visual.update(|window, cx| window.focused(cx).is_some()));
+    visual.simulate_keystrokes("cmd-z");
     pump_until(&editor, cx, |view| {
         settled(view)
             && view
