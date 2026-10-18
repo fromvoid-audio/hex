@@ -70,6 +70,7 @@ pub(super) struct TrimDrag {
 /// through one `Rc`; pointer updates and previews never clone the note list.
 #[derive(Clone, Debug)]
 pub(super) struct MidiTrimDrag {
+    canceled: Rc<Cell<bool>>,
     pub(super) project_generation: u64,
     pub(super) revision: u64,
     pub(super) source_track: TrackId,
@@ -104,6 +105,180 @@ fn corrected_edge_frame(pointer_frame: u64, grab_delta: i128) -> u64 {
     (i128::from(pointer_frame) - grab_delta).clamp(0, i128::from(u64::MAX)) as u64
 }
 
+/// One resize terminal owner. PR403 adds optional display metadata to this
+/// same record; no separate completion key, FIFO counter or viewport owner.
+pub(super) struct PendingTrim {
+    generation: u64,
+    command: ResizeCommand,
+    remaining: Option<usize>,
+    scroll_viewport: Option<Viewport>,
+}
+pub(super) struct RetiredTrimViewport {
+    generation: u64,
+    viewport: Option<Viewport>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResizeCommand {
+    Audio {
+        clip: hex_project::ClipId,
+        edge: TrimEdge,
+        frame: u64,
+        stretch: bool,
+    },
+    Midi {
+        clip: hex_project::ClipId,
+        edge: TrimEdge,
+        beat: BeatTime,
+    },
+}
+
+impl ResizeCommand {
+    fn from_request(request: &Request) -> Option<Self> {
+        match request {
+            Request::Edit(Command::StretchAudioClipEdge { clip, edge, frame }) => {
+                Some(Self::Audio {
+                    clip: *clip,
+                    edge: *edge,
+                    frame: *frame,
+                    stretch: true,
+                })
+            }
+            Request::Edit(Command::TrimClipEdge { clip, edge, frame }) => Some(Self::Audio {
+                clip: *clip,
+                edge: *edge,
+                frame: *frame,
+                stretch: false,
+            }),
+            Request::Edit(Command::TrimMidiClipEdge { clip, edge, beat }) => Some(Self::Midi {
+                clip: *clip,
+                edge: *edge,
+                beat: *beat,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl PendingTrim {
+    fn into_viewport(self) -> RetiredTrimViewport {
+        RetiredTrimViewport {
+            generation: self.generation,
+            viewport: self.scroll_viewport,
+        }
+    }
+}
+impl EditorView {
+    pub(super) fn pending_trim_matches(&self, request: &Request) -> bool {
+        self.pending_trim.as_ref().is_some_and(|pending| {
+            pending.generation == self.project_generation
+                && pending.remaining.is_none()
+                && ResizeCommand::from_request(request) == Some(pending.command)
+        })
+    }
+    pub(super) fn trim_request_submitted(&mut self) {
+        if let Some(pending) = self.pending_trim.as_mut() {
+            pending.remaining = Some(self.worker_requests_pending);
+        }
+    }
+    /// Take only our own FIFO terminal before receive installs its canonical
+    /// state. Earlier completions, including typed gestures, count but do not
+    /// normalize. Replacement discards the old document's owner entirely.
+    pub(super) fn trim_request_complete(
+        &mut self,
+        event: &hex_session::service::Event,
+    ) -> Option<RetiredTrimViewport> {
+        let pending = self.pending_trim.as_mut()?;
+        if event.project_replaced || pending.generation != self.project_generation {
+            self.pending_trim = None;
+            return None;
+        }
+        if event.request_complete
+            && let Some(remaining) = pending.remaining.as_mut()
+        {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                return self.pending_trim.take().map(PendingTrim::into_viewport);
+            }
+        }
+        None
+    }
+    pub(super) fn normalize_completed_trim_viewport(
+        &mut self,
+        terminal: Option<RetiredTrimViewport>,
+    ) {
+        if let Some(terminal) = terminal {
+            self.normalize_canceled_trim_viewport(terminal.generation, terminal.viewport);
+        }
+    }
+    pub(super) fn retire_pending_trim(&mut self) -> bool {
+        let terminal = self.pending_trim.take().map(PendingTrim::into_viewport);
+        let retired = terminal.is_some();
+        self.normalize_completed_trim_viewport(terminal);
+        retired
+    }
+}
+
+/// Use only the canonical model's applied portion of one timer step. Ordinary
+/// unconstrained movement stays constant-work. A source/minimum clamp finds
+/// its first saturating point; an invalid full step finds its last valid point.
+/// Each search halves a u64 interval: at most 64 metadata-only iterations, never
+/// per-frame retries, DSP work, grid quantization or relaxed model bounds.
+fn resize_pan_prefix<T: PartialEq>(
+    current: Viewport,
+    next: Viewport,
+    candidate: impl Fn(Viewport) -> Option<(T, bool)>,
+) -> Option<Viewport> {
+    if current.length != next.length || current.start == next.start {
+        return None;
+    }
+    let before = candidate(current)?.0;
+    let distance = current.start.abs_diff(next.start);
+    let viewport_at = |distance| Viewport {
+        start: if next.start > current.start {
+            current.start + distance
+        } else {
+            current.start - distance
+        },
+        length: current.length,
+    };
+    if let Some((after, unclamped)) = candidate(next) {
+        if after == before {
+            return None;
+        }
+        if unclamped {
+            return Some(next);
+        }
+        let mut earlier = 0;
+        let mut saturated = distance;
+        while saturated - earlier > 1 {
+            let middle = earlier + (saturated - earlier) / 2;
+            if candidate(viewport_at(middle))
+                .as_ref()
+                .is_some_and(|(clip, _)| clip == &after)
+            {
+                saturated = middle;
+            } else {
+                earlier = middle;
+            }
+        }
+        return Some(viewport_at(saturated));
+    }
+    let mut valid = 0;
+    let mut invalid = distance;
+    while invalid - valid > 1 {
+        let middle = valid + (invalid - valid) / 2;
+        if candidate(viewport_at(middle)).is_some() {
+            valid = middle;
+        } else {
+            invalid = middle;
+        }
+    }
+    let last = viewport_at(valid);
+    candidate(last)
+        .filter(|(after, _)| *after != before)
+        .map(|_| last)
+}
+
 fn edge_frame(clip: &Clip, edge: TrimEdge) -> Option<u64> {
     match edge {
         TrimEdge::Left => Some(clip.start()),
@@ -112,12 +287,13 @@ fn edge_frame(clip: &Clip, edge: TrimEdge) -> Option<u64> {
 }
 
 fn drag_admitted(view: &EditorView) -> bool {
-    trim_drag_admitted(
-        view.opening_project,
-        view.close_prompt_open,
-        view.worker_requests_pending,
-        view.pending_requests.len(),
-    )
+    view.pending_trim.is_none()
+        && trim_drag_admitted(
+            view.opening_project,
+            view.close_prompt_open,
+            view.worker_requests_pending,
+            view.pending_requests.len(),
+        )
 }
 
 fn trim_drag_admitted(
@@ -167,7 +343,8 @@ fn midi_payload_is_current(
     viewport: Viewport,
     source_lane: Option<LaneBounds>,
 ) -> bool {
-    drag.project_generation == generation
+    !drag.canceled.get()
+        && drag.project_generation == generation
         && drag.revision == state.revision
         && drag.viewport().start == viewport.start
         && drag.viewport().length == viewport.length
@@ -390,6 +567,7 @@ impl EditorView {
             return Vec::new();
         };
         let drag = MidiTrimDrag {
+            canceled: Rc::new(Cell::new(false)),
             project_generation: self.project_generation,
             revision: state.revision,
             source_track: track,
@@ -692,13 +870,52 @@ impl EditorView {
     }
 
     pub(super) fn cancel_trim_gesture(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(drag) = self.active_trim_drag.take() else {
-            return false;
-        };
-        drag.canceled.set(true);
-        drag.preview.borrow_mut().take();
-        cx.notify();
-        true
+        self.retire_trim_gesture(true, cx)
+    }
+
+    fn normalize_canceled_trim_viewport(&mut self, generation: u64, owned: Option<Viewport>) {
+        if generation == self.project_generation
+            && owned.is_some()
+            && self.viewport == owned
+            && self.active_trim_drag.is_none()
+            && self.active_midi_trim_drag.is_none()
+            && let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames)
+        {
+            // The active display-horizon owner is already retired. Persist the
+            // actual canonical clamp so later unrelated growth cannot resurrect
+            // an offset that was concealed by visible_viewport's current clamp.
+            self.viewport = Some(self.visible_viewport(horizon));
+        }
+    }
+
+    fn retire_trim_gesture(&mut self, canceled_view: bool, cx: &mut Context<Self>) -> bool {
+        let audio = self.active_trim_drag.take();
+        let midi = self.active_midi_trim_drag.take();
+        let canceled = audio.is_some() || midi.is_some();
+        if let Some(drag) = audio {
+            drag.canceled.set(true);
+            drag.preview.borrow_mut().take();
+            if canceled_view {
+                self.normalize_canceled_trim_viewport(
+                    drag.project_generation,
+                    drag.scroll.get().viewport,
+                );
+            }
+        }
+        if let Some(drag) = midi {
+            drag.canceled.set(true);
+            drag.preview.borrow_mut().take();
+            if canceled_view {
+                self.normalize_canceled_trim_viewport(
+                    drag.project_generation,
+                    drag.scroll.get().viewport,
+                );
+            }
+        }
+        if canceled {
+            cx.notify();
+        }
+        canceled
     }
 
     pub(super) fn begin_trim_drag(&mut self, drag: &TrimDrag) {
@@ -777,7 +994,14 @@ impl EditorView {
         if self.active_midi_trim_drag.as_ref().is_some_and(|active| {
             active.project_generation == generation && active.clip.id() == clip
         }) {
-            self.active_midi_trim_drag = None;
+            if let Some(drag) = self.active_midi_trim_drag.take() {
+                drag.canceled.set(true);
+                drag.preview.borrow_mut().take();
+                self.normalize_canceled_trim_viewport(
+                    drag.project_generation,
+                    drag.scroll.get().viewport,
+                );
+            }
             cx.notify();
         }
     }
@@ -874,13 +1098,111 @@ impl EditorView {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        self.enqueue(Request::Edit(Command::TrimMidiClipEdge {
+        self.pending_trim = Some(PendingTrim {
+            generation: drag.project_generation,
+            command: ResizeCommand::Midi {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                beat,
+            },
+            remaining: None,
+            scroll_viewport: drag.scroll.get().viewport,
+        });
+        let accepted = self.enqueue(Request::Edit(Command::TrimMidiClipEdge {
             clip: drag.clip.id(),
             edge: drag.edge,
             beat,
         }));
-        self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+        if !accepted {
+            self.pending_trim = None;
+        }
+        self.retire_trim_gesture(!accepted, cx);
         cx.notify();
+    }
+
+    pub(super) fn trim_pan_viewport(
+        &self,
+        drag: &TrimDrag,
+        x: f32,
+        next: Viewport,
+    ) -> Option<Viewport> {
+        let state = self.state.as_ref()?;
+        let lane = self.drag_lanes.get(&drag.source_track).copied()?;
+        let delta = (*drag.grab_delta.borrow())?;
+        let candidate = |viewport| {
+            let pointer_frame = frame_at_x(x, lane, viewport)?;
+            let requested = i128::from(pointer_frame) - delta;
+            let frame = corrected_edge_frame(pointer_frame, delta);
+            let clip = preview_clip(drag, &state.project, frame).ok()?;
+            let unclamped =
+                requested == i128::from(frame) && edge_frame(&clip, drag.edge)? == frame;
+            Some((clip, unclamped))
+        };
+        resize_pan_prefix(drag.viewport(), next, candidate)
+    }
+
+    pub(super) fn midi_trim_pan_viewport(
+        &self,
+        drag: &MidiTrimDrag,
+        x: f32,
+        next: Viewport,
+    ) -> Option<Viewport> {
+        let state = self.state.as_ref()?;
+        let lane = self.drag_lanes.get(&drag.source_track).copied()?;
+        let delta = (*drag.grab_delta.borrow())?;
+        let candidate = |viewport| {
+            let beat = midi_pointer_beat(&state.project, x, lane, viewport)?;
+            let requested = i128::from(beat.raw()) - delta;
+            let beat = BeatTime::from_raw(requested.clamp(0, i128::from(u64::MAX)) as u64);
+            let clip = drag.clip.preview_edge_trim(drag.edge, beat).ok()?;
+            let edge = match drag.edge {
+                TrimEdge::Left => clip.start().raw(),
+                TrimEdge::Right => clip.start().raw().checked_add(clip.length().raw())?,
+            };
+            Some((
+                clip,
+                requested == i128::from(beat.raw()) && edge == beat.raw(),
+            ))
+        };
+        resize_pan_prefix(drag.viewport(), next, candidate)
+    }
+
+    /// A private resize may navigate beyond the current display extent, never
+    /// beyond its checked viewport or into a stale owner's project/geometry.
+    pub(super) fn trim_display_end(&self) -> Option<u64> {
+        if !drag_admitted(self) {
+            return None;
+        }
+        let state = self.state.as_ref()?;
+        if let Some(drag) = &self.active_trim_drag {
+            let viewport = drag.scroll.get().viewport?;
+            if self.viewport == Some(viewport)
+                && payload_is_current(
+                    drag,
+                    self.project_generation,
+                    state,
+                    viewport,
+                    self.drag_lanes.get(&drag.source_track).copied(),
+                )
+            {
+                return viewport.end();
+            }
+        }
+        if let Some(drag) = &self.active_midi_trim_drag {
+            let viewport = drag.scroll.get().viewport?;
+            if self.viewport == Some(viewport)
+                && midi_payload_is_current(
+                    drag,
+                    self.project_generation,
+                    state,
+                    viewport,
+                    self.drag_lanes.get(&drag.source_track).copied(),
+                )
+            {
+                return viewport.end();
+            }
+        }
+        None
     }
 
     pub(super) fn trim_drag_current(&self, drag: &TrimDrag) -> bool {
@@ -949,7 +1271,19 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        self.enqueue(Request::Edit(if drag.stretch_modifier.get() {
+        let stretch = drag.stretch_modifier.get();
+        self.pending_trim = Some(PendingTrim {
+            generation: drag.project_generation,
+            command: ResizeCommand::Audio {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                frame,
+                stretch,
+            },
+            remaining: None,
+            scroll_viewport: drag.scroll.get().viewport,
+        });
+        let accepted = self.enqueue(Request::Edit(if stretch {
             Command::StretchAudioClipEdge {
                 clip: drag.clip.id(),
                 edge: drag.edge,
@@ -962,7 +1296,10 @@ impl EditorView {
                 frame,
             }
         }));
-        self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
+        if !accepted {
+            self.pending_trim = None;
+        }
+        self.retire_trim_gesture(!accepted, cx);
         cx.notify();
     }
 }
@@ -1341,3 +1678,7 @@ mod tests {
         state.project.clip(id).expect("clip").clone()
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "resize_terminal_tests.rs"]
+mod resize_terminal_tests;
