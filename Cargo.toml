@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/hex-dsp", "crates/hex-midi", "crates/hex-clap-scan", "crates/hex-plugin-scan", "crates/hex-warp", "crates/hex-diagnostics", "crates/hex-session", "crates/hex-storage", "crates/hex-media", "crates/hex-project", "crates/hex-lattice-contract", "crates/hex-lattice", "crates/hex-devices", "crates/hex-engine", "crates/hex-stream", "crates/hex-export", "crates/hex-library", "crates/hex-cli", "crates/hex-desktop", "crates/hex-ui", "crates/hex-audio", "crates/hex-preferences", "crates/hex-widgets"]
-exclude = ["third_party/gpui", "third_party/block", "third_party/proc-macro-error2", "third_party/xattr"]
+members = ["crates/hex-mts", "crates/hex-tuning", "crates/hex-dsp", "crates/hex-midi", "crates/hex-clap-scan", "crates/hex-plugin-scan", "crates/hex-warp", "crates/hex-diagnostics", "crates/hex-session", "crates/hex-storage", "crates/hex-media", "crates/hex-project", "crates/hex-lattice-contract", "crates/hex-lattice", "crates/hex-devices", "crates/hex-engine", "crates/hex-stream", "crates/hex-export", "crates/hex-library", "crates/hex-cli", "crates/hex-desktop", "crates/hex-ui", "crates/hex-audio", "crates/hex-preferences", "crates/hex-widgets"]
+exclude = ["third_party/mts-esp-master", "third_party/gpui", "third_party/block", "third_party/proc-macro-error2", "third_party/xattr"]
 resolver = "3"
 
 [workspace.package]

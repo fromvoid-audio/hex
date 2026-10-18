@@ -2,6 +2,7 @@
 mod files;
 mod journal;
 pub mod preset;
+pub mod tuning_library;
 pub use journal::{Journal, journal_path, load_journal};
 mod audio_edit;
 mod replacement;
@@ -129,11 +130,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the complete schema29 envelope, preserving fade shapes, nested audio
-/// events, appearance, names, routing, device gains and gain-lane metadata.
-/// Historical readers remain explicit.
+/// Encode the single current schema31 envelope with required tuning and complete
+/// device asset manifests, preserving all other active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::fade_shapes::DocumentV29::from_project(project)?)
+    encode_document(&schema::tuning::DocumentV31::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -149,6 +149,12 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project.tuning() != hex_tuning::ProjectTuning::default() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save project tuning",
+        ));
+    }
+    schema::device_assets::refuse_legacy(project)?;
     if project.tracks().iter().any(|t| {
         t.clips().iter().any(|c| c.name() != "clip")
             || t.midi_clips().iter().any(|c| c.name() != "clip")

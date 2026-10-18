@@ -41,6 +41,26 @@ controls and unordered/out-of-range markers. MIDI velocity zero is silent.
 There is no anti-alias filter, warp, crossfade or zero-crossing snap in this
 kernel. Linear resampling alone does not establish high-quality downsampling.
 
+## checked voice lifetime preparation
+
+Pulse2761 / PR369 adds `Voice::end_age_frames(gate_frames)`, an exclusive
+onset-relative bound derived from the existing kernel law. Trigger returns the
+natural source end, independent of note-off. Gate returns the earlier of source
+exhaustion and gate-plus-release; a loop requires a representable gate-plus-release.
+An exhausted nonlooping source still supplies a finite bound when that addition
+would overflow. The query is not a silence/energy detector: silent PCM or an
+inaudible envelope may end sounding sooner. The caller must separately check
+absolute onset addition and retain resources through actual host retirement.
+No Stop, seek, retuning, density, resource-admission or registry policy is added.
+
+Eleven focused sampler tests pass, including three new lifetime fixtures that
+compare the reported bound with actual positive-PCM exhaustion at five source
+and output rates, five pitches, both directions and multiple gate lengths.
+Loop release, Trigger slices after short notes, irregular partitions and u64
+boundary refusal are covered. Strict device all-target Clippy passes. Final
+exact-source full CI remains required; these are kernel tests, not host callback
+or native/listening evidence.
+
 ## host integration contract still required
 
 The current 4KiB device-state and analytic-context bounds and separate 2MiB

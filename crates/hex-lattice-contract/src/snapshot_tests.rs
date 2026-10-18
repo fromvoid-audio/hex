@@ -101,7 +101,7 @@ fn snapshot_late_validation_or_private_patch_failure_never_changes_source() {
             &self,
             state: &NativeDeviceState,
         ) -> Result<NativeDeviceState, DeviceContractError> {
-            Ok(state.clone())
+            NativeDeviceState::new(self.type_id(), 1, state.payload().to_vec())
         }
         fn read_parameter(
             &self,
@@ -116,6 +116,11 @@ fn snapshot_late_validation_or_private_patch_failure_never_changes_source() {
             id: ParameterId,
             _value: ParameterValue,
         ) -> Result<NativeDeviceState, DeviceContractError> {
+            assert_eq!(
+                state.asset_references().len(),
+                1,
+                "private patch lost its host binding"
+            );
             self.patches.fetch_add(1, Ordering::Relaxed);
             if id.value() == 2 {
                 return Err(DeviceContractError::MalformedState);
@@ -128,7 +133,14 @@ fn snapshot_late_validation_or_private_patch_failure_never_changes_source() {
     let definition = Definition {
         patches: AtomicUsize::new(0),
     };
-    let source = definition.default_state().unwrap();
+    let source = definition
+        .default_state()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(42).unwrap(),
+        }])
+        .unwrap();
     let invalid = DeviceParameterSnapshot::new(&[
         (DESCRIPTORS[0].id, ParameterValue::Float(0.5)),
         (DESCRIPTORS[1].id, ParameterValue::Float(1.5)),

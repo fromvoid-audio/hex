@@ -151,8 +151,12 @@ impl RuntimeOwnership {
         clock: Option<&dyn crate::NativeInstrumentClock>,
     ) {
         match self {
-            Self::Legacy { scratch, .. } => scratch.process_block_with_clock(frames, clock),
-            Self::Owned(v) => v.process_block_with_clock(frames, clock),
+            Self::Legacy { scratch, .. } => {
+                scratch.process_block_with_clock(frames, clock, &crate::EMPTY_DEVICE_RESOURCES)
+            }
+            Self::Owned(v) => {
+                v.process_block_with_clock(frames, clock, &crate::EMPTY_DEVICE_RESOURCES)
+            }
             Self::Memoryless => {}
         }
     }
@@ -162,10 +166,14 @@ impl RuntimeOwnership {
         clock: Option<&dyn crate::NativeInstrumentClock>,
     ) {
         match self {
-            Self::Legacy { scratch, .. } => {
-                scratch.process_bypassed_block_with_clock(frames, clock)
+            Self::Legacy { scratch, .. } => scratch.process_bypassed_block_with_clock(
+                frames,
+                clock,
+                &crate::EMPTY_DEVICE_RESOURCES,
+            ),
+            Self::Owned(v) => {
+                v.process_bypassed_block_with_clock(frames, clock, &crate::EMPTY_DEVICE_RESOURCES)
             }
-            Self::Owned(v) => v.process_bypassed_block_with_clock(frames, clock),
             Self::Memoryless => {}
         }
     }

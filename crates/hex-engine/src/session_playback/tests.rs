@@ -117,11 +117,15 @@ impl hex_lattice::NativeInstrumentDefinition for ContinuityInstrumentDefinition 
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
     > {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if !(8_000..=192_000).contains(&sample_rate)
             || state.type_id() != self.id
             || state.state_version() != 1
@@ -242,7 +246,7 @@ impl hex_lattice::NativeInstrumentDefinition for OversizedSharedContextDefinitio
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
@@ -289,7 +293,13 @@ impl hex_lattice::PreparedSharedAnalyticContext for OversizedSharedContext {
         Ok(hex_lattice::PreparedSharedAnalyticNote::new([0; 8], 0))
     }
 
-    fn sample(&self, _: &hex_lattice::PreparedSharedAnalyticNote, _: u64, _: u64) -> [f32; 2] {
+    fn sample(
+        &self,
+        _: &hex_lattice::PreparedSharedAnalyticNote,
+        _: u64,
+        _: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> [f32; 2] {
         [0.0; 2]
     }
 }
@@ -318,6 +328,7 @@ impl hex_lattice::PreparedSharedAnalyticContext for ContinuitySharedContext {
         note: &hex_lattice::PreparedSharedAnalyticNote,
         age: u64,
         gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> [f32; 2] {
         if age < gate.saturating_add(note.release_frames()) {
             let level = f32::from_bits(note.payload()[0] as u32);
@@ -333,6 +344,7 @@ fn continuity_sample(
     age: u64,
     gate: u64,
     release: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> [f32; 2] {
     if age < gate.saturating_add(release) {
         let level = f32::from_bits(payload[0] as u32);
@@ -420,6 +432,7 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         &self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
         let mut active = self.active;
         let mut previous_offset = 0;
@@ -451,6 +464,7 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         &mut self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
@@ -599,11 +613,15 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFeedbackDefinition {
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
     > {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if !(8_000..=192_000).contains(&sample_rate)
             || state.type_id() != self.metadata.id
             || state.state_version() != 1
@@ -708,6 +726,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         &self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
         let mut voices = self.voices;
         let mut previous_offset = 0;
@@ -757,6 +776,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         &mut self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
@@ -830,7 +850,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
 #[test]
 fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     let sampler_bytes = std::mem::size_of::<hex_lattice::PreparedAnalyticNote>();
-    assert_eq!(sampler_bytes, 344);
+    assert_eq!(sampler_bytes, 352);
     let added_sampler_bytes = sampler_bytes - 40;
     let release_capacity = super::SESSION_RELEASE_CAPACITY;
     let release_entries_bytes = release_capacity
@@ -866,12 +886,14 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     );
     #[cfg(target_pointer_width = "64")]
     {
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 480);
-        assert_eq!(span_buffer_bytes, 82_952);
-        assert_eq!(current_bytes, 15_811_592);
+        // Sampler authority adds eight bytes; tuning custody uses existing
+        // padding. The admission ceilings remain unchanged.
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
+        assert_eq!(span_buffer_bytes, 82_952 + 192 * 8);
+        assert_eq!(current_bytes, 16_075_272);
         assert_eq!(shared_owner_slots, 131_072);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 16_335_880);
+        assert_eq!(scoped_bytes, 16_599_560);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)
@@ -930,6 +952,7 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
@@ -1145,6 +1168,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
@@ -1307,6 +1331,30 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
         assert!(calls.iter().all(|(identity, _, _)| {
             identity.owner == hex_lattice::ProcessorChainOwner::Track(1) && identity.device_id == 7
         }));
+        let mut paired = make_playback(looping);
+        let mut paired_output = [[0.0; 2]; 512];
+        let mut paired_calls = Vec::new();
+        paired
+            .render_with_node_signal_observer(
+                &mut paired_output,
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    assert_eq!(identity.owner, hex_lattice::ProcessorChainOwner::Track(1));
+                    assert_eq!(identity.device_id, 7);
+                    paired_calls.push((phase, offset, frames.len()));
+                }),
+            )
+            .unwrap();
+        assert_eq!(paired_output, ordinary_output);
+        let expected_pairs: Vec<_> = expected_chunks
+            .iter()
+            .flat_map(|&(offset, count)| {
+                [
+                    (crate::NodeSignalPhase::Input, offset, count),
+                    (crate::NodeSignalPhase::Output, offset, count),
+                ]
+            })
+            .collect();
+        assert_eq!(paired_calls, expected_pairs);
     }
 }
 
@@ -1364,6 +1412,30 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
                 }),
             )
             .unwrap();
+        let mut paired =
+            Playback::try_from_prepared_with_session(revision(&project, Arc::clone(&table)))
+                .unwrap();
+        paired.apply(PlaybackCommand::Play);
+        let mut paired_output = [[0.0; 2]; 256];
+        let mut signals = Vec::new();
+        paired
+            .render_with_node_signal_observer(
+                &mut paired_output,
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    if identity == return_identity {
+                        signals.push((phase, offset, frames.to_vec()));
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(paired_output, output);
+        assert_eq!(signals.len(), 2);
+        assert_eq!(signals[0].0, crate::NodeSignalPhase::Input);
+        assert_eq!(signals[1].0, crate::NodeSignalPhase::Output);
+        assert_eq!(signals[0].1, signals[1].1);
+        if bypassed {
+            assert_eq!(signals[0].2, signals[1].2);
+        }
         calls
     };
 
@@ -1837,74 +1909,82 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     };
     let old_revision = prepare(&old_project);
 
-    let start_old = || {
-        let mut playback = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    // Each transition owns the same two real playback values, but their
+    // lifetime is one helper call. Keeping all four pairs in this debug test
+    // frame exceeded the ordinary test-thread stack before rendering.
+    fn start_old(revision: Arc<PreparedRevision>) -> SessionPlayback {
+        let mut playback = SessionPlayback::new(revision).unwrap();
         playback.apply(SessionPlaybackCommand::Play).unwrap();
         let mut prefix = [[0.0; 2]; 32];
         playback.render(&mut prefix).unwrap();
         assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
         assert!(!playback.device_chains[0].committed_range_is_quiescent(0..1));
         playback
-    };
-
-    let mut reference = start_old();
-    let mut expected = [[0.0; 2]; 256];
-    let mut offset = 0;
-    for size in [1, 7, 31, 64, 153] {
-        reference
-            .render(&mut expected[offset..offset + size])
-            .unwrap();
-        offset += size;
     }
-    assert_eq!(offset, expected.len());
+    fn reference_output(revision: Arc<PreparedRevision>) -> [Frame; 256] {
+        let mut reference = start_old(revision);
+        let mut expected = [[0.0; 2]; 256];
+        let mut offset = 0;
+        for size in [1, 7, 31, 64, 153] {
+            reference
+                .render(&mut expected[offset..offset + size])
+                .unwrap();
+            offset += size;
+        }
+        assert_eq!(offset, expected.len());
+        expected
+    }
+    fn transition_output(
+        old: Arc<PreparedRevision>,
+        candidate: Arc<PreparedRevision>,
+        detached: bool,
+    ) -> [Frame; 256] {
+        let mut previous = start_old(old);
+        let mut current = SessionPlayback::new(candidate).unwrap();
+        current.try_inherit_state_from(&mut previous).unwrap();
+        assert_eq!(
+            current.tail_groups.iter().flatten().count(),
+            usize::from(detached)
+        );
+        if detached {
+            assert!(current.tail_output_active[0]);
+        }
+        let mut output = [[0.0; 2]; 256];
+        current.render(&mut output).unwrap();
+        output
+    }
 
+    let expected = reference_output(Arc::clone(&old_revision));
     // A non-device edit preserves the same owner; history transfers once to
     // the candidate and does not create a second retained old suffix.
-    let mut unchanged_previous = start_old();
-    let mut unchanged = SessionPlayback::new(prepare(&unchanged_project)).unwrap();
-    unchanged
-        .try_inherit_state_from(&mut unchanged_previous)
-        .unwrap();
-    assert_eq!(unchanged.tail_groups.iter().flatten().count(), 0);
-    let mut unchanged_output = [[0.0; 2]; 256];
-    unchanged.render(&mut unchanged_output).unwrap();
-    assert_eq!(unchanged_output, expected);
-
-    // A bypass/device-configuration edit detaches the old output settings.
-    let mut old_for_bypass = start_old();
-    let mut bypassed = SessionPlayback::new(prepare(&bypassed_project)).unwrap();
-    bypassed
-        .try_inherit_state_from(&mut old_for_bypass)
-        .unwrap();
-    assert_eq!(bypassed.tail_groups.iter().flatten().count(), 1);
-    assert!(bypassed.tail_output_active[0]);
-    let mut bypassed_output = [[0.0; 2]; 256];
-    bypassed.render(&mut bypassed_output).unwrap();
-    assert_eq!(bypassed_output, expected);
-
-    // A compatible runtime can inherit physical filter history across a
-    // parameter edit, but that history belongs to the old configuration for
-    // outgoing residual audio and must not also be copied into the candidate.
-    let mut old_for_configuration = start_old();
-    let mut changed = SessionPlayback::new(prepare(&changed_configuration)).unwrap();
-    changed
-        .try_inherit_state_from(&mut old_for_configuration)
-        .unwrap();
-    assert_eq!(changed.tail_groups.iter().flatten().count(), 1);
-    assert!(changed.tail_output_active[0]);
-    let mut changed_output = [[0.0; 2]; 256];
-    changed.render(&mut changed_output).unwrap();
-    assert_eq!(changed_output, expected);
-
-    let mut old_for_mix = start_old();
-    let mut changed_mix = SessionPlayback::new(prepare(&changed_mix_project)).unwrap();
-    changed_mix
-        .try_inherit_state_from(&mut old_for_mix)
-        .unwrap();
-    assert_eq!(changed_mix.tail_groups.iter().flatten().count(), 1);
-    let mut changed_mix_output = [[0.0; 2]; 256];
-    changed_mix.render(&mut changed_mix_output).unwrap();
-    assert_eq!(changed_mix_output, expected);
+    assert_eq!(
+        transition_output(
+            Arc::clone(&old_revision),
+            prepare(&unchanged_project),
+            false
+        ),
+        expected
+    );
+    // Bypass detaches the old output settings.
+    assert_eq!(
+        transition_output(Arc::clone(&old_revision), prepare(&bypassed_project), true),
+        expected
+    );
+    // A compatible runtime inherits filter history for outgoing residual audio
+    // without also copying that old-configuration history into the new chain.
+    assert_eq!(
+        transition_output(
+            Arc::clone(&old_revision),
+            prepare(&changed_configuration),
+            true
+        ),
+        expected
+    );
+    // The retained old suffix also preserves its captured mix.
+    assert_eq!(
+        transition_output(old_revision, prepare(&changed_mix_project), true),
+        expected
+    );
 }
 
 #[test]
@@ -1951,7 +2031,14 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let old_prepared = hex_devices::eq8::EQ8_DEFINITION
-        .prepare_processor(&old_state, 48_000)
+        .prepare_processor(
+            &old_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .unwrap();
     let mut reference_runtime = old_prepared.create_runtime();
@@ -1960,7 +2047,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     let mut output = input;
     source.render(&mut input).unwrap();
     expected.copy_from_slice(&input);
-    reference_runtime.process_block(&mut expected);
+    reference_runtime.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     old.render(&mut output).unwrap();
     assert_eq!(output, expected, "initial registered EQ8 PCM oracle");
     assert!(!old.device_chains[0].committed_range_is_quiescent(0..1));
@@ -1973,7 +2060,14 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
         assert_eq!(candidate.tail_groups.iter().flatten().count(), 0);
         assert!(!candidate.device_chains[0].committed_range_is_quiescent(0..1));
         let prepared = hex_devices::eq8::EQ8_DEFINITION
-            .prepare_processor(&candidate_state, 48_000)
+            .prepare_processor(
+                &candidate_state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap();
         let mut next_reference = prepared.create_runtime();
@@ -1984,7 +2078,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
         output.fill([0.0; 2]);
         source.render(&mut input).unwrap();
         expected.copy_from_slice(&input);
-        next_reference.process_block(&mut expected);
+        next_reference.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         candidate.render(&mut output).unwrap();
         assert_eq!(output, expected, "retargeted EQ8 parameter PCM oracle");
         assert!(
@@ -5283,13 +5377,23 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
         velocity: 100,
     }];
     let mut oracle_prefix = [[0.0; 2]; 16];
-    hex_lattice::MutableInstrumentRuntime::process_block(&mut oracle, &note_on, &mut oracle_prefix);
+    hex_lattice::MutableInstrumentRuntime::process_block(
+        &mut oracle,
+        &note_on,
+        &mut oracle_prefix,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let note_off = [hex_lattice::NativeInstrumentEvent::NoteOff {
         frame_offset: 0,
         occurrence_id: 1,
     }];
     let mut expected = [[0.0; 2]; 16];
-    hex_lattice::MutableInstrumentRuntime::process_block(&mut oracle, &note_off, &mut expected);
+    hex_lattice::MutableInstrumentRuntime::process_block(
+        &mut oracle,
+        &note_off,
+        &mut expected,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     for frame in &mut expected {
         frame[0] *= 0.5;
         frame[1] *= 0.5;

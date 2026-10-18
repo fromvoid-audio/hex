@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update clean main, verify it, build/install the optimized app, and open it."""
+"""Update clean main, build/install the verified optimized app, and open it; --test adds full checks."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parent
@@ -123,7 +124,8 @@ def configured_app(root: Path) -> Path:
 
 def open_installed(app: Path, expected_source: str | None = None) -> Path:
     try:
-        receipt = delivery.verify(app)
+        with ci.terminal_progress("verifying installed hex"):
+            receipt = delivery.verify(app)
         source = receipt.get("source")
         if receipt.get("profile") != "release":
             raise ValueError("installed app is not an optimized release build")
@@ -156,10 +158,10 @@ def assert_no_raw_desktop_process(root: Path) -> None:
             )
 
 
-def checklist(source: str) -> str:
+def checklist(source: str, *, tested: bool) -> str:
     return f"""# launch smoke checklist
 
-Candidate source: `{source}` (optimized release build; full local CI passed).
+Candidate source: `{source}` (optimized release build; {'full local CI passed' if tested else 'tests not run by this launch'}).
 
 1. Confirm the hex window opens and its titlebar controls do not overlap app controls.
 2. Open the generated demo and confirm the arrangement renders and transport starts/stops.
@@ -175,7 +177,8 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
         raise LaunchError("./launch builds and opens the native desktop app on macOS only")
     require_clean_main(root)
     initial_head = checked(["git", "rev-parse", "HEAD"], cwd=root)
-    source = fetch_and_fast_forward(root)
+    with ci.terminal_progress("fetching latest main"):
+        source = fetch_and_fast_forward(root)
     if source != initial_head:
         # Re-import helpers and run the entrypoint from the newly fetched source.
         os.execv(sys.executable, [sys.executable, str(root / "launch"), *(argv or [])])
@@ -188,20 +191,29 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
     except (delivery.DeliveryError, OSError, subprocess.CalledProcessError) as error:
         raise LaunchError(f"configured app must be saved and quit before launch; no process was terminated: {error}") from error
 
-    runner = ci.LocalCiRunner(root, mode="full")
-    result = runner.run()
-    if result != 0 or runner.summary.get("status") != "passed":
-        raise LaunchError(f"full local CI failed; see {runner.summary_path}")
-    if runner.summary.get("commit") != source or runner.summary.get("dirty") is not False \
-            or runner.summary.get("stale") is not False:
-        raise LaunchError(f"full local CI did not verify the fetched clean source; see {runner.summary_path}")
+    tested = "--test" in (argv or [])
+    if tested:
+        runner = ci.LocalCiRunner(root, mode="full")
+        result = runner.run()
+        if result != 0 or runner.summary.get("status") != "passed":
+            raise LaunchError(f"full local CI failed; see {runner.summary_path}")
+        if runner.summary.get("commit") != source or runner.summary.get("dirty") is not False \
+                or runner.summary.get("stale") is not False:
+            raise LaunchError(f"full local CI did not verify the fetched clean source; see {runner.summary_path}")
+        output_dir = runner.output_dir
+        verification_args = ["--ci-report", str(runner.summary_path)]
+    else:
+        artifacts = root / "artifacts/launch"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        output_dir = Path(tempfile.mkdtemp(prefix="build-", dir=artifacts))
+        verification_args = ["--build-only"]
 
-    included_path = runner.output_dir / "included-test-revisions.json"
-    checklist_path = runner.output_dir / "USER-TEST.md"
+    included_path = output_dir / "included-test-revisions.json"
+    checklist_path = output_dir / "USER-TEST.md"
     included_path.write_text(json.dumps(included, indent=2) + "\n")
-    checklist_path.write_text(checklist(source))
+    checklist_path.write_text(checklist(source, tested=tested))
     checked(
-        ["sh", "scripts/bundle-macos.sh", "--ci-report", str(runner.summary_path),
+        ["sh", "scripts/bundle-macos.sh", *verification_args,
          "--candidate", source, "--included", str(included_path), "--checklist", str(checklist_path)],
         cwd=root,
         capture=False,

@@ -24,6 +24,17 @@ pub(crate) fn audio_to(
 
     crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
     crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;
+    let id = append_audio(project, copied, track)?;
+    Project::from_snapshot(project.snapshot())?;
+    Ok(Created::Clip(id))
+}
+
+/// Append an already projected whole clip after the batch cleared old content.
+pub(crate) fn append_audio(
+    project: &mut Project,
+    mut copied: crate::Clip,
+    track: TrackId,
+) -> Result<ClipId, Invalid> {
     if clip_count(project) >= MAX_CLIPS {
         return Err(Invalid("clip limit reached"));
     }
@@ -34,8 +45,7 @@ pub(crate) fn audio_to(
         .try_reserve(1)
         .map_err(|_| Invalid("could not reserve copied clip storage"))?;
     clips.push(copied);
-    Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(copied_id))
+    Ok(copied_id)
 }
 
 pub(crate) fn midi_to(
@@ -50,7 +60,7 @@ pub(crate) fn midi_to(
         .find(|candidate| candidate.midi_clips().iter().any(|item| item.id == clip_id))
         .map(|candidate| candidate.id)
         .ok_or(Invalid("midi clip no longer exists"))?;
-    let mut copied = project
+    let copied = project
         .midi_clip(clip_id)
         .cloned()
         .ok_or(Invalid("midi clip no longer exists"))?;
@@ -65,9 +75,21 @@ pub(crate) fn midi_to(
     if source_track == track && copied.start == start {
         return Ok(Created::None);
     }
-    let added_notes = copied.source.notes.len();
     crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
     crate::midi::overwrite_midi_interval(project, track, start, end, ClipId(0))?;
+    let id = append_midi(project, copied, track, start)?;
+    Project::from_snapshot(project.snapshot())?;
+    Ok(Created::Clip(id))
+}
+
+/// Keep batch members intact, including overlaps already present in the source.
+pub(crate) fn append_midi(
+    project: &mut Project,
+    mut copied: crate::MidiClip,
+    track: TrackId,
+    start: crate::BeatTime,
+) -> Result<ClipId, Invalid> {
+    let added_notes = copied.source.notes.len();
     if clip_count(project) >= MAX_CLIPS {
         return Err(Invalid("clip limit reached"));
     }
@@ -89,8 +111,7 @@ pub(crate) fn midi_to(
         .try_reserve(1)
         .map_err(|_| Invalid("could not reserve copied midi clip storage"))?;
     clips.push(copied);
-    Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(copied_id))
+    Ok(copied_id)
 }
 
 fn original_audio_at(project: &Project, track: TrackId, clip: ClipId, start: u64) -> bool {

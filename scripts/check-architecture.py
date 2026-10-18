@@ -7,18 +7,20 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
+    'hex-mts': {'hex-tuning'},
+    'hex-tuning': set(),
     'hex-dsp': set(),
     'hex-midi': set(),
     'hex-clap-scan': set(),
     'hex-plugin-scan': set(),
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
-    'hex-project': {'hex-lattice-contract'},
-    'hex-lattice': {'hex-lattice-contract', 'hex-dsp'},
+    'hex-project': {'hex-lattice-contract', 'hex-tuning'},
+    'hex-lattice': {'hex-lattice-contract', 'hex-dsp', 'hex-tuning'},
     'hex-devices': {'hex-lattice', 'hex-lattice-contract', 'hex-dsp'},
     'hex-media': {'hex-engine', 'hex-project'},
-    'hex-storage': {'hex-project', 'hex-lattice-contract'},
-    'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
+    'hex-storage': {'hex-project', 'hex-lattice-contract', 'hex-tuning'},
+    'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     'hex-stream': {'hex-engine', 'hex-media', 'hex-project'},
@@ -28,22 +30,26 @@ ALLOWED = {
     'hex-widgets': set(),
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream'},
-    'hex-ui': {'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
+    'hex-ui': {'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.
-    'hex-desktop': {'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media'},
+    'hex-desktop': {'hex-mts', 'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media'},
     'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }
 # These narrow test-only edges exercise canonical publication and prepared
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    # Verified-mode source limits for real worker/key-handler failure fixtures only.
+    'hex-ui': {'hex-media'},
+    'hex-engine': {'hex-tuning'},
+    'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
     'hex-desktop': {'hex-project'},
-    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media'},
-    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
+    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning'},
+    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
-BOUNDARIES = {'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
+BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
               # Source and controlled scanner identities never enter DSP.
