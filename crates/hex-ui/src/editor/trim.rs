@@ -794,9 +794,10 @@ impl EditorView {
             .when(edge == TrimEdge::Left, |this| this.left(px(-1.0)))
             .when(edge == TrimEdge::Right, |this| this.right(px(-1.0)))
             .cursor(bracket_cursor(edge))
-            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.midi_trim_drag_current(&pointer_payload) {
+                        view.focus.focus(window);
                         view.remember_pointer_down(
                             clip_generation,
                             clip_id,
@@ -1290,12 +1291,14 @@ impl EditorView {
         cx.notify();
     }
 
-    /// Captured resize owns release independently of the panel beneath it.
+    /// Resolve the actual Arrangement target, or the explicit browser hitbox
+    /// exception. Other outside releases retain ordinary cancellation semantics.
     /// Foreign coordinates never become timeline coordinates; canonical drop
     /// validation and the existing single pending-trim owner remain authoritative.
     pub(super) fn finish_trim_pointer_release(
         &mut self,
         event: &gpui::MouseUpEvent,
+        browser_release: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -1313,6 +1316,16 @@ impl EditorView {
             self.cancel_trim_gesture(cx);
             return true;
         }
+        // `browser_release` is supplied only by the browser's own hovered
+        // capture listener. Never infer that exception from a foreign x value.
+        let target_track = if browser_release && self.browser.open {
+            None
+        } else if let Some((track, _)) = self.hovered_drag_target(x, f32::from(event.position.y)) {
+            Some(track)
+        } else {
+            // Let existing mouse-up/out cancellation retire this outside drag.
+            return false;
+        };
         if let Some(drag) = self.active_trim_drag.clone() {
             drag.snap_modifier.set(event.modifiers.platform);
             drag.stretch_modifier.set(event.modifiers.shift);
@@ -1326,7 +1339,7 @@ impl EditorView {
                 drag.last_pointer_x.set(Some(pointer));
                 self.update_trim_preview(&drag, pointer, cx);
                 if drag.preview.borrow().is_some() {
-                    self.drop_trim(&drag, drag.source_track, window, cx);
+                    self.drop_trim(&drag, target_track.unwrap_or(drag.source_track), window, cx);
                 }
             }
         } else if let Some(drag) = self.active_midi_trim_drag.clone() {
@@ -1341,7 +1354,7 @@ impl EditorView {
                 drag.last_pointer_x.set(Some(pointer));
                 self.update_midi_trim_preview(&drag, pointer, cx);
                 if drag.preview.borrow().is_some() {
-                    self.drop_midi_trim(&drag, drag.source_track, cx);
+                    self.drop_midi_trim(&drag, target_track.unwrap_or(drag.source_track), cx);
                 }
             }
         }

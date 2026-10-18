@@ -18,10 +18,13 @@ point outside it, only while a valid preview remains. Invalid previews cannot
 silently resurrect an older valid preview. Temporary preview borrows end before
 mutating the preview.
 
-The existing root mouse-up capture finishes an owned resize through the existing
-canonical audio/MIDI drop functions before a browser child can consume release.
-It consumes that owned release and retires the GPUI drag. Release over the timeline
-still uses its authoritative event coordinate. Generation/revision/clip/asset,
+The root mouse-up capture resolves the actual hovered Arrangement track through
+current rendered lane bounds/epochs. A different track cancels through canonical
+drop validation. Only the browser panel's own hit-tested capture supplies the
+explicit browser exception, finishing the owned resize before a browser child can
+consume release. Other outside locations retain cancellation. Both paths use the
+existing canonical audio/MIDI drop functions and retire the GPUI drag. Release
+over the timeline still uses its authoritative event coordinate. Generation/revision/clip/asset,
 viewport/lane, focus, Arrangement context, source/minimum limits and queue admission
 remain checked. Escape, stale state, foreign focus, view switches and refusals
 cancel honestly. Accepted display ownership transfers to the same PendingTrim;
@@ -36,8 +39,21 @@ theme fixture paths are bounded before worker startup; no OS audio adapter or
 user media is used. A temporary-borrow regression found during implementation
 was repaired with its failed test logs retained.
 
+The original outside-cancellation fixture released at (464,214), inside the actual
+browser bounds (0,168), size484×890. Its original failure logs remain evidence.
+After the coordinator's explicit contract decision, the cancellation fixture now
+uses the actual upper rail outside both rendered browser and Arrangement body,
+asserting those exclusions before release. Its no-edit/preview-cleanup assertions
+remain unchanged. A separate actual audio/MIDI release at the original browser
+point verifies commit, worker acknowledgment and one Undo/Redo. Other-track audio
+and MIDI refusals are real before→after regressions. Ordinary MIDI admission from
+detail/browser focus already passed before repair; explicit edge-down editor focus
+acquisition matches Audio and is defensive hardening, not an invented failing case.
+
 These checks establish component behavior, not physical pointer/GPU/audio or
-installed-app acceptance. The root-owned native request runs exactly the four
-`editor::trim::resize_release_tests::browser_` tests with default native stack.
+installed-app acceptance. The root-owned native selector
+`editor::trim::resize_release_tests::browser_` now runs exactly nine unique tests
+with default native stack. All nine use the private bounded constructor before
+workers; the older generic clip-drag fixture is not part of this native selector.
 The sole merger owns final prospective-tree full CI, review and merge; source
 readiness remains In Progress until merged. No app operation is part of this work.
