@@ -5155,3 +5155,14 @@ release and async/layout updates. Unicode grapheme boundaries reuse the locked
 segmentation package. Source selection work is separate from unresolved #2794
 native focus diagnostics. Dedicated merger owns integration/full CI/merge;
 root owns native optimized acceptance and the current app remains untouched.
+
+## consistent live input casing — pulse2810 / PR416, 18 october 2026
+
+Actual track rename shaped uppercase while editing and lowercase after commit.
+Name/search and themed numeric inputs now shape lowercase immediately, preserving
+original stored names, clipboard and parser values. A neutral injected case token
+shares raw-byte/shaped-byte offset mapping for expanded lowercase glyphs; native
+IME selection remains original UTF-16. Canonical rename Undo/Redo/save/reopen,
+actual typing/paste/cut/copy and marked Unicode/caret/scroll regressions cover the
+boundary. Source-path casing2649 stays intact. Dedicated merger owns final
+integration/full CI/merge; native app/IME/clipboard acceptance remains open.
