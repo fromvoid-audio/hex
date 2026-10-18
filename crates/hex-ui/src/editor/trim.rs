@@ -952,7 +952,7 @@ impl EditorView {
         }
         // A full timer step can cross the opposite edge during inward stretch.
         // Search only this checked step's valid prefix, with the canonical model
-        // still deciding legality. The maximum is 64 probes, never unbounded
+        // still deciding legality. The search takes at most 64 steps, never unbounded
         // one-frame retries or a relaxed minimum/source interval.
         let mut valid = 0;
         let mut invalid = current.start.abs_diff(next.start);

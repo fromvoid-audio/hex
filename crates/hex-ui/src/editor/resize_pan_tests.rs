@@ -545,17 +545,23 @@ fn check_retired_pan_then_growth(cx: &mut TestAppContext, stale: bool) {
 
 #[gpui::test]
 fn inward_shift_resize_consumes_last_valid_stationary_pan_step(cx: &mut TestAppContext) {
-    check_inward_last_valid_step(cx, false, false);
+    check_inward_last_valid_step(cx, false, false, false);
 }
 #[gpui::test]
 fn inward_midi_resize_keeps_positive_extent_at_stationary_pan_limit(cx: &mut TestAppContext) {
-    check_inward_last_valid_step(cx, true, false);
+    check_inward_last_valid_step(cx, true, false, false);
 }
 #[gpui::test]
 fn inward_left_shift_resize_consumes_last_valid_stationary_pan_step(cx: &mut TestAppContext) {
-    check_inward_last_valid_step(cx, false, true);
+    check_inward_last_valid_step(cx, false, true, false);
 }
-fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool) {
+#[gpui::test]
+fn inward_pan_then_supported_stretch_release_commits_once_and_undoes(cx: &mut TestAppContext) {
+    for left in [false, true] {
+        check_inward_last_valid_step(cx, false, left, true);
+    }
+}
+fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool, supported: bool) {
     let viewport = if left {
         Viewport {
             start: 0,
@@ -569,6 +575,8 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool)
     };
     let (handle, editor, track, clip, _files) = fixture(cx, midi, Some(viewport));
     let mut visual = VisualTestContext::from_window(handle, cx);
+    let before_project =
+        editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let down = capture(&mut visual, clip, midi, left);
     let edge = editor.read_with(&visual, |v, _| {
         let lane = v.drag_lanes[&track];
@@ -629,16 +637,59 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool)
             "no timer drift past legal resize bound"
         )
     });
-    visual.simulate_mouse_up(edge, MouseButton::Left, modifiers);
+    let release = if supported {
+        let target = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            let frame = if left { 168_000_u64 } else { 120_000 };
+            point(
+                px(lane.left
+                    + ((frame - at_limit.start) as f64 / at_limit.length as f64
+                        * f64::from(lane.width)) as f32),
+                down.y,
+            )
+        });
+        visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        target
+    } else {
+        edge
+    };
+    let desired = editor.read_with(&visual, |v, _| {
+        v.active_trim_drag
+            .as_ref()
+            .and_then(|d| d.preview.borrow().as_ref().map(|p| p.clip.clone()))
+    });
+    visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        eprintln!("inward release midi={midi} left={left} error={:?} submitted={:?} audio_active={} midi_active={}", v.error, v.last_enqueued_edit, v.active_trim_drag.is_some(), v.active_midi_trim_drag.is_some());
-        assert!(v.error.is_none(), "{:?}", v.error);
+        eprintln!("inward release midi={midi} left={left} supported={supported} error={:?} submitted={:?}", v.error, v.last_enqueued_edit);
         let p = &v.state.as_ref().unwrap().project;
+        assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
         if midi {
+            assert!(v.error.is_none(), "{:?}", v.error);
             assert!(p.midi_clip(clip).unwrap().length().raw() > 0);
+        } else if supported {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert_eq!(p.clip(clip), desired.as_ref());
+            assert!((12_000..=96_000).contains(&p.clip(clip).unwrap().duration()));
         } else {
-            assert_eq!(p.clip(clip).unwrap().duration(), 1);
+            // Model-positive is not a waiver of the separate prepared warp
+            // capability. A 96000:1 transform must refuse atomically, visibly.
+            assert!(v.error.as_ref().is_some_and(|e| e.contains("warp stretch including pitch compensation must be within 1/8..8")));
+            assert_eq!(p.snapshot(), before_project);
         }
     });
+    if supported {
+        let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before_project)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
 }

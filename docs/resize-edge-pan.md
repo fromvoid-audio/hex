@@ -20,7 +20,9 @@ warp/stretch and checked endpoints. Navigation stops when the unsnapped model
 cannot advance further, so exhausted sources do not pan out of sight. An inward Shift-stretch step that would cross the opposite edge uses the last
 canonical-valid viewport within that timer step, found in bounded integer-frame
 probes. It does not discard the remaining valid travel or relax the positive
-interval/source rules. MIDI retains its existing canonical clamp. Grid
+interval/source rules. Prepared warp capability limits (including the existing
+1/8–8 stretch range) still refuse unsupported releases atomically; model-positive
+preview alone does not establish preparation acceptance. MIDI retains its existing canonical clamp. Grid
 quantization does not prematurely stop held scrolling. Preview and release use
 the current snap modifier; Shift still chooses the existing audio stretch path.
 No separate timer, DSP, waveform-cache, fade gesture or source mapping is added.
