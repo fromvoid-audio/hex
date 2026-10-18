@@ -1,0 +1,36 @@
+{
+  "source": "99483c43c0cda0b5132067dfd3cdca1cf0a56760",
+  "tree": "da0b14c6d8dedde403d6c491c0f9620ba6109dc2",
+  "filename": "hex-sampler-99483c43-return-cost-evidence.tar.gz",
+  "bytes": 49118,
+  "sha256": "66b68b98183c25e8a007b5aa5f13a258508593684f8e249c6610e5d66a4979fa",
+  "members": 15,
+  "payloads": 14,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/returns.rs",
+      "before": "635da2e2155040d4ec81538b4214538b48ba3565f84bb7854508744ddd76cab0",
+      "after": "e46eeef9c84e522ef1603499a616bba63e8054deece53917a0d3fe290cd3d8f1"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/returns/selector_cost.rs",
+      "before": null,
+      "after": "10f6ce58220ee09489c957ff26c81e8cb3c9b69775a343bea0739d45d97006f1"
+    },
+    {
+      "path": "crates/hex-engine/src/return_feed_plan/persistent.rs",
+      "before": "9069b8a555690f645f0ca33db568b3f644cff34961a22103d3603863095a1957",
+      "after": "a92cfe5447973813c2992fc438e783512f0509fdc58c2815980fd1fc23360558"
+    },
+    {
+      "path": "crates/hex-engine/src/return_feed_plan/persistent/construction.rs",
+      "before": null,
+      "after": "8d6f54ee515601838d56a4ed6f8f019672e286288e677d495ecf3b45ab29fbf5"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "dec9949fe6d3e46e32462eca33f425ae0990eeb2f98bbaf43d0f434d32788eac",
+      "after": "d2924eb461eb1ec25a304ad208467fb7fa72455e8b166c84a72cabc2842800eb"
+    }
+  ]
+}
