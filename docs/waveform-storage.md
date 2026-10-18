@@ -31,6 +31,15 @@ version is charged by the enclosing facade/container's actual size. Geometry,
 mapping, sampling, drag behavior and cache budgets remain unchanged. None of
 these operations copies PCM.
 
+The renderer's peak aggregation and geometry preparation now consume a scoped
+`WaveformRead` rather than `&Waveform` or a cloneable shared owner. Media provides
+source length, bin count, scalar peak queries and the nonowning cache version;
+there is no raw waveform, PCM, source-lease or owner extraction. Raw owned
+waveform values can be queried but receive no shared cache version. Read views
+cannot outlive the actual source borrow. This prepares the renderer for exact
+snapshot-scoped resolution; the current canvas capture is still an owner until
+the sealed export/custody integration is complete.
+
 This removes one exported owning-field family only. Paint closures, canonical
 and preview snapshot capabilities, pending events and retained readers still need
 the sealed snapshot-export boundary and independently bounded control retirement

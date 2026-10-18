@@ -25,6 +25,9 @@ pub struct Waveform {
 /// beside the actual owner. No raw Arc adoption or mutable shared access.
 pub type SharedWaveform = hex_engine::SharedMetadata<Waveform>;
 
+mod read;
+pub use read::{WaveformRead, read_shared};
+
 #[cfg(test)]
 mod shared_storage_tests;
 

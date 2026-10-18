@@ -37,7 +37,10 @@ pub mod import_batch;
 pub mod import_batch_decode;
 pub mod service;
 pub mod tuning_gesture;
-pub use hex_media::waveform::{Peak as CachedPeak, SharedWaveform, Waveform as CachedWaveform};
+pub use hex_media::waveform::{
+    Peak as CachedPeak, SharedWaveform, Waveform as CachedWaveform, WaveformRead,
+    read_shared as read_shared_waveform,
+};
 
 #[derive(Debug)]
 pub enum SessionError {

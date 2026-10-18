@@ -1,7 +1,9 @@
 use crate::theme;
 use gpui::{Context, Div, Window, canvas, div, prelude::*, px, rgb};
 use hex_project::{Clip, ClipFade};
-use hex_session::{CachedPeak, CachedWaveform};
+#[cfg(test)]
+use hex_session::CachedWaveform;
+use hex_session::{CachedPeak, WaveformRead};
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use super::waveform_geometry::{
@@ -257,11 +259,15 @@ pub(super) fn waveform_canvas(
                     columns,
                     grid,
                 };
-                cached_waveform_geometry(cache, &waveform, &request)
+                cached_waveform_geometry(
+                    cache,
+                    hex_session::read_shared_waveform(&waveform),
+                    &request,
+                )
             });
             let geometry = geometry.or_else(|| {
                 prepare_waveform_geometry(
-                    &waveform,
+                    hex_session::read_shared_waveform(&waveform),
                     &mapping,
                     visible_start,
                     visible_end,
@@ -594,7 +600,7 @@ pub(super) fn push_source_range(
 }
 
 pub(super) fn aggregate_peaks(
-    waveform: &CachedWaveform,
+    waveform: WaveformRead<'_>,
     start: usize,
     end: usize,
 ) -> Option<[CachedPeak; 2]> {
@@ -602,7 +608,7 @@ pub(super) fn aggregate_peaks(
 }
 
 pub(super) fn aggregate_ranges(
-    waveform: &CachedWaveform,
+    waveform: WaveformRead<'_>,
     ranges: &[Range<usize>],
 ) -> Option<[CachedPeak; 2]> {
     let mut merged = None;
@@ -818,9 +824,9 @@ mod tests {
             ],
         )
         .expect("valid cache");
-        assert_eq!(aggregate_peaks(&waveform, 0, 4).unwrap()[0].max, 0.0);
-        assert_eq!(aggregate_peaks(&waveform, 4, 7).unwrap()[0].max, 0.2);
-        assert_eq!(aggregate_peaks(&waveform, 7, 11).unwrap()[0].max, 0.8);
+        assert_eq!(aggregate_peaks(waveform.read(), 0, 4).unwrap()[0].max, 0.0);
+        assert_eq!(aggregate_peaks(waveform.read(), 4, 7).unwrap()[0].max, 0.2);
+        assert_eq!(aggregate_peaks(waveform.read(), 7, 11).unwrap()[0].max, 0.8);
         assert_eq!(waveform.cached_bin_count(), 6);
     }
 
@@ -841,7 +847,7 @@ mod tests {
             ],
         )
         .expect("valid cache");
-        let peaks = aggregate_peaks(&waveform, 0, 12).expect("nonempty group");
+        let peaks = aggregate_peaks(waveform.read(), 0, 12).expect("nonempty group");
         assert_eq!(peaks[0].min, -1.0);
         assert_eq!(peaks[0].max, 0.9);
         assert_eq!(peaks[1].max, 0.7);
@@ -883,7 +889,8 @@ mod tests {
                 .collect(),
         )
         .expect("valid cache");
-        let peaks = aggregate_ranges(&waveform, ranges.as_slice()).expect("visible loop peaks");
+        let peaks =
+            aggregate_ranges(waveform.read(), ranges.as_slice()).expect("visible loop peaks");
         assert_eq!(peaks[0].max, 13.0 / 32.0);
         assert_eq!(peaks[0].min, 10.0 / 32.0);
     }
@@ -974,7 +981,8 @@ mod tests {
         )
         .expect("valid cache");
         let ranges = timeline_source_ranges(&clip(0, 8, 1, 4, true), 2..4, 6);
-        let peaks = aggregate_ranges(&waveform, ranges.as_slice()).expect("wrapped visible loop");
+        let peaks =
+            aggregate_ranges(waveform.read(), ranges.as_slice()).expect("wrapped visible loop");
         assert_eq!(peaks[0].max, 0.9);
         assert_eq!(peaks[1].max, 0.3);
     }

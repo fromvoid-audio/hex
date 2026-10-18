@@ -63,7 +63,8 @@ fn raw_peak_location_uses_source_markers_across_tempo_points() {
     ];
     let source = CachedWaveform::from_peaks(88_200, peaks).unwrap();
     let ranges = p.ranges(22_050..22_136, 88_200);
-    let actual = super::super::waveform::aggregate_ranges(&source, ranges.as_slice()).unwrap();
+    let actual =
+        super::super::waveform::aggregate_ranges(source.read(), ranges.as_slice()).unwrap();
     assert_eq!(actual[0].min, -0.75);
     assert_eq!(actual[1].max, 0.875);
     let full = p.ranges(0..132_300, 88_200);

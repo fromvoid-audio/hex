@@ -1,7 +1,9 @@
 //! Bounded retained waveform paths for the visible editor working set.
 use gpui::{Bounds, Path, PathBuilder, Pixels, point, px};
 use hex_project::Clip;
-use hex_session::{CachedPeak, CachedWaveform};
+#[cfg(test)]
+use hex_session::CachedWaveform;
+use hex_session::{CachedPeak, WaveformRead};
 #[cfg(test)]
 use std::hint::black_box;
 use std::{collections::VecDeque, sync::Arc};
@@ -95,9 +97,9 @@ impl WaveformGeometryCache {
     fn get(
         &mut self,
         key: WaveformGeometryKey,
-        source: &hex_session::SharedWaveform,
+        source: Option<hex_engine::SharedMetadataCacheIdentity>,
     ) -> Option<Arc<WaveformGeometry>> {
-        let source = source.cache_identity()?;
+        let source = source?;
         let index = self
             .entries
             .iter()
@@ -111,11 +113,11 @@ impl WaveformGeometryCache {
     fn insert(
         &mut self,
         key: WaveformGeometryKey,
-        source: &hex_session::SharedWaveform,
+        source: Option<hex_engine::SharedMetadataCacheIdentity>,
         geometry: Arc<WaveformGeometry>,
         columns: usize,
     ) {
-        let Some(source) = source.cache_identity() else {
+        let Some(source) = source else {
             return;
         };
         if columns == 0 || columns > MAX_CACHED_WAVEFORM_COLUMNS {
@@ -247,7 +249,7 @@ pub(super) struct WaveformGeometryRequest<'a> {
 
 pub(super) fn cached_waveform_geometry(
     cache: &std::cell::RefCell<WaveformGeometryCache>,
-    waveform: &hex_session::SharedWaveform,
+    waveform: WaveformRead<'_>,
     request: &WaveformGeometryRequest<'_>,
 ) -> Option<Arc<WaveformGeometry>> {
     let mut key = waveform_geometry_key(
@@ -261,7 +263,7 @@ pub(super) fn cached_waveform_geometry(
     if let Some(geometry) = cache
         .try_borrow_mut()
         .ok()
-        .and_then(|mut cache| cache.get(key.clone(), waveform))
+        .and_then(|mut cache| cache.get(key.clone(), waveform.cache_identity()))
     {
         return Some(geometry);
     }
@@ -275,7 +277,12 @@ pub(super) fn cached_waveform_geometry(
         request.grid,
     )?);
     if let Ok(mut cache) = cache.try_borrow_mut() {
-        cache.insert(key, waveform, Arc::clone(&geometry), geometry.columns);
+        cache.insert(
+            key,
+            waveform.cache_identity(),
+            Arc::clone(&geometry),
+            geometry.columns,
+        );
     }
     Some(geometry)
 }
@@ -337,7 +344,7 @@ fn waveform_geometry_key(
 }
 
 pub(super) fn prepare_waveform_geometry(
-    waveform: &CachedWaveform,
+    waveform: WaveformRead<'_>,
     mapping: &WaveformMapping,
     visible_start: u64,
     visible_end: u64,
@@ -396,7 +403,7 @@ pub(super) fn prepare_waveform_geometry(
             .max(start.saturating_add(1));
         let peaks = match mapping {
             WaveformMapping::Stretch(projection) => {
-                let ranges = projection.ranges(start..end, waveform.source_frames);
+                let ranges = projection.ranges(start..end, waveform.source_frames());
                 aggregate_ranges(waveform, ranges.as_slice())
             }
             WaveformMapping::Prepared {
@@ -409,7 +416,7 @@ pub(super) fn prepare_waveform_geometry(
                 // translation before clamping; subtracting origin first erases
                 // valid edge bins and changes their shape during a left trim.
                 let translation = i128::from(*root_offset) - i128::from(*timeline_origin);
-                let available = waveform.source_frames as i128;
+                let available = waveform.source_frames() as i128;
                 let start = (i128::from(start) + translation).clamp(0, available) as usize;
                 let end = (i128::from(end) + translation).clamp(0, available) as usize;
                 aggregate_peaks(waveform, start, end)
@@ -422,7 +429,7 @@ pub(super) fn prepare_waveform_geometry(
                     clip,
                     *timeline_origin,
                     start..end,
-                    waveform.source_frames,
+                    waveform.source_frames(),
                 );
                 aggregate_ranges(waveform, ranges.as_slice())
             }
@@ -564,7 +571,7 @@ mod tests {
     ) -> Arc<WaveformGeometry> {
         Arc::new(
             prepare_waveform_geometry(
-                source,
+                source.read(),
                 &WaveformMapping::Source {
                     timeline_origin: origin,
                 },
@@ -606,7 +613,7 @@ mod tests {
                         size(px((end - start) as f32 / 96_000.0 * width), px(44.0)),
                     );
                     prepare_waveform_geometry(
-                        &source,
+                        source.read(),
                         &mapping,
                         start,
                         end,
@@ -680,7 +687,7 @@ mod tests {
         );
         let draw = |origin, offset| {
             prepare_waveform_geometry(
-                &source,
+                source.read(),
                 &WaveformMapping::Prepared {
                     timeline_origin: origin,
                     root_offset: offset,
@@ -746,7 +753,7 @@ mod tests {
                     size(px(clip.duration() as f32 / 96_000.0 * grid.width), px(44.0)),
                 );
                 prepare_waveform_geometry(
-                    &source,
+                    source.read(),
                     &WaveformMapping::Clip {
                         clip: clip.clone(),
                         timeline_origin: start,
@@ -797,9 +804,16 @@ mod tests {
         let cache_key = key(0, extent);
         let geometry = geometry(&source, 0, extent);
         let mut cache = WaveformGeometryCache::default();
-        cache.insert(cache_key.clone(), &source, Arc::clone(&geometry), 32);
+        cache.insert(
+            cache_key.clone(),
+            source.cache_identity(),
+            Arc::clone(&geometry),
+            32,
+        );
         assert!(Arc::ptr_eq(
-            &cache.get(cache_key.clone(), &source).expect("cache hit"),
+            &cache
+                .get(cache_key.clone(), source.cache_identity())
+                .expect("cache hit"),
             &geometry,
         ));
         assert!(
@@ -811,12 +825,20 @@ mod tests {
         );
 
         let resized = Bounds::new(extent.origin, size(px(1201.0), extent.size.height));
-        assert!(cache.get(key(0, resized), &source).is_none());
+        assert!(
+            cache
+                .get(key(0, resized), source.cache_identity())
+                .is_none()
+        );
         let scrolled = Bounds::new(
             point(extent.origin.x, extent.origin.y + px(44.0)),
             extent.size,
         );
-        assert!(cache.get(key(0, scrolled), &source).is_none());
+        assert!(
+            cache
+                .get(key(0, scrolled), source.cache_identity())
+                .is_none()
+        );
         let scale_changed = waveform_geometry_key(
             &WaveformMapping::Source { timeline_origin: 0 },
             0,
@@ -824,10 +846,14 @@ mod tests {
             extent,
             1.0,
         );
-        assert!(cache.get(scale_changed, &source).is_none());
-        assert!(cache.get(key(1, extent), &source).is_none());
+        assert!(cache.get(scale_changed, source.cache_identity()).is_none());
+        assert!(cache.get(key(1, extent), source.cache_identity()).is_none());
         let different_source = waveform();
-        assert!(cache.get(cache_key, &different_source).is_none());
+        assert!(
+            cache
+                .get(cache_key, different_source.cache_identity())
+                .is_none()
+        );
     }
 
     #[test]
@@ -840,7 +866,7 @@ mod tests {
             let version = old_source.cache_identity().unwrap();
             cache.insert(
                 cache_key.clone(),
-                &old_source,
+                old_source.cache_identity(),
                 geometry(&old_source, 0, extent),
                 32,
             );
@@ -853,11 +879,20 @@ mod tests {
         let old_geometry = Arc::clone(&cache.entries[0].geometry);
         let replacement = waveform();
         assert_ne!(replacement.cache_identity(), Some(old_version));
-        assert!(cache.get(cache_key.clone(), &replacement).is_none());
+        assert!(
+            cache
+                .get(cache_key.clone(), replacement.cache_identity())
+                .is_none()
+        );
         let fresh = geometry(&replacement, 0, extent);
-        cache.insert(cache_key.clone(), &replacement, Arc::clone(&fresh), 32);
+        cache.insert(
+            cache_key.clone(),
+            replacement.cache_identity(),
+            Arc::clone(&fresh),
+            32,
+        );
         assert!(Arc::ptr_eq(
-            &cache.get(cache_key, &replacement).unwrap(),
+            &cache.get(cache_key, replacement.cache_identity()).unwrap(),
             &fresh
         ));
         assert!(!Arc::ptr_eq(&old_geometry, &fresh));
@@ -878,7 +913,7 @@ mod tests {
         let geometry = |mapping| {
             cached_waveform_geometry(
                 &cache,
-                &source,
+                hex_session::read_shared_waveform(&source),
                 &WaveformGeometryRequest {
                     mapping,
                     visible_start: 0,
@@ -906,12 +941,21 @@ mod tests {
         for index in 0..13_u64 {
             let origin = index * 96_000;
             let cache_key = key(origin, extent);
-            cache.insert(cache_key, &source, geometry(&source, origin, extent), 4_000);
+            cache.insert(
+                cache_key,
+                source.cache_identity(),
+                geometry(&source, origin, extent),
+                4_000,
+            );
         }
         assert_eq!(cache.entries.len(), 13);
         assert_eq!(cache.columns, 52_000);
         for index in 0..13_u64 {
-            assert!(cache.get(key(index * 96_000, extent), &source).is_some());
+            assert!(
+                cache
+                    .get(key(index * 96_000, extent), source.cache_identity())
+                    .is_some()
+            );
         }
     }
 
@@ -946,7 +990,12 @@ mod tests {
             retained.push((
                 origin,
                 extent,
-                cached_waveform_geometry(&cache, &source, &request).unwrap(),
+                cached_waveform_geometry(
+                    &cache,
+                    hex_session::read_shared_waveform(&source),
+                    &request,
+                )
+                .unwrap(),
             ));
         }
         for (origin, extent, original) in retained {
@@ -962,7 +1011,12 @@ mod tests {
                 grid: None,
                 columns: 19,
             };
-            let repeated = cached_waveform_geometry(&cache, &source, &request).unwrap();
+            let repeated = cached_waveform_geometry(
+                &cache,
+                hex_session::read_shared_waveform(&source),
+                &request,
+            )
+            .unwrap();
             assert!(
                 Arc::ptr_eq(&original, &repeated),
                 "visible clip geometry was rebuilt at {origin}"
@@ -979,24 +1033,37 @@ mod tests {
         let path_geometry = geometry(&source, 0, extent);
         let mut entry_bounded = WaveformGeometryCache::default();
         for index in 0..(MAX_CACHED_WAVEFORM_ENTRIES + 1) as u64 {
-            entry_bounded.insert(key(index, extent), &source, Arc::clone(&path_geometry), 1);
+            entry_bounded.insert(
+                key(index, extent),
+                source.cache_identity(),
+                Arc::clone(&path_geometry),
+                1,
+            );
         }
         assert_eq!(entry_bounded.entries.len(), MAX_CACHED_WAVEFORM_ENTRIES);
-        assert!(entry_bounded.get(key(0, extent), &source).is_none());
+        assert!(
+            entry_bounded
+                .get(key(0, extent), source.cache_identity())
+                .is_none()
+        );
         assert_eq!(entry_bounded.columns, MAX_CACHED_WAVEFORM_ENTRIES);
 
         let mut column_bounded = WaveformGeometryCache::default();
         for index in 0..17_u64 {
             column_bounded.insert(
                 key(index, extent),
-                &source,
+                source.cache_identity(),
                 Arc::clone(&path_geometry),
                 MAX_WAVEFORM_COLUMNS_FOR_TEST,
             );
         }
         assert_eq!(column_bounded.entries.len(), 16);
         assert_eq!(column_bounded.columns, MAX_CACHED_WAVEFORM_COLUMNS);
-        assert!(column_bounded.get(key(0, extent), &source).is_none());
+        assert!(
+            column_bounded
+                .get(key(0, extent), source.cache_identity())
+                .is_none()
+        );
     }
 
     const MAX_WAVEFORM_COLUMNS_FOR_TEST: usize = MAX_CACHED_WAVEFORM_COLUMNS / 16;
@@ -1022,7 +1089,7 @@ mod tests {
         };
         let rounds = 20;
 
-        let sampled = aggregate_peaks(&source, 0, source.source_frames)
+        let sampled = aggregate_peaks(source.read(), 0, source.source_frames)
             .expect("fixture extrema survive cache preparation");
         assert!(sampled.iter().any(|peak| peak.min < -0.9 && peak.max > 0.7));
         let digest = source.bins.iter().step_by(127).fold(0_u64, |digest, pair| {
@@ -1033,7 +1100,7 @@ mod tests {
 
         for _ in 0..2 {
             black_box(prepare_waveform_geometry(
-                &source,
+                source.read(),
                 &mapping,
                 visible_start,
                 visible_end,
@@ -1045,7 +1112,7 @@ mod tests {
         let uncached_started = Instant::now();
         for _ in 0..rounds {
             black_box(prepare_waveform_geometry(
-                &source,
+                source.read(),
                 &mapping,
                 visible_start,
                 visible_end,
@@ -1056,12 +1123,17 @@ mod tests {
         }
         let uncached_elapsed = uncached_started.elapsed();
 
-        let warmed = cached_waveform_geometry(&cache, &source, &request)
-            .expect("initial cached preparation");
+        let warmed =
+            cached_waveform_geometry(&cache, hex_session::read_shared_waveform(&source), &request)
+                .expect("initial cached preparation");
         let cached_started = Instant::now();
         for _ in 0..rounds {
-            let geometry =
-                cached_waveform_geometry(&cache, &source, &request).expect("warm cache hit");
+            let geometry = cached_waveform_geometry(
+                &cache,
+                hex_session::read_shared_waveform(&source),
+                &request,
+            )
+            .expect("warm cache hit");
             black_box(Arc::clone(&geometry));
             assert!(Arc::ptr_eq(&geometry, &warmed));
         }
