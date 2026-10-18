@@ -1,0 +1,39 @@
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -3610,6 +3610,36 @@
+ }
+ 
+ #[gpui::test]
++fn browser_picker_resize_retains_rows_and_clips_long_names(cx: &mut TestAppContext) {
++    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
++    editor.update(cx, |view, cx| {
++        view.browser.places[0] = directory.0.join("a very long custom place name");
++        cx.notify();
++    });
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let selectors = [
++        "browser-collection-0", "browser-collection-2", "browser-section-samples",
++        "browser-section-all", "browser-control-⚙", "browser-place-0",
++    ];
++    let baseline = selectors.map(|selector| visual.debug_bounds(selector).unwrap());
++    for width in [124.0, 110.0, 80.0, 64.0, 63.0, 48.0, 27.0, 23.0, 124.0] {
++        let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
++        let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
++        let target = divider.center() + point(px(width) - sidebar.size.width, px(0.0));
++        visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++        visual.run_until_parked();
++        for (selector, before) in selectors.into_iter().zip(baseline) {
++            let after = visual.debug_bounds(selector).unwrap();
++            assert_eq!(after.origin, before.origin, "{selector} must not reflow at width {width}");
++            assert_eq!(after.size.height, before.size.height, "{selector} row height at {width}");
++        }
++    }
++}
++
++#[gpui::test]
+ fn browser_folder_double_click_expands_inline_without_replacing_surrounding_rows(
+     cx: &mut TestAppContext,
+ ) {

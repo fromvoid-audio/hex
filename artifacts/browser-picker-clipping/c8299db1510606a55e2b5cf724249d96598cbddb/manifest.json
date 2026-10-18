@@ -1,0 +1,63 @@
+{
+  "canonical_pr": 415,
+  "ticket": 2809,
+  "head": "c8299db1510606a55e2b5cf724249d96598cbddb",
+  "tree": "4cf92212ce58ce36e49d1abe33eb989e183da450",
+  "expected_before": "a433e806631b854e93797597fcb60747183973c3",
+  "expected_before_tree": "96779bad5ec916a44346376752956cbe617e903d",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-layout.md",
+    "scripts/check-ui-style.py",
+    "todo.md"
+  ],
+  "original_red": {
+    "source": "a433e806631b854e93797597fcb60747183973c3",
+    "log": "415-original-red.log",
+    "test_patch": "original-test-only.patch",
+    "result": "0pass1fail: Collection0 y225.5 to245 at80px; 19.5px heading wrapping shift"
+  },
+  "final_results": {
+    "browser": "79pass0failed0ignored667filtered",
+    "strict_clippy": "UI alltargets/ui-test-support -Dwarnings PASS",
+    "guards": "architecture/GPUI/style/fmt/diff PASS; exact commands/head in415-checked-checks.json",
+    "fullCI": "not run; sole merger owns prospective integration/full CI/review/merge"
+  },
+  "retained_failures": {
+    "415-final-style.log": "new picker_label/picker_heading helpers unregistered; both route browser_caption to theme::text, registered only those components then all targeted checks rerun"
+  },
+  "scope": "Picker label/header/settings clipping only, fixed22px icon and23px minimum preserved; no results/tree/query/input/schema/preview/action/audio edits. Original322 geometry and source selection/hover/focus tests pass.326/400/411 untouched.",
+  "known_limits": [
+    "Native optimized clipping/tooltip/drag acceptance remains open/root-owned",
+    "Existing PCM declared Arc Unknown unsupported_wrapper build-script diagnostic retained",
+    "No full20 sourceowner run; final actual-main integration belongs sole merger"
+  ],
+  "files": {
+    "415-checked-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "415-checked-browser.log": "4a595dc0168094c114627d89dfa00355f7a03ea980892d85b5f19c1486d66a56",
+    "415-checked-checks.json": "44ac5be46be1c725918515e6aa38288e37794076abe83503c81503a7c787eda8",
+    "415-checked-clippy.log": "4e70e64e25c69867eab3305c086e4feea8ed7932a1577e5f965535bdf830cadb",
+    "415-checked-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "415-checked-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "415-checked-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "415-checked-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "415-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "415-final-browser.log": "93490899ecbc81b1a9a91861a8f4ed7cdef16def384650da630350ac1ccd3010",
+    "415-final-checks.json": "dd0a1e35879866c9d3d8bf687b4bfd2b3e6df5b079d60d358f5ed7e9d6d62f0a",
+    "415-final-clippy.log": "8b7effe2d50b1d4fd9cbf4022b9f987ab998997e433dde76666b7ae8297af5ca",
+    "415-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "415-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "415-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "415-final-style-corrected.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "415-final-style.log": "805e6eb7a521d00e8ff660dcb9c88c3e97a0b4eba9d31be339b2aa90e14ecd9a",
+    "415-original-red.log": "8fb36b7a3540a5219f278c3dbc3ae2e474ff89c35a19c4a473e8668c0f36a08f",
+    "415-original-test.rs": "99cc6b4755eb2c93d7e621f15c66e01e1013703c25fd334d51a446769f288d66",
+    "415-picker-expanded.log": "aaa35deb1d3b4c4b51378bcd984cca8212f5a489ffdac5ac19f56893098da3f8",
+    "415-picker-green.log": "91188d565aa1d6af35f7bbd00bdeacd1a8ea98aa8553e1b2038905c74c79fb1e",
+    "before-after-hashes.json": "28d52aa1084c6df0200c21f672d21e94817d0e49e5cc641134d1eb4d96e1aff9",
+    "native-checklist.md": "4b91175c39469221b785bbd20407f527b21930d8ce145cdfa64e566052372f77",
+    "original-test-only.patch": "fd5370109325c0c32c72405dc2f0bc61b55a3b5e5d6a8ec9251522314d934a42",
+    "source.patch": "2eafe43d36d5091cdff13f546d29b1894c3d425dad2a90c79cf9ea29cc908547"
+  }
+}
