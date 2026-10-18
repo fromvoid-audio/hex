@@ -1,0 +1,8 @@
+Evidence only — never build or merge this ref.
+
+Pulse2800 / PR406 source 9f56b3bf662cba6865f3d074fab6ff8b14735c36, tree7335756c7c791f901aacd3073d6f2b5a5941fa2b; base dc341ca161f0ee1d1a4b668ce026ed4a7f955bbb (actual merged9900).
+Archive hex-2800-9f56b3bf-evidence-v1.tar.gz:231899bytes, SHA25635e92424af6d6f205086b677cb71368c4bed7b239cc987d3e406c9ac535acfdb;182safe members/181hashed payloads,29original summaries+ALLlogs/source checkpoint patches/mode ledger/shared before-after hashes/final source/native checklist.
+Final original focused12 run20261018T164634Z-45307fa8 passed163.75s/stalefalse/cleanunchanged; summarySHAa75f33b124426c9c8a898eec6b939a4bc6f46166da927f2bf8f35b1725b41055.15EQ UI+7model+1catalog+60widgets,0ignored;6guards+strictUIfeature/alltarget andwidget/alltargetClippy. This is focused, NOT full20/final prospective integration/native acceptance.
+Original font/setup/compile/geometry/7pass3fail/focus inactive-window/offscreen input/guard/shadowing/lock receipts remain original, never relabeled.6dc fullfocused12green is historical only after later wait-state repair. Pulse metadata corrections24189/24478 are disclosed; runner source bytes authoritative.
+Linux GPUI cannot register bundled Ioskeley: explicit UNSUPPORTED real-font metric limit, all geometry/input assertions still run. Catalog no audio/project worker; real public spectrum control-channel fixture is not a guarded Client/backend/admission/capture proof. No screenshot or Mac original report bytes included. Physical visual/audio/listening/current installed app remain coordinator-owned/open.
+Merger durable01a149d1-3232-76d1-b08a-05f3ca89906d owns final integration/full20/merge. Root owns sole serial native/optimized lane; no self-dispatch.
