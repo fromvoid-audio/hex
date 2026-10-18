@@ -1,0 +1,166 @@
+{
+  "ticket": 2707,
+  "canonical_pr": 323,
+  "head": "87f19cf54ff7807ea872a25b727eb352024ff32b",
+  "tree": "9af458d58cf6df06d00bc25b3dfb788a9fe758ba",
+  "expected_before": "38247fdcaaef86416ab19747f8bed9396dfbcb02",
+  "expected_before_tree": "8a60ebd77df17dc81705d5b21708dcf5e1d5a24c",
+  "dependency": {
+    "canonical_pr": 324,
+    "published_head": "e93452f8a9603cd876910b6fcc4774670a779523",
+    "tree": "8a60ebd77df17dc81705d5b21708dcf5e1d5a24c",
+    "frozen_branch_unchanged": true
+  },
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_divider_paint_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-layout.md",
+    "scripts/check-ui-style.py",
+    "todo.md"
+  ],
+  "checks": [
+    {
+      "name": "browser",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "editor::browser::",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/323-final-browser.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/323-final-clippy.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/323-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/323-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/323-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/323-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/323-final-diff.log"
+    }
+  ],
+  "original_red": {
+    "source": "38247fdcaaef86416ab19747f8bed9396dfbcb02",
+    "snapshot": "323-original-test.rs",
+    "registration": "original-registration.patch",
+    "log": "323-original-red.log",
+    "outcome": "0PASS1FAIL: actual rendered4px filledquad spans full4px capture gutter; notthin1\u20132px"
+  },
+  "final_results": {
+    "browser": "92PASS0failed0ignored716filtered28.04s,2newthinpaint/inputcases+4unchanged324gesturecases+86existingbrowsercases",
+    "strict_clippy": "hex-ui alltargets ui-test-support -Dwarnings PASS26.55s",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "fullCI": "NOTRUN bysourceowner; solemerger actualprospectivecandidate"
+  },
+  "coverage": "Completed scene quads showtransparent4pxgutter and1pxleadingchild, unchangednormal/compactgeometry, actualdown/dragfrompaintedline and3.5pxtransparentedge, horizontalcursorrequest, realpicker/outerresize, hoverandactivedeparturecolorwithoutwidening, normal124/23px andeditorclosed/open, all324active/release/noLeft/cancel/later-no-resumechecksretained. Existingsearch/focus/IME/Places/tree/audition/Stop/offset/no-doubleclick-importcasespassed.",
+  "retained_diagnostics": {
+    "323-first-green.log": "originalthinpaintcase1PASS0.17s aftersourcefix, beforestrongerhit/cursor/modecase",
+    "323-pre-registration-style.log": "rawguardexit1 flagsONLY two newhelper component expressions asunregistered; no directtext/font/color violation",
+    "323-original-style-guard.py": "originalexactguardbeforehelperregistration",
+    "323-pre-registration-checks.json": "92browserPASS/strictClippyPASS/architectureGPUI0 andstyle1, fmt/diffnotyetexecuted",
+    "323-pre-registration-candidate.patch": "trackedcandidatebeforeoneexplicitguardallowlistline; no runtime/testlibrary edits after92PASS/Clippy, finalstyle/fmt/diffrerun. FinalCIbymerger qualifiescompletecombinedcandidate."
+  },
+  "scope": "Same4pxcapture/cursor/resize law; movepaintonly into1pxleadingline, groupedhovercoversfulltransparentgutter, existingactiveflagfrom324drivesline. Adjacentexisting1pxborderunchangedproduces1\u20132pxvisibleboundarywithoutnewlayoutallocation. No focus/prefs/controller/model/Engine/sharedtext changes.",
+  "limits": [
+    "NativeDPI/physicalpixels/temporalGPU/OShovercursor/captureacceptanceopen; rootsoleMaclane",
+    "Frozen324sourceandoriginalevidenceremainimmutable; own323presentationtestsadaptactualpaintselectorwithoutremovingcases",
+    "Future444/325/446/414/423/427combinedtreeNOTqualifiedbythissourcepacket; preserveexactdeclaredhunks",
+    "No appoperations/packaging/install/launch/quit/permissions/userinput/userfiles orhostedCI",
+    "Source-ready PulseInProgress untilactualmerge",
+    "Broaderhistory/tagmodel work separate; original400nativefocusdiagnosticunresolved"
+  ],
+  "payloads": {
+    "323-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "323-final-browser.log": "dc92fc06f2ca449687865f89c3f83567b73bb8fc6a1c82bedd41e0822e39455a",
+    "323-final-checks.json": "2daa85cb77771d4ced677610641dbd678b82f7e95afd77e85921c17822e58c20",
+    "323-final-clippy.log": "1881f1223f4c219a440c174f63592ebcc983bb7fe45d6eda5e4a2ce79fc24313",
+    "323-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "323-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "323-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "323-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "323-first-green.log": "8dcba7d4ae0b37638d9240ad7bfdcf1bdb7323557999709f53c9ea400f6f8539",
+    "323-fix-divider-paint.py": "6fd36fb444f1a271c11bf61fb8dccf0c52666d23fab098298b228cdb641c570f",
+    "323-focused-checks.py": "a9212f5c85ac694af83b1ed98aed5ec3ec7e117006361e59bbf2c6b80cba1a22",
+    "323-original-red.log": "bb4977e4c3ca94aa2cc59bea8dc176a1a0540a0754e4d74884911bdaf777ae0e",
+    "323-original-style-guard.py": "a92dcb40c6b4e0f44c404c4210e137a1a7126717870bb720592f719237381455",
+    "323-original-test.rs": "bcf8d030a380ed8c0c62719084c59c7c16a882c78464897cf35a4b3e7adbf281",
+    "323-pre-registration-candidate.patch": "f52ff4e3f62f90d20395b81b96d39e4b5610826393a41f4edde0bffcdad5a74f",
+    "323-pre-registration-checks.json": "d13e7a6adefc0516a2d393e1046f8a91479996834c95afc38511b1ce1aaef505",
+    "323-pre-registration-style.log": "2de69f92bc05022599e6abe3610bb307222c5d060742e8a457d130de73d5026a",
+    "323-publish-evidence.py": "8760f2856db66a21fa13c3a089b61ce44544fbf867f859bfd2578c1ce84d6c83",
+    "before-after-hashes.json": "0a26507ab36d3ad38c0ed9a68a5ebffa11033c71639da88f7af7b314fba1ea20",
+    "finite-mac-checklist.md": "668ba78a31a352f60fd664f837f3dc6024e8fc4cc0aab4c97bc1462b825902b0",
+    "integration-note.md": "7d9972db81d64d06c31e3878a60d2408add74439a4b38ef111b592e92553ea07",
+    "original-registration.patch": "cfaaba5e37c41c96fd9ad313a45fe7bcc28b23b0767d185574c59519324e79cb",
+    "source.patch": "522acbac44f8db8df5179a04db40d3bff3499793ed71a90e399a938f0e8967a5"
+  }
+}

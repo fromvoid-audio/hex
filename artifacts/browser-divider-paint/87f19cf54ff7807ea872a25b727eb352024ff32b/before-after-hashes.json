@@ -1,0 +1,50 @@
+{
+  "crates/hex-ui/src/editor/browser.rs": {
+    "before_git_blob": "c394bb62dcba828c6f625c8ef72d320a3ddfcfb3",
+    "before_sha256": "797885fc6f86d97999c64c45b89b77dff74b1d01b43656c8173e1436bdf88169",
+    "after_git_blob": "5f035370c1874a9bf6da303592f1d73d2f424879",
+    "after_sha256": "52c4db17feee1525895fab0d28bdf811bbd4445d4936ca8b0e365a49bccb38e4"
+  },
+  "crates/hex-ui/src/editor/browser/layout.rs": {
+    "before_git_blob": "c8ff2cd149e49ed1393098817da1d451ec716456",
+    "before_sha256": "9a9725176456eda3ea6a367e1a7eea51af9a0ab6556fa7fa6269ceb05cb2904a",
+    "after_git_blob": "e7b58f6fb3f45abbd415d3678508ed4eaf570c21",
+    "after_sha256": "c5320a809a0363b352f650f0505051492f8e1439cdb2b14b5ba09f416da6a6e7"
+  },
+  "crates/hex-ui/src/editor/browser_divider_paint_ui_test.rs": {
+    "before_git_blob": null,
+    "before_sha256": null,
+    "after_git_blob": "6299e5dfc6fa9b688ef49e7131c71cf0c51a8a6e",
+    "after_sha256": "33b03a69bc319b546b45285ffec04a4e127200b3ea06f659d1c37aa741a88d5e"
+  },
+  "crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs": {
+    "before_git_blob": "ccb45686e1c1aef6d3d62b324f53a2e88e01e7e0",
+    "before_sha256": "1bfd768118a5dd1513cfbd2df7e80908d890046c4a9d1a13463bdb537dc1fb57",
+    "after_git_blob": "b53cdbd6d14efb49174f747acf81113d9c4b0512",
+    "after_sha256": "ec6e52a45a506f2fcec8403244c265147e40878f9187d42637bb66df06370a95"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_git_blob": "d8bce028c7de76ba54c0dfb5f2ef804b65cb58f9",
+    "before_sha256": "5c699ac10a4414dd89ac29917a9a4db7646ab8d2167f0e32c97f7b77e648505c",
+    "after_git_blob": "e1fb98b3d88deed38cf862404dc8bb07e96ca4f9",
+    "after_sha256": "8d83cc4de5ac2036f8233bf4bda24c5090bb5d2083d7d6b1faf5270f0ea0907a"
+  },
+  "docs/browser-layout.md": {
+    "before_git_blob": "0f3247e58ece76b85c58e804977ed4b7c3c221c6",
+    "before_sha256": "bd07251e22ce36323f34e80b5fb6c31b54d022bdd385113206ff2d6f55b7f646",
+    "after_git_blob": "9623e8da85f89765a8fdad677d8f487c67495391",
+    "after_sha256": "92de896b2166f25b7ba1bcf717eba0f9e578aa0d0daa7dd82e79d2efd416e8db"
+  },
+  "scripts/check-ui-style.py": {
+    "before_git_blob": "32ba55b839c2dbf5bca794856b3478872ceb720f",
+    "before_sha256": "a92dcb40c6b4e0f44c404c4210e137a1a7126717870bb720592f719237381455",
+    "after_git_blob": "f73f6acea2acdea083a5443e43422bb20270dca4",
+    "after_sha256": "70ca195cc179083384e255662e91dbfdbd31eff7a2899b6cd1dab4cb08ddd7b1"
+  },
+  "todo.md": {
+    "before_git_blob": "e576160cfea0301e1d81a1f6ed09ad2ce5180fad",
+    "before_sha256": "8206378be17b003a6d626d7e6aff6a2893accb4640475d096a73469d17517a47",
+    "after_git_blob": "adc1e8d55c791270a2cf5a676beb8b2d6640684a",
+    "after_sha256": "a8d6967b3fd4d1f0924f166f7fc238aa72147867b5e6b773f5462decea51cdc4"
+  }
+}

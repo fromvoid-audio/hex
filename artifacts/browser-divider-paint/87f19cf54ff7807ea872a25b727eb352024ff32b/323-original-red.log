@@ -1,0 +1,39 @@
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling mts-esp-master-adapter v0.1.0 (/workspace/hex/third_party/mts-esp-master)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-mts v0.1.0 (/workspace/hex/crates/hex-mts)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-library v0.1.0 (/workspace/hex/crates/hex-library)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 48.78s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::browser::ui_test::divider_paint::browser_divider_paint_is_thin_without_shrinking_capture_bounds' (116462) panicked at crates/hex-ui/src/editor/browser_divider_paint_ui_test.rs:40:9:
+browser-sidebar-resize paints 4pxpx across its 4pxpx capture area
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::divider_paint::browser_divider_paint_is_thin_without_shrinking_capture_bounds ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::divider_paint::browser_divider_paint_is_thin_without_shrinking_capture_bounds
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 806 filtered out; finished in 0.16s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,2 @@
+crates/hex-ui/src/editor/browser.rs:1928: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/browser/layout.rs:567: route text through theme::text or add an explicit view component

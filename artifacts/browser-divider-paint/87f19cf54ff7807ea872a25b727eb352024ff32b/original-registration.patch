@@ -1,0 +1,9 @@
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4897,3 +4897,6 @@
+ 
+ #[path = "browser_resize_feedback_ui_test.rs"]
+ mod resize_feedback;
++
++#[path = "browser_divider_paint_ui_test.rs"]
++mod divider_paint;
