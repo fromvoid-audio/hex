@@ -404,6 +404,21 @@ impl MutableInstrumentTrackRuntime {
         pair: RuntimePair,
         resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     ) -> Result<Self, MutableInstrumentRuntimeError> {
+        // The sealed concrete Sampler constructor must bind the actual retained
+        // configuration before a host pair can escape. This read-only preflight
+        // checks both fresh twins without rendering or opening a block. Generic
+        // providers retain their existing preparation contract and stay opaque.
+        if pair.qualified_sampler_pair().is_some() {
+            pair.preflight_event_batch(
+                &[],
+                0,
+                resources.as_ref().map_or(
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+                    |configuration| configuration,
+                ),
+            )
+            .map_err(map_runtime_error)?;
+        }
         let pair_bytes = pair
             .fixed_storage_pair_bytes()
             .ok_or(MutableInstrumentRuntimeError::Budget)?;

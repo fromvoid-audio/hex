@@ -21,6 +21,16 @@ caller constructors. A compile-fail fixture rejects use across pair mutation.
 Observation alone proves neither provenance nor custody. Commit may swap the
 two Boxes; every observation must be borrowed fresh after mutation.
 
+Before a concrete Sampler pair becomes an engine track runtime, both fresh
+twins now run their read-only zero-frame source preflight against the actual
+retained configuration. Missing or mismatched source identity/rate/layout/window
+refuses construction, before occurrence buffers or an exposed host exist.
+Generic provider construction remains opaque. A regression first reproduced
+acceptance without the required source, then checks both source refusals and
+unchanged independent PCM playback from a separately accepted host. This binds
+the constructor's source requirements; it does not certify configuration custody,
+all later moves or the whole graph's storage/publication.
+
 ## Requested layout and accounting
 
 The separate `sampler-runtime-sized-box-new-v1` gate uses pinned Rust1.94.0

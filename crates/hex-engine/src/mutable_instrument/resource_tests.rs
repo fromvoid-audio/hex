@@ -178,3 +178,62 @@ fn mutable_host_refuses_foreign_scope_history_and_wrong_pcm_before_mutating_outp
     assert_eq!(output, [[0.125, -0.25]; 2]);
     wrong.rollback_block();
 }
+
+#[test]
+fn sampler_constructor_refuses_missing_or_wrong_source_before_exposing_runtime() {
+    let Some((source, owner, _editor)) = crate::shared_analytic::sampler_tests::retained_fixture()
+    else {
+        return;
+    };
+    let factory = crate::session_inventory::PreparedTrackRuntimeFactory::Sampler(
+        owner.sampler_factory_on_control().unwrap(),
+    );
+    let configuration = owner.resource_configuration().unwrap();
+    let clone_configuration = || configuration.try_clone_on_control(4096).unwrap();
+    let mut accepted = MutableInstrumentTrackRuntime::new_with_factory(
+        &factory,
+        44_100,
+        Some(clone_configuration()),
+    )
+    .unwrap();
+    assert!(matches!(
+        MutableInstrumentTrackRuntime::new_with_factory(&factory, 44_100, None),
+        Err(MutableInstrumentRuntimeError::Runtime(
+            NativeInstrumentRuntimeError::ResourceUnavailable
+        ))
+    ));
+    let wrong = source
+        .prepare_lease_on_control(&fixtures::state(fixtures::ids()[1]), 4096)
+        .unwrap()
+        .try_into_configuration_on_control(4096)
+        .ok()
+        .unwrap();
+    assert!(matches!(
+        MutableInstrumentTrackRuntime::new_with_factory(&factory, 44_100, Some(wrong)),
+        Err(MutableInstrumentRuntimeError::Runtime(
+            NativeInstrumentRuntimeError::ResourceUnavailable
+        ))
+    ));
+    // Both refusals leave the independently retained accepted pair/configuration
+    // usable. This is actual source PCM, not just a scalar identity assertion.
+    let mut frames = [[0.0; 2]; 6];
+    accepted.begin_block();
+    accepted
+        .pair
+        .process_block_with_clock(
+            &[NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 1,
+                pitch: 60,
+                velocity: 127,
+            }],
+            &mut frames,
+            None,
+            accepted.resources.as_ref().unwrap(),
+        )
+        .unwrap();
+    accepted.commit_block();
+    assert_eq!(&frames[..4], &fixtures::PCM);
+    assert_eq!(&frames[4..], &[[0.0; 2]; 2]);
+    eprintln!("SUPPORTED actual Sampler constructor source refusals preserve accepted PCM");
+}
