@@ -1,3 +1,21 @@
+## header volume automation indication — returned pulse2715 / PR331
+
+Restored explicit `auto` readout for authored gain envelopes and recorded touch
+lanes, rather than a disabled static-gain slider. Existing admission policy stays
+unchanged. Two bounded rendered regressions reproduce missing indication before
+repair and verify pointer attempts preserve canonical gain/history. No widget,
+actor, Audio or Engine changes; final integrated CI/native acceptance separate.
+
+## resident track-header volume — pulse2715 / PR331, 18 october2026
+
+Compact shared rail/dB controls use canonical gain and typed coalesced resident
+previews during held drag, one Undo on release and latest-canonical Cancel.
+Geometry, actor PCM/history and callback-allocation regressions are retained;
+see docs/track-header-volume.md for scope and finite native acceptance.
+VerifiedStreaming keeps functional +/- until linked2792/PR398 adds audible
+preview publication. Full integrated CI/review/merge belong to the dedicated
+merger; native listening/latency/app delivery remain separate and pending.
+
 ## prepared-batch final routing validation — pulse2790 / PR396, 18 october2026
 
 Public regressions reproduced two invalid commits before repair: adding a send
@@ -5156,6 +5174,15 @@ and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
 full CI/integration/merge; optimized native drag/hover/optical acceptance remains
 open. No installed app, persisted schema or user files changed.
 
+18 October 2026 — Pulse #2710 / canonical PR #326: custom Place icon source work
+uses the existing bundled browser glyphs and editor context menu, with stable
+native-path assignment in bounded browser preferences. Unknown IDs retain a
+folder fallback; icon reuse and default reset are supported. The source candidate
+stacks frozen picker geometry PR #322; dedicated merger owns final prospective
+integration/full checks/merge. Native optimized picker/font/reopen acceptance
+remains open. PR #400 mouse-search diagnostics are frozen separately; this work
+does not claim to resolve the native focus report.
+
 ## consistent live input casing — pulse2810 / PR416, 18 october 2026
 
 Actual track rename shaped uppercase while editing and lowercase after commit.
@@ -5179,3 +5206,15 @@ startup-root rendered matrix checks both layouts, typing isolation, workers/tick
 explicit return and close; prior focus assertions now reflect this new contract
 while retaining their audition/generation/device/drag assertions. Native acceptance
 and final prospective full CI/integration remain with root/sole merger.
+## browser picker label clipping — pulse2809 / PR415, 18 october 2026
+
+Rendered geometry reproduced a 19.5 px Collection-row shift at 80 px because
+the group heading wrapped. Picker headings now retain one line and stay mounted
+at narrow widths; source labels clip continuously beside the existing fixed icon
+column rather than ellipsizing or disappearing at 64 px. Open section settings
+also retain row geometry. The 23 px minimum, icon centers, palette, source actions,
+full-row hit targets and full-name tooltip handlers remain in use. Regression
+covers long Place names, zero label space, both settings states and resize back
+to normal; existing selection/hover/focus/audition regressions remain applicable.
+Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
+source handoff is separate from final integration/full CI/merge and delivery.
