@@ -1,0 +1,55 @@
+{
+  "canonical_pr": 415,
+  "ticket": 2809,
+  "review_return": 24538,
+  "head": "78d83486f13e2d7981622cee0ebb83d78ea980de",
+  "tree": "b5b16c975894659f80e0873f92718f9607c6dd6f",
+  "expected_before": "229729eaf2dac2b71d24c7c43315da68b642dc09",
+  "expected_before_tree": "55bcbbb20ac8d65c474ac93e36326d7714a257c3",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs"
+  ],
+  "original_red": {
+    "source": "229729eaf2dac2b71d24c7c43315da68b642dc09",
+    "result": "0PASS1FAIL actualopen-settings\u2192resize23\u2192gearclose widened124; expected23,415-gear-original-red.log",
+    "reproduction": "original-red-test.patch"
+  },
+  "final_results": {
+    "picker": "4PASS0failed0ignored747filtered2.44s; actualiconcenters/minimum/continuouslabels andcompactgearopen/close",
+    "clippy": "UIalltargets ui-test-support -Dwarnings PASS",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "commands": "415-gear-final-checks.json",
+    "fullCI": "notrun;solemergerprospectivequalification",
+    "source_identity": "checkedworkingtreeunchangedthroughfreeze;commitafterchecks"
+  },
+  "retained_diagnostics": {
+    "415-gear-unused-compact-clippy.log": "initialtinyfix left obsoletecompactlocal unused; strictClippy failed101, removedlocal/unused64threshold thenALLfocusedchecks reran green",
+    "415-gear-initial-picker-green.log": "4PASS beforeunusedcleanup, finaltargetedrerunaftercleanup retained"
+  },
+  "scope": "Twofiles, minimalownerreturnedfix only, no rootfocus/constructor/audio/prefs/model/schema/native/wholefile replacement. Canonical415 untouched; auxiliarypatchreadyformerger.",
+  "known_limits": [
+    "Physicaloptimizedbrowseracceptanceopen",
+    "No full20 requiredqualification claimed",
+    "Existing PCMdeclaredArcUnknown warningretained"
+  ],
+  "files": {
+    "415-gear-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "415-gear-final-checks.json": "2d1480fa314f3b760cc800b83da28ca15bdb0bf1edb256cb5743b68096b75c2a",
+    "415-gear-final-clippy.log": "c8787f2e62899b7dee684008c73909c696736f32838e664d9c9ae8dbba6afc34",
+    "415-gear-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "415-gear-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "415-gear-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "415-gear-final-picker.log": "c10fa87651e59058782eabf8b31ed8bc5b1effc78d120eeade7e082e189e5bb1",
+    "415-gear-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "415-gear-initial-picker-green.log": "59c68519699de81bc8a970a0bd222b53732305843c637a81d4678f3ed9b4c24f",
+    "415-gear-original-red.log": "6ad4a36c2cbcbbf5a4502c6ddb6219602a38d3e70ff3c77c157ed6d4a90c8a2e",
+    "415-gear-original-test.rs": "9b5279424ef258e76328b813dc9258fa85d7f58aa800de5f15a89f67ffb17c71",
+    "415-gear-unused-compact-clippy.log": "96c7f9f07954d1fa2c112d6a7f30257876ddc30f93c8c8079802e8c34a3cf1f7",
+    "before-after-hashes.json": "53122046019b12630d17853fff74394f3685bb187ad117a791b2f5a0c1ae918f",
+    "integration-note.md": "7a0fc536c21bccb3a6ac0495a63b972a388dba9e7a0acc76820316c1dcbae47e",
+    "native-checklist.md": "4e66a9e0384810b0513c4beb4dc22d86a9c38bfa33f896b36f1a660e61ed63b7",
+    "original-red-test.patch": "a95e541dff7227a7ed23117a533ba8721d22b5ae98cde4030fd3e016304cd3dd",
+    "source.patch": "11c9088fc2013a78da4cdfc28dcd5eb8f6f515b1841d9f6e1a5969688fb40f9d"
+  }
+}

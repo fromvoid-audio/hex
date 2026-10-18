@@ -1,0 +1,42 @@
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4207,3 +4207,39 @@
+ 
+ #[path = "browser_search_selection_ui_test.rs"]
+ mod search_selection;
++
++#[gpui::test]
++fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(cx: &mut TestAppContext) {
++    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let closed_top = visual.debug_bounds("browser-place-0").unwrap().top();
++    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
++    visual.simulate_click(gear.center(), Modifiers::default());
++    let open_top = visual.debug_bounds("browser-place-0").unwrap().top();
++    assert!(open_top > closed_top, "actual settings rows must be present");
++    let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
++    let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
++    let target = divider.center() + point(px(23.0) - sidebar.size.width, px(0.0));
++    visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++    visual.run_until_parked();
++    assert_eq!(visual.debug_bounds("browser-place-0").unwrap().top(), open_top);
++    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
++    visual.simulate_click(gear.center(), Modifiers::default());
++    assert_eq!(visual.debug_bounds("browser-sidebar").unwrap().size.width, px(23.0), "closing compact settings must not widen the picker");
++    assert_eq!(visual.debug_bounds("browser-place-0").unwrap().top(), closed_top, "gear must remove the actual open settings rows");
++    // The existing deliberate compact-open behavior still expands usable settings.
++    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
++    visual.simulate_click(gear.center(), Modifiers::default());
++    assert_eq!(visual.debug_bounds("browser-sidebar").unwrap().size.width, px(124.0));
++    assert_eq!(visual.debug_bounds("browser-place-0").unwrap().top(), open_top);
++    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
++    visual.simulate_click(gear.center(), Modifiers::default());
++    assert_eq!(visual.debug_bounds("browser-place-0").unwrap().top(), closed_top);
++    editor.read_with(visual, |view, _| {
++        assert!(view.pending_requests.is_empty());
++        assert!(view.pending_audio_commands.is_empty());
++    });
++}
