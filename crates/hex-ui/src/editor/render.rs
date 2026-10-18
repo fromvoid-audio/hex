@@ -1134,6 +1134,12 @@ impl Render for EditorView {
                 view.remove_track(cx);
                 cx.notify();
             }))
+            .on_action(
+                cx.listener(|view, _: &super::RemoveHeaderTracks, window, cx| {
+                    view.remove_header_tracks(window, cx);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &Quit, window, cx| {
                 view.request_quit(window, cx);
             }))
