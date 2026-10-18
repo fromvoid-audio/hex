@@ -113,6 +113,14 @@ pub fn encode(preset: &Preset) -> Result<Vec<u8>, Error> {
             "comparison provider does not match device preset",
         ));
     }
+    if preset.comparison.as_ref().is_some_and(|comparison| {
+        comparison.inactive().input_gain_millidb() != preset.state.input_gain_millidb()
+            || comparison.inactive().output_gain_millidb() != preset.state.output_gain_millidb()
+    }) {
+        return Err(Error::Invalid(
+            "comparison host gains must be device-global",
+        ));
+    }
     if !preset.state.asset_references().is_empty()
         || preset
             .comparison
@@ -333,6 +341,16 @@ mod tests {
                 encode(&preset).is_err(),
                 "mismatched global trims must refuse"
             );
+            let directory = std::env::temp_dir().join(format!(
+                "hex-preset-trim-refusal-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&directory).unwrap();
+            let path = directory.join("refused.hex-device-preset.json");
+            assert!(save_new(&path, &preset).is_err());
+            assert!(!path.exists());
+            fs::remove_dir(&directory).unwrap();
         }
     }
 

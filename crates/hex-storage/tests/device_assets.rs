@@ -51,6 +51,7 @@ fn replacement(
     Command::ReplaceDeviceStateWithIdentityReservation {
         device,
         expected_state,
+        expected_variant: editor.project().device(device).unwrap().active_variant(),
         state,
         expected_next_id: editor.project().snapshot().next_id,
         reserved_ids: 0,

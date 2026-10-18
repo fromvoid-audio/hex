@@ -107,11 +107,15 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         Command::ReplaceDeviceStateWithIdentityReservation {
             device,
             expected_state,
+            expected_variant,
             state,
             expected_next_id,
             reserved_ids,
         } => {
             if project.next_id != expected_next_id
+                || project
+                    .device(device)
+                    .is_none_or(|entry| entry.active_variant() != expected_variant)
                 || project
                     .device(device)
                     .ok_or(Invalid("device no longer exists"))?
@@ -529,6 +533,7 @@ mod tests {
         let command = Command::ReplaceDeviceStateWithIdentityReservation {
             device,
             expected_state: editor.project().device(device).unwrap().state().clone(),
+            expected_variant: crate::DeviceVariant::A,
             state: state(vec![9]),
             expected_next_id: editor.project().next_identity(),
             reserved_ids: 1,
@@ -559,6 +564,31 @@ mod tests {
         );
         assert!(editor.redo());
         assert_eq!(editor.project().snapshot(), before);
+        // A fresh B-owned capture remains a valid identity-reserving edit.
+        let entry = editor.project().device(device).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceStateWithIdentityReservation {
+                device,
+                expected_state: entry.state().clone(),
+                expected_variant: entry.active_variant(),
+                state: state(vec![9]),
+                expected_next_id: editor.project().next_identity(),
+                reserved_ids: 1,
+            })
+            .unwrap();
+        assert_eq!(
+            editor.project().device(device).unwrap().active_variant(),
+            crate::DeviceVariant::B
+        );
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &state(vec![9])
+        );
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &state(vec![7])
+        );
     }
 
     #[test]
@@ -571,6 +601,7 @@ mod tests {
         let command = Command::ReplaceDeviceStateWithIdentityReservation {
             device,
             expected_state: expected.clone(),
+            expected_variant: crate::DeviceVariant::A,
             state: state(vec![9]),
             expected_next_id: first,
             reserved_ids: 41,
@@ -591,6 +622,7 @@ mod tests {
                 .execute(Command::ReplaceDeviceStateWithIdentityReservation {
                     device,
                     expected_state: expected,
+                    expected_variant: crate::DeviceVariant::A,
                     state: state(vec![10]),
                     expected_next_id: first + 41,
                     reserved_ids: u64::MAX

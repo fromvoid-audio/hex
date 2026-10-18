@@ -135,11 +135,12 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
     },
     /// Atomically replace opaque device state and reserve fresh identities.
-    /// Expected source and allocator cursor prevent stale UI edits overwriting
+    /// Expected source, active A/B slot and allocator cursor prevent stale UI edits overwriting
     /// another edit; history preserves the allocator high-water mark on undo.
     ReplaceDeviceStateWithIdentityReservation {
         device: DeviceId,
         expected_state: hex_lattice_contract::NativeDeviceState,
+        expected_variant: crate::DeviceVariant,
         state: hex_lattice_contract::NativeDeviceState,
         expected_next_id: u64,
         reserved_ids: u64,
