@@ -149,7 +149,7 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "▤",
-                    "show arrangement",
+                    "show arrange view · tab",
                     |view, _, _| view.set_mode(EditorMode::Arrangement),
                     cx,
                 )
@@ -162,7 +162,7 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "▦",
-                    "show session",
+                    "show console view · tab",
                     |view, _, _| view.set_mode(EditorMode::Session),
                     cx,
                 )
@@ -171,6 +171,15 @@ impl EditorView {
                 } else {
                     theme::color(theme::PaletteRole::Muted)
                 })),
+            )
+            .child(
+                div()
+                    .debug_selector({
+                        let name = self.workspace_view_name();
+                        move || name.to_owned()
+                    })
+                    .text_xs()
+                    .child(theme::text(self.workspace_view_name())),
             )
             .child(
                 div()

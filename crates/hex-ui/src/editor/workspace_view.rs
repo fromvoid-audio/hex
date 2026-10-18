@@ -1,0 +1,56 @@
+//! Workspace navigation leaves focused controls and modal editors in charge of Tab.
+use super::{EditorMode, EditorView};
+use gpui::{Context, KeyDownEvent, Modifiers, Window};
+
+impl EditorView {
+    pub(super) fn workspace_view_name(&self) -> &'static str {
+        match self.mode {
+            EditorMode::Arrangement => "arrange view",
+            EditorMode::Session => "console view",
+        }
+    }
+
+    /// Bubbling, never capture/global: children retain local traversal and text input.
+    pub(super) fn workspace_tab(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if event.keystroke.key != "tab"
+            || event.keystroke.modifiers != Modifiers::default()
+            || event.is_held
+            || !self.focus.is_focused(window)
+            || self.track_name.is_editing()
+            || self.clip_name_edit.is_some()
+            || self.tuning.open
+            || self.theme_settings.open
+            || self.controller_input_is_open()
+            || self.context_menu.is_some()
+            || self.close_prompt_open
+            || self.opening_project
+            || self.pending_open_path.is_some()
+            || self.pending_new_mode.is_some()
+            || self.export_dialog_open
+            || self.save_dialog_open
+            || self.preset_dialog_open
+            || self.active_clip_drag.is_some()
+            || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.loop_rail_gesture.is_some()
+        {
+            return false;
+        }
+        self.set_mode(match self.mode {
+            EditorMode::Arrangement => EditorMode::Session,
+            EditorMode::Session => EditorMode::Arrangement,
+        });
+        cx.notify();
+        true
+    }
+}

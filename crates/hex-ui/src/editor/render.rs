@@ -516,6 +516,10 @@ impl Render for EditorView {
                 }
             }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if view.workspace_tab(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape"
                     && (view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag())
                 {

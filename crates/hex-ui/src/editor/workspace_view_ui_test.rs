@@ -1,6 +1,8 @@
 //! Workspace Tab dispatch uses an isolated browser before worker startup.
 use super::{EditorMode, EditorView};
-use gpui::{AppContext, Entity, TestAppContext, VisualTestContext};
+use gpui::{
+    AppContext, Entity, Focusable, Modifiers, MouseButton, TestAppContext, VisualTestContext,
+};
 use hex_session::service::Service;
 use std::time::{Duration, Instant};
 
@@ -59,7 +61,12 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
         v.clip_view_open = false;
         cx.notify();
     });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("arrange view").is_some());
     visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("console view").is_some());
+    assert!(visual.debug_bounds("arrange view").is_none());
     editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| {
@@ -78,4 +85,82 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
         assert_eq!(v.worker_requests_pending, 0);
         assert!(v.pending_requests.is_empty());
     });
+}
+
+#[gpui::test]
+fn workspace_tab_leaves_browser_numeric_and_nested_focus_in_charge(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (_files, handle, editor) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let browser = editor.read_with(&visual, |v, cx| v.browser.search.read(cx).focus_handle());
+    visual.update(|window, _| browser.focus(window));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
+    // The real numeric control owns its local draft and Tab routing.
+    let bounds = visual.debug_bounds("project-tempo-value").unwrap();
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
+    // Both detail editors use their own focus, even though they descend from the workspace.
+    for audio in [false, true] {
+        visual.update(|window, cx| {
+            editor.update(cx, |v, _| {
+                if audio {
+                    v.audio_event_focus.focus(window);
+                } else {
+                    v.midi_focus.focus(window);
+                }
+            })
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
+    }
+}
+
+#[gpui::test]
+fn workspace_tab_respects_modifiers_and_retained_root_modal_state(cx: &mut TestAppContext) {
+    let (_files, handle, editor) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for key in ["shift-tab", "cmd-tab", "alt-tab", "ctrl-tab"] {
+        visual.simulate_keystrokes(key);
+        editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
+    }
+    for guard in 0..8 {
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                v.focus.focus(window);
+                match guard {
+                    0 => v.close_prompt_open = true,
+                    1 => v.save_dialog_open = true,
+                    2 => v.export_dialog_open = true,
+                    3 => v.preset_dialog_open = true,
+                    4 => v.opening_project = true,
+                    5 => v.theme_settings.open = true,
+                    6 => v.tuning.open = true,
+                    _ => v.pending_open_path = Some(std::path::PathBuf::from("unused.hex")),
+                }
+                cx.notify();
+            })
+        });
+        visual.simulate_keystrokes("tab");
+        editor.update(&mut visual, |v, cx| {
+            assert_eq!(v.mode, EditorMode::Arrangement, "guard {guard}");
+            v.close_prompt_open = false;
+            v.save_dialog_open = false;
+            v.export_dialog_open = false;
+            v.preset_dialog_open = false;
+            v.opening_project = false;
+            v.theme_settings.open = false;
+            v.tuning.open = false;
+            v.pending_open_path = None;
+            assert_eq!(v.worker_requests_pending, 0);
+            cx.notify();
+        });
+    }
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
 }
