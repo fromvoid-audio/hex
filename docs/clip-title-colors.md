@@ -26,3 +26,12 @@ for ordinary and multi-selection, both flavors and an inherited track recolor;
 check readable names/rename focus, all four independent selection edges, body
 and header grabs. Repeat at the eventual header-only height after PR431 is
 integrated. No app installation or physical action belongs to this source lane.
+
+The title receives the exact fill already resolved for its audio/MIDI clip body.
+It performs no additional project, track or clip lookup. Previously each title
+called `Project::clip_flavor`, which scans Arrangement audio, then MIDI, then
+Session cells; repeated for V visible clips among N clips this introduced
+O(V*N) lookup work per redraw. The source call paths establish that cost; no
+native latency or benchmark improvement is claimed. Both existing callers now
+resolve one body fill and reuse it for the title and readable foreground. The
+original rendered color/recolor/selection/geometry/rename regression is unchanged.

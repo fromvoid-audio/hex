@@ -173,17 +173,9 @@ impl EditorView {
         track: hex_project::TrackId,
         clip: ClipId,
         name: &str,
+        fill: u32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let fill = self
-            .state
-            .as_ref()
-            .and_then(|state| {
-                let color = state.project.track(track)?.color();
-                let flavor = state.project.clip_flavor(clip)?;
-                Some(theme::clip_fill(color, flavor, self.clip_is_selected(clip)))
-            })
-            .unwrap_or_else(|| theme::color(theme::PaletteRole::Raised));
         let text = theme::readable_text(fill, theme::color(theme::PaletteRole::Text));
         div()
             .id(("clip-name", clip.value()))
