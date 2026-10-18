@@ -177,8 +177,13 @@ mod tests {
         let actual = first.canonical_audio_source.as_ref().unwrap();
         let retained = actual.clone();
         let independent = SharedCanonicalAudioSource::new_on_control(
-            CanonicalAudioSourceSnapshot::capture(&first.project, 7, 11, &session),
+            CanonicalAudioSourceSnapshot::capture(&first.project, 11, 7, &session),
         );
+        let expected_context = hex_engine::AudioSourceContext {
+            project_generation: 11,
+            editor_revision: 7,
+        };
+        assert_eq!(actual.context(), expected_context);
         assert!(actual.shares_owner_with(&retained));
         assert!(!actual.shares_owner_with(&independent));
         assert_eq!(actual.context(), independent.context());
@@ -236,7 +241,7 @@ mod tests {
         drop(session);
         drop(first);
         drop(independent);
-        assert_eq!(retained.context().editor_revision, 11);
+        assert_eq!(retained.context(), expected_context);
         assert_eq!(retained.sample_rate(), 48_000);
     }
 
