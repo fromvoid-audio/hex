@@ -322,6 +322,18 @@ impl EditorView {
             },
             cx,
         );
+        // The row separator is a background surface. Painting it after the
+        // clips would cover their bottom selection stroke at the row boundary.
+        clip_area = clip_area.child(
+            div()
+                .debug_selector(|| format!("lane-separator-{}", track_id.value()))
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(1.0))
+                .bg(rgb(theme::color(theme::PaletteRole::Border))),
+        );
         clip_area = clip_area.child(content);
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
@@ -680,16 +692,6 @@ impl EditorView {
                 }
             }
         }
-        clip_area = clip_area.child(
-            div()
-                .debug_selector(|| format!("lane-separator-{}", track_id.value()))
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(px(1.0))
-                .bg(rgb(theme::color(theme::PaletteRole::Border))),
-        );
         clip_area = clip_area
             .on_drop(cx.listener(move |view, drag: &ClipDrag, window, cx| {
                 view.drop_clip(drag, track_id, window, cx);

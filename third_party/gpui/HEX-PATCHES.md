@@ -160,3 +160,11 @@ changes no production rendering, native behavior, layout or input. Clip selectio
 regressions use it to verify the actual painted outline and viewport clipping.
 Original baseline hashes remain unchanged; the cumulative patch is regenerated
 against the hash-verified original test_context.rs.
+
+18 October clip-bottom-border test support: `rendered_quad_paint_layers` reads the
+completed scene's quad draw order, stable position and masks for all matching
+fragments of a debug element, including retained cache replay.
+Combined with existing painted border widths, ancestor mask and real separator
+bounds, this detects an occluding later row separator. It adds no production
+paint/layout/input behavior or native framebuffer claim. Original archive and
+source hashes remain verified; the cumulative patch is regenerated.
