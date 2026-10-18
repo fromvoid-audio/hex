@@ -12,7 +12,7 @@ pub const MAX_SCRATCH_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_MAP_SEGMENTS: usize = 8_192;
 pub const MAX_POINTS: usize = 1_024;
 pub const MAX_WORK_UNITS: u64 = 1_000_000_000;
-pub const ALGORITHM_VERSION: u32 = 7;
+pub const ALGORITHM_VERSION: u32 = 8;
 const Q32: i128 = 1_i128 << 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,6 +426,12 @@ struct Accumulator {
     cursor: usize,
 }
 impl Accumulator {
+    fn previous(&self) -> [f64; 2] {
+        self.cursor
+            .checked_sub(1)
+            .and_then(|i| self.output.get(i))
+            .map_or([0.0; 2], |x| x.map(f64::from))
+    }
     fn preview(&self, frame: i128) -> Option<[f64; 2]> {
         let frame = usize::try_from(frame).ok()?;
         if frame < self.cursor

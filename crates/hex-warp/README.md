@@ -28,7 +28,7 @@ ring. Candidate scoring uses inexpensive samples; only selected grains use the
 bandlimited reconstruction. Coherent overlaps preserve DC and low-confidence
 noise uses bounded shared energy compensation. The combined plan, filter bank,
 search allowance and ring are quoted before allocation under the existing caps.
-Algorithm version7 invalidates older prepared PCM.
+Algorithm version8 invalidates older prepared PCM.
 
 Physical analysis combines a fast energy-rise path with streaming four-band
 spectral increase and stereo complex-phase prediction. A spectral novelty peak
@@ -49,6 +49,11 @@ normalized turn overlap serve both channels. Compression stays forward. The
 private scalar plan checks native traversal and nonduplicated endpoints; the
 output intentionally smooths turns instead of promising raw reversed indexing.
 Short safe bodies shrink grain shoulders to retain available native material.
+Continuous source-wrap boundaries remain logical edges, not attack guards. A
+stereo cyclic-innovation check distinguishes actual wrap attacks; signed cycle
+origins retain phase. With no safe body, a bounded endpoint splice cannot sample
+the upcoming protected attack. One/two-sample material is never turned into an
+indefinitely held or repeated attack by an empty-interval clamp.
 
 This remains a partial checkpoint. Adaptive grain sizing, the complete short-edge
 and variable-rate matrix, Stop integration and the full

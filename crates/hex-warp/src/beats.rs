@@ -70,7 +70,14 @@ pub(super) fn render(
     )?;
     let mut output = 0;
     let mut source = anchors[0].source;
+    let mut previous = 0;
     for (i, anchor) in anchors.iter().enumerate().take(anchors.len() - 1) {
+        if i > 0 && !anchor.attack {
+            continue;
+        }
+        let next = (i + 1..anchors.len())
+            .find(|j| anchors[*j].attack || *j == anchors.len() - 1)
+            .unwrap();
         let start = anchor.output.saturating_sub(anchor.before);
         let end = (anchor.output + anchor.after).min(request.output_frames);
         synthesis::bed(
@@ -95,13 +102,13 @@ pub(super) fn render(
             let position = anchor.source + (frame as f64 - anchor.output as f64) * pitch;
             let (lower, upper) = if frame < anchor.output {
                 (
-                    anchors[i.saturating_sub(1)].source.floor() as i128,
+                    anchors[previous].source.floor() as i128,
                     anchor.source.ceil() as i128 - 1,
                 )
             } else {
                 (
                     anchor.source.floor() as i128,
-                    anchors[i + 1].source.ceil() as i128 - 1,
+                    anchors[next].source.ceil() as i128 - 1,
                 )
             };
             let sample = bank.sample_segment(request.input, position, lower, upper.max(lower));
@@ -110,6 +117,7 @@ pub(super) fn render(
         acc.finish_until(end)?;
         output = end;
         source = anchor.source + anchor.after as f64 * pitch;
+        previous = i;
     }
     synthesis::bed(
         request,

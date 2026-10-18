@@ -1,12 +1,16 @@
 //! Distinct physical attacks and exact-map protected neighborhoods.
 use super::*;
 fn push(anchors: &mut Vec<Anchor>, source: f64, output: usize, attack: bool) -> Result<(), Error> {
-    if let Some(last) = anchors.last() {
+    if let Some(last) = anchors.last_mut() {
         if last.output == output {
             if (last.source - source).abs() > 1e-9 && attack && last.attack {
                 return Err(Error::Invalid(
                     "distinct attacks project onto the same output sample",
                 ));
+            }
+            if attack && !last.attack {
+                last.source = source;
+                last.attack = true;
             }
             return Ok(());
         }
@@ -50,19 +54,21 @@ pub(super) fn prepare(
         slow += (x[0] * x[0] + x[1] * x[1]) / warmup as f64;
     }
     let coefficient = 1.0 - (-1.0 / (f64::from(rate) * 0.020)).exp();
-    let mut last = 0;
+    let mut last = None;
     for i in 0..request.input.region_length {
         if i % 1024 == 0 {
             work.check(1024)?;
         }
         let x = request.input.frame(i128::from(i));
         let energy = x[0] * x[0] + x[1] * x[1];
-        if i >= last + separation && energy > 1e-12 && energy > slow * 8.0 {
+        if last.is_none_or(|last| i >= last + separation) && energy > 1e-12 && energy > slow * 8.0 {
             if starts.len() == MAX_POINTS {
                 return Err(Error::Invalid("transients exceed bounded source plan"));
             }
-            starts.push(i);
-            last = i;
+            if i != 0 {
+                starts.push(i);
+            }
+            last = Some(i);
         }
         slow += (energy - slow) * coefficient;
     }
@@ -70,7 +76,13 @@ pub(super) fn prepare(
     let first = request.map.segments()[0].source_start_q32;
     let end = request.map.segments().last().unwrap().source_end_q32;
     let region = i128::from(request.input.region_length);
-    let first_cycle = first.div_euclid(Q32).div_euclid(region).max(0);
+    let first_cycle = first.div_euclid(Q32).div_euclid(region);
+    let first_cycle = if request.input.looping {
+        first_cycle
+    } else {
+        first_cycle.max(0)
+    };
+    let boundary_attack = onsets::cycle_boundary(request.input, work)?;
     let last_cycle = end.div_euclid(Q32).div_euclid(region);
     if last_cycle - first_cycle > MAX_MAP_SEGMENTS as i128 {
         return Err(Error::Invalid("transient cycle count exceeds bounded plan"));
@@ -92,10 +104,10 @@ pub(super) fn prepare(
         for at in &starts {
             let source = cycle * region + i128::from(*at);
             if let Some(output) = request.map.output_for_source(source * Q32)
-                && output > 0
                 && output < (request.output_frames as u64)
             {
-                push(&mut anchors, source as f64, output as usize, true)?;
+                let attack = *at != 0 || output != 0 && boundary_attack;
+                push(&mut anchors, source as f64, output as usize, attack)?;
             }
         }
     }
@@ -105,23 +117,34 @@ pub(super) fn prepare(
         request.output_frames,
         false,
     )?;
+    work.check(anchors.len() as u64 * 8)?;
     for i in 0..anchors.len() - 1 {
+        if i > 0 && !anchors[i].attack {
+            continue;
+        }
+        let previous = (0..i)
+            .rev()
+            .find(|j| *j == 0 || anchors[*j].attack)
+            .unwrap_or(0);
+        let next = (i + 1..anchors.len())
+            .find(|j| anchors[*j].attack || *j == anchors.len() - 1)
+            .unwrap();
         let before = if i == 0 {
             0
         } else {
             ((f64::from(rate) / 1000.0 / pitch).floor() as usize)
-                .min((anchors[i].output - anchors[i - 1].output) / 3)
+                .min((anchors[i].output - anchors[previous].output) / 3)
                 .min(
-                    ((anchors[i].source - anchors[i - 1].source) / pitch / 3.0)
+                    ((anchors[i].source - anchors[previous].source) / pitch / 3.0)
                         .floor()
                         .max(0.0) as usize,
                 )
         };
         let after = ((f64::from(rate) / 125.0 / pitch).floor() as usize)
             .max(1)
-            .min((anchors[i + 1].output - anchors[i].output).div_ceil(3))
+            .min((anchors[next].output - anchors[i].output).div_ceil(3))
             .min(
-                ((anchors[i + 1].source - anchors[i].source) / pitch / 3.0)
+                ((anchors[next].source - anchors[i].source) / pitch / 3.0)
                     .ceil()
                     .max(1.0) as usize,
             );

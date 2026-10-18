@@ -70,8 +70,12 @@ impl<'a> Schedule<'a> {
         let first = request.map.segments()[0]
             .source_start_q32
             .div_euclid(Q32)
-            .div_euclid(region)
-            .max(0);
+            .div_euclid(region);
+        let first = if request.input.looping {
+            first
+        } else {
+            first.max(0)
+        };
         let end = request.map.segments().last().unwrap().source_end_q32;
         let last = end.div_euclid(Q32).div_euclid(region);
         if last - first > MAX_MAP_SEGMENTS as i128 {

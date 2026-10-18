@@ -69,6 +69,29 @@ fn refine(
     Ok(None)
 }
 
+/// A region wrap is not itself an onset. Compare its innovation against the
+/// same cyclic neighborhood without privileging either stereo channel.
+pub(super) fn cycle_boundary(input: Input<'_>, work: &mut Work<'_>) -> Result<bool, Error> {
+    if !input.looping {
+        return Ok(true);
+    }
+    let count = i128::from((input.sample_rate / 500).max(1));
+    work.check(count as u64 * 32)?;
+    let difference = |at: i128| {
+        let x = input.frame(at);
+        let y = input.frame(at - 1);
+        (0..2).map(|c| (x[c] - y[c]).powi(2)).sum::<f64>()
+    };
+    let seam = difference(0);
+    let mut neighborhood = 0.0;
+    for at in -count..=count {
+        if at != 0 {
+            neighborhood += difference(at);
+        }
+    }
+    Ok(seam > 1e-12 && seam > neighborhood / (count * 2) as f64 * 8.0)
+}
+
 pub(super) fn detect(
     input: Input<'_>,
     starts: &mut Vec<u64>,

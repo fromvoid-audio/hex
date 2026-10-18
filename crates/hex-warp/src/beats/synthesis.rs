@@ -114,29 +114,18 @@ pub(super) fn bed(
     if start >= end {
         return Ok(());
     }
+    if source_end - source_start < 4.0 {
+        return short_splice(request, bank, work, acc, span, pitch);
+    }
     let lower = source_start.floor() as i128;
-    let upper = (source_end.ceil() as i128 - 1).max(lower);
+    let upper = source_end.ceil() as i128 - 1;
     let available = ((source_end - source_start) / pitch).floor().max(0.0) as usize;
     let grain = (request.input.sample_rate as usize / 25)
         .min(available)
-        // A short safe body must not disappear inside one huge turn overlap.
-        // Keep its shoulders small relative to that actual available material.
         .min((available / 4).max(4))
         .min((end - start) * 2);
     if grain < 4 {
-        work.check((end - start) as u64 * 64)?;
-        for out in start..end {
-            let f = (out - start) as f64 / (end - start).max(1) as f64;
-            let p = source_start + (source_end - source_start) * f;
-            let mut sample = bank.sample_segment(request.input, p, lower, upper);
-            if available <= 1 {
-                for s in &mut sample {
-                    *s *= 1.0 - f;
-                }
-            }
-            acc.add(out as i128, sample, 1.0)?;
-        }
-        return acc.finish_until(end);
+        return short_splice(request, bank, work, acc, span, pitch);
     }
     let grain = grain - grain % 2;
     let hop = grain / 2;
@@ -269,4 +258,47 @@ pub(super) fn bed(
         acc.finish_until((out.max(start as i128) as usize).min(end))?;
     }
     acc.finish_until(end)
+}
+
+// With no meaningful safe sustain, play only the available body once, then a
+// bounded endpoint splice. Never turn a future attack into a held sample by
+// forcing an empty interval's upper bound up to its lower bound.
+fn short_splice(
+    request: &Request<'_>,
+    bank: &Bandlimited,
+    work: &mut Work<'_>,
+    acc: &mut Accumulator,
+    span: Span,
+    pitch: f64,
+) -> Result<(), Error> {
+    let duration = span.end - span.start;
+    let native =
+        (((span.source_end - span.source_start).max(0.0) / pitch).ceil() as usize).min(duration);
+    let release = (request.input.sample_rate as usize / 2000)
+        .max(1)
+        .min(duration - native);
+    let mut last = acc.previous();
+    for age in 0..duration {
+        if age % 256 == 0 {
+            work.check(256 * 64)?;
+        }
+        let sample = if age < native {
+            let lower = span.source_start.floor() as i128;
+            let upper = span.source_end.ceil() as i128 - 1;
+            last = bank.sample_segment(
+                request.input,
+                span.source_start + age as f64 * pitch,
+                lower,
+                upper,
+            );
+            last
+        } else if age - native < release {
+            let x = (age - native + 1) as f64 / release as f64;
+            last.map(|s| s * (1.0 - x * x * (3.0 - 2.0 * x)))
+        } else {
+            [0.0; 2]
+        };
+        acc.add((span.start + age) as i128, sample, 1.0)?;
+    }
+    acc.finish_until(span.end)
 }
