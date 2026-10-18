@@ -396,6 +396,19 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("track-name-input").is_some());
         visual.simulate_input("Verse S 🎹");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let input = view.track_name.edit.as_ref().unwrap().input.read(cx);
+            assert_eq!(
+                input.content, "Verse S 🎹",
+                "display policy must preserve the submitted name"
+            );
+            assert_eq!(
+                input.painted_text_for_test(),
+                Some("verse s 🎹"),
+                "editing and committed display must use the same lowercase policy"
+            );
+        });
         visual.simulate_keystrokes("enter");
         let command = editor.read_with(&visual,|view,_| {
             assert!(view.track_name.edit.is_none());

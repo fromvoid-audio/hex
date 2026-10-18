@@ -31,6 +31,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
         font_size: 9.0,
+        text_case: hex_widgets::TextCase::Lowercase,
     };
     match role {
         DeviceStyleRole::Control => {}
