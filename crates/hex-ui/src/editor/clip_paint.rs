@@ -154,7 +154,7 @@ impl EditorView {
         {
             return true;
         }
-        self.enqueue(Request::Edit(Command::PlaceMidiClip {
+        self.enqueue(Request::Edit(Command::PlaceMidiClipWithOverwrite {
             track: gesture.track,
             start: gesture.start,
             length: BeatTime::from_raw(gesture.end.raw() - gesture.start.raw()),
