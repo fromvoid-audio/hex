@@ -170,6 +170,80 @@ impl MidiClipTrim {
 }
 
 impl MidiClip {
+    /// Plan a clip-local loop handle without allocating or detaching notes.
+    /// New ordinary one-shots capture their current visible range; captured
+    /// Once sources retain their cycle and explicitly resume at modulo phase.
+    /// The returned canonical overwrite command owns the eventual transaction.
+    pub fn loop_outer_resize_command(&self, end: BeatTime) -> Result<Command, Invalid> {
+        self.loop_resize_command(end, false)
+    }
+
+    /// Plan the first repeat marker independently from the positive outer span.
+    /// A non-repeating source has no active repeat marker to edit.
+    pub fn loop_cycle_resize_command(&self, end: BeatTime) -> Result<Command, Invalid> {
+        self.loop_resize_command(end, true)
+    }
+
+    fn loop_resize_command(&self, end: BeatTime, cycle: bool) -> Result<Command, Invalid> {
+        self.source_playback()?;
+        let offset = end
+            .raw()
+            .checked_sub(self.start.raw())
+            .filter(|length| *length > 0)
+            .ok_or(Invalid("loop boundary must follow clip start"))?;
+        let mut source_start = self.source_start();
+        let mut source_length = self.source_length();
+        let mut loop_start = self.loop_start();
+        let mut loop_end = self.loop_end();
+        let length = if cycle {
+            if !self.looping() {
+                return Err(Invalid("first repeat needs an existing loop"));
+            }
+            loop_end = BeatTime::from_raw(
+                source_start
+                    .raw()
+                    .checked_add(offset)
+                    .ok_or(Invalid("loop source end overflow"))?,
+            );
+            source_length = source_length.max(loop_end);
+            self.length
+        } else {
+            if self.source.one_shot_boundary == MidiOneShotBoundary::LoopEnd {
+                source_start = self.source.one_shot_boundary.loop_activation_start(
+                    source_start,
+                    loop_start,
+                    loop_end,
+                )?;
+            } else if !self.looping() {
+                loop_start = source_start;
+                loop_end = BeatTime::from_raw(
+                    source_start
+                        .raw()
+                        .checked_add(self.length.raw())
+                        .ok_or(Invalid("first loop source end overflow"))?,
+                );
+                source_length = source_length.max(loop_end);
+            }
+            BeatTime::from_raw(offset)
+        };
+        validate_clip(self.start, length)?;
+        MidiSourcePlayback::new(
+            source_length,
+            source_start,
+            Some((loop_start, loop_end)),
+            length,
+        )?;
+        Ok(Command::SetMidiClipSourceWithOverwrite {
+            clip: self.id,
+            source_length,
+            source_start,
+            loop_start,
+            loop_end,
+            looping: true,
+            length,
+        })
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

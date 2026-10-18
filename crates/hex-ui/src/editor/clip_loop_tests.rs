@@ -1,9 +1,7 @@
 //! PR445 capability checkpoint: existing MIDI commands, not shipped gesture wiring.
 //! The scalar planner below is deliberately private until the common audio/gesture seam is settled.
 use super::midi_source_controls::SourceValues;
-use hex_project::{
-    BeatTime, ClipId, Command, Created, Editor, Invalid, MidiClip, MidiSourcePlayback, Project,
-};
+use hex_project::{BeatTime, ClipId, Command, Created, Editor, Invalid, MidiClip, Project};
 
 const Q: u64 = 1 << 32;
 fn beat(value: u64) -> BeatTime {
@@ -17,49 +15,32 @@ enum Gesture {
 }
 
 fn values(clip: &MidiClip, gesture: Gesture, target: BeatTime) -> Result<SourceValues, Invalid> {
-    let mut next =
-        SourceValues::from_source(clip.source(), clip.start().raw(), clip.length().raw());
-    let offset = target
-        .raw()
-        .checked_sub(next.arrangement_start)
-        .filter(|length| *length > 0)
-        .ok_or(Invalid("loop boundary must follow clip start"))?;
-    match gesture {
-        Gesture::Outer => {
-            if !next.looping {
-                // Capture CURRENT visible content, including its nonzero source offset.
-                next.loop_start = next.source_start;
-                next.loop_end = next
-                    .source_start
-                    .checked_add(next.arrangement_length)
-                    .ok_or(Invalid("first loop source end overflow"))?;
-                // One-shot MIDI can contain trailing silence; retain that silence in the cycle.
-                next.source_length = next.source_length.max(next.loop_end);
-                next.looping = true;
-            }
-            next.arrangement_length = offset;
-        }
-        Gesture::FirstBoundary => {
-            if !next.looping {
-                return Err(Invalid("first repeat needs an existing loop"));
-            }
-            next.loop_end = next
-                .source_start
-                .checked_add(offset)
-                .ok_or(Invalid("loop source end overflow"))?;
-            next.source_length = next.source_length.max(next.loop_end);
-        }
-    }
-    next.arrangement_start
-        .checked_add(next.arrangement_length)
-        .ok_or(Invalid("loop arrangement end overflow"))?;
-    MidiSourcePlayback::new(
-        beat(next.source_length),
-        beat(next.source_start),
-        Some((beat(next.loop_start), beat(next.loop_end))),
-        beat(next.arrangement_length),
-    )?;
-    Ok(next)
+    let command = match gesture {
+        Gesture::Outer => clip.loop_outer_resize_command(target)?,
+        Gesture::FirstBoundary => clip.loop_cycle_resize_command(target)?,
+    };
+    let Command::SetMidiClipSourceWithOverwrite {
+        source_length,
+        source_start,
+        loop_start,
+        loop_end,
+        looping,
+        length,
+        ..
+    } = command
+    else {
+        return Err(Invalid("unexpected loop resize command"));
+    };
+    Ok(SourceValues {
+        arrangement_start: clip.start().raw(),
+        arrangement_length: length.raw(),
+        source_length: source_length.raw(),
+        source_start: source_start.raw(),
+        loop_start: loop_start.raw(),
+        loop_end: loop_end.raw(),
+        looping,
+        one_shot_boundary: hex_project::MidiOneShotBoundary::LoopEnd,
+    })
 }
 
 fn fixture(source_start: u64, length: u64, looping: bool) -> (Editor, ClipId) {
@@ -288,6 +269,47 @@ fn midi_loop_invalid_and_prepare_refusal_keep_project_ids_history_and_redo() {
     assert!(editor.can_redo());
     assert!(editor.redo());
     assert_eq!(editor.project().clip_name(clip), Some("redo branch"));
+}
+
+#[test]
+fn midi_loop_reactivation_keeps_captured_cycle_and_normalizes_consumed_phase_only() {
+    let (mut editor, clip) = fixture(2 * Q, 8 * Q, true);
+    let captured = values(
+        editor.project().midi_clip(clip).unwrap(),
+        Gesture::Outer,
+        beat(18 * Q),
+    )
+    .unwrap();
+    apply(&mut editor, clip, captured);
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(8 * Q),
+            source_start: beat(7 * Q),
+            loop_start: beat(2 * Q),
+            loop_end: beat(4 * Q),
+            looping: false,
+            length: beat(8 * Q),
+        })
+        .unwrap();
+    let before = editor.project().clone();
+    let original = before.midi_clip(clip).unwrap();
+    let next = values(original, Gesture::Outer, beat(22 * Q)).unwrap();
+    assert_eq!(
+        (next.loop_start, next.loop_end),
+        (2 * Q, 4 * Q),
+        "reactivation must preserve the captured cycle, including silence already consumed"
+    );
+    assert_eq!(next.source_start, 3 * Q);
+    assert_eq!(next.source_length, 8 * Q);
+    assert_eq!(next.arrangement_length, 12 * Q);
+    apply(&mut editor, clip, next);
+    assert_eq!(
+        editor.project().midi_clip(clip).unwrap().notes(),
+        original.notes()
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
 }
 
 #[test]

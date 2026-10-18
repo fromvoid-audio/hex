@@ -22,11 +22,16 @@ clip, Engine code or persistent representation is introduced. Existing numeric
 included in the global no-overlap2822 audit; this command is not that feature's
 completion.
 
-The private test-only scalar planner captures the current MIDI source start and
+`MidiClip::loop_outer_resize_command` and `loop_cycle_resize_command` plan
+existing canonical commands in constant metadata work without allocating or
+detaching notes. First activation captures the current MIDI source start and
 visible length on first activation. Existing loops retain their loop region;
 first-boundary changes preserve the outer duration. Extending a one-shot's
 virtual source length can retain trailing silence in the first cycle without
-removing authored notes. This planner is **not yet runtime gesture wiring**.
+removing authored notes. Reactivating a captured Once preserves its cycle and
+normalizes only the consumed cursor; the first marker keeps outer length fixed.
+The private capability tests delegate these production planners rather than
+maintaining separate arithmetic. This is **not yet runtime gesture wiring**.
 
 Tests exercise actual canonical commands, occurrence timing, whole-project
 snapshot validation, no-op/invalid/prepare refusal, one Undo/Redo, mixed audio/MIDI
