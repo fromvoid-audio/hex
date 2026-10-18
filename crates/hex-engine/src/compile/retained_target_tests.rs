@@ -156,3 +156,96 @@ fn retained_compiler_target_success_matches_public_pcm_and_occupied_refusal_pres
     );
     assert_eq!(render(destination.as_ref().unwrap(), 1), expected);
 }
+
+#[test]
+fn retained_compiler_target_keeps_return_plan_before_resolution_error_or_unwind() {
+    for unwind in [false, true] {
+        let (mut editor, media) = fixture();
+        let mut returns = Vec::new();
+        for name in ["first", "second"] {
+            let hex_project::Created::ReturnTrack(id) = editor
+                .execute(hex_project::Command::AddReturnTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("return");
+            };
+            returns.push(id);
+        }
+        editor
+            .execute(hex_project::Command::SetReturnFeed {
+                source: returns[0],
+                destination: returns[1],
+                gain: 0.5,
+            })
+            .unwrap();
+        let expected = crate::return_feed_plan::ReturnFeedPlan::prepare(editor.project()).unwrap();
+        assert!(!expected.has_no_owned_storage());
+        let expected_edges = expected.edges().collect::<Vec<_>>();
+        assert_eq!(expected_edges.len(), 1);
+        let effects = hex_devices::native_registry().unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let transforms = AudioTransformPreparation::default();
+        let mut contexts = Some(OwnedShared::new_owned(
+            crate::shared_analytic::SharedAnalyticContextTable::default(),
+        ));
+        let context_pointer = Arc::as_ptr(contexts.as_ref().unwrap().arc());
+        let mut destination = None;
+        let mut resolutions = 0;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            transforms.compile_transaction(|| {
+                compile_project_into(
+                    editor.project(),
+                    |asset, rate| {
+                        resolutions += 1;
+                        if resolutions == 2 {
+                            assert!(!unwind, "injected resolver unwind");
+                            return Err(Invalid("injected resolver error"));
+                        }
+                        resolve_resident(asset, rate, &media)
+                    },
+                    None,
+                    &effects,
+                    &instruments,
+                    &mut contexts,
+                    &transforms,
+                    &mut destination,
+                )
+            })
+        }));
+        if unwind {
+            assert!(result.is_err());
+        } else {
+            assert!(matches!(
+                result,
+                Ok(Err(Invalid("injected resolver error")))
+            ));
+        }
+        assert_eq!(resolutions, 2);
+        assert!(contexts.is_none());
+        let retained = destination.as_ref().unwrap();
+        assert_eq!(Arc::as_ptr(retained.shared_contexts.arc()), context_pointer);
+        assert_eq!(retained.tracks.len(), 1);
+        assert!(!retained.return_feed_plan.has_no_owned_storage());
+        assert_eq!(retained.return_feed_plan.order(), expected.order());
+        assert_eq!(
+            retained.return_feed_plan.edges().collect::<Vec<_>>(),
+            expected_edges
+        );
+        // These are the actual independently allocated plan backings in the
+        // retained Project, not borrowed source or a clone of the oracle plan.
+        assert_ne!(
+            retained.return_feed_plan.order().as_ptr(),
+            expected.order().as_ptr()
+        );
+        let backing = retained.return_feed_plan.order().as_ptr();
+        drop(editor);
+        drop(media);
+        assert_eq!(retained.return_feed_plan.order(), &[0, 1]);
+        assert_eq!(retained.return_feed_plan.order().as_ptr(), backing);
+        assert_eq!(
+            retained.tracks[0].clips[0].audio.as_ref().unwrap().frames(),
+            &[[0.25, -0.25]; 4]
+        );
+        // Partial output stays control-owned and is never rendered/published.
+    }
+}

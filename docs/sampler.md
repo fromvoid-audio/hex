@@ -998,5 +998,29 @@ locals and effect/provider births, aggregate before-first-owner reservation,
 parent failed-custody retention, actual Session request binding and continuous
 joint publication guards remain unfinished. Registration and full functional
 panel/load/play acceptance remain open. The urgent user-reported Beats click
-repair is tracked in existing Pulse2830/PR434; the coherent Sampler checkpoint is
-preserved while that bounded musical-quality repair proceeds.
+repair is frozen separately in Pulse2830/PR434; Sampler implementation continues
+from its preserved compiler destination checkpoint without waiting for that merge.
+
+The prepared Return feed plan now moves into the actual caller-held Project
+immediately after context assembly, before source resolution. Previously it
+remained a compiler local until all Tracks and Returns completed, so a later
+resolver refusal or unwind destroyed its real backings while the partial Project
+remained rooted. The failure regression checks both paths, the actual nonempty
+plan/order/edge values, independent plan allocation, unchanged completed PCM, and
+survival after the model and input media are dropped. The success path still uses
+the same plan and musical algorithm. This is a fixed ownership move, not a new
+constructor family or an aggregate peak/retirement certificate.
+
+The next production step is selecting the existing paired Track/Return child
+constructors in this same compiler, retaining their original declarations in the
+existing rows through partial construction, restore and cleanup. The current
+rows still correlate clips one-to-one with the old original-source bindings;
+transformed or omitted compiled clips require actual correlation before that
+route can be admitted. No generic public compiled-output adoption is allowed.
+Before registration, the complete path must also reserve the whole old/new/temp
+union before the first owner, persist failed parent custody, join the actual
+Service candidate/current-worker source, and retain the final ledger/guards
+through the preflighted native publication move. The first usable milestone
+remains atomic sample load/replace into a registered playable host, followed by
+the functional waveform panel and the full musical workflow above; this local
+compiler step does not deliver it.

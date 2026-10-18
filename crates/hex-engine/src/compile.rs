@@ -390,6 +390,11 @@ pub(crate) fn compile_project_into<'a>(
     let project = destination
         .as_mut()
         .ok_or(Invalid("compiler destination is missing"))?;
+    // Move the actual prepared plan into the retained destination before any
+    // resolver/provider work. A later error or unwind must not strand this
+    // allocation in a compiler local while the partial Project remains rooted.
+    // This move does not qualify its enclosing construction budget or children.
+    project.return_feed_plan = return_feed_plan;
     let shared_contexts = &project.shared_contexts;
     let device_context = hex_lattice::DevicePreparationContext {
         sample_rate: snapshot.sample_rate(),
@@ -720,7 +725,6 @@ pub(crate) fn compile_project_into<'a>(
         });
     }
     project.finalize_compiled_tracks_on_control()?;
-    project.return_feed_plan = return_feed_plan;
     let mut feeds = Vec::new();
     feeds
         .try_reserve_exact(snapshot.authored_routing().len())
