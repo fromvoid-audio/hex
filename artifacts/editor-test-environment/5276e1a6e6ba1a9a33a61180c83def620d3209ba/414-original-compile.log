@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+error[E0616]: field `path` of struct `RecentProjectsState` is private
+  --> crates/hex-ui/src/editor/editor_test_environment_ui_test.rs:19:38
+   |
+19 |         assert!(view.recent_projects.path.starts_with(owner));
+   |                                      ^^^^ private field
+
+error[E0616]: field `path` of struct `ThemeSettingsState` is private
+  --> crates/hex-ui/src/editor/editor_test_environment_ui_test.rs:20:37
+   |
+20 |         assert!(view.theme_settings.path.starts_with(owner));
+   |                                     ^^^^ private field
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `hex-ui` (lib test) due to 2 previous errors

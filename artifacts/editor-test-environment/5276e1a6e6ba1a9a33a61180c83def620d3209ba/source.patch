@@ -1,0 +1,1132 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index b81fc69e..c2cc638d 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -77,24 +77,12 @@ struct PreviewSlot {
+     error: Rc<RefCell<Option<String>>>,
+ }
+ 
++#[cfg(not(test))]
+ pub(super) fn default_preferences_path() -> PathBuf {
+-    #[cfg(test)]
+-    {
+-        use std::sync::atomic::{AtomicU64, Ordering};
+-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+-        std::env::temp_dir().join(format!(
+-            "hex-ui-test-places-{}-{}.json",
+-            std::process::id(),
+-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
+-        ))
+-    }
+-    #[cfg(not(test))]
+-    {
+-        let home = std::env::var_os("HOME")
+-            .map(PathBuf::from)
+-            .unwrap_or_else(|| PathBuf::from("/"));
+-        hex_preferences::browser_places_path(&home)
+-    }
++    let home = std::env::var_os("HOME")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/"));
++    hex_preferences::browser_places_path(&home)
+ }
+ 
+ fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
+@@ -224,14 +212,14 @@ impl BrowserState {
+     pub fn new(
+         cx: &mut Context<EditorView>,
+         preferences_path: PathBuf,
+-        #[cfg(all(test, feature = "ui-test-support"))] test_home: Option<PathBuf>,
++        #[cfg(test)] test_home: Option<PathBuf>,
+     ) -> Self {
++        #[cfg(not(test))]
+         let home = std::env::var_os("HOME")
+             .map(PathBuf::from)
+             .unwrap_or_else(|| PathBuf::from("/"));
+-        // Explicit fixture defaults precede discovery, catalog roots and fallback.
+-        #[cfg(all(test, feature = "ui-test-support"))]
+-        let home = test_home.unwrap_or(home);
++        #[cfg(test)]
++        let home = test_home.expect("editor test home must be resolved before startup");
+         let music = home.join("Music");
+         let search = cx.new(BrowserSearch::new);
+         let mut previous_query = String::new();
+@@ -421,11 +409,17 @@ impl EditorView {
+ 
+     pub(super) fn start_browser_places_load(&mut self, cx: &mut Context<Self>) {
+         let path = self.browser.preferences_path.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::load(&path) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::load(&path)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser_places_loaded(result, cx);
+@@ -540,11 +534,17 @@ impl EditorView {
+         };
+         self.browser.places_save_in_flight = true;
+         let path = self.browser.preferences_path.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::save(&path, &places) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::save(&path, &places)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser_places_saved(result, cx);
+@@ -728,15 +728,19 @@ impl EditorView {
+         cx: &mut Context<Self>,
+     ) {
+         self.browser.playback_in_flight = true;
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let path = request.path.clone();
+             let sample_rate = request.sample_rate;
+             let result = cx
+                 .background_executor()
+-                .spawn(
+-                    async move { hex_session::service::prepare_sample_preview(path, sample_rate) },
+-                )
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_session::service::prepare_sample_preview(path, sample_rate)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser.playback_in_flight = false;
+@@ -1008,15 +1012,19 @@ impl EditorView {
+             self.browser.preview_preparations += 1;
+         }
+         self.browser.preview_in_flight = Some(request.clone());
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let path = request.key.path.clone();
+             let sample_rate = request.key.sample_rate;
+             let result = cx
+                 .background_executor()
+-                .spawn(
+-                    async move { hex_session::service::prepare_audio_preview(path, sample_rate) },
+-                )
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_session::service::prepare_audio_preview(path, sample_rate)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser_audio_preview_finished(request, result, cx);
+@@ -1196,12 +1204,18 @@ impl EditorView {
+     }
+ 
+     fn start_browser_scan(&mut self, request: ScanRequest, cx: &mut Context<Self>) {
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let path_for_scan = request.directory.clone();
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { scan_directory(path_for_scan) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    scan_directory(path_for_scan)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser_scan_finished(request, result, cx);
+diff --git a/crates/hex-ui/src/editor/browser/samples.rs b/crates/hex-ui/src/editor/browser/samples.rs
+index c0615443..2ccc689b 100644
+--- a/crates/hex-ui/src/editor/browser/samples.rs
++++ b/crates/hex-ui/src/editor/browser/samples.rs
+@@ -195,13 +195,21 @@ impl EditorView {
+             .browser
+             .preferences_path
+             .with_extension("samples-v1.db");
++        #[cfg(test)]
++        let test_environment = Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             if load {
+                 let path = database.clone();
++                #[cfg(test)]
++                let load_environment = Arc::clone(&test_environment);
+                 let cached = cx
+                     .background_executor()
+-                    .spawn(async move { SampleCatalog::load(&path) })
++                    .spawn(async move {
++                        #[cfg(test)]
++                        let _test_environment = load_environment;
++                        SampleCatalog::load(&path)
++                    })
+                     .await;
+                 if this
+                     .update(cx, |view, cx| {
+@@ -232,7 +240,13 @@ impl EditorView {
+                 .background_executor()
+                 .spawn(async move {
+                     let scan = scan_samples(&scan_roots);
++                    #[cfg(test)]
++                    let gate = test_environment.before_catalog_save().await;
+                     let saved = scan.catalog.save(&database);
++                    #[cfg(test)]
++                    if let Some(gate) = gate {
++                        gate.did_save(saved.is_ok(), test_environment.root().is_dir());
++                    }
+                     (scan, saved)
+                 })
+                 .await;
+diff --git a/crates/hex-ui/src/editor/browser/tree.rs b/crates/hex-ui/src/editor/browser/tree.rs
+index 9e8f385c..e66d82a1 100644
+--- a/crates/hex-ui/src/editor/browser/tree.rs
++++ b/crates/hex-ui/src/editor/browser/tree.rs
+@@ -428,12 +428,18 @@ impl EditorView {
+         let Some(request) = self.browser.tree.next() else {
+             return;
+         };
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let path = request.path.clone();
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { scan_directory(path) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    scan_directory(path)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 let selection = view.browser_selected_item(cx);
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 306c6e49..6f3d8161 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4307,8 +4307,10 @@ fn place_icon_preferences_window(
+                         recent.to_owned(),
+                         directory.0.join("icon-theme.json"),
+                     ),
+-                    None,
+-                    Some(home),
++                    crate::editor::test_environment::Inputs {
++                        home: Some(home),
++                        ..Default::default()
++                    },
+                 )
+             })
+         })
+@@ -4894,3 +4896,6 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
+         assert!(view.pending_audio_commands.is_empty());
+     });
+ }
++
++#[path = "editor_test_environment_ui_test.rs"]
++mod test_environment;
+diff --git a/crates/hex-ui/src/editor/editor_test_environment_ui_test.rs b/crates/hex-ui/src/editor/editor_test_environment_ui_test.rs
+new file mode 100644
+index 00000000..705c241f
+--- /dev/null
++++ b/crates/hex-ui/src/editor/editor_test_environment_ui_test.rs
+@@ -0,0 +1,300 @@
++//! Constructor roots are checked before the deterministic executor runs startup I/O.
++use super::*;
++
++#[gpui::test]
++fn browser_test_environment_ordinary_constructor_has_private_roots_before_startup(
++    cx: &mut TestAppContext,
++) {
++    let handle = *cx.add_window(|_, _| Empty);
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.replace_root(cx, |window, cx| {
++                EditorView::new(
++                    window,
++                    cx,
++                    Service::new(48_000, 16, 8_000_000).unwrap(),
++                    Err("offline sandbox test".into()),
++                )
++            })
++        })
++        .unwrap();
++    // Do not park/drain until these assertions pass: the original constructor
++    // queues ambient discovery. Failing here leaves those test-executor jobs unpolled.
++    editor.read_with(cx, |view, _| {
++        assert!(
++            view.browser.home.starts_with(std::env::temp_dir()),
++            "ordinary constructor queued ambient home discovery: {:?}",
++            view.browser.home
++        );
++        assert_ne!(
++            view.browser.home,
++            std::env::temp_dir(),
++            "the shared system temporary folder is not a private test home"
++        );
++        assert_eq!(view.browser.directory, view.browser.music);
++        assert!(view.browser.music.starts_with(&view.browser.home));
++        assert!(view.browser.music.is_dir());
++        assert!(
++            view.browser
++                .places
++                .iter()
++                .all(|path| path.starts_with(&view.browser.home))
++        );
++        let owner = view.browser.home.parent().unwrap();
++        assert!(view.browser.preferences_path.starts_with(owner));
++        assert!(view.recent_projects.test_path().starts_with(owner));
++        assert!(view.theme_settings.test_path().starts_with(owner));
++    });
++}
++
++fn ordinary(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
++    let handle = *cx.add_window(|_, _| Empty);
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.replace_root(cx, |window, cx| {
++                EditorView::new(
++                    window,
++                    cx,
++                    Service::new(48_000, 16, 8_000_000).unwrap(),
++                    Err("offline sandbox test".into()),
++                )
++            })
++        })
++        .unwrap();
++    (handle, editor)
++}
++
++#[gpui::test]
++fn browser_test_environment_unique_editors_complete_real_directory_and_catalog_startup(
++    cx: &mut TestAppContext,
++) {
++    let mut roots = Vec::new();
++    for _ in 0..2 {
++        let (handle, editor) = ordinary(cx);
++        let (root, home, database) = editor.read_with(cx, |view, _| {
++            let root = view.test_environment.root().to_owned();
++            assert!(view.browser.home.starts_with(&root));
++            assert!(view.browser.music.starts_with(&root));
++            assert_eq!(view.browser.directory, view.browser.music);
++            assert!(
++                view.browser
++                    .places
++                    .iter()
++                    .all(|path| path.starts_with(&root))
++            );
++            assert!(
++                view.sample_roots()
++                    .iter()
++                    .all(|path| path.starts_with(&root))
++            );
++            assert!(view.browser.preferences_path.starts_with(&root));
++            assert!(view.recent_projects.test_path().starts_with(&root));
++            assert!(view.theme_settings.test_path().starts_with(&root));
++            (
++                root,
++                view.browser.home.clone(),
++                view.browser
++                    .preferences_path
++                    .with_extension("samples-v1.db"),
++            )
++        });
++        let visual = &mut VisualTestContext::from_window(handle, cx);
++        visual.run_until_parked();
++        editor.read_with(visual, |view, _| {
++            assert!(!view.browser.preferences_loading);
++            assert!(!view.browser.loading);
++            assert_eq!(
++                view.browser.listing.as_ref().unwrap().directory,
++                home.join("Music")
++            );
++        });
++        assert!(database.is_file(), "real catalog save completed");
++        let catalog = hex_library::catalog::SampleCatalog::load(&database).unwrap();
++        assert!(catalog.entries().is_empty());
++        roots.push(root);
++    }
++    assert_ne!(
++        roots[0], roots[1],
++        "ordinary editors must not share configuration or discovery roots"
++    );
++}
++
++#[gpui::test]
++fn browser_test_environment_missing_music_falls_back_only_to_owned_home(cx: &mut TestAppContext) {
++    let (handle, editor) = ordinary(cx);
++    let home = editor.read_with(cx, |view, _| {
++        assert!(view.browser.home.starts_with(view.test_environment.root()));
++        std::fs::remove_dir(&view.browser.music).unwrap();
++        view.browser.home.clone()
++    });
++    let wav = home.join("Fallback.WAV");
++    std::fs::write(&wav, mono_pcm_wav(24)).unwrap();
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.directory, home);
++        assert!(!view.browser.loading);
++        assert!(view.browser.error.is_none());
++        assert_eq!(view.browser.listing.as_ref().unwrap().directory, home);
++        assert!(
++            view.browser
++                .listing
++                .as_ref()
++                .unwrap()
++                .entries
++                .iter()
++                .any(|entry| entry.path == wav)
++        );
++        assert!(
++            view.sample_roots()
++                .iter()
++                .all(|path| path.starts_with(&home))
++        );
++    });
++}
++
++#[gpui::test]
++fn browser_test_environment_explicit_missing_corrupt_and_populated_preferences_keep_native_paths(
++    cx: &mut TestAppContext,
++) {
++    for mode in 0..3 {
++        let directory = PreferencesTestDirectory::new();
++        let prefs = directory.0.join("Custom Preferences.json");
++        let recent = directory.0.join("Recent Projects.json");
++        let place = directory.0.join("Original Case Samples");
++        std::fs::create_dir(&place).unwrap();
++        match mode {
++            0 => {}
++            1 => std::fs::write(&prefs, b"malformed preferences preserved").unwrap(),
++            2 => hex_preferences::save(
++                &prefs,
++                &hex_preferences::BrowserPlaces::new([place.clone()]).unwrap(),
++            )
++            .unwrap(),
++            _ => unreachable!(),
++        }
++        let original = std::fs::read(&prefs).ok();
++        let handle = *cx.add_window(|_, _| Empty);
++        let editor = cx
++            .update_window(handle, |_, window, cx| {
++                window.replace_root(cx, |window, cx| {
++                    EditorView::new_for_test(
++                        window,
++                        cx,
++                        Service::new(48_000, 16, 8_000_000).unwrap(),
++                        Err("offline explicit preference test".into()),
++                        prefs.clone(),
++                        recent.clone(),
++                    )
++                })
++            })
++            .unwrap();
++        editor.read_with(cx, |view, _| {
++            assert_eq!(view.browser.preferences_path, prefs);
++            assert_eq!(view.recent_projects.test_path(), recent);
++            assert!(
++                view.theme_settings
++                    .test_path()
++                    .starts_with(view.test_environment.root())
++            );
++            assert!(view.browser.home.starts_with(view.test_environment.root()));
++        });
++        let visual = &mut VisualTestContext::from_window(handle, cx);
++        visual.run_until_parked();
++        editor.read_with(visual, |view, _| {
++            assert!(!view.browser.preferences_loading);
++            if mode == 1 {
++                assert!(!view.browser.preferences_writable);
++                assert!(view.browser.places_status.is_some());
++            }
++            if mode == 2 {
++                assert!(view.browser.places.contains(&place));
++            }
++        });
++        assert_eq!(
++            std::fs::read(&prefs).ok(),
++            original,
++            "explicit missing/corrupt/populated file must not be replaced by sandbox defaults"
++        );
++        visual.update(|window, cx| {
++            let _ = window.replace_root(cx, |_, _| Empty);
++        });
++        drop(editor);
++        assert!(
++            directory.0.is_dir(),
++            "caller-owned directory must never be adopted/deleted"
++        );
++        assert!(place.is_dir());
++        assert_eq!(std::fs::read(&prefs).ok(), original);
++    }
++}
++
++#[gpui::test]
++fn browser_test_environment_actual_catalog_save_keeps_root_after_view_drop_then_cleans(
++    cx: &mut TestAppContext,
++) {
++    use std::sync::{Arc, atomic::Ordering};
++    let (handle, editor) = ordinary(cx);
++    let (root, weak, gate) = editor.read_with(cx, |view, _| {
++        (
++            view.test_environment.root().to_owned(),
++            Arc::downgrade(&view.test_environment),
++            view.test_environment.gate_next_catalog_save(),
++        )
++    });
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    assert!(
++        gate.reached.load(Ordering::Acquire),
++        "held inside the actual catalog scan/save worker"
++    );
++    assert!(!gate.finished.load(Ordering::Acquire));
++    visual.update(|window, cx| {
++        let _ = window.replace_root(cx, |_, _| Empty);
++    });
++    let editor_weak = editor.downgrade();
++    drop(editor);
++    // GPUI defers Entity value destruction until an App update flushes releases.
++    visual.update(|_, _| {});
++    visual.run_until_parked();
++    assert!(
++        editor_weak.upgrade().is_none(),
++        "the actual editor owner was released before the job resumes"
++    );
++    assert!(
++        weak.upgrade().is_some(),
++        "actual filesystem job owns the environment after view drop"
++    );
++    assert_eq!(
++        weak.strong_count(),
++        1,
++        "only the actual held filesystem job retains the environment"
++    );
++    assert!(root.is_dir());
++    gate.release();
++    visual.run_until_parked();
++    assert!(
++        gate.finished.load(Ordering::Acquire),
++        "actual catalog save ran after release, not a stub"
++    );
++    assert!(gate.save_succeeded.load(Ordering::Relaxed));
++    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
++    visual.update(|_, _| {});
++    assert!(
++        weak.upgrade().is_none(),
++        "no editor/FS-job guards left after actual save"
++    );
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    while root.exists() {
++        assert!(
++            std::time::Instant::now() < deadline,
++            "background-owned root cleanup timed out"
++        );
++        std::thread::yield_now();
++    }
++    visual.run_until_parked();
++    assert!(
++        !root.exists(),
++        "drained filesystem work must not recreate the deleted root"
++    );
++}
+diff --git a/crates/hex-ui/src/editor/mod.rs b/crates/hex-ui/src/editor/mod.rs
+index 88c0d20d..420c752f 100644
+--- a/crates/hex-ui/src/editor/mod.rs
++++ b/crates/hex-ui/src/editor/mod.rs
+@@ -19,6 +19,8 @@ mod clip_content_cache;
+ mod clip_drag_ui_test;
+ mod clip_name;
+ mod clip_selection;
++#[cfg(test)]
++mod test_environment;
+ 
+ mod clip_paint;
+ #[cfg(all(test, feature = "ui-test-support"))]
+@@ -697,6 +699,8 @@ pub(super) struct EditorView {
+     #[cfg(test)]
+     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
+     snap_grid: musical_time::SnapGrid,
++    #[cfg(test)]
++    test_environment: Arc<test_environment::Environment>,
+     browser: browser::BrowserState,
+     recent_projects: RecentProjectsState,
+     theme_settings: theme_settings::ThemeSettingsState,
+@@ -736,15 +740,36 @@ impl EditorView {
+         service: Service,
+         output: Result<crate::EditorAudio, String>,
+     ) -> Self {
+-        Self::new_with_browser_preferences_path(
+-            window,
+-            cx,
+-            service,
+-            output,
+-            browser::default_preferences_path(),
+-            recent_projects::default_preferences_path(),
+-            theme_settings::default_preferences_path(),
+-        )
++        #[cfg(not(test))]
++        {
++            Self::new_with_browser_preferences_path(
++                window,
++                cx,
++                service,
++                output,
++                browser::default_preferences_path(),
++                recent_projects::default_preferences_path(),
++                theme_settings::default_preferences_path(),
++            )
++        }
++        #[cfg(test)]
++        {
++            Self::new_with_browser_paths(
++                window,
++                cx,
++                service,
++                output,
++                (
++                    std::path::PathBuf::new(),
++                    std::path::PathBuf::new(),
++                    std::path::PathBuf::new(),
++                ),
++                test_environment::Inputs {
++                    defaults: [true; 3],
++                    ..Default::default()
++                },
++            )
++        }
+     }
+ 
+     #[cfg(all(test, feature = "ui-test-support"))]
+@@ -756,14 +781,20 @@ impl EditorView {
+         preferences_path: std::path::PathBuf,
+         recent_projects_path: std::path::PathBuf,
+     ) -> Self {
+-        Self::new_with_browser_preferences_path(
++        Self::new_with_browser_paths(
+             window,
+             cx,
+             service,
+             output,
+-            preferences_path,
+-            recent_projects_path,
+-            theme_settings::default_preferences_path(),
++            (
++                preferences_path,
++                recent_projects_path,
++                std::path::PathBuf::new(),
++            ),
++            test_environment::Inputs {
++                defaults: [false, false, true],
++                ..Default::default()
++            },
+         )
+     }
+ 
+@@ -806,8 +837,10 @@ impl EditorView {
+                 directory.join("recent-projects.json"),
+                 directory.join("theme.json"),
+             ),
+-            Some(directory.join("samples")),
+-            None,
++            test_environment::Inputs {
++                directory: Some(directory.join("samples")),
++                ..Default::default()
++            },
+         )
+     }
+ 
+@@ -830,10 +863,8 @@ impl EditorView {
+                 recent_projects_path,
+                 theme_preferences_path,
+             ),
+-            #[cfg(all(test, feature = "ui-test-support"))]
+-            None,
+-            #[cfg(all(test, feature = "ui-test-support"))]
+-            None,
++            #[cfg(test)]
++            test_environment::Inputs::default(),
+         )
+     }
+ 
+@@ -843,13 +874,14 @@ impl EditorView {
+         service: Service,
+         output: Result<crate::EditorAudio, String>,
+         paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+-        #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
+-            std::path::PathBuf,
+-        >,
+-        #[cfg(all(test, feature = "ui-test-support"))] test_browser_home: Option<
+-            std::path::PathBuf,
+-        >,
++        #[cfg(test)] test_paths: test_environment::Inputs,
+     ) -> Self {
++        #[cfg(test)]
++        let test_environment = test_environment::Environment::new()
++            .expect("could not create private editor test environment; no ambient fallback");
++        #[cfg(test)]
++        let paths = test_environment.resolve_paths(paths, test_paths.defaults);
++
+         let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
+         let (audio, status) = match output {
+             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
+@@ -968,8 +1000,12 @@ impl EditorView {
+         let browser = browser::BrowserState::new(
+             cx,
+             preferences_path,
+-            #[cfg(all(test, feature = "ui-test-support"))]
+-            test_browser_home,
++            #[cfg(test)]
++            Some(
++                test_paths
++                    .home
++                    .unwrap_or_else(|| test_environment.home.clone()),
++            ),
+         );
+         let recent_projects = RecentProjectsState::new(recent_projects_path);
+         let theme_settings =
+@@ -1142,6 +1178,8 @@ impl EditorView {
+             #[cfg(test)]
+             last_enqueued_import_to_new_track: None,
+             snap_grid: musical_time::SnapGrid::default(),
++            #[cfg(test)]
++            test_environment,
+             browser,
+             recent_projects,
+             theme_settings,
+@@ -1156,8 +1194,8 @@ impl EditorView {
+             pending_time_range_move: None,
+             suppress_cursor_click: false,
+         };
+-        #[cfg(all(test, feature = "ui-test-support"))]
+-        if let Some(directory) = test_browser_directory {
++        #[cfg(test)]
++        if let Some(directory) = test_paths.directory {
+             view.browser.directory = directory.clone();
+             view.browser.places = vec![directory];
+         }
+diff --git a/crates/hex-ui/src/editor/recent_projects.rs b/crates/hex-ui/src/editor/recent_projects.rs
+index aaa94e29..49902f97 100644
+--- a/crates/hex-ui/src/editor/recent_projects.rs
++++ b/crates/hex-ui/src/editor/recent_projects.rs
+@@ -15,6 +15,10 @@ pub(super) struct RecentProjectsState {
+ }
+ 
+ impl RecentProjectsState {
++    #[cfg(all(test, feature = "ui-test-support"))]
++    pub(super) fn test_path(&self) -> &Path {
++        &self.path
++    }
+     pub(super) fn new(path: PathBuf) -> Self {
+         Self {
+             path,
+@@ -28,34 +32,28 @@ impl RecentProjectsState {
+     }
+ }
+ 
++#[cfg(not(test))]
+ pub(super) fn default_preferences_path() -> PathBuf {
+-    #[cfg(test)]
+-    {
+-        use std::sync::atomic::{AtomicU64, Ordering};
+-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+-        std::env::temp_dir().join(format!(
+-            "hex-ui-test-recent-{}-{}.json",
+-            std::process::id(),
+-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
+-        ))
+-    }
+-    #[cfg(not(test))]
+-    {
+-        let home = std::env::var_os("HOME")
+-            .map(PathBuf::from)
+-            .unwrap_or_else(|| PathBuf::from("/"));
+-        hex_preferences::recent_projects_path(&home)
+-    }
++    let home = std::env::var_os("HOME")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/"));
++    hex_preferences::recent_projects_path(&home)
+ }
+ 
+ impl EditorView {
+     pub(super) fn start_recent_projects_load(&mut self, cx: &mut Context<Self>) {
+         let path = self.recent_projects.path.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::load_recent_projects(&path) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::load_recent_projects(&path)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.recent_projects_loaded(result, cx);
+@@ -144,11 +142,17 @@ impl EditorView {
+         };
+         self.recent_projects.save_in_flight = true;
+         let path = self.recent_projects.path.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::save_recent_projects(&path, &projects) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::save_recent_projects(&path, &projects)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.recent_projects_saved(result, cx);
+diff --git a/crates/hex-ui/src/editor/test_environment.rs b/crates/hex-ui/src/editor/test_environment.rs
+new file mode 100644
+index 00000000..72e019cf
+--- /dev/null
++++ b/crates/hex-ui/src/editor/test_environment.rs
+@@ -0,0 +1,183 @@
++//! Test-only startup paths and filesystem-job custody. Never built into the app.
++use std::{
++    fs, io,
++    path::{Path, PathBuf},
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicBool, AtomicU64, Ordering},
++    },
++    task::{Poll, Waker},
++};
++
++/// One test-only constructor input boundary; explicit fixture paths are caller-owned.
++#[derive(Default)]
++pub(super) struct Inputs {
++    pub(super) directory: Option<PathBuf>,
++    pub(super) home: Option<PathBuf>,
++    pub(super) defaults: [bool; 3],
++}
++
++static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
++
++struct OwnedRoot(PathBuf);
++impl OwnedRoot {
++    fn create() -> io::Result<Self> {
++        for _ in 0..128 {
++            let path = std::env::temp_dir().join(format!(
++                "hex-editor-test-{}-{}",
++                std::process::id(),
++                NEXT_ROOT.fetch_add(1, Ordering::Relaxed),
++            ));
++            match fs::create_dir(&path) {
++                Ok(()) => return Ok(Self(path)),
++                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
++                Err(error) => return Err(error),
++            }
++        }
++        Err(io::Error::new(
++            io::ErrorKind::AlreadyExists,
++            "cannot allocate a private editor test root",
++        ))
++    }
++}
++impl Drop for OwnedRoot {
++    fn drop(&mut self) {
++        let path = self.0.clone();
++        let report_path = path.clone();
++        // Teardown must not block the UI. This independent cleanup owns only our
++        // exclusively-created root; it is not a Session or application worker join.
++        if let Err(error) = std::thread::Builder::new()
++            .name("hex-test-cleanup".into())
++            .spawn(move || {
++                if let Err(error) = fs::remove_dir_all(&path)
++                    && error.kind() != io::ErrorKind::NotFound
++                {
++                    eprintln!("could not remove editor test root {path:?}: {error}");
++                }
++            })
++        {
++            eprintln!("could not schedule editor test root cleanup {report_path:?}: {error}");
++        }
++    }
++}
++
++pub(super) struct Environment {
++    root: OwnedRoot,
++    pub(super) home: PathBuf,
++    catalog_save_gate: Mutex<Option<Arc<CatalogSaveGate>>>,
++}
++impl Environment {
++    pub(super) fn new() -> io::Result<Arc<Self>> {
++        let root = OwnedRoot::create()?;
++        let home = root.0.join("home");
++        fs::create_dir_all(home.join("Music"))?;
++        fs::create_dir(root.0.join("config"))?;
++        Ok(Arc::new(Self {
++            root,
++            home,
++            catalog_save_gate: Mutex::new(None),
++        }))
++    }
++    pub(super) fn root(&self) -> &Path {
++        &self.root.0
++    }
++    pub(super) fn resolve_paths(
++        &self,
++        paths: (PathBuf, PathBuf, PathBuf),
++        defaults: [bool; 3],
++    ) -> (PathBuf, PathBuf, PathBuf) {
++        let (browser, recent, theme) = paths;
++        let config = self.root.0.join("config");
++        // Flags describe constructor intent; explicit paths are never recognized
++        // by string comparison or derived from an arbitrary preferences parent.
++        (
++            if defaults[0] {
++                config.join("browser.json")
++            } else {
++                browser
++            },
++            if defaults[1] {
++                config.join("recent-projects.json")
++            } else {
++                recent
++            },
++            if defaults[2] {
++                config.join("theme.json")
++            } else {
++                theme
++            },
++        )
++    }
++    #[cfg(feature = "ui-test-support")]
++    pub(super) fn gate_next_catalog_save(&self) -> Arc<CatalogSaveGate> {
++        let gate = Arc::new(CatalogSaveGate::default());
++        let mut slot = self
++            .catalog_save_gate
++            .lock()
++            .expect("catalog test gate poisoned");
++        assert!(
++            slot.is_none(),
++            "a catalog save test gate is already installed"
++        );
++        *slot = Some(Arc::clone(&gate));
++        gate
++    }
++    pub(super) async fn before_catalog_save(&self) -> Option<Arc<CatalogSaveGate>> {
++        let gate = self
++            .catalog_save_gate
++            .lock()
++            .expect("catalog test gate poisoned")
++            .take();
++        if let Some(gate) = &gate {
++            gate.wait().await;
++        }
++        gate
++    }
++}
++
++/// A deterministic test checkpoint inside the real catalog scan/save job. It
++/// yields the test executor rather than blocking its thread or replacing I/O.
++#[derive(Default)]
++pub(super) struct CatalogSaveGate {
++    pub(super) reached: AtomicBool,
++    released: AtomicBool,
++    waker: Mutex<Option<Waker>>,
++    pub(super) finished: AtomicBool,
++    pub(super) save_succeeded: AtomicBool,
++    pub(super) root_present_during_save: AtomicBool,
++}
++impl CatalogSaveGate {
++    async fn wait(&self) {
++        std::future::poll_fn(|cx| {
++            self.reached.store(true, Ordering::Release);
++            if self.released.load(Ordering::Acquire) {
++                return Poll::Ready(());
++            }
++            *self.waker.lock().expect("catalog test gate poisoned") = Some(cx.waker().clone());
++            if self.released.load(Ordering::Acquire) {
++                Poll::Ready(())
++            } else {
++                Poll::Pending
++            }
++        })
++        .await;
++    }
++    #[cfg(feature = "ui-test-support")]
++    pub(super) fn release(&self) {
++        self.released.store(true, Ordering::Release);
++        if let Some(waker) = self
++            .waker
++            .lock()
++            .expect("catalog test gate poisoned")
++            .take()
++        {
++            waker.wake();
++        }
++    }
++    pub(super) fn did_save(&self, succeeded: bool, root_present: bool) {
++        self.save_succeeded.store(succeeded, Ordering::Relaxed);
++        self.root_present_during_save
++            .store(root_present, Ordering::Relaxed);
++        self.finished.store(true, Ordering::Release);
++    }
++}
+diff --git a/crates/hex-ui/src/editor/theme_settings.rs b/crates/hex-ui/src/editor/theme_settings.rs
+index 03c8653c..f865e8b8 100644
+--- a/crates/hex-ui/src/editor/theme_settings.rs
++++ b/crates/hex-ui/src/editor/theme_settings.rs
+@@ -215,6 +215,10 @@ pub(super) struct ThemeSettingsState {
+ }
+ 
+ impl ThemeSettingsState {
++    #[cfg(all(test, feature = "ui-test-support"))]
++    pub(super) fn test_path(&self) -> &std::path::Path {
++        &self.path
++    }
+     pub(super) fn new(path: PathBuf, window: &Window, cx: &mut Context<EditorView>) -> Self {
+         let colors = theme::preferences();
+         Self {
+@@ -252,35 +256,29 @@ impl ThemeSettingsState {
+     }
+ }
+ 
++#[cfg(not(test))]
+ pub(super) fn default_preferences_path() -> PathBuf {
+-    #[cfg(test)]
+-    {
+-        use std::sync::atomic::{AtomicU64, Ordering};
+-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+-        std::env::temp_dir().join(format!(
+-            "hex-ui-test-theme-{}-{}.json",
+-            std::process::id(),
+-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
+-        ))
+-    }
+-    #[cfg(not(test))]
+-    {
+-        let home = std::env::var_os("HOME")
+-            .map(PathBuf::from)
+-            .unwrap_or_else(|| PathBuf::from("/"));
+-        hex_preferences::theme_preferences_path(&home)
+-    }
++    let home = std::env::var_os("HOME")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/"));
++    hex_preferences::theme_preferences_path(&home)
+ }
+ 
+ impl EditorView {
+     pub(super) fn start_theme_preferences_load(&mut self, cx: &mut Context<Self>) {
+         let path = self.theme_settings.path.clone();
+         let generation = self.theme_settings.load_generation;
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::load_theme_preferences(&path) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::load_theme_preferences(&path)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.theme_preferences_loaded(generation, result, cx);
+@@ -732,11 +730,17 @@ impl EditorView {
+         let path = self.theme_settings.path.clone();
+         let window_handle = self.theme_settings.window;
+         let editor_focus = self.focus.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::save_theme_preferences(&path, &colors) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::save_theme_preferences(&path, &colors)
++                })
+                 .await;
+             let closed = this
+                 .update(cx, |view, cx| {
+diff --git a/docs/cloud-environment.md b/docs/cloud-environment.md
+index f5c0dee9..7d7729e9 100644
+--- a/docs/cloud-environment.md
++++ b/docs/cloud-environment.md
+@@ -136,3 +136,30 @@ appended to live Pulse 2348, revision 21. Runtime HTTP policy enforcement was
+ reported unknown; the browser's preserved policy settings are configuration
+ evidence, not proof of enforcement. Native macOS/audio acceptance and complete
+ Linux workspace CI are not established by this probe.
++
++### editor test filesystem sandbox — pulse2808 / PR414
++
++Only `cfg(test)` editor construction resolves default filesystem paths into one
++fresh, exclusively created temporary root per editor. Its Home/Music, browser
++start directory and Places are resolved before startup jobs; default browser,
++sample catalog, recent-project and theme files live there too. Missing Music
++falls back to that private Home. Explicit populated, missing or malformed fixture
++paths and explicit browser directories/Homes are preserved exactly; the resolver
++never adopts them or derives scan roots from an arbitrary preference-file parent.
++Creation errors fail clearly without ambient Home fallback or environment overrides.
++The `ui-test-support` feature by itself does not change application startup.
++
++An Arc guard belongs to the editor and each actual filesystem job, including
++inner directory/tree scans, preview preparation, preference load/save and catalog
++load/scan/save futures. A view's outer awaiting future is insufficient custody:
++real I/O can finish after the view is gone. Only after the last guard is released
++is the exclusively owned root removed on an independent cleanup thread, without
++blocking UI Drop. Explicit caller-owned directories remain the caller's responsibility
++and are never deleted by the sandbox. This does not join Session workers or promise
++all application workers have stopped.
++
++A test-only asynchronous gate inside the real catalog save job verifies that the
++editor can be released while the job is held, the real save retains its root,
++and cleanup happens afterward without recreation. GPUI deferred Entity releases
++are flushed explicitly in that test. This is filesystem lifetime evidence, not a
++native-app or audio-listening acceptance result; older runs are not retroqualified.
+diff --git a/todo.md b/todo.md
+index 7c5fc5b1..0157b17a 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5230,3 +5230,13 @@ covers long Place names, zero label space, both settings states and resize back
+ to normal; existing selection/hover/focus/audition regressions remain applicable.
+ Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
+ source handoff is separate from final integration/full CI/merge and delivery.
++
++- 18 October 2026 — Pulse2808 / PR414: common cfg(test) editor resolver allocates
++  unique private Home/Music/config before discovery, preserving explicit fixture
++  paths; no process environment or application feature-only behavior change.
++  Arc guards live in actual inner filesystem jobs, and owned-root cleanup is off
++  the UI thread after the last guard. Original ordinary-constructor RED configured
++  /home/agent. Five new regressions cover two-editor startup/catalog isolation,
++  missing-Music private fallback, explicit missing/corrupt/populated preferences,
++  and a real held catalog save after actual view release then cleanup. Session
++  worker joining/native delivery are not claimed; final candidate CI belongs to merger.

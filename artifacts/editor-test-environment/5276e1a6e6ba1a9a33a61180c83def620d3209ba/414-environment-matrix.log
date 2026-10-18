@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0433]: failed to resolve: could not find `SampleCatalog` in `hex_library`
+   --> crates/hex-ui/src/editor/editor_test_environment_ui_test.rs:112:36
+    |
+112 |         let catalog = hex_library::SampleCatalog::load(&database).unwrap();
+    |                                    ^^^^^^^^^^^^^ could not find `SampleCatalog` in `hex_library`
+    |
+    = note: struct `crate::editor::browser::samples::cache_tests::SampleCatalog` exists but is inaccessible
+help: consider importing this struct
+    |
+  2 + use hex_library::catalog::SampleCatalog;
+    |
+help: if you import `SampleCatalog`, refer to it directly
+    |
+112 -         let catalog = hex_library::SampleCatalog::load(&database).unwrap();
+112 +         let catalog = SampleCatalog::load(&database).unwrap();
+    |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `hex-ui` (lib test) due to 1 previous error

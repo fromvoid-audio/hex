@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.85s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::browser::ui_test::test_environment::browser_test_environment_ordinary_constructor_has_private_roots_before_startup' (102083) panicked at crates/hex-ui/src/editor/editor_test_environment_ui_test.rs:11:9:
+ordinary constructor queued ambient home discovery: "/home/agent"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::test_environment::browser_test_environment_ordinary_constructor_has_private_roots_before_startup ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::test_environment::browser_test_environment_ordinary_constructor_has_private_roots_before_startup
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 770 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

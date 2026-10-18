@@ -1,0 +1,190 @@
+{
+  "ticket": 2808,
+  "canonical_pr": 414,
+  "head": "5276e1a6e6ba1a9a33a61180c83def620d3209ba",
+  "tree": "71be686efe19472636372f6cf95e9b69c5256190",
+  "expected_before": "d02e8d0a71851ce02c85830eb7e3d467fdb7f8d4",
+  "expected_before_tree": "81640053de3df321cf2ae3bcd0b1063a1dbf47cd",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/samples.rs",
+    "crates/hex-ui/src/editor/browser/tree.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "crates/hex-ui/src/editor/editor_test_environment_ui_test.rs",
+    "crates/hex-ui/src/editor/mod.rs",
+    "crates/hex-ui/src/editor/recent_projects.rs",
+    "crates/hex-ui/src/editor/test_environment.rs",
+    "crates/hex-ui/src/editor/theme_settings.rs",
+    "docs/cloud-environment.md",
+    "todo.md"
+  ],
+  "commands": [
+    {
+      "name": "ui-library",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/414-final-ui-library.log"
+    },
+    {
+      "name": "clippy-default",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/414-final-clippy-default.log"
+    },
+    {
+      "name": "clippy-test-support",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/414-final-clippy-test-support.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/414-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/414-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/414-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/414-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/414-final-diff.log"
+    }
+  ],
+  "original_red": {
+    "source": "d02e8d0a71851ce02c85830eb7e3d467fdb7f8d4",
+    "log": "414-original-red.log",
+    "outcome": "ordinary constructor configured /home/agent rather than private test home,0PASS1FAIL. Checked synchronously before startup test-executor drain; no intentional ambient Home scan used as repro",
+    "reconstruction": "two original-test.patch files +original snapshots on expectedparent; originalcompile private recent/theme fields separately recorded, not product RED"
+  },
+  "final_results": {
+    "ui-library": "772PASS0failed3existingignored0filtered145.80s, one actual process with constructor/browser/recent/theme/331/333/346 and remaining editor/library unit input cases;5new sandbox tests incl soleactualjobArc after Editor release",
+    "clippy-default": "alltargets no ui-test-support -Dwarnings PASS",
+    "clippy-test-support": "alltargets ui-test-support -Dwarnings PASS; includes non-test app compilation with feature alone",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "fullCI": "NOTrun; solemerger actualprospective-tree qualification"
+  },
+  "retained_diagnostics": {
+    "414-original-compile.log": "original test attempted private recent/theme State.path; roots-only corrected test produced actual RED, later test-only actual-path getters added",
+    "414-environment-matrix.log": "compile only: SampleCatalog is under hex_library::catalog, corrected import; no product PASS from this attempt",
+    "414-environment-matrix-2.log": "4PASS1FAIL actual save completed but GPUI deferred Editor value release not yet flushed, leaving owner Arc. Corrected test explicitly flushes App releases BEFORE releasing job; final also asserts EditorWeak dead and EnvWeak strongcount1, preventing view retention from masquerading as filesystem custody",
+    "414-lifetime-before-flush-candidate.patch": "tracked diff on parent, add lifetime-before-flush-environment.rs as test_environment.rs and lifetime-before-flush-test.rs as editor_test_environment_ui_test.rs for exact unpublished diagnostic candidate",
+    "414-environment-matrix-3.log": "5PASS before final Inputs bundling and stronger sole-job count; historical, not final whole-source qualification",
+    "414-pre-input-bundle-ui-library.log": "772PASS3ignored142.98s before final cfg(test) Inputs bundle; historical source, not relabeled final",
+    "414-consolidate-inputs.py": "test-only path/home/default flags bundled into one Inputs; removed unnecessary helper cfg restriction because normal profile helper is compiled without test-support too; final bothconfigClippy/wholeUI rerun, no lint waiver"
+  },
+  "scope": "ONE cfg(test) root/resolver with atomic exclusive create/retry/clearfailure, owns privateHome/Music/config; explicit caller paths retained exactly/no adoption. Arc editor+12actual innerFSjobs: placesload/save, directory/tree, waveform/PCMpreview, catalogload/scan-save, recentload/save,themeload/save. Only exclusively owned root removed after lastguard on independent cleanupthread, no UI-blocking deletion. No HOME overrides, dependencies, project/media/schema/production-runtime changes.",
+  "limits": [
+    "3existing ignored profiling tests not executed; native profiling/performance not established",
+    "Source-only check handoff; solemerger final integration/fullCI/merge and root native delivery remain",
+    "Session workers not joined; ServiceDrop unchanged cancellation only",
+    "Explicit caller-owned fixture directories remain caller lifetime responsibility and are never adopted/deleted",
+    "ui-test-support feature alone does NOT sandbox actual app; cfg(test) required",
+    "Existing PCM Arc Unknown build warning retained",
+    "400 native mouse-focus diagnostic unresolved; no app actions/acceptance claim"
+  ],
+  "payloads": {
+    "414-add-job-guards.py": "0fde904488e50560185ac329191221cf3d0b18175207673b927a3a1ce8793839",
+    "414-consolidate-inputs.py": "140400350e2518955c433046ecaafa265a19105493eaa2fcf53bef5d5e5de84d",
+    "414-environment-matrix-2.log": "bf5baa343b0be0870a7475cd81430daaea8ca8ede17101776123455c705b0860",
+    "414-environment-matrix-3.log": "c3d4d130f8f090a0b3e2cccdd2c45c1e4991107e18656de2d57ee932e9d56a13",
+    "414-environment-matrix.log": "9e9de072e73866c2d2e80a08dc6dbddd2d0854a3cce3b2fa63cb4634e16199f2",
+    "414-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "414-final-checks.json": "27f3115b65be358eb3089e532a6247b7d9e5d59618f9b88e7ed11a2e7e57179a",
+    "414-final-clippy-default.log": "24aa2c9a1b0c62f5c19831b40b19760ccfd3e4337a4364e30355b1d603d13985",
+    "414-final-clippy-test-support.log": "47705a6de823ce4adaa8c73f4229c0b4bf60ebecccd28a187e1906a7c5484877",
+    "414-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "414-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "414-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "414-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "414-final-ui-library.log": "6e53723fbb184185a4e7aeb73fb7f2d7ffad4d0c762a8d84ae8baf63360a9be6",
+    "414-first-green.log": "a6e37cab0b2f0a09fca2ec05ca05c0e5ae1c9158c160fcb605d6d61952670c2b",
+    "414-focused-checks.py": "7d7db99763237cff796d8d162e6ff3284750f08edb4c4a5493da63cb928da835",
+    "414-lifetime-before-flush-candidate.patch": "d3887ea809fe2bdf62913d378642f71b8c152c3d660513de27bc8281ef3754cc",
+    "414-lifetime-before-flush-environment.rs": "95e87ce1858fd4ac643e03889f0cb0cd31fa36aea04b9910b8ad49e47c829565",
+    "414-lifetime-before-flush-test.rs": "5674e761a6d91d07891eb5fc6828da360dc8821882c71100e67074d44f77140c",
+    "414-original-compile.log": "2bb1de869f612e7db6e079f2ebe7ebe931b92becd752b9d269e29dcc9aa48512",
+    "414-original-red.log": "d0db202e92bbdfffad4ed01e0a32e5fa6940da882e3d7380905f8c60baed136d",
+    "414-original-registration.rs": "99740075cd55141aa40e722cbbd186a3f37ece5f3d365b01f6f19ef5f136a1b2",
+    "414-original-test.rs": "a0d4588e28fb9abc1d332f6c96734bbe2bccaf4c69c2f1cf84a2529012446273",
+    "414-pre-input-bundle-ui-library.log": "ac6521fcaa546c660c18a305750ac4985ff2e5c4b87d97a69e695a5aa22a397c",
+    "414-publish-evidence.py": "dbe1939726c1c44b176efc2dae784048716b41220f616f7281c126c556a241b1",
+    "414-test-environment-candidate.rs": "856610ff4ae905602a6f1985c29ab501b2067ea8f428c45785d0a2857d50401c",
+    "414-ui-library.log": "ac6521fcaa546c660c18a305750ac4985ff2e5c4b87d97a69e695a5aa22a397c",
+    "before-after-hashes.json": "9723a16cc7730ed33096fdbb35e39398410ad13366851450fb0d724e76c58586",
+    "browser_ui_test.rs.original-test.patch": "1c7f544c0e0150ffa7ac5652592d28aa2769de9930de894e39d298f49c041b24",
+    "editor_test_environment_ui_test.rs.original-test.patch": "939f69900aff4c672fddc29c566207a15178e30282d4845167669e4779dbd3ed",
+    "finite-mac-checklist.md": "0d936de7865c30a7e130c6cfca4c8e22d762700602a79409c76ae18104199de5",
+    "integration-note.md": "2a31e4106652faec8c99a2a844955bf2ff54ce8d1285f743d3066f6dd896eeeb",
+    "source.patch": "27c6e375ee5ceb0e1da64b960ca5a511c041b7e9d089390d43089822e8d813ac"
+  }
+}

@@ -1,0 +1,574 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index b81fc69e..c2cc638d 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -77,24 +77,12 @@ struct PreviewSlot {
+     error: Rc<RefCell<Option<String>>>,
+ }
+ 
++#[cfg(not(test))]
+ pub(super) fn default_preferences_path() -> PathBuf {
+-    #[cfg(test)]
+-    {
+-        use std::sync::atomic::{AtomicU64, Ordering};
+-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+-        std::env::temp_dir().join(format!(
+-            "hex-ui-test-places-{}-{}.json",
+-            std::process::id(),
+-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
+-        ))
+-    }
+-    #[cfg(not(test))]
+-    {
+-        let home = std::env::var_os("HOME")
+-            .map(PathBuf::from)
+-            .unwrap_or_else(|| PathBuf::from("/"));
+-        hex_preferences::browser_places_path(&home)
+-    }
++    let home = std::env::var_os("HOME")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/"));
++    hex_preferences::browser_places_path(&home)
+ }
+ 
+ fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
+@@ -224,14 +212,14 @@ impl BrowserState {
+     pub fn new(
+         cx: &mut Context<EditorView>,
+         preferences_path: PathBuf,
+-        #[cfg(all(test, feature = "ui-test-support"))] test_home: Option<PathBuf>,
++        #[cfg(test)] test_home: Option<PathBuf>,
+     ) -> Self {
++        #[cfg(not(test))]
+         let home = std::env::var_os("HOME")
+             .map(PathBuf::from)
+             .unwrap_or_else(|| PathBuf::from("/"));
+-        // Explicit fixture defaults precede discovery, catalog roots and fallback.
+-        #[cfg(all(test, feature = "ui-test-support"))]
+-        let home = test_home.unwrap_or(home);
++        #[cfg(test)]
++        let home = test_home.expect("editor test home must be resolved before startup");
+         let music = home.join("Music");
+         let search = cx.new(BrowserSearch::new);
+         let mut previous_query = String::new();
+@@ -421,11 +409,17 @@ impl EditorView {
+ 
+     pub(super) fn start_browser_places_load(&mut self, cx: &mut Context<Self>) {
+         let path = self.browser.preferences_path.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::load(&path) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::load(&path)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser_places_loaded(result, cx);
+@@ -540,11 +534,17 @@ impl EditorView {
+         };
+         self.browser.places_save_in_flight = true;
+         let path = self.browser.preferences_path.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::save(&path, &places) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::save(&path, &places)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser_places_saved(result, cx);
+@@ -728,15 +728,19 @@ impl EditorView {
+         cx: &mut Context<Self>,
+     ) {
+         self.browser.playback_in_flight = true;
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let path = request.path.clone();
+             let sample_rate = request.sample_rate;
+             let result = cx
+                 .background_executor()
+-                .spawn(
+-                    async move { hex_session::service::prepare_sample_preview(path, sample_rate) },
+-                )
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_session::service::prepare_sample_preview(path, sample_rate)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser.playback_in_flight = false;
+@@ -1008,15 +1012,19 @@ impl EditorView {
+             self.browser.preview_preparations += 1;
+         }
+         self.browser.preview_in_flight = Some(request.clone());
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let path = request.key.path.clone();
+             let sample_rate = request.key.sample_rate;
+             let result = cx
+                 .background_executor()
+-                .spawn(
+-                    async move { hex_session::service::prepare_audio_preview(path, sample_rate) },
+-                )
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_session::service::prepare_audio_preview(path, sample_rate)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser_audio_preview_finished(request, result, cx);
+@@ -1196,12 +1204,18 @@ impl EditorView {
+     }
+ 
+     fn start_browser_scan(&mut self, request: ScanRequest, cx: &mut Context<Self>) {
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let path_for_scan = request.directory.clone();
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { scan_directory(path_for_scan) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    scan_directory(path_for_scan)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.browser_scan_finished(request, result, cx);
+diff --git a/crates/hex-ui/src/editor/browser/samples.rs b/crates/hex-ui/src/editor/browser/samples.rs
+index c0615443..2ccc689b 100644
+--- a/crates/hex-ui/src/editor/browser/samples.rs
++++ b/crates/hex-ui/src/editor/browser/samples.rs
+@@ -195,13 +195,21 @@ impl EditorView {
+             .browser
+             .preferences_path
+             .with_extension("samples-v1.db");
++        #[cfg(test)]
++        let test_environment = Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             if load {
+                 let path = database.clone();
++                #[cfg(test)]
++                let load_environment = Arc::clone(&test_environment);
+                 let cached = cx
+                     .background_executor()
+-                    .spawn(async move { SampleCatalog::load(&path) })
++                    .spawn(async move {
++                        #[cfg(test)]
++                        let _test_environment = load_environment;
++                        SampleCatalog::load(&path)
++                    })
+                     .await;
+                 if this
+                     .update(cx, |view, cx| {
+@@ -232,7 +240,13 @@ impl EditorView {
+                 .background_executor()
+                 .spawn(async move {
+                     let scan = scan_samples(&scan_roots);
++                    #[cfg(test)]
++                    let gate = test_environment.before_catalog_save().await;
+                     let saved = scan.catalog.save(&database);
++                    #[cfg(test)]
++                    if let Some(gate) = gate {
++                        gate.did_save(saved.is_ok(), test_environment.root().is_dir());
++                    }
+                     (scan, saved)
+                 })
+                 .await;
+diff --git a/crates/hex-ui/src/editor/browser/tree.rs b/crates/hex-ui/src/editor/browser/tree.rs
+index 9e8f385c..e66d82a1 100644
+--- a/crates/hex-ui/src/editor/browser/tree.rs
++++ b/crates/hex-ui/src/editor/browser/tree.rs
+@@ -428,12 +428,18 @@ impl EditorView {
+         let Some(request) = self.browser.tree.next() else {
+             return;
+         };
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let path = request.path.clone();
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { scan_directory(path) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    scan_directory(path)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 let selection = view.browser_selected_item(cx);
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 306c6e49..12b89f31 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4309,6 +4309,7 @@ fn place_icon_preferences_window(
+                     ),
+                     None,
+                     Some(home),
++                    [false; 3],
+                 )
+             })
+         })
+@@ -4894,3 +4895,6 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
+         assert!(view.pending_audio_commands.is_empty());
+     });
+ }
++
++#[path = "editor_test_environment_ui_test.rs"]
++mod test_environment;
+diff --git a/crates/hex-ui/src/editor/mod.rs b/crates/hex-ui/src/editor/mod.rs
+index 88c0d20d..cdaedb84 100644
+--- a/crates/hex-ui/src/editor/mod.rs
++++ b/crates/hex-ui/src/editor/mod.rs
+@@ -19,6 +19,8 @@ mod clip_content_cache;
+ mod clip_drag_ui_test;
+ mod clip_name;
+ mod clip_selection;
++#[cfg(test)]
++mod test_environment;
+ 
+ mod clip_paint;
+ #[cfg(all(test, feature = "ui-test-support"))]
+@@ -697,6 +699,8 @@ pub(super) struct EditorView {
+     #[cfg(test)]
+     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
+     snap_grid: musical_time::SnapGrid,
++    #[cfg(test)]
++    test_environment: Arc<test_environment::Environment>,
+     browser: browser::BrowserState,
+     recent_projects: RecentProjectsState,
+     theme_settings: theme_settings::ThemeSettingsState,
+@@ -736,15 +740,35 @@ impl EditorView {
+         service: Service,
+         output: Result<crate::EditorAudio, String>,
+     ) -> Self {
+-        Self::new_with_browser_preferences_path(
+-            window,
+-            cx,
+-            service,
+-            output,
+-            browser::default_preferences_path(),
+-            recent_projects::default_preferences_path(),
+-            theme_settings::default_preferences_path(),
+-        )
++        #[cfg(not(test))]
++        {
++            Self::new_with_browser_preferences_path(
++                window,
++                cx,
++                service,
++                output,
++                browser::default_preferences_path(),
++                recent_projects::default_preferences_path(),
++                theme_settings::default_preferences_path(),
++            )
++        }
++        #[cfg(test)]
++        {
++            Self::new_with_browser_paths(
++                window,
++                cx,
++                service,
++                output,
++                (
++                    std::path::PathBuf::new(),
++                    std::path::PathBuf::new(),
++                    std::path::PathBuf::new(),
++                ),
++                None,
++                None,
++                [true; 3],
++            )
++        }
+     }
+ 
+     #[cfg(all(test, feature = "ui-test-support"))]
+@@ -756,14 +780,19 @@ impl EditorView {
+         preferences_path: std::path::PathBuf,
+         recent_projects_path: std::path::PathBuf,
+     ) -> Self {
+-        Self::new_with_browser_preferences_path(
++        Self::new_with_browser_paths(
+             window,
+             cx,
+             service,
+             output,
+-            preferences_path,
+-            recent_projects_path,
+-            theme_settings::default_preferences_path(),
++            (
++                preferences_path,
++                recent_projects_path,
++                std::path::PathBuf::new(),
++            ),
++            None,
++            None,
++            [false, false, true],
+         )
+     }
+ 
+@@ -808,9 +837,11 @@ impl EditorView {
+             ),
+             Some(directory.join("samples")),
+             None,
++            [false; 3],
+         )
+     }
+ 
++    #[cfg(any(not(test), feature = "ui-test-support"))]
+     fn new_with_browser_preferences_path(
+         window: &mut Window,
+         cx: &mut Context<Self>,
+@@ -830,10 +861,12 @@ impl EditorView {
+                 recent_projects_path,
+                 theme_preferences_path,
+             ),
+-            #[cfg(all(test, feature = "ui-test-support"))]
++            #[cfg(test)]
+             None,
+-            #[cfg(all(test, feature = "ui-test-support"))]
++            #[cfg(test)]
+             None,
++            #[cfg(test)]
++            [false; 3],
+         )
+     }
+ 
+@@ -843,13 +876,16 @@ impl EditorView {
+         service: Service,
+         output: Result<crate::EditorAudio, String>,
+         paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+-        #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
+-            std::path::PathBuf,
+-        >,
+-        #[cfg(all(test, feature = "ui-test-support"))] test_browser_home: Option<
+-            std::path::PathBuf,
+-        >,
++        #[cfg(test)] test_browser_directory: Option<std::path::PathBuf>,
++        #[cfg(test)] test_browser_home: Option<std::path::PathBuf>,
++        #[cfg(test)] test_default_paths: [bool; 3],
+     ) -> Self {
++        #[cfg(test)]
++        let test_environment = test_environment::Environment::new()
++            .expect("could not create private editor test environment; no ambient fallback");
++        #[cfg(test)]
++        let paths = test_environment.resolve_paths(paths, test_default_paths);
++
+         let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
+         let (audio, status) = match output {
+             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
+@@ -968,8 +1004,8 @@ impl EditorView {
+         let browser = browser::BrowserState::new(
+             cx,
+             preferences_path,
+-            #[cfg(all(test, feature = "ui-test-support"))]
+-            test_browser_home,
++            #[cfg(test)]
++            Some(test_browser_home.unwrap_or_else(|| test_environment.home.clone())),
+         );
+         let recent_projects = RecentProjectsState::new(recent_projects_path);
+         let theme_settings =
+@@ -1142,6 +1178,8 @@ impl EditorView {
+             #[cfg(test)]
+             last_enqueued_import_to_new_track: None,
+             snap_grid: musical_time::SnapGrid::default(),
++            #[cfg(test)]
++            test_environment,
+             browser,
+             recent_projects,
+             theme_settings,
+@@ -1156,7 +1194,7 @@ impl EditorView {
+             pending_time_range_move: None,
+             suppress_cursor_click: false,
+         };
+-        #[cfg(all(test, feature = "ui-test-support"))]
++        #[cfg(test)]
+         if let Some(directory) = test_browser_directory {
+             view.browser.directory = directory.clone();
+             view.browser.places = vec![directory];
+diff --git a/crates/hex-ui/src/editor/recent_projects.rs b/crates/hex-ui/src/editor/recent_projects.rs
+index aaa94e29..49902f97 100644
+--- a/crates/hex-ui/src/editor/recent_projects.rs
++++ b/crates/hex-ui/src/editor/recent_projects.rs
+@@ -15,6 +15,10 @@ pub(super) struct RecentProjectsState {
+ }
+ 
+ impl RecentProjectsState {
++    #[cfg(all(test, feature = "ui-test-support"))]
++    pub(super) fn test_path(&self) -> &Path {
++        &self.path
++    }
+     pub(super) fn new(path: PathBuf) -> Self {
+         Self {
+             path,
+@@ -28,34 +32,28 @@ impl RecentProjectsState {
+     }
+ }
+ 
++#[cfg(not(test))]
+ pub(super) fn default_preferences_path() -> PathBuf {
+-    #[cfg(test)]
+-    {
+-        use std::sync::atomic::{AtomicU64, Ordering};
+-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+-        std::env::temp_dir().join(format!(
+-            "hex-ui-test-recent-{}-{}.json",
+-            std::process::id(),
+-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
+-        ))
+-    }
+-    #[cfg(not(test))]
+-    {
+-        let home = std::env::var_os("HOME")
+-            .map(PathBuf::from)
+-            .unwrap_or_else(|| PathBuf::from("/"));
+-        hex_preferences::recent_projects_path(&home)
+-    }
++    let home = std::env::var_os("HOME")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/"));
++    hex_preferences::recent_projects_path(&home)
+ }
+ 
+ impl EditorView {
+     pub(super) fn start_recent_projects_load(&mut self, cx: &mut Context<Self>) {
+         let path = self.recent_projects.path.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::load_recent_projects(&path) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::load_recent_projects(&path)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.recent_projects_loaded(result, cx);
+@@ -144,11 +142,17 @@ impl EditorView {
+         };
+         self.recent_projects.save_in_flight = true;
+         let path = self.recent_projects.path.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::save_recent_projects(&path, &projects) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::save_recent_projects(&path, &projects)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.recent_projects_saved(result, cx);
+diff --git a/crates/hex-ui/src/editor/theme_settings.rs b/crates/hex-ui/src/editor/theme_settings.rs
+index 03c8653c..f865e8b8 100644
+--- a/crates/hex-ui/src/editor/theme_settings.rs
++++ b/crates/hex-ui/src/editor/theme_settings.rs
+@@ -215,6 +215,10 @@ pub(super) struct ThemeSettingsState {
+ }
+ 
+ impl ThemeSettingsState {
++    #[cfg(all(test, feature = "ui-test-support"))]
++    pub(super) fn test_path(&self) -> &std::path::Path {
++        &self.path
++    }
+     pub(super) fn new(path: PathBuf, window: &Window, cx: &mut Context<EditorView>) -> Self {
+         let colors = theme::preferences();
+         Self {
+@@ -252,35 +256,29 @@ impl ThemeSettingsState {
+     }
+ }
+ 
++#[cfg(not(test))]
+ pub(super) fn default_preferences_path() -> PathBuf {
+-    #[cfg(test)]
+-    {
+-        use std::sync::atomic::{AtomicU64, Ordering};
+-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+-        std::env::temp_dir().join(format!(
+-            "hex-ui-test-theme-{}-{}.json",
+-            std::process::id(),
+-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
+-        ))
+-    }
+-    #[cfg(not(test))]
+-    {
+-        let home = std::env::var_os("HOME")
+-            .map(PathBuf::from)
+-            .unwrap_or_else(|| PathBuf::from("/"));
+-        hex_preferences::theme_preferences_path(&home)
+-    }
++    let home = std::env::var_os("HOME")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/"));
++    hex_preferences::theme_preferences_path(&home)
+ }
+ 
+ impl EditorView {
+     pub(super) fn start_theme_preferences_load(&mut self, cx: &mut Context<Self>) {
+         let path = self.theme_settings.path.clone();
+         let generation = self.theme_settings.load_generation;
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::load_theme_preferences(&path) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::load_theme_preferences(&path)
++                })
+                 .await;
+             let _ = this.update(cx, |view, cx| {
+                 view.theme_preferences_loaded(generation, result, cx);
+@@ -732,11 +730,17 @@ impl EditorView {
+         let path = self.theme_settings.path.clone();
+         let window_handle = self.theme_settings.window;
+         let editor_focus = self.focus.clone();
++        #[cfg(test)]
++        let test_environment = std::sync::Arc::clone(&self.test_environment);
+         let this = cx.entity().downgrade();
+         cx.spawn(async move |_, cx| {
+             let result = cx
+                 .background_executor()
+-                .spawn(async move { hex_preferences::save_theme_preferences(&path, &colors) })
++                .spawn(async move {
++                    #[cfg(test)]
++                    let _test_environment = test_environment;
++                    hex_preferences::save_theme_preferences(&path, &colors)
++                })
+                 .await;
+             let closed = this
+                 .update(cx, |view, cx| {

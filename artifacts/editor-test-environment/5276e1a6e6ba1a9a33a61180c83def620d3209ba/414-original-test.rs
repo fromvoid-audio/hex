@@ -1,0 +1,20 @@
+//! Constructor roots are checked before the deterministic executor runs startup I/O.
+use super::*;
+
+#[gpui::test]
+fn browser_test_environment_ordinary_constructor_has_private_roots_before_startup(cx:&mut TestAppContext) {
+    let handle=*cx.add_window(|_,_|Empty);
+    let editor=cx.update_window(handle,|_,window,cx|window.replace_root(cx,|window,cx|EditorView::new(window,cx,Service::new(48_000,16,8_000_000).unwrap(),Err("offline sandbox test".into())))).unwrap();
+    // Do not park/drain until these assertions pass: the original constructor
+    // queues ambient discovery. Failing here leaves those test-executor jobs unpolled.
+    editor.read_with(cx,|view,_|{
+        assert!(view.browser.home.starts_with(std::env::temp_dir()),"ordinary constructor queued ambient home discovery: {:?}",view.browser.home);
+        assert_ne!(view.browser.home,std::env::temp_dir(),"the shared system temporary folder is not a private test home");
+        assert_eq!(view.browser.directory,view.browser.music);
+        assert!(view.browser.music.starts_with(&view.browser.home));
+        assert!(view.browser.music.is_dir());
+        assert!(view.browser.places.iter().all(|path|path.starts_with(&view.browser.home)));
+        let owner=view.browser.home.parent().unwrap();
+        assert!(view.browser.preferences_path.starts_with(owner));
+    });
+}

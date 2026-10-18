@@ -1,0 +1,50 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+warning: method `gate_next_catalog_save` is never used
+   --> crates/hex-ui/src/editor/test_environment.rs:104:19
+    |
+ 61 | impl Environment {
+    | ---------------- method in this implementation
+...
+104 |     pub(super) fn gate_next_catalog_save(&self) -> Arc<CatalogSaveGate> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `release` is never used
+   --> crates/hex-ui/src/editor/test_environment.rs:158:19
+    |
+141 | impl CatalogSaveGate {
+    | -------------------- method in this implementation
+...
+158 |     pub(super) fn release(&self) {
+    |                   ^^^^^^^
+
+warning: method `test_path` is never used
+  --> crates/hex-ui/src/editor/recent_projects.rs:19:19
+   |
+17 | impl RecentProjectsState {
+   | ------------------------ method in this implementation
+18 |     #[cfg(all(test, feature = "ui-test-support"))]
+19 |     pub(super) fn test_path(&self) -> &Path {
+   |                   ^^^^^^^^^
+
+warning: method `test_path` is never used
+   --> crates/hex-ui/src/editor/theme_settings.rs:219:19
+    |
+217 | impl ThemeSettingsState {
+    | ----------------------- method in this implementation
+218 |     #[cfg(all(test, feature = "ui-test-support"))]
+219 |     pub(super) fn test_path(&self) -> &std::path::Path {
+    |                   ^^^^^^^^^
+
+warning: `hex-ui` (lib test) generated 4 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.52s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+test editor::browser::ui_test::test_environment::browser_test_environment_ordinary_constructor_has_private_roots_before_startup ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 770 filtered out; finished in 0.17s
+
