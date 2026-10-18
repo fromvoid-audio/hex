@@ -5230,3 +5230,10 @@ covers long Place names, zero label space, both settings states and resize back
 to normal; existing selection/hover/focus/audition regressions remain applicable.
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
+
+18 October2026 — Pulse2844/PR446 source: reuse bundled Place grid/reset for stable
+Home/Music IDs; reversible sidebar-only Remove for Home/Music/Samples/custom
+folders, existing configuration restores sources, active removal falls back to
+All without deleting files/catalog/project media. All displays first; accepted
+Command-F route reused unchanged. Focused rendered/persistence checks recorded
+in Pulse; full prospective CI/merge remains sole merger, native acceptance root.

@@ -205,3 +205,30 @@ handlers run in their local browser scope; painting/workers never restore focus.
 Close returns focus to the editor. This is separate from the unresolved native
 field-click focus-loss report2794 and the future double-click refinement2817.
 Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
+
+## Built-in source menus and reversible sidebar removal — Pulse2844 / PR446
+
+Home and Music use the existing row-anchored bundled icon grid and Default Icon
+reset. Their saved identities are `home` and `music`, independent of the resolved
+native Home path. Unknown icon IDs survive saves and show the default folder
+with a bounded diagnostic. Custom Place assignments remain keyed by original
+native paths; paths, casing and same-name identities are unchanged.
+
+Remove on Home, Music, Samples or a custom Place hides that sidebar entry only.
+The source paths remain in Places and the indexed catalog roots, and no files,
+project media or history entries are deleted. Removing the active source stops
+its preview and selects visible All. Existing source settings expose checkboxes
+to restore every hidden Place and Samples; All remains reachable with Command-F.
+Visibility and built-in icon overrides use the existing bounded browser document
+and background latest-snapshot save lane. Malformed settings remain untouched.
+Other section icon cycling and the broader collections work in2672 remain separate.
+
+All is the first Library row in both expanded and compact modes, retaining stable
+internal section IDs. The existing accepted Command-F handler is reused unchanged:
+it reveals All, preserves/selects the query, finalizes valid edits and respects
+invalid numeric drafts and IME handling. It adds no recursive indexing.
+
+Source tests exercise actual built-in right-click/grid/reset, compact glyph
+centers, actual Remove/restore controls, preference reopen and preserved WAV bytes,
+catalog roots/entries and request queues. Native optimized appearance, user menu
+navigation and actual app close/reopen remain root-owned acceptance gaps.

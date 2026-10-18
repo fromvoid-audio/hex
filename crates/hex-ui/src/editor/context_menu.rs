@@ -21,6 +21,7 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    RemoveBrowserSource(super::browser::BrowserSection),
     PlaceIcon {
         path: std::path::PathBuf,
         id: Option<&'static str>,
@@ -233,6 +234,9 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::RemoveBrowserSource(source) => {
+                self.remove_browser_source(source, window, cx);
+            }
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
             }
@@ -344,6 +348,9 @@ impl EditorView {
             menu.items.iter().any(|item| match &item.action {
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
+                }
+                EditorContextAction::RemoveBrowserSource(source) => {
+                    !self.browser_source_removable(source)
                 }
                 EditorContextAction::InsertTrack(_) => false,
                 EditorContextAction::TrackColor {

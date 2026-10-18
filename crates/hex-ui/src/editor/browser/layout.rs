@@ -50,6 +50,12 @@ impl Default for BrowserLayout {
 }
 
 impl BrowserLayout {
+    pub(super) fn samples_visible(&self) -> bool {
+        self.visible[0]
+    }
+    pub(super) fn set_samples_visible(&mut self, visible: bool) {
+        self.visible[0] = visible;
+    }
     pub(super) fn reveal_all(&mut self) {
         if let Some(index) = SECTIONS
             .iter()
@@ -291,7 +297,8 @@ impl EditorView {
         sidebar = sidebar
             .child(picker_heading("collections pending"))
             .child(picker_heading("library"));
-        for (index, (section, name)) in SECTIONS.into_iter().enumerate() {
+        for index in [3, 0, 1, 2] {
+            let (section, name) = SECTIONS[index].clone();
             if !self.browser.layout.visible[index] {
                 continue;
             }
@@ -334,6 +341,16 @@ impl EditorView {
                                 cx.notify();
                             }),
                         )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                                if name == "samples" {
+                                    view.open_browser_samples_menu(event.position, window, cx);
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                }
+                            }),
+                        )
                         .child(icon)
                         .child(picker_label(name).debug_selector(move || {
                             format!("browser-picker-label-section-{index}")
@@ -342,7 +359,7 @@ impl EditorView {
         }
         sidebar = sidebar.child(self.browser_icon(
             "⚙",
-            "configure sections · session only",
+            "configure browser sources",
             move |view, _, cx| {
                 view.browser.layout.settings_visible = !view.browser.layout.settings_visible;
                 if view.browser.layout.settings_visible {
@@ -354,7 +371,7 @@ impl EditorView {
             cx,
         ));
         if self.browser.layout.settings_visible {
-            sidebar = sidebar.child(picker_heading("sections · session"));
+            sidebar = sidebar.child(picker_heading("sources"));
             for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
                 let visible = self.browser.layout.visible[index];
                 sidebar = sidebar.child(
@@ -369,6 +386,9 @@ impl EditorView {
                         .child(
                             div()
                                 .id(("browser-section-visibility", index))
+                                .debug_selector(move || {
+                                    format!("browser-section-visibility-{index}")
+                                })
                                 .flex_1()
                                 .min_w_0()
                                 .overflow_hidden()
@@ -376,6 +396,14 @@ impl EditorView {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |view, _, _, cx| {
+                                        if index == 0 {
+                                            view.set_browser_source_visible(
+                                                BrowserSection::Samples,
+                                                !view.browser.layout.visible[index],
+                                                cx,
+                                            );
+                                            return;
+                                        }
                                         let layout = &mut view.browser.layout;
                                         if layout.visible[index]
                                             && layout.visible.iter().filter(|v| **v).count() == 1
@@ -420,8 +448,58 @@ impl EditorView {
                 );
             }
         }
+        if self.browser.layout.settings_visible {
+            for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
+                let path = place.clone();
+                let visible = self.browser_place_visible(place);
+                let name = if *place == self.browser.music {
+                    "music".to_owned()
+                } else if *place == self.browser.home {
+                    "home".to_owned()
+                } else {
+                    place
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                let tooltip = name.clone();
+                sidebar = sidebar.child(
+                    div()
+                        .id(("browser-place-visibility", index))
+                        .debug_selector(move || format!("browser-place-visibility-{index}"))
+                        .h(px(PICKER_CONTROL_SIZE))
+                        .w_full()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .cursor_pointer()
+                        .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                view.set_browser_source_visible(
+                                    BrowserSection::Place(path.clone()),
+                                    !visible,
+                                    cx,
+                                );
+                                view.browser.results_focus.focus(window);
+                                window.prevent_default();
+                            }),
+                        )
+                        .child(picker_label(format!(
+                            "{} {name}",
+                            if visible { "☑" } else { "□" }
+                        ))),
+                );
+            }
+        }
         sidebar = sidebar.child(picker_heading("places"));
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
+            if !self.browser_place_visible(place) {
+                continue;
+            }
             let path = place.clone();
             let icon_path = place.clone();
             let row_bounds = Rc::new(std::cell::Cell::new(None::<gpui::Bounds<gpui::Pixels>>));
