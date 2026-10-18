@@ -464,7 +464,7 @@ fn actual_context_aliases_close_without_duplicate_pcm_or_reservation_enlargement
 }
 
 #[test]
-fn actual_compiler_error_and_panic_keep_original_and_reject_unqualified_restore_destination() {
+fn actual_compiler_error_and_panic_restore_same_context_without_legacy_producer() {
     for panic in [false, true] {
         let f = Fixture::new();
         let original = f.original(4096);
@@ -501,17 +501,37 @@ fn actual_compiler_error_and_panic_keep_original_and_reject_unqualified_restore_
         }
         assert_eq!(original.summary().unwrap(), before);
         assert!(rows.root.context_at(None).is_some());
-        // New Sampler contexts do not possess the existing empty-context
-        // producer's transfer state. Refuse before moving any retained owner;
-        // this is an explicit integration limit, NOT successful restoration.
-        let context = rows.root.context_at(None).unwrap() as *const _;
+        let context = rows.root.context_at(None).unwrap().as_ref() as *const _;
         let mut unrelated = crate::session_shared_preparation::SessionSharedConstruction::default();
+        let shared_before = unrelated.observe().unwrap();
+        let clones_before_restore = crate::owned_shared::clone_count();
+        let mut restore = Ok(());
+        let allocations = allocation_counter::measure(|| {
+            restore = rows
+                .root
+                .restore(&mut rows.tracks, &mut rows.returns, &mut unrelated);
+        });
+        restore.unwrap();
+        assert_eq!(allocations.count_total, 0);
+        assert_eq!(crate::owned_shared::clone_count(), clones_before_restore);
         assert_eq!(
-            rows.root
-                .restore(&mut rows.tracks, &mut rows.returns, &mut unrelated),
-            Err(AudioStorageError::SourceMismatch)
+            rows.root.context_at(None).unwrap().as_ref() as *const _,
+            context
         );
-        assert_eq!(rows.root.context_at(None).unwrap() as *const _, context);
+        assert_eq!(unrelated.observe().unwrap(), shared_before);
+        rows.restore_root(&mut unrelated).unwrap();
+        assert_eq!(
+            rows.root.context_at(None).unwrap().as_ref() as *const _,
+            context
+        );
+        let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+        parent.arrangement_clips = rows;
+        assert_eq!(parent.phase(), AudioPreparationPhase::Vacant);
+        parent.cleanup_on_control();
+        assert_eq!(parent.phase(), AudioPreparationPhase::Recoverable);
+        assert!(parent.arrangement_clips.root_context().is_none());
+        parent.arrangement_clips.clear_disposed().unwrap();
+        assert!(!parent.arrangement_clips.has_next());
         assert_eq!(original.summary().unwrap(), before);
     }
 }
@@ -550,4 +570,202 @@ fn actual_existing_cancellation_poll_seam_preserves_each_closed_operation_fronti
         }
         f.transforms.compile_transaction(|| Ok(())).unwrap();
     }
+}
+
+#[test]
+fn root_owned_context_only_cancellation_is_discovered_and_retired_by_actual_parent() {
+    let f = Fixture::new();
+    f.transforms.cancel_after_polls_for_test(2);
+    let original = f.original(4096);
+    let before = original.summary().unwrap();
+    let mut rows = ArrangementClips::default();
+    assert!(
+        rows.compile_original_sampler_on_control(
+            &f.editor,
+            &f.preparation,
+            &f.bank,
+            Some(&f.previous),
+            &original,
+            &f.transforms,
+            limits()
+        )
+        .is_err()
+    );
+    assert!(rows.root.project().is_none());
+    assert!(rows.root_context().is_some());
+    assert!(rows.has_next());
+    assert!(rows.clear_disposed().is_err());
+    let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+    parent.arrangement_clips = rows;
+    parent.cleanup_on_control();
+    assert_eq!(parent.phase(), AudioPreparationPhase::Recoverable);
+    assert!(parent.arrangement_clips.root_context().is_none());
+    parent.cleanup_on_control();
+    parent.arrangement_clips.clear_disposed().unwrap();
+    parent.arrangement_clips.clear_disposed().unwrap();
+    assert_eq!(original.summary().unwrap(), before);
+}
+
+#[test]
+fn root_owned_successful_project_restores_same_table_and_real_parent_retires_once() {
+    let f = Fixture::new();
+    let original = f.original(4096);
+    let before = original.summary().unwrap();
+    let mut rows = ArrangementClips::default();
+    rows.compile_original_sampler_on_control(
+        &f.editor,
+        &f.preparation,
+        &f.bank,
+        Some(&f.previous),
+        &original,
+        &f.transforms,
+        limits(),
+    )
+    .unwrap();
+    let context = rows.root_context().unwrap().as_ref() as *const _;
+    let mut unrelated = crate::session_shared_preparation::SessionSharedConstruction::default();
+    rows.restore_root(&mut unrelated).unwrap();
+    assert_eq!(rows.root_context().unwrap().as_ref() as *const _, context);
+    rows.restore_root(&mut unrelated).unwrap();
+    let order = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let children = order.clone();
+    rows.tracks.probe = Some(crate::audio_preparation::DropProbe(Some(Box::new(
+        move || {
+            assert_eq!(
+                children.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+        },
+    ))));
+    let context_drop = order.clone();
+    rows.root.context_probe = Some(crate::audio_preparation::DropProbe(Some(Box::new(
+        move || {
+            assert_eq!(
+                context_drop.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+        },
+    ))));
+    let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+    parent.arrangement_clips = rows;
+    parent.cleanup_on_control();
+    assert_eq!(parent.phase(), AudioPreparationPhase::Recoverable);
+    assert_eq!(order.load(std::sync::atomic::Ordering::SeqCst), 2);
+    parent.cleanup_on_control();
+    assert_eq!(order.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(parent.arrangement_clips.root_context().is_none());
+    assert_eq!(original.summary().unwrap(), before);
+}
+
+#[test]
+fn root_owned_retirement_unwind_is_pending_and_actual_parent_preserves_first_payload() {
+    let f = Fixture::new();
+    f.transforms.cancel_after_polls_for_test(2);
+    let original = f.original(4096);
+    let before = original.summary().unwrap();
+    let mut rows = ArrangementClips::default();
+    assert!(
+        rows.compile_original_sampler_on_control(
+            &f.editor,
+            &f.preparation,
+            &f.bank,
+            Some(&f.previous),
+            &original,
+            &f.transforms,
+            limits()
+        )
+        .is_err()
+    );
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    rows.root.context_probe = Some(crate::audio_preparation::DropProbe(Some(Box::new(
+        move || {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("root-owned context retirement probe");
+        },
+    ))));
+    let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+    parent.arrangement_clips = rows;
+    parent.cleanup_on_control();
+    assert_eq!(parent.phase(), AudioPreparationPhase::FailedIncomplete);
+    let payload = parent
+        .first_panic
+        .as_ref()
+        .unwrap()
+        .downcast_ref::<&'static str>()
+        .unwrap()
+        .to_owned();
+    assert_eq!(payload, "root-owned context retirement probe");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(parent.arrangement_clips.root_context().is_none());
+    assert!(parent.arrangement_clips.has_next());
+    assert!(
+        parent
+            .arrangement_clips
+            .capacity_at(false, None, None)
+            .is_err()
+    );
+    assert!(parent.arrangement_clips.clear_disposed().is_err());
+    parent.cleanup_on_control();
+    assert_eq!(
+        parent
+            .first_panic
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<&'static str>()
+            .unwrap(),
+        &payload
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        parent
+            .arrangement_clips
+            .root
+            .dispose_metadata_on_control()
+            .is_err()
+    );
+    assert!(
+        parent
+            .arrangement_clips
+            .root
+            .begin_compiler_context()
+            .is_err()
+    );
+    assert_eq!(original.summary().unwrap(), before);
+}
+
+pub(in crate::audio_preparation::arrangement_clips) fn compiled_root_owned_rows(
+    mode: &str,
+) -> ArrangementClips {
+    let f = Fixture::new();
+    if mode == "context-only" {
+        f.transforms.cancel_after_polls_for_test(2);
+    }
+    let original = f.original(4096);
+    let mut rows = ArrangementClips::default();
+    if mode == "track-error" {
+        rows.tracks.fail_after = Some(0);
+    }
+    if mode == "selector-panic" {
+        rows.tracks.panic_after = Some(0);
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rows.compile_original_sampler_on_control(
+            &f.editor,
+            &f.preparation,
+            &f.bank,
+            Some(&f.previous),
+            &original,
+            &f.transforms,
+            limits(),
+        )
+    }));
+    match mode {
+        "context-only" | "track-error" => assert!(result.unwrap().is_err()),
+        "selector-panic" => assert!(result.is_err()),
+        _ => result.unwrap().unwrap(),
+    }
+    // External bank/history/previous owners disappear normally; only actual
+    // persistent compiler destinations and their real resource leases remain.
+    rows
 }

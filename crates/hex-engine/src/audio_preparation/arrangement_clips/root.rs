@@ -47,6 +47,16 @@ impl<'a> RootStorageView<'a> {
         self.feed.filter(|_| self.feed_is_paired)
     }
 }
+/// Disposal routing only; actual fields/receipts remain storage authority.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ContextLifecycle {
+    #[default]
+    None,
+    LegacyProducer,
+    CompilerOwned,
+    RetirementPending,
+    RetirementComplete,
+}
 #[derive(Default)]
 pub(super) struct ArrangementRootAssembly {
     project: Option<Project>,
@@ -54,6 +64,7 @@ pub(super) struct ArrangementRootAssembly {
     returns: Vec<ReturnBus>,
     feed: ReturnFeedPlan,
     contexts: Option<OwnedShared<SharedAnalyticContextTable>>,
+    context_lifecycle: ContextLifecycle,
     tempo_map: Option<hex_project::TempoMap>,
     midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
     topology: Option<OwnedShared<crate::signal_graph::SignalGraph>>,
@@ -67,6 +78,8 @@ pub(super) struct ArrangementRootAssembly {
     pub(super) panic_after: Option<usize>,
     #[cfg(test)]
     pub(super) panic_after_metadata_take: bool,
+    #[cfg(test)]
+    pub(super) context_probe: Option<crate::audio_preparation::DropProbe>,
 }
 impl ArrangementRootAssembly {
     #[cfg(test)]
@@ -91,13 +104,62 @@ impl ArrangementRootAssembly {
             && self.topology.is_none()
             && self.midi_routing.capacity() == 0
             && !self.metadata_drop_pending
+            && self.context_lifecycle != ContextLifecycle::RetirementPending
             && self.feed.has_no_owned_storage()
     }
     pub(super) fn restore_project(&mut self, source: &mut Option<Project>) {
         *self.compiler_destination_on_control() = source.take();
     }
     pub(super) fn compiler_destinations_vacant(&self) -> bool {
-        self.project.is_none() && self.contexts.is_none() && !self.metadata_drop_pending
+        self.project.is_none()
+            && self.contexts.is_none()
+            && !self.metadata_drop_pending
+            && self.context_lifecycle == ContextLifecycle::None
+    }
+    pub(super) fn begin_compiler_context(&mut self) -> Result<(), AudioStorageError> {
+        if !self.compiler_destinations_vacant() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.context_lifecycle = ContextLifecycle::CompilerOwned;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn record_external_legacy_transfer(
+        &mut self,
+        shared: &crate::session_shared_preparation::SessionSharedConstruction,
+    ) -> Result<(), AudioStorageError> {
+        if !self.compiler_destinations_vacant() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        // The two direct common-compiler fixtures transfer from the actual
+        // producer outside construct(); validate its real transfer state.
+        shared.preflight_arrangement_restore()?;
+        self.context_lifecycle = ContextLifecycle::LegacyProducer;
+        Ok(())
+    }
+    pub(super) fn legacy_context_at<'a>(
+        &'a self,
+        external: Option<&'a Project>,
+    ) -> Option<&'a OwnedShared<SharedAnalyticContextTable>> {
+        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
+            None
+        } else {
+            self.context_at(external)
+        }
+    }
+    pub(super) fn clear_context_retirement(&mut self) -> Result<(), AudioStorageError> {
+        if self.metadata_drop_pending
+            || self.context_lifecycle == ContextLifecycle::RetirementPending
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        if self.project.is_some() || self.contexts.is_some() || self.has_metadata_disposal() {
+            return Err(AudioStorageError::Capacity);
+        }
+        if self.context_lifecycle == ContextLifecycle::RetirementComplete {
+            self.context_lifecycle = ContextLifecycle::None;
+        }
+        Ok(())
     }
     pub(super) fn compiler_destinations(
         &mut self,
@@ -118,6 +180,7 @@ impl ArrangementRootAssembly {
             || !self.tracks.is_empty()
             || !self.returns.is_empty()
             || self.contexts.is_some()
+            || self.context_lifecycle != ContextLifecycle::None
             || self.has_feed
             // A fresh compiler feed remains here after root restoration; it
             // must finish guarded metadata retirement before this slot reopens.
@@ -197,7 +260,9 @@ impl ArrangementRootAssembly {
         &'a self,
         external: Option<&'a Project>,
     ) -> Result<RootStorageView<'a>, AudioStorageError> {
-        if self.metadata_drop_pending {
+        if self.metadata_drop_pending
+            || self.context_lifecycle == ContextLifecycle::RetirementPending
+        {
             return Err(AudioStorageError::UnknownStorage);
         }
         if self.project.is_some() && external.is_some() {
@@ -339,6 +404,7 @@ impl ArrangementRootAssembly {
             || !self.returns.is_empty()
             || self.has_feed
             || self.contexts.is_some()
+            || self.context_lifecycle != ContextLifecycle::None
             || self.tempo_map.is_some()
             || self.topology.is_some()
             || self.midi_routing.capacity() != 0
@@ -370,6 +436,7 @@ impl ArrangementRootAssembly {
         #[cfg(test)]
         self.fault(frontier)?;
         shared.commit_arrangement_transfer(&mut self.contexts);
+        self.context_lifecycle = ContextLifecycle::LegacyProducer;
         #[cfg(test)]
         self.fault(frontier + 1)?;
         // Every field was validated/reserved before any owner move. The only
@@ -410,8 +477,19 @@ impl ArrangementRootAssembly {
         let view = self.view_at(None)?;
         tracks.preflight_root_restore(view.tracks)?;
         returns.preflight_root_restore(view.returns, self.has_feed)?;
-        if self.context_at(None).is_some() {
-            shared.preflight_arrangement_restore()?;
+        match self.context_lifecycle {
+            ContextLifecycle::CompilerOwned => {
+                if let Some(context) = self.context_at(None) {
+                    context.refuse_opaque_control_drop()?;
+                }
+            }
+            ContextLifecycle::LegacyProducer => shared.preflight_arrangement_restore()?,
+            ContextLifecycle::None | ContextLifecycle::RetirementComplete => {
+                if self.context_at(None).is_some() {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+            }
+            ContextLifecycle::RetirementPending => return Err(AudioStorageError::UnknownStorage),
         }
         // Validate the whole restoration batch before unpacking any final owner.
         if let Some(Project {
@@ -438,7 +516,10 @@ impl ArrangementRootAssembly {
             self.topology = signal_graph;
             self.install_restored_metadata(tempo_map, midi_routing);
         }
-        shared.restore_arrangement(&mut self.contexts);
+        if self.context_lifecycle == ContextLifecycle::LegacyProducer {
+            shared.restore_arrangement(&mut self.contexts);
+            self.context_lifecycle = ContextLifecycle::None;
+        }
         returns.restore_root(&mut self.returns, &mut self.feed, self.has_feed);
         tracks.restore_root_rows(&mut self.tracks);
         self.has_feed = false;
@@ -457,21 +538,41 @@ impl ArrangementRootAssembly {
     }
     pub(super) fn has_metadata_disposal(&self) -> bool {
         self.metadata_drop_pending
+            || self.contexts.is_some()
+            || self.project.is_some()
+            || matches!(
+                self.context_lifecycle,
+                ContextLifecycle::CompilerOwned | ContextLifecycle::RetirementPending
+            )
             || self.tempo_map.is_some()
             || self.topology.is_some()
             || self.midi_routing.capacity() != 0
             || !self.feed.has_no_owned_storage()
     }
     pub(super) fn dispose_metadata_on_control(&mut self) -> Result<(), AudioStorageError> {
-        if self.metadata_drop_pending {
+        if self.metadata_drop_pending
+            || self.context_lifecycle == ContextLifecycle::RetirementPending
+        {
             return Err(AudioStorageError::UnknownStorage);
         }
         if self.project.is_some()
             || !self.tracks.is_empty()
             || !self.returns.is_empty()
-            || self.contexts.is_some()
+            || (self.contexts.is_some()
+                && self.context_lifecycle != ContextLifecycle::CompilerOwned)
         {
             return Err(AudioStorageError::Capacity);
+        }
+        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
+            if let Some(context) = &self.contexts {
+                context.refuse_opaque_control_drop()?;
+            }
+            self.context_lifecycle = ContextLifecycle::RetirementPending;
+            drop(self.contexts.take());
+            #[cfg(test)]
+            drop(self.context_probe.take());
+            self.context_lifecycle = ContextLifecycle::RetirementComplete;
+            return Ok(());
         }
         if self
             .topology
@@ -532,6 +633,7 @@ impl ArrangementRootAssembly {
             returns,
             feed,
             contexts: _,
+            context_lifecycle: _,
             tempo_map,
             midi_routing,
             topology,
@@ -545,8 +647,17 @@ impl ArrangementRootAssembly {
                 panic_after: _,
             #[cfg(test)]
                 panic_after_metadata_take: _,
+            #[cfg(test)]
+                context_probe: _,
         } = self;
         let view = self.view_at(external)?;
+        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
+            if let Some(context) = self.context_at(external) {
+                if !l.skip_observed_shared_field(context) {
+                    crate::shared_analytic::resource_storage::visit_table_contents(context, l)?;
+                }
+            }
+        }
         l.vec(tracks)?;
         l.vec(returns)?;
         feed.visit_audio_storage(l)?;
@@ -595,3 +706,6 @@ impl ArrangementRootAssembly {
 
 #[cfg(test)]
 mod metadata_tests;
+
+#[cfg(test)]
+mod lifecycle_tests;

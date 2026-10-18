@@ -852,6 +852,7 @@ impl AudioPreparationCustody {
         capacity: &mut AudioArrangementCapacity,
     ) -> Result<u64, AudioStorageError> {
         if self.phase != AudioPreparationPhase::Vacant
+            || self.arrangement_clips.has_next()
             || self.bank.is_some()
             || self.original_resources.is_some()
             || self.original_resources_drop_pending
@@ -1086,8 +1087,12 @@ impl AudioPreparationCustody {
     /// panic makes an irreversible tombstone, preserving bank and remaining rows.
     pub fn cleanup_on_control(&mut self) {
         if self.phase == AudioPreparationPhase::Vacant {
-            self.dispose_original_resources_on_control();
-            return;
+            if self.arrangement_clips.has_next() {
+                self.phase = AudioPreparationPhase::Cleaning;
+            } else {
+                self.dispose_original_resources_on_control();
+                return;
+            }
         }
         if self.phase != AudioPreparationPhase::Cleaning {
             return;

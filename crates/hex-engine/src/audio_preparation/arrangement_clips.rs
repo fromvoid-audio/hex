@@ -461,7 +461,11 @@ impl ArrangementClips {
         self.root.context_at(external)
     }
     pub(super) fn has_next(&self) -> bool {
-        !matches!(self.phase, Phase::Vacant | Phase::Complete) || self.root.has_metadata_disposal()
+        !matches!(self.phase, Phase::Vacant | Phase::Complete)
+            || self.preview.has_next()
+            || self.returns.has_next()
+            || self.tracks.has_next()
+            || self.root.has_metadata_disposal()
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         if self.preview.has_next() {
@@ -547,7 +551,11 @@ impl ArrangementClips {
         Ok(())
     }
     pub(super) fn clear_disposed(&mut self) -> Result<(), AudioStorageError> {
-        if self.phase == Phase::Vacant {
+        if self.phase == Phase::Vacant && !self.has_next() {
+            self.root.clear_context_retirement()?;
+            self.preview.clear_disposed()?;
+            self.returns.clear_disposed()?;
+            self.tracks.clear_disposed()?;
             return Ok(());
         }
         if self.phase != Phase::Complete
@@ -561,6 +569,7 @@ impl ArrangementClips {
         {
             return Err(AudioStorageError::Capacity);
         }
+        self.root.clear_context_retirement()?;
         self.preview.clear_disposed()?;
         self.returns.clear_disposed()?;
         self.tracks.clear_disposed()?;
@@ -732,7 +741,7 @@ impl ArrangementClips {
         if let Some(metadata) = pending_metadata {
             l.clip_metadata(metadata)?;
         }
-        Ok(root.context_at(project))
+        Ok(root.legacy_context_at(project))
     }
 }
 

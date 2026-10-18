@@ -219,6 +219,9 @@ impl ArrangementClips {
         let instruments = hex_devices::native_instrument_registry()
             .map_err(|_| AudioStorageError::UnsupportedGraph)?;
         let result = transforms.compile_transaction(|| {
+            self.root
+                .begin_compiler_context()
+                .map_err(|_| crate::Invalid("sampler context destination is occupied"))?;
             let (destination, contexts) = self.root.compiler_destinations();
             *contexts = Some(
                 SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
@@ -277,4 +280,4 @@ impl ArrangementClips {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

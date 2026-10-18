@@ -33,8 +33,12 @@ impl PreparedSharedAnalyticContext for OpaqueDrop {
     }
 }
 
-#[test]
-fn retained_context_drop_preflight_refuses_opaque_without_releasing_any_owner() {
+pub(crate) struct OpaqueFixture {
+    pub(crate) table: crate::owned_shared::OwnedShared<SharedAnalyticContextTable>,
+    pub(crate) owner: SharedContextLease,
+    pub(crate) drops: Arc<AtomicUsize>,
+}
+pub(crate) fn opaque_fixture() -> OpaqueFixture {
     let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let hex_project::Created::Track(track) = editor
         .execute(hex_project::Command::AddMidiTrack {
@@ -63,6 +67,19 @@ fn retained_context_drop_preflight_refuses_opaque_without_releasing_any_owner() 
             None,
         ));
     let table = sampler_tests::retained_table_fixture(owner.clone());
+    OpaqueFixture {
+        table,
+        owner,
+        drops,
+    }
+}
+#[test]
+fn retained_context_drop_preflight_refuses_opaque_without_releasing_any_owner() {
+    let OpaqueFixture {
+        table,
+        owner,
+        drops,
+    } = opaque_fixture();
     for _ in 0..128 {
         assert_eq!(
             table.refuse_opaque_control_drop(),

@@ -317,7 +317,7 @@ pub(crate) fn visit_table<'a>(
     // One cached template can be held by multiple real revisions. Its one
     // physical table field is counted once, while distinct table aliases still
     // require distinct headers/handles even when their allocation is shared.
-    if ledger.skip_observed_root(table) {
+    if ledger.skip_observed_root(table) || ledger.skip_observed_shared_field(table) {
         return Ok(());
     }
     ledger.root(table, role)?;

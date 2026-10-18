@@ -12,7 +12,7 @@ use std::sync::{
 };
 
 #[cfg(test)]
-mod cleanup_tests;
+pub(crate) mod cleanup_tests;
 #[cfg(feature = "instrument-test-support")]
 pub(crate) mod inline_fixture;
 pub(crate) mod resource_storage;

@@ -1821,6 +1821,7 @@ fn selected_joint_children_keep_both_feed_plans_in_actual_root_and_retire_fresh_
         shared.construct().unwrap();
         let mut contexts = None;
         shared.commit_arrangement_transfer(&mut contexts);
+        rows.root.record_external_legacy_transfer(&shared).unwrap();
         let effects = hex_devices::native_registry().unwrap();
         let instruments = hex_devices::native_instrument_registry().unwrap();
         let transforms = crate::audio_transform::AudioTransformPreparation::default();
@@ -1962,6 +1963,7 @@ fn selected_joint_children_partial_track_or_return_failure_restores_same_persist
             shared.construct().unwrap();
             let mut contexts = None;
             shared.commit_arrangement_transfer(&mut contexts);
+            rows.root.record_external_legacy_transfer(&shared).unwrap();
             let effects = hex_devices::native_registry().unwrap();
             let instruments = hex_devices::native_instrument_registry().unwrap();
             let transforms = crate::audio_transform::AudioTransformPreparation::default();

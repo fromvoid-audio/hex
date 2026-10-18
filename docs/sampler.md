@@ -1326,8 +1326,8 @@ Injected paired Track error/panic preserves the original ledger and retains new
 owners in persistent destinations; the original assertion panic payload survives.
 These are control-side tests, not callback, native or musical-use acceptance.
 
-Successful generic once-only restoration of the newly constructed contexts is
-STILL OPEN. Existing `RootAssembly::restore` requires the actual producer's
+At checkpoint `a456846c`, successful generic once-only restoration of the newly
+constructed contexts remained open. Existing `RootAssembly::restore` requires the actual producer's
 `SessionSharedConstruction` arrangement-transfer state. New Sampler contexts
 constructed directly into the persistent root have no such prior empty-context
 transfer. An unrelated/default restore destination refuses before moving owners;
@@ -1335,3 +1335,39 @@ no transfer state is fabricated. A genuine new-context destination/retirement
 contract, complete unwind custody, Service incarnation, normal selected-summary
 completeness, publication/registration and the usable native panel remain open.
 This closed operation remains private and unconnected to Service.
+
+
+The next focused lifecycle checkpoint keeps compiler-created contexts in the
+existing Arrangement root through Project and revision value moves. A private
+scalar distinguishes no context, a genuine legacy producer transfer, root-owned
+compiler context, pending retirement and completed retirement. This routes
+disposal only; actual fields, constructor receipts, mandatory visitors and closure
+remain the storage authority. Legacy SessionShared transfer/empty-table checks
+are unchanged. The two direct compiler test fixtures explicitly record their
+actual external producer transfer without changing any legacy assertions.
+
+Root-owned restoration validates all current Track/Return destinations and the
+context's supported destructor before unpacking. It restores the same context
+to the vacant existing root slot, with no allocation or clone, and never touches
+an unrelated SessionShared producer. Child retirement precedes context retirement.
+A pending marker precedes take/drop; normal completion is explicit. A destructor
+probe unwind leaves pending irreversible, preserves the parent's first payload
+and remaining tempo storage, and blocks repeat disposal, inspection and reuse.
+Context-only cancellation and partial children are discoverable even while the
+Arrangement or enclosing preparation phase is Vacant. Root-owned contexts use
+the actual embedded resource-table contents visitor and are excluded from the
+legacy empty-table visitor. Exact same-field observations deduplicate while
+separate physical aliases remain separately observed; arithmetic always traverses
+descendants. Omitting a real compiled-child alias still fails normal closure.
+
+Focused tests cover successful compilation, immediate post-install cancellation,
+ordinary Track failure and caught selector panic followed by same-field restore
+and actual parent retirement. Inventory covers context-only, Project, failed,
+restored and revision-value placements; wrong route, occupied slot and opaque
+provider destructor refuse before moving owners. Actual pending unwind retains
+its payload/metadata and invokes the drop probe once. The changed test layout's
+conservative fixture boundary is 714,362 retained / 785,908 peak bytes; both
+minus-one limits still refuse before allocation or paired owner activity. These
+are actual source-bound control-side tests. They do not close every compiler
+constructor/unwind frontier, Service incarnation, complete selected summaries,
+publication/registration, the functional Sampler panel or native musical use.
