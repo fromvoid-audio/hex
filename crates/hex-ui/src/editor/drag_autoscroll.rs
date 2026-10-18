@@ -251,9 +251,9 @@ impl EditorView {
             let Some(next) = next_viewport(&drag.scroll, viewport, u64::MAX, lane, x, now) else {
                 return false;
             };
-            if !self.midi_trim_pan_advances(&drag, x, next) {
+            let Some(next) = self.midi_trim_pan_viewport(&drag, x, next) else {
                 return false;
-            }
+            };
             self.apply_drag_scroll(&drag.scroll, next, horizon);
             self.update_midi_trim_preview(&drag, x, cx);
             return true;

@@ -218,6 +218,67 @@ impl EditorView {
     }
 }
 
+/// Use only the canonical model's applied portion of one timer step. Ordinary
+/// unconstrained movement stays constant-work. A source/minimum clamp finds
+/// its first saturating point; an invalid full step finds its last valid point.
+/// Each search halves a u64 interval: at most64 metadata-only iterations, never
+/// per-frame retries, DSP work, grid quantization or relaxed model bounds.
+fn resize_pan_prefix<T: PartialEq>(
+    current: Viewport,
+    next: Viewport,
+    candidate: impl Fn(Viewport) -> Option<(T, bool)>,
+) -> Option<Viewport> {
+    if current.length != next.length || current.start == next.start {
+        return None;
+    }
+    let before = candidate(current)?.0;
+    let distance = current.start.abs_diff(next.start);
+    let viewport_at = |distance| Viewport {
+        start: if next.start > current.start {
+            current.start + distance
+        } else {
+            current.start - distance
+        },
+        length: current.length,
+    };
+    if let Some((after, unclamped)) = candidate(next) {
+        if after == before {
+            return None;
+        }
+        if unclamped {
+            return Some(next);
+        }
+        let mut earlier = 0;
+        let mut saturated = distance;
+        while saturated - earlier > 1 {
+            let middle = earlier + (saturated - earlier) / 2;
+            if candidate(viewport_at(middle))
+                .as_ref()
+                .is_some_and(|(clip, _)| clip == &after)
+            {
+                saturated = middle;
+            } else {
+                earlier = middle;
+            }
+        }
+        return Some(viewport_at(saturated));
+    }
+    let mut valid = 0;
+    let mut invalid = distance;
+    while invalid - valid > 1 {
+        let middle = valid + (invalid - valid) / 2;
+        if candidate(viewport_at(middle)).is_some() {
+            valid = middle;
+        } else {
+            invalid = middle;
+        }
+    }
+    let last = viewport_at(valid);
+    candidate(last)
+        .filter(|(after, _)| *after != before)
+        .map(|_| last)
+}
+
 fn edge_frame(clip: &Clip, edge: TrimEdge) -> Option<u64> {
     match edge {
         TrimEdge::Left => Some(clip.start()),
@@ -1070,67 +1131,35 @@ impl EditorView {
         let delta = (*drag.grab_delta.borrow())?;
         let candidate = |viewport| {
             let frame = corrected_edge_frame(frame_at_x(x, lane, viewport)?, delta);
-            preview_clip(drag, &state.project, frame).ok()
+            let clip = preview_clip(drag, &state.project, frame).ok()?;
+            let unclamped = edge_frame(&clip, drag.edge)? == frame;
+            Some((clip, unclamped))
         };
-        let current = drag.viewport();
-        let before = candidate(current)?;
-        if let Some(after) = candidate(next) {
-            return (before != after).then_some(next);
-        }
-        // A full timer step can cross the opposite edge during inward stretch.
-        // Search only this checked step's valid prefix, with the canonical model
-        // still deciding legality. The search takes at most 64 steps, never unbounded
-        // one-frame retries or a relaxed minimum/source interval.
-        let mut valid = 0;
-        let mut invalid = current.start.abs_diff(next.start);
-        let viewport_at = |distance| Viewport {
-            start: if next.start > current.start {
-                current.start + distance
-            } else {
-                current.start - distance
-            },
-            length: current.length,
-        };
-        while invalid.saturating_sub(valid) > 1 {
-            let middle = valid + (invalid - valid) / 2;
-            if candidate(viewport_at(middle)).is_some() {
-                valid = middle;
-            } else {
-                invalid = middle;
-            }
-        }
-        let last = viewport_at(valid);
-        candidate(last)
-            .filter(|after| *after != before)
-            .map(|_| last)
+        resize_pan_prefix(drag.viewport(), next, candidate)
     }
 
-    pub(super) fn midi_trim_pan_advances(
+    pub(super) fn midi_trim_pan_viewport(
         &self,
         drag: &MidiTrimDrag,
         x: f32,
         next: Viewport,
-    ) -> bool {
-        let Some(state) = &self.state else {
-            return false;
-        };
-        let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
-            return false;
-        };
-        let Some(delta) = *drag.grab_delta.borrow() else {
-            return false;
-        };
+    ) -> Option<Viewport> {
+        let state = self.state.as_ref()?;
+        let lane = self.drag_lanes.get(&drag.source_track).copied()?;
+        let delta = (*drag.grab_delta.borrow())?;
         let candidate = |viewport| {
             let beat = midi_pointer_beat(&state.project, x, lane, viewport)?;
             let beat = BeatTime::from_raw(
                 (i128::from(beat.raw()) - delta).clamp(0, i128::from(u64::MAX)) as u64,
             );
-            drag.clip.preview_edge_trim(drag.edge, beat).ok()
+            let clip = drag.clip.preview_edge_trim(drag.edge, beat).ok()?;
+            let edge = match drag.edge {
+                TrimEdge::Left => clip.start().raw(),
+                TrimEdge::Right => clip.start().raw().checked_add(clip.length().raw())?,
+            };
+            Some((clip, edge == beat.raw()))
         };
-        match (candidate(drag.viewport()), candidate(next)) {
-            (Some(before), Some(after)) => before != after,
-            _ => false,
-        }
+        resize_pan_prefix(drag.viewport(), next, candidate)
     }
 
     /// A private resize may navigate beyond the current display extent, never
