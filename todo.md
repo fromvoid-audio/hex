@@ -5148,3 +5148,16 @@ clicks, inert hover, focus and resize state across those widths. Targeted result
 and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
 full CI/integration/merge; optimized native drag/hover/optical acceptance remains
 open. No installed app, persisted schema or user files changed.
+
+## browser picker label clipping — pulse2809 / PR415, 18 october 2026
+
+Rendered geometry reproduced a 19.5 px Collection-row shift at 80 px because
+the group heading wrapped. Picker headings now retain one line and stay mounted
+at narrow widths; source labels clip continuously beside the existing fixed icon
+column rather than ellipsizing or disappearing at 64 px. Open section settings
+also retain row geometry. The 23 px minimum, icon centers, palette, source actions,
+full-row hit targets and full-name tooltip handlers remain in use. Regression
+covers long Place names, zero label space, both settings states and resize back
+to normal; existing selection/hover/focus/audition regressions remain applicable.
+Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
+source handoff is separate from final integration/full CI/merge and delivery.
