@@ -1,0 +1,121 @@
+{
+  "source": "8073eeb94481f25b0ecf8858ca3d11e999152d1c",
+  "tree": "37bfaf716a52718d0371f3f4912212c872a6c664",
+  "filename": "hex-sampler-8073eeb9-arithmetic-checkpoint-evidence.tar.gz",
+  "bytes": 289497,
+  "sha256": "b24c045bac8340f6aa610444bdac28cba4245d72de6bea564e9f95a789bfb359",
+  "members": 51,
+  "payloads": 50,
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "before": "a0e8f3c71694eb238670dec1d359afda0dcc6dbd41fd179091383bef04e2afd0",
+      "after": "2361aa333e727430955a73fa1c847ea9b661f21f19a7c8d7c4b32cc38c3ca994"
+    },
+    {
+      "path": "crates/hex-engine/Cargo.toml",
+      "before": "c27265a416a858a948ac45a3e658c2518b652bc475caaec8370272e2e9c399f9",
+      "after": "662abf56950fb56ad21ce79375de1574fad8c1221099338b82363107cb2cff62"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_only_inputs.rs",
+      "before": "7d9b1a79cbfec008acab5f27d9ae2e3cab457be3d221ecd7b397ee34070083e1",
+      "after": "5b2a1d6c8a35235c27d055e6fb29981a772d74d5d04a24e49ecd6167638c0e32"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility.rs",
+      "before": "4c28ae3a8c437b4600004a7e2ac9354015c81379089e5a9b079290d2effd828e",
+      "after": "7ad50bbd673b785a3576f3c3c2caa0d77cd93e709abfcea6a633eea81c3fe7aa"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage.rs",
+      "before": "fd502924e9fa7189472f396f9aa07be3cebfa5a4ac1ea15fba02cacab37a9f3e",
+      "after": "c7bae3dd1d9170227cdb2c09d9bc1848685c99560b19849b6464d5c19697a9c7"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/arithmetic.rs",
+      "before": null,
+      "after": "7cc416479a215b81043be213d51596b223f5c69d5f4de62d83fab6ff2585e511"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/arithmetic/tests.rs",
+      "before": null,
+      "after": "b4c2c7a37f1bcde7abd76510760d321bf8f83a5919f6a58b90e7c663efc362ea"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/canonical_state.rs",
+      "before": "aee77d0bbf952e7c2ff8d824731edf0d48770765762f1a0a81bf6d2e136e83ea",
+      "after": "cfd41b528dab0905c92c874ac080365679197789fa87e9afc55cce32097d2969"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/models.rs",
+      "before": "6ac9d551b8d547d382663f4df6feba703380ad51590dd41f4643a6959eda7245",
+      "after": "1c729ba64b8669589c87d844b932bb6e88e528be7c84ec9e9d52873dc1c35997"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/sources.rs",
+      "before": "119607339df6279d08a6221d9b25c40b116e50fa41418ca2619470f8f48b528e",
+      "after": "01ff60fb33ca8dbf7e727e5e93e0fd45a8e0f7380be8adb94e273d4aa8209009"
+    },
+    {
+      "path": "crates/hex-engine/src/midi_note_bank/storage.rs",
+      "before": "80ca77852372e1dd1fc956d5cc2d86546d9e640fb65fd663c8f15aeab6441fa7",
+      "after": "b489533d590140370bb320a0e06385b2f4771e4aa1541aa69ea0695b8a93e83d"
+    },
+    {
+      "path": "crates/hex-engine/src/midi_preview.rs",
+      "before": "0bdf7d62055186a8338a89c6b582346637a0d60f866f35b3ef3d526723ca8bdc",
+      "after": "9eb8eefb653143bea64f8b58bd5c913befce71e6a4dbbfb977181ba3f9dc186c"
+    },
+    {
+      "path": "crates/hex-engine/src/midi_preview/persistent.rs",
+      "before": "3b841788a065c506860e4271676fc7799d8c234c4d8f51506161825b82b5391f",
+      "after": "8035510a0b9b624a663f8f6f049302e597b05185fdf8f02e44c8a21e35cc8db4"
+    },
+    {
+      "path": "crates/hex-engine/src/midi_template/storage.rs",
+      "before": "d66e711dac07470d992f63c07bc5f900c2677e8075164967760432428b5c4022",
+      "after": "92d51de8df3a3bac78e7c0b5eabef1e732c4eff48eeaa1b564040fd94b064859"
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/retained.rs",
+      "before": "d3ddc1d33257b654fc9ea7e62b3eb49a3d3ac2996714913f40cabd8a830800fc",
+      "after": "35b91a2c10054fc83daa88116e2e29524a5242807bcd351f59272b6f8c460dae"
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/mutable_factory.rs",
+      "before": "94dec4a24eee6650fca57c3f4532e2185a041c32326f48a0c7a439ed72b8bd53",
+      "after": "575ee93d7ccaa327fde4ce6b1ab411c18ec2e3e77ca1a3795f8716bffb7e627f"
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/resource_storage.rs",
+      "before": "7610bc3d8eb89032d903dbeab7bea6a7236f23999736b9139aded53b8189be06",
+      "after": "5a1b40300a4851faa4f8c25b3caadaac704390cc5807e5818ed84157cfa0cd26"
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/resource_storage/arithmetic_tests.rs",
+      "before": null,
+      "after": "f6f34fe1de1eb4955223c83478a795cefa310ea140bd375432d500241b27c435"
+    },
+    {
+      "path": "crates/hex-engine/src/shared_metadata.rs",
+      "before": "fb72abb45079f01a07824d56f7fac9de094458e05ea8b3e0a326acdfb8c144b1",
+      "after": "bd408b89cf67d521d49f8097e0c19e4f6f1cc4bfd68a2c403da97522e325907d"
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/storage.rs",
+      "before": "c8bf3fb46c242c8d2a737552e393ccabf1f7f6762bf9ef352bbec6d3433494a5",
+      "after": "291511d32cddceb2a94e92010c23096c56cc2469d205639134daa1a804efc24b"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "abaee9d032789523dad81dd8b8a1154efb748b8b48f23a1146300674fa7a155c",
+      "after": "2228b686549dab5997e7dba5faba675f1d83d6a0d8c28236d4f9483285ce2a5e"
+    },
+    {
+      "path": "todo.md",
+      "before": "4c3bfea4213886ca48d4026bce8e764a608d89dab8ee5d82d9ff8285f0a0a801",
+      "after": "ba694ca6e86f8655a83fd68de4b1b6198b02fe2c564fe626f6d12e8148223e59"
+    }
+  ]
+}
