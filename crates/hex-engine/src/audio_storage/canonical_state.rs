@@ -231,7 +231,13 @@ mod tests {
             assert_eq!(ledger.summary().unwrap().data_bytes, expected * 2);
             assert_eq!(ledger.selected_shared_counts_on_control(), (4, 6));
             assert!(ledger.summary().unwrap().require_complete().is_err());
-            let mut exact = self::ledger(expected);
+            // The reservation covers retained DATA plus the ACTUAL ledger
+            // backing/header, not just the slice bodies. Set the test budget
+            // only after observing this already reserved ledger's capacity.
+            let mut exact = self::ledger(100_000);
+            let exact_total = exact.summary().unwrap().ledger_bytes + expected;
+            exact.reservation.max_retained_bytes = exact_total;
+            exact.reservation.max_construction_peak_bytes = exact_total;
             exact
                 .borrow_canonical_native_state_on_control(&state)
                 .unwrap();
@@ -240,7 +246,11 @@ mod tests {
                 .unwrap();
             exact.validate_selected_shared_handles_on_control().unwrap();
             assert_eq!(exact.summary().unwrap().data_bytes, expected);
-            let mut short = self::ledger(expected - 1);
+            assert_eq!(exact.summary().unwrap().retained_bytes, exact_total);
+            let mut short = self::ledger(100_000);
+            let short_total = short.summary().unwrap().ledger_bytes + expected - 1;
+            short.reservation.max_retained_bytes = short_total;
+            short.reservation.max_construction_peak_bytes = short_total;
             assert!(
                 short
                     .borrow_canonical_native_state_on_control(&state)
@@ -314,7 +324,10 @@ mod tests {
         assert!(ledger.summary().unwrap().require_complete().is_err());
         drop(ledger);
         drop(editor);
-        let mut ledger = self::ledger(16);
+        let mut ledger = self::ledger(100_000);
+        let retained = ledger.summary().unwrap().ledger_bytes + 16;
+        ledger.reservation.max_retained_bytes = retained;
+        ledger.reservation.max_construction_peak_bytes = retained;
         ledger
             .borrow_project_native_states_on_control(&candidate)
             .unwrap();
