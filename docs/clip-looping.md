@@ -73,18 +73,32 @@ the tempo map and retain pitch. A fixed frame modulus is valid only for the
 intentional frame-clock case. No repeated PCM flattening, callback DSP, new
 source owner or silent processed-stream fallback is allowed.
 
-Disabling a captured loop must play only its remaining selected cycle, then
-silence. The current MIDI boolean-off path reads toward the full retained source
-end; it needs the approved narrow playback-window contract before existing
-controls can expose the new captured-loop off behavior. Do not delete notes or
-hide the control to avoid this requirement. Persistent fields are not frozen.
+The MIDI source now carries `MidiOneShotBoundary::{SourceEnd, LoopEnd}`.
+Ordinary sources retain `SourceEnd`; the new loop-capture overwrite command
+sets `LoopEnd`. Numeric edits and Looping toggles preserve this policy. The
+effective end is the loop end while repeating or bounded Once, otherwise the
+full authored source end. Notes remain validated and retained against the full
+source length. A bounded Once start must precede its selected end, even with
+Looping off. Snapshot, COW/copy and current-format MIDI codecs retain the policy;
+missing or unknown current-format policy values refuse explicitly.
+
+`MidiSource::source_playback(duration)` is the shared checked constructor for
+Arrangement and Session consumers. It calls
+`MidiSourcePlayback::new_with_initial_end`, which independently validates authored
+note bounds and clips audible onsets/gates at the selected end. The ordinary
+constructor retains its prior behavior. `effective_end()` exposes the same
+source-owned law without a compiler-owned mirror. Arrangement's existing clip
+query delegates to this constructor. Source4 still must adapt the separate
+Session template path and audit both actual compiler paths; model/codec tests
+are not proof of that unfinished runtime integration. No notes or controls are
+removed. The audio placement representation remains pending implementation.
 
 The existing linear export path explicitly refuses mutable Arrangement MIDI
 source loops; prepared preview success does not clear that limitation. Full445
 playback/export acceptance must resolve that bounded dependency honestly.
 
 Frontend preview/marker/corner gestures, audio loop representation/preparation,
-new Once behavior, rendered rounded styling, all-mode PCM/export and optimized
+complete Once runtime integration, rendered rounded styling, all-mode PCM/export and optimized
 native acceptance remain open. PR445 stays draft/In Progress; the sole merger
 owns final prospective-tree full CI/review/integration/merge, and root owns the
 serial Mac lane and app delivery. No native/app operation is part of this source

@@ -420,6 +420,7 @@ fn materialize_shifted_midi(
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
+            one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             notes,
         }),
     })

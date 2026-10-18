@@ -481,6 +481,14 @@ pub(crate) fn apply(
             let target = project
                 .session_midi_clip(clip)
                 .ok_or(Invalid("session midi clip no longer exists"))?;
+            crate::midi::validate_source_boundary(
+                source_length,
+                source_start,
+                loop_start,
+                loop_end,
+                looping,
+                target.source.one_shot_boundary(),
+            )?;
             for note in target.source.notes() {
                 crate::midi::validate_note(
                     note.start,
@@ -639,6 +647,7 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                         loop_start: source.loop_start,
                         loop_end: source.loop_end,
                         looping: source.looping,
+                        one_shot_boundary: source.one_shot_boundary,
                         notes,
                     }),
                 })

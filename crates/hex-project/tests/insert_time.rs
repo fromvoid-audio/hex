@@ -417,6 +417,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
         loop_start_raw: 0,
         loop_end_raw: quarter(4).raw(),
         looping: false,
+        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
         notes: Vec::new(),
     });
     for id in 6..(MAX_CLIPS as u64 + 5) {
@@ -431,6 +432,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
             loop_start_raw: 0,
             loop_end_raw: quarter(1).raw(),
             looping: false,
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
             notes: Vec::new(),
         });
     }

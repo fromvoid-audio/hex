@@ -441,6 +441,7 @@ pub(crate) fn paste_rows(
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
+            one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             notes,
         };
         let clip = MidiClip {

@@ -1392,6 +1392,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
             loop_start_raw: 0,
             loop_end_raw: beat(4).raw(),
             looping: false,
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
             notes: (0..count)
                 .map(|index| MidiNoteSnapshot {
                     id: first_note_id + index as u64,

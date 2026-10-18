@@ -204,6 +204,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
             loop_start_raw: 0,
             loop_end_raw: beat(2).raw(),
             looping: false,
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
             notes: Vec::new(),
         })
         .collect();

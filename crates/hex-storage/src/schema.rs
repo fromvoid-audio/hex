@@ -378,6 +378,28 @@ struct SessionMidiClipDtoV11 {
     source: MidiSourceDtoV11,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MidiOneShotBoundaryDto {
+    SourceEnd,
+    LoopEnd,
+}
+impl From<hex_project::MidiOneShotBoundary> for MidiOneShotBoundaryDto {
+    fn from(value: hex_project::MidiOneShotBoundary) -> Self {
+        match value {
+            hex_project::MidiOneShotBoundary::SourceEnd => Self::SourceEnd,
+            hex_project::MidiOneShotBoundary::LoopEnd => Self::LoopEnd,
+        }
+    }
+}
+impl From<MidiOneShotBoundaryDto> for hex_project::MidiOneShotBoundary {
+    fn from(value: MidiOneShotBoundaryDto) -> Self {
+        match value {
+            MidiOneShotBoundaryDto::SourceEnd => Self::SourceEnd,
+            MidiOneShotBoundaryDto::LoopEnd => Self::LoopEnd,
+        }
+    }
+}
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MidiSourceDtoV11 {
     source_length_raw: u64,
@@ -385,6 +407,7 @@ struct MidiSourceDtoV11 {
     loop_start_raw: u64,
     loop_end_raw: u64,
     looping: bool,
+    one_shot_boundary: MidiOneShotBoundaryDto,
     notes: Vec<MidiNoteDto>,
 }
 
@@ -606,6 +629,7 @@ struct MidiClipDtoV10 {
     loop_start_raw: u64,
     loop_end_raw: u64,
     looping: bool,
+    one_shot_boundary: MidiOneShotBoundaryDto,
     notes: Vec<MidiNoteDto>,
 }
 #[derive(Serialize, Deserialize)]
@@ -1712,6 +1736,7 @@ impl DocumentV12 {
                                 loop_start_raw: clip.source.loop_start_raw,
                                 loop_end_raw: clip.source.loop_end_raw,
                                 looping: clip.source.looping,
+                                one_shot_boundary: clip.source.one_shot_boundary.into(),
                                 notes: clip
                                     .source
                                     .notes
@@ -1827,6 +1852,7 @@ impl DocumentV12 {
                                     loop_start_raw: clip.source.loop_start_raw,
                                     loop_end_raw: clip.source.loop_end_raw,
                                     looping: clip.source.looping,
+                                    one_shot_boundary: clip.source.one_shot_boundary.into(),
                                     notes: clip
                                         .source
                                         .notes
@@ -2208,6 +2234,7 @@ impl DocumentV11 {
                                     loop_start_raw: clip.source.loop_start_raw,
                                     loop_end_raw: clip.source.loop_end_raw,
                                     looping: clip.source.looping,
+                                    one_shot_boundary: clip.source.one_shot_boundary.into(),
                                     notes: clip
                                         .source
                                         .notes
@@ -2293,6 +2320,7 @@ impl DocumentV10 {
                                         loop_start_raw: c.loop_start_raw,
                                         loop_end_raw: c.loop_end_raw,
                                         looping: c.looping,
+                                        one_shot_boundary: c.one_shot_boundary.into(),
                                         notes: c
                                             .notes
                                             .into_iter()
@@ -2429,6 +2457,7 @@ impl DocumentV9 {
                                     loop_start_raw: 0,
                                     loop_end_raw: c.length_raw,
                                     looping: false,
+                                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                                     notes: c
                                         .notes
                                         .into_iter()
@@ -2507,6 +2536,7 @@ fn midi_v10_from_snapshot(clip: MidiClipSnapshot) -> MidiClipDtoV10 {
         loop_start_raw: clip.loop_start_raw,
         loop_end_raw: clip.loop_end_raw,
         looping: clip.looping,
+        one_shot_boundary: clip.one_shot_boundary.into(),
         notes: clip
             .notes
             .into_iter()
@@ -2534,6 +2564,7 @@ fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
         loop_start_raw: clip.loop_start_raw,
         loop_end_raw: clip.loop_end_raw,
         looping: clip.looping,
+        one_shot_boundary: clip.one_shot_boundary.into(),
         notes: clip
             .notes
             .into_iter()
@@ -2586,6 +2617,7 @@ fn session_snapshot_to_v12(snapshot: SessionSnapshot) -> SessionDtoV12 {
                                 loop_start_raw: clip.source.loop_start_raw,
                                 loop_end_raw: clip.source.loop_end_raw,
                                 looping: clip.source.looping,
+                                one_shot_boundary: clip.source.one_shot_boundary.into(),
                                 notes: clip
                                     .source
                                     .notes
@@ -2648,6 +2680,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                                 loop_start_raw: clip.source.loop_start_raw,
                                 loop_end_raw: clip.source.loop_end_raw,
                                 looping: clip.source.looping,
+                                one_shot_boundary: clip.source.one_shot_boundary.into(),
                                 notes: clip
                                     .source
                                     .notes
