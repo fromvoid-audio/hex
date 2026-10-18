@@ -145,6 +145,7 @@ fn gain_error(error: GainCopyError) -> AudioStorageError {
         GainCopyError::Capacity => AudioStorageError::Capacity,
         GainCopyError::Allocation => AudioStorageError::Allocation,
         GainCopyError::Overflow => AudioStorageError::Overflow,
+        GainCopyError::Incomplete => AudioStorageError::UnknownStorage,
     }
 }
 impl TrackAssembly {
@@ -756,8 +757,10 @@ impl TrackAssembly {
             return Err(AudioStorageError::UnknownStorage);
         }
         r.midi.clear_disposed()?;
-        r.gain.restore(&mut r.prepared_gain).map_err(gain_error)?;
-        r.gain.clear_on_control();
+        r.gain
+            .retire_prepared_on_control(&mut r.prepared_gain)
+            .map_err(gain_error)?;
+        r.gain.clear_on_control().map_err(gain_error)?;
         r.sends.clear();
         r.pairs.clear();
         r.id = None;

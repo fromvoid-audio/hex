@@ -20,6 +20,25 @@ pub(super) struct PreparedTouch {
     steps: Vec<Step>,
 }
 impl PreparedTouch {
+    pub(super) fn dispose_on_control(self) {
+        // Owned destructuring makes a future custom Drop/new owning field an
+        // explicit audit change. Span's Range is non-Copy but owns no heap.
+        fn audit_span(span: Span) {
+            let Span { start, end, steps } = span;
+            let Range {
+                start: first,
+                end: last,
+            } = steps;
+            fn copy<T: Copy>(_: T) {}
+            copy((start, end, first, last));
+        }
+        let _: fn(Span) = audit_span;
+        fn copy_leaf<T: Copy>() {}
+        copy_leaf::<Step>();
+        let Self { spans, steps } = self;
+        drop(spans);
+        drop(steps);
+    }
     pub(super) fn visit_audio_storage<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,

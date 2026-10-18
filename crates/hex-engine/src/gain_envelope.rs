@@ -240,6 +240,24 @@ fn fill_knots(
     Ok(())
 }
 impl PreparedGainEnvelope {
+    /// Fixed control teardown of this closed scalar-Vec value only. No opaque
+    /// provider, callback, shared owner, allocation or fallible operation.
+    pub(crate) fn dispose_on_control(self) {
+        let Self {
+            knots,
+            mix,
+            authored_points,
+            authored_units,
+            touch,
+            fallback,
+        } = self;
+        fn copy_leaf<T: Copy>() {}
+        copy_leaf::<GainEnvelopeKnot>();
+        fn copy<T: Copy>(_: T) {}
+        copy((mix, authored_points, authored_units, fallback));
+        drop(knots);
+        touch.dispose_on_control();
+    }
     pub(crate) fn constant(mix: PreparedTrackMix, fallback: f32) -> Self {
         Self {
             knots: Vec::new(),

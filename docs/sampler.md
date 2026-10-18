@@ -966,3 +966,17 @@ old late refusal, then proves resident/streamed original-bank identity and backi
 are returned before consumption, with normal once-only recovery after clearing
 only that test fault. The same four-root and twelve error/panic checks still pass.
 This closes that local failure frontier, not aggregate compiler admission.
+
+Track cleanup now distinguishes the existing installed gain-copy state from a
+fresh concrete compiled gain curve. Copied knots return to their original
+custody; fresh knots/touch Vecs are destroyed on control through owned exhaustive
+field teardown and scalar-leaf audits. This selects a cleanup destination only,
+not allocation provenance or a graph permit. The existing custody phase is set
+to retiring before removing the actual curve field. An abnormal exit refuses
+storage observation, new reserve, restore, retry and clear, so the parent must
+retain its failure charge. Tests cover actual compiler curves with/without touch,
+spare knot capacity, independent empty-reserved copy backing, unchanged copied
+restoration and a caught fault after concrete destruction. That injected fault
+is not an opaque destructor panic or complete parent/reaper qualification.
+Public nonempty/touch preparation refusals remain until full closed ingress and
+aggregate reservation are implemented.
