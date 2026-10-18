@@ -561,3 +561,21 @@ bus before speculative rollback replay; production mixing is unchanged. Both
 run logs are retained. Devices/Engine/Session all-target strict Clippy also
 passes. The new fixed fields change actual runtime Box size, so native paired
 layout/allocation-probe qualification remains separate from these cloud results.
+
+## compound waveform flag edits
+
+Sampler metadata now applies a parameter snapshot to one private authored state
+and validates source/loop geometry after all flags are present. A valid move from
+`[1, 3)` to `[5, 7)` therefore succeeds even with start before end, while the same
+single start edit still refuses its invalid intermediate region. Loop flag pairs
+follow the same rule. The shared snapshot protocol validates every supplied value
+and current access before mutation; mode-dependent access remains enforced during
+private patching. Invalid final regions or Slice marker order refuse unchanged.
+
+This supplies the existing parameter-snapshot gesture path with an atomic bounds
+law, not a second UI model or an implemented waveform drag. Original PCM tests
+verify disjoint region moves in both orders, loop source phase/block partition,
+Slice key regions, host metadata/reference preservation and malformed/final-geometry
+refusal. Codec, runtime layout, PCM ownership and registry admission are unchanged.
+Functional marker overlay, canonical gesture/Undo wiring and the full panel remain
+required alongside actual admitted loading.

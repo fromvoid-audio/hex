@@ -277,107 +277,131 @@ impl NativeDeviceMetadata for SamplerMetadata {
         let DeviceState::Sample(mut state) = DeviceState::from_native(native)? else {
             return Err(Error::AssetResourcesUnavailable);
         };
-        if !enabled(&state, id) {
-            return Err(Error::InvalidParameterValue);
+        // Preserve the existing no-op handle when selecting the current mode.
+        if id == MODE && self.read_parameter(native, MODE)? == value {
+            return Ok(native.clone());
         }
-        match (id, value) {
-            (MODE, ParameterValue::Choice(mode)) => {
-                let current = match state.mode {
-                    AuthoredMode::Classic { .. } => 0,
-                    AuthoredMode::OneShot { .. } => 1,
-                    AuthoredMode::Slice { .. } => 2,
-                };
-                if current == mode {
-                    return Ok(native.clone());
-                }
-                state.mode = match mode {
-                    0 => AuthoredMode::Classic { loop_region: None },
-                    1 => AuthoredMode::OneShot {
-                        gate: GateMode::Trigger,
-                    },
-                    2 => AuthoredMode::Slice {
-                        starts: vec![state.region.start],
-                        base_note: 60,
-                        gate: GateMode::Trigger,
-                    },
-                    _ => return Err(Error::InvalidParameterValue),
-                };
-            }
-            (REVERSE, ParameterValue::Bool(value)) => state.reverse = value,
-            (ROOT, ParameterValue::Float(value)) => state.root_note = value.round() as u8,
-            (TRANSPOSE, ParameterValue::Float(value)) => {
-                state.transpose_semitones = f64::from(value)
-            }
-            (DETUNE, ParameterValue::Float(value)) => state.detune_cents = f64::from(value),
-            (GAIN, ParameterValue::Float(value)) => state.gain = f64::from(value),
-            (PAN, ParameterValue::Float(value)) => state.pan = f64::from(value),
-            (VELOCITY, ParameterValue::Float(value)) => state.velocity_amount = f64::from(value),
-            (ATTACK, ParameterValue::Float(value)) => {
-                state.envelope.attack_seconds = f64::from(value)
-            }
-            (DECAY, ParameterValue::Float(value)) => {
-                state.envelope.decay_seconds = f64::from(value)
-            }
-            (SUSTAIN, ParameterValue::Float(value)) => state.envelope.sustain = f64::from(value),
-            (RELEASE, ParameterValue::Float(value)) => {
-                state.envelope.release_seconds = f64::from(value)
-            }
-            (VOICES, ParameterValue::Float(value)) => state.voices = value.round() as u8,
-            (FADE_IN | FADE_OUT, ParameterValue::Float(value)) => {
-                state.one_shot_fades_seconds[usize::from(id == FADE_OUT)] = f64::from(value);
-            }
-            (LOOP, ParameterValue::Bool(value)) => {
-                let AuthoredMode::Classic { loop_region } = &mut state.mode else {
-                    return Err(Error::InvalidParameterValue);
-                };
-                *loop_region = if value {
-                    Some(loop_region.unwrap_or(state.region))
-                } else {
-                    None
-                };
-            }
-            (GATE, ParameterValue::Choice(value)) => match &mut state.mode {
-                AuthoredMode::OneShot { gate } | AuthoredMode::Slice { gate, .. } => {
-                    *gate = if value == 0 {
-                        GateMode::Trigger
-                    } else {
-                        GateMode::Gate
-                    }
-                }
-                _ => return Err(Error::InvalidParameterValue),
-            },
-            (SLICE_BASE, ParameterValue::Float(value)) => match &mut state.mode {
-                AuthoredMode::Slice { base_note, .. } => *base_note = value.round() as u8,
-                _ => return Err(Error::InvalidParameterValue),
-            },
-            (START, ParameterValue::Float(value)) => {
-                let start = value.round() as usize;
-                state.region.start = start;
-                // The first slice starts at the region flag. Move those two
-                // canonical coordinates together; never delete later markers.
-                if let AuthoredMode::Slice { starts, .. } = &mut state.mode {
-                    let first = starts.first_mut().ok_or(Error::MalformedState)?;
-                    *first = start;
-                }
-            }
-            (END, ParameterValue::Float(value)) => state.region.end = value.round() as usize,
-            (LOOP_START | LOOP_END, ParameterValue::Float(value)) => {
-                let AuthoredMode::Classic {
-                    loop_region: Some(region),
-                } = &mut state.mode
-                else {
-                    return Err(Error::InvalidParameterValue);
-                };
-                if id == LOOP_START {
-                    region.start = value.round() as usize;
-                } else {
-                    region.end = value.round() as usize;
-                }
-            }
-            _ => return Err(Error::UnknownParameter),
+        patch_authored(&mut state, id, value)?;
+        state.to_native()?.with_host_metadata_from(native)
+    }
+    fn patch_parameters(
+        &self,
+        native: &NativeDeviceState,
+        snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+    ) -> Result<NativeDeviceState, Error> {
+        // Validate every supplied value/current access before any private edit.
+        // Region and loop bounds are compound laws: validate their geometry
+        // only after BOTH flags are applied, independent of snapshot ordering.
+        hex_lattice_contract::validate_parameter_snapshot_for_write(self, native, snapshot)?;
+        let DeviceState::Sample(mut state) = DeviceState::from_native(native)? else {
+            return Err(Error::AssetResourcesUnavailable);
+        };
+        for &(id, value) in snapshot.entries() {
+            patch_authored(&mut state, id, value)?;
         }
         state.to_native()?.with_host_metadata_from(native)
     }
+}
+
+fn patch_authored(
+    state: &mut SamplerState,
+    id: ParameterId,
+    value: ParameterValue,
+) -> Result<(), Error> {
+    if !enabled(state, id) {
+        return Err(Error::InvalidParameterValue);
+    }
+    match (id, value) {
+        (MODE, ParameterValue::Choice(mode)) => {
+            let current = match state.mode {
+                AuthoredMode::Classic { .. } => 0,
+                AuthoredMode::OneShot { .. } => 1,
+                AuthoredMode::Slice { .. } => 2,
+            };
+            if current == mode {
+                return Ok(());
+            }
+            state.mode = match mode {
+                0 => AuthoredMode::Classic { loop_region: None },
+                1 => AuthoredMode::OneShot {
+                    gate: GateMode::Trigger,
+                },
+                2 => AuthoredMode::Slice {
+                    starts: vec![state.region.start],
+                    base_note: 60,
+                    gate: GateMode::Trigger,
+                },
+                _ => return Err(Error::InvalidParameterValue),
+            };
+        }
+        (REVERSE, ParameterValue::Bool(value)) => state.reverse = value,
+        (ROOT, ParameterValue::Float(value)) => state.root_note = value.round() as u8,
+        (TRANSPOSE, ParameterValue::Float(value)) => state.transpose_semitones = f64::from(value),
+        (DETUNE, ParameterValue::Float(value)) => state.detune_cents = f64::from(value),
+        (GAIN, ParameterValue::Float(value)) => state.gain = f64::from(value),
+        (PAN, ParameterValue::Float(value)) => state.pan = f64::from(value),
+        (VELOCITY, ParameterValue::Float(value)) => state.velocity_amount = f64::from(value),
+        (ATTACK, ParameterValue::Float(value)) => state.envelope.attack_seconds = f64::from(value),
+        (DECAY, ParameterValue::Float(value)) => state.envelope.decay_seconds = f64::from(value),
+        (SUSTAIN, ParameterValue::Float(value)) => state.envelope.sustain = f64::from(value),
+        (RELEASE, ParameterValue::Float(value)) => {
+            state.envelope.release_seconds = f64::from(value)
+        }
+        (VOICES, ParameterValue::Float(value)) => state.voices = value.round() as u8,
+        (FADE_IN | FADE_OUT, ParameterValue::Float(value)) => {
+            state.one_shot_fades_seconds[usize::from(id == FADE_OUT)] = f64::from(value);
+        }
+        (LOOP, ParameterValue::Bool(value)) => {
+            let AuthoredMode::Classic { loop_region } = &mut state.mode else {
+                return Err(Error::InvalidParameterValue);
+            };
+            *loop_region = if value {
+                Some(loop_region.unwrap_or(state.region))
+            } else {
+                None
+            };
+        }
+        (GATE, ParameterValue::Choice(value)) => match &mut state.mode {
+            AuthoredMode::OneShot { gate } | AuthoredMode::Slice { gate, .. } => {
+                *gate = if value == 0 {
+                    GateMode::Trigger
+                } else {
+                    GateMode::Gate
+                }
+            }
+            _ => return Err(Error::InvalidParameterValue),
+        },
+        (SLICE_BASE, ParameterValue::Float(value)) => match &mut state.mode {
+            AuthoredMode::Slice { base_note, .. } => *base_note = value.round() as u8,
+            _ => return Err(Error::InvalidParameterValue),
+        },
+        (START, ParameterValue::Float(value)) => {
+            let start = value.round() as usize;
+            state.region.start = start;
+            // The first slice starts at the region flag. Move those two
+            // canonical coordinates together; never delete later markers.
+            if let AuthoredMode::Slice { starts, .. } = &mut state.mode {
+                let first = starts.first_mut().ok_or(Error::MalformedState)?;
+                *first = start;
+            }
+        }
+        (END, ParameterValue::Float(value)) => state.region.end = value.round() as usize,
+        (LOOP_START | LOOP_END, ParameterValue::Float(value)) => {
+            let AuthoredMode::Classic {
+                loop_region: Some(region),
+            } = &mut state.mode
+            else {
+                return Err(Error::InvalidParameterValue);
+            };
+            if id == LOOP_START {
+                region.start = value.round() as usize;
+            } else {
+                region.end = value.round() as usize;
+            }
+        }
+        _ => return Err(Error::UnknownParameter),
+    }
+    Ok(())
 }
 
 #[cfg(test)]

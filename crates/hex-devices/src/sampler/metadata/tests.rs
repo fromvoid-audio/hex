@@ -297,3 +297,204 @@ fn mode_specific_controls_and_reselect_preserve_authored_coordinates() {
         }
     );
 }
+
+#[test]
+fn compound_region_flags_cross_old_bounds_in_either_order_and_change_real_pcm() {
+    use hex_lattice_contract::DeviceParameterSnapshot;
+    let original = loaded();
+    let mut state = SamplerState::for_source_frames(8).unwrap();
+    state.region = Region { start: 1, end: 3 };
+    let original = state.replace_in(&original).unwrap();
+    assert!(
+        METADATA
+            .patch_parameter(&original, START, ParameterValue::Float(5.0))
+            .is_err()
+    );
+    let right = [
+        (START, ParameterValue::Float(5.0)),
+        (END, ParameterValue::Float(7.0)),
+    ];
+    let moved = METADATA
+        .patch_parameters(&original, &DeviceParameterSnapshot::new(&right).unwrap())
+        .unwrap();
+    let reversed_order = METADATA
+        .patch_parameters(
+            &original,
+            &DeviceParameterSnapshot::new(&[right[1], right[0]]).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(moved, reversed_order);
+    assert!(moved.shares_asset_reference_storage_with(&original));
+    assert_eq!(moved.output_gain_millidb(), original.output_gain_millidb());
+    assert!(
+        METADATA
+            .patch_parameter(&moved, END, ParameterValue::Float(3.0))
+            .is_err()
+    );
+    let returned = METADATA
+        .patch_parameters(
+            &moved,
+            &DeviceParameterSnapshot::new(&[
+                (END, ParameterValue::Float(3.0)),
+                (START, ParameterValue::Float(1.0)),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(returned, original);
+    let pcm = std::array::from_fn::<_, 8, _>(|i| [i as f32 / 8.0, -(i as f32) / 8.0]);
+    for (native, expected) in [
+        (&original, [pcm[1], pcm[2], [0.0; 2]]),
+        (&moved, [pcm[5], pcm[6], [0.0; 2]]),
+    ] {
+        let authored = SamplerState::from_native(native).unwrap();
+        let voice = PreparedSamplerPlan::new(
+            SampleShape::new(8, 48_000, SampleChannels::Stereo).unwrap(),
+            48_000,
+            authored.settings(),
+        )
+        .unwrap()
+        .prepare_voice_coefficients(60, 127)
+        .unwrap()
+        .unwrap();
+        let mut actual = [[0.0; 2]; 3];
+        voice.render(DeviceResourcePcm::Stereo(&pcm), 0, 100, &mut actual);
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn compound_loop_flags_move_past_old_loop_end_and_keep_source_phase_partition() {
+    use hex_lattice_contract::DeviceParameterSnapshot;
+    let mut state = SamplerState::for_source_frames(8).unwrap();
+    state.mode = AuthoredMode::Classic {
+        loop_region: Some(Region { start: 1, end: 3 }),
+    };
+    let original = state.replace_in(&loaded()).unwrap();
+    assert!(
+        METADATA
+            .patch_parameter(&original, LOOP_START, ParameterValue::Float(5.0))
+            .is_err()
+    );
+    let moved = METADATA
+        .patch_parameters(
+            &original,
+            &DeviceParameterSnapshot::new(&[
+                (LOOP_START, ParameterValue::Float(5.0)),
+                (LOOP_END, ParameterValue::Float(7.0)),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+    let authored = SamplerState::from_native(&moved).unwrap();
+    let voice = PreparedSamplerPlan::new(
+        SampleShape::new(8, 48_000, SampleChannels::Stereo).unwrap(),
+        48_000,
+        authored.settings(),
+    )
+    .unwrap()
+    .prepare_voice_coefficients(60, 127)
+    .unwrap()
+    .unwrap();
+    let pcm = std::array::from_fn::<_, 8, _>(|i| [i as f32 / 8.0, -(i as f32) / 8.0]);
+    let expected = [0, 1, 2, 3, 4, 5, 6, 5, 6, 5, 6].map(|i| pcm[i]);
+    let mut whole = [[0.0; 2]; 11];
+    voice.render(DeviceResourcePcm::Stereo(&pcm), 0, 100, &mut whole);
+    assert_eq!(whole, expected);
+    let mut partitioned = [[0.0; 2]; 11];
+    for (offset, block) in partitioned.chunks_mut(3).enumerate() {
+        voice.render(
+            DeviceResourcePcm::Stereo(&pcm),
+            (offset * 3) as u64,
+            100,
+            block,
+        );
+    }
+    assert_eq!(partitioned, expected);
+    assert_eq!(SamplerState::from_native(&original).unwrap(), state);
+}
+
+#[test]
+fn compound_bounds_preserve_slice_markers_and_refuse_invalid_final_geometry_without_mutation() {
+    use hex_lattice_contract::DeviceParameterSnapshot;
+    let mut state = SamplerState::for_source_frames(8).unwrap();
+    state.region.start = 1;
+    state.mode = AuthoredMode::Slice {
+        starts: vec![1, 5],
+        base_note: 60,
+        gate: GateMode::Trigger,
+    };
+    let original = state.replace_in(&loaded()).unwrap();
+    let moved = METADATA
+        .patch_parameters(
+            &original,
+            &DeviceParameterSnapshot::new(&[
+                (START, ParameterValue::Float(2.0)),
+                (END, ParameterValue::Float(7.0)),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+    let authored = SamplerState::from_native(&moved).unwrap();
+    assert!(matches!(&authored.mode, AuthoredMode::Slice { starts, .. } if starts == &[2, 5]));
+    let pcm = std::array::from_fn::<_, 8, _>(|i| [i as f32 / 8.0, -(i as f32) / 8.0]);
+    let plan = PreparedSamplerPlan::new(
+        SampleShape::new(8, 48_000, SampleChannels::Stereo).unwrap(),
+        48_000,
+        authored.settings(),
+    )
+    .unwrap();
+    for (note, expected) in [
+        (60, [pcm[2], pcm[3], pcm[4], [0.0; 2]]),
+        (61, [pcm[5], pcm[6], [0.0; 2], [0.0; 2]]),
+    ] {
+        let mut actual = [[0.0; 2]; 4];
+        plan.prepare_voice_coefficients(note, 127)
+            .unwrap()
+            .unwrap()
+            .render(DeviceResourcePcm::Stereo(&pcm), 0, 100, &mut actual);
+        assert_eq!(actual, expected);
+    }
+    for entries in [
+        vec![
+            (START, ParameterValue::Float(6.0)),
+            (END, ParameterValue::Float(7.0)),
+        ],
+        vec![
+            (START, ParameterValue::Float(2.0)),
+            (END, ParameterValue::Float(5.0)),
+        ],
+        vec![
+            (END, ParameterValue::Float(1.0)),
+            (START, ParameterValue::Float(2.0)),
+        ],
+        vec![
+            (LOOP_START, ParameterValue::Float(1.0)),
+            (LOOP_END, ParameterValue::Float(3.0)),
+        ],
+        vec![
+            (START, ParameterValue::Float(2.0)),
+            (GAIN, ParameterValue::Float(4.1)),
+        ],
+    ] {
+        assert!(
+            METADATA
+                .patch_parameters(&original, &DeviceParameterSnapshot::new(&entries).unwrap())
+                .is_err()
+        );
+        assert_eq!(SamplerState::from_native(&original).unwrap(), state);
+        assert_eq!(original.output_gain_millidb(), -600);
+    }
+    assert!(
+        METADATA
+            .patch_parameters(
+                &METADATA.default_state().unwrap(),
+                &DeviceParameterSnapshot::new(&[
+                    (START, ParameterValue::Float(1.0)),
+                    (END, ParameterValue::Float(3.0))
+                ])
+                .unwrap()
+            )
+            .is_err()
+    );
+}
