@@ -1,0 +1,26 @@
+{
+  "source": "91089165935e5c34ea046b0532ecd8e0174e7441",
+  "tree": "b4aa44d1ce53c94bda2592d7e66231aaba7e209c",
+  "filename": "hex-sampler-91089165-graph-cost-evidence.tar.gz",
+  "bytes": 46768,
+  "sha256": "a8c76fb37688777249a09cc76f83f97483881f075e58cac549f13a9e03c1efd9",
+  "members": 12,
+  "payloads": 11,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/signal_graph.rs",
+      "before": "41785470fa3ab40bce0f2dc7e176e95cbdf7c0480864163e0ba0b70eb45ab25a",
+      "after": "c746ed21f6a3d7df912588832ec53749555e5d1c8725f512ea12c132341d507d"
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/construction.rs",
+      "before": null,
+      "after": "4b4857312e5f324a6902d457075fa375dc5d5c8d34aba656459cc6f47b54c099"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "8161645c93ab4ade5e79e8ed888134f17aba844b883324764fbbfe04d6a43347",
+      "after": "abaee9d032789523dad81dd8b8a1154efb748b8b48f23a1146300674fa7a155c"
+    }
+  ]
+}
