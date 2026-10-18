@@ -4999,11 +4999,21 @@ handlers unchanged. Native double-click behavior remains coordinator-serial.
   refusal; focused three-case real-worker regression passes d6babcc0. New
   dialogs defer and failed writes retire. Fresh final full CI remains pending.
 
+## command-d time range — pulse2759 / PR367, 18 october2026
+
+Arrangement Command-D uses existing atomic time-chunk copy at the range end,
+normal overwrite semantics, retained gaps/audio source windows/MIDI fragments
+and main-track scope. Successful selection feedback supports repeated copies;
+clipboard and other-editor shortcuts are preserved. Rendered key/real-worker
+regression covers one Undo/Redo and text focus. Exact source checks and native
+input acceptance remain pending; no installed app changes.
+
 ## project bpm input — pulse2720 / pr336
 
 - Implemented compact top-left shared numeric tempo entry in both project modes;
   removed canonical BPM +/- while preserving meter and SetTempoPoint semantics.
-- Five focused range/input/layout/lifecycle tests pass. Required final exact-source
+- Six focused range/input/layout/lifecycle/blur regressions cover the control;
+  final source validation is recorded in PR336/Pulse2720. Required exact-source
   full local CI is recorded in PR336/Pulse2720, not inferred from focused tests.
 - Native optimized physical input, listening and current-format save/reopen remain
   open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.

@@ -11,12 +11,15 @@ semantics, 1..1000 BPM inclusive range and micro-BPM precision (six decimals).
 No persistence schema, transport engine, project tuning or MTS behavior changes.
 Canonical command/history/timing/storage remain owned by their existing layers.
 
-Click the value or Tab to it to edit. Enter commits a valid changed number once;
-Escape cancels. Empty, nonnumeric, nonfinite and out-of-range text stays invalid
+Click the value to edit. Enter or focus loss commits valid changed text once;
+Escape cancels. Keyboard adjustments use the shared numeric control, without
+adding a new Tab stop to the existing device traversal. Empty, nonnumeric,
+nonfinite and out-of-range text stays invalid
 without a canonical edit or clamping. Shared numeric text selection, clipboard,
-arrow and accessibility behavior applies. Text entry owns the keyboard so
+arrow and accessibility behavior applies. Focused text entry owns the keyboard so
 printable transport, track and computer-keyboard shortcuts do not run; project
-Undo/Redo does not consume a numeric text draft. A value that rounds to the
+Undo/Redo does not consume a focused numeric text draft. An invalid unfocused
+draft does not suppress workspace shortcuts. A value that rounds to the
 current micro-BPM produces no canonical command.
 
 While idle, the field reflects canonical tempo at the cursor's snapped quarter.
@@ -29,11 +32,12 @@ reach the project worker.
 ## source checks and native acceptance
 
 `cargo test -p hex-ui --features ui-test-support --locked project_tempo_`
-selects the range/precision test and four rendered input/layout/lifecycle tests.
+selects the range/precision test and five rendered input/layout/lifecycle tests.
 They exercise actual numeric text events, invalid/empty rejection, cancellation,
 text-focus protection, canonical command/micro-BPM, Undo/Redo and beat-to-frame
 semantics; layout covers 880/1280px in both modes, plus stale revision/generation
-and cursor movement during typing. These are headless GPUI fixtures. Required
+and cursor movement during typing. The blur regression checks valid commit,
+invalid/empty refusal and shortcut recovery after returning focus to the editor. These are headless GPUI fixtures. Required
 full exact-source local CI remains separate; a focused pass alone cannot merge.
 Current-format save/reopen retains existing persistence behavior and remains a
 native acceptance item, not an unexecuted automated round-trip claim.
@@ -48,12 +52,15 @@ After a coordinator-qualified optimized delivery and with the user present:
 
 1. At supported narrow/wide window sizes in both editor modes, confirm BPM is
    first at the top left, plus/minus are absent, and tuning/play/stop/output
-   neighbors remain usable. Confirm text, selection, Tab and focus are legible.
+   neighbors remain usable. Confirm text, selection and focus are legible; existing
+   device Tab traversal is unchanged.
 2. In a disposable project, enter `123.456789`, then `1` and `1000`: each valid
-   commit updates canonical tempo once. Undo/Redo restores it. Escape and a
-   click-away cancel leave it unchanged; invalid/empty/NaN/out-of-range text
+   commit updates canonical tempo once. Undo/Redo restores it. Escape cancels;
+   clicking away commits valid changed text once, while invalid/empty/NaN/
+   out-of-range text
    cannot apply. While typing, Space, m, z/x, c/v, l and s must not trigger DAW
-   actions; editor Undo must not apply a text draft.
+   actions; editor Undo must not apply a focused text draft. After leaving invalid
+   text and focusing the workspace, normal DAW shortcuts must work again.
 3. Test at a later cursor quarter in a disposable tempo map. While playing,
    start a draft, let the cursor move, then commit: only the originally captured
    tempo point changes. Confirm metronome/transport follows the canonical map;

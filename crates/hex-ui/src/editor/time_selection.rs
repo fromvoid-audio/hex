@@ -579,6 +579,69 @@ impl EditorView {
         })
     }
 
+    /// Duplicate the bounded Arrangement rectangle through the existing atomic
+    /// copy edit. Normal overwrite semantics match Option-drag range copying.
+    pub(super) fn duplicate_time_selection(&mut self, window: &Window) -> bool {
+        if self.mode != EditorMode::Arrangement
+            || self.midi_focus.is_focused(window)
+            || !self.focus.is_focused(window)
+        {
+            return false;
+        }
+        if self
+            .time_selection
+            .is_none_or(|selection| selection.anchor_frame == selection.end_frame)
+        {
+            return false;
+        }
+        let Some(range) = self.normalized_time_selection() else {
+            self.error = Some("time selection no longer belongs to current tracks".into());
+            return true;
+        };
+        if self.edit_pending()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
+            || self.context_menu.is_some()
+            || self.save_dialog_open
+            || self.export_dialog_open
+        {
+            self.error = Some("finish the current edit before duplicating time".into());
+            return true;
+        }
+        let Some(end) = range.end().checked_add(range.duration()) else {
+            self.error = Some("duplicated time range would overflow".into());
+            return true;
+        };
+        let Some((first, last)) = self.time_selection_track_indices() else {
+            return true;
+        };
+        let Ok(destination) =
+            hex_project::TimeRange::new(range.tracks().to_vec(), range.end(), end)
+        else {
+            return true;
+        };
+        let revision = self.state.as_ref().map_or(0, |state| state.revision);
+        let command = Command::CopyTimeRangeTo {
+            range: range.clone(),
+            track: range.tracks()[0],
+            frame: range.end(),
+        };
+        if self.enqueue(Request::Edit(command)) {
+            self.pending_time_range_move = Some(PendingTimeRangeMove {
+                source: range,
+                range: destination,
+                project_scope: self.time_selection_project_scope,
+                destination_first_index: first,
+                destination_last_index: last,
+                source_revision: revision,
+                copy_modifier: true,
+            });
+        }
+        true
+    }
+
     pub(super) fn copy_time_selection(&mut self, cut: bool, window: &Window) {
         if self.mode != EditorMode::Arrangement
             || self.midi_focus.is_focused(window)
@@ -1200,3 +1263,6 @@ fn lane_contains(x: f32, y: f32, lane: super::drag::LaneBounds) -> bool {
         && y >= lane.top
         && y < lane.top + lane.height - 1.0
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod duplicate_tests;

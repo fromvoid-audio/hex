@@ -135,7 +135,6 @@ impl EditorView {
         binding.entity.update(cx, |numeric, cx| {
             numeric.set_enabled(enabled, cx);
             let _ = numeric.set_external_value(value, cx);
-            numeric.set_tab_navigation(true, cx);
         });
         div()
             .debug_selector(|| "project-tempo-field".into())

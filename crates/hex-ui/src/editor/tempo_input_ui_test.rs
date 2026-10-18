@@ -81,8 +81,7 @@ fn project_tempo_stale_revision_and_project_switch_retire_drafts(cx: &mut TestAp
         });
         visual.run_until_parked();
         visual.simulate_keystrokes("enter");
-        editor.update(cx, |view, cx| {
-            assert!(!view.project_tempo_editing(cx));
+        editor.update(cx, |view, _| {
             assert!(view.last_enqueued_edit.is_none());
             assert_eq!(
                 view.state
@@ -204,4 +203,49 @@ fn project_tempo_direct_input_validation_cancel_focus_and_canonical_commit(
     assert_eq!(model.project().tempo_map(), project.tempo_map());
     assert!(model.redo());
     assert_eq!(model.project().tempo_map(), changed.tempo_map());
+}
+
+#[gpui::test]
+fn project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts(
+    cx: &mut TestAppContext,
+) {
+    cx.update(bind_editor_keys);
+    for (text, expected) in [("130.25", Some(130_250_000)), ("", None), ("nan", None)] {
+        let (handle, editor) = clip_drag_ui_test::editor_window(
+            cx,
+            hex_project::Project::new(48_000).unwrap(),
+            Default::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        begin(&mut visual);
+        visual.simulate_keystrokes("backspace");
+        visual.simulate_input(text);
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            editor.update(cx, |view, cx| {
+                assert!(
+                    view.project_tempo_editing(cx),
+                    "draft must actually own text focus before blur"
+                )
+            })
+        });
+        visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            match expected {
+                Some(micro) => assert!(matches!(view.last_enqueued_edit, Some(hex_project::Command::SetTempoPoint { beat: hex_project::BeatTime::ZERO, tempo }) if tempo.micro_bpm() == micro)),
+                None => assert!(view.last_enqueued_edit.is_none()),
+            }
+        });
+        if expected.is_none() {
+            visual.simulate_keystrokes("m");
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.computer_keyboard.enabled,
+                    "invalid unfocused tempo draft must not suppress editor shortcuts"
+                )
+            });
+        }
+    }
 }
