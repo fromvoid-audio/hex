@@ -687,11 +687,19 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
         };
         (clip.id(), cell.track())
     });
-    visual.simulate_click("show session", Modifiers::default());
+    visual.simulate_click(
+        visual.debug_bounds("show session").unwrap().center(),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     // The label is in the real Session cell; its normal click selects its owning cell.
     visual.simulate_click(
-        Box::leak(format!("clip-name-{}", session_id.value()).into_boxed_str()),
+        visual
+            .debug_bounds(Box::leak(
+                format!("clip-name-{}", session_id.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center(),
         Modifiers::default(),
     );
     visual.run_until_parked();
@@ -699,7 +707,10 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
         assert_eq!(v.selected_clip, Some(session_id));
         assert_eq!(v.selected_cell, Some((track, scene)));
     });
-    visual.simulate_click("show arrangement", Modifiers::default());
+    visual.simulate_click(
+        visual.debug_bounds("show arrangement").unwrap().center(),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for key in ["cmd-l", "l"] {
@@ -734,7 +745,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
         editor.update(&mut visual, |v, _| {
             let state = v.state.as_ref().unwrap();
             if native {
-                let entry = hex_engine::native_device_catalog_for_class(
+                let entry = &hex_engine::native_device_catalog_for_class(
                     hex_engine::NativeDeviceClass::Effect,
                 )
                 .unwrap()[0];
