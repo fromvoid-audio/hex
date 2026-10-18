@@ -265,6 +265,10 @@ def prepare(root, base=None, *, source='HEAD', model=infer, timeout=120):
             raise Refusal('first generation requires an explicit --base; no previous release is assumed')
         base = dataset['batches'][-1]['input']['source']
     packet = input_packet(root, base, source)
+    try:
+        git(root, 'merge-base', '--is-ancestor', packet['source'], 'HEAD')
+    except Refusal as error:
+        raise Refusal('requested changelog source is not an ancestor of this candidate') from error
     if dataset['batches']:
         last = dataset['batches'][-1]['input']
         if last['input_tree'] == packet['input_tree'] and last['version'] == packet['version'] and last['prompt_version'] == PROMPT_VERSION and (requested_base is None or last['base'] == packet['base']):

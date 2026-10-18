@@ -260,6 +260,27 @@ runpy.run_path(entry,run_name='__main__')
         self.assertEqual(self.git('rev-parse', 'HEAD'), self.source)
         self.assertEqual((self.root / notes.DATASET).read_bytes(), raw)
 
+    def test_prepare_nonancestor_refuses_before_model_or_write(self):
+        notes.prepare(self.root, self.base, model=self.model)
+        candidate = self.commit('retain valid notes')
+        path = self.root / notes.DATASET
+        original = path.read_bytes()
+        self.git('checkout', '-qb', 'sibling-prepare', self.base)
+        (self.root / 'feature.txt').write_text('sibling-only change\n')
+        sibling = self.commit('sibling-only feature')
+        self.git('checkout', '-q', candidate)
+        calls = []
+        def model(directory, timeout):
+            calls.append(directory)
+            return {'entries': [{'category': 'features', 'text': 'a sibling-only feature.', 'commits': [sibling]}], 'reason': 'injected fixture, not inference'}
+        try:
+            with self.assertRaisesRegex(notes.Refusal, 'ancestor'):
+                notes.prepare(self.root, self.base, source=sibling, model=model)
+        finally:
+            self.assertEqual(calls, [], 'nonancestor preparation must not invoke the model')
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(self.git('rev-parse', 'HEAD'), candidate)
+
     def test_literal_workspace_version_scope_and_explicit_refusal(self):
         for raw, expected in [('[workspace.package]\nversion = "0.1.0"\n', '0.1.0'),
                               ("[workspace.package] # workspace metadata\nversion = '1.2.3-beta.1+build' # bounded literal\n", '1.2.3-beta.1+build'),
