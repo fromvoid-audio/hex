@@ -1,0 +1,26 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.42s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::browser::ui_test::compact_picker::browser_picker_near_minimum_resize_captures_and_retains_exact_control_minimum' (100528) panicked at crates/hex-ui/src/editor/browser_picker_compact_ui_test.rs:33:5:
+assertion `left == right` failed: near-minimum drag must capture the exact existing minimum and stay there after release
+  left: 25px
+ right: 23px
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::compact_picker::browser_picker_near_minimum_resize_captures_and_retains_exact_control_minimum ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::compact_picker::browser_picker_near_minimum_resize_captures_and_retains_exact_control_minimum
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 769 filtered out; finished in 0.24s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

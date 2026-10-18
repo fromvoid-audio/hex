@@ -1,0 +1,38 @@
+{
+  "crates/hex-ui/src/editor/browser/layout.rs": {
+    "before_git_blob": "241910a5867cedc32559b416535bc8b466e3622e",
+    "before_sha256": "6914583c9c4f6ef11010c78e1e0c4de73fbddcc66dfc522e4468fc17a6db9cfd",
+    "after_git_blob": "2d2bc52857d304cf52191bd4a85f2c8b18be1f7b",
+    "after_sha256": "72d2eea00ba27eeaffe4439f814a5ebb1f8e99f284605459a501f74945f4d0e7"
+  },
+  "crates/hex-ui/src/editor/browser_picker_compact_ui_test.rs": {
+    "before_git_blob": null,
+    "before_sha256": null,
+    "after_git_blob": "41eee4f43db31a13de69d2b2dc7868238732f4b5",
+    "after_sha256": "e917dd042bb48bcf43fbd8c69834fdd05db4b55745ca4d3485342a79120d5d4b"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_git_blob": "01e5ce257967c03573b1b2fcaf15c170ce6f65ce",
+    "before_sha256": "f7605803ec65b1523b166674de07e11664b44650f1bde53da5496db77b28faaf",
+    "after_git_blob": "55ef4852b266c76fae3b3505e0c8ad6935b8578c",
+    "after_sha256": "d38b22614270678a3c6fb991c7bd69fd67311437f927ec94f02403a6e41b1d5d"
+  },
+  "docs/browser-places.md": {
+    "before_git_blob": "985e2147fd9f96a5fed7921296a737ce121075ec",
+    "before_sha256": "68c01754fa0f6c0181f848633d1bfe7b030be416a966ba41e35be586533017dc",
+    "after_git_blob": "72298ab7acb696a3937b8512189a75d1b9700a4d",
+    "after_sha256": "ccdc1c5ac5983a52deefed3b4d3f09690101bd4380656032edec761a64eb19ed"
+  },
+  "scripts/check-ui-style.py": {
+    "before_git_blob": "3ff6c360e5dc75fdec7b5207012f4c5818f694ea",
+    "before_sha256": "ba60f9ba3e34bbfdc1b64b3ab50d6d78f38435ec3e6cdeb6ac5af098bed2a75f",
+    "after_git_blob": "59c2ac3b1e58f4b6d28e7042fadef29d2d808f3a",
+    "after_sha256": "d4df8ca1be9604cf957bfd2366e1f9e35504b7ea777b8722bfb163333b445760"
+  },
+  "todo.md": {
+    "before_git_blob": "b5db6ecd61c6a981cc7a3bf4fea0e5244644d6d0",
+    "before_sha256": "50438f4f5240b2de4cc68894de7e8b6288f8e5a25b867b6f8ea31c188a5a0051",
+    "after_git_blob": "235a82af3c4066e241fb1f3ea661b9e6501aa072",
+    "after_sha256": "989c8bd0a8e78f8f0e9cde8f1e3fbe6e30332289bc0b186822ad4eef03daaffd"
+  }
+}

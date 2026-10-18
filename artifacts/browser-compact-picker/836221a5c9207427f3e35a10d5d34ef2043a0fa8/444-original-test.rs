@@ -1,0 +1,34 @@
+//! Pointer resize and painted compact-heading contract; no native GPU claim.
+use super::*;
+
+fn picker(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>, PreferencesTestDirectory) {
+    cx.update(crate::editor::bind_editor_keys);
+    let directory=PreferencesTestDirectory::new();
+    let samples=directory.0.join("samples");
+    std::fs::create_dir_all(&samples).unwrap();
+    let handle=*cx.add_window(|_,_|Empty);
+    let editor=cx.update_window(handle,|_,window,cx|window.replace_root(cx,|window,cx|EditorView::new_for_test_with_browser_directory(window,cx,Service::new(48_000,16,8_000_000).unwrap(),&directory.0))).unwrap();
+    editor.read_with(cx,|view,_|{
+        assert_eq!(view.browser.directory,samples);
+        assert_eq!(view.browser.places,vec![samples.clone()]);
+        assert_eq!(view.sample_roots(),vec![samples]);
+    });
+    (handle,editor,directory)
+}
+
+#[gpui::test]
+fn browser_picker_near_minimum_resize_captures_and_retains_exact_control_minimum(cx:&mut TestAppContext) {
+    let(handle,_editor,_directory)=picker(cx);
+    let visual=&mut VisualTestContext::from_window(handle,cx);
+    visual.run_until_parked();
+    let minimum=f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width)+1.0;
+    let divider=visual.debug_bounds("browser-sidebar-resize").unwrap();
+    let before=visual.debug_bounds("browser-sidebar").unwrap();
+    let near=minimum+f32::from(divider.size.width)*0.5;
+    let target=divider.center()+point(px(near)-before.size.width,px(0.0));
+    visual.simulate_mouse_down(divider.center(),MouseButton::Left,Modifiers::default());
+    visual.simulate_mouse_move(target,MouseButton::Left,Modifiers::default());
+    visual.simulate_mouse_up(target,MouseButton::Left,Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("browser-sidebar").unwrap().size.width,px(minimum),"near-minimum drag must capture the exact existing minimum and stay there after release");
+}

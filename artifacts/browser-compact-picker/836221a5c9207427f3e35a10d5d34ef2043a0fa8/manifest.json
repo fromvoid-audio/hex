@@ -1,0 +1,157 @@
+{
+  "ticket": 2841,
+  "canonical_pr": 444,
+  "head": "836221a5c9207427f3e35a10d5d34ef2043a0fa8",
+  "tree": "5696c37070cbdf6f9f82f48f78a7c762d8d8b2d1",
+  "expected_before": "1f9bfe778e8e5338b8dcbfaadd9b037df1aa7f9b",
+  "expected_before_tree": "660e6e2759a5762d97a900817591aa730c63c1cf",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_picker_compact_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-places.md",
+    "scripts/check-ui-style.py",
+    "todo.md"
+  ],
+  "commands": [
+    {
+      "name": "browser",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "browser",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/444-final-browser.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/444-final-clippy.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/444-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/444-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/444-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/444-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/444-final-diff.log"
+    }
+  ],
+  "original_red": {
+    "source": "1f9bfe778e8e5338b8dcbfaadd9b037df1aa7f9b",
+    "log": "444-original-red.log",
+    "outcome": "actual pointer drag near min then mouseup retained25px instead of required23px,0PASS1FAIL; exact original test/registration snapshots+patches included"
+  },
+  "final_results": {
+    "browser": "97PASS0failed0ignored675filtered26.85s; new3actual pointer/scene cases plus original4picker geometry/clipping/gear cases; existing focus/source/audition/query/tree/Place interactions retained",
+    "clippy": "UI all-targets ui-test-support -Dwarnings PASS",
+    "guards": "architecture/GPUI/style/fmt/diff all0; exact caption-helper recognition added, not rawtext waiver",
+    "fullCI": "notrun; solemerger finalcandidate qualification"
+  },
+  "retained_diagnostics": {
+    "444-first-picker-green.log": "compile only: (&str,&str) is not ElementId; used existing SharedString identity, no vendor/API edits",
+    "444-picker-matrix.log": "6PASS1FAIL actual79.25px layout rendered79.5px; ordinary fractional-width assertion allowed existing <=0.5px rounding, capture/release integer widths remain exact",
+    "444-fractional-candidate.patch": "tracked diff on parent; add444-fractional-candidate-test.rs at newbrowser_picker_compact_ui_test.rs for exact unpublished candidate",
+    "444-pre-style-boundary-checks.json": "Clippy/architecture/GPUI PASS then styleFAIL (new helper absent from explicit view-component list); fmt/diff notrun in this attempt, not falsely green",
+    "444-style-failure-console.log": "tool console transcription explicitly labeled; redirected first style-failure log replaced by successful rerun, original exit1 retained in checksJSON, no claim this is untouched raw log",
+    "444-original-style-guard.py": "exact guard before narrow helper registration; source helper already routes captions via theme::text; final allchecks rerun"
+  },
+  "scope": "Only transient picker heading/resize refinement. Original text linebox retained under native hidden visibility, separator overlay centered22pxcolumn. Same23pxmin; capture4px/release8px currentgesturehysteresis, outside continuous. Item iconcatalog/nativepaths/persistence/settingsgear/focus/textcase/palette unchanged.",
+  "limits": [
+    "No native optimized physical drag/hover/GPU/accessibility acceptance established",
+    "No full required prospective source CI or merge by implementer",
+    "No static-heading accessibility role added; full names retained in labels and hover tooltips",
+    "414 shared sandbox remains separate; newtestsuse existing bounded363constructor/callerRAII, no globalFSclosurecustody claim",
+    "400 focus-loss remains separate unresolved"
+  ],
+  "payloads": {
+    "444-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "444-final-browser.log": "750d014a878418355d73933d7d7798e152e86a936ea3ce6ce5240b3c019d1aef",
+    "444-final-checks.json": "a196c5b75b5d621daf48a1ce9f45f7c1d663c8b1f1a54bfed986d3f5a5b62e1d",
+    "444-final-clippy.log": "21b8867d3c5ccc4eb378119ce5d100002ac9b95be4f46ffbde04de644c8f7fe1",
+    "444-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "444-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "444-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "444-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "444-first-picker-green.log": "5094ab75a119699189f9ff61c7c05f242d08c204e0a02cdc4b19d4ebaf0462ca",
+    "444-focused-checks.py": "bc639543d7abe71e85781188e33655a2fb1fb055da9e3194bda9e5ca95352922",
+    "444-fractional-candidate-test.rs": "83c136365987288d4c44520a26f9da3500f01bd4db3ffcd097736f9d30149fe7",
+    "444-fractional-candidate.patch": "f012a2a5d7da3291fb0c6379303a7c5bb2676b3246ef5996a1a15694dd416ba5",
+    "444-original-red.log": "bb4056238bb9bea8f01a3e8410a987605d282bad16b3d73b637ce1a5a5222677",
+    "444-original-registration.rs": "d38b22614270678a3c6fb991c7bd69fd67311437f927ec94f02403a6e41b1d5d",
+    "444-original-style-guard.py": "ba60f9ba3e34bbfdc1b64b3ab50d6d78f38435ec3e6cdeb6ac5af098bed2a75f",
+    "444-original-test.rs": "0781f6098847c8d5240b99d9c66db6afe89503b5eb6c645a1dc6b93276eb488e",
+    "444-picker-matrix.log": "54e455577fa1dd36e777fba08ca9a515fb4ca249b0fceb585c36c90ae20c0c88",
+    "444-pre-style-boundary-checks.json": "bc75c188d14b62abfd441b3d3b3b3f2f92e00c818034fc639065e3e4d56032c2",
+    "444-publish-evidence.py": "259bde10fc6b3c35cb81bff50cc77da33f9b704ee47f23be9b5bdf71b270f40a",
+    "444-style-failure-console.log": "61c664c9fc1b63ad19327a4f9b7dcf0cbf220671ad42616ed1c607970bf60224",
+    "before-after-hashes.json": "0931b9a94efb5fcb4edbfd57c17d9f98342d8167ab56b5e6b47ad2922b3f723e",
+    "browser_picker_compact_ui_test.rs.original-test.patch": "f149ad47c7b4c395202e6005d7037721923a199ca53c9ea4b86fba83c760a645",
+    "browser_ui_test.rs.original-test.patch": "79c6b1dc0ceb4439e05132364f73abe98ca070ba58fbfb6cc7709e00b2bbbce1",
+    "integration-note.md": "e521dadf50efc87239a0a91f23409fe3ae06e1d872da8592c2cc591f79851634",
+    "native-checklist.md": "102aa4f3145ff7a3bb73c99e9d6832bea9da377f7b08cd36febfc5a3faf37040",
+    "source.patch": "9e818e0dee745c2141ca9d747bde89b65fe6658b2aeadce5857f50339ff4a259"
+  }
+}

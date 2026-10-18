@@ -1,0 +1,6 @@
+Original style-failure console output transcribed from the tool result (the redirected log was replaced by the final successful rerun; not represented as an untouched raw log). Exit1 is preserved in444-pre-style-boundary-checks.json, and exact original guard source in444-original-style-guard.py.
+crates/hex-ui/src/editor/browser/layout.rs:293: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/browser/layout.rs:348: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/browser/layout.rs:349: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/browser/layout.rs:413: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/browser/layout.rs:479: route text through theme::text or add an explicit view component

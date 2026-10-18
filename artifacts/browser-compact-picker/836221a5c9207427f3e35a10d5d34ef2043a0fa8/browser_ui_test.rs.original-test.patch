@@ -1,0 +1,9 @@
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4757,3 +4757,6 @@
+         assert!(view.pending_audio_commands.is_empty());
+     });
+ }
++
++#[path = "browser_picker_compact_ui_test.rs"]
++mod compact_picker;
