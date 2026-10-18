@@ -259,6 +259,32 @@ impl PreparedDeviceSample {
         reservation: ResidentResourcePlanReservation,
         cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<DeviceResourceBank, ResourcePreparationError> {
+        self.resolve_resource_plan_with_sources_on_control(
+            source,
+            candidate,
+            sources,
+            assets,
+            reservation,
+            cancel,
+        )?
+        .as_engine_plan()
+        .prepare_on_control(reservation, cancel)
+    }
+    /// Actual assignment/source checks precede resolving borrowed input rows.
+    /// This view is not worker/request freshness or an aggregate reservation;
+    /// the caller must retain the actual transition and preparation custody.
+    pub(crate) fn resolve_resource_plan_with_sources_on_control<'scope>(
+        &'scope self,
+        source: &Project,
+        candidate: &Project,
+        sources: &'scope crate::resource_plan::producer::ResidentResourceSources<'_>,
+        assets: &[AssetId],
+        reservation: ResidentResourcePlanReservation,
+        cancel: &dyn hex_engine::CancellationQuery,
+    ) -> Result<
+        crate::resource_plan::producer::ResolvedOriginalResources<'scope>,
+        ResourcePreparationError,
+    > {
         self.validate_target_on_control(source)
             .map_err(|_| ResourcePreparationError::InvalidSource)?;
         if candidate.sample_rate() != source.sample_rate() {
@@ -297,7 +323,12 @@ impl PreparedDeviceSample {
                 .min(reservation.max_construction_peak_bytes),
             cancel,
         )?;
-        sources.prepare(assets, Some((asset, &self.source)), reservation, cancel)
+        sources.resolve(
+            assets,
+            Some((asset, &self.source)),
+            reservation.max_preparation_metadata_bytes,
+            cancel,
+        )
     }
 }
 

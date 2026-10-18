@@ -768,3 +768,114 @@ fn disjoint_pending_resource_projection_works_beside_actual_editor_transition_an
         }
     }
 }
+
+#[test]
+fn resolved_pending_plan_installs_into_actual_preparation_custody_beside_editor_refusal() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported resolved pending affine install");
+        return;
+    }
+    for stereo in [false, true] {
+        eprintln!("SUPPORTED resolved pending affine install stereo={stereo}");
+        let (mut session, device) = fixture();
+        let before = session.project().clone();
+        let undo = session.editor.undo_storage_on_control().clone();
+        let redo = session.editor.redo_storage_on_control().clone();
+        let original = if stereo {
+            OwnedAudioSource::try_resident(24000, vec![[0.25, -0.5]; 4])
+                .ok()
+                .unwrap()
+        } else {
+            OwnedAudioSource::try_resident_mono(24000, vec![0.25; 4])
+                .ok()
+                .unwrap()
+        };
+        let pending = PreparedDeviceSample::from_native_on_control(
+            device,
+            session.project().device(device).unwrap().state(),
+            "pending.wav".into(),
+            original,
+        )
+        .unwrap();
+        let pcm_closed = || {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(
+                hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 32,
+                    handle_rows: 16,
+                    root_rows: 8,
+                    max_retained_bytes: 1_000_000,
+                    max_construction_peak_bytes: 1_000_000,
+                },
+            )
+            .unwrap();
+            pending
+                .visit_original_pcm_on_control(&mut ledger, AudioStorageRole::Caller)
+                .unwrap();
+            ledger.validate_selected_shared_handles_on_control()
+        };
+        pcm_closed().unwrap();
+        let mut outer = limits().inputs;
+        outer.allocation_items = 256;
+        outer.handle_obligations = 128;
+        outer.max_prepared_data_bytes = 16 * 1024 * 1024;
+        outer.max_construction_data_bytes = 16 * 1024 * 1024;
+        let mut cell = hex_engine::AudioCandidatePreparation::try_new_on_control(0, outer).unwrap();
+        let sources = crate::resource_plan::producer::ResidentResourceSources::new(&session.media);
+        let result: Result<(Created, ()), SessionError> =
+            session.editor.execute_prepared_transition(
+                pending.assignment_command_on_control(),
+                |source, candidate| {
+                    assert_eq!(source, &before);
+                    let reference = candidate.device(device).unwrap().state().asset_references()[0];
+                    let asset = candidate
+                        .assets()
+                        .find(|asset| asset.id().value() == reference.asset.value())
+                        .unwrap();
+                    let resolved = pending
+                        .resolve_resource_plan_with_sources_on_control(
+                            source,
+                            candidate,
+                            &sources,
+                            &[asset.id()],
+                            limits(),
+                            &AtomicBool::new(false),
+                        )
+                        .map_err(|_| SessionError::Invalid("input resolution refused"))?;
+                    // Resolution carries only borrowed rows: it has not minted a
+                    // source alias, bank or lease and cannot expose an owning bank.
+                    pcm_closed().unwrap();
+                    cell.operations_on_control()
+                        .install_original_resources_on_control(
+                            &resolved.as_engine_plan(),
+                            limits(),
+                            &AtomicBool::new(false),
+                        )
+                        .map_err(|_| SessionError::Invalid("affine install refused"))?;
+                    // The actual bank is now inside Engine custody. Omitting its
+                    // actual source field independently refuses alias closure.
+                    assert!(pcm_closed().is_err());
+                    assert!(cell.owner_on_control().is_none());
+                    Err(SessionError::Invalid("later preparation refused"))
+                },
+            );
+        assert!(result.is_err());
+        assert_eq!(session.project(), &before);
+        assert_eq!(session.editor.undo_storage_on_control(), &undo);
+        assert_eq!(session.editor.redo_storage_on_control(), &redo);
+        assert!(session.media.is_empty());
+        assert!(!cell.failed_incomplete());
+        assert!(
+            pcm_closed().is_err(),
+            "editor refusal cannot lose installed custody"
+        );
+        cell.cleanup_on_control().unwrap();
+        cell.cleanup_on_control().unwrap();
+        pcm_closed().unwrap();
+        match &pending.source {
+            OriginalAudio::Stereo(audio) => assert_eq!(audio.frames(), &[[0.25, -0.5]; 4]),
+            OriginalAudio::Mono(source) => {
+                assert_eq!(source.view().resident_mono_samples().unwrap(), &[0.25; 4])
+            }
+        }
+    }
+}

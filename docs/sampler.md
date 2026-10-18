@@ -855,3 +855,14 @@ retained extra inputs remain allowed. This scratch is destroyed before the bank
 producer starts. This local validation does not establish worker/request freshness,
 the aggregate old/new construction reservation, installed-bank waveform custody
 or atomic model/history/media/audio publication. Registration remains closed.
+
+The private Session original-input resolver now returns borrowed source rows,
+not a resource bank. The pending assignment helper reuses its actual source and
+candidate checks before resolving these rows. Both the legacy headless helper
+and the nonextracting Engine install use the same concrete producer. An actual
+editor-transition regression installs Mono/Stereo originals into preparation
+custody, then refuses later preparation: Project/Undo/Redo/media stay unchanged,
+the installed bank remains rooted until explicit control cleanup, and omitted
+bank aliases prevent PCM closure in between. This is a local custody integration
+proof; worker request/incarnation binding, pending waveform placement, aggregate
+preconstruction reservation and final model/history/audio publication stay open.
