@@ -542,3 +542,79 @@ fn check_retired_pan_then_growth(cx: &mut TestAppContext, stale: bool) {
         });
     }
 }
+
+#[gpui::test]
+fn inward_shift_resize_consumes_last_valid_stationary_pan_step(cx: &mut TestAppContext) {
+    check_inward_last_valid_step(cx, false);
+}
+#[gpui::test]
+fn inward_midi_resize_keeps_positive_extent_at_stationary_pan_limit(cx: &mut TestAppContext) {
+    check_inward_last_valid_step(cx, true);
+}
+fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool) {
+    let viewport = Viewport {
+        start: 100_000,
+        length: 192_000,
+    };
+    let (handle, editor, track, clip, _files) = fixture(cx, midi, Some(viewport));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let down = capture(&mut visual, clip, midi, false);
+    let edge = editor.read_with(&visual, |v, _| {
+        let lane = v.drag_lanes[&track];
+        point(px(lane.left + 3.0), down.y)
+    });
+    let modifiers = Modifiers {
+        shift: !midi,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_move(edge, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| {
+        if !midi {
+            let d = v.active_trim_drag.as_ref().unwrap();
+            assert!(d.stretch_modifier.get());
+            assert!(d.preview.borrow().as_ref().unwrap().clip.duration() > 1);
+        }
+        v.viewport.unwrap()
+    });
+    let now = Instant::now();
+    held_tick(&editor, &mut visual, now);
+    let at_limit = editor.read_with(&visual, |v, _| {
+        let after = v.viewport.unwrap();
+        eprintln!("inward held midi={midi} before={before:?} after={after:?}");
+        assert!(
+            after.start < before.start,
+            "consume valid final partial step rather than reject overshooting full tick"
+        );
+        if midi {
+            let d = v.active_midi_trim_drag.as_ref().unwrap();
+            assert!(d.preview.get().unwrap().length().raw() > 0);
+        } else {
+            let d = v.active_trim_drag.as_ref().unwrap();
+            assert_eq!(
+                d.preview.borrow().as_ref().unwrap().clip.duration(),
+                1,
+                "last legal positive stretch interval"
+            );
+        }
+        after
+    });
+    held_tick(&editor, &mut visual, now + Duration::from_secs(1));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.viewport,
+            Some(at_limit),
+            "no timer drift past legal resize bound"
+        )
+    });
+    visual.simulate_mouse_up(edge, MouseButton::Left, modifiers);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        if midi {
+            assert!(p.midi_clip(clip).unwrap().length().raw() > 0);
+        } else {
+            assert_eq!(p.clip(clip).unwrap().duration(), 1);
+        }
+    });
+}
