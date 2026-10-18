@@ -50,7 +50,7 @@ fn beats_continuous_division_joins_do_not_manufacture_zero_to_dc_edges() {
         let source = vec![[0.5, -0.25]; length];
         for ratio in [0.125, 0.5, 1.0, 1.375, 2.0, 8.0] {
             for tail in [Tail::Forward, Tail::Alternating] {
-                let output = (length as f64 * ratio).round() as usize;
+                let output = (length as f64 * ratio).ceil() as usize;
                 let pcm = prepare(&source, rate, output, tail);
                 for boundary in 1..4 {
                     let src = length / 4 * boundary;
@@ -100,6 +100,113 @@ fn beats_neighbor_join_preserves_original_tone_edge_in_both_channels() {
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn beats_off_gap_restart_preserves_attack_change_without_preecho_or_dc_click() {
+    for rate in [8_000, 44_100, 48_000, 96_000] {
+        let length = rate as usize / 2;
+        let division = length / 4;
+        for background in [[0.5, -0.25], [0.0, 0.0], [0.2, 0.0], [-0.3, 0.3]] {
+            let mut source = vec![background; length];
+            let background_only = prepare(&source, rate, length * 2, Tail::Off);
+            source[division] = [background[0] + 0.35, background[1] - 0.2];
+            let output = length * 2;
+            let pcm = prepare(&source, rate, output, Tail::Off);
+            let attack = linear(length, output)
+                .output_for_source((division as i128) << 32)
+                .unwrap() as usize;
+            assert!(pcm[division..attack].iter().all(|frame| *frame == [0.0; 2]));
+            assert!((pcm[attack][0] - 0.35).abs() < 1e-6);
+            assert!((pcm[attack][1] + 0.2).abs() < 1e-6);
+            assert_eq!(pcm[attack + rate as usize / 500 + 2], background);
+            assert_eq!(
+                &pcm[attack + 1..attack + rate as usize / 500],
+                &background_only[attack + 1..attack + rate as usize / 500],
+                "the impulse must not affect the background's ordinary restart"
+            );
+        }
+    }
+}
+
+#[test]
+fn beats_off_incoherent_zero_mean_background_does_not_become_an_offset_pulse() {
+    for rate in [16_000, 48_000, 96_000] {
+        let length = rate as usize / 2;
+        let source: Vec<Frame> = (0..length)
+            .map(|i| {
+                let noise = if i % 2 == 0 { 0.3 } else { -0.3 };
+                [noise, -noise * 0.7]
+            })
+            .collect();
+        let pcm = prepare(&source, rate, length * 2, Tail::Off);
+        let attack = length / 2;
+        assert!(pcm[length / 4..attack].iter().all(|s| *s == [0.0; 2]));
+        assert_eq!(
+            &pcm[attack..attack + rate as usize / 500],
+            &source[length / 4..length / 4 + rate as usize / 500]
+        );
+    }
+}
+
+#[test]
+fn beats_forward_sustain_preserves_periodic_phase_and_level_after_source_exhaustion() {
+    for rate in [16_000, 48_000] {
+        for hz in [55.0, 220.0, 997.0] {
+            let length = rate as usize / 7;
+            let source: Vec<Frame> = (0..length)
+                .map(|i| {
+                    let value = (std::f64::consts::TAU * hz * i as f64 / f64::from(rate) + 0.4)
+                        .sin() as f32
+                        * 0.5;
+                    [value, -value * 0.7]
+                })
+                .collect();
+            let output = length * 4;
+            let map = linear(length, output);
+            let pcm = render(
+                &Request {
+                    input: Input {
+                        frames: &source,
+                        sample_rate: rate,
+                        region_start: 0,
+                        region_length: length as u64,
+                        phase: 0,
+                        looping: false,
+                        envelope: &[],
+                    },
+                    attacks: &[0],
+                    map: &map,
+                    output_frames: output,
+                    pitch_cents: 0,
+                    mode: Mode::Beats {
+                        division_frames: None,
+                        tail: Tail::Forward,
+                        decay: 100,
+                    },
+                },
+                &mut || false,
+            )
+            .unwrap()
+            .frames;
+            let begin = length + rate as usize / 100;
+            let end = output - rate as usize / 100;
+            let error = (begin..end)
+                .map(|i| {
+                    let expected =
+                        (std::f64::consts::TAU * hz * i as f64 / f64::from(rate) + 0.4).sin() * 0.5;
+                    (f64::from(pcm[i][0]) - expected).powi(2)
+                })
+                .sum::<f64>()
+                / (end - begin) as f64;
+            assert!(
+                error.sqrt() < 0.025,
+                "sustain phase error rate={rate}/hz={hz}: {}",
+                error.sqrt()
+            );
+            assert!(pcm.iter().all(|s| s[1] == -s[0] * 0.7));
         }
     }
 }

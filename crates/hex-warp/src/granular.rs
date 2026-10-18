@@ -23,6 +23,65 @@ fn push_attack(attacks: &mut Vec<Attack>, attack: Attack) -> Result<(), Error> {
     attacks.push(attack);
     Ok(())
 }
+
+/// One-sided endpoint estimate, never sampling the arriving attack. A locally
+/// predictable background uses its endpoint; incoherent noise uses its local
+/// mean so a random last sample does not become a new decaying low-frequency
+/// pulse. The predictability decision and time window are shared by stereo.
+fn off_restart_baseline(
+    input: Input<'_>,
+    bank: &Bandlimited,
+    start: i128,
+    end: i128,
+    pitch: f64,
+    work: &mut Work<'_>,
+) -> Result<[f64; 2], Error> {
+    let available = (((end - start) as f64 / pitch).floor() as usize).max(1);
+    let count = ((input.sample_rate / 2_000).max(2) as usize).min(available);
+    work.check(count as u64 * 64)?;
+    let center = (count - 1) as f64 * 0.5;
+    let mut sum = [0.0; 2];
+    let mut square = [0.0; 2];
+    let mut slope = [0.0; 2];
+    let mut denominator = 0.0;
+    let mut minimum = [f64::INFINITY; 2];
+    let mut maximum = [f64::NEG_INFINITY; 2];
+    for i in 0..count {
+        let t = i as f64 - center;
+        let sample = bank.sample_segment(
+            input,
+            end as f64 - (count - i) as f64 * pitch,
+            start,
+            end - 1,
+        );
+        denominator += t * t;
+        for c in 0..2 {
+            sum[c] += sample[c];
+            square[c] += sample[c] * sample[c];
+            slope[c] += t * sample[c];
+            minimum[c] = minimum[c].min(sample[c]);
+            maximum[c] = maximum[c].max(sample[c]);
+        }
+    }
+    let variance: f64 = (0..2)
+        .map(|c| (square[c] - sum[c] * sum[c] / count as f64).max(0.0))
+        .sum();
+    let fitted = if denominator > 0.0 {
+        slope.iter().map(|s| s * s / denominator).sum()
+    } else {
+        0.0
+    };
+    let predictable = variance - fitted <= variance * 0.05 + 1e-16;
+    Ok(std::array::from_fn(|c| {
+        let mean = sum[c] / count as f64;
+        if predictable && denominator > 0.0 {
+            (mean + slope[c] / denominator * center).clamp(minimum[c], maximum[c])
+        } else {
+            mean
+        }
+    }))
+}
+
 pub(super) fn beats(
     request: &Request<'_>,
     pitch: f64,
@@ -186,9 +245,45 @@ pub(super) fn beats(
         } else {
             duration
         };
+        let after_off_gap = tail == Tail::Off
+            && index > 0
+            && attacks.get(index - 1).is_some_and(|previous| {
+                let native = ((event.source - previous.source) as f64 / pitch).ceil() as u64;
+                event.output - previous.output > native
+            });
+        let onset = if after_off_gap {
+            (u64::from(request.input.sample_rate) / 500).min(sounding_end)
+        } else {
+            0
+        };
+        let baseline = if onset >= 2 {
+            off_restart_baseline(
+                request.input,
+                &bank,
+                attacks[index - 1].source,
+                event.source,
+                pitch,
+                work,
+            )?
+        } else {
+            [0.0; 2]
+        };
+        // A sustained segment joins the NEXT ORIGINAL pre-attack trajectory,
+        // not zero. Finish before its attack so the attack itself is neither
+        // faded nor replayed. Off with an actual silence gap and authored
+        // shortening remain separate from this unshortened sustain repair.
+        let join = if changed_duration
+            && decay == 100
+            && attacks.get(index + 1).is_some()
+            && (tail != Tail::Off || duration as f64 <= native_duration)
+        {
+            (u64::from(request.input.sample_rate) / 500).min(duration / 4)
+        } else {
+            0
+        };
         // A short safety ramp at an actual cut/stop is distinct from the
         // authored shortening envelope. Do not alter exact unity playback.
-        let release = if changed_duration {
+        let release = if changed_duration && join == 0 {
             (u64::from(request.input.sample_rate) / 1_000).min(sounding_end / 4)
         } else {
             0
@@ -256,8 +351,31 @@ pub(super) fn beats(
             } else {
                 1.0
             };
-            for channel in &mut sample {
-                *channel *= envelope * safety;
+            let restart_weight = if onset >= 2 && age < onset as f64 {
+                let x = age / (onset - 1) as f64;
+                1.0 - x * x * x * (10.0 + x * (-15.0 + 6.0 * x))
+            } else {
+                0.0
+            };
+            for (c, channel) in sample.iter_mut().enumerate() {
+                *channel = (*channel - baseline[c] * restart_weight) * envelope * safety;
+            }
+            let until_next = stop - frame;
+            if join > 0 && until_next <= join {
+                work.check(64)?;
+                // Clamp the reconstruction to the outgoing source interval:
+                // no following attack may leak through the sinc filter.
+                let incoming = bank.sample_segment(
+                    request.input,
+                    source_end as f64 - until_next as f64 * pitch,
+                    event.source,
+                    source_end - 1,
+                );
+                let x = (join - until_next + 1) as f64 / join as f64;
+                let weight = x * x * x * (10.0 + x * (-15.0 + 6.0 * x));
+                sample = std::array::from_fn(|channel| {
+                    sample[channel] * (1.0 - weight) + incoming[channel] * weight
+                });
             }
             if let Some(destination) = output.get_mut(frame as usize) {
                 *destination = finite(sample)?;
