@@ -5,6 +5,7 @@ use gpui::{
     MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, Style, TextRun, UTF16Selection,
     UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, rgba, size,
 };
+use hex_widgets::TextCase;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -102,6 +103,11 @@ impl BrowserSearch {
         self.reversed = false;
         self.marked = None;
         cx.notify();
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn painted_text_for_test(&self) -> Option<&str> {
+        self.last_layout.as_ref().map(|line| line.text.as_ref())
     }
 
     fn cursor(&self) -> usize {
@@ -273,6 +279,7 @@ impl BrowserSearch {
             return self.content.len();
         }
         let index = line.closest_index_for_x(point.x - self.last_origin_x.unwrap_or(bounds.left()));
+        let index = TextCase::Lowercase.source_offset(&self.content, index);
         if index == self.content.len() {
             return index;
         }
@@ -474,8 +481,19 @@ impl EntityInputHandler for BrowserSearch {
         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
         let range = self.range_from_utf16(&range);
         Some(Bounds::from_corners(
-            point(origin_x + line.x_for_index(range.start), bounds.top()),
-            point(origin_x + line.x_for_index(range.end), bounds.bottom()),
+            point(
+                origin_x
+                    + line.x_for_index(
+                        TextCase::Lowercase.display_offset(&self.content, range.start),
+                    ),
+                bounds.top(),
+            ),
+            point(
+                origin_x
+                    + line
+                        .x_for_index(TextCase::Lowercase.display_offset(&self.content, range.end)),
+                bounds.bottom(),
+            ),
         ))
     }
 
@@ -488,7 +506,7 @@ impl EntityInputHandler for BrowserSearch {
         let bounds = self.last_bounds?;
         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
         let index = self.last_layout.as_ref()?.index_for_x(point.x - origin_x)?;
-        Some(self.offset_to_utf16(index))
+        Some(self.offset_to_utf16(TextCase::Lowercase.source_offset(&self.content, index)))
     }
 }
 
@@ -630,7 +648,7 @@ impl Element for BrowserSearchElement {
             )
         } else {
             (
-                input.content.clone(),
+                TextCase::Lowercase.present(&input.content),
                 gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Text)).into(),
             )
         };
@@ -642,7 +660,11 @@ impl Element for BrowserSearchElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked) = input.marked.as_ref() {
+        let marked = input.marked.as_ref().map(|range| {
+            TextCase::Lowercase.display_offset(&input.content, range.start)
+                ..TextCase::Lowercase.display_offset(&input.content, range.end)
+        });
+        let runs = if let Some(marked) = marked {
             vec![
                 TextRun {
                     len: marked.start,
@@ -672,7 +694,8 @@ impl Element for BrowserSearchElement {
         let line = window
             .text_system()
             .shape_line(text.into(), font_size, &runs, None);
-        let cursor_x = line.x_for_index(input.cursor());
+        let cursor_x =
+            line.x_for_index(TextCase::Lowercase.display_offset(&input.content, input.cursor()));
         let max_cursor_x = bounds.size.width - px(2.0);
         let text_shift = if cursor_x > max_cursor_x {
             cursor_x - max_cursor_x
@@ -699,11 +722,19 @@ impl Element for BrowserSearchElement {
             Some(fill(
                 Bounds::from_corners(
                     point(
-                        origin_x + line.x_for_index(input.selected.start),
+                        origin_x
+                            + line.x_for_index(
+                                TextCase::Lowercase
+                                    .display_offset(&input.content, input.selected.start),
+                            ),
                         bounds.top(),
                     ),
                     point(
-                        origin_x + line.x_for_index(input.selected.end),
+                        origin_x
+                            + line.x_for_index(
+                                TextCase::Lowercase
+                                    .display_offset(&input.content, input.selected.end),
+                            ),
                         bounds.bottom(),
                     ),
                 ),
@@ -795,3 +826,7 @@ mod tests {
         assert_eq!(lowercase_utf16_offset(raw, 3), "🎛a".len());
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "name_case_ui_test.rs"]
+mod name_case_ui_test;

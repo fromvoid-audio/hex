@@ -32,6 +32,7 @@ fn style() -> ControlStyle {
         dial_rail: 0x000000,
         hover: theme::color(theme::PaletteRole::Hover),
         font_size: 9.0,
+        text_case: hex_widgets::TextCase::Lowercase,
     }
 }
 
