@@ -402,8 +402,11 @@ fn zero_frame_note_is_explicitly_refused() {
 fn arrangement_source_window_editor(high_note_start: BeatTime) -> Editor {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     {
@@ -449,8 +452,11 @@ fn arrangement_bank_ignores_notes_outside_the_emitted_source_window() {
 fn session_source_window_editor(high_note_start: BeatTime) -> Editor {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     {
@@ -1142,8 +1148,11 @@ fn empty_midi_clip_has_no_edges_and_event_capacity_is_two_per_note() {
 fn compile_refuses_pitch_at_or_above_project_nyquist() {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     else {
@@ -1234,6 +1243,12 @@ fn absent_and_bypassed_instruments_keep_midi_extent_and_preview() {
             Created::Track(track) => track,
             _ => panic!("track"),
         };
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
         let clip = add_clip(&mut editor, track, beat(1, 4), beat(3, 4));
         editor
             .execute(Command::AddMidiNote {
