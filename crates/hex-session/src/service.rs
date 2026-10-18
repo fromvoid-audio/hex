@@ -883,6 +883,24 @@ fn view_state(
     unsaved: bool,
     document_path: Option<&Path>,
 ) -> Arc<ViewState> {
+    Arc::new(view_state_owned(
+        session,
+        midi_preview,
+        revision,
+        project_generation,
+        unsaved,
+        document_path,
+    ))
+}
+
+pub(crate) fn view_state_owned(
+    session: &Session,
+    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    revision: u64,
+    project_generation: u64,
+    unsaved: bool,
+    document_path: Option<&Path>,
+) -> ViewState {
     let project = crate::SharedProject::new_on_control(session.project().clone());
     let rate = u64::from(project.sample_rate());
     let latest_clip_end = latest_clip_end(&project);
@@ -892,7 +910,7 @@ fn view_state(
             .map(|region| region.end())
             .unwrap_or(0),
     );
-    Arc::new(ViewState {
+    ViewState {
         canonical_audio_source: Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
             &project,
             project_generation,
@@ -912,7 +930,7 @@ fn view_state(
         revision,
         unsaved,
         document_path: document_path.map(Path::to_path_buf),
-    })
+    }
 }
 
 fn preview_view_state(

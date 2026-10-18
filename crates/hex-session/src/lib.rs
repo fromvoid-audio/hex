@@ -36,6 +36,7 @@ mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
 pub mod service;
+pub mod snapshot_exports;
 pub mod tuning_gesture;
 pub use hex_media::waveform::{
     Peak as CachedPeak, SharedWaveform, Waveform as CachedWaveform, WaveformRead,
