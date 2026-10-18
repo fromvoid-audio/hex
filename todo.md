@@ -5240,3 +5240,12 @@ source handoff is separate from final integration/full CI/merge and delivery.
   missing-Music private fallback, explicit missing/corrupt/populated preferences,
   and a real held catalog save after actual view release then cleanup. Session
   worker joining/native delivery are not claimed; final candidate CI belongs to merger.
+
+- 18 October 2026 — Pulse2841 / PR444: minimum-width source-picker headings retain
+  their original line boxes while painting themed separator marks; full names have
+  tooltips. Near-minimum divider drags capture exactly23px with divider-derived
+  4px/8px capture/release hysteresis; other widths retain continuous resizing.
+  Original actual drag RED retained25px instead of23px. Rendered pointer regressions
+  cover all source-row/glyph positions, separator scene paint/text non-paint, long
+  labels, open settings and repeated capture/expansion. Sole merger owns final full
+  candidate checks/merge; native physical interaction and delivery remain open.

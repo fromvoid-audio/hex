@@ -4899,3 +4899,6 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
 
 #[path = "editor_test_environment_ui_test.rs"]
 mod test_environment;
+
+#[path = "browser_picker_compact_ui_test.rs"]
+mod compact_picker;

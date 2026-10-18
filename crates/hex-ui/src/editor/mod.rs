@@ -22,6 +22,7 @@ mod clip_selection;
 #[cfg(test)]
 mod test_environment;
 
+pub(crate) mod changelog;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
@@ -341,6 +342,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
+    changelog::bind_keys(cx);
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     clip_name::bind_keys(cx);
@@ -661,6 +663,7 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
@@ -703,6 +706,7 @@ pub(super) struct EditorView {
     test_environment: Arc<test_environment::Environment>,
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
+    changelog: changelog::State,
     theme_settings: theme_settings::ThemeSettingsState,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
@@ -1149,6 +1153,7 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
             active_midi_trim_drag: None,
@@ -1182,6 +1187,7 @@ impl EditorView {
             test_environment,
             browser,
             recent_projects,
+            changelog: changelog::State::new(cx),
             theme_settings,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
@@ -1400,6 +1406,8 @@ impl EditorView {
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        // Only a current resize owner may extend the transient display extent.
+        let horizon = horizon.max(self.trim_display_end().unwrap_or(0));
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)
