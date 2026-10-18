@@ -69,6 +69,7 @@ pub use session::{
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
+mod sorted_entries;
 pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
@@ -80,7 +81,8 @@ pub use snapshot::{
     SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
     SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
 };
-use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
+pub use sorted_entries::SortedEntries;
+use std::{fmt, path::PathBuf, sync::Arc};
 pub use timebase::{
     BeatPulse, BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterMapCopyCustody,
     MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout, MeterPoint, MeterPosition,
@@ -169,6 +171,11 @@ impl Asset {
         self.id
     }
     pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+    /// Actual owning path field for control-side capacity inventory. Borrowing
+    /// it creates no path clone and grants no whole-root storage qualification.
+    pub fn path_buffer_on_control(&self) -> &PathBuf {
         &self.path
     }
     pub fn frames(&self) -> u64 {
@@ -466,7 +473,7 @@ pub struct Project {
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,
-    pub(crate) assets: BTreeMap<AssetId, Asset>,
+    pub(crate) assets: SortedEntries<AssetId, Asset>,
     pub(crate) tracks: Vec<Track>,
     pub(crate) returns: Vec<ReturnTrack>,
     pub(crate) session: SessionGrid,
@@ -488,7 +495,7 @@ impl Project {
             sample_rate,
             next_id: 1,
             import_provenance: None,
-            assets: BTreeMap::new(),
+            assets: SortedEntries::new(),
             tracks: Vec::new(),
             returns: Vec::new(),
             session: SessionGrid::default(),
@@ -645,6 +652,11 @@ impl Project {
     }
     pub fn assets(&self) -> impl Iterator<Item = &Asset> {
         self.assets.values()
+    }
+    /// Borrow actual canonical backing, including spare capacity. This is not
+    /// a snapshot/clone or qualification for any child allocation or graph.
+    pub fn asset_entries_on_control(&self) -> &SortedEntries<AssetId, Asset> {
+        &self.assets
     }
     pub fn asset(&self, id: AssetId) -> Option<&Asset> {
         self.assets.get(&id)

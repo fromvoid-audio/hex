@@ -2287,8 +2287,9 @@ impl Project {
         if self.assets.len() >= MAX_ASSETS {
             return Err(Invalid("asset limit reached"));
         }
+        self.assets.try_reserve_on_control(1, MAX_ASSETS)?;
         let id = AssetId(self.allocate_id()?);
-        self.assets.insert(
+        self.assets.try_insert_on_control(
             id,
             Asset {
                 id,
@@ -2298,7 +2299,8 @@ impl Project {
                 playback_frames,
                 conversion_version,
             },
-        );
+            MAX_ASSETS,
+        )?;
         Ok(id)
     }
 }

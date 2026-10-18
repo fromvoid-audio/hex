@@ -5,11 +5,7 @@ use crate::{
     MAX_CLIPS, MAX_DEVICES, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MeterPoint, MidiClip, MidiNote,
     NoteId, Project, TempoPoint, Track, TrackContent, TrackId, validate_conversion_metadata,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
@@ -474,7 +470,10 @@ impl Project {
 
         let mut ids = BTreeSet::new();
         let mut max_id = 0_u64;
-        let mut assets = BTreeMap::new();
+        let mut assets = Vec::new();
+        assets
+            .try_reserve_exact(snapshot.assets.len())
+            .map_err(|_| Invalid("could not reserve project asset entries"))?;
         for asset in snapshot.assets {
             insert_id(asset.id, &mut ids, &mut max_id)?;
             if asset.path.as_os_str().is_empty() {
@@ -488,7 +487,7 @@ impl Project {
                 asset.conversion_version,
             )?;
             let id = AssetId(asset.id);
-            assets.insert(
+            assets.push((
                 id,
                 Asset {
                     id,
@@ -498,8 +497,10 @@ impl Project {
                     playback_frames: asset.playback_frames,
                     conversion_version: asset.conversion_version,
                 },
-            );
+            ));
         }
+
+        let assets = crate::SortedEntries::try_from_unsorted_on_control(assets, MAX_ASSETS)?;
 
         let mut total_clips = 0_usize;
         let mut total_devices = 0_usize;
