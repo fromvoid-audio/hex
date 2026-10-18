@@ -596,8 +596,12 @@ mod ui_tests {
         editor.update_in(&mut visual, |view, window, _cx| view.focus.focus(window));
         visual.simulate_keystrokes("cmd-shift-l");
         visual.run_until_parked();
-        assert!(visual.debug_bounds("changelog-note-0-features-0").is_some());
+        assert!(visual.debug_bounds("changelog-notes").is_some());
+        let embedded: serde_json::Value =
+            serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/changelog.json")))
+                .unwrap();
         editor.read_with(&visual, |view, _| {
+            assert_projection(&view.changelog.document, &embedded);
             assert!(view.changelog.open);
             assert!(!view.changelog.document.batches.is_empty());
             assert!(
@@ -674,15 +678,15 @@ mod ui_tests {
     fn long_notes_scroll_panel_is_bounded_and_close_does_not_edit_project(cx: &mut TestAppContext) {
         let (_directory, mut visual, editor) = fixture(cx);
         editor.update(&mut visual, |view, cx| {
-            view.changelog.document =
-                notes(include_str!(concat!(env!("OUT_DIR"), "/changelog.json"))).unwrap();
-            view.changelog.document.batches[0].groups = [
-                Vec::new(),
-                Vec::new(),
+            view.changelog.document = notes(&raw_entries(serde_json::json!(
                 (0..100)
-                    .map(|n| format!("example user-facing fixture note {n}"))
-                    .collect(),
-            ];
+                    .map(|n| serde_json::json!({
+                        "category":"fixes",
+                        "text":format!("example user-facing fixture note {n}")
+                    }))
+                    .collect::<Vec<_>>()
+            )))
+            .unwrap();
             cx.notify();
         });
         click(&mut visual, "open-changelog");
@@ -731,11 +735,75 @@ mod ui_tests {
         })
     }
 
+    fn assert_projection(document: &Document, original: &serde_json::Value) {
+        let batches = original["batches"].as_array().unwrap();
+        assert_eq!(document.batches.len(), batches.len());
+        for (batch, input) in document.batches.iter().zip(batches.iter().rev()) {
+            assert_eq!(batch.version, input["input"]["version"].as_str().unwrap());
+            assert_eq!(batch.source, input["input"]["source"].as_str().unwrap());
+            let entries = input["result"]["entries"].as_array().unwrap();
+            assert_eq!(
+                batch.groups.iter().map(Vec::len).sum::<usize>(),
+                entries.len()
+            );
+            for category in Category::ALL {
+                let expected: Vec<_> = entries
+                    .iter()
+                    .filter(|entry| entry["category"] == category.label())
+                    .map(|entry| entry["text"].as_str().unwrap())
+                    .collect();
+                assert_eq!(batch.groups[category.index()], expected);
+            }
+            assert!(
+                batch
+                    .details
+                    .contains(&format!("version {}", batch.version))
+            );
+            assert!(
+                batch
+                    .details
+                    .contains(&format!("notes through {}", batch.source))
+            );
+            for field in [
+                &input["input"]["base"],
+                &input["generated_at"],
+                &input["generator"],
+                &input["execution"]["origin"],
+                &input["execution"]["evidence_commit"],
+            ] {
+                if let Some(value) = field.as_str() {
+                    assert!(batch.details.contains(value), "complete original metadata");
+                }
+            }
+        }
+    }
+
+    // Synthetic valid reader history, not generated AI evidence. Deliberately
+    // unequal counts/category sets expose newest-display vs oldest-storage order.
+    fn grouped_history_fixture() -> serde_json::Value {
+        serde_json::json!({"format":1,"batches":[
+            {"input":{"version":"0.1.0","source":"1111111111111111111111111111111111111111"},
+             "result":{"entries":[
+                {"category":"fixes","text":"older first fix"},
+                {"category":"fixes","text":"older second fix"}]}},
+            {"input":{"version":"0.2.0","base":"1111111111111111111111111111111111111111",
+                      "source":"2222222222222222222222222222222222222222"},
+             "generated_at":"fixture time","generator":"test fixture",
+             "result":{"entries":[
+                {"category":"fixes","text":"newer complete fix"},
+                {"category":"features","text":"newer first feature"},
+                {"category":"improvements","text":"newer complete improvement"},
+                {"category":"features","text":"newer second feature"}]}}
+        ]})
+    }
+
     #[gpui::test]
     fn changelog_grouped_headings_render_once_and_rows_hover_independently(
         cx: &mut TestAppContext,
     ) {
         let (_directory, mut visual, editor) = fixture(cx);
+        let original = grouped_history_fixture();
+        install(&editor, &mut visual, &original.to_string());
         click(&mut visual, "open-changelog");
         for (selector, role) in [
             ("changelog-heading-0-features", PaletteRole::Secondary),
@@ -751,35 +819,29 @@ mod ui_tests {
                 rgb(theme::color(role)).into()
             );
         }
-        // Original generated notes are complete and ordered within each category.
-        let original: serde_json::Value =
-            serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/changelog.json")))
-                .unwrap();
+        // Match every newest-first displayed batch to its oldest-first input,
+        // not just whichever release happened to be embedded when this test began.
         editor.read_with(&visual, |view, _| {
-            let batch = &view.changelog.document.batches[0];
-            assert_eq!(batch.groups.iter().map(Vec::len).sum::<usize>(), 7);
-            for category in Category::ALL {
-                let expected: Vec<_> = original["batches"][0]["result"]["entries"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|entry| entry["category"] == category.label())
-                    .map(|entry| entry["text"].as_str().unwrap())
-                    .collect();
-                assert_eq!(batch.groups[category.index()], expected);
-            }
-            assert!(
-                batch
-                    .details
-                    .contains("cdba26a815a2286ed43c2a6ed5089f5c9b88613f")
-            );
-            assert!(
-                batch
-                    .details
-                    .contains("cb8befc4f2dd19d0af1fd02932cb52941653b479")
-            );
-            assert!(batch.details.contains("configured mac codex cli"));
+            assert_projection(&view.changelog.document, &original);
         });
+        for (selector, present) in [
+            ("changelog-heading-1-features", false),
+            ("changelog-heading-1-improvements", false),
+            ("changelog-heading-1-fixes", true),
+            ("changelog-note-1-fixes-0", true),
+            ("changelog-note-1-fixes-1", true),
+            ("changelog-note-1-fixes-2", false),
+            ("changelog-note-0-features-2", false),
+            ("changelog-note-0-improvements-1", false),
+            ("changelog-note-0-fixes-0", true),
+            ("changelog-note-0-fixes-1", false),
+        ] {
+            assert_eq!(
+                visual.debug_bounds(selector).is_some(),
+                present,
+                "{selector}"
+            );
+        }
         let first = visual.debug_bounds("changelog-note-0-features-0").unwrap();
         let second = visual.debug_bounds("changelog-note-0-features-1").unwrap();
         let header = visual.debug_bounds("changelog-heading-0-features").unwrap();
