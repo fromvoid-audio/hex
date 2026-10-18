@@ -72,6 +72,30 @@ pub(super) fn reserved_state_bytes() -> usize {
     std::mem::size_of::<ClaimedState>()
 }
 impl AudioCandidateOwner {
+    /// Configure existing metering flags while the actual constructor is still
+    /// rooted and unpublished. No runtime/owner escapes and no storage is
+    /// constructed here. Native hosts perform this BEFORE final inspection;
+    /// this is not a publication or resource-admission proof.
+    pub fn prepare_device_metering_on_control(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), AudioStorageError> {
+        if self.inner.phase != AudioCandidateDisposalPhase::Owned
+            || self.inner.runtime_receipt.is_some()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if !runtime.playback.candidate_constructor_is_fresh() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        runtime.playback.set_device_metering(enabled);
+        Ok(())
+    }
     /// All reported refusals precede owner movement. Box allocation follows the
     /// existing control-side fatal-OOM convention. The host must preflight and
     /// charge this wrapper plus all simultaneous anchor/runtime storage first.
@@ -520,6 +544,114 @@ impl ClaimedAudioCandidateRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn constructor_metering_setup_preserves_pcm_storage_and_actual_device_peaks() {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        if !crate::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported constructor metering; no positive setup proof");
+            return;
+        }
+        eprintln!("SUPPORTED actual rooted constructor metering and Utility output peaks");
+        let mut snapshot = crate::audio_preparation::candidate_test_project().snapshot();
+        let device = snapshot.next_id;
+        snapshot.tracks[0]
+            .devices
+            .push(hex_project::DeviceSnapshot {
+                id: device,
+                bypassed: false,
+                state: hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            });
+        snapshot.next_id += 1;
+        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+        let asset = project.assets().next().unwrap().id();
+        let mut results = Vec::new();
+        for enabled in [false, true] {
+            let quote = AudioCandidateReservationQuote::for_project(&project, 1).unwrap();
+            let mut cell = AudioCandidatePreparation::try_new_on_control(
+                1,
+                quote.storage_reservation(1024).unwrap(),
+            )
+            .unwrap();
+            let audio = crate::Audio::new(48_000, vec![[0.25, -0.5]; 8]).unwrap();
+            cell.copy_resident_source_on_control(asset, &audio).unwrap();
+            cell.prepare_on_control(
+                &project,
+                11,
+                crate::AudioSourceContext {
+                    project_generation: 2,
+                    editor_revision: 7,
+                },
+            )
+            .unwrap();
+            let owner = cell.owner_on_control().unwrap();
+            let address = owner.inner.runtime.as_deref().unwrap() as *const RuntimeOwner;
+            owner.prepare_device_metering_on_control(enabled).unwrap();
+            assert_eq!(
+                owner.inner.runtime.as_deref().unwrap() as *const RuntimeOwner,
+                address
+            );
+            let summary = owner
+                .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 2048,
+                    root_rows: 4,
+                    max_retained_bytes: 64 * 1024 * 1024,
+                    max_construction_peak_bytes: 64 * 1024 * 1024,
+                })
+                .unwrap();
+            let (mut runtime, mut anchors) = cell.split_for_publication_on_control().unwrap();
+            assert_eq!(
+                anchors.constructor_claims(&runtime).unwrap().summary(),
+                Some(summary)
+            );
+            assert!(
+                anchors
+                    .owner
+                    .prepare_device_metering_on_control(!enabled)
+                    .is_err()
+            );
+            runtime
+                .apply_action(crate::PlaybackAction::Transport(
+                    crate::PlaybackCommand::Play,
+                ))
+                .unwrap();
+            let mut pcm = [[0.0; 2]; 8];
+            runtime
+                .render_with_post_node_observer(&mut pcm, None)
+                .unwrap();
+            let root = anchors
+                .owner
+                .inner
+                .custody
+                .candidate_root_view(&anchors.owner.inner.token)
+                .unwrap();
+            let peaks = root
+                .arrangement()
+                .device_meter(device)
+                .unwrap()
+                .take_peaks();
+            if enabled {
+                // DeviceMeter reports aggregate input/output peaks, rather
+                // than separate left/right channels. Unity Utility preserves
+                // the independent 0.5 absolute stereo input maximum.
+                assert_eq!(peaks, [0.5, 0.5]);
+            } else {
+                assert_eq!(peaks, [0.0, 0.0]);
+            }
+            results.push(pcm);
+            let proof = runtime.dispose_on_control().unwrap();
+            let mut cells = [Some(anchors)];
+            proof.record_anchor_cells_on_control(&mut cells).unwrap();
+            let anchors = cells[0].as_mut().unwrap();
+            anchors.finish_disposal_on_control().unwrap();
+            let _bank = anchors.recover_inputs_on_control().unwrap();
+            cell.cleanup_on_control().unwrap();
+        }
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], [[0.25, -0.5]; 8]);
+    }
     #[test]
     fn preallocated_split_drop_and_transfer_preserve_actual_cell_and_allocation_ownership() {
         if !crate::audio_storage_constructor_layout_supported() {

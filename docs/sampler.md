@@ -15,14 +15,14 @@ gate it. Pulse2679 revision17 preserves the full existing feature acceptance.
 PR296 and PR369 remain merged kernel/lifetime prerequisites. PR389 remains the
 canonical resource foundation; selected storage/ABI proofs do not complete it.
 
-Remaining critical path (source checkpoint 898e, with the approved Vec extension
-and concrete batch adapter currently under implementation):
+Remaining critical path (rooted stage checkpoint 0bec, with metering and claim
+handle preconstruction continuing in the same canonical implementation):
 
 1. **Ownership and publication blocking registration.** Selected PCM, canonical
    model/state, waveform, gain/MIDI preview, retained-record and pending-decoder
    child proofs exist; they do not qualify the whole graph. Finish the approved
-   all-slot outer guards (including vacancies), concrete inner guards and actual
-   nonstatic guard-Vec accounting in one ledger. Join EVERY actual worker/native
+   selected all-slot outer/inner/Vec inventory into final publication (the
+   component guard and backing proofs exist). Join EVERY actual worker/native
    current/candidate/outgoing/carried/history/pending/unreclaimed owner, including
    legacy Event/UI/canvas fields still unqualified. Reserve old/new/input/temp
    construction overlap before work, revalidate actual source/candidate/cancel
@@ -44,11 +44,13 @@ and concrete batch adapter currently under implementation):
    rollback/partition kernels exist. Canonical manual Slice insert/move/remove
    now changes real note regions without pitch transposition. Finish real
    filter/envelope modulation, LFO/modulation, retrigger/glide/voice behavior,
-   fades/crop and prepared pitch-independent Warp through the implemented stretch
+   crop and prepared pitch-independent Warp through the implemented stretch
    boundary. Complete high-quality rate/pitch resampling and independent alias,
    transient/stereo/loop/partition tests; linear interpolation is not a quality
    acceptance claim. New parameters must reach current state/preparation/Undo,
    not just metadata. No historical-alpha conversion is required.
+   One-Shot fades and atomic compound source/loop flag patching now have actual
+   PCM/state regressions; their panel and canonical gesture wiring remain open.
 4. **Functional clean native UI is not implemented yet.** Borrowed authored
    reads, exact source-bound waveform queries, geometry reuse and canonical
    Slice edit primitives are preparation, not a panel. Build the actual compact
@@ -579,3 +581,32 @@ Slice key regions, host metadata/reference preservation and malformed/final-geom
 refusal. Codec, runtime layout, PCM ownership and registry admission are unchanged.
 Functional marker overlay, canonical gesture/Undo wiring and the full panel remain
 required alongside actual admitted loading.
+
+## publication preconstruction
+
+The rooted construction cell now retains its original runtime while the actual
+empty split wrapper and unpublished native State are allocated before the short
+terminal scope. A lifetime-bound split preparation prevents cell mutation and
+leaves the original owner rooted if discarded before transfer. The transfer
+moves the same runtime Box, group and journal allocations into the empty wrapper;
+it does not compile or copy PCM again. Its accepted component proof does not
+qualify a native graph or authorize publication.
+
+Device metering is configured on the still-owned fresh runtime before sealing
+and splitting. An independent Utility test checks actual aggregate input/output
+peaks, identical PCM with metering disabled/enabled, unchanged runtime address,
+valid constructor claims and refusal of setup on a leased anchor. Metering does
+not create an owner or allocation. Native State construction also precreates its
+actual Root/Life handle pairs. Binding moves these handles into claims; a refused
+binding retains them in returned metadata until normal control retirement rather
+than destroying handles in the transfer tail. The enlarged fixed State body is
+charged by its actual size through the existing unchanged reservation ceilings.
+
+The current path still performs candidate-local sealing and legacy both-half
+claim checks. It does **not** yet hold all external and eligible-native guards
+continuously around a full current union/peak inspection and reserved queue
+commit. The private already-held-bank helpers are preparation for that operation,
+not a reusable scalar permit. Actual worker/native enclosing storage, construction
+overlap, cancellation linearization and the final infallible queue tail remain
+required before Sampler registration. The functional panel, complete DSP and
+musical workflow above remain the deliverable.

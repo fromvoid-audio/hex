@@ -160,6 +160,13 @@ struct Claims {
     successor_dependency: bool,
     resources: RootResourceWitness,
 }
+// Actual precreated handles, not installation authority. A rejected/closed
+// binding keeps these in returned metadata until normal control retirement;
+// the ownership-transfer tail neither clones nor destroys them.
+struct ClaimHandles {
+    root: CandidateRoot,
+    life: Arc<Life>,
+}
 #[derive(Clone, Copy)]
 pub(in crate::candidate_custody) struct Header {
     pub(in crate::candidate_custody) revision: u64,
@@ -193,6 +200,7 @@ struct State {
     claims: Option<Claims>,
     spare_successor: Option<Claims>,
     covering_successor: Option<Claims>,
+    pending_claim_handles: Option<[ClaimHandles; 2]>,
     manifest: Option<AudioCandidateTransfer>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
     streaming: Option<streaming::Workspace>,
@@ -505,11 +513,18 @@ impl super::Custody {
     pub(in crate::candidate_custody) fn stage_sealed(
         &self,
         root: &CandidateRoot,
-        owner: AudioCandidateOwner,
+        mut owner: AudioCandidateOwner,
         domains: Vec<AudioCandidateDomainToken>,
         header: Header,
         summary: AudioCandidateConstructorSummary,
     ) -> Result<(Queued, AudioCandidateTicket), AudioCandidateEligibleStageRefusal> {
+        if owner.prepare_device_metering_on_control(true).is_err() {
+            return Err(AudioCandidateEligibleStageRefusal {
+                reason: "constructor metering setup refused",
+                owner,
+                domains,
+            });
+        }
         let plan = match self.preflight_stage(root, &owner, &domains, header, summary, None) {
             Ok(plan) => plan,
             Err(reason) => {
@@ -520,7 +535,16 @@ impl super::Custody {
                 });
             }
         };
-        let state = Self::publication_state(plan.stamp, &domains, header);
+        let state = match self.preconstruct_publication_state(root, &plan, &domains, header) {
+            Ok(state) => state,
+            Err(reason) => {
+                return Err(AudioCandidateEligibleStageRefusal {
+                    reason,
+                    owner,
+                    domains,
+                });
+            }
+        };
         let (runtime, anchors) = match owner.split_constructor_on_control() {
             Ok(parts) => parts,
             Err(refusal) => {
@@ -531,18 +555,15 @@ impl super::Custody {
                 });
             }
         };
-        Ok(self.commit_stage(
-            root,
-            StageCommit {
-                runtime,
-                anchors,
-                domains,
-                header,
-                summary,
-                plan,
-                state,
-            },
-        ))
+        Ok(self.commit_stage(StageCommit {
+            runtime,
+            anchors,
+            domains,
+            header,
+            summary,
+            plan,
+            state,
+        }))
     }
     fn preflight_stage(
         &self,
@@ -785,19 +806,50 @@ impl super::Custody {
             resources,
         })
     }
-    fn publication_state(
-        stamp: Stamp,
+    fn preconstruct_publication_state(
+        &self,
+        root: &CandidateRoot,
+        plan: &StagePlan,
         domains: &[AudioCandidateDomainToken],
         header: Header,
-    ) -> Box<State> {
+    ) -> Result<Box<State>, &'static str> {
+        let pending_claim_handles = if plan.resources.is_some() {
+            let bank = lock(&self.bank);
+            let slot = bank
+                .publication
+                .slots
+                .get(plan.stamp.slot)
+                .ok_or("candidate preconstruction slot differs")?;
+            let same_slot = if plan.prepared {
+                slot.phase == Phase::Reserved
+                    && !slot.preparation_retiring
+                    && slot.incarnation == plan.stamp.incarnation
+            } else {
+                slot.phase == Phase::Vacant
+                    && slot.incarnation.checked_add(1) == Some(plan.stamp.incarnation)
+            };
+            if bank.root != plan.stamp.root
+                || root.root_id() != bank.root
+                || bank.closing
+                || !same_slot
+            {
+                return Err("candidate preconstruction slot changed");
+            }
+            Some(std::array::from_fn(|_| ClaimHandles {
+                root: root.clone(),
+                life: Arc::clone(&slot.life),
+            }))
+        } else {
+            None
+        };
         let Header {
             revision,
             context_generation,
             policy,
         } = header;
         // Allocate the exact wrapper before consuming the original constructor.
-        Box::new(State {
-            stamp,
+        Ok(Box::new(State {
+            stamp: plan.stamp,
             revision,
             context_generation,
             policy,
@@ -806,16 +858,13 @@ impl super::Custody {
             claims: None,
             spare_successor: None,
             covering_successor: None,
+            pending_claim_handles,
             manifest: None,
             domain_refs: std::array::from_fn(|index| domains.get(index).copied()),
             streaming: None,
-        })
+        }))
     }
-    fn commit_stage(
-        &self,
-        root: &CandidateRoot,
-        commit: StageCommit,
-    ) -> (Queued, AudioCandidateTicket) {
+    fn commit_stage(&self, commit: StageCommit) -> (Queued, AudioCandidateTicket) {
         // Preserve the legacy lock order: constructor custody is inspected
         // before acquiring the native eligible bank, as before this split.
         let matched = commit
@@ -823,14 +872,13 @@ impl super::Custody {
             .constructor_claims(&commit.runtime)
             .is_some_and(|proof| proof.summary() == Some(commit.summary));
         let mut bank = lock(&self.bank);
-        self.commit_stage_with_bank(root, commit, matched, &mut bank)
+        self.commit_stage_with_bank(commit, matched, &mut bank)
     }
-    // Guard-preserving primitive only. Claim clones and metering below are
-    // STILL legacy setup and must move before final joint inspection before
-    // this may be used by the new irreversible closed-graph frontier.
+    // Guard-preserving primitive only. The legacy both-half proof and native
+    // eligibility still need continuous final joint inspection before this
+    // may be used by the irreversible closed-graph frontier.
     fn commit_stage_with_bank(
         &self,
-        root: &CandidateRoot,
         commit: StageCommit,
         matched: bool,
         bank: &mut NativeBank,
@@ -893,24 +941,23 @@ impl super::Custody {
         if matched
             && self.claims_open()
             && let Some(resources) = resources
+            && let Some([current, spare]) = state.pending_claim_handles.take()
         {
             state.claims = Some(Claims {
-                root: root.clone(),
-                life: Arc::clone(&slot.life),
+                root: current.root,
+                life: current.life,
                 stamp,
                 successor_dependency: false,
                 resources,
             });
             state.spare_successor = Some(Claims {
-                root: root.clone(),
-                life: Arc::clone(&slot.life),
+                root: spare.root,
+                life: spare.life,
                 stamp,
                 successor_dependency: false,
                 resources,
             });
         }
-        let mut runtime = runtime;
-        let _ = runtime.set_device_metering(true);
         state.runtime = Some(runtime);
         slot.life.live.store(true, Ordering::Release);
         (Queued { state }, AudioCandidateTicket { stamp })

@@ -522,6 +522,9 @@ impl Custody {
                 return Err("candidate constructor rate or phase differs");
             }
             owner
+                .prepare_device_metering_on_control(true)
+                .map_err(|_| "candidate constructor metering setup refused")?;
+            owner
                 .seal_constructor_with_runtime_storage_on_control(ledger, external)
                 .map_err(|_| "candidate DATA or resource closure refused")
         })) {
@@ -570,9 +573,11 @@ impl Custody {
             summary,
             Some(token),
         )?;
-        // This actual empty State Box also exists BEFORE the terminal barrier.
-        // Final preflight below rechecks its exact stamp; this is not a permit.
-        let state = Self::publication_state(preliminary.stamp, &execution.domains, header);
+        // This actual unpublished State Box and paired Root/Life handles exist
+        // BEFORE the terminal barrier. Final preflight rechecks its exact stamp;
+        // neither the handles nor this preliminary plan grant installation.
+        let state =
+            self.preconstruct_publication_state(root, &preliminary, &execution.domains, header)?;
         let barrier = lock(&root.0.bank);
         if barrier.closing || barrier.retiring {
             return Err("candidate Root is closing");
@@ -593,7 +598,7 @@ impl Custody {
         }
         execution.pending = true;
         // Only the preallocated transfer moves owners. This remains the legacy
-        // candidate-local stage: claims/metering/continuous native guards and
+        // candidate-local stage: final claim binding/continuous native guards and
         // the actual joint ledger still need the separate closed-graph route.
         let parts = catch_unwind(AssertUnwindSafe(|| split.transfer_on_control()));
         let (runtime, anchors) = match parts {
@@ -612,18 +617,15 @@ impl Custody {
             }
         };
         let domains = std::mem::take(&mut execution.domains);
-        let (queued, ticket) = self.commit_stage(
-            root,
-            StageCommit {
-                runtime,
-                anchors,
-                domains,
-                header,
-                summary,
-                plan,
-                state,
-            },
-        );
+        let (queued, ticket) = self.commit_stage(StageCommit {
+            runtime,
+            anchors,
+            domains,
+            header,
+            summary,
+            plan,
+            state,
+        });
         enqueue(queued);
         execution.pending = false;
         drop(barrier);
