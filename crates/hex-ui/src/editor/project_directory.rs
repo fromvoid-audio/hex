@@ -22,7 +22,9 @@ pub(super) struct State {
     changed_while_loading: bool,
     writes: Arc<Mutex<Writes>>,
     #[cfg(test)]
-    save_gate: Option<Arc<SaveGate>>,
+    save_gate: Option<Arc<TestGate>>,
+    #[cfg(test)]
+    directory_gate: Option<Arc<TestGate>>,
 }
 impl State {
     pub(super) fn new(path: PathBuf) -> Self {
@@ -35,6 +37,8 @@ impl State {
             writes: Arc::default(),
             #[cfg(test)]
             save_gate: None,
+            #[cfg(test)]
+            directory_gate: None,
         }
     }
 }
@@ -228,11 +232,21 @@ impl EditorView {
                 Ok(environment) => environment,
                 Err(_) => return,
             };
+            #[cfg(test)]
+            let gate = match this.update(cx, |view, _| view.project_directory.directory_gate.take())
+            {
+                Ok(gate) => gate,
+                Err(_) => return,
+            };
             let directory = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     let _environment = environment;
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        gate.wait().await;
+                    }
                     usable_directory(directory)
                 })
                 .await;
@@ -244,13 +258,13 @@ impl EditorView {
 
 #[cfg(test)]
 #[derive(Default)]
-struct SaveGate {
+struct TestGate {
     reached: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
     waker: Mutex<Option<std::task::Waker>>,
 }
 #[cfg(test)]
-impl SaveGate {
+impl TestGate {
     async fn wait(&self) {
         use std::{sync::atomic::Ordering, task::Poll};
         self.reached.store(true, Ordering::Release);

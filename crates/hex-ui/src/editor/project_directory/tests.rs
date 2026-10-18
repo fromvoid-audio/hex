@@ -475,7 +475,7 @@ fn project_directory_owned_writer_persists_latest_success_after_view_drop(cx: &m
     let first = owned.folder("First").join("One.hex");
     let latest = owned.folder("Latest").join("Two.hex");
     let (mut visual, editor) = owned.window(cx);
-    let gate = Arc::new(SaveGate::default());
+    let gate = Arc::new(TestGate::default());
     editor.update(&mut visual, |view, _| {
         view.project_directory.save_gate = Some(gate.clone())
     });
@@ -592,4 +592,101 @@ fn project_directory_named_save_uses_actual_document_path_without_a_chooser(
         hex_preferences::load_project_directory(&owned.preferences()).unwrap(),
         Some(current.parent().unwrap().to_owned())
     );
+}
+
+#[gpui::test]
+fn project_directory_stale_preparation_clears_only_its_owned_open_intent(cx: &mut TestAppContext) {
+    let owned = Directory::new();
+    let folder = owned.folder("Remembered");
+    hex_preferences::save_project_directory(&owned.preferences(), &folder).unwrap();
+    let (mut visual, editor) = owned.window(cx);
+    let gate = Arc::new(TestGate::default());
+    let generation = editor.read_with(&visual, |view, _| view.project_generation);
+    editor.update(&mut visual, |view, _| {
+        view.project_directory.directory_gate = Some(gate.clone())
+    });
+    visual.dispatch_action(OpenProject);
+    pump(&editor, &mut visual, |_| {
+        gate.reached.load(Ordering::Acquire)
+    });
+    assert!(cx.pending_open_directory().is_none());
+    // The independent real actor replacement advances the actual UI generation.
+    editor.read_with(&visual, |view, _| {
+        view.service
+            .submit(Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap()
+    });
+    pump(&editor, &mut visual, |view| {
+        settled(view) && view.project_generation == generation + 1
+    });
+    gate.release();
+    pump(&editor, &mut visual, |view| !view.project_open.busy());
+    assert!(cx.pending_open_directory().is_none());
+    open(&mut visual, &editor);
+    assert_eq!(cx.pending_open_directory(), Some(Some(folder)));
+    cx.simulate_paths_selection(None);
+    visual.run_until_parked();
+    flush(&editor, &mut visual);
+}
+
+#[gpui::test]
+fn project_directory_closed_window_does_not_receive_a_late_native_open(cx: &mut TestAppContext) {
+    let owned = Directory::new();
+    let folder = owned.folder("Remembered");
+    hex_preferences::save_project_directory(&owned.preferences(), &folder).unwrap();
+    let original = std::fs::read(owned.preferences()).unwrap();
+    let (mut visual, editor) = owned.window(cx);
+    let gate = Arc::new(TestGate::default());
+    editor.update(&mut visual, |view, _| {
+        view.project_directory.directory_gate = Some(gate.clone())
+    });
+    visual.dispatch_action(OpenProject);
+    pump(&editor, &mut visual, |_| {
+        gate.reached.load(Ordering::Acquire)
+    });
+    visual.update(|window, _| window.remove_window());
+    gate.release();
+    pump(&editor, cx, |view| !view.project_open.busy());
+    assert!(cx.pending_open_directory().is_none());
+    assert_eq!(std::fs::read(owned.preferences()).unwrap(), original);
+}
+
+#[gpui::test]
+fn project_directory_stale_save_response_cannot_save_into_the_replacement_document(
+    cx: &mut TestAppContext,
+) {
+    let owned = Directory::new();
+    let folder = owned.folder("Remembered");
+    hex_preferences::save_project_directory(&owned.preferences(), &folder).unwrap();
+    let original = std::fs::read(owned.preferences()).unwrap();
+    let (mut visual, editor) = owned.window(cx);
+    let generation = editor.read_with(&visual, |view, _| view.project_generation);
+    save_as(&mut visual, &editor, false);
+    editor.read_with(&visual, |view, _| {
+        view.service
+            .submit(Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap()
+    });
+    pump(&editor, &mut visual, |view| {
+        settled(view) && view.project_generation == generation + 1
+    });
+    let late = owned.0.join("Must Not Be Saved.hex");
+    cx.simulate_new_path_selection(|_| Some(late.clone()));
+    visual.run_until_parked();
+    assert!(!late.exists());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.save_dialog_open);
+        assert!(view.state.as_ref().unwrap().document_path.is_none());
+    });
+    save_as(&mut visual, &editor, false);
+    cx.simulate_new_path_selection(|_| None);
+    visual.run_until_parked();
+    flush(&editor, &mut visual);
+    assert_eq!(std::fs::read(owned.preferences()).unwrap(), original);
 }
