@@ -228,8 +228,6 @@ pub(super) fn render_return_effect(
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
     return_id: hex_project::ReturnId,
-    devices: &[hex_project::Device],
-    index: usize,
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let id = device.id();
@@ -246,72 +244,15 @@ pub(super) fn render_return_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let bypassed = device.bypassed();
-    let before_up = index.checked_sub(1).map(|previous| devices[previous].id());
-    let after_down = devices.get(index + 2).map(|device| device.id());
-    let has_down = index + 1 < devices.len();
+    let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
-    actions = actions.child(
-        action_button(
-            format!("device-bypass-{}", id.value()),
-            if bypassed { "⊘" } else { "●" },
-            "toggle device bypass",
-            if bypassed {
-                theme::DeviceActionRole::Muted
-            } else {
-                theme::DeviceActionRole::Normal
-            },
+    if device_view.is_ok() {
+        actions = actions.child(super::super::device_preset::actions(
+            id,
+            NativeDeviceClass::Effect,
             selected,
-        )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
-                    device: id,
-                    bypassed: !bypassed,
-                }));
-            }
-            cx.notify();
-        })),
-    );
-    if let Some(before) = before_up {
-        actions = actions.child(
-            action_button(
-                format!("return-device-up-{}", id.value()),
-                "‹",
-                "move effect left",
-                theme::DeviceActionRole::Normal,
-                selected,
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                if finalize_controls(view, cx) {
-                    view.enqueue_device_barrier(Request::Edit(Command::MoveReturnDevice {
-                        device: id,
-                        before: Some(before),
-                    }));
-                }
-                cx.notify();
-            })),
-        );
-    }
-    if has_down {
-        actions = actions.child(
-            action_button(
-                format!("return-device-down-{}", id.value()),
-                "›",
-                "move effect right",
-                theme::DeviceActionRole::Normal,
-                selected,
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                if finalize_controls(view, cx) {
-                    view.enqueue_device_barrier(Request::Edit(Command::MoveReturnDevice {
-                        device: id,
-                        before: after_down,
-                    }));
-                }
-                cx.notify();
-            })),
-        );
+            cx,
+        ));
     }
     actions = actions.child(
         action_button(
@@ -328,14 +269,6 @@ pub(super) fn render_return_effect(
             cx.notify();
         })),
     );
-    if device_view.is_ok() {
-        actions = actions.child(super::super::device_preset::actions(
-            id,
-            NativeDeviceClass::Effect,
-            selected,
-            cx,
-        ));
-    }
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -396,6 +329,7 @@ pub(super) fn render_return_effect(
                     theme::text(device_view.name.clone()),
                 ),
                 theme::device_frame_style(selected),
+                leading,
                 actions,
                 body,
             )
@@ -419,6 +353,7 @@ pub(super) fn render_return_effect(
             device_frame(
                 device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
                 theme::device_frame_style(selected),
+                leading,
                 actions,
                 body,
             )

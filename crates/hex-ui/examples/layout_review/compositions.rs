@@ -37,6 +37,7 @@ impl Gallery {
             theme::text(format!("{} · fixture", self.entry.label())),
             theme::device_frame_style(self.selected),
             actions,
+            div(),
             body,
         )
         .id("catalog-card")
