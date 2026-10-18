@@ -437,9 +437,7 @@ fn project_directory_invalid_preferences_still_open_default_and_preserve_bytes(
 
 #[cfg(unix)]
 #[gpui::test]
-fn project_directory_existing_native_folder_preserves_case_and_bytes(
-    cx: &mut TestAppContext,
-) {
+fn project_directory_existing_native_folder_preserves_case_and_bytes(cx: &mut TestAppContext) {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let owned = Directory::new();
     // The native macOS filesystem rejects invalid UTF-8 filenames (EILSEQ).
