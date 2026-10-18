@@ -398,7 +398,7 @@ fn project_directory_unset_missing_and_non_directory_fall_back_without_creating_
         visual.run_until_parked();
         flush(&editor, &mut visual);
         assert_eq!(std::fs::read(owned.preferences()).ok(), original);
-        assert_eq!(unavailable.is_dir(), false);
+        assert!(!unavailable.is_dir());
         if kind == 2 {
             assert_eq!(std::fs::read(&unavailable).unwrap(), b"regular file");
         }
