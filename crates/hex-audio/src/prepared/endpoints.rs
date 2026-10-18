@@ -196,18 +196,33 @@ impl Client {
         generation: u64,
         audio: hex_engine::Audio,
     ) -> Result<(), crate::sample_preview::PublishRefusal> {
+        self.preview_publish_from(generation, audio, 0)
+    }
+    pub fn preview_publish_from(
+        &mut self,
+        generation: u64,
+        audio: hex_engine::Audio,
+        frame: usize,
+    ) -> Result<(), crate::sample_preview::PublishRefusal> {
         let Some(endpoints) = self.endpoints.owner_mut() else {
             return Err(crate::sample_preview::PublishRefusal {
                 reason: Invalid("audio client is closed"),
                 audio,
             });
         };
-        endpoints.sample_preview.publish(generation, audio)
+        endpoints
+            .sample_preview
+            .publish_from(generation, audio, frame)
     }
     pub fn preview_cancel(&mut self) {
         if let Some(e) = self.endpoints.owner_mut() {
             e.sample_preview.cancel();
         }
+    }
+    pub fn preview_snapshot(&self) -> Option<crate::sample_preview::Snapshot> {
+        self.endpoints
+            .owner_ref()
+            .map(|e| e.sample_preview.snapshot())
     }
     /// Resident compatibility only; the Verified constructor seals preview before
     /// this client becomes visible and can never place owning PCM here.
@@ -264,6 +279,67 @@ impl Client {
             .spectrum_reader
             .as_mut()?
             .try_latest()
+    }
+    pub fn project_spectrum_available(&self) -> bool {
+        self.endpoints
+            .owner_ref()
+            .and_then(|e| e.spectrum_reader.as_ref())
+            .is_some_and(|r| r.project_available())
+    }
+    pub fn project_spectrum_select(
+        &self,
+        tracks: &[u64],
+        generation: u64,
+        floor: u64,
+        rate: u32,
+    ) -> Result<crate::spectrum_worker::ProjectSelection, &'static str> {
+        if !self.project_spectrum_available() {
+            return Err("project spectrum unavailable");
+        }
+        self.endpoints
+            .owner_ref()
+            .ok_or("audio client is closed")?
+            .status
+            .project_spectrum
+            .select(tracks, generation, floor, rate)
+    }
+    pub fn project_spectrum_clear(&self) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_ref()
+            .ok_or("audio client is closed")?
+            .status
+            .project_spectrum
+            .clear()
+    }
+    pub fn project_spectrum_desired(&self) -> Option<crate::spectrum_worker::ProjectSelection> {
+        self.endpoints
+            .owner_ref()?
+            .status
+            .project_spectrum
+            .read()
+            .filter(|s| s.active)
+    }
+    pub fn project_spectrum_latest(
+        &mut self,
+    ) -> Option<crate::spectrum_worker::PublishedProjectSpectrum> {
+        let endpoints = self.endpoints.owner_mut()?;
+        let selection = endpoints
+            .status
+            .project_spectrum
+            .read()
+            .filter(|s| s.active)?;
+        endpoints
+            .spectrum_reader
+            .as_mut()?
+            .try_latest_project_at(Instant::now(), selection)
+    }
+    /// One fresh, aligned pair; input is absent for legacy output-only captures.
+    pub fn spectrum_latest_pair(&mut self) -> Option<crate::spectrum_worker::PublishedSpectra> {
+        self.endpoints
+            .owner_mut()?
+            .spectrum_reader
+            .as_mut()?
+            .try_latest_pair()
     }
     pub fn spectrum_desired(&self) -> Option<spectrum_target::SpectrumTarget> {
         self.endpoints

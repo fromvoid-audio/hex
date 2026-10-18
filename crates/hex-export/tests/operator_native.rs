@@ -76,6 +76,13 @@ fn expected(age: u64) -> f32 {
 }
 
 fn operator_revision(state: hex_lattice_contract::NativeDeviceState) -> Arc<PreparedRevision> {
+    operator_revision_with_tuning(state, None)
+}
+
+fn operator_revision_with_tuning(
+    state: hex_lattice_contract::NativeDeviceState,
+    hz: Option<f64>,
+) -> Arc<PreparedRevision> {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let track = match editor
         .execute(Command::AddMidiTrack {
@@ -120,6 +127,17 @@ fn operator_revision(state: hex_lattice_contract::NativeDeviceState) -> Arc<Prep
         })
         .expect("MIDI note");
 
+    if let Some(hz) = hz {
+        let tuning = editor.project().tuning();
+        let mut scale = tuning.scale();
+        scale.set_reference(69, hz, 0).expect("tuned reference");
+        editor
+            .execute(Command::SetTuning(
+                hex_tuning::ProjectTuning::new(true, scale, tuning.audition())
+                    .expect("valid tuning"),
+            ))
+            .expect("project tuning");
+    }
     Arc::new(
         PreparedRevision::prepare(
             editor.project(),
@@ -129,6 +147,41 @@ fn operator_revision(state: hex_lattice_contract::NativeDeviceState) -> Arc<Prep
         )
         .expect("prepared registered Operator"),
     )
+}
+
+#[test]
+fn project_tuning_operator_export_uses_custom_pitch_across_blocks_and_release() {
+    let state = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &operator_state(),
+        ParameterId::from_static(608),
+        ParameterValue::Choice(0),
+    )
+    .expect("legacy processing");
+    let revision = operator_revision_with_tuning(state, Some(333.0));
+    let directory = TestDir::new();
+    let path = directory.0.join("tuned-operator.wav");
+    hex_export::render_prepared_new(&path, revision, 0, 6500).expect("tuned export");
+    let bytes = fs::read(path).expect("exported PCM");
+    for (age, samples) in bytes[44..].chunks_exact(4).enumerate() {
+        let envelope = if age < 6000 {
+            1.0
+        } else if age < 6240 {
+            0.000_01_f64.powf((age - 6000) as f64 / 240.0)
+        } else {
+            0.0
+        };
+        let expected = (((TAU * 333.0 * age as f64 / f64::from(RATE)).sin() * envelope) as f32
+            * 32767.0)
+            .round() as i16;
+        for channel in samples.chunks_exact(2) {
+            let actual = i16::from_le_bytes([channel[0], channel[1]]);
+            assert!(
+                (i32::from(actual) - i32::from(expected)).abs() <= 1,
+                "tuned export frame {age}: {actual} vs {expected}"
+            );
+        }
+    }
 }
 
 #[test]

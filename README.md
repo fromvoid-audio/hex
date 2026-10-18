@@ -12,11 +12,15 @@ See [reference inventory](docs/research/reference.md).
 
 The default GPUI desktop now edits a canonical audio project, with background WAV
 import, cached waveforms, compiled CoreAudio playback, track gain/balance/mute/solo
-and master gain, clip nudge/trim/delete/split/duplicate, editable linear fades and source-implemented pointer dragging, timeline zoom/pan/fit,
+and master gain, clip nudge/trim/delete/split/duplicate, editable fades with hold-f endpoint/curve handles and source-implemented pointer dragging, timeline zoom/pan/fit,
 undo/redo, project
 open/save/save-as and background PCM16 WAV export. The older four-track generated
 Arrangement/Session prototype remains available with `--demo`.
 App text uses lowercase and embedded Ioskeley Mono with compact Yield styling.
+A built-in [project spectrum](docs/project-spectrum.md) below the toolbar shows
+actual Master and independent track-colored layers for every selected track,
+with bounded capture/analysis and responsive collapse/height controls. Source
+checks and native visual/listening acceptance are recorded separately.
 Canonical Session scenes and independent MIDI/stop cells persist in schema 11.
 Every revision prepares their immutable inventory before edits/history/open commit,
 with compatible source reuse and structural per-track work envelopes. Playback
@@ -49,22 +53,33 @@ remains open. Asset relinking is deferred.
 
 ## Run
 
-On macOS, `./launch` opens the installed optimized `hex.app` at the configured
-stable path (default `artifacts/hex.app`). Normal startup does not update source,
-build, run tests or take Cargo locks, and it works from dirty or non-main source.
-It verifies the installed bundle's identity, hashes, signature and release receipt.
-If no usable app exists, it reports `./launch --test` as the setup action.
+On macOS, `./launch` fetches the latest `origin/main`, fast-forwards a clean local
+`main`, builds and installs the optimized app at the configured
+stable path (default `artifacts/hex.app`), then opens that verified build. It refuses
+dirty, non-main, ahead or divergent checkouts. If the update changes the launcher,
+it re-executes from the updated source before continuing.
 
-`./launch --test` updates a clean `main` checkout from `origin/main`, runs full
-local CI, builds and installs the optimized app, then opens it. This mode needs
-the native toolchain and authenticated `gh` for PR provenance. Save and quit hex
-before using `--test`; it refuses running-app replacement and never force-quits.
-Build provenance and a finite smoke checklist remain under `artifacts/local-ci/`;
-native interaction and listening results remain user checks.
+Normal launch always fetches and invokes the optimized build, even if an app is
+already installed. It does not run tests or require an earlier CI report. Source,
+artifact and configured signature checks still apply; receipts record tests as not
+run. `./launch --test` adds full exact-source local CI before building.
+`./launch --open` only verifies and opens the installed optimized app;
+it does not update source, build or run tests. This mode can open an already running
+installed app normally. The update/build workflow requires the native toolchain and
+authenticated `gh` for PR provenance. Save and quit hex before using it; it refuses
+running installed or raw `hex-desktop` processes and never force-quits. Build
+provenance and a finite smoke checklist remain under `artifacts/launch/` and
+`artifacts/local-ci/`; native
+interaction and listening results remain user checks.
+
+Interactive terminals show a small stage spinner while fetching, building,
+checking or verifying the installed app. Redirected logs stay plain; compiler
+and test diagnostics retain their existing log files and failure messages.
 
 ```sh
-./launch          # open the installed optimized app
-./launch --test   # update, check, build/install, then open
+./launch          # fetch latest main, build/install and open; no tests
+./launch --test   # also run full exact-source local CI before building
+./launch --open   # open the installed optimized app without updating/building
 cargo run -p hex-desktop
 cargo run -p hex-desktop -- --demo
 # Optimized stable test delivery after exact-source CI (see docs/test-builds.md):
@@ -88,7 +103,7 @@ User-test builds use the optimized stable development app at `artifacts/hex.app`
 with exact-source CI, provenance and verified replacement without retained
 rollback copies. The bundle script refuses to overwrite a running app, including macOS case-insensitive
 `Hex.app` aliases. Save and quit before retrying; launch/relaunch manually after
-delivery, or use `./launch` to open the installed app. See [native test builds](docs/test-builds.md) for the required arguments
+delivery, or use `./launch --open` to open the installed app. See [native test builds](docs/test-builds.md) for the required arguments
 and repository-owned build/install process. Pulse manages tickets only.
 
 The demo is four seconds at 48 kHz and 120 BPM: one silent beat, followed by

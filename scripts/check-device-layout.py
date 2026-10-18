@@ -129,6 +129,8 @@ ENTRY_POINTS = {
         "action_button": ("hex_widgets::device_action", "theme::device_header_action_style"),
         "control_style": ("theme::device_style",),
         "device_layout_style": ("theme::device_style",),
+    },
+    PANEL / "bindings.rs": {
         "parameter_style": ("theme::device_style",),
     },
     PANEL / "parameter_rows.rs": {

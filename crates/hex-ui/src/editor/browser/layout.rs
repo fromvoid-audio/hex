@@ -1,12 +1,13 @@
 //! Browser composition and transient visual review state. Tag storage stays outside the UI.
 use super::*;
 
-const SECTIONS: [(BrowserSection, &str); 3] = [
+const SECTIONS: [(BrowserSection, &str); 4] = [
     (BrowserSection::Samples, "samples"),
     (BrowserSection::Instruments, "devices"),
     (BrowserSection::Projects, "projects"),
+    (BrowserSection::All, "all"),
 ];
-const ICONS: [&str; 6] = ["♫", "⌘", "▤", "◈", "≋", "□"];
+const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
     ("content", &["audio clip", "midi clip", "preset", "sample"]),
     ("type", &["loop", "one shot", "impulse response"]),
@@ -23,8 +24,8 @@ pub(super) struct BrowserLayout {
     editor_visible: bool,
     settings_visible: bool,
     group_open: [bool; 6],
-    visible: [bool; 3],
-    icons: [usize; 3],
+    visible: [bool; 4],
+    icons: [usize; 4],
 }
 
 impl Default for BrowserLayout {
@@ -36,8 +37,19 @@ impl Default for BrowserLayout {
             editor_visible: false,
             settings_visible: false,
             group_open: [true, true, false, false, false, false],
-            visible: [true; 3],
-            icons: [0, 1, 2],
+            visible: [true; 4],
+            icons: [0, 1, 2, 6],
+        }
+    }
+}
+
+impl BrowserLayout {
+    pub(super) fn reveal_all(&mut self) {
+        if let Some(index) = SECTIONS
+            .iter()
+            .position(|(section, _)| *section == BrowserSection::All)
+        {
+            self.visible[index] = true;
         }
     }
 }
@@ -67,7 +79,7 @@ impl BrowserLayout {
     }
 }
 
-fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpui::AnyView {
+pub(super) fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpui::AnyView {
     cx.new(|_| super::super::transport::MiniTooltip {
         description: theme::text(label),
     })
@@ -131,7 +143,20 @@ impl EditorView {
                         .into()
                     }),
             )
-            .child(div().flex_1().min_w_0().child(self.browser.search.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            view.browser.results_focused = false;
+                            window.prevent_default();
+                            cx.notify();
+                        }),
+                    )
+                    .child(self.browser.search.clone()),
+            )
             .child(self.browser_icon(
                 "≡",
                 "show or hide tag filters",
@@ -191,6 +216,7 @@ impl EditorView {
             sidebar = sidebar.child(
                 div()
                     .id(("browser-collection", index))
+                    .debug_selector(move || format!("browser-collection-{index}"))
                     .tooltip(move |_, cx| {
                         browser_label_tooltip(format!("{name} · collections pending"), cx)
                     })
@@ -199,7 +225,26 @@ impl EditorView {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .cursor_pointer()
+                    .bg(rgb(theme::color(
+                        if self.browser.section == BrowserSection::Collection(index) {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Surface
+                        },
+                    )))
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            view.select_browser_source(BrowserSection::Collection(index), cx);
+                            view.browser
+                                .search
+                                .update(cx, |input, _| input.focus(window));
+                            window.prevent_default();
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         browser_caption("■").text_color(rgb(theme::element_colors(color).accent)),
                     )
@@ -241,10 +286,12 @@ impl EditorView {
                     })))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
-                            view.browser.section = section;
-                            view.browser.selected_index = 0;
-                            view.browser.results_focused = false;
+                        cx.listener(move |view, _, window, cx| {
+                            view.select_browser_source(section.clone(), cx);
+                            view.browser
+                                .search
+                                .update(cx, |input, _| input.focus(window));
+                            window.prevent_default();
                             cx.notify();
                         }),
                     )
@@ -296,8 +343,10 @@ impl EditorView {
                                             && let Some(next) =
                                                 layout.visible.iter().position(|v| *v)
                                         {
-                                            view.browser.section = SECTIONS[next].0;
-                                            view.browser.selected_index = 0;
+                                            view.select_browser_source(
+                                                SECTIONS[next].0.clone(),
+                                                cx,
+                                            );
                                         }
                                         cx.notify();
                                     }),
@@ -342,6 +391,7 @@ impl EditorView {
             sidebar = sidebar.child(
                 div()
                     .id(("browser-place", index))
+                    .debug_selector(move || format!("browser-place-{index}"))
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
                     .h(px(23.0))
                     .px_2()
@@ -350,18 +400,22 @@ impl EditorView {
                     .gap_1()
                     .cursor_pointer()
                     .overflow_hidden()
-                    .bg(rgb(theme::color(if self.browser.directory == *place {
-                        theme::PaletteRole::Hover
-                    } else {
-                        theme::PaletteRole::Surface
-                    })))
+                    .bg(rgb(theme::color(
+                        if self.browser.section == BrowserSection::Place(place.clone()) {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Surface
+                        },
+                    )))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
-                            if view.browser.section == BrowserSection::Instruments {
-                                view.browser.section = BrowserSection::Samples;
-                            }
-                            view.request_browser_scan(path.clone(), cx);
+                        cx.listener(move |view, _, window, cx| {
+                            view.select_browser_source(BrowserSection::Place(path.clone()), cx);
+                            view.browser
+                                .search
+                                .update(cx, |input, _| input.focus(window));
+                            window.prevent_default();
+                            cx.notify();
                         }),
                     )
                     .child(browser_caption("□"))
@@ -558,29 +612,18 @@ impl EditorView {
         Some(div().flex().flex_shrink_0().min_h_0().child(editor))
     }
 
-    fn browser_selected_label(&self, cx: &App) -> String {
-        if self.browser.section == BrowserSection::Instruments {
-            let query = self.browser.search.read(cx).content.to_lowercase();
-            self.browser
-                .device_catalog
-                .as_ref()
-                .and_then(|catalog| catalog.as_ref().ok())
-                .and_then(|entries| {
-                    entries
-                        .iter()
-                        .filter(|(_, entry)| {
-                            query.is_empty() || entry.name.to_lowercase().contains(&query)
-                        })
-                        .nth(self.browser.selected_index)
-                })
+    pub(super) fn browser_selected_label(&self, cx: &App) -> String {
+        let files = self.browser_visible_entries(cx);
+        let index = self.browser.selected_index;
+        if let Some(entry) = files.get(index) {
+            entry.name.clone()
+        } else {
+            self.browser_visible_devices(cx)
+                .get(index.saturating_sub(files.len()))
                 .map_or_else(
                     || "no item selected".into(),
                     |(_, entry)| entry.name.to_string(),
                 )
-        } else {
-            self.browser_visible_entries(cx)
-                .get(self.browser.selected_index)
-                .map_or_else(|| "no item selected".into(), |entry| entry.name.clone())
         }
     }
 
@@ -592,10 +635,11 @@ impl EditorView {
                 .get(self.browser.selected_index)
                 .cloned()
         };
-        let mut preview = browser_divider()
-            .h(px(108.0))
+        browser_divider()
+            .h(px(50.0))
             .flex_shrink_0()
             .min_w_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .border_t_1()
@@ -604,13 +648,15 @@ impl EditorView {
                 browser_divider()
                     .h(px(26.0))
                     .flex_shrink_0()
+                    .min_w_0()
+                    .overflow_hidden()
                     .px_1()
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(browser_caption("tags:"))
-                    .child(browser_pending("add…"))
-                    .child(div().flex_1())
+                    .child(browser_caption("tags:").whitespace_nowrap().flex_shrink_0())
+                    .child(browser_pending("add…").whitespace_nowrap().flex_shrink_0())
+                    .child(div().flex_1().min_w_0())
                     .child(self.browser_icon(
                         "⋯",
                         "open full tag editor",
@@ -620,95 +666,7 @@ impl EditorView {
                         },
                         cx,
                     )),
-            );
-        if let Some(entry) = entry {
-            preview = preview.child(
-                browser_caption(&entry.name)
-                    .px_2()
-                    .overflow_hidden()
-                    .text_ellipsis(),
-            );
-            if entry.kind == EntryKind::WaveAudio {
-                let rate = self
-                    .state
-                    .as_ref()
-                    .map_or(48_000, |state| state.project.sample_rate());
-                let slot = self.browser_preview_cell(entry.path.clone(), rate);
-                if slot.metadata.borrow().is_none() && slot.error.borrow().is_none() {
-                    self.queue_browser_audio_preview(
-                        PreviewKey {
-                            path: entry.path.clone(),
-                            sample_rate: rate,
-                        },
-                        slot.clone(),
-                        cx,
-                    );
-                }
-                let metadata = slot.metadata.borrow().clone();
-                let waveform = div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .bg(rgb(theme::color(theme::PaletteRole::ClipFill)));
-                let waveform_panel = if let Some(metadata) = metadata {
-                    waveform.child(super::super::waveform::waveform_summary_view(Arc::clone(
-                        &metadata.waveform,
-                    )))
-                } else {
-                    let key = PreviewKey {
-                        path: entry.path.clone(),
-                        sample_rate: rate,
-                    };
-                    let error = self
-                        .browser
-                        .preview_cache
-                        .get(&key)
-                        .is_some_and(|slot| slot.error.borrow().is_some());
-                    waveform.child(browser_heading(if error {
-                        "waveform unavailable"
-                    } else {
-                        "preparing waveform…"
-                    }))
-                };
-                preview = preview.child(waveform_panel);
-                preview = preview.child(
-                    div()
-                        .h(px(22.0))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .child(self.browser_icon(
-                            "▶",
-                            "audition selected sample",
-                            move |view, _, cx| {
-                                view.play_browser_sample(entry.path.clone(), cx);
-                            },
-                            cx,
-                        ))
-                        .child(browser_heading("sample preview")),
-                );
-                return preview;
-            }
-            preview.child(browser_heading(if entry.kind == EntryKind::Directory {
-                "folder"
-            } else {
-                "project"
-            }))
-        } else {
-            preview = preview.child(
-                browser_caption(self.browser_selected_label(cx))
-                    .px_2()
-                    .overflow_hidden()
-                    .text_ellipsis(),
-            );
-            preview.child(browser_heading(
-                if self.browser.section == BrowserSection::Instruments {
-                    "device preview · tags pending"
-                } else {
-                    "select an item to preview"
-                },
-            ))
-        }
+            )
+            .child(self.browser_audition_row(entry, cx))
     }
 }

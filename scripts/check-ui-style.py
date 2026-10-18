@@ -13,7 +13,7 @@ widgets = (
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Clip name components normalize labels or render a native text-input entity.
-    'self.clip_name_label(', 'self.clip_name_header(', 'edit.input.clone())',
+    'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -52,15 +52,22 @@ widgets = (
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
+    # Audition row controls normalize labels; miniature waveform contains no text.
+    'self.browser_audition_row(', 'mini_waveform(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
     'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
     'super::super::waveform::waveform_summary_view(',
     'self.browser_sections(', 'self.browser_places(', 'self.browser_instrument_row(',
+    # Sample source filters route labels through theme::text.
+    'self.sample_filters(', 'filters)',
+
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
     'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
+    'super::musical_audio_controls::warp_header(', 'sample_bpm::field(',
     'super::waveform::prepared_waveform_view_cached(',
+    'super::waveform::timeline_waveform_view_cached(',
     'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
@@ -71,7 +78,7 @@ widgets = (
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
     'section_heading(', 'unavailable(',
-    'menu_message(', 'action_button(', 'action_button_sized(', 'entity.clone())', 'control.entity.clone())',
+    'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
@@ -82,6 +89,8 @@ widgets = (
     'super::super::device_preset::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
+    # Track sizing composes non-text pointer handles and capture listeners.
+    'self.track_resize_events(', 'self.track_width_resize_handle(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
     'render_return_add_menu(',
@@ -90,7 +99,7 @@ widgets = (
     'output)', 'gain)', 'balance)', 'cutoff)', 'mute_dc)', 'mute)', 'dc)',
     # Saturator composition uses typed shared controls and a normalized plot;
     # its axis/error text is routed through theme::text at the panel boundary.
-    'plot)', 'chooser)', 'drive)', 'wet)',
+    'plot)', 'plot.id(', 'self.project_spectrum_panel(', 'self.project_spectrum_pointer_events(', 'chooser)', 'drive)', 'wet)',
     # Compressor composition uses shared typed numeric controls and normalized plot.
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
@@ -106,6 +115,12 @@ widgets = (
     'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
     'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
+    # Fade pointer capture is a typed canvas listener with no rendered text.
+    'self.fade_pointer_events(',
+    # Tuning components normalize labels at their theme::text boundary.
+    'tuning_section(', 'self.tuning_control(', 'self.tuning_library_panel(', 'self.tuning_mts_controls(',
+    'pitch)', 'palette)', 'plots::lattice(', 'tuning_name_input.clone())',
+    'tuning_nodes)', 'tuning_slots)', 'tuning_reference)', 'settings)', 'right)',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

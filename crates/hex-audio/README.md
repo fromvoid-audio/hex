@@ -4,6 +4,17 @@
 
 Own device output, stream lifetime, bounded real-time control delivery, and backend telemetry.
 
+Selected-device spectra stage actual whole-entry input and output independently,
+then submit a single aligned pair only after final callback output validation.
+The bounded worker shares FFT scratch, cadence, freshness and retirement across
+both layers. Output-only APIs project the output of the same reader; legacy
+captures leave input absent. See [EQ signal and custody contracts](../../docs/eq.md#live-input-and-output-spectra).
+
+Project-wide spectra reuse the same worker/reaper with a fixed packet pool,
+independent selected-track layers and explicit work/storage/freshness bounds.
+See [project spectrum](../../docs/project-spectrum.md) for taps, lifecycle and
+measured source-profile limits.
+
 The desktop's nonblocking initial open uses `request_initial_open()` and polls
 its one-result handle; the lifecycle worker uses the device's actual default
 rate without assuming a project rate. Recovery uses
@@ -106,6 +117,15 @@ waits for preview owners too. No extra stream, callback allocation, locking or
 final PCM drop is needed. The media decoder and browser input remain outside
 this crate. See [runtime](../../docs/runtime.md#browser-sample-playback--pulse2637--pr254).
 
+`sample_preview::Control::snapshot` and the split client's `preview_snapshot`
+expose generation-scoped Preparing, Playing and Finished phases. Submission is
+not playback: only actual callback PCM consumption marks Playing, and the final
+frame marks Finished even when retirement is backpressured. Cancel returns Idle
+immediately and silences active/queued/pending PCM without touching project
+transport; stale decodes cannot revive it. Faulted/closed output is Unavailable.
+Two constructor-allocated atomic generation acknowledgements carry callback
+start/end; snapshots neither own PCM nor allocate or reclaim on the callback.
+
 The strict worker factory uses the same analysis implementation at the actual
 fixed device rate, with a private actual Capture/Reader/Reaper receipt. Its Reader
 is part of Client's terminal bundle; the Reaper stays in persistent lifecycle
@@ -129,12 +149,15 @@ and performs one nonblocking SPSC push; it does not wake the worker.
 The worker drains at most 32 batches per poll, assembles a fixed 4096-frame
 rolling window, and publishes no faster than 30 Hz through a one-result bounded
 channel. Target, capture generation, sample-rate changes and sequence gaps clear
-the rolling window. Ordinary applied-revision changes keep contiguous output
+the rolling windows and display envelopes. Display results use immediate attack
+and 48 dB/s decay with a common pair time; decay never refreshes capture age.
+Ordinary applied-revision changes keep contiguous output
 samples and update the published revision. Sample-rate changes reconstruct the
 kernel on the worker. Results expire after 100 ms without accepted capture. The
 worker thread owns FFT construction/reconstruction and analysis. The prepared
-CPAL callback only stages the selected EQ8 post-node output into fixed storage
-and submits bounded batches; it performs no FFT.
+CPAL callback stages the selected EQ entry's actual input/output in fixed storage
+and submits one aligned packet; it performs no FFT. Output-only APIs remain
+projections of the same worker/reader, and legacy captures have no input layer.
 
 The callback owns the capture producer. After a successful stream pause, the
 lifecycle owner drops the stream/callback first, joins the worker reaper second,
@@ -160,7 +183,7 @@ disposal; CPAL for CoreAudio output; rtrb for SPSC commands. This narrow product
 stream edge supplies one sealed exact-domain endpoint to the opted-in constructor
 renderer under its real readiness transaction. Legacy callers remain unchanged.
 Tests use
-hex-project as a dev-dependency to build canonical prepared revisions for the
+hex-project and hex-tuning as dev-dependencies to build canonical prepared revisions for the
 callback boundary. The non-default `allocation-probe` feature also activates
 hex-engine's hidden `instrument-test-support` preparation seam and uses
 hex-lattice as a dev-dependency. This injects a fixed-storage mutable proof
@@ -282,3 +305,12 @@ stale/no-longer-retained revisions are UnknownRevision, and callback Applying or
 Complete remains distinct from cancellation. Mirror replacement/destruction is
 worker-side outside the slot mutex. Verified opt-in still requires the virgin
 empty cell and never admits these owning Resident requests.
+
+
+Browser preview `publish_from`/`Client::preview_publish_from` admits an absolute
+frame offset into the existing immutable decoded PCM owner. Bounds are checked on
+control; the callback retains its ordinary cursor and finite end, including a
+silent exact-end start. Snapshots expose absolute frame/total length using one
+additional constructor-allocated atomic cursor; generation acknowledgements keep
+old requests isolated. Constructor channel accounting includes its paired payload.
+UI hit normalization/decoding stays outside this crate and project transport.
