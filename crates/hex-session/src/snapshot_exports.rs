@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
 
 mod family;
+mod storage;
 mod transport;
 pub use family::{
     SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyQueries, SnapshotProducerKey,

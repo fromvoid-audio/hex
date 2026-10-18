@@ -146,6 +146,33 @@ impl<'a> crate::AudioRootStorageLedger<'a> {
     ) -> Result<(), crate::AudioStorageError> {
         self.mutate(|ledger| ledger.vec(value))
     }
+    /// Actual Unix PathBuf backing capacity, including empty reserved storage.
+    /// On the supported pinned Linux/macOS targets PathBuf -> OsString ->
+    /// sys::os_str::bytes::Buf owns Vec<u8>; inline headers belong to the parent.
+    /// Other targets refuse rather than estimating encoded length or layout.
+    pub fn borrow_metadata_path_backing_on_control(
+        &mut self,
+        value: &'a std::path::PathBuf,
+    ) -> Result<(), crate::AudioStorageError> {
+        if !cfg!(any(
+            all(
+                target_arch = "x86_64",
+                target_os = "linux",
+                target_env = "gnu"
+            ),
+            all(target_arch = "aarch64", target_os = "macos"),
+        )) || !crate::audio_storage_constructor_layout_supported()
+        {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        self.mutate(|ledger| {
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(value),
+                crate::audio_storage::Location("unix-path-buffer", 0),
+                value.capacity(),
+            )
+        })
+    }
     /// Actual capacity-visible entry backing. Inline entry fields are included
     /// here; owned children still require their module's traversal. The inline
     /// container header belongs to its enclosing owner.

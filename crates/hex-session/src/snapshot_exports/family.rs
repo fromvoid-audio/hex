@@ -214,7 +214,17 @@ impl SessionExportFamily {
 pub struct SnapshotFamilyQueries<'a> {
     records: &'a SnapshotExportRecords,
 }
-impl SnapshotFamilyQueries<'_> {
+impl<'a> SnapshotFamilyQueries<'a> {
+    /// Actual nested records while the enclosing family read guard stays held.
+    /// The enclosing holder/table and every other root join the SAME ledger;
+    /// this neither supplies a construction quote nor authorizes publication.
+    pub fn visit_selected_storage_on_control(
+        &self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.records.visit_selected_storage_on_control(ledger)
+    }
+
     pub fn inventory_revision(&self) -> u64 {
         self.records.inventory_revision()
     }

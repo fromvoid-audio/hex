@@ -117,3 +117,42 @@ aliases, repeated-visit deduplication, exact/minus-one retained budgets, reserve
 empty samples, independent empty headers and raw/default/unsupported refusal.
 Their post-construction observations do not establish whole-root inventory,
 construction peak, guarded publication, final retirement or usable Sampler UI.
+
+## Actual retained snapshot records
+
+The selected record visitor now traverses both actual record Vec backings and
+EVERY occupied paired ViewState: current and retired records, readers released
+but not cleaned, unpainted records and cleanup-latched owners still present.
+Each view visits its canonical source, actual Project field, waveform maps and
+children, MIDI preview, gain preview and document-path backing. Scalar/atomic
+record and view fields are exhaustively matched. No synthetic read-ID owner or
+released-reader count substitutes for an actual retained object.
+
+`SnapshotFamilyQueries::visit_selected_storage_on_control` borrows these actual
+records while the existing family guard remains held. The same ledger must also
+join the actual holder/table, other families, prepared/history/pending/native
+owners and all other live roots before publication. The method supplies no
+whole-root witness or construction quote, and guard release is not a seal.
+Cleanup still takes its existing try-write route and cannot release a still-read
+snapshot; durable ACK alone releases no owning bytes.
+
+Document PathBuf inline headers belong to ViewState. On the supported pinned
+Rust targets, its actual capacity is byte backing: audited Rust commit
+`4a4ef493e3a1488c6e321570238084b38948f6db`, `library/std/src/path.rs:1789`
+delegates to OsString; `library/std/src/ffi/os_str.rs:350` delegates to its Buf;
+`library/std/src/sys/os_str/mod.rs` selects bytes on Linux/macOS, and
+`library/std/src/sys/os_str/bytes.rs:19,133` stores/returns the actual Vec<u8>
+capacity. The visitor charges capacity, including empty reserved paths, using
+the existing Vec backing contract. Other targets/unsupported pinned constructor
+builds refuse. No encoded-length estimate, raw address, allocator usable-size or
+historical peak is inferred. These primary source files were read at that exact
+commit; this does not constitute runtime or platform acceptance by itself.
+
+New runtime oracles cover two actual independent canonical records and omission
+totals, exact/minus-one selected retained budgets, an unadopted pending source,
+released old readers before actual cleanup, guarded family retirement, reserved
+empty path capacity/dedup and known-outer/unknown-MIDI refusal. Final capacities
+and the ledger's own construction metric cannot recover earlier Project clones,
+input Vecs, old/new/temporary construction overlap or saturated global reaping.
+Registry admission and production UI capability replacement remain closed/open
+work respectively until those separate obligations qualify.
