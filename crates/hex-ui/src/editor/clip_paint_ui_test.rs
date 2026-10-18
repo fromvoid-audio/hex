@@ -366,7 +366,7 @@ fn clip_review_visible_body_wins_over_occluded_edges(cx: &mut TestAppContext) {
         let mut model = Editor::new(project, 8).unwrap();
         let edge = if midi {
             model
-                .execute(Command::PlaceMidiClipWithOverwrite {
+                .execute(Command::PlaceMidiClip {
                     track,
                     start: BeatTime::from_quarters(2).unwrap(),
                     length: BeatTime::from_quarters(4).unwrap(),
