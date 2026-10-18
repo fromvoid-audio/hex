@@ -102,6 +102,7 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
@@ -541,6 +542,7 @@ pub(super) struct EditorView {
     gain_lane: gain_lane::GainLane,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
+    track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
@@ -992,6 +994,7 @@ impl EditorView {
             gain_lane: gain_lane::GainLane::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
+            track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
