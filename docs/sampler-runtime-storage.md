@@ -232,3 +232,22 @@ zero, duplicate-heavy and maximum-note inputs, stable pointer/capacity through
 fill and deduplication, invalid-note refusal and actual bank reuse/PCM. This
 bounds one helper's requested growth; the aggregate entry must still reserve its
 backing and all other live owners/scratch before construction.
+
+Signal-topology preparation also participates in the complete compiler's
+temporary cost, including the zero-latency path that returns no retained graph.
+Its typed-key tree set/map are replaced by explicit reserved scalar Vecs. Node
+and edge counts are checked before builder allocation; insertion refuses an
+exhausted backing instead of implicitly growing. Per-track/Return nested
+buffers and owner ordering are reserved from actual counts too. Unstable sorts
+use complete identity/ordinal keys, preserving the previous tree ordering and
+stable parallel-edge ties without a sort workspace. Existing latency, topology
+and graph limits still apply; no compensation or typed route is skipped.
+
+Tests compare against the historical tree oracle at graph limits, preserve a
+parallel-edge latency plan under shuffled enumeration, reject duplicates and
+invalid endpoints, and compare counts against an actual compiled send/Return/
+typed-feed graph. Present default generators count even without MIDI clips.
+Existing delayed PCM/partition/handoff tests and actual original-PCM Sampler
+preparation still exercise the changed path. This exposes bounded scalar
+construction backings; it does not qualify a raw SignalGraph Arc, complete
+compiler peak, nonempty Arrangement cleanup or native publication.

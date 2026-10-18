@@ -2,7 +2,8 @@
 use crate::{Frame, Invalid, Project, Track, compensation::*};
 mod legacy;
 use hex_project::{ReturnId, RoutingOwner, TrackId};
-use std::{collections::BTreeMap, mem::size_of, sync::Arc};
+use std::{mem::size_of, sync::Arc};
+mod typed_inputs;
 
 pub(crate) const MAX_COEXISTING_COMPENSATION_BYTES: usize = 32 * 1024 * 1024;
 
@@ -82,15 +83,21 @@ struct Builder {
     edges: Vec<(usize, usize)>,
 }
 impl Builder {
-    fn node(&mut self, id: NodeId, latency: Option<u32>) -> usize {
+    fn node(&mut self, id: NodeId, latency: Option<u32>) -> Result<usize, Invalid> {
         let index = self.nodes.len();
+        if index == self.nodes.capacity() {
+            return Err(Invalid("signal graph node reservation exhausted"));
+        }
         self.nodes.push((id, latency));
-        index
+        Ok(index)
     }
-    fn edge(&mut self, from: usize, to: usize) -> usize {
+    fn edge(&mut self, from: usize, to: usize) -> Result<usize, Invalid> {
         let index = self.edges.len();
+        if index == self.edges.capacity() {
+            return Err(Invalid("signal graph edge reservation exhausted"));
+        }
         self.edges.push((from, to));
-        index
+        Ok(index)
     }
 }
 impl SignalGraph {
@@ -99,8 +106,13 @@ impl SignalGraph {
         feeds: &[(usize, usize, f32)],
         canonical: &hex_project::Project,
     ) -> Result<Option<Arc<Self>>, Invalid> {
-        let mut builder = Builder::default();
-        let mut tracks = Vec::new();
+        let (node_count, edge_count) =
+            typed_inputs::counts(project, feeds.len(), canonical.audio_feeds().len())?;
+        let mut builder = Builder {
+            nodes: typed_inputs::reserved(node_count)?,
+            edges: typed_inputs::reserved(edge_count)?,
+        };
+        let mut tracks = typed_inputs::reserved(project.tracks.len())?;
         for (index, track) in project.tracks.iter().enumerate() {
             if track.instrument_runtime_latency != track.instrument_latency {
                 return Err(Invalid(
@@ -110,38 +122,44 @@ impl SignalGraph {
             let id = track
                 .canonical_track_id()
                 .map_or(index as u64, TrackId::value);
-            let audio = builder.node(NodeId::Audio(id), Some(0));
-            let input = builder.node(NodeId::TrackInput(id), Some(0));
-            let source_input = builder.edge(audio, input);
+            let audio = builder.node(NodeId::Audio(id), Some(0))?;
+            let input = builder.node(NodeId::TrackInput(id), Some(0))?;
+            let source_input = builder.edge(audio, input)?;
             let mut previous = input;
-            let mut devices = Vec::new();
+            let mut devices = typed_inputs::reserved(track.device_chain.len())?;
             for device in track.device_chain.iter().take(track.instrument_position) {
                 let node = builder.node(
                     NodeId::Device(device.device_id),
                     device.algorithmic_latency_frames(),
-                );
-                builder.edge(previous, node);
+                )?;
+                builder.edge(previous, node)?;
                 previous = node;
                 devices.push(node);
             }
-            let generator = track
-                .instrument_slot_enabled()
-                .then(|| builder.node(NodeId::Generator(id), track.instrument_latency));
-            let merge = builder.node(NodeId::Merge(id), Some(0));
-            let audio_merge = builder.edge(previous, merge);
-            let generator_merge = generator.map(|node| builder.edge(node, merge));
+            let generator = if track.instrument_slot_enabled() {
+                Some(builder.node(NodeId::Generator(id), track.instrument_latency)?)
+            } else {
+                None
+            };
+            let merge = builder.node(NodeId::Merge(id), Some(0))?;
+            let audio_merge = builder.edge(previous, merge)?;
+            let generator_merge = if let Some(node) = generator {
+                Some(builder.edge(node, merge)?)
+            } else {
+                None
+            };
             previous = merge;
             for device in track.device_chain.iter().skip(track.instrument_position) {
                 let node = builder.node(
                     NodeId::Device(device.device_id),
                     device.algorithmic_latency_frames(),
-                );
-                builder.edge(previous, node);
+                )?;
+                builder.edge(previous, node)?;
                 previous = node;
                 devices.push(node);
             }
-            let fader = builder.node(NodeId::Fader(id), Some(0));
-            builder.edge(previous, fader);
+            let fader = builder.node(NodeId::Fader(id), Some(0))?;
+            builder.edge(previous, fader)?;
             tracks.push(TrackPlan {
                 id: track.canonical_track_id(),
                 devices,
@@ -152,40 +170,44 @@ impl SignalGraph {
                 audio_merge,
                 generator_merge,
                 main: 0,
-                sends: Vec::new(),
-                audio_feeds: Vec::new(),
+                sends: typed_inputs::reserved(track.sends.len())?,
+                audio_feeds: typed_inputs::reserved(canonical.audio_feeds().iter().filter(|feed| {
+                    matches!(feed.source(), RoutingOwner::Track(id) if Some(id) == track.canonical_track_id())
+                }).count())?,
             });
         }
-        let mut returns = Vec::new();
-        let mut inputs = Vec::new();
-        for bus in &project.return_buses {
-            let input = builder.node(NodeId::ReturnInput(bus.id.value()), Some(0));
+        let mut returns = typed_inputs::reserved(project.return_buses.len())?;
+        let mut inputs = typed_inputs::reserved(project.return_buses.len())?;
+        for (bus_index, bus) in project.return_buses.iter().enumerate() {
+            let input = builder.node(NodeId::ReturnInput(bus.id.value()), Some(0))?;
             inputs.push(input);
             let mut previous = input;
-            let mut devices = Vec::new();
+            let mut devices = typed_inputs::reserved(bus.device_chain.len())?;
             for device in bus.device_chain.iter() {
                 let node = builder.node(
                     NodeId::Device(device.device_id),
                     device.algorithmic_latency_frames(),
-                );
-                builder.edge(previous, node);
+                )?;
+                builder.edge(previous, node)?;
                 previous = node;
                 devices.push(node);
             }
-            let output = builder.node(NodeId::ReturnOutput(bus.id.value()), Some(0));
-            builder.edge(previous, output);
+            let output = builder.node(NodeId::ReturnOutput(bus.id.value()), Some(0))?;
+            builder.edge(previous, output)?;
             returns.push(ReturnPlan {
                 id: bus.id,
                 devices,
                 output,
                 main: 0,
-                feeds: Vec::new(),
-                audio_feeds: Vec::new(),
+                feeds: typed_inputs::reserved(feeds.iter().filter(|&&(source, _, _)| source == bus_index).count())?,
+                audio_feeds: typed_inputs::reserved(canonical.audio_feeds().iter().filter(|feed| {
+                    matches!(feed.source(), RoutingOwner::Return(id) if id == bus.id)
+                }).count())?,
             });
         }
-        let main = builder.node(NodeId::Main, Some(0));
+        let main = builder.node(NodeId::Main, Some(0))?;
         for (index, track) in tracks.iter_mut().enumerate() {
-            track.main = builder.edge(track.fader, main);
+            track.main = builder.edge(track.fader, main)?;
             for send in &project.tracks[index].sends {
                 let input = *inputs
                     .get(send.return_index)
@@ -193,12 +215,12 @@ impl SignalGraph {
                 track.sends.push(Send {
                     target: send.return_index,
                     gain: send.gain,
-                    edge: builder.edge(track.fader, input),
+                    edge: builder.edge(track.fader, input)?,
                 });
             }
         }
         for bus in &mut returns {
-            bus.main = builder.edge(bus.output, main);
+            bus.main = builder.edge(bus.output, main)?;
         }
         for &(source, target, gain) in feeds {
             let from = returns
@@ -211,7 +233,7 @@ impl SignalGraph {
             returns[source].feeds.push(Send {
                 target,
                 gain,
-                edge: builder.edge(from, to),
+                edge: builder.edge(from, to)?,
             });
         }
         for feed in canonical.audio_feeds() {
@@ -240,53 +262,24 @@ impl SignalGraph {
             let send = Send {
                 target,
                 gain: feed.gain(),
-                edge: builder.edge(from, to),
+                edge: builder.edge(from, to)?,
             };
             match source {
                 Owner::Track(index) => tracks[index].audio_feeds.push(send),
                 Owner::Return(index) => returns[index].audio_feeds.push(send),
             }
         }
-        // Typed identities assign stable generic keys, independent of traversal order.
-        let keys: BTreeMap<_, _> = builder
-            .nodes
-            .iter()
-            .map(|(id, _)| *id)
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .enumerate()
-            .map(|(index, id)| (id, index as u64 + 1))
-            .collect();
-        if keys.len() != builder.nodes.len() {
-            return Err(Invalid("signal graph has duplicate typed nodes"));
+        if builder.nodes.len() != node_count || builder.edges.len() != edge_count {
+            return Err(Invalid("signal graph construction count changed"));
         }
-        let nodes: Vec<_> = builder
-            .nodes
-            .iter()
-            .map(|(id, latency)| LatencyNode {
-                key: keys[id],
-                latency_frames: *latency,
-            })
-            .collect();
-        let mut edge_order: Vec<_> = (0..builder.edges.len()).collect();
-        edge_order.sort_by_key(|&i| {
-            let (from, to) = builder.edges[i];
-            (keys[&builder.nodes[from].0], keys[&builder.nodes[to].0])
-        });
-        let mut edge_keys = vec![0; builder.edges.len()];
-        for (key, &index) in edge_order.iter().enumerate() {
-            edge_keys[index] = key as u64 + 1;
-        }
-        let edges: Vec<_> = builder
-            .edges
-            .iter()
-            .enumerate()
-            .map(|(i, &(from, to))| LatencyEdge {
-                key: edge_keys[i],
-                from: keys[&builder.nodes[from].0],
-                to: keys[&builder.nodes[to].0],
-            })
-            .collect();
+        // All stable keys and mapping scratch are real reserved scalar Vecs.
+        // The helper preserves typed identity order and parallel-edge order.
+        let typed_inputs::TypedInputs {
+            typed,
+            nodes,
+            edges,
+            edge_keys,
+        } = typed_inputs::prepare(&builder)?;
         let plan =
             LatencyPlan::build(&nodes, &edges, CompensationLimits::default()).map_err(error)?;
         if plan.max_latency_frames() == 0 && canonical.audio_feeds().is_empty() {
@@ -325,7 +318,19 @@ impl SignalGraph {
                 feed.edge = edge_index(feed.edge)?;
             }
         }
-        let mut order: Vec<_> = tracks
+        let mut ranks = typed_inputs::reserved(plan.nodes().len())?;
+        ranks.resize(plan.nodes().len(), 0_usize);
+        for (rank, &node) in plan.topological_order().iter().enumerate() {
+            *ranks
+                .get_mut(node)
+                .ok_or(Invalid("signal graph node mapping is missing"))? = rank;
+        }
+        let owner_count = tracks
+            .len()
+            .checked_add(returns.len())
+            .ok_or(Invalid("signal graph owner count overflow"))?;
+        let mut order = typed_inputs::reserved(owner_count)?;
+        for (node, owner) in tracks
             .iter()
             .enumerate()
             .map(|(i, t)| (t.fader, Owner::Track(i)))
@@ -335,20 +340,26 @@ impl SignalGraph {
                     .enumerate()
                     .map(|(i, bus)| (bus.output, Owner::Return(i))),
             )
-            .collect();
-        let mut ranks = vec![0; plan.nodes().len()];
-        for (rank, &node) in plan.topological_order().iter().enumerate() {
-            ranks[node] = rank;
+        {
+            order.push((
+                *ranks
+                    .get(node)
+                    .ok_or(Invalid("signal graph node mapping is missing"))?,
+                owner,
+            ));
         }
-        order.sort_by_key(|(node, _)| ranks[*node]);
-        let owner_order = order.into_iter().map(|(_, owner)| owner).collect();
+        // Fader/Return-output node identities are distinct, hence ranks are
+        // unique. This needs no stable-sort workspace.
+        order.sort_unstable_by_key(|(rank, _)| *rank);
+        let mut owner_order = typed_inputs::reserved(owner_count)?;
+        owner_order.extend(order.into_iter().map(|(_, owner)| owner));
         let graph = Arc::new(Self {
             main: node_index(main)?,
             plan,
             tracks,
             returns,
             owner_order,
-            typed: keys.into_keys().collect(),
+            typed,
         });
         // Charge actual prepared table capacity before admitting runtime owners.
         if graph

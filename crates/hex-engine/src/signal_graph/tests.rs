@@ -10,7 +10,7 @@ use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterValue,
 };
 use hex_project::{Command, Created, Editor};
-use std::any::Any;
+use std::{any::Any, collections::BTreeMap};
 
 #[path = "tests/eq_automation.rs"]
 mod eq_automation;
