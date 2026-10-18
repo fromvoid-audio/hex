@@ -622,3 +622,189 @@ fn device_backspace_preserves_invalid_numeric_draft_and_device(cx: &mut TestAppC
         assert!(settled(view));
     });
 }
+
+#[gpui::test]
+fn device_delete_review_refused_press_cannot_turn_into_held_removal(cx: &mut TestAppContext) {
+    let browser = BrowserDirectory::new();
+    cx.update(super::super::super::bind_editor_keys);
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = browser.window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    let point = title(&mut visual, device);
+    visual.simulate_click(point, Modifiers::default());
+    // Real actor work is pending at the first event, not a forged view counter.
+    // Dispatch before leaving this window update so its completion cannot drain first.
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::RenameTrack {
+                track,
+                name: "completed while key held".into(),
+            })));
+            assert!(view.worker_requests_pending > 0);
+        });
+        window.dispatch_input(
+            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+                is_held: false,
+            }),
+            cx,
+        );
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .is_some()
+            );
+            assert_eq!(
+                view.error.as_deref(),
+                Some("finish pending edits before removing the selected device")
+            );
+        });
+    });
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    let after_edit = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        is_held: true,
+    });
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project,
+            after_edit,
+            "refused first press must remain refused while held after pending work completes"
+        );
+    });
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+    });
+    visual.simulate_keystrokes("backspace");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .is_none()
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-z");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .is_some()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, after_edit)
+    });
+}
+
+fn pointer_remove_retains_keyboard(cx: &mut TestAppContext, kind: u8) {
+    let browser = BrowserDirectory::new();
+    cx.update(super::super::super::bind_editor_keys);
+    let (service, state, track, return_id, device) = if kind == 2 {
+        let (service, state, track, owner, device, _) = actor_return_utility_fixture();
+        (service, state, track, Some(owner), device)
+    } else {
+        let (service, state, track, effect, _, _) = actor_utility_fixture();
+        let device = if kind == 1 {
+            state
+                .project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id()
+        } else {
+            effect
+        };
+        (service, state, track, None, device)
+    };
+    let original = state.project.clone();
+    let (handle, editor) = browser.window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.focused_return = return_id;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    let point = title(&mut visual, device);
+    visual.simulate_click(point, Modifiers::default());
+    let prefix = match kind {
+        0 => "device-remove",
+        1 => "instrument-remove",
+        _ => "return-device-remove",
+    };
+    let remove = visual
+        .debug_bounds(Box::leak(
+            format!("{prefix}-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("remove control");
+    visual.simulate_click(remove.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .is_none()
+    });
+    visual.run_until_parked();
+    let focused = visual.update(|window, cx| window.focused(cx).is_some());
+    visual.simulate_keystrokes("cmd-z");
+    assert!(
+        focused,
+        "pointer X retired the focused card and blurred the editor before real Cmd-Z"
+    );
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .is_some()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+    editor.update(cx, |view, _| view.last_transport_command = None);
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.last_transport_command.is_some(),
+            "real Space remains routed to transport"
+        )
+    });
+}
+
+#[gpui::test]
+fn device_delete_review_pointer_track_effect_keeps_keyboard(cx: &mut TestAppContext) {
+    pointer_remove_retains_keyboard(cx, 0);
+}
+#[gpui::test]
+fn device_delete_review_pointer_instrument_keeps_keyboard(cx: &mut TestAppContext) {
+    pointer_remove_retains_keyboard(cx, 1);
+}
+#[gpui::test]
+fn device_delete_review_pointer_return_keeps_keyboard(cx: &mut TestAppContext) {
+    pointer_remove_retains_keyboard(cx, 2);
+}

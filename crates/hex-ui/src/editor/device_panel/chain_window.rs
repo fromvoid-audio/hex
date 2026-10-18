@@ -9,6 +9,7 @@ pub(super) struct ChainWindow {
     cards: Vec<(DeviceId, f32, f32)>,
     focus: HashMap<DeviceId, FocusHandle>,
     selection_focus: Option<FocusHandle>,
+    pub(super) refused_delete: Option<super::keyboard::RefusedDelete>,
     width: Rc<Cell<f32>>,
 }
 
@@ -53,6 +54,12 @@ impl ChainWindow {
         self.selection_focus
             .get_or_insert_with(|| cx.focus_handle())
             .clone()
+    }
+
+    pub(super) fn device_is_focused(&self, device: DeviceId, window: &Window) -> bool {
+        self.focus
+            .get(&device)
+            .is_some_and(|focus| focus.is_focused(window))
     }
 
     fn visible(&self, device: DeviceId, initial_width: Option<f32>) -> bool {

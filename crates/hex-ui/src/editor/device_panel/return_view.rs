@@ -262,9 +262,11 @@ pub(super) fn render_return_effect(
             theme::DeviceActionRole::Destructive,
             selected,
         )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(id)));
+        .on_click(cx.listener(move |view, _, window, cx| {
+            if finalize_controls(view, cx)
+                && view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(id)))
+            {
+                keyboard::after_pointer_removal(view, id, window, cx);
             }
             cx.notify();
         })),
