@@ -932,24 +932,50 @@ impl EditorView {
         cx.notify();
     }
 
-    pub(super) fn trim_pan_advances(&self, drag: &TrimDrag, x: f32, next: Viewport) -> bool {
-        let Some(state) = &self.state else {
-            return false;
-        };
-        let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
-            return false;
-        };
-        let Some(delta) = *drag.grab_delta.borrow() else {
-            return false;
-        };
+    pub(super) fn trim_pan_viewport(
+        &self,
+        drag: &TrimDrag,
+        x: f32,
+        next: Viewport,
+    ) -> Option<Viewport> {
+        let state = self.state.as_ref()?;
+        let lane = self.drag_lanes.get(&drag.source_track).copied()?;
+        let delta = (*drag.grab_delta.borrow())?;
         let candidate = |viewport| {
             let frame = corrected_edge_frame(frame_at_x(x, lane, viewport)?, delta);
             preview_clip(drag, &state.project, frame).ok()
         };
-        match (candidate(drag.viewport()), candidate(next)) {
-            (Some(before), Some(after)) => before != after,
-            _ => false,
+        let current = drag.viewport();
+        let before = candidate(current)?;
+        if let Some(after) = candidate(next) {
+            return (before != after).then_some(next);
         }
+        // A full timer step can cross the opposite edge during inward stretch.
+        // Search only this checked step's valid prefix, with the canonical model
+        // still deciding legality. The maximum is 64 probes, never unbounded
+        // one-frame retries or a relaxed minimum/source interval.
+        let mut valid = 0;
+        let mut invalid = current.start.abs_diff(next.start);
+        let viewport_at = |distance| Viewport {
+            start: if next.start > current.start {
+                current.start + distance
+            } else {
+                current.start - distance
+            },
+            length: current.length,
+        };
+        while invalid.saturating_sub(valid) > 1 {
+            let middle = valid + (invalid - valid) / 2;
+            if candidate(viewport_at(middle)).is_some() {
+                valid = middle;
+            } else {
+                invalid = middle;
+            }
+        }
+        let last = viewport_at(valid);
+        candidate(last)
+            .filter(|after| *after != before)
+            .map(|_| last)
     }
 
     pub(super) fn midi_trim_pan_advances(

@@ -545,23 +545,41 @@ fn check_retired_pan_then_growth(cx: &mut TestAppContext, stale: bool) {
 
 #[gpui::test]
 fn inward_shift_resize_consumes_last_valid_stationary_pan_step(cx: &mut TestAppContext) {
-    check_inward_last_valid_step(cx, false);
+    check_inward_last_valid_step(cx, false, false);
 }
 #[gpui::test]
 fn inward_midi_resize_keeps_positive_extent_at_stationary_pan_limit(cx: &mut TestAppContext) {
-    check_inward_last_valid_step(cx, true);
+    check_inward_last_valid_step(cx, true, false);
 }
-fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool) {
-    let viewport = Viewport {
-        start: 100_000,
-        length: 192_000,
+#[gpui::test]
+fn inward_left_shift_resize_consumes_last_valid_stationary_pan_step(cx: &mut TestAppContext) {
+    check_inward_last_valid_step(cx, false, true);
+}
+fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool) {
+    let viewport = if left {
+        Viewport {
+            start: 0,
+            length: 188_000,
+        }
+    } else {
+        Viewport {
+            start: 100_000,
+            length: 192_000,
+        }
     };
     let (handle, editor, track, clip, _files) = fixture(cx, midi, Some(viewport));
     let mut visual = VisualTestContext::from_window(handle, cx);
-    let down = capture(&mut visual, clip, midi, false);
+    let down = capture(&mut visual, clip, midi, left);
     let edge = editor.read_with(&visual, |v, _| {
         let lane = v.drag_lanes[&track];
-        point(px(lane.left + 3.0), down.y)
+        point(
+            px(if left {
+                lane.left + lane.width - 3.0
+            } else {
+                lane.left + 3.0
+            }),
+            down.y,
+        )
     });
     let modifiers = Modifiers {
         shift: !midi,
@@ -583,7 +601,11 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool) {
         let after = v.viewport.unwrap();
         eprintln!("inward held midi={midi} before={before:?} after={after:?}");
         assert!(
-            after.start < before.start,
+            if left {
+                after.start > before.start
+            } else {
+                after.start < before.start
+            },
             "consume valid final partial step rather than reject overshooting full tick"
         );
         if midi {

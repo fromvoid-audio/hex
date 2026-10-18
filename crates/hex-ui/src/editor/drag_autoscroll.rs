@@ -230,9 +230,9 @@ impl EditorView {
                 return false;
             };
             // Source/minimum bounds, not grid quantization, may stop navigation.
-            if !self.trim_pan_advances(&drag, x, next) {
+            let Some(next) = self.trim_pan_viewport(&drag, x, next) else {
                 return false;
-            }
+            };
             self.apply_drag_scroll(&drag.scroll, next, horizon);
             self.update_trim_preview(&drag, x, cx);
             return true;
