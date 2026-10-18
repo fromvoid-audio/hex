@@ -1,0 +1,8 @@
+{
+  "file": "hex-2790-native-request-v1.tar.gz",
+  "bytes": 394235,
+  "sha256": "4f57d0155cceeb7e5aa78cc56fe008089c130e7642952eba5feb076c163e7b45",
+  "candidate": "daf55e5c2ed0c3a2933172a872689d28462c2b83",
+  "tree": "1f3cf49bf5af86b96eeca271bbc1d10162315bf0",
+  "warning": "Evidence-only ref. Never checkout/build as CODE. Fetch pinned code candidate separately. Native targeted request only, full cloud qualification pending."
+}
