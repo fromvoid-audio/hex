@@ -105,6 +105,119 @@ fn corrected_edge_frame(pointer_frame: u64, grab_delta: i128) -> u64 {
     (i128::from(pointer_frame) - grab_delta).clamp(0, i128::from(u64::MAX)) as u64
 }
 
+/// One resize terminal owner. PR403 adds optional display metadata to this
+/// same record; no separate completion key, FIFO counter or viewport owner.
+pub(super) struct PendingTrim {
+    generation: u64,
+    command: ResizeCommand,
+    remaining: Option<usize>,
+    scroll_viewport: Option<Viewport>,
+}
+pub(super) struct RetiredTrimViewport {
+    generation: u64,
+    viewport: Option<Viewport>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResizeCommand {
+    Audio {
+        clip: hex_project::ClipId,
+        edge: TrimEdge,
+        frame: u64,
+        stretch: bool,
+    },
+    Midi {
+        clip: hex_project::ClipId,
+        edge: TrimEdge,
+        beat: BeatTime,
+    },
+}
+
+impl ResizeCommand {
+    fn from_request(request: &Request) -> Option<Self> {
+        match request {
+            Request::Edit(Command::StretchAudioClipEdge { clip, edge, frame }) => {
+                Some(Self::Audio {
+                    clip: *clip,
+                    edge: *edge,
+                    frame: *frame,
+                    stretch: true,
+                })
+            }
+            Request::Edit(Command::TrimClipEdge { clip, edge, frame }) => Some(Self::Audio {
+                clip: *clip,
+                edge: *edge,
+                frame: *frame,
+                stretch: false,
+            }),
+            Request::Edit(Command::TrimMidiClipEdge { clip, edge, beat }) => Some(Self::Midi {
+                clip: *clip,
+                edge: *edge,
+                beat: *beat,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl PendingTrim {
+    fn into_viewport(self) -> RetiredTrimViewport {
+        RetiredTrimViewport {
+            generation: self.generation,
+            viewport: self.scroll_viewport,
+        }
+    }
+}
+impl EditorView {
+    pub(super) fn pending_trim_matches(&self, request: &Request) -> bool {
+        self.pending_trim.as_ref().is_some_and(|pending| {
+            pending.generation == self.project_generation
+                && pending.remaining.is_none()
+                && ResizeCommand::from_request(request) == Some(pending.command)
+        })
+    }
+    pub(super) fn trim_request_submitted(&mut self) {
+        if let Some(pending) = self.pending_trim.as_mut() {
+            pending.remaining = Some(self.worker_requests_pending);
+        }
+    }
+    /// Take only our own FIFO terminal before receive installs its canonical
+    /// state. Earlier completions, including typed gestures, count but do not
+    /// normalize. Replacement discards the old document's owner entirely.
+    pub(super) fn trim_request_complete(
+        &mut self,
+        event: &hex_session::service::Event,
+    ) -> Option<RetiredTrimViewport> {
+        let pending = self.pending_trim.as_mut()?;
+        if event.project_replaced || pending.generation != self.project_generation {
+            self.pending_trim = None;
+            return None;
+        }
+        if event.request_complete
+            && let Some(remaining) = pending.remaining.as_mut()
+        {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                return self.pending_trim.take().map(PendingTrim::into_viewport);
+            }
+        }
+        None
+    }
+    pub(super) fn normalize_completed_trim_viewport(
+        &mut self,
+        terminal: Option<RetiredTrimViewport>,
+    ) {
+        if let Some(terminal) = terminal {
+            self.normalize_canceled_trim_viewport(terminal.generation, terminal.viewport);
+        }
+    }
+    pub(super) fn retire_pending_trim(&mut self) -> bool {
+        let terminal = self.pending_trim.take().map(PendingTrim::into_viewport);
+        let retired = terminal.is_some();
+        self.normalize_completed_trim_viewport(terminal);
+        retired
+    }
+}
+
 fn edge_frame(clip: &Clip, edge: TrimEdge) -> Option<u64> {
     match edge {
         TrimEdge::Left => Some(clip.start()),
@@ -113,12 +226,13 @@ fn edge_frame(clip: &Clip, edge: TrimEdge) -> Option<u64> {
 }
 
 fn drag_admitted(view: &EditorView) -> bool {
-    trim_drag_admitted(
-        view.opening_project,
-        view.close_prompt_open,
-        view.worker_requests_pending,
-        view.pending_requests.len(),
-    )
+    view.pending_trim.is_none()
+        && trim_drag_admitted(
+            view.opening_project,
+            view.close_prompt_open,
+            view.worker_requests_pending,
+            view.pending_requests.len(),
+        )
 }
 
 fn trim_drag_admitted(
@@ -923,11 +1037,24 @@ impl EditorView {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
+        self.pending_trim = Some(PendingTrim {
+            generation: drag.project_generation,
+            command: ResizeCommand::Midi {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                beat,
+            },
+            remaining: None,
+            scroll_viewport: drag.scroll.get().viewport,
+        });
         let accepted = self.enqueue(Request::Edit(Command::TrimMidiClipEdge {
             clip: drag.clip.id(),
             edge: drag.edge,
             beat,
         }));
+        if !accepted {
+            self.pending_trim = None;
+        }
         self.retire_trim_gesture(!accepted, cx);
         cx.notify();
     }
@@ -1110,7 +1237,19 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        let accepted = self.enqueue(Request::Edit(if drag.stretch_modifier.get() {
+        let stretch = drag.stretch_modifier.get();
+        self.pending_trim = Some(PendingTrim {
+            generation: drag.project_generation,
+            command: ResizeCommand::Audio {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                frame,
+                stretch,
+            },
+            remaining: None,
+            scroll_viewport: drag.scroll.get().viewport,
+        });
+        let accepted = self.enqueue(Request::Edit(if stretch {
             Command::StretchAudioClipEdge {
                 clip: drag.clip.id(),
                 edge: drag.edge,
@@ -1123,6 +1262,9 @@ impl EditorView {
                 frame,
             }
         }));
+        if !accepted {
+            self.pending_trim = None;
+        }
         self.retire_trim_gesture(!accepted, cx);
         cx.notify();
     }
