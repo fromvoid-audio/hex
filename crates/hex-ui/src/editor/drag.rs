@@ -860,7 +860,7 @@ impl super::EditorView {
             .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
         let timeline = LaneBounds {
             left: body.left,
-            width: body.width - super::tracks::TRACK_HEADER_WIDTH,
+            width: body.width - self.track_header_width(),
             top: body.top,
             height: body.height,
         };

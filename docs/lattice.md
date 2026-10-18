@@ -243,3 +243,11 @@ The device-specific and acceptance tickets retain those obligations. In particul
 existing export compatibility is preserved; additional export capability belongs
 to the owner's 0.2 scope. Historical checkpoint descriptions retain their original
 evidence and must not be read as fresh acceptance of current source.
+
+## owned effect transaction bootstrap
+
+The additive owned factory/runtime capability supports private committed and
+speculative history with explicit abort after host failure. Legacy production
+providers and effective memory caps remain unchanged. The registered delay is
+conformance-only; large history admission and native preserved-history custody
+remain open. See [contract and evidence](owned-effect-transactions.md) (#2673).

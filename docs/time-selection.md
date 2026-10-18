@@ -41,7 +41,7 @@ candidate project compiles successfully. Delete, paste and move each commit as
 one prepared history operation. Refused edits preserve the project and redo.
 Undo restores musical content; the existing stable-ID allocator never rewinds.
 
-Paste replaces the **entire destination rectangle**, including copied silence,
+Time-range paste replaces the **entire destination rectangle**, including copied silence,
 with the same track count and frame duration. Keyboard paste of a single copied
 track uses the currently targeted row. Multiple copied tracks retain their
 original stable track IDs, using only the new horizontal position. Intervening
@@ -69,6 +69,47 @@ delete time with gap movement and Session time-area editing are deferred.
 Cmd-Shift-C copies the same time rectangle; Cmd-Shift-V inserts it and shifts
 later content right on only the destination rows. Ordinary paste still replaces.
 No schema change is introduced.
+
+## whole-clip keyboard clipboard — pulse2770 / PR378
+
+Click a clip header, optionally extend the clip selection, then press Command-C
+to capture complete clips. A deliberate header click clears an unrelated time
+area; body time-selection gestures retain the rectangle contract above. Copying
+without a time area uses selected whole clips. Cut still requires a time area.
+
+Click elsewhere on a track to place the edit cursor, then Command-V pastes at
+that time even though the source selection is now cleared. The worker retains
+the immutable payload independently of view selection and OS text clipboard.
+Repeated paste remains available. Successful whole-clip or time-range copy
+replaces this one project-scoped payload; refused copy preserves its predecessor.
+Project replacement clears it as before. Text inputs retain their own keys.
+
+Whole clips preserve full source/loop/fade and note metadata, relative start
+times and gaps. Every paste allocates fresh clip/note IDs and commits one atomic
+Undo operation. Existing canonical placement, overlap and ripple operations
+remain in use: pasted extents replace old destination content, while gaps are
+untouched and valid overlapping copied members do not erase each other. A single
+copied source track follows the clicked target; copies from multiple source
+tracks retain their original stable TrackIds and use the new horizontal origin,
+for both normal and ripple paste. No track creation or cross-track remapping is
+introduced. Missing assets/tracks, invalid bounds and exhausted limits refuse
+the complete edit; no PCM or file conversion occurs during copy.
+
+The rendered regression reproduces an unrelated old range pasting 12,000 frames
+instead of the selected 48,000-frame clip, then passes after the routing repair.
+Single/multiple clips exercise real worker copy/paste, destination clicks,
+relative gaps, fresh IDs, one Undo/Redo, repeated paste, text focus and disposable
+save/reopen. Model tests cover retained content after source removal, mixed
+audio/MIDI overlaps and domains, stable multi-track normal/ripple ownership and
+atomic overflow refusal. Exact final required checks are recorded in Pulse/PR.
+
+Native acceptance remains with the coordinator's serial Mac lane on a future
+approved optimized candidate containing PR378: copy one clip then several clips,
+click a different time/track and paste, repeat, compare full content/gaps, Undo/
+Redo, and confirm text-input copy/paste does not replace the Arrangement payload.
+Use a disposable project for save/reopen. Record the actual source/build and a
+short interaction capture; this does not require saving/quitting or replacing
+the user's current running app. No native acceptance is claimed here.
 
 ## acceptance
 
@@ -243,3 +284,18 @@ review build `hex-time-gesture-20261009.app` and authorized PR #17 to merge.
 It is merged as `a250f83`; exact source `25b797e` passed all 14 local CI steps.
 Pulse ticket 38 records this completion. This establishes the reviewed interaction
 acceptance, not physical input/paint timing measurements.
+
+Command-D in the focused Arrangement duplicates a positive time selection at its
+exclusive end, using the same atomic `CopyTimeRangeTo` edit as Option-drag time
+copy. This is normal overwrite paste, not ripple insertion: destination contents
+inside the copied rectangle are replaced, while copied gaps and partial source
+windows follow the existing time-chunk rules. Source rows are the existing
+contiguous time-selection rectangle; the main-track proxy scopes all Arrangement
+tracks. Audio and MIDI fragments are supported; unsupported automation transforms
+refuse through the canonical edit. The clipboard is unchanged.
+
+After successful acknowledgement the selected rectangle advances to the copy,
+so another press repeats it. Pending edits must finish before another duplicate;
+overflow and invalid ranges make no partial edit. MIDI/detail/session and text or
+numeric focus retain their own commands. Without an active Arrangement range,
+the existing clip/scene duplication behavior remains.

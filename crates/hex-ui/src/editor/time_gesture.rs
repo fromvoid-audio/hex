@@ -173,6 +173,7 @@ impl EditorView {
             && self.active_browser_audio_drag.is_none()
             && self.active_native_device_drag.is_none()
             && self.active_trim_drag.is_none()
+            && self.active_fade_drag.is_none()
             && self.active_midi_trim_drag.is_none()
     }
 }

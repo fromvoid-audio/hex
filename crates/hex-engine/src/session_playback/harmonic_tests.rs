@@ -284,11 +284,17 @@ fn first_paint_preserves_all_64_held_or_released_analytic_voices_and_undo_stays_
 
 #[test]
 fn routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and_undo() {
+    // Retain every real oracle/transition owner, but keep their storage out of
+    // the caller's debug frame. The production constructor still runs normally
+    // inside this small test-only boundary; no thread stack is enlarged.
+    fn playback(revision: Arc<PreparedRevision>) -> Box<SessionPlayback> {
+        Box::new(SessionPlayback::new(revision).unwrap())
+    }
     let (original, source, destination, source_clip) = routed_session_fixture();
     let revision = prepared(&original, None);
-    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    let mut old_reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    let mut analytic_oracle = SessionPlayback::new(revision).unwrap();
+    let mut old = playback(Arc::clone(&revision));
+    let mut old_reference = playback(Arc::clone(&revision));
+    let mut analytic_oracle = playback(revision);
     for runtime in [&mut old, &mut old_reference, &mut analytic_oracle] {
         runtime
             .apply(SessionPlaybackCommand::LaunchClip {
@@ -314,9 +320,9 @@ fn routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and
         ],
     );
     let candidate = prepared(&custom, Some(old.revision.session()));
-    let mut painted = SessionPlayback::new(Arc::clone(&candidate)).unwrap();
+    let mut painted = playback(Arc::clone(&candidate));
     painted.try_inherit_state_from(&mut old).unwrap();
-    let mut painted_reference = SessionPlayback::new(candidate).unwrap();
+    let mut painted_reference = playback(candidate);
     painted_reference
         .try_inherit_state_from(&mut old_reference)
         .unwrap();
@@ -359,14 +365,12 @@ fn routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and
     painted_reference.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
 
-    let mut undone =
-        SessionPlayback::new(prepared(&original, Some(painted.revision.session()))).unwrap();
+    let mut undone = playback(prepared(&original, Some(painted.revision.session())));
     undone.try_inherit_state_from(&mut painted).unwrap();
-    let mut undone_reference = SessionPlayback::new(prepared(
+    let mut undone_reference = playback(prepared(
         &original,
         Some(painted_reference.revision.session()),
-    ))
-    .unwrap();
+    ));
     undone_reference
         .try_inherit_state_from(&mut painted_reference)
         .unwrap();
