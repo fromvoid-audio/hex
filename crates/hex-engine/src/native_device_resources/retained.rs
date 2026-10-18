@@ -51,6 +51,22 @@ impl std::fmt::Debug for OriginalSourceLease {
     }
 }
 impl DeviceResourceBank {
+    /// Actual embedded bank field: the enclosing parent charges its inline body.
+    /// No extra root/owner or synthetic handle is constructed for inspection.
+    pub(crate) fn visit_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        if ledger.contains_shared_field(self) {
+            return Ok(());
+        }
+        visit(
+            &self.root,
+            crate::audio_storage::Owner::exclusive(self),
+            self.handle,
+            ledger,
+        )
+    }
     pub fn borrow_original_source_on_control(
         &self,
         asset: AssetId,

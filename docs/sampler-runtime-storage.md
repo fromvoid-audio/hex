@@ -396,3 +396,28 @@ bank destination is not production custody. This factors the required borrowed
 producer seam only: the sealed candidate/request binding, persistent bank
 installation, aggregate preconstruction reservation, displaced-history retirement
 and final model/media/audio publication frontier remain required and closed.
+
+The actual AudioPreparationCustody now has one private original-resource bank
+field. Moving that custodian through the existing draft into the final candidate
+moves this field too. Its embedded visitor charges the original paired body,
+catalog and PCM once, includes every actual bank/lease alias, and skips repeated
+visits of the same physical bank field. The enclosing custody body charges the
+inline bank header. Original-bank recovery requires this resource field to be
+normally retired first.
+
+Control cleanup retires the bank after runtime, prepared roots and child
+custodians. A precompiler vacant custodian can also retire its unpublished bank.
+The destruction marker is set before take and only cleared on normal return;
+unresolved state refuses observation and recovery, and abnormal exit latches the
+existing first-panic/FailedIncomplete state without retry. Tests cover original
+Mono/Stereo aliases, independent standalone-vs-parented bytes, omitted handles,
+exact/minus-one budgets, actual draft-to-final-owner movement and normal control
+retirement while a real source lease remains readable. A separate injected
+unresolved marker test proves refusal only, not a final-drop-panic or saturated
+host reaper certificate.
+
+These tests inject the private field after preparing an existing audio-only
+fixture. Public construction still refuses nonempty resource custody. No bank
+setter, extractor, owning install parameter, producer callback or snapshot bank
+was exposed. The sealed producer/install operation, before-first-owner aggregate
+allowance, actual pending request binding and atomic publication remain open.

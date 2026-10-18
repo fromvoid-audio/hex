@@ -4,6 +4,7 @@
 use crate::audio_clip_source::{ClipSourceKind, OwnedAudioClipSource};
 use crate::audio_only_inputs::*;
 mod arrangement_clips;
+mod original_resources;
 mod storage;
 pub(crate) use arrangement_clips::ArrangementClips;
 #[cfg(test)]
@@ -287,6 +288,8 @@ pub struct AudioPreparationCustody {
     incarnation: u64,
     phase: AudioPreparationPhase,
     bank: Option<OwnedAudioInputs>,
+    original_resources: Option<crate::native_device_resources::DeviceResourceBank>,
+    original_resources_drop_pending: bool,
     slots: Vec<SourceSlot>,
     next_disposal: usize,
     first_panic: Option<Box<dyn Any + Send>>,
@@ -354,6 +357,8 @@ impl AudioPreparationCustody {
             incarnation: 0,
             phase: AudioPreparationPhase::Vacant,
             bank: None,
+            original_resources: None,
+            original_resources_drop_pending: false,
             slots: Vec::new(),
             next_disposal: 0,
             first_panic: None,
@@ -844,6 +849,8 @@ impl AudioPreparationCustody {
     ) -> Result<u64, AudioStorageError> {
         if self.phase != AudioPreparationPhase::Vacant
             || self.bank.is_some()
+            || self.original_resources.is_some()
+            || self.original_resources_drop_pending
             || !self.slots.is_empty()
         {
             return Err(AudioStorageError::Capacity);
@@ -1074,6 +1081,10 @@ impl AudioPreparationCustody {
     /// CONTROL ONLY, outside ordinary locks. Pending is recorded before take;
     /// panic makes an irreversible tombstone, preserving bank and remaining rows.
     pub fn cleanup_on_control(&mut self) {
+        if self.phase == AudioPreparationPhase::Vacant {
+            self.dispose_original_resources_on_control();
+            return;
+        }
         if self.phase != AudioPreparationPhase::Cleaning {
             return;
         }
@@ -1117,6 +1128,9 @@ impl AudioPreparationCustody {
             return;
         }
         if !self.dispose_shared_on_control() {
+            return;
+        }
+        if !self.dispose_original_resources_on_control() {
             return;
         }
         self.phase = AudioPreparationPhase::Recoverable;
@@ -1263,7 +1277,11 @@ impl AudioPreparationCustody {
         &mut self,
         token: &AudioPreparationToken,
     ) -> Option<OwnedAudioInputs> {
-        if !self.matches(token) || self.phase != AudioPreparationPhase::Recoverable {
+        if !self.matches(token)
+            || self.phase != AudioPreparationPhase::Recoverable
+            || self.original_resources.is_some()
+            || self.original_resources_drop_pending
+        {
             return None;
         }
         if self.arrangement_clips.clear_disposed().is_err()
