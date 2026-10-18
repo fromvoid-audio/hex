@@ -23,7 +23,7 @@ pub(super) struct WaveformGeometryCache {
     entries: VecDeque<WaveformGeometryEntry>,
     columns: usize,
     #[cfg(all(test, feature = "ui-test-support"))]
-    painted: Vec<WaveformPaintSample>,
+    painted: VecDeque<WaveformPaintSample>,
 }
 
 struct WaveformGeometryEntry {
@@ -171,7 +171,10 @@ impl WaveformGeometryCache {
         mask: Bounds<Pixels>,
         geometry: &WaveformGeometry,
     ) {
-        self.painted.push(WaveformPaintSample {
+        if self.painted.len() == MAX_CACHED_WAVEFORM_ENTRIES {
+            self.painted.pop_front();
+        }
+        self.painted.push_back(WaveformPaintSample {
             bounds,
             mask,
             ordinates: std::array::from_fn(|channel| {
@@ -187,7 +190,7 @@ impl WaveformGeometryCache {
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn painted_waveforms(&self) -> &[WaveformPaintSample] {
+    pub(super) fn painted_waveforms(&self) -> &VecDeque<WaveformPaintSample> {
         &self.painted
     }
 
