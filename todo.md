@@ -5004,5 +5004,8 @@ handlers unchanged. Native double-click behavior remains coordinator-serial.
 bypass before name, removes movement buttons while retaining title drag reorder,
 orders Load↓/Save↑ before the far-right remove×, and uses the same leading-control
 frame API for Track/Return and specialized/descriptor panels. Rendered/header
-command/history regressions and exact-source full local CI are being run; native
+command/history regressions pass; the first full CI stopped on an older test
+expecting the removed movement button. That fixture now drives a real title drag
+and asserts its complete canonical drop request; fresh exact-source full CI is
+being run. Native
 Load dialog, glyph/input/compact layout acceptance remains coordinator-owned.

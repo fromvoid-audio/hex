@@ -57,7 +57,9 @@ focus/draft finalization and refusal semantics are preserved.
 Rendered regressions cover name/action order at880px and1280px windows, Utility,
 Sine, Operator and Return headers, bypass/removal command ownership and Undo.
 Existing preset save/worker-load, invalid draft/focus and title-drag tests remain
-required. The GPUI test platform does not implement the native open-file prompt:
+required. The legacy chain-action fixture also uses a real title drag and checks
+the full source/class/type/generation/revision/destination request, replacing
+its removed-arrow click while preserving the other command and frame checks. The GPUI test platform does not implement the native open-file prompt:
 worker Load is covered separately, and actual Load dialog/arrow glyph, physical
 input and native display acceptance need the coordinator's finite Mac session.
 Source/scene checks are not physical acceptance or app delivery.
