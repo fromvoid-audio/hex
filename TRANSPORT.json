@@ -1,0 +1,21 @@
+{
+  "source": "ffb69943d3e7e87bb4bd75371518d3eb1394b493",
+  "tree": "d2dd5155d9aa329aee02e618298bdb1e9587e0a9",
+  "filename": "hex-sampler-ffb69943-feed-cost-evidence.tar.gz",
+  "bytes": 10496,
+  "sha256": "0a1c05d77a5c4659e6c517284dff0ff417f074ffeac37111e4f083279e6c7f98",
+  "members": 9,
+  "payloads": 8,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/return_feed_plan.rs",
+      "before": "324512ce51839ad3b60da8c6060a8dbf6b2b300143e8bbeba8a5388eefca1d3b",
+      "after": "275476af94e55eaf4433485e4ad4e69c56d5b5e6f1330c000fd3f41421f415f9"
+    },
+    {
+      "path": "crates/hex-engine/src/return_feed_plan/borrowed.rs",
+      "before": "7ce0c1b8c3a052272ed9b6a7bc05eff51586c52ce7aacf7922d5e89c475457de",
+      "after": "56b4ef21a3b6379f61ca922129fea128a6ab87156c2ddae4e5e1c03645bbe167"
+    }
+  ]
+}
