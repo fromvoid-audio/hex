@@ -310,7 +310,9 @@ mod tests {
         let next = bind_registered_worker_on_control(&mut worker, &mut key).unwrap();
         assert!(matches!(stop.request_cancel(), Err(Error::Stale)));
         assert!(!next.worker_on_control().unwrap().is_cancelled());
+        let next_stop = next.stop_endpoint();
         next.finish_on_control().unwrap();
+        wait_retired(next_stop);
     }
     #[test]
     fn registered_worker_neutral_binding_refuses_other_signal_or_producer_without_consumption() {
@@ -343,6 +345,8 @@ mod tests {
         ));
         assert!(actual.is_some() && wrong_key.is_some());
         let control = bind_registered_worker_on_control(&mut actual, &mut key).unwrap();
+        let stop = control.stop_endpoint();
         control.finish_on_control().unwrap();
+        wait_retired(stop);
     }
 }
