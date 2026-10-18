@@ -248,6 +248,7 @@ actions!(
         BrowserNext,
         BrowserActivate,
         BrowserPreviewSelected,
+        BrowserCollapseFolder,
         BrowserEscape,
         ToggleSolo,
         AdditiveSolo,
@@ -360,6 +361,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", BrowserNext, Some("hex_browser")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser")),
         KeyBinding::new("right", BrowserPreviewSelected, Some("hex_browser")),
+        KeyBinding::new("left", BrowserCollapseFolder, Some("hex_browser")),
         KeyBinding::new("escape", BrowserEscape, Some("hex_browser")),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser_search")),
         KeyBinding::new("down", BrowserNext, Some("hex_browser_search")),
@@ -784,6 +786,28 @@ impl EditorView {
         )
     }
 
+    /// Bound discovery before any browser worker starts; never change process settings.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_browser_directory(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        directory: &std::path::Path,
+    ) -> Self {
+        Self::new_with_browser_paths(
+            window,
+            cx,
+            service,
+            Err("offline ui test".into()),
+            (
+                directory.join("browser.json"),
+                directory.join("recent-projects.json"),
+                directory.join("theme.json"),
+            ),
+            Some(directory.join("samples")),
+        )
+    }
+
     fn new_with_browser_preferences_path(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -793,6 +817,32 @@ impl EditorView {
         recent_projects_path: std::path::PathBuf,
         theme_preferences_path: std::path::PathBuf,
     ) -> Self {
+        Self::new_with_browser_paths(
+            window,
+            cx,
+            service,
+            output,
+            (
+                preferences_path,
+                recent_projects_path,
+                theme_preferences_path,
+            ),
+            #[cfg(all(test, feature = "ui-test-support"))]
+            None,
+        )
+    }
+
+    fn new_with_browser_paths(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        output: Result<crate::EditorAudio, String>,
+        paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+        #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
+            std::path::PathBuf,
+        >,
+    ) -> Self {
+        let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
             Err(error) => (
@@ -1092,6 +1142,11 @@ impl EditorView {
             pending_time_range_move: None,
             suppress_cursor_click: false,
         };
+        #[cfg(all(test, feature = "ui-test-support"))]
+        if let Some(directory) = test_browser_directory {
+            view.browser.directory = directory.clone();
+            view.browser.places = vec![directory];
+        }
         view.browser_scan_initial(cx);
         view.start_recent_projects_load(cx);
         view.start_theme_preferences_load(cx);
