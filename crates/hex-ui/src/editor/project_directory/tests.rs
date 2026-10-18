@@ -690,3 +690,37 @@ fn project_directory_stale_save_response_cannot_save_into_the_replacement_docume
     flush(&editor, &mut visual);
     assert_eq!(std::fs::read(owned.preferences()).unwrap(), original);
 }
+
+#[gpui::test]
+fn project_directory_ordinary_constructor_resolves_fourth_path_before_any_job(
+    cx: &mut TestAppContext,
+) {
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline owned environment".into()))
+            })
+        })
+        .unwrap();
+    pump(&editor, cx, |view| {
+        settled(view) && !view.project_directory.loading
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.project_directory.path,
+            view.test_environment
+                .root()
+                .join("config/project-directory.json")
+        );
+        assert!(view.project_directory.directory.is_none());
+        assert!(
+            !view.project_directory.path.exists(),
+            "merely opening a picker/starting up must not create preference data"
+        );
+    });
+    cx.update_window(handle, |_, window, _| window.remove_window())
+        .unwrap();
+    drop(editor);
+}
