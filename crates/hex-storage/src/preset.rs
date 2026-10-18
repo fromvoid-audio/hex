@@ -15,7 +15,7 @@ pub const EXTENSION: &str = "hex-device-preset.json";
 // Compact JSON needs at most four bytes per payload byte (255 plus comma),
 // plus the bounded type id and a fixed envelope allowance. No state cap changes.
 pub const MAX_PRESET_BYTES: usize =
-    4 * MAX_NATIVE_DEVICE_STATE_BYTES + MAX_DEVICE_TYPE_ID_BYTES + 256;
+    8 * MAX_NATIVE_DEVICE_STATE_BYTES + 2 * MAX_DEVICE_TYPE_ID_BYTES + 512;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +29,7 @@ pub enum DeviceClass {
 pub struct Preset {
     pub class: DeviceClass,
     pub state: NativeDeviceState,
+    pub comparison: Option<hex_project::DeviceComparison>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -40,6 +41,8 @@ struct Envelope {
     type_id: String,
     state_version: u32,
     payload: Vec<u8>,
+    #[serde(deserialize_with = "crate::schema::device_assets::required_comparison")]
+    comparison: Option<crate::schema::device_assets::ComparisonDto>,
 }
 
 #[derive(Debug)]
@@ -101,14 +104,19 @@ impl From<serde_json::Error> for Error {
 }
 
 pub fn encode(preset: &Preset) -> Result<Vec<u8>, Error> {
-    if !preset.state.asset_references().is_empty() {
+    if !preset.state.asset_references().is_empty()
+        || preset
+            .comparison
+            .as_ref()
+            .is_some_and(|value| !value.inactive().asset_references().is_empty())
+    {
         return Err(Error::Invalid(
             "device asset presets require a portable asset manifest",
         ));
     }
     let bytes = serde_json::to_vec(&Envelope {
         format: "hex-device-preset".into(),
-        schema: 1,
+        schema: 2,
         class: preset.class,
         type_id: preset
             .state
@@ -118,6 +126,12 @@ pub fn encode(preset: &Preset) -> Result<Vec<u8>, Error> {
             .into(),
         state_version: preset.state.state_version(),
         payload: preset.state.payload().to_vec(),
+        comparison: preset
+            .comparison
+            .as_ref()
+            .map(crate::schema::device_assets::ComparisonDto::from_comparison)
+            .transpose()
+            .map_err(|_| Error::Invalid("invalid comparison state"))?,
     })?;
     if bytes.len() > MAX_PRESET_BYTES {
         return Err(Error::Invalid("device preset exceeds byte limit"));
@@ -130,16 +144,30 @@ pub fn decode(bytes: &[u8]) -> Result<Preset, Error> {
         return Err(Error::Invalid("device preset exceeds byte limit"));
     }
     let envelope: Envelope = serde_json::from_slice(bytes)?;
-    if envelope.format != "hex-device-preset" || envelope.schema != 1 {
+    if envelope.format != "hex-device-preset" || envelope.schema != 2 {
         return Err(Error::Invalid(
-            "unsupported device preset format or schema · use schema 1",
+            "unsupported device preset format or schema · use schema 2",
         ));
     }
     let type_id = DeviceTypeId::new(&envelope.type_id)
         .map_err(|_| Error::Invalid("invalid device preset type id"))?;
     let state = NativeDeviceState::new(type_id, envelope.state_version, envelope.payload)
         .map_err(|_| Error::Invalid("invalid device preset version or payload size"))?;
+    let comparison = envelope
+        .comparison
+        .map(|value| value.into_comparison(&state))
+        .transpose()
+        .map_err(|_| Error::Invalid("invalid comparison state"))?;
+    if comparison
+        .as_ref()
+        .is_some_and(|value| !value.inactive().asset_references().is_empty())
+    {
+        return Err(Error::Invalid(
+            "device asset presets require a portable asset manifest",
+        ));
+    }
     Ok(Preset {
+        comparison,
         class: envelope.class,
         state,
     })
@@ -225,6 +253,7 @@ mod tests {
     use super::*;
     fn fixture() -> Preset {
         Preset {
+            comparison: None,
             class: DeviceClass::Instrument,
             state: NativeDeviceState::new(
                 DeviceTypeId::from_static("hex.instrument.operator"),
@@ -249,7 +278,7 @@ mod tests {
         let bytes = encode(&fixture()).unwrap();
         let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         for (key, value) in [
-            ("schema", serde_json::json!(2)),
+            ("schema", serde_json::json!(3)),
             ("format", serde_json::json!("project")),
             ("class", serde_json::json!("plugin")),
             ("type_id", serde_json::json!("INVALID")),
