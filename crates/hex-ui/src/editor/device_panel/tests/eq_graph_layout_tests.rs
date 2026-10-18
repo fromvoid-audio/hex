@@ -6,6 +6,36 @@ impl Drop for BrowserRoot {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+// Match the existing exclusive output lease for these private headless fixtures.
+// No global environment/settings mutation, backend redesign or lease bypass.
+fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+fn headless_status_output() -> (
+    hex_audio::WorkerPreparedOutput,
+    hex_audio::worker_fixture::HeadlessBackend,
+) {
+    // Drop retires the previous headless carriers on the existing lifecycle
+    // worker. Wait only for that bounded teardown, never open an OS backend.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => return output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => {
+                panic!("headless status fixture could not acquire its exclusive lease: {error}")
+            }
+        }
+    }
+}
 pub(super) fn bounded_window(
     cx: &mut TestAppContext,
     service: Service,
@@ -733,12 +763,13 @@ fn eq_two_device_selection_focus_off_and_removed_targets_use_one_real_control_ch
 fn eq_analyzer_status_closed_public_client_is_visible_without_changing_intent(
     cx: &mut TestAppContext,
 ) {
+    let _status_fixture_guard = status_fixture_guard();
     let (service, state, track, device) = fixture(false);
     let original = state.project.clone();
     let (handle, editor, _root) = bounded_window(cx, service, state, track);
     // Existing instrumented constructor owns real endpoint guards; it never
     // opens CPAL, queries a device, renders audio or requests OS permission.
-    let (mut output, backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+    let (mut output, backend) = headless_status_output();
     let mut client = output.take_client().unwrap();
     client.close();
     let identity = hex_engine::PostNodeIdentity::new(
@@ -1120,6 +1151,7 @@ fn eq_review_selection_of_non_eq_retires_actual_public_capture_target(cx: &mut T
 fn eq_review_new_and_open_empty_projects_retire_only_owned_analyzer_status(
     cx: &mut TestAppContext,
 ) {
+    let _status_fixture_guard = status_fixture_guard();
     let mut completed = 0;
     for open in [false, true] {
         for status in ["waiting", "closed", "unrelated"] {
@@ -1132,7 +1164,7 @@ fn eq_review_new_and_open_empty_projects_retire_only_owned_analyzer_status(
             let (handle, editor, root) = bounded_window(cx, service, state, track);
             let mut backend_owners = None;
             if status == "closed" {
-                let (mut output, backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+                let (mut output, backend) = headless_status_output();
                 let mut client = output.take_client().unwrap();
                 client.close();
                 editor.update(cx, |view, _| {
@@ -1313,4 +1345,273 @@ fn eq_review_boundary_node_outer_hit_wins_but_blank_axis_never_creates(cx: &mut 
         );
         assert_eq!(editor.read_with(cx, |view, _| read(view, device)), expected);
     }
+}
+
+#[gpui::test]
+fn eq_status_review_setup_rate_and_pending_contexts_remain_distinct(cx: &mut TestAppContext) {
+    let _status_fixture_guard = status_fixture_guard();
+    let mut completed = 0;
+    for (rate, setup, expected) in [
+        (
+            48_000,
+            Some("fixture spectrum setup failed"),
+            Some("spectrum unavailable: fixture spectrum setup failed"),
+        ),
+        (
+            7_999,
+            None,
+            Some("spectrum unavailable: unsupported audio sample rate"),
+        ),
+        (48_000, None, None),
+    ] {
+        let cx = &mut cx.new_app();
+        eprintln!("EQ status context variant rate={rate}, setup={setup:?}");
+        let (service, state, track, device) = fixture(false);
+        let before = state.project.clone();
+        let (handle, editor, _root) = bounded_window(cx, service, state, track);
+        // Existing guarded public control only: no CPAL, OS device, callback
+        // render, fabricated frame or new backend implementation. Metadata is
+        // the real EditorAudio carrier received by the UI after output setup.
+        let (mut output, backend) = headless_status_output();
+        let mut client = output.take_client().unwrap();
+        if rate == 7_999 {
+            assert_eq!(
+                client.spectrum_select(
+                    hex_engine::PostNodeIdentity::new(
+                        hex_engine::ProcessorChainOwner::Track(track.value()),
+                        device.value(),
+                        EQ_TYPE_ID
+                    ),
+                    1,
+                    1,
+                    rate
+                ),
+                Err(hex_audio::spectrum_target::TargetError::UnsupportedSampleRate(rate))
+            );
+        }
+        editor.update(cx, |view, cx| {
+            view.audio = Some(crate::editor_backend::EditorAudio {
+                control: client,
+                sample_rate: rate,
+                label: "headless status fixture".into(),
+                spectrum_error: setup.map(str::to_owned),
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.simulate_resize(size(px(1500.0), px(650.0)));
+        visual.run_until_parked();
+        let focus = editor.update(cx, |view, cx| {
+            view.device_panel.chain_window.focus(device, cx)
+        });
+        visual.update(|window, _| focus.focus(window));
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.device_panel.selected_device, Some(device));
+            assert_eq!(
+                view.device_panel.message.as_deref(),
+                expected,
+                "rate={rate}, setup={setup:?}"
+            );
+            assert!(
+                view.audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .spectrum_desired()
+                    .is_none()
+            );
+            assert_eq!(view.state.as_ref().unwrap().project, before);
+            assert!(view.device_panel.spectrum_result.is_none());
+        });
+        editor.update(cx, |view, _| view.audio.take());
+        drop(backend);
+        drop(output);
+        completed += 1;
+    }
+    assert_eq!(
+        completed, 3,
+        "setup, unsupported rate and pending variants all completed"
+    );
+}
+
+#[gpui::test]
+fn eq_status_review_repeated_closed_endpoint_does_not_erase_newer_save_error(
+    cx: &mut TestAppContext,
+) {
+    let _status_fixture_guard = status_fixture_guard();
+    let (service, state, track, device) = fixture(false);
+    let before = state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let (mut output, backend) = headless_status_output();
+    let mut client = output.take_client().unwrap();
+    client.close();
+    editor.update(cx, |view, cx| {
+        view.device_panel.eq_spectrum.test_client = Some(client);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let focus = editor.update(cx, |view, cx| {
+        view.device_panel.chain_window.focus(device, cx)
+    });
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.message.as_deref(),
+            Some("spectrum unavailable: audio output is closed")
+        )
+    });
+    for iteration in 0..3 {
+        editor.update(cx, |view, cx| {
+            if iteration == 0 {
+                view.device_panel.message = Some("could not save project: disk full".into());
+            }
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.device_panel.message.as_deref(),
+                Some("could not save project: disk full"),
+                "actual repeated render {iteration}"
+            );
+            assert!(eq_panel::spectrum_intent_for_test(view, device).0);
+            assert_eq!(view.state.as_ref().unwrap().project, before);
+            assert!(view.audio.is_none());
+        });
+    }
+    // Once the unrelated owner dismisses its error, current analyzer failure
+    // must still be reportable; preserving save feedback is not hiding faults.
+    editor.update(cx, |view, cx| {
+        view.device_panel.message = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.message.as_deref(),
+            Some("spectrum unavailable: audio output is closed")
+        )
+    });
+    editor.update(cx, |view, _| {
+        view.device_panel.eq_spectrum.test_client.take()
+    });
+    drop(backend);
+    drop(output);
+}
+
+#[gpui::test]
+fn eq_status_review_off_sparse_preserves_legacy_public_target_and_clears_own(
+    cx: &mut TestAppContext,
+) {
+    let (service, _, track, legacy) = fixture(true);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(EQ_TYPE_ID),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let sparse = state.project.track(track).unwrap().devices()[1].id();
+    let before = state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1800.0), px(650.0)));
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.device_panel
+            .chain_window
+            .scroll
+            .set_offset(point(px(-1200.0), px(0.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let toggle = visual
+        .debug_bounds(selector("eq8-spectrum", sparse))
+        .unwrap();
+    let viewport = visual.update(|window, _| window.viewport_size());
+    assert!(toggle.center().x > px(0.0) && toggle.center().x < viewport.width);
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(!editor.read_with(cx, |view, _| {
+        eq_panel::spectrum_intent_for_test(view, sparse).0
+    }));
+    let generation = editor.read_with(cx, |view, _| view.project_generation);
+    let (mut control, mut callback) = hex_audio::spectrum_target::channel();
+    let identity = hex_engine::PostNodeIdentity::new(
+        hex_engine::ProcessorChainOwner::Track(track.value()),
+        legacy.value(),
+        hex_lattice_contract::DeviceTypeId::from_static("hex.eq8"),
+    );
+    let (legacy_target, _) = control.select(identity, generation, 1, 48_000).unwrap();
+    callback.begin_block();
+    assert_eq!(callback.current(), Some(legacy_target));
+    editor.update(cx, |view, cx| {
+        view.device_panel.eq_spectrum.test_channel = Some(control);
+        cx.notify();
+    });
+    let focus = editor.update(cx, |view, cx| {
+        view.device_panel.chain_window.focus(sparse, cx)
+    });
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(sparse));
+        assert_eq!(
+            view.device_panel
+                .eq_spectrum
+                .test_channel
+                .as_ref()
+                .unwrap()
+                .desired(),
+            Some(legacy_target),
+            "Off sparse selection cannot clear an independent legacy EQ8"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project, before);
+    });
+    assert_eq!(
+        callback.current(),
+        Some(legacy_target),
+        "accepted legacy tap remains admitted"
+    );
+    let toggle = visual
+        .debug_bounds(selector("eq8-spectrum", sparse))
+        .unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    callback.begin_block();
+    let own = callback
+        .current()
+        .expect("deliberate sparse On chooses own target");
+    assert_eq!(own.identity.device_id, sparse.value());
+    assert_eq!(own.identity.device_type, EQ_TYPE_ID);
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.device_panel
+                .eq_spectrum
+                .test_channel
+                .as_ref()
+                .unwrap()
+                .desired()
+                .is_none(),
+            "own Off retires own target"
+        );
+        assert!(view.audio.is_none());
+        assert_eq!(view.state.as_ref().unwrap().project, before);
+    });
+    assert!(
+        callback.current().is_none(),
+        "own admitted tap invalidated immediately"
+    );
 }

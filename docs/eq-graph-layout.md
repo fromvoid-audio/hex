@@ -204,3 +204,46 @@ OS audio device, permission or user-file action is needed. Do not blindly repeat
 the old native19 for unchanged font/geometry source. Physical edge targeting,
 optimized pixels, real capture cessation after selection and listening remain
 coordinator/user acceptance, not claims from these simulated cases.
+
+## setup and retry ownership review return
+
+The later published2547 integration passed its full20 checks but fresh review
+returned three additional status/target paths; those older results are retained
+with their original source and do not resolve the return. New controlled real
+UI regressions reproduce hidden stored setup errors, closed-channel retries
+replacing a newer unrelated save error, and Off sparse EQ selection clearing an
+independently active legacy EQ8 public target. The first run also exposed a
+private-fixture collision at the existing exclusive headless-output lease;
+that is recorded as fixture failure, not proof of the setup-reporting defect.
+
+Analyzer context now distinguishes no output/pending publication from terminal
+stored spectrum setup failure and the existing unsupported-sample-rate reason.
+The concrete setup reason is retained in view-local owned status; no backend is
+opened to diagnose it. Reporting may update an absent/analyzer-owned shared
+message, but repeated render/retry cannot overwrite a newer unrelated message.
+Dismissing the unrelated message allows the current analyzer failure to appear
+again. Explicit Off and document-generation retirement still clear only owned
+status, preserving unrelated recovery errors.
+
+Off clears only the exact sparse processor owner/device/type/generation. A
+legacy EQ8 target remains active when an intentionally-Off sparse EQ is focused;
+deliberately enabling the sparse EQ may choose its own target, and disabling it
+then immediately retires its own accepted public callback target. No target
+protocol, audio capture, worker, callback, controller or engine redesign is made.
+
+The private tests use the existing guarded headless constructor/public target
+channel; they never open CPAL, request a device, render a callback or change OS
+permissions. Setup/rate/pending metadata uses the actual EditorAudio carrier,
+with no fabricated analyzer frames. All four fixtures using the process-local
+exclusive output lease serialize with one private test mutex and bounded waiting
+for the existing retirement worker after previous fixture Drop. No environment,
+settings, production lease guard or audio lifecycle code changes. Fresh app
+contexts preserve strict native bundled-font selection before each first window.
+
+The new finite native request is the three `eq_status_review_` cases plus the
+existing New/Open-six-variant case because its private headless-constructor
+helper changed. Require four unique positive tests/zero ignored, all three
+setup/rate/pending variants and all six New/Open variants. Do not repeat old
+layout/font19, already qualified407six or436four absent a relevant source change.
+Actual backend setup/OS device failure, physical UI/pixels/listening/optimized
+app acceptance remains coordinator/user-owned and is not simulated as accepted.

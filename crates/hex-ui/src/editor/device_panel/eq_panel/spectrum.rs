@@ -9,7 +9,7 @@ pub(in super::super) struct SpectrumSelection {
     generation: u64,
     revision: Option<u64>,
     off: HashSet<DeviceId>,
-    status_message: Option<&'static str>,
+    status_message: Option<String>,
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in super::super) test_channel: Option<hex_audio::spectrum_target::SpectrumTargetControl>,
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -27,7 +27,9 @@ impl SpectrumSelection {
 fn clear_status(view: &mut EditorView) -> bool {
     let owned = view.device_panel.eq_spectrum.status_message.take();
     if view.device_panel.message.as_deref() == Some(WAITING)
-        || owned.is_some_and(|message| view.device_panel.message.as_deref() == Some(message))
+        || owned
+            .as_deref()
+            .is_some_and(|message| view.device_panel.message.as_deref() == Some(message))
     {
         view.device_panel.message = None;
         return true;
@@ -35,8 +37,8 @@ fn clear_status(view: &mut EditorView) -> bool {
     owned.is_some()
 }
 
-fn report_error(view: &mut EditorView, error: TargetError) {
-    let message = match error {
+fn target_error_message(error: TargetError) -> &'static str {
+    match error {
         TargetError::OutputClosed => "spectrum unavailable: audio output is closed",
         TargetError::InvalidDevice | TargetError::InvalidOwner | TargetError::WrongDeviceType => {
             "spectrum unavailable: selected eq target is invalid"
@@ -48,9 +50,25 @@ fn report_error(view: &mut EditorView, error: TargetError) {
         TargetError::EpochExhausted | TargetError::TokenExhausted => {
             "spectrum unavailable: target identity exhausted; reopen audio output"
         }
-    };
-    view.device_panel.eq_spectrum.status_message = Some(message);
-    view.device_panel.message = Some(message.into());
+    }
+}
+
+fn report_status(view: &mut EditorView, message: String) {
+    // Retrying an analyzer may replace its own feedback, never a newer error
+    // owned by save/edit controls. Retain the reason so it can be shown once
+    // that unrelated owner dismisses its message.
+    let current = view.device_panel.message.as_deref();
+    let available = current.is_none()
+        || current == Some(WAITING)
+        || current == view.device_panel.eq_spectrum.status_message.as_deref();
+    view.device_panel.eq_spectrum.status_message = Some(message.clone());
+    if available {
+        view.device_panel.message = Some(message);
+    }
+}
+
+fn report_error(view: &mut EditorView, error: TargetError) {
+    report_status(view, target_error_message(error).into());
 }
 
 pub(in crate::editor) fn reconcile(view: &mut EditorView) -> bool {
@@ -139,24 +157,33 @@ fn desired(view: &EditorView) -> Option<SpectrumTarget> {
         .and_then(|audio| audio.control.spectrum_desired())
 }
 
-fn context(view: &EditorView) -> Option<(u64, u32)> {
+fn context(view: &EditorView) -> Result<Option<(u64, u32)>, String> {
     #[cfg(all(test, feature = "ui-test-support"))]
     if view.device_panel.eq_spectrum.test_channel.is_some()
         || view.device_panel.eq_spectrum.test_client.is_some()
     {
         // Fixture admission only: a real target channel or guarded Client.
         // Neither path opens an OS audio device or supplies fabricated frames.
-        return Some((1, 48_000));
+        return Ok(Some((1, 48_000)));
     }
-    let audio = view.audio.as_ref()?;
-    if audio.spectrum_error.is_some() || !(8_000..=192_000).contains(&audio.sample_rate) {
-        return None;
+    let Some(audio) = view.audio.as_ref() else {
+        return Ok(None);
+    };
+    if let Some(error) = &audio.spectrum_error {
+        return Err(format!("spectrum unavailable: {error}"));
     }
-    let revision = view.state.as_ref()?.revision;
-    let floor = view
+    if !(8_000..=192_000).contains(&audio.sample_rate) {
+        return Err(
+            target_error_message(TargetError::UnsupportedSampleRate(audio.sample_rate)).into(),
+        );
+    }
+    let Some(state) = view.state.as_ref() else {
+        return Ok(None);
+    };
+    Ok(view
         .audio_admission
-        .published_audio_revision(view.project_generation, revision)?;
-    Some((floor, audio.sample_rate))
+        .published_audio_revision(view.project_generation, state.revision)
+        .map(|floor| (floor, audio.sample_rate)))
 }
 
 fn clear(view: &mut EditorView) {
@@ -220,17 +247,25 @@ pub(super) fn sync_selected(
     }) {
         return;
     }
+    let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
     if !view.device_panel.eq_spectrum.enabled(device) {
-        if desired(view).is_some() {
+        if desired(view).is_some_and(|target| {
+            target.identity == identity && target.project_generation == view.project_generation
+        }) {
             clear(view);
         }
         clear_status(view);
         return;
     }
-    let Some((floor, rate)) = context(view) else {
-        return;
+    let (floor, rate) = match context(view) {
+        Ok(Some(context)) => context,
+        Ok(None) => return,
+        Err(error) => {
+            view.device_panel.spectrum_result = None;
+            report_status(view, error);
+            return;
+        }
     };
-    let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
     let current = desired(view);
     if current.is_some_and(|target| {
         target.identity == identity
@@ -280,7 +315,8 @@ pub(super) fn toggle(
         if view.device_panel.eq_spectrum.enabled(device) {
             view.device_panel.eq_spectrum.off.insert(device);
             if desired(view).is_some_and(|target| {
-                target.identity.device_id == device.value()
+                target.identity
+                    == hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID)
                     && target.project_generation == generation
             }) {
                 clear(view);
@@ -290,8 +326,8 @@ pub(super) fn toggle(
             view.device_panel.selected_device = Some(device);
             sync_selected(view, device, owner);
         }
-        if view.device_panel.eq_spectrum.enabled(device) && context(view).is_none() {
-            view.device_panel.message = Some(WAITING.into());
+        if view.device_panel.eq_spectrum.enabled(device) && matches!(context(view), Ok(None)) {
+            report_status(view, WAITING.into());
         } else if !view.device_panel.eq_spectrum.enabled(device) {
             clear_status(view);
         }
