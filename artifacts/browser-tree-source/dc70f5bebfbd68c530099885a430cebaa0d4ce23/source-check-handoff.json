@@ -1,0 +1,67 @@
+{
+  "kind": "source-check-handoff-not-full-ci",
+  "created_at": "2026-10-18T13:56:45.025585+00:00",
+  "source_sha": "dc70f5bebfbd68c530099885a430cebaa0d4ce23",
+  "tree": "2d3e136804a0860cff7df75b84746cbe3e6a0458",
+  "dirty": false,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/341",
+  "branch": "pulse/task-2728-g1-93b65c564dd2",
+  "dependency": {
+    "pr": 340,
+    "tested_source": "38a91b57713259b72fd303d7b761ae49c1859803",
+    "actual_merge": "07a8c5d50fa1a7c1c006fbdfd9d884269675be59",
+    "identical_tree_verified": true
+  },
+  "checks": {
+    "full_ui": {
+      "command": "cargo test -p hex-ui --features ui-test-support --locked",
+      "passed": 733,
+      "failed": 0,
+      "ignored": 3,
+      "seconds": 125.99,
+      "includes_browser_tests": 66
+    },
+    "feature_clippy": {
+      "command": "cargo clippy -p hex-ui --all-targets --features ui-test-support --locked -- -D warnings",
+      "exit_code": 0
+    },
+    "guards": [
+      "architecture",
+      "gpui-patch",
+      "ui-style",
+      "cargo fmt --all --check"
+    ]
+  },
+  "required_prospective_full_ci": {
+    "status": "not_run_here",
+    "owner": "dedicated merger01a149d1-3232-76d1-b08a-05f3ca89906d"
+  },
+  "native_acceptance": "open; no Mac/app actions; installed Live gesture comparison unavailable",
+  "logs": {
+    "browser-tests-v3-passed.log": {
+      "sha256": "9feac23a5f6181601902e7f6fddc4b2a6c94b5dd76d092002a572c49a6d58c7a",
+      "bytes": 7325
+    },
+    "full-ui-passed.log": {
+      "sha256": "6f51094ee907a0136e6aecb9ff43b1ba01643fda44a1ed3724cfde062a2d0583",
+      "bytes": 81225
+    },
+    "feature-clippy-passed.log": {
+      "sha256": "eab13867726d5d3a7800f9270ed37c5b3b99ade94159a3cdd42887de48210f6b",
+      "bytes": 360
+    },
+    "browser-tests-v2-failed.log": {
+      "sha256": "9a6bbce26e10d0c7b647d4c26b159a42888ca8ab4d038d596da4a2b3d42954da",
+      "bytes": 9173
+    },
+    "before-tree-input-regression-failed.log": {
+      "sha256": "5074d5e56b3e7c35f338aa2d177a7243de56ce128fa9d04cffa63427a9dec047",
+      "bytes": 1191
+    },
+    "initial-compile-diagnostic-record.txt": {
+      "sha256": "d90cd14ed651665dfe63c8f5f60a86fb8d929417bc7916cf9fbdb09d65bd4e54",
+      "bytes": 598
+    }
+  },
+  "initial_log_limit": "The first temporary compiler log was overwritten on retry; full diagnostics remain in chat terminal transcript. The explicitly labeled diagnostic record is not an original raw log."
+}

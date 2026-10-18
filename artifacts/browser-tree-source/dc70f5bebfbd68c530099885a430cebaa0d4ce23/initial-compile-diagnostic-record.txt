@@ -1,0 +1,5 @@
+Captured from terminal transcript of first PR341 browser-test attempt at source8b7bda84.
+The temporary /tmp/hex-tree-browser-tests.log was overwritten on retry; this is a diagnostic record, not the original raw log.
+Exit101 before tests: E0624 browser_collapse_folder was private to browser from editor/render.rs; E0277 gpui::ElementId does not implement From<String> at browser row_id.
+Repair: restrict method to crate::editor ancestor scope and convert path ID through gpui::SharedString. The transcript retains the full original compiler output.
+Subsequent attempts use distinct retained paths.

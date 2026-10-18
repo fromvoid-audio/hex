@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.96s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-06f3ca1078ca4914)
+
+running 1 test
+
+thread 'editor::browser::ui_test::browser_folder_double_click_expands_inline_without_replacing_surrounding_rows' (40975) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:3502:9:
+assertion `left == right` failed: disclosure must not navigate to another page
+  left: "/tmp/hex-ui-browser-test-40974-0/a"
+ right: "/tmp/hex-ui-browser-test-40974-0"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::browser_folder_double_click_expands_inline_without_replacing_surrounding_rows ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::browser_folder_double_click_expands_inline_without_replacing_surrounding_rows
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 724 filtered out; finished in 0.44s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

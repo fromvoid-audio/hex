@@ -1,0 +1,13 @@
+{
+  "purpose": "original PR341 source evidence only; never merge this orphan evidence commit",
+  "source": "dc70f5bebfbd68c530099885a430cebaa0d4ce23",
+  "files": {
+    "artifacts/browser-tree-source/dc70f5bebfbd68c530099885a430cebaa0d4ce23/before-tree-input-regression-failed.log": "5074d5e56b3e7c35f338aa2d177a7243de56ce128fa9d04cffa63427a9dec047",
+    "artifacts/browser-tree-source/dc70f5bebfbd68c530099885a430cebaa0d4ce23/browser-tests-v2-failed.log": "9a6bbce26e10d0c7b647d4c26b159a42888ca8ab4d038d596da4a2b3d42954da",
+    "artifacts/browser-tree-source/dc70f5bebfbd68c530099885a430cebaa0d4ce23/browser-tests-v3-passed.log": "9feac23a5f6181601902e7f6fddc4b2a6c94b5dd76d092002a572c49a6d58c7a",
+    "artifacts/browser-tree-source/dc70f5bebfbd68c530099885a430cebaa0d4ce23/feature-clippy-passed.log": "eab13867726d5d3a7800f9270ed37c5b3b99ade94159a3cdd42887de48210f6b",
+    "artifacts/browser-tree-source/dc70f5bebfbd68c530099885a430cebaa0d4ce23/full-ui-passed.log": "6f51094ee907a0136e6aecb9ff43b1ba01643fda44a1ed3724cfde062a2d0583",
+    "artifacts/browser-tree-source/dc70f5bebfbd68c530099885a430cebaa0d4ce23/initial-compile-diagnostic-record.txt": "d90cd14ed651665dfe63c8f5f60a86fb8d929417bc7916cf9fbdb09d65bd4e54",
+    "artifacts/browser-tree-source/dc70f5bebfbd68c530099885a430cebaa0d4ce23/source-check-handoff.json": "ec461084cc6587d9a3ae5b028383171cf676ab54730f865650ed6991a4deaca1"
+  }
+}
