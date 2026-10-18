@@ -60,3 +60,13 @@ need native acceptance. User checklist:
 Native checks require a separately qualified optimized candidate coordinated by
 the single Mac owner. No app installation, physical listening/input, waveform
 GPU deadline or complete Live-parity acceptance is implied by source checks.
+
+At the combined audio/MIDI clip limit, painting first retires MIDI clips fully
+covered by the painted interval on the private candidate. Those victims only
+free capacity. Audio and remaining MIDI fragmentation then retain their existing
+admission checks, followed by the new painted clip's ordinary admission. This
+admits a valid final hybrid count without allowing a temporary helper count to
+refuse it, raising the cap, or publishing a partial cut. An invalid final count
+or failed preparation preserves the original Project, ID cursor and Undo/Redo.
+The capacity regression covers the exact limit with one audio split/two covered
+MIDI victims, over-limit final refusal, and post-edit preparation failure.
