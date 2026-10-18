@@ -950,7 +950,32 @@ fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppCont
             format!("arrangement-lane-{}", source.value()).into_boxed_str(),
         ))
         .expect("source lane");
-    let outside = point(lane.origin.x - px(20.0), lane.origin.y - px(20.0));
+    // The historical x=lane.left-20 was inside the browser. Browser release
+    // now intentionally commits; test cancellation on the actual upper rail.
+    let outside = point(lane.center().x, lane.origin.y - px(20.0));
+    let browser = visual
+        .debug_bounds("resize-browser-hit-region")
+        .expect("actual browser region");
+    assert!(
+        !browser.contains(&outside),
+        "cancellation fixture must stay outside browser"
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.arrangement_bounds_epoch, view.drag_layout_generation);
+        let body = view.arrangement_bounds.expect("actual Arrangement body");
+        let bounds = gpui::Bounds::new(
+            point(px(body.left), px(body.top)),
+            gpui::size(px(body.width), px(body.height)),
+        );
+        assert!(
+            !bounds.contains(&outside),
+            "cancellation fixture must stay outside Arrangement body"
+        );
+        assert!(
+            view.hovered_drag_target(f32::from(outside.x), f32::from(outside.y))
+                .is_none()
+        );
+    });
     visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();

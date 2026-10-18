@@ -276,7 +276,26 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        self.test_platform.cursor_style()
 +    }
 +
-@@ -307,0 +320,32 @@
+@@ -142,0 +155,18 @@
++    }
++
++    /// Opt into real macOS font registration and shaping for a disposable test.
++    /// Call before opening any window. This retains the deterministic test
++    /// platform and never creates an OS window or changes system font settings.
++    /// Default test contexts continue to use the no-op text system.
++    #[cfg(all(target_os = "macos", feature = "font-kit"))]
++    pub fn use_native_text_system(&mut self) -> Result<()> {
++        let mut app = self.app.borrow_mut();
++        if !app.windows.is_empty() {
++            bail!("native test text system must be selected before opening windows");
++        }
++        let text_system = Arc::new(TextSystem::new(Arc::new(
++            crate::platform::MacTextSystem::new(),
++        )));
++        app.text_system = Arc::clone(&text_system);
++        self.text_system = text_system;
++        Ok(())
+@@ -307,0 +338,32 @@
 +    /// Whether the test platform has an outstanding Open picker request.
 +    pub fn did_prompt_for_paths(&self) -> bool {
 +        self.test_platform.did_prompt_for_paths()
@@ -309,7 +328,7 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        crate::MacPlatform::picker_directory_url_for_test(directory)
 +    }
 +
-@@ -677,0 +722,89 @@
+@@ -677,0 +740,89 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
