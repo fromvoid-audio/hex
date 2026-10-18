@@ -1,0 +1,34 @@
+[
+  {
+    "name": "preferences",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-preferences",
+      "--locked",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0,
+    "log": "/tmp/446-final-preferences.log"
+  },
+  {
+    "name": "browser",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-ui",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "--lib",
+      "editor::browser::",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "log": "/tmp/446-final-browser.log"
+  }
+]

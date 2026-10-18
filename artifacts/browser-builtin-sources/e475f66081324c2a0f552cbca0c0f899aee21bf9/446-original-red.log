@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.94s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::browser::ui_test::builtin_sources::browser_builtin_source_actual_right_click_has_icon_grid' (109647) panicked at crates/hex-ui/src/editor/browser_builtin_source_ui_test.rs:13:5:
+Music right-click must open existing bundled icon grid
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_actual_right_click_has_icon_grid ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::builtin_sources::browser_builtin_source_actual_right_click_has_icon_grid
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 795 filtered out; finished in 0.21s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

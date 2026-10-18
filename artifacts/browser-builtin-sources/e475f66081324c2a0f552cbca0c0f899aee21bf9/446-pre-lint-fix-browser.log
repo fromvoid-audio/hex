@@ -1,0 +1,165 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.43s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 90 tests
+test editor::browser::audition::tests::combined_waveform_keeps_opposite_phase_channel_peaks ... ok
+test editor::browser::tests::browser_drag_ghost_position_uses_window_relative_pointer_coordinates ... ok
+test editor::browser::audition::tests::waveform_hit_positions_map_to_bounded_decoded_frames ... ok
+test editor::browser::tests::browser_width_preserves_minimum_workspace_and_panel ... ok
+test editor::browser::tests::stale_directory_scan_results_are_not_current ... ok
+test editor::browser::samples::cache_tests::combined_results_reuse_cache_and_accept_republished_folder_contents ... ok
+test editor::browser::tree::tests::native_non_utf8_paths_cannot_alias_element_identity ... ok
+test editor::browser::tree::tests::exhausted_request_identity_refuses_work_without_a_false_loading_state ... ok
+test editor::browser::tree::tests::late_collapse_reopen_and_source_results_cannot_replace_new_request ... ok
+test editor::browser::tree::tests::siblings_filter_refresh_error_and_same_names_keep_native_identity ... ok
+test editor::browser::tree::tests::source_file_kind_filters_apply_to_inline_children_and_flat_snapshots_are_shared ... ok
+test editor::browser::tree::tests::child_cache_budget_and_nonchild_refusal_are_explicit ... ok
+test editor::browser::ui_test::arrangement_overview_shows_the_project_and_click_centers_a_clamped_viewport ... ok
+test editor::browser::ui_test::browser_audio_drag_rejects_changed_snap_or_viewport ... ok
+test editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate ... ok
+test editor::browser::ui_test::arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline ... ok
+test editor::browser::ui_test::browser_audio_drag_release_outside_arrangement_cancels_import ... ok
+test editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh ... ok
+test editor::browser::ui_test::browser_audio_drag_uses_command_override_live_and_at_mouse_up ... ok
+test editor::browser::ui_test::browser_audition_row_observes_pcm_completion_and_stop_without_project_transport ... ok
+test editor::browser::ui_test::browser_audition_strip_is_one_bounded_row ... ok
+test editor::browser::ui_test::browser_audition_toggle_keeps_manual_play_and_result_focus ... ok
+test editor::browser::ui_test::browser_auto_navigation_auditions_new_selection_but_not_boundary_repeats ... ok
+test editor::browser::ui_test::browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel ... ok
+test editor::browser::ui_test::browser_folder_double_click_expands_inline_without_replacing_surrounding_rows ... ok
+test editor::browser::ui_test::browser_click_and_right_request_preview_without_import_search_arrows_keep_caret ... ok
+test editor::browser::ui_test::browser_new_selection_clears_completed_position_without_auto_audition ... ok
+test editor::browser::ui_test::browser_offline_and_removed_place_never_shows_stale_or_second_source ... ok
+test editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable ... ok
+test editor::browser::ui_test::browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly ... ok
+picker requested=124 actual=124 browser-picker-glyph-collection-0: row=Bounds { origin: Point { x: 0px, y: 225.5px }, size: Size { 123px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 227px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=124 actual=124 browser-picker-glyph-collection-1: row=Bounds { origin: Point { x: 0px, y: 247.5px }, size: Size { 123px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 249px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=124 actual=124 browser-picker-glyph-collection-2: row=Bounds { origin: Point { x: 0px, y: 269.5px }, size: Size { 123px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 271px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=124 actual=124 browser-picker-glyph-section-0: row=Bounds { origin: Point { x: 0px, y: 371px }, size: Size { 123px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 374px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=124 actual=124 browser-picker-glyph-section-1: row=Bounds { origin: Point { x: 0px, y: 396px }, size: Size { 123px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 399px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=124 actual=124 browser-picker-glyph-section-2: row=Bounds { origin: Point { x: 0px, y: 421px }, size: Size { 123px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 424px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=124 actual=124 browser-picker-glyph-section-3: row=Bounds { origin: Point { x: 0px, y: 346px }, size: Size { 123px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 349px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=124 actual=124 browser-picker-glyph-place-0: row=Bounds { origin: Point { x: 0px, y: 495.5px }, size: Size { 123px × 23px } } glyph=Bounds { origin: Point { x: 7px, y: 497.5px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=80 actual=80 browser-picker-glyph-collection-0: row=Bounds { origin: Point { x: 0px, y: 225.5px }, size: Size { 79px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 227px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=80 actual=80 browser-picker-glyph-collection-1: row=Bounds { origin: Point { x: 0px, y: 247.5px }, size: Size { 79px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 249px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=80 actual=80 browser-picker-glyph-collection-2: row=Bounds { origin: Point { x: 0px, y: 269.5px }, size: Size { 79px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 271px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=80 actual=80 browser-picker-glyph-section-0: row=Bounds { origin: Point { x: 0px, y: 371px }, size: Size { 79px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 374px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=80 actual=80 browser-picker-glyph-section-1: row=Bounds { origin: Point { x: 0px, y: 396px }, size: Size { 79px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 399px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=80 actual=80 browser-picker-glyph-section-2: row=Bounds { origin: Point { x: 0px, y: 421px }, size: Size { 79px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 424px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=80 actual=80 browser-picker-glyph-section-3: row=Bounds { origin: Point { x: 0px, y: 346px }, size: Size { 79px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 349px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=80 actual=80 browser-picker-glyph-place-0: row=Bounds { origin: Point { x: 0px, y: 495.5px }, size: Size { 79px × 23px } } glyph=Bounds { origin: Point { x: 7px, y: 497.5px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+test editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity ... ok
+picker requested=64 actual=64 browser-picker-glyph-collection-0: row=Bounds { origin: Point { x: 0px, y: 225.5px }, size: Size { 63px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 227px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=64 actual=64 browser-picker-glyph-collection-1: row=Bounds { origin: Point { x: 0px, y: 247.5px }, size: Size { 63px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 249px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=64 actual=64 browser-picker-glyph-collection-2: row=Bounds { origin: Point { x: 0px, y: 269.5px }, size: Size { 63px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 271px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=64 actual=64 browser-picker-glyph-section-0: row=Bounds { origin: Point { x: 0px, y: 371px }, size: Size { 63px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 374px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=64 actual=64 browser-picker-glyph-section-1: row=Bounds { origin: Point { x: 0px, y: 396px }, size: Size { 63px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 399px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=64 actual=64 browser-picker-glyph-section-2: row=Bounds { origin: Point { x: 0px, y: 421px }, size: Size { 63px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 424px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=64 actual=64 browser-picker-glyph-section-3: row=Bounds { origin: Point { x: 0px, y: 346px }, size: Size { 63px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 349px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=64 actual=64 browser-picker-glyph-place-0: row=Bounds { origin: Point { x: 0px, y: 495.5px }, size: Size { 63px × 23px } } glyph=Bounds { origin: Point { x: 7px, y: 497.5px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=63 actual=63 browser-picker-glyph-collection-0: row=Bounds { origin: Point { x: 0px, y: 225.5px }, size: Size { 62px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 227px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=63 actual=63 browser-picker-glyph-collection-1: row=Bounds { origin: Point { x: 0px, y: 247.5px }, size: Size { 62px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 249px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=63 actual=63 browser-picker-glyph-collection-2: row=Bounds { origin: Point { x: 0px, y: 269.5px }, size: Size { 62px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 271px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=63 actual=63 browser-picker-glyph-section-0: row=Bounds { origin: Point { x: 0px, y: 371px }, size: Size { 62px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 374px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=63 actual=63 browser-picker-glyph-section-1: row=Bounds { origin: Point { x: 0px, y: 396px }, size: Size { 62px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 399px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=63 actual=63 browser-picker-glyph-section-2: row=Bounds { origin: Point { x: 0px, y: 421px }, size: Size { 62px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 424px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=63 actual=63 browser-picker-glyph-section-3: row=Bounds { origin: Point { x: 0px, y: 346px }, size: Size { 62px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 349px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=63 actual=63 browser-picker-glyph-place-0: row=Bounds { origin: Point { x: 0px, y: 495.5px }, size: Size { 62px × 23px } } glyph=Bounds { origin: Point { x: 7px, y: 497.5px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=60 actual=60 browser-picker-glyph-collection-0: row=Bounds { origin: Point { x: 0px, y: 225.5px }, size: Size { 59px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 227px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=60 actual=60 browser-picker-glyph-collection-1: row=Bounds { origin: Point { x: 0px, y: 247.5px }, size: Size { 59px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 249px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=60 actual=60 browser-picker-glyph-collection-2: row=Bounds { origin: Point { x: 0px, y: 269.5px }, size: Size { 59px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 271px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=60 actual=60 browser-picker-glyph-section-0: row=Bounds { origin: Point { x: 0px, y: 371px }, size: Size { 59px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 374px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=60 actual=60 browser-picker-glyph-section-1: row=Bounds { origin: Point { x: 0px, y: 396px }, size: Size { 59px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 399px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=60 actual=60 browser-picker-glyph-section-2: row=Bounds { origin: Point { x: 0px, y: 421px }, size: Size { 59px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 424px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=60 actual=60 browser-picker-glyph-section-3: row=Bounds { origin: Point { x: 0px, y: 346px }, size: Size { 59px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 349px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=60 actual=60 browser-picker-glyph-place-0: row=Bounds { origin: Point { x: 0px, y: 495.5px }, size: Size { 59px × 23px } } glyph=Bounds { origin: Point { x: 7px, y: 497.5px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+test editor::browser::ui_test::browser_picker_resizes_to_icons_and_back_without_changing_browser_width ... ok
+picker requested=48 actual=48 browser-picker-glyph-collection-0: row=Bounds { origin: Point { x: 0px, y: 225.5px }, size: Size { 47px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 227px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=48 actual=48 browser-picker-glyph-collection-1: row=Bounds { origin: Point { x: 0px, y: 247.5px }, size: Size { 47px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 249px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=48 actual=48 browser-picker-glyph-collection-2: row=Bounds { origin: Point { x: 0px, y: 269.5px }, size: Size { 47px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 271px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=48 actual=48 browser-picker-glyph-section-0: row=Bounds { origin: Point { x: 0px, y: 371px }, size: Size { 47px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 374px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=48 actual=48 browser-picker-glyph-section-1: row=Bounds { origin: Point { x: 0px, y: 396px }, size: Size { 47px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 399px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=48 actual=48 browser-picker-glyph-section-2: row=Bounds { origin: Point { x: 0px, y: 421px }, size: Size { 47px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 424px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=48 actual=48 browser-picker-glyph-section-3: row=Bounds { origin: Point { x: 0px, y: 346px }, size: Size { 47px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 349px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=48 actual=48 browser-picker-glyph-place-0: row=Bounds { origin: Point { x: 0px, y: 495.5px }, size: Size { 47px × 23px } } glyph=Bounds { origin: Point { x: 7px, y: 497.5px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=36 actual=36 browser-picker-glyph-collection-0: row=Bounds { origin: Point { x: 0px, y: 225.5px }, size: Size { 35px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 227px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=36 actual=36 browser-picker-glyph-collection-1: row=Bounds { origin: Point { x: 0px, y: 247.5px }, size: Size { 35px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 249px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=36 actual=36 browser-picker-glyph-collection-2: row=Bounds { origin: Point { x: 0px, y: 269.5px }, size: Size { 35px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 271px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=36 actual=36 browser-picker-glyph-section-0: row=Bounds { origin: Point { x: 0px, y: 371px }, size: Size { 35px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 374px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=36 actual=36 browser-picker-glyph-section-1: row=Bounds { origin: Point { x: 0px, y: 396px }, size: Size { 35px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 399px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=36 actual=36 browser-picker-glyph-section-2: row=Bounds { origin: Point { x: 0px, y: 421px }, size: Size { 35px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 424px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=36 actual=36 browser-picker-glyph-section-3: row=Bounds { origin: Point { x: 0px, y: 346px }, size: Size { 35px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 349px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=36 actual=36 browser-picker-glyph-place-0: row=Bounds { origin: Point { x: 0px, y: 495.5px }, size: Size { 35px × 23px } } glyph=Bounds { origin: Point { x: 7px, y: 497.5px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=23 actual=23 browser-picker-glyph-collection-0: row=Bounds { origin: Point { x: 0px, y: 225.5px }, size: Size { 22px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 227px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=23 actual=23 browser-picker-glyph-collection-1: row=Bounds { origin: Point { x: 0px, y: 247.5px }, size: Size { 22px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 249px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=23 actual=23 browser-picker-glyph-collection-2: row=Bounds { origin: Point { x: 0px, y: 269.5px }, size: Size { 22px × 22px } } glyph=Bounds { origin: Point { x: 7px, y: 271px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=23 actual=23 browser-picker-glyph-section-0: row=Bounds { origin: Point { x: 0px, y: 371px }, size: Size { 22px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 374px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=23 actual=23 browser-picker-glyph-section-1: row=Bounds { origin: Point { x: 0px, y: 396px }, size: Size { 22px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 399px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=23 actual=23 browser-picker-glyph-section-2: row=Bounds { origin: Point { x: 0px, y: 421px }, size: Size { 22px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 424px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=23 actual=23 browser-picker-glyph-section-3: row=Bounds { origin: Point { x: 0px, y: 346px }, size: Size { 22px × 25px } } glyph=Bounds { origin: Point { x: 7px, y: 349px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+picker requested=23 actual=23 browser-picker-glyph-place-0: row=Bounds { origin: Point { x: 0px, y: 495.5px }, size: Size { 22px × 23px } } glyph=Bounds { origin: Point { x: 7px, y: 497.5px }, size: Size { 8px × 19.5px } } control=Bounds { origin: Point { x: 0px, y: 446px }, size: Size { 22px × 22px } }
+test editor::browser::ui_test::browser_picker_glyph_alignment_and_continuous_minimum_geometry ... ok
+test editor::browser::ui_test::browser_place_icon_popup_outside_click_does_not_start_arrangement_gesture ... ok
+test editor::browser::ui_test::browser_place_icons_coalesced_save_errors_and_stale_menu_are_bounded ... ok
+test editor::browser::ui_test::browser_place_icon_grid_uses_clicked_row_reset_and_reopens ... ok
+test editor::browser::ui_test::browser_place_icons_preference_fixture_bounds_startup_before_workers ... ok
+test editor::browser::ui_test::browser_picker_resize_retains_rows_and_clips_long_names ... ok
+test editor::browser::ui_test::browser_preferences_coalesce_background_saves_and_preserve_corrupt_files ... ok
+test editor::browser::ui_test::browser_project_open_preserves_dirty_work_until_same_item_is_confirmed ... ok
+test editor::browser::ui_test::browser_place_icons_input_persistence_identity_fallback_and_geometry ... ok
+test editor::browser::ui_test::browser_restores_missing_user_folder_without_touching_real_preferences ... ok
+test editor::browser::ui_test::browser_result_reset_cancels_preparing_and_playing_audition ... ok
+test editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing ... ok
+test editor::browser::ui_test::browser_right_opens_selected_folder_without_sample_or_project_commands ... ok
+test editor::browser::ui_test::browser_sample_drop_above_first_track_shows_line_and_inserts_before_it ... ok
+test editor::browser::ui_test::browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost ... ok
+test editor::browser::ui_test::browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snapped_start ... ok
+test editor::browser::ui_test::browser_sample_drop_in_empty_arrangement_creates_bottom_track ... ok
+test editor::browser::ui_test::browser_search_owns_typing_and_blocks_editor_shortcuts ... ok
+test editor::browser::ui_test::browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches ... ok
+test editor::browser::ui_test::browser_sample_gap_target_uses_only_currently_painted_rows_after_scroll ... ok
+test editor::browser::ui_test::browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed ... ok
+test editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope ... ok
+hidden-branch refresh started 2 folder requests
+test editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query ... ok
+test editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels ... ok
+test editor::browser::ui_test::browser_waveform_position_observes_rendered_pcm_not_click_or_decode ... ok
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_actual_right_click_has_icon_grid ... ok
+test editor::browser::ui_test::browser_waveform_click_is_manual_positioned_audition_and_retains_focus ... ok
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_all_first_and_command_f_uses_existing_global_scope ... ok
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_icons_persist_target_reset_and_compact_geometry ... ok
+test editor::browser::ui_test::clip_and_sample_drags_clear_their_target_over_pinned_returns ... ok
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_remove_restore_retains_files_catalog_and_identity ... ok
+test editor::browser::ui_test::command_f_caret_movement_preserves_result_scroll ... ok
+test editor::browser::ui_test::command_f_category_switch_scrolls_first_result_into_view ... ok
+test editor::browser::ui_test::command_f_category_click_keeps_query_but_moves_real_focus_in_session ... ok
+test editor::browser::ui_test::command_f_device_click_retains_browser_keys_in_session ... ok
+test editor::browser::ui_test::command_f_commits_clip_name_draft_then_routes_typing_to_browser ... ok
+test editor::browser::ui_test::command_f_device_highlight_waits_for_result_focus ... ok
+test editor::browser::ui_test::command_f_escape_keeps_navigation_until_explicit_text_entry ... ok
+test editor::browser::ui_test::command_f_scan_completion_preserves_selected_device ... ok
+test editor::browser::ui_test::command_f_replaces_entire_query_during_ime_composition ... ok
+test editor::browser::ui_test::command_f_opens_all_search_and_replaces_query_from_editor_and_results ... ok
+test editor::browser::ui_test::device_browser_lists_registered_devices_and_drag_starts_without_track_focus ... ok
+test editor::browser::ui_test::empty_arrangement_keeps_the_grid_aligned_with_the_ruler ... ok
+test editor::browser::ui_test::dropping_browser_audio_on_pinned_main_cancels_import_and_track_creation ... ok
+test editor::browser::ui_test::browser_source_groups_have_exactly_one_persistent_selected_row ... ok
+test editor::browser::ui_test::explicit_focus::browser_query_entry_navigation_escape_and_close_have_real_focus_owners ... ok
+test editor::browser::ui_test::physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta ... ok
+test editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success ... ok
+test editor::browser::ui_test::explicit_focus::browser_stale_unavailable_row_click_leaves_query_focus_without_action ... ok
+test editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks ... ok
+test editor::browser::ui_test::middle_drag_pans_both_arrangement_axes_until_release ... ok
+test editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search ... ok
+test editor::browser::ui_test::search_selection::search_keyboard_selection_keeps_combining_graphemes_whole ... ok
+test editor::browser::ui_test::search_selection::search_focus_click_selects_query_and_replaces_after_real_workers ... ok
+test editor::browser::ui_test::search_selection::search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins ... ok
+test editor::browser::ui_test::split_browser_keeps_results_between_sidebar_tags_and_preview ... ok
+test editor::browser::ui_test::explicit_focus::browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing ... ok
+test editor::browser::ui_test::search_selection::search_selection_clipboard_ime_empty_and_long_query_keep_text_ownership ... ok
+
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 709 filtered out; finished in 27.42s
+

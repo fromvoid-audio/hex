@@ -1,0 +1,72 @@
+[
+  {
+    "name": "preferences",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-preferences",
+      "--locked",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0,
+    "log": "/tmp/446-final-preferences.log"
+  },
+  {
+    "name": "browser",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-ui",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "--lib",
+      "editor::browser::",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0,
+    "log": "/tmp/446-final-browser.log"
+  },
+  {
+    "name": "context-menu",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-ui",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "--lib",
+      "context_menu",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0,
+    "log": "/tmp/446-final-context-menu.log"
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "hex-ui",
+      "-p",
+      "hex-preferences",
+      "--all-targets",
+      "--features",
+      "hex-ui/ui-test-support",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 101,
+    "log": "/tmp/446-final-clippy.log"
+  }
+]

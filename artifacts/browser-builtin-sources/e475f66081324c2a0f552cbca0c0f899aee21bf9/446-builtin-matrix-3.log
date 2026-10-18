@@ -1,0 +1,15 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.95s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 4 tests
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_actual_right_click_has_icon_grid ... ok
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_all_first_and_command_f_uses_existing_global_scope ... ok
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_icons_persist_target_reset_and_compact_geometry ... ok
+test editor::browser::ui_test::builtin_sources::browser_builtin_source_remove_restore_retains_files_catalog_and_identity ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 795 filtered out; finished in 1.72s
+

@@ -1,0 +1,930 @@
+diff --git a/crates/hex-preferences/README.md b/crates/hex-preferences/README.md
+index 92caeb0c..8af249df 100644
+--- a/crates/hex-preferences/README.md
++++ b/crates/hex-preferences/README.md
+@@ -34,3 +34,9 @@ Browser Places also retain optional icon IDs keyed by exact native Place paths.
+ At most one bounded, nonempty, control-free ID (64 UTF-8 bytes) is accepted per
+ additional Place. Unknown IDs roundtrip unchanged; glyph inventory, defaults and
+ fallback presentation belong to the UI. Orphan/duplicate icon records are refused.
++
++Browser preferences also contain at most three stable built-in source records
++(`home`, `music`, `samples`) with visibility and optional bounded icon IDs, plus
++at most fourteen hidden additional native paths referencing existing Places.
++Duplicate/unknown built-in identities and orphan hidden paths are refused.
++Sidebar visibility never removes a source path or touches its contents.
+diff --git a/crates/hex-preferences/src/lib.rs b/crates/hex-preferences/src/lib.rs
+index 03ef7ef5..5eddf3be 100644
+--- a/crates/hex-preferences/src/lib.rs
++++ b/crates/hex-preferences/src/lib.rs
+@@ -84,11 +84,28 @@ impl RgbColor {
+     }
+ }
+ 
++/// Stable identities independent of the user's current Home path.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum BrowserBuiltin {
++    Home,
++    Music,
++    Samples,
++}
++
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++struct BuiltinPreference {
++    hidden: bool,
++    icon: Option<String>,
++}
++
+ /// Additional browser folders, in user-visible order.
+ #[derive(Clone, Debug, Default, PartialEq, Eq)]
+ pub struct BrowserPlaces {
+     additional: Vec<PathBuf>,
+     icons: BTreeMap<PathBuf, String>,
++    builtins: BTreeMap<BrowserBuiltin, BuiltinPreference>,
++    hidden_places: HashSet<PathBuf>,
+ }
+ 
+ impl BrowserPlaces {
+@@ -125,9 +142,55 @@ impl BrowserPlaces {
+         Ok(Self {
+             additional,
+             icons: BTreeMap::new(),
++            builtins: BTreeMap::new(),
++            hidden_places: HashSet::new(),
+         })
+     }
+ 
++    pub fn builtin_icon(&self, source: BrowserBuiltin) -> Option<&str> {
++        self.builtins
++            .get(&source)
++            .and_then(|value| value.icon.as_deref())
++    }
++
++    pub fn builtin_hidden(&self, source: BrowserBuiltin) -> bool {
++        self.builtins.get(&source).is_some_and(|value| value.hidden)
++    }
++
++    pub fn set_builtin_icon(
++        &mut self,
++        source: BrowserBuiltin,
++        icon: Option<&str>,
++    ) -> Result<(), PreferencesError> {
++        if let Some(id) = icon {
++            validate_icon_id(id)?;
++        }
++        self.builtins.entry(source).or_default().icon = icon.map(str::to_owned);
++        Ok(())
++    }
++
++    pub fn set_builtin_hidden(&mut self, source: BrowserBuiltin, hidden: bool) {
++        self.builtins.entry(source).or_default().hidden = hidden;
++    }
++
++    pub fn place_hidden(&self, path: &Path) -> bool {
++        self.hidden_places.contains(path)
++    }
++
++    pub fn set_place_hidden(&mut self, path: &Path, hidden: bool) -> Result<(), PreferencesError> {
++        if !self.additional.iter().any(|place| place == path) {
++            return Err(PreferencesError::InvalidDocument(
++                "hidden source has no matching place".into(),
++            ));
++        }
++        if hidden {
++            self.hidden_places.insert(path.to_owned());
++        } else {
++            self.hidden_places.remove(path);
++        }
++        Ok(())
++    }
++
+     pub fn additional(&self) -> &[PathBuf] {
+         &self.additional
+     }
+@@ -151,14 +214,7 @@ impl BrowserPlaces {
+             ));
+         }
+         if let Some(id) = id {
+-            if id.is_empty()
+-                || id.len() > MAX_PLACE_ICON_ID_BYTES
+-                || id.chars().any(char::is_control)
+-            {
+-                return Err(PreferencesError::InvalidDocument(
+-                    "invalid place icon identifier".into(),
+-                ));
+-            }
++            validate_icon_id(id)?;
+             self.icons.insert(path.to_owned(), id.to_owned());
+         } else {
+             self.icons.remove(path);
+@@ -167,6 +223,15 @@ impl BrowserPlaces {
+     }
+ }
+ 
++fn validate_icon_id(id: &str) -> Result<(), PreferencesError> {
++    if id.is_empty() || id.len() > MAX_PLACE_ICON_ID_BYTES || id.chars().any(char::is_control) {
++        return Err(PreferencesError::InvalidDocument(
++            "invalid place icon identifier".into(),
++        ));
++    }
++    Ok(())
++}
++
+ /// Recently opened project files, most recent first.
+ #[derive(Clone, Debug, Default, PartialEq, Eq)]
+ pub struct RecentProjects {
+@@ -323,6 +388,41 @@ pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
+         }
+         places.set_icon(&path, Some(&icon.id))?;
+     }
++    if document.builtin_sources.len() > 3 || document.hidden_places.len() > MAX_USER_PLACES {
++        return Err(PreferencesError::InvalidDocument(
++            "too many source preferences".into(),
++        ));
++    }
++    for value in document.builtin_sources {
++        let source = value.source;
++        if let Some(id) = &value.icon {
++            validate_icon_id(id)?;
++        }
++        if places
++            .builtins
++            .insert(
++                source,
++                BuiltinPreference {
++                    hidden: value.hidden,
++                    icon: value.icon,
++                },
++            )
++            .is_some()
++        {
++            return Err(PreferencesError::InvalidDocument(
++                "duplicate builtin identity".into(),
++            ));
++        }
++    }
++    for stored in document.hidden_places {
++        let path = stored.into_path()?;
++        if places.place_hidden(&path) {
++            return Err(PreferencesError::InvalidDocument(
++                "duplicate hidden place".into(),
++            ));
++        }
++        places.set_place_hidden(&path, true)?;
++    }
+     Ok(places)
+ }
+ 
+@@ -438,6 +538,21 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
+     }
+     let document = Document {
+         version: DOCUMENT_VERSION,
++        builtin_sources: places
++            .builtins
++            .iter()
++            .map(|(source, value)| StoredBuiltinPreference {
++                source: *source,
++                hidden: value.hidden,
++                icon: value.icon.clone(),
++            })
++            .collect(),
++        hidden_places: places
++            .additional
++            .iter()
++            .filter(|path| places.place_hidden(path))
++            .map(|path| StoredPath::from_path(path))
++            .collect::<Result<Vec<_>, _>>()?,
+         place_icons: places
+             .icons
+             .iter()
+@@ -584,6 +699,18 @@ struct Document {
+     additional_places: Vec<StoredPath>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     place_icons: Vec<StoredPlaceIcon>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    builtin_sources: Vec<StoredBuiltinPreference>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    hidden_places: Vec<StoredPath>,
++}
++
++#[derive(Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct StoredBuiltinPreference {
++    source: BrowserBuiltin,
++    hidden: bool,
++    icon: Option<String>,
+ }
+ 
+ #[derive(Serialize, Deserialize)]
+@@ -1033,4 +1160,84 @@ mod tests {
+         assert_eq!(load(&config).unwrap(), places);
+         assert_eq!(load(&config).unwrap().icon(&path), Some("waveform"));
+     }
++    #[test]
++    fn builtin_sources_and_hidden_places_round_trip_without_path_or_icon_loss() {
++        let directory = TestDirectory::new();
++        let config = directory.0.join("browser.json");
++        let first = directory.0.join("one/same");
++        let second = directory.0.join("two/same");
++        let mut places = BrowserPlaces::new([first.clone(), second.clone()]).unwrap();
++        places.set_icon(&first, Some("samples")).unwrap();
++        places.set_place_hidden(&first, true).unwrap();
++        places
++            .set_builtin_icon(BrowserBuiltin::Home, Some("future-bundled-icon"))
++            .unwrap();
++        places
++            .set_builtin_icon(BrowserBuiltin::Music, Some("samples"))
++            .unwrap();
++        for source in [
++            BrowserBuiltin::Home,
++            BrowserBuiltin::Music,
++            BrowserBuiltin::Samples,
++        ] {
++            places.set_builtin_hidden(source, true);
++        }
++        save(&config, &places).unwrap();
++        assert_eq!(load(&config).unwrap(), places);
++        assert_eq!(
++            load(&config).unwrap().additional(),
++            &[first.clone(), second.clone()]
++        );
++        assert_eq!(
++            load(&config).unwrap().builtin_icon(BrowserBuiltin::Home),
++            Some("future-bundled-icon")
++        );
++        places.set_builtin_icon(BrowserBuiltin::Home, None).unwrap();
++        places.set_builtin_hidden(BrowserBuiltin::Music, false);
++        places.set_place_hidden(&first, false).unwrap();
++        save(&config, &places).unwrap();
++        assert_eq!(load(&config).unwrap(), places);
++        assert!(!places.place_hidden(&second));
++        assert_eq!(places.icon(&first), Some("samples"));
++        assert!(
++            !first.exists() && !second.exists(),
++            "preferences must not create source folders"
++        );
++    }
++
++    #[test]
++    fn builtin_source_invalid_identity_duplicate_and_hidden_path_errors_preserve_document() {
++        let directory = TestDirectory::new();
++        let config = directory.0.join("browser.json");
++        for sources in [
++            serde_json::json!([{"source":"home","hidden":false,"icon":null},{"source":"home","hidden":true,"icon":null}]),
++            serde_json::json!([{"source":"unknown-source","hidden":false,"icon":null}]),
++            serde_json::json!([{"source":"music","hidden":false,"icon":"bad\nicon"}]),
++        ] {
++            let bytes = serde_json::to_vec(
++                &serde_json::json!({"version":1,"additional_places":[],"builtin_sources":sources}),
++            )
++            .unwrap();
++            fs::write(&config, &bytes).unwrap();
++            assert!(load(&config).is_err());
++            assert!(save(&config, &BrowserPlaces::default()).is_err());
++            assert_eq!(fs::read(&config).unwrap(), bytes);
++        }
++        let mut places = BrowserPlaces::default();
++        assert!(
++            places
++                .set_place_hidden(&directory.0.join("absent"), true)
++                .is_err()
++        );
++        assert!(
++            places
++                .set_builtin_icon(BrowserBuiltin::Home, Some(""))
++                .is_err()
++        );
++        assert!(
++            places
++                .set_builtin_icon(BrowserBuiltin::Home, Some(&"x".repeat(65)))
++                .is_err()
++        );
++    }
+ }
+diff --git a/crates/hex-ui/src/context_menu.rs b/crates/hex-ui/src/context_menu.rs
+index e31a2ce0..7362a65f 100644
+--- a/crates/hex-ui/src/context_menu.rs
++++ b/crates/hex-ui/src/context_menu.rs
+@@ -21,7 +21,7 @@ pub(crate) struct MenuItem<A> {
+ 
+ pub(crate) struct PopupMenu<A> {
+     pub position: Point<Pixels>,
+-    // Item zero is a full-width action; remaining items are glyph cells.
++    // Item zero and any items after the glyph catalog are full-width actions.
+     pub icon_grid: Option<Vec<&'static str>>,
+     pub items: Vec<MenuItem<A>>,
+     pub selected: usize,
+@@ -63,8 +63,8 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
+     let (width, height) = if grid.is_some() {
+         (
+             ICON_WIDTH,
+-            ROW_HEIGHT
+-                + menu.items.len().saturating_sub(1).div_ceil(ICON_COLUMNS) as f32 * ICON_CELL
++            ROW_HEIGHT * menu.items.len().saturating_sub(grid.map_or(0, Vec::len)) as f32
++                + grid.map_or(0, Vec::len).div_ceil(ICON_COLUMNS) as f32 * ICON_CELL
+                 + 13.0,
+         )
+     } else {
+@@ -97,6 +97,7 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
+         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+     let is_icon_menu = grid.is_some();
+     let mut cells = Vec::new();
++    let mut trailing = Vec::new();
+     for (index, item) in menu.items.iter().enumerate() {
+         let action = item.action.clone();
+         let label = item.label;
+@@ -161,6 +162,8 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
+             );
+         if glyph.is_some() {
+             cells.push(row);
++        } else if index > 0 && grid.is_some() {
++            trailing.push(row);
+         } else {
+             panel = panel.child(row);
+         }
+@@ -178,6 +181,8 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
+                 .children(cells),
+         );
+     }
++    panel = panel.children(trailing);
++    let glyph_count = grid.map_or(0, Vec::len);
+     let is_grid = grid.is_some();
+     let selected = menu.selected;
+     let count = menu.items.len();
+@@ -201,13 +206,13 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
+                     }
+                     "up" | "down" => {
+                         let forward = event.keystroke.key == "down";
+-                        let steps = if !is_grid || selected == 0 {
++                        let steps = if !is_grid || selected == 0 || selected > glyph_count {
+                             1
+                         } else if forward {
+-                            if selected + ICON_COLUMNS < count {
++                            if selected + ICON_COLUMNS <= glyph_count {
+                                 ICON_COLUMNS
+                             } else {
+-                                count - selected
++                                (glyph_count + 1).min(count) - selected
+                             }
+                         } else {
+                             selected.min(ICON_COLUMNS)
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index b81fc69e..b1ecb19c 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -12,7 +12,7 @@ use gpui::{
+ };
+ use hex_audio::sample_preview::Phase;
+ use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
+-use hex_preferences::BrowserPlaces;
++use hex_preferences::{BrowserBuiltin, BrowserPlaces};
+ use hex_project::Command;
+ use hex_session::service::AudioPreview;
+ use hex_session::service::Request;
+@@ -172,6 +172,7 @@ pub(super) struct BrowserState {
+     music: PathBuf,
+     pub(super) places: Vec<PathBuf>,
+     place_icons: HashMap<PathBuf, String>,
++    source_preferences: BrowserPlaces,
+     preferences_path: PathBuf,
+     preferences_loading: bool,
+     pub(super) preferences_writable: bool,
+@@ -258,6 +259,7 @@ impl BrowserState {
+             music,
+             places,
+             place_icons: HashMap::new(),
++            source_preferences: BrowserPlaces::default(),
+             preferences_path,
+             preferences_loading: true,
+             preferences_writable: true,
+@@ -448,6 +450,10 @@ impl EditorView {
+                     Some(places_error("could not load browser places", &error));
+             }
+             Ok(loaded) => {
++                self.browser
++                    .layout
++                    .set_samples_visible(!loaded.builtin_hidden(BrowserBuiltin::Samples));
++                self.browser.source_preferences = loaded.clone();
+                 self.browser.place_icons = loaded
+                     .icon_assignments()
+                     .map(|(path, id)| (path.to_owned(), id.to_owned()))
+@@ -457,6 +463,10 @@ impl EditorView {
+                     .place_icons
+                     .values()
+                     .any(|id| !place_icons::known(id))
++                    || [BrowserBuiltin::Home, BrowserBuiltin::Music]
++                        .into_iter()
++                        .filter_map(|source| loaded.builtin_icon(source))
++                        .any(|id| !place_icons::known(id))
+                 {
+                     self.browser.places_status =
+                         Some("some place icons unavailable · showing folder".into());
+@@ -492,6 +502,7 @@ impl EditorView {
+                 }
+             }
+         }
++        self.reconcile_browser_source_visibility(cx);
+         self.refresh_sample_catalog(cx);
+     }
+ 
+@@ -511,6 +522,24 @@ impl EditorView {
+             .filter(|path| **path != self.browser.home && **path != self.browser.music)
+             .cloned();
+         let places = BrowserPlaces::new(additional).and_then(|mut places| {
++            for source in [
++                BrowserBuiltin::Music,
++                BrowserBuiltin::Home,
++                BrowserBuiltin::Samples,
++            ] {
++                places.set_builtin_icon(
++                    source,
++                    self.browser.source_preferences.builtin_icon(source),
++                )?;
++                places.set_builtin_hidden(
++                    source,
++                    self.browser.source_preferences.builtin_hidden(source),
++                );
++            }
++            for path in places.additional().to_vec() {
++                places
++                    .set_place_hidden(&path, self.browser.source_preferences.place_hidden(&path))?;
++            }
+             for (path, id) in &self.browser.place_icons {
+                 if places.additional().contains(path) {
+                     places.set_icon(path, Some(id))?;
+@@ -520,6 +549,7 @@ impl EditorView {
+         });
+         match places {
+             Ok(places) => {
++                self.browser.source_preferences = places.clone();
+                 self.browser.pending_places_save = Some(places);
+                 self.browser.places_status = Some("saving browser places…".into());
+                 self.start_browser_places_save(cx);
+diff --git a/crates/hex-ui/src/editor/browser/layout.rs b/crates/hex-ui/src/editor/browser/layout.rs
+index 0e2db9f6..c4079053 100644
+--- a/crates/hex-ui/src/editor/browser/layout.rs
++++ b/crates/hex-ui/src/editor/browser/layout.rs
+@@ -50,6 +50,12 @@ impl Default for BrowserLayout {
+ }
+ 
+ impl BrowserLayout {
++    pub(super) fn samples_visible(&self) -> bool {
++        self.visible[0]
++    }
++    pub(super) fn set_samples_visible(&mut self, visible: bool) {
++        self.visible[0] = visible;
++    }
+     pub(super) fn reveal_all(&mut self) {
+         if let Some(index) = SECTIONS
+             .iter()
+@@ -291,7 +297,8 @@ impl EditorView {
+         sidebar = sidebar
+             .child(picker_heading("collections pending"))
+             .child(picker_heading("library"));
+-        for (index, (section, name)) in SECTIONS.into_iter().enumerate() {
++        for index in [3, 0, 1, 2] {
++            let (section, name) = SECTIONS[index].clone();
+             if !self.browser.layout.visible[index] {
+                 continue;
+             }
+@@ -334,6 +341,16 @@ impl EditorView {
+                                 cx.notify();
+                             }),
+                         )
++                        .on_mouse_down(
++                            MouseButton::Right,
++                            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
++                                if name == "samples" {
++                                    view.open_browser_samples_menu(event.position, window, cx);
++                                    cx.stop_propagation();
++                                    window.prevent_default();
++                                }
++                            }),
++                        )
+                         .child(icon)
+                         .child(picker_label(name).debug_selector(move || {
+                             format!("browser-picker-label-section-{index}")
+@@ -342,7 +359,7 @@ impl EditorView {
+         }
+         sidebar = sidebar.child(self.browser_icon(
+             "⚙",
+-            "configure sections · session only",
++            "configure browser sources",
+             move |view, _, cx| {
+                 view.browser.layout.settings_visible = !view.browser.layout.settings_visible;
+                 if view.browser.layout.settings_visible {
+@@ -354,7 +371,7 @@ impl EditorView {
+             cx,
+         ));
+         if self.browser.layout.settings_visible {
+-            sidebar = sidebar.child(picker_heading("sections · session"));
++            sidebar = sidebar.child(picker_heading("sources"));
+             for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
+                 let visible = self.browser.layout.visible[index];
+                 sidebar = sidebar.child(
+@@ -369,6 +386,9 @@ impl EditorView {
+                         .child(
+                             div()
+                                 .id(("browser-section-visibility", index))
++                                .debug_selector(move || {
++                                    format!("browser-section-visibility-{index}")
++                                })
+                                 .flex_1()
+                                 .min_w_0()
+                                 .overflow_hidden()
+@@ -376,6 +396,14 @@ impl EditorView {
+                                 .on_mouse_down(
+                                     MouseButton::Left,
+                                     cx.listener(move |view, _, _, cx| {
++                                        if index == 0 {
++                                            view.set_browser_source_visible(
++                                                BrowserSection::Samples,
++                                                !view.browser.layout.visible[index],
++                                                cx,
++                                            );
++                                            return;
++                                        }
+                                         let layout = &mut view.browser.layout;
+                                         if layout.visible[index]
+                                             && layout.visible.iter().filter(|v| **v).count() == 1
+@@ -420,8 +448,58 @@ impl EditorView {
+                 );
+             }
+         }
++        if self.browser.layout.settings_visible {
++            for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
++                let path = place.clone();
++                let visible = self.browser_place_visible(place);
++                let name = if *place == self.browser.music {
++                    "music".to_owned()
++                } else if *place == self.browser.home {
++                    "home".to_owned()
++                } else {
++                    place
++                        .file_name()
++                        .unwrap_or_default()
++                        .to_string_lossy()
++                        .into_owned()
++                };
++                let tooltip = name.clone();
++                sidebar = sidebar.child(
++                    div()
++                        .id(("browser-place-visibility", index))
++                        .debug_selector(move || format!("browser-place-visibility-{index}"))
++                        .h(px(PICKER_CONTROL_SIZE))
++                        .w_full()
++                        .min_w_0()
++                        .flex_shrink_0()
++                        .overflow_hidden()
++                        .whitespace_nowrap()
++                        .cursor_pointer()
++                        .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
++                        .on_mouse_down(
++                            MouseButton::Left,
++                            cx.listener(move |view, _, window, cx| {
++                                view.set_browser_source_visible(
++                                    BrowserSection::Place(path.clone()),
++                                    !visible,
++                                    cx,
++                                );
++                                view.browser.results_focus.focus(window);
++                                window.prevent_default();
++                            }),
++                        )
++                        .child(picker_label(format!(
++                            "{} {name}",
++                            if visible { "☑" } else { "□" }
++                        ))),
++                );
++            }
++        }
+         sidebar = sidebar.child(picker_heading("places"));
+         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
++            if !self.browser_place_visible(place) {
++                continue;
++            }
+             let path = place.clone();
+             let icon_path = place.clone();
+             let row_bounds = Rc::new(std::cell::Cell::new(None::<gpui::Bounds<gpui::Pixels>>));
+diff --git a/crates/hex-ui/src/editor/browser/place_icons.rs b/crates/hex-ui/src/editor/browser/place_icons.rs
+index 7aca3b5c..11b7166c 100644
+--- a/crates/hex-ui/src/editor/browser/place_icons.rs
++++ b/crates/hex-ui/src/editor/browser/place_icons.rs
+@@ -22,20 +22,14 @@ pub(super) fn known(id: &str) -> bool {
+ 
+ impl EditorView {
+     pub(super) fn browser_place_glyph(&self, path: &std::path::Path) -> &'static str {
+-        if path == self.browser.home || path == self.browser.music {
+-            return ICONS[0].1;
+-        }
+-        self.browser
+-            .place_icons
+-            .get(path)
+-            .and_then(|id| ICONS.iter().find(|(candidate, _, _)| candidate == id))
++        self.browser_place_icon_id(path)
++            .and_then(|id| ICONS.iter().find(|(candidate, _, _)| *candidate == id))
+             .map_or(ICONS[0].1, |(_, glyph, _)| *glyph)
+     }
+ 
+     pub(in crate::editor) fn browser_place_icon_assignable(&self, path: &std::path::Path) -> bool {
+-        path != self.browser.home
+-            && path != self.browser.music
+-            && self.browser.places.iter().any(|place| place == path)
++        self.browser.places.iter().any(|place| place == path)
++            && self.browser_place_visible(path)
+             && !self.browser.preferences_loading
+             && self.browser.preferences_writable
+     }
+@@ -58,10 +52,8 @@ impl EditorView {
+         }
+         self.cancel_time_selection_gesture();
+         let selected = self
+-            .browser
+-            .place_icons
+-            .get(&path)
+-            .and_then(|id| ICONS.iter().position(|(candidate, _, _)| candidate == id))
++            .browser_place_icon_id(&path)
++            .and_then(|id| ICONS.iter().position(|(candidate, _, _)| *candidate == id))
+             .map_or(0, |index| index + 1);
+         let previous_focus = self
+             .context_menu
+@@ -99,6 +91,14 @@ impl EditorView {
+                         },
+                     }),
+             )
++            .chain(std::iter::once(MenuItem {
++                label: "remove",
++                swatch: None,
++                checked: false,
++                action: EditorContextAction::RemoveBrowserSource(BrowserSection::Place(
++                    path.clone(),
++                )),
++            }))
+             .collect(),
+         });
+         cx.notify();
+@@ -113,7 +113,15 @@ impl EditorView {
+         if !self.browser_place_icon_assignable(&path) || id.is_some_and(|id| !known(id)) {
+             return;
+         }
+-        if let Some(id) = id {
++        if let Some(source) = self.browser_builtin_place(&path) {
++            // Validation is shared with custom icons; unknown saved IDs remain untouched until chosen/reset.
++            if let Err(error) = self.browser.source_preferences.set_builtin_icon(source, id) {
++                self.browser.places_status =
++                    Some(places_error("could not set source icon", &error));
++                cx.notify();
++                return;
++            }
++        } else if let Some(id) = id {
+             self.browser.place_icons.insert(path, id.into());
+         } else {
+             self.browser.place_icons.remove(&path);
+@@ -122,3 +130,141 @@ impl EditorView {
+         cx.notify();
+     }
+ }
++
++impl EditorView {
++    fn browser_builtin_place(&self, path: &std::path::Path) -> Option<BrowserBuiltin> {
++        if path == self.browser.music {
++            Some(BrowserBuiltin::Music)
++        } else if path == self.browser.home {
++            Some(BrowserBuiltin::Home)
++        } else {
++            None
++        }
++    }
++
++    fn browser_place_icon_id(&self, path: &std::path::Path) -> Option<&str> {
++        match self.browser_builtin_place(path) {
++            Some(source) => self.browser.source_preferences.builtin_icon(source),
++            None => self.browser.place_icons.get(path).map(String::as_str),
++        }
++    }
++
++    pub(super) fn browser_place_visible(&self, path: &std::path::Path) -> bool {
++        match self.browser_builtin_place(path) {
++            Some(source) => !self.browser.source_preferences.builtin_hidden(source),
++            None => !self.browser.source_preferences.place_hidden(path),
++        }
++    }
++
++    pub(in crate::editor) fn remove_browser_source(
++        &mut self,
++        source: BrowserSection,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        if self.browser_source_removable(&source) {
++            self.set_browser_source_visible(source, false, cx);
++            self.browser.results_focus.focus(window);
++            window.prevent_default();
++        }
++    }
++
++    pub(in crate::editor) fn browser_source_removable(&self, source: &BrowserSection) -> bool {
++        !self.browser.preferences_loading
++            && self.browser.preferences_writable
++            && match source {
++                BrowserSection::Place(path) => {
++                    self.browser.places.contains(path) && self.browser_place_visible(path)
++                }
++                BrowserSection::Samples => self.browser.layout.samples_visible(),
++                _ => false,
++            }
++    }
++
++    pub(super) fn set_browser_source_visible(
++        &mut self,
++        source: BrowserSection,
++        visible: bool,
++        cx: &mut Context<Self>,
++    ) {
++        if self.browser.preferences_loading || !self.browser.preferences_writable {
++            return;
++        }
++        match source {
++            BrowserSection::Place(ref path) if self.browser.places.contains(path) => {
++                if let Some(builtin) = self.browser_builtin_place(path) {
++                    self.browser
++                        .source_preferences
++                        .set_builtin_hidden(builtin, !visible);
++                } else {
++                    if let Err(error) = self
++                        .browser
++                        .source_preferences
++                        .set_place_hidden(path, !visible)
++                    {
++                        self.browser.places_status =
++                            Some(places_error("could not hide source", &error));
++                        cx.notify();
++                        return;
++                    }
++                }
++            }
++            BrowserSection::Samples => {
++                self.browser.layout.set_samples_visible(visible);
++                self.browser
++                    .source_preferences
++                    .set_builtin_hidden(BrowserBuiltin::Samples, !visible);
++            }
++            _ => return,
++        }
++        self.reconcile_browser_source_visibility(cx);
++        self.queue_browser_places_save(cx);
++        cx.notify();
++    }
++
++    pub(super) fn reconcile_browser_source_visibility(&mut self, cx: &mut Context<Self>) {
++        let hidden = match &self.browser.section {
++            BrowserSection::Place(path) => !self.browser_place_visible(path),
++            BrowserSection::Samples => !self.browser.layout.samples_visible(),
++            _ => false,
++        };
++        if hidden {
++            self.cancel_browser_sample_playback();
++            self.browser.layout.reveal_all();
++            self.select_browser_source(BrowserSection::All, cx);
++        }
++    }
++
++    pub(super) fn open_browser_samples_menu(
++        &mut self,
++        position: Point<Pixels>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        if !self.browser_source_removable(&BrowserSection::Samples) {
++            return;
++        }
++        self.cancel_time_selection_gesture();
++        let previous_focus = self
++            .context_menu
++            .take()
++            .and_then(|menu| menu.previous_focus)
++            .or_else(|| window.focused(cx));
++        let focus = cx.focus_handle();
++        focus.focus(window);
++        self.context_menu = Some(PopupMenu {
++            position,
++            icon_grid: None,
++            selected: 0,
++            focus,
++            previous_focus,
++            items: vec![MenuItem {
++                label: "remove",
++                swatch: None,
++                checked: false,
++                action: EditorContextAction::RemoveBrowserSource(BrowserSection::Samples),
++            }],
++        });
++        cx.notify();
++    }
++}
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 306c6e49..7c06c072 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4582,7 +4582,11 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut
+                     .insert(path.clone(), "samples".into());
+                 assert_eq!(view.browser_place_glyph(&path), "□");
+                 view.open_browser_place_icons(path, point(px(0.0), px(0.0)), window, cx);
+-                assert!(view.context_menu.is_none(), "defaults aren't custom Places");
++                assert!(
++                    view.context_menu.is_some(),
++                    "built-in Places use the same catalog"
++                );
++                view.dismiss_context_menu(window, cx);
+             }
+             view.browser.preferences_loading = true;
+             view.open_browser_place_icons(directory.0.clone(), point(px(0.0), px(0.0)), window, cx);
+@@ -4894,3 +4898,6 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
+         assert!(view.pending_audio_commands.is_empty());
+     });
+ }
++
++#[path = "browser_builtin_source_ui_test.rs"]
++mod builtin_sources;
+diff --git a/crates/hex-ui/src/editor/context_menu.rs b/crates/hex-ui/src/editor/context_menu.rs
+index 37af3211..f93b54e6 100644
+--- a/crates/hex-ui/src/editor/context_menu.rs
++++ b/crates/hex-ui/src/editor/context_menu.rs
+@@ -21,6 +21,7 @@ pub(super) struct UtilityModeAction {
+ 
+ #[derive(Clone)]
+ pub(super) enum EditorContextAction {
++    RemoveBrowserSource(super::browser::BrowserSection),
+     PlaceIcon {
+         path: std::path::PathBuf,
+         id: Option<&'static str>,
+@@ -233,6 +234,9 @@ impl EditorView {
+     ) {
+         self.dismiss_context_menu(window, cx);
+         match action {
++            EditorContextAction::RemoveBrowserSource(source) => {
++                self.remove_browser_source(source, window, cx);
++            }
+             EditorContextAction::PlaceIcon { path, id } => {
+                 self.set_browser_place_icon(path, id, cx)
+             }
+@@ -345,6 +349,9 @@ impl EditorView {
+                 EditorContextAction::PlaceIcon { path, .. } => {
+                     !self.browser_place_icon_assignable(path)
+                 }
++                EditorContextAction::RemoveBrowserSource(source) => {
++                    !self.browser_source_removable(source)
++                }
+                 EditorContextAction::InsertTrack(_) => false,
+                 EditorContextAction::TrackColor {
+                     generation, track, ..
+diff --git a/docs/browser-places.md b/docs/browser-places.md
+index d9986247..a7eefc60 100644
+--- a/docs/browser-places.md
++++ b/docs/browser-places.md
+@@ -205,3 +205,30 @@ handlers run in their local browser scope; painting/workers never restore focus.
+ Close returns focus to the editor. This is separate from the unresolved native
+ field-click focus-loss report2794 and the future double-click refinement2817.
+ Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
++
++## Built-in source menus and reversible sidebar removal — Pulse2844 / PR446
++
++Home and Music use the existing row-anchored bundled icon grid and Default Icon
++reset. Their saved identities are `home` and `music`, independent of the resolved
++native Home path. Unknown icon IDs survive saves and show the default folder
++with a bounded diagnostic. Custom Place assignments remain keyed by original
++native paths; paths, casing and same-name identities are unchanged.
++
++Remove on Home, Music, Samples or a custom Place hides that sidebar entry only.
++The source paths remain in Places and the indexed catalog roots, and no files,
++project media or history entries are deleted. Removing the active source stops
++its preview and selects visible All. Existing source settings expose checkboxes
++to restore every hidden Place and Samples; All remains reachable with Command-F.
++Visibility and built-in icon overrides use the existing bounded browser document
++and background latest-snapshot save lane. Malformed settings remain untouched.
++Other section icon cycling and the broader collections work in2672 remain separate.
++
++All is the first Library row in both expanded and compact modes, retaining stable
++internal section IDs. The existing accepted Command-F handler is reused unchanged:
++it reveals All, preserves/selects the query, finalizes valid edits and respects
++invalid numeric drafts and IME handling. It adds no recursive indexing.
++
++Source tests exercise actual built-in right-click/grid/reset, compact glyph
++centers, actual Remove/restore controls, preference reopen and preserved WAV bytes,
++catalog roots/entries and request queues. Native optimized appearance, user menu
++navigation and actual app close/reopen remain root-owned acceptance gaps.
+diff --git a/todo.md b/todo.md
+index 7c5fc5b1..6aa50ec3 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5230,3 +5230,10 @@ covers long Place names, zero label space, both settings states and resize back
+ to normal; existing selection/hover/focus/audition regressions remain applicable.
+ Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
+ source handoff is separate from final integration/full CI/merge and delivery.
++
++18 October2026 — Pulse2844/PR446 source: reuse bundled Place grid/reset for stable
++Home/Music IDs; reversible sidebar-only Remove for Home/Music/Samples/custom
++folders, existing configuration restores sources, active removal falls back to
++All without deleting files/catalog/project media. All displays first; accepted
++Command-F route reused unchanged. Focused rendered/persistence checks recorded
++in Pulse; full prospective CI/merge remains sole merger, native acceptance root.

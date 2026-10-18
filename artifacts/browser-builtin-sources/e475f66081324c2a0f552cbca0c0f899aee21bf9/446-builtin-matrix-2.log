@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/browser_builtin_source_ui_test.rs:270:44
+    |
+270 |                 view.browser.search.update(cx, |input, cx| {
+    |                                     ------ ^^ types differ in mutability
+    |                                     |
+    |                                     arguments to this method are incorrect
+    |
+    = note: expected mutable reference `&mut _`
+                       found reference `&gpui::App`
+note: method defined here
+   --> third_party/gpui/src/app/entity_map.rs:430:12
+    |
+430 |     pub fn update<R, C: AppContext>(
+    |            ^^^^^^
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `hex-ui` (lib test) due to 1 previous error

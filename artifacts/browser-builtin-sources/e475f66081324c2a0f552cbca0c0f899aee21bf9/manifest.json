@@ -1,0 +1,215 @@
+{
+  "ticket": 2844,
+  "canonical_pr": 446,
+  "head": "e475f66081324c2a0f552cbca0c0f899aee21bf9",
+  "tree": "9758011c35bd9a0c28aa5b188bdccd6c128a97ba",
+  "expected_before": "d8fdea82dcfe03b2f4d6741f964a6ed947c8fd26",
+  "expected_before_tree": "898318c3feec24f6546d3a5f4b023b213a0d6520",
+  "changed_files": [
+    "crates/hex-preferences/README.md",
+    "crates/hex-preferences/src/lib.rs",
+    "crates/hex-ui/src/context_menu.rs",
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser/place_icons.rs",
+    "crates/hex-ui/src/editor/browser_builtin_source_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "crates/hex-ui/src/editor/context_menu.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "checks": [
+    {
+      "name": "preferences",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-preferences",
+        "--locked",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-preferences.log"
+    },
+    {
+      "name": "browser",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "editor::browser::",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-browser.log"
+    },
+    {
+      "name": "context-menu",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "context_menu",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-context-menu.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "-p",
+        "hex-preferences",
+        "--all-targets",
+        "--features",
+        "hex-ui/ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-clippy.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/446-final-diff.log"
+    }
+  ],
+  "original_red": {
+    "source": "d8fdea82dcfe03b2f4d6741f964a6ed947c8fd26",
+    "test_snapshot": "446-original-test.rs",
+    "registration": "original-registration.patch",
+    "log": "446-original-red.log",
+    "outcome": "actual rightclickMusic0PASS1FAIL, grid absent before production edits"
+  },
+  "final_results": {
+    "preferences": "22PASS0failed0ignored; doctests0matches not coverage",
+    "browser": "90PASS0failed0ignored709filtered27.06s, includes4newactualinputcases andexistingaudition/Stop/offset/no-doubleclickimport/focus/IME/selection/Place/tree regressions",
+    "context_menu": "5PASS0failed0ignored794filtered0.93s",
+    "strict_clippy": "hex-ui+hex-preferences alltargets ui-test-support -Dwarnings PASS20.08s",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "fullCI": "NOT RUN bysourceowner; solemerger actualprospectivecandidate"
+  },
+  "retained_failures": {
+    "446-first-green.log": "compile-only private method/field access boundaries; corrected narrowbrowser remove helper/no public field change",
+    "446-first-green-2.log": "compile-only borrowedpath movedintofooter; clonecapturednativepath",
+    "446-builtin-matrix.log": "compile-only interim storedsource Option\u2192mandatory enum conversion .take mismatch",
+    "446-builtin-matrix-2.log": "compile-only testupdate used readonlyApp; actual input handler update movedtoactualmutableApp",
+    "446-builtin-matrix-3.log": "first4GPUIpass1.72s, historical before unknownicon/query/extraunit/keyboard strengthening",
+    "446-initial-browser-failures.log": "88PASS2FAIL from incorrect test assumptions: custom-onlyfixture omits builtins, actualresize deliberately exitsquerytextfocus. Corrected expectation +explicitCmdF afterresize beforecheckingrestoration, no production focus workaround. Exactcandidate trackedpatch+newtest snapshot retained",
+    "446-pre-lint-fix-clippy.log": "strict test-only cloned_ref_to_slice_refs warning, correctedstd::slice::from_ref, no waiver; exactcandidate+newtestsnapshot and90PASS/5PASS intermediate receipts retained, final allfocusedchecks rerun"
+  },
+  "scope": "Stable builtinIDs Home/Music/Samples boundedat3, native customhidden paths<=14 referenceexistingPlaces. Existing7bundledglyphcatalog/menu reused, builtinHome/Music choose/reset,persistedsidebarhide/remove+restore, fallbackAll/previewcancel. AllDISPLAYfirstkeeps internalindices; acceptedCommandF handlerunchanged/no newindexing. No file/catalog/projectmedia removal. No schema/project/media/DSP/backend/widgetinput implementation changes.",
+  "limits": [
+    "Native optimized interaction/appclose-reopen/physicalAX unverified; root sole Mac lane",
+    "Frozen444 heading/snap and414 testcustody integration ownedmerger, preserve exact disjointhunks; source doesnotchase movingmain",
+    "Broader2672collections and othersectionicon/settingspersistence remainseparate unimplemented scope",
+    "Existing unsupported PCM Arc-layout build warning retained",
+    "Source-ready remains PulseInProgress until actual authenticatedmerge",
+    "Original400nativeclickfocus diagnostic unresolved; unrelated changes do not closeit"
+  ],
+  "payloads": {
+    "446-builtin-matrix-2.log": "f7449afb97fbbc0f70779162b52e343ee95018398966eddbb4c72b64d6dea74f",
+    "446-builtin-matrix-3.log": "403c4d330ad31f52dfb98fdcbfed4d54384850e55b2d23a9f095da31f18e9674",
+    "446-builtin-matrix.log": "1099ebd579fde075e54525bb2db1c5ab876efc0e36567395e71da61cfa3b1b5f",
+    "446-edit-layout.py": "8563a32dd3d447e859400314a3a36315b57048973e8dd6709f526a580ca0cbd2",
+    "446-edit-preferences.py": "aabbad2ecfcbe64900bf66c97e797aefa58b4a9a41fed22163a50fe42a51b51f",
+    "446-edit-ui.py": "fe419b23f7b201de3cfb13d432b3f64889d10555429175a87e9b6c38ddfd1346",
+    "446-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "446-final-browser.log": "e2c6d9aacd8e03e647004294281b31ed26261de7e11f92c788b77ce55d61ab69",
+    "446-final-checks.json": "fc36e8b4b685ccf2d5fa0c9081bbfc3d50be01192648f6193521b0e704d8b22d",
+    "446-final-clippy.log": "b604c31490aa82a1a4b37ff2fc1677a8124ff17e2dd41b86e1b4bdff15cd5d51",
+    "446-final-context-menu.log": "7421e886695af688076eac9591f9004a45e75c3ea598fa705523dde0f0ade1bf",
+    "446-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "446-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "446-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "446-final-preferences.log": "772b9ced0efb1509bfd42159f55753387d5e47aebc0e67225e119e0e3d4b7a02",
+    "446-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "446-first-green-2.log": "a510f574c43db799fcba3d37d9d4ac40c6a2b420370c37c4383e7f1a5fd26378",
+    "446-first-green.log": "2a99812fdf6453f216f150f8fe940d6e389a0fc6c4c8d93ebbd3e98cd25c6b02",
+    "446-focused-checks.py": "502856e86d333f62096501b3f963090f63d98ebbde198fe8a70382b6c92ca716",
+    "446-initial-browser-failures.log": "29d6bd303f3eccc550941be9e612f409490c00c2cf6317745877c3bb4c0e2ea2",
+    "446-initial-checks.json": "552f49bf8b57ef5d7df95204e78a740abc436bda39c40ea8dd0cde0428fd295b",
+    "446-initial-matrix-builtin-test.rs": "0625f6dfe88320baa81469ee0b5509cf72cada8b193b32ac51885aa71b796b5b",
+    "446-initial-matrix-candidate.patch": "d90c2713c4a7e1805617f008e0a9ba48a0f3b7d72d57323e3eeba25d88654505",
+    "446-initial-preferences.log": "41b9666c25b004f03048f5ae0ed055a4dcc393e384827c3a65c7ce615c997820",
+    "446-original-red.log": "4fa5186052f3ea4aeba29eed60c43117b1d739a10e6071b23fc5771ec7c58dc5",
+    "446-original-test.rs": "dc68b7e304a5793be97ae648f479425bdf540365a94f1ac8c959c5aa8b27b6d2",
+    "446-pre-lint-fix-browser.log": "555a76e9320cfc1bb13244bb6def71451575f17e20f5ffbc9e041326a8ddd6e8",
+    "446-pre-lint-fix-candidate.patch": "b0dfa0cecd2a8730aadea5f0a5d386e4890df588cb582a0c026efb7049e281e1",
+    "446-pre-lint-fix-checks.json": "8bc7f6d17cbdc98d554f63d86f6fc014d92e19d63c03238a76b01315bedd4f9c",
+    "446-pre-lint-fix-clippy.log": "8a408e4ce1134d17424bf371f9aa9333e85babc943e3006f92084ba85b51b061",
+    "446-pre-lint-fix-context-menu.log": "1d9f7055145ff382944edbc1db6ed3cb228ea86ab8c094dff28d94ef32014440",
+    "446-pre-lint-fix-test.rs": "d140535491c06bf13fda054b137e8a8393d0eb7db1394792e84b5108b4593207",
+    "446-publish-evidence.py": "4e0afcae56bae52a367cc3c17c1a50bda903a04203870846c4bd6df401f0797c",
+    "before-after-hashes.json": "f393c53d09addf62c4fb05e44e69c6163ccd09a127c0f4c4bdd21461f66d425d",
+    "finite-mac-checklist.md": "a648482477bb0b3aaa3be7e818aa06d7c757bc0c00f3eb05856dfc9737bbb1e5",
+    "integration-note.md": "d7d0c414cb447afa5ba6c532825ca77786b24c3f13cdad8068043efbde4695df",
+    "original-registration.patch": "f7b81b6cb1c2eb6758e491220f69c28ea982d2f8c43f0c472de1350193e23a9f",
+    "source.patch": "623e075c9f1cd9f6d4f8a0f95da8891a7e5ee6c405a6795d4ad1f0421533ac20"
+  }
+}

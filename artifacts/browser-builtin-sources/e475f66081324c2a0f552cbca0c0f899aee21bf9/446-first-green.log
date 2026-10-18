@@ -1,0 +1,55 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0624]: method `reconcile_browser_source_visibility` is private
+   --> crates/hex-ui/src/editor/browser.rs:501:14
+    |
+501 |         self.reconcile_browser_source_visibility(cx);
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/hex-ui/src/editor/browser/place_icons.rs:210:5
+    |
+210 |     fn reconcile_browser_source_visibility(&mut self, cx: &mut Context<Self>) {
+    |     ------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `set_browser_source_visible` is private
+   --> crates/hex-ui/src/editor/context_menu.rs:239:26
+    |
+239 |                       self.set_browser_source_visible(source, false, cx);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/hex-ui/src/editor/browser/place_icons.rs:169:5
+    |
+169 | /     pub(super) fn set_browser_source_visible(
+170 | |         &mut self,
+171 | |         source: BrowserSection,
+172 | |         visible: bool,
+173 | |         cx: &mut Context<Self>,
+174 | |     ) {
+    | |_____- private method defined here
+
+error[E0616]: field `results_focus` of struct `BrowserState` is private
+   --> crates/hex-ui/src/editor/context_menu.rs:240:34
+    |
+240 |                     self.browser.results_focus.focus(window);
+    |                                  ^^^^^^^^^^^^^ private field
+
+error[E0505]: cannot move out of `path` because it is borrowed
+  --> crates/hex-ui/src/editor/browser/place_icons.rs:98:88
+   |
+84 |                     .map(|(index, (id, _, label))| MenuItem {
+   |                          ------------------------- borrow of `path` occurs here
+...
+89 |                             path: path.clone(),
+   |                                   ---- borrow occurs due to use in closure
+...
+94 |             .chain(std::iter::once(MenuItem {
+   |              ----- borrow later used by call
+...
+98 |                 action: EditorContextAction::RemoveBrowserSource(BrowserSection::Place(path)),
+   |                                                                                        ^^^^ move out of `path` occurs here
+
+Some errors have detailed explanations: E0505, E0616, E0624.
+For more information about an error, try `rustc --explain E0505`.
+error: could not compile `hex-ui` (lib test) due to 4 previous errors

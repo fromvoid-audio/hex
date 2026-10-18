@@ -1,0 +1,15 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.06s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 5 tests
+test context_menu::tests::popup_stays_inside_window_edges ... ok
+test editor::context_menu::tests::track_header_offers_ten_swatches_and_stale_clip_action_is_ignored ... ok
+test editor::context_menu::tests::right_click_track_inserts_below_clicked_track ... ok
+test editor::context_menu::tests::menu_escape_outside_click_and_enter_do_not_leak_to_editor ... ok
+test editor::context_menu::tests::clip_right_click_toggles_flavor_without_track_insertion ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 794 filtered out; finished in 0.93s
+

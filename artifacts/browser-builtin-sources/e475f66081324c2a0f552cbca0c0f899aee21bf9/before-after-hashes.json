@@ -1,0 +1,68 @@
+{
+  "crates/hex-preferences/README.md": {
+    "before_git_blob": "92caeb0cc6a50119a5dfb93b98a9a7a1509171b1",
+    "before_sha256": "8e12356f2111fb0a4c014459abb76cdb391bae8041f2a3e194df225702e9c795",
+    "after_git_blob": "8af249df03abe780b85e471e242fb0cacc1aff42",
+    "after_sha256": "074324c9c6ef8fc2bfeda8ad5c9a3c4b75ec146a814e25e16dc61babb578874e"
+  },
+  "crates/hex-preferences/src/lib.rs": {
+    "before_git_blob": "03ef7ef5c40d988b8508e9a74b2ba4268b833583",
+    "before_sha256": "c590d29089ec87828c7b6af6264ea358a7a5fb1224908581c0bf01066cb97d04",
+    "after_git_blob": "e6da598d21ff48df68ba62aa1fd7cdb7b42e515a",
+    "after_sha256": "ec7f3d48b6f60f4f2e47d3691874926598d36b65f52d6654ed6be0d0e07b582c"
+  },
+  "crates/hex-ui/src/context_menu.rs": {
+    "before_git_blob": "e31a2ce0591bc17b237da50b96c84f0e8c6c3e01",
+    "before_sha256": "db6e350ddc7d43d4dc5ba1fe0462e071d941fc15d7b3118eae12cc8283b3787e",
+    "after_git_blob": "7362a65f67485bd1df8d9f8e7e20eac914e17b60",
+    "after_sha256": "b20b81fed737015605fb6246fd26e22159f647c10ef7a38c2ab42fc048963ecc"
+  },
+  "crates/hex-ui/src/editor/browser.rs": {
+    "before_git_blob": "b81fc69ea13aa7e0ad5eea919c5d1ec9f37980f5",
+    "before_sha256": "4db032bc681d805578d192ba55dd108eb07f7e04e39ac0bb06fd1dc18db2f520",
+    "after_git_blob": "b1ecb19c03228a5295d3ecbc2ce4077e8b2bbc73",
+    "after_sha256": "bbf97a88a7abcc4752dc52a87117a430fda50a9f082dd70bb1efff1c8b883036"
+  },
+  "crates/hex-ui/src/editor/browser/layout.rs": {
+    "before_git_blob": "0e2db9f6de211f67aa01ed698eca75eace6a50cc",
+    "before_sha256": "6b95d499b0fd7cab4f9ab1f0e0d66be83a40b5a39b5f74e30ef7fe8503be4060",
+    "after_git_blob": "c407905368ba0a8f143a8b596a31542131a9eecd",
+    "after_sha256": "646414fed769f907775af14733b6ef970f26c7d2fa895a77f93f0ab21fe04134"
+  },
+  "crates/hex-ui/src/editor/browser/place_icons.rs": {
+    "before_git_blob": "7aca3b5c53123e0ecfba3e07f96ca7e1d6538be6",
+    "before_sha256": "a93485d4233892b1e6a56de9af704c0963b4ebc6ae3f38f9d96ed3a10048f570",
+    "after_git_blob": "11b7166c059d06e082c0d921dffe989c69f172b0",
+    "after_sha256": "91a35f5e81b3bff4ad56af70bb792b1a507c5a84e6bf3f1626fe306e9202a74b"
+  },
+  "crates/hex-ui/src/editor/browser_builtin_source_ui_test.rs": {
+    "before_git_blob": null,
+    "before_sha256": null,
+    "after_git_blob": "ae09b1cdaa93c9b215b3ef5ec7977f7fe16b85da",
+    "after_sha256": "586b8d3d68c3ab55f27b0a69913a642edc2d8b9683c37e18ff0bc42b10a488de"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_git_blob": "306c6e497cc668f822fc43ef9f4b1d7855e17e42",
+    "before_sha256": "ba0e8a79308a655e548a111d1b8fe353f49281d0c09b7d830935855cce8779f9",
+    "after_git_blob": "5bdfc69fd6ebc74ca8bca4c4db9b349de501f03f",
+    "after_sha256": "ad2b406cc74e94a7e370a74f5498557e274dda2e6a826fca307cd74b8935d916"
+  },
+  "crates/hex-ui/src/editor/context_menu.rs": {
+    "before_git_blob": "37af3211d3125c2dc4e47106bd7a80a0db902ccd",
+    "before_sha256": "42a87a5d9a73f5026006715e523130e43670a14cc3b7e863881368c9f7f752ff",
+    "after_git_blob": "f93b54e6f68f3926788e2b8f08bb54ad7654ed76",
+    "after_sha256": "02de9171e91be0361add671b85e5e638af2f09b2c8193da5d1b4f623365d9537"
+  },
+  "docs/browser-places.md": {
+    "before_git_blob": "d9986247cdff26577df68973f456b5511c47fd12",
+    "before_sha256": "2f6411cfd3204519f1518627ebbecb927b49d86431527974ec1f06e58376592c",
+    "after_git_blob": "a7eefc60cd6fd4eb584b0f2f7cffa29a7234f8e1",
+    "after_sha256": "4db64f6ef60be302aaa6e3d1fdf342b71581178cf3236c062ba46160d320236d"
+  },
+  "todo.md": {
+    "before_git_blob": "7c5fc5b1d0ba459ac890c987d4ad45c124d3da97",
+    "before_sha256": "ddd015a3ff29a167b48962d3c2b5b6d88ac1f6530f883b5e52f8ae2435d37255",
+    "after_git_blob": "6aa50ec335a56c913e589d18ed9fd9162da83ec4",
+    "after_sha256": "ee34e2a4a2b775a9aa6d274bab6ce3d16cf354d16768f2dc1a54957c58345f40"
+  }
+}
