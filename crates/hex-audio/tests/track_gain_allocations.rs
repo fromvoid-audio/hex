@@ -25,16 +25,23 @@ fn prepare(editor: &Editor) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
 #[test]
 fn held_track_gain_candidates_inherit_running_voice_and_allocate_nothing_in_callback()
 -> Result<(), Box<dyn Error>> {
-    gain_callback(false)
+    gain_callback(false, false)
 }
 
 #[test]
 fn mutable_held_track_gain_candidates_inherit_running_voice_without_callback_allocation()
 -> Result<(), Box<dyn Error>> {
-    gain_callback(true)
+    gain_callback(true, false)
 }
 
-fn gain_callback(mutable: bool) -> Result<(), Box<dyn Error>> {
+#[test]
+fn launched_session_gain_candidates_keep_phase_and_routes_without_callback_allocation()
+-> Result<(), Box<dyn Error>> {
+    gain_callback(false, true)?;
+    gain_callback(true, true)
+}
+
+fn gain_callback(mutable: bool, session: bool) -> Result<(), Box<dyn Error>> {
     let rate = 48_000;
     let mut editor = Editor::new(Project::new(rate)?, 16)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
@@ -43,13 +50,39 @@ fn gain_callback(mutable: bool) -> Result<(), Box<dyn Error>> {
     else {
         return Err("track".into());
     };
-    let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
-        track,
-        start: BeatTime::ZERO,
-        length: BeatTime::from_quarters(16)?,
-    })?
-    else {
-        return Err("clip".into());
+    let (clip, launch) = if session {
+        let Created::Scene(scene) = editor.execute(Command::AddScene {
+            name: "held cell".into(),
+        })?
+        else {
+            return Err("scene".into());
+        };
+        let Created::SessionClip(clip) = editor.execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "sustain".into(),
+            source_length: BeatTime::from_quarters(16)?,
+        })?
+        else {
+            return Err("session clip".into());
+        };
+        (
+            clip,
+            Some(hex_engine::SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            }),
+        )
+    } else {
+        let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(16)?,
+        })?
+        else {
+            return Err("clip".into());
+        };
+        (clip, None)
     };
     editor.execute(Command::AddMidiNote {
         clip,
@@ -95,7 +128,13 @@ fn gain_callback(mutable: bool) -> Result<(), Box<dyn Error>> {
     }
     let revision = prepare(&editor)?;
     let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
-    oracle.apply(PlaybackCommand::Play);
+    if let Some(launch) = launch {
+        oracle
+            .try_apply_action(hex_engine::PlaybackAction::LaunchAndPlay(launch))
+            .map_err(|error| format!("oracle launch: {error:?}"))?;
+    } else {
+        oracle.apply(PlaybackCommand::Play);
+    }
     let (mut control, mut callback) = prepared::channel(rate)?;
     control
         .publish_with_policy_and_context_generation(
@@ -104,7 +143,13 @@ fn gain_callback(mutable: bool) -> Result<(), Box<dyn Error>> {
             1,
         )
         .map_err(|_| "initial publication")?;
-    control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+    if let Some(launch) = launch {
+        control
+            .launch_and_play_with_ticket(launch)
+            .map_err(|_| "launch")?;
+    } else {
+        control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+    }
     let mut output = [[0.0; 2]; 128];
     let mut expected = [[0.0; 2]; 128];
     callback.begin_block();
