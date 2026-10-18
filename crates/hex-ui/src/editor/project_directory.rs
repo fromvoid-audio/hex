@@ -78,6 +78,10 @@ impl EditorView {
                     }
                     Err(error) => {
                         view.project_directory.writable = false;
+                        view.project_directory.directory = None;
+                        if let Ok(mut writes) = view.project_directory.writes.lock() {
+                            writes.pending = None;
+                        }
                         view.project_directory_error("load", error);
                     }
                 }
@@ -103,6 +107,12 @@ impl EditorView {
 
     /// Called ONLY after canonical successful Open/Save completion, never picker acceptance.
     pub(super) fn record_project_directory(&mut self, document: PathBuf, cx: &mut Context<Self>) {
+        if !self.project_directory.writable {
+            self.error = Some(
+                "could not remember project folder · original invalid preferences preserved".into(),
+            );
+            return;
+        }
         let Some(parent) = document.parent().filter(|path| path.is_absolute()) else {
             return;
         };
@@ -155,7 +165,12 @@ impl EditorView {
                                     break;
                                 }
                             },
-                            Err(_) => break,
+                            Err(_) => {
+                                result = Err(hex_preferences::PreferencesError::InvalidDocument(
+                                    "project folder queue unavailable".into(),
+                                ));
+                                break;
+                            }
                         };
                         result = hex_preferences::save_project_directory(&path, &directory);
                     }
