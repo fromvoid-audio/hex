@@ -333,6 +333,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_project_open(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
         self.sync_tuning(cx);
@@ -706,11 +707,15 @@ impl Render for EditorView {
                 view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &OpenProject, _, cx| {
-                view.open_dialog(hex_session::DocumentAudioMode::Resident, cx)
+            .on_action(cx.listener(|view, _: &OpenProject, window, cx| {
+                view.open_dialog(hex_session::DocumentAudioMode::Resident, window, cx)
             }))
-            .on_action(cx.listener(|view, _: &OpenStreamingProject, _, cx| {
-                view.open_dialog(hex_session::DocumentAudioMode::VerifiedStreaming, cx)
+            .on_action(cx.listener(|view, _: &OpenStreamingProject, window, cx| {
+                view.open_dialog(
+                    hex_session::DocumentAudioMode::VerifiedStreaming,
+                    window,
+                    cx,
+                )
             }))
             .on_action(cx.listener(|view, _: &OpenRelinkedProject, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Relink, window, cx)

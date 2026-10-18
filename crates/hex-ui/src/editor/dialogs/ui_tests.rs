@@ -57,29 +57,21 @@ fn native_new_action_survives_editor_focus_loss(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn native_open_confirmation_action_survives_editor_focus_loss(cx: &mut TestAppContext) {
+fn native_open_action_survives_editor_focus_loss(cx: &mut TestAppContext) {
     let directory = Directory::new();
     let (handle, editor) = directory.window(cx);
+    pump(&editor, cx, settled);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    // Existing second-click confirmation path avoids invoking the platform picker
-    // (unimplemented by GPUI's headless test platform), but uses real menu dispatch.
-    editor.update(cx, |view, _| {
-        view.pending_open_path = Some(directory.0.join("missing.hex"));
-        view.pending_open_mode = Some(hex_session::DocumentAudioMode::Resident);
-    });
     visual.update(|window, _| {
         window.activate_window();
         window.blur();
     });
     visual.dispatch_action(OpenProject);
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_paths_selection(None);
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert!(
-            view.pending_open_path.is_none(),
-            "native Open action was silently lost without a focused editor element"
-        )
-    });
+    editor.read_with(cx, |view, _| assert!(!view.project_open.busy()));
 }
 
 fn pump(
@@ -198,13 +190,14 @@ fn project_open_confirmation_loads_saved_state_and_failure_preserves_it(cx: &mut
     pump(&editor, cx, |view| {
         settled(view) && view.state.as_ref().unwrap().project.tracks().is_empty()
     });
-    // Native picker itself is a separately required platform check. Select its
-    // already-supported confirmation path here; do not fake an OS picker pass.
-    editor.update(cx, |view, _| {
-        view.pending_open_path = Some(path.clone());
-        view.pending_open_mode = Some(hex_session::DocumentAudioMode::Resident);
-    });
     visual.dispatch_action(OpenProject);
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_paths_selection(Some(vec![path.clone()]));
+    visual.run_until_parked();
+    assert!(
+        !cx.has_pending_prompt(),
+        "clean content opens without a second confirmation"
+    );
     pump(&editor, cx, |view| {
         settled(view) && view.state.as_ref().unwrap().project == saved
     });
@@ -221,12 +214,10 @@ fn project_open_confirmation_loads_saved_state_and_failure_preserves_it(cx: &mut
         if bad.ends_with("malformed.hex") {
             std::fs::write(&bad, b"not a current hex project").unwrap();
         }
-        editor.update(cx, |view, _| {
-            view.pending_open_path = Some(bad);
-            view.pending_open_mode = Some(hex_session::DocumentAudioMode::Resident);
-            view.error = None;
-        });
+        editor.update(cx, |view, _| view.error = None);
         visual.dispatch_action(OpenProject);
+        cx.simulate_paths_selection(Some(vec![bad]));
+        visual.run_until_parked();
         pump(&editor, cx, |view| settled(view) && view.error.is_some());
         editor.read_with(cx, |view, _| {
             let after = view.state.as_ref().unwrap();
@@ -366,11 +357,7 @@ fn unfocused_streaming_file_actions_preserve_explicit_mode_refusal(cx: &mut Test
         );
         assert_eq!(view.state.as_ref().unwrap().project, before);
     });
-    editor.update(cx, |view, _| {
-        view.error = None;
-        view.pending_open_path = Some(directory.0.join("saved.hex"));
-        view.pending_open_mode = Some(hex_session::DocumentAudioMode::VerifiedStreaming);
-    });
+    editor.update(cx, |view, _| view.error = None);
     visual.dispatch_action(super::super::OpenStreamingProject);
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -384,4 +371,443 @@ fn unfocused_streaming_file_actions_preserve_explicit_mode_refusal(cx: &mut Test
         );
         assert!(!view.opening_project);
     });
+}
+
+#[gpui::test]
+fn one_open_action_offers_save_discard_cancel_after_selecting_a_file(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, _| {
+        window.activate_window();
+        window.blur();
+    });
+    visual.dispatch_action(OpenProject);
+    assert!(
+        cx.did_prompt_for_paths(),
+        "one Open must request the picker"
+    );
+    cx.simulate_paths_selection(Some(vec![directory.0.join("chosen.hex")]));
+    visual.run_until_parked();
+    assert!(
+        cx.has_pending_prompt(),
+        "one Open must continue to Save / Don't Save / Cancel, not wait for another Open action"
+    );
+    editor.update(cx, |view, cx| {
+        assert!(!view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::AddTrack {
+                name: "must refuse".into()
+            }
+        )));
+        view.save_project(cx);
+        assert!(
+            !view.save_dialog_open,
+            "confirmation cannot stack an unrelated Save As"
+        );
+    });
+    cx.simulate_prompt_answer("cancel");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before.project);
+        assert!(!view.opening_project);
+    });
+}
+
+fn saved_destination(
+    directory: &Directory,
+) -> (std::path::PathBuf, std::sync::Arc<hex_project::Project>) {
+    use hex_session::service::{Event, Request};
+    fn receive(service: &Service) -> Event {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(event) = service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                return event;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "destination actor timeout"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive(&service);
+    service
+        .submit(Request::Edit(hex_project::Command::AddTrack {
+            name: "destination".into(),
+        }))
+        .unwrap();
+    let project = receive(&service).state.project.clone();
+    let path = directory.0.join("destination.hex");
+    service.submit(Request::SaveNew(path.clone())).unwrap();
+    assert!(receive(&service).save_complete);
+    (path, project)
+}
+
+fn select_open(visual: &mut VisualTestContext, cx: &TestAppContext, path: std::path::PathBuf) {
+    visual.update(|window, _| {
+        window.activate_window();
+        window.blur();
+    });
+    visual.dispatch_action(OpenProject);
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_paths_selection(Some(vec![path]));
+    visual.run_until_parked();
+}
+
+fn assert_document_unchanged(
+    editor: &gpui::Entity<EditorView>,
+    cx: &TestAppContext,
+    before: &hex_session::service::ViewState,
+) {
+    editor.read_with(cx, |view, _| {
+        let after = view.state.as_ref().unwrap();
+        assert_eq!(after.project, before.project);
+        assert_eq!(after.document_path, before.document_path);
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(
+            (after.can_undo, after.can_redo, after.unsaved),
+            (before.can_undo, before.can_redo, before.unsaved)
+        );
+        assert!(!view.opening_project);
+        assert!(!view.project_open.busy());
+    });
+}
+
+#[gpui::test]
+fn one_open_dont_save_replaces_once_and_clean_content_opens_directly(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (path, target) = saved_destination(&directory);
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    let generation = editor.read_with(cx, |view, _| view.project_generation);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    select_open(&mut visual, cx, path.clone());
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("don't save");
+    visual.run_until_parked();
+    pump(&editor, cx, |view| {
+        settled(view) && view.project_generation == generation + 1
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, target);
+        assert_eq!(
+            view.state.as_ref().unwrap().document_path.as_ref(),
+            Some(&path)
+        );
+        assert!(!view.state.as_ref().unwrap().can_undo);
+    });
+    select_open(&mut visual, cx, path);
+    assert!(
+        !cx.has_pending_prompt(),
+        "saved content is clean even when tracks exist"
+    );
+    pump(&editor, cx, |view| {
+        settled(view) && view.project_generation == generation + 2
+    });
+    visual.run_until_parked();
+    assert!(!cx.did_prompt_for_paths());
+    assert!(!cx.has_pending_prompt());
+}
+
+#[gpui::test]
+fn one_open_save_as_completes_original_selection_only_after_save_success(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (path, target) = saved_destination(&directory);
+    let current_path = directory.0.join("preserved-current.hex");
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    let current = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    let generation = editor.read_with(cx, |view, _| view.project_generation);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    select_open(&mut visual, cx, path.clone());
+    cx.simulate_prompt_answer("save");
+    visual.run_until_parked();
+    assert!(cx.did_prompt_for_new_path());
+    assert!(!current_path.exists());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.project_generation, generation)
+    });
+    visual.dispatch_action(OpenProject);
+    assert!(
+        !cx.did_prompt_for_paths(),
+        "pending Save As cannot create a second Open"
+    );
+    cx.simulate_new_path_selection(|_| Some(current_path.clone()));
+    visual.run_until_parked();
+    pump(&editor, cx, |view| {
+        settled(view) && view.project_generation == generation + 1
+    });
+    assert!(
+        current_path.is_file(),
+        "original current document must be saved before replacement"
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, target);
+        assert_eq!(
+            view.state.as_ref().unwrap().document_path.as_ref(),
+            Some(&path)
+        );
+    });
+    // Reopen the saved original through the same real worker path, independently
+    // proving its contents rather than checking only that a file was created.
+    select_open(&mut visual, cx, current_path);
+    pump(&editor, cx, |view| {
+        settled(view) && view.project_generation == generation + 2
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, current)
+    });
+}
+
+#[gpui::test]
+fn one_open_save_current_completes_original_selection_after_success(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (path, target) = saved_destination(&directory);
+    let current_path = directory.0.join("named-current.hex");
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::SaveNew(current_path.clone())))
+    });
+    pump(&editor, cx, |view| {
+        settled(view) && view.state.as_ref().unwrap().document_path.is_some()
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::AddTrack {
+                name: "saved before replacement".into(),
+            }
+        )))
+    });
+    pump(&editor, cx, |view| {
+        settled(view) && view.state.as_ref().unwrap().unsaved
+    });
+    let current = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    let generation = editor.read_with(cx, |view, _| view.project_generation);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    select_open(&mut visual, cx, path.clone());
+    cx.simulate_prompt_answer("save");
+    visual.run_until_parked();
+    assert!(
+        !cx.did_prompt_for_new_path(),
+        "named Save keeps its actual path"
+    );
+    pump(&editor, cx, |view| {
+        settled(view) && view.project_generation == generation + 1
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, target);
+        assert_eq!(
+            view.state.as_ref().unwrap().document_path.as_ref(),
+            Some(&path)
+        );
+    });
+    select_open(&mut visual, cx, current_path);
+    assert!(!cx.has_pending_prompt());
+    pump(&editor, cx, |view| {
+        settled(view) && view.project_generation == generation + 2
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, current)
+    });
+}
+
+#[gpui::test]
+fn one_open_cancel_save_as_clears_intent_so_later_save_does_not_open(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (path, _) = saved_destination(&directory);
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    let generation = editor.read_with(cx, |view, _| view.project_generation);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    select_open(&mut visual, cx, path);
+    cx.simulate_prompt_answer("save");
+    visual.run_until_parked();
+    cx.simulate_new_path_selection(|_| None);
+    visual.run_until_parked();
+    assert_document_unchanged(&editor, cx, &before);
+    let later = directory.0.join("later.hex");
+    visual.dispatch_action(super::super::SaveProject);
+    assert!(
+        cx.did_prompt_for_new_path(),
+        "cancel restores usable keyboard/action focus"
+    );
+    cx.simulate_new_path_selection(|_| Some(later.clone()));
+    visual.run_until_parked();
+    pump(&editor, cx, |view| {
+        settled(view) && view.state.as_ref().unwrap().document_path.as_ref() == Some(&later)
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.project_generation, generation);
+        assert_eq!(view.state.as_ref().unwrap().project, before.project);
+    });
+}
+
+#[gpui::test]
+fn one_open_save_failure_keeps_document_and_does_not_resume(cx: &mut TestAppContext) {
+    for named in [false, true] {
+        let directory = Directory::new();
+        let (path, _) = saved_destination(&directory);
+        let (handle, editor) = directory.window(cx);
+        add_track(&editor, cx);
+        let current_path = directory.0.join("current.hex");
+        if named {
+            editor.update(cx, |view, _| {
+                assert!(view.enqueue(hex_session::service::Request::SaveNew(current_path.clone())))
+            });
+            pump(&editor, cx, |view| {
+                settled(view) && view.state.as_ref().unwrap().document_path.is_some()
+            });
+            editor.update(cx, |view, _| {
+                assert!(view.enqueue(hex_session::service::Request::Edit(
+                    hex_project::Command::AddTrack {
+                        name: "unsaved second".into()
+                    }
+                )))
+            });
+            pump(&editor, cx, |view| {
+                settled(view) && view.state.as_ref().unwrap().unsaved
+            });
+        }
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+        let generation = editor.read_with(cx, |view, _| view.project_generation);
+        let preserved_bytes = b"external data must not be overwritten";
+        std::fs::write(&current_path, preserved_bytes).unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        select_open(&mut visual, cx, path);
+        cx.simulate_prompt_answer("save");
+        visual.run_until_parked();
+        if !named {
+            cx.simulate_new_path_selection(|_| Some(current_path.clone()));
+            visual.run_until_parked();
+        }
+        pump(&editor, cx, |view| settled(view) && view.error.is_some());
+        assert_document_unchanged(&editor, cx, &before);
+        assert_eq!(std::fs::read(&current_path).unwrap(), preserved_bytes);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.project_generation, generation)
+        });
+    }
+}
+
+#[gpui::test]
+fn one_open_picker_cancel_and_failed_load_preserve_actual_imported_media(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let wav = directory.0.join("source.wav");
+    let samples = [0_i16, 1000, -1000, 2000, -2000, 500, -500, 0];
+    let mut bytes = Vec::new();
+    bytes.extend(b"RIFF");
+    bytes.extend((36_u32 + samples.len() as u32 * 2).to_le_bytes());
+    bytes.extend(b"WAVEfmt ");
+    bytes.extend(16_u32.to_le_bytes());
+    bytes.extend(1_u16.to_le_bytes());
+    bytes.extend(1_u16.to_le_bytes());
+    bytes.extend(48_000_u32.to_le_bytes());
+    bytes.extend(96_000_u32.to_le_bytes());
+    bytes.extend(2_u16.to_le_bytes());
+    bytes.extend(16_u16.to_le_bytes());
+    bytes.extend(b"data");
+    bytes.extend((samples.len() as u32 * 2).to_le_bytes());
+    for sample in samples {
+        bytes.extend(sample.to_le_bytes());
+    }
+    std::fs::write(&wav, &bytes).unwrap();
+    let (handle, editor) = directory.window(cx);
+    pump(&editor, cx, settled);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Import(wav.clone())))
+    });
+    pump(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .assets()
+                .next()
+                .is_some()
+    });
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, _| {
+        window.activate_window();
+        window.blur();
+    });
+    visual.dispatch_action(OpenProject);
+    cx.simulate_paths_selection(None);
+    visual.run_until_parked();
+    assert_document_unchanged(&editor, cx, &before);
+    for invalid in [
+        directory.0.join("missing.hex"),
+        directory.0.join("malformed.hex"),
+    ] {
+        if invalid.ends_with("malformed.hex") {
+            std::fs::write(&invalid, b"not a hex project").unwrap();
+        }
+        select_open(&mut visual, cx, invalid);
+        cx.simulate_prompt_answer("don't save");
+        visual.run_until_parked();
+        pump(&editor, cx, |view| settled(view) && view.error.is_some());
+        assert_document_unchanged(&editor, cx, &before);
+        assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+    }
+}
+
+#[gpui::test]
+fn one_open_stale_picker_or_confirmation_cannot_replace_a_new_project(cx: &mut TestAppContext) {
+    for picker in [true, false] {
+        let directory = Directory::new();
+        let (path, _) = saved_destination(&directory);
+        let (handle, editor) = directory.window(cx);
+        add_track(&editor, cx);
+        let generation = editor.read_with(cx, |view, _| view.project_generation);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        visual.update(|window, _| {
+            window.activate_window();
+            window.blur();
+        });
+        visual.dispatch_action(OpenProject);
+        if !picker {
+            cx.simulate_paths_selection(Some(vec![path.clone()]));
+            visual.run_until_parked();
+        }
+        // An independent actor replacement is a real generation change, not a
+        // manually edited UI generation counter or a fake completion event.
+        editor.read_with(cx, |view, _| {
+            view.service
+                .submit(hex_session::service::Request::NewWithAudioMode {
+                    mode: hex_session::DocumentAudioMode::Resident,
+                    reservation: None,
+                })
+                .unwrap()
+        });
+        pump(&editor, cx, |view| {
+            settled(view) && view.project_generation == generation + 1
+        });
+        if picker {
+            cx.simulate_paths_selection(Some(vec![path]));
+        } else {
+            cx.simulate_prompt_answer("don't save");
+        }
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
+            assert!(!view.project_open.busy());
+            assert_eq!(view.project_generation, generation + 1);
+        });
+    }
 }

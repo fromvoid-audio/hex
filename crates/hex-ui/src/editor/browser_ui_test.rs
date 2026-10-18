@@ -777,7 +777,9 @@ fn browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel(
 }
 
 #[gpui::test]
-fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &mut TestAppContext) {
+fn browser_project_open_queues_selected_path_without_second_click_confirmation(
+    cx: &mut TestAppContext,
+) {
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -836,8 +838,12 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
     })
     .expect("editor window");
     editor.read_with(cx, |view, _| {
-        assert!(view.opening_project);
-        assert!(view.pending_open_path.is_none());
+        assert!(!view.opening_project);
+        assert_eq!(view.pending_open_path.as_ref(), Some(&second));
+        assert!(
+            view.pending_requests.is_empty(),
+            "confirmation must precede replacement"
+        );
     });
 }
 

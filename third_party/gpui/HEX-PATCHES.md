@@ -160,3 +160,11 @@ changes no production rendering, native behavior, layout or input. Clip selectio
 regressions use it to verify the actual painted outline and viewport clipping.
 Original baseline hashes remain unchanged; the cumulative patch is regenerated
 against the hash-verified original test_context.rs.
+
+18 October project Open test support: the existing deterministic test platform now
+queues Open picker requests and lets tests complete them with paths or Cancel.
+TestAppContext exposes the matching queue/selection methods. This replaces an
+unimplemented test-platform leaf; production native picker APIs and behavior are
+unchanged. Actual window dispatch, unsaved Save/Don’t Save/Cancel and canonical
+save/open events can be tested without touching a user document. Injected picker
+results are not evidence of native macOS picker presentation or physical input.
