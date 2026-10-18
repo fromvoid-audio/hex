@@ -1228,14 +1228,6 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        #[cfg(test)]
-        eprintln!(
-            "drop_trim ENTER focus={} admitted={} target={} source={}",
-            self.focus.is_focused(window),
-            drag_admitted(self),
-            target_track.value(),
-            drag.source_track.value()
-        );
         if !self.focus.is_focused(window) {
             drag.canceled.set(true);
             self.cancel_trim_gesture(cx);
