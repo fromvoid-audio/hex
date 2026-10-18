@@ -33,6 +33,21 @@ pub struct ResidentPcmInventory<'a> {
     transforms: &'a hex_engine::audio_transform::AudioTransformPcmInventory<'a>,
 }
 impl ResidentPcmInventory<'_> {
+    /// Join the first original-only worker's actual model/media, cached sine,
+    /// both cancellation fields and reserved empty transform metadata. This
+    /// remains CHILD storage: enclosing worker/Event/native roots and complete
+    /// construction/publication/retirement proof must join separately.
+    pub fn visit_original_only_worker_children_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        self.visit_worker_model_media_storage_on_control(ledger)?;
+        ledger.borrow_metadata_entries_backing_on_control(&self.session.verified_sources)?;
+        self.session.sine_table.visit_storage_on_control(ledger)?;
+        self.session.shutdown.visit(ledger)?;
+        self.transforms
+            .visit_original_only_control_storage_on_control(ledger)
+    }
     /// Join the ACTUAL worker's current/Undo/Redo model fields and resident
     /// source/derivative/waveform fields under this same scoped Session/cache
     /// borrow. No snapshots or synthetic identities are constructed. Every

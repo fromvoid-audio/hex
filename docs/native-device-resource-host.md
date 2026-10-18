@@ -671,3 +671,24 @@ the existing fade. Cancellation on query four and processed-prefix/untouched-
 suffix assertions remain intact. This is a fixture repair, not a change to fade
 production semantics. The earlier accepted-PCM case passed at d5e817b8; runtime
 qualification of the repaired long scan remains separate.
+## original-only worker child inventory checkpoint
+
+Even a Session with no transformed audio reserves transform-cache entry backing
+when it compiles. The private bounded FIFO/LRU now uses a capacity-visible Vec
+instead of VecDeque; eviction and cache hits move metadata/handles on control,
+never copy PCM or run on the callback. Its 256-entry and byte caps are unchanged.
+
+The actual scoped transform inventory holds cache, pending and tempo borrows.
+Its original-only visitor charges the real reserved empty cache and pending Vec
+capacities through the existing ledger, plus the actual paired cancellation
+field. It accepts only the existing nonowning static production budget and no
+tempo/domain/derived entries. Nonempty transformed caches, raw cancellation and
+test-local owning budgets stay Unknown. A known empty backing is not proof of
+arbitrary cache payloads, a historical construction peak or an admitted graph.
+
+The Session child visitor joins that component with actual current/Undo/Redo
+model/media/waveform fields, reserved verified-map backing, cached sine and its
+own cancellation field. All other physical owners must still join under the
+approved family guards: base worker/Event/native/current/candidate/outgoing and
+pending/unreclaimed roots. Enclosing storage, preconstruction old/new/temporary
+quotes, publication linearization and saturated retirement remain open.

@@ -4,6 +4,8 @@ mod events;
 mod mapping;
 use crate::{Audio, CancellationQuery, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
+#[cfg(test)]
+mod control_storage_tests;
 mod pcm_inventory;
 pub use pcm_inventory::AudioTransformPcmInventory;
 #[cfg(test)]
@@ -13,7 +15,6 @@ use hex_project::{
 };
 use std::{
     cell::{Cell, RefCell},
-    collections::VecDeque,
     sync::{Arc, atomic::AtomicBool},
 };
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
@@ -35,16 +36,19 @@ struct Entry {
     source_bytes: usize,
 }
 struct Cache {
-    entries: VecDeque<Entry>,
+    // At most 256 control-side entries. A capacity-visible Vec keeps FIFO/LRU
+    // order while exposing its ACTUAL backing to the existing storage ledger.
+    // Moving entries shifts handles/metadata, never PCM and never on callback.
+    entries: Vec<Entry>,
     bytes: usize,
     source_bytes: usize,
 }
 impl Cache {
     fn evict_oldest(&mut self) -> Result<(), Invalid> {
-        let old = self
-            .entries
-            .pop_front()
-            .ok_or(Invalid("audio cache accounting is inconsistent"))?;
+        if self.entries.is_empty() {
+            return Err(Invalid("audio cache accounting is inconsistent"));
+        }
+        let old = self.entries.remove(0);
         self.bytes = self
             .bytes
             .checked_sub(old.bytes)
@@ -114,7 +118,7 @@ impl AudioTransformPreparation {
     fn from_cancellation(shutdown: TransformCancellation) -> Self {
         Self {
             cache: RefCell::new(Cache {
-                entries: VecDeque::new(),
+                entries: Vec::new(),
                 bytes: 0,
                 source_bytes: 0,
             }),
@@ -262,7 +266,7 @@ impl AudioTransformPreparation {
             .source_bytes
             .checked_add(entry.source_bytes)
             .ok_or(Invalid("audio source cache byte count overflow"))?;
-        cache.entries.push_back(entry);
+        cache.entries.push(entry);
         Ok(())
     }
     fn retain(&self, entry: Entry) -> Result<(), Invalid> {
@@ -370,12 +374,12 @@ impl AudioTransformPreparation {
         let Some(index) = cache.entries.iter().position(matching) else {
             return Ok(None);
         };
-        let entry = cache
-            .entries
-            .remove(index)
-            .ok_or(Invalid("audio cache entry disappeared"))?;
+        if index >= cache.entries.len() {
+            return Err(Invalid("audio cache entry disappeared"));
+        }
+        let entry = cache.entries.remove(index);
         let audio = entry.prepared.clone();
-        cache.entries.push_back(entry);
+        cache.entries.push(entry);
         self.hits.set(self.hits.get().saturating_add(1));
         Ok(Some(audio))
     }

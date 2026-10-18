@@ -89,6 +89,45 @@ fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPrepara
         ..AudioTransformPreparation::default()
     }
 }
+
+#[test]
+fn capacity_visible_transform_fifo_preserves_lru_hits_and_bounded_eviction() {
+    let (mut editor, clip, media) = fixture(false);
+    let context = isolated(512_000, 128_000, 2);
+    let mut retained = Vec::new();
+    for cents in [100, 200] {
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents })
+            .unwrap();
+        retained.push(prepare(&editor, &media, &context));
+    }
+    assert_eq!(context.cache.borrow().entries.len(), 2);
+    let reserved_capacity = context.cache.borrow().entries.capacity();
+    let hits = context.cache_hits();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 100 })
+        .unwrap();
+    retained.push(prepare(&editor, &media, &context));
+    assert!(context.cache_hits() > hits); // Move first entry to most recent.
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 300 })
+        .unwrap();
+    retained.push(prepare(&editor, &media, &context));
+    assert_eq!(context.cache.borrow().entries.len(), 2);
+    assert_eq!(context.cache.borrow().entries.capacity(), reserved_capacity);
+    let before_miss = context.cache_hits();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 200 })
+        .unwrap();
+    retained.push(prepare(&editor, &media, &context));
+    assert_eq!(context.cache_hits(), before_miss); // 200 was the oldest, not 100.
+    assert_eq!(context.cache.borrow().entries.len(), 2);
+    // Control metadata moves did not alter the still-audible prepared buffers.
+    assert_eq!(
+        render(&retained[0], 0, 64, 17),
+        render(&retained[2], 0, 64, 31)
+    );
+}
 #[test]
 fn every_mode_split_recombines_exactly_with_root_pitch_phase_envelope_fades_and_tempo() {
     for mode in [

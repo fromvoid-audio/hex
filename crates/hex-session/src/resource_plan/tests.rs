@@ -921,3 +921,98 @@ fn retained_cancellation_direct_session_constructor_visits_actual_session_and_tr
         Err(AudioStorageError::UnknownStorage)
     );
 }
+
+#[test]
+fn original_only_worker_children_join_real_sampler_history_empty_cache_and_sine() {
+    if !hex_engine::audio_storage_constructor_layout_supported()
+        || !hex_engine::canonical_native_state_storage_layout_supported()
+        || !hex_engine::canonical_midi_storage_layout_supported()
+    {
+        return;
+    }
+    eprintln!(
+        "SUPPORTED actual empty Sampler Session/history, reserved transform backing, cached sine and paired cancellation union"
+    );
+    let signal = hex_engine::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+    let job = hex_engine::RetainedControlJob::try_from_owned_on_control(
+        &mut Some(0_u8),
+        usize::MAX,
+        |_: &mut u8| Ok::<_, ()>(hex_engine::RetainedControlJobProgress::Pending),
+    )
+    .unwrap();
+    let mut session = Session::new_with_retained_cancellation_on_control(
+        48_000,
+        8,
+        1024,
+        signal.bind_worker_on_control(job.route()),
+    )
+    .unwrap();
+    let hex_project::Created::Track(track) = session
+        .editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = session
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    session
+        .editor
+        .execute(hex_project::Command::ReplaceDeviceState {
+            device,
+            state: hex_engine::empty_sampler_state_on_control().unwrap(),
+        })
+        .unwrap();
+    // Actual compiler reserves empty transform backing too. Its temporary
+    // prepared owners retire before this selected worker-only union.
+    drop(session.compile_prepared_revision(None).unwrap());
+    let sine_alias = session.sine_table();
+    let collect = |reservation| {
+        session.with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
+            inventory.visit_original_only_worker_children_on_control(&mut ledger)?;
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err()
+            );
+            signal.visit_storage_on_control(&mut ledger)?;
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err()
+            );
+            sine_alias.visit_storage_on_control(&mut ledger)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            let measured = ledger.summary()?;
+            inventory.visit_original_only_worker_children_on_control(&mut ledger)?;
+            assert_eq!(ledger.summary()?, measured);
+            assert!(session.audio_clip_waveforms.try_borrow_mut().is_err());
+            Ok(measured)
+        })
+    };
+    let measured = collect(ledger_limits()).unwrap();
+    let mut exact = ledger_limits();
+    exact.max_retained_bytes = measured.retained_bytes;
+    exact.max_construction_peak_bytes = measured.construction_peak_bytes;
+    assert_eq!(collect(exact).unwrap(), measured);
+    exact.max_retained_bytes -= 1;
+    assert!(collect(exact).is_err());
+    let raw = Session::new(48_000, 8, 1024).unwrap();
+    raw.with_resident_pcm_inventory_on_control(|inventory| {
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits())?;
+        assert_eq!(
+            inventory.visit_original_only_worker_children_on_control(&mut ledger),
+            Err(AudioStorageError::UnknownStorage)
+        );
+        Ok(())
+    })
+    .unwrap();
+}

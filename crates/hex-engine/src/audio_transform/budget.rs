@@ -34,6 +34,13 @@ pub(super) enum BudgetOwner {
     Local(Arc<Budget>),
 }
 impl BudgetOwner {
+    pub(super) fn uses_static_production_counter(&self) -> bool {
+        match self {
+            Self::Production(budget) => std::ptr::eq(*budget, &PRODUCTION_BUDGET),
+            #[cfg(test)]
+            Self::Local(_) => false,
+        }
+    }
     #[cfg(test)]
     pub(super) fn local(limit: usize) -> Self {
         Self::Local(Arc::new(Budget::new(limit)))

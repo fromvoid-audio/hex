@@ -4,8 +4,10 @@ use crate::{AudioRootStorageLedger, AudioStorageError, AudioStorageRole};
 use std::cell::Ref;
 
 pub struct AudioTransformPcmInventory<'a> {
+    owner: &'a AudioTransformPreparation,
     cache: Ref<'a, Cache>,
     pending: Ref<'a, Option<Vec<Entry>>>,
+    tempo: Ref<'a, Option<Arc<hex_project::TempoMap>>>,
 }
 impl AudioTransformPreparation {
     /// Control-only scoped borrow. The callback cannot return or retain its
@@ -22,6 +24,7 @@ impl AudioTransformPreparation {
         ) -> Result<T, AudioStorageError>,
     ) -> Result<T, AudioStorageError> {
         let inventory = AudioTransformPcmInventory {
+            owner: self,
             cache: self
                 .cache
                 .try_borrow()
@@ -30,11 +33,64 @@ impl AudioTransformPreparation {
                 .pending
                 .try_borrow()
                 .map_err(|_| AudioStorageError::UnknownStorage)?,
+            tempo: self
+                .tempo
+                .try_borrow()
+                .map_err(|_| AudioStorageError::UnknownStorage)?,
         };
         visit(&inventory)
     }
 }
 impl AudioTransformPcmInventory<'_> {
+    /// The first original-only graph still owns the actual reserved EMPTY cache
+    /// backing. Observe it, pending empty capacity and the actual cancellation
+    /// field under the same guards. Nonempty domains/tempo/derived entries and
+    /// test-local owning budgets remain Unknown, not inferred from PCM counts.
+    /// The enclosing preparation body and old/new/temporary peak are separate.
+    pub fn visit_original_only_control_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let AudioTransformPreparation {
+            cache: _,
+            pending: _,
+            tempo: _,
+            shutdown: _,
+            budget,
+            cache_limit,
+            source_limit,
+            entry_limit,
+            hits,
+            #[cfg(test)]
+            cancel_after_polls,
+        } = self.owner;
+        let _: (&usize, &usize, &usize, &Cell<u64>) =
+            (cache_limit, source_limit, entry_limit, hits);
+        #[cfg(test)]
+        let _: &Cell<Option<usize>> = cancel_after_polls;
+        let Cache {
+            entries,
+            bytes,
+            source_bytes,
+        } = &*self.cache;
+        if !entries.is_empty()
+            || *bytes != 0
+            || *source_bytes != 0
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|entries| !entries.is_empty())
+            || self.tempo.is_some()
+            || !budget.uses_static_production_counter()
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        ledger.borrow_metadata_vec_backing_on_control(entries)?;
+        if let Some(pending) = self.pending.as_ref() {
+            ledger.borrow_metadata_vec_backing_on_control(pending)?;
+        }
+        self.owner.visit_cancellation_storage_on_control(ledger)
+    }
     /// Actual embedded fields when composing with other root/model visitors.
     /// Repeated visits of the SAME field deduplicate; another physical handle
     /// must still join closure. Derived/unknown PCM remains refused. Cache
