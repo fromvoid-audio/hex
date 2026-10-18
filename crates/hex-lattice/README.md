@@ -1,5 +1,17 @@
 # hex-lattice
 
+Borrowed `NodeSignalPhase` taps bracket a complete native effect entry: input
+before host input trim, output after processing and output trim. Each pair uses
+the same stable identity, offset and length. Existing post-only observers remain
+supported; observation never transfers sample or runtime ownership. Host render
+success and final output validation still determine whether samples may publish.
+
+Supported registry preparation and public prepared-chain admission currently
+reject nonempty device asset references before provider migration/preparation.
+Metadata queries, state migration and edits preserve host-owned references but
+grant no PCM ownership or runtime capability. See
+[device assets](../../docs/device-assets.md).
+
 ## Purpose
 
 Provide validated stereo transforms and registered, bounded stateful effect
@@ -85,6 +97,9 @@ The optional `conformance` feature exposes control-side authoring fixtures for
 codec/descriptor contracts, transactional effects and instrument capabilities.
 It uses only existing traits and allocates outside callbacks. See
 [authoring](../../docs/native-device-authoring.md) for checks and finite limits.
+The `owned_history_profile` example requires this feature explicitly; ordinary
+isolated package tests skip that conformance-only executable. Run it with
+`cargo run --release -p hex-lattice --example owned_history_profile --features conformance --locked`.
 
 The additive owned-effect capability constructs one fallible control-side owner
 of committed/speculative history. General accounting charges total pair bytes;

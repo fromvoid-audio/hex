@@ -3,15 +3,21 @@
 pub mod conformance;
 mod meter;
 mod owned_processor;
+mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
     NativeDeviceState,
 };
+pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::DeviceMeter;
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
     PreparedRuntimeDevice, PreparedRuntimeInstance,
+};
+pub use resources::{
+    BorrowedDeviceResources, DevicePreparationContext, DeviceResourceIdentity, DeviceResourcePcm,
+    DeviceResourceView, DeviceResources, EMPTY_DEVICE_RESOURCES,
 };
 use runtime_ownership::RuntimeOwnership;
 use std::any::Any as StdAny;
@@ -48,9 +54,9 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
     fn prepare_runtime_factory(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
-        self.prepare_processor(state, sample_rate).map(|processor| {
+        self.prepare_processor(state, context).map(|processor| {
             processor
                 .map(|processor| PreparedProcessorFactory::Legacy(std::sync::Arc::from(processor)))
         })
@@ -61,7 +67,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
     fn prepare_processor(
         &self,
         _state: &NativeDeviceState,
-        _sample_rate: u32,
+        _context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         Ok(None)
     }
@@ -71,10 +77,10 @@ mod instrument;
 mod instrument_pair;
 mod instrument_runtime;
 pub use instrument::{
-    ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
-    NativeInstrumentRegistry, PreparedAnalyticNote, PreparedNativeInstrument,
-    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, PreparedStorageDeclaration,
-    SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+    ANALYTIC_NOTE_PAYLOAD_WORDS, AnalyticNoteContinuation, MAX_SHARED_ANALYTIC_CONTEXT_BYTES,
+    NativeInstrumentDefinition, NativeInstrumentRegistry, PreparedAnalyticNote,
+    PreparedNativeInstrument, PreparedSharedAnalyticContext, PreparedSharedAnalyticNote,
+    PreparedStorageDeclaration, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
@@ -150,7 +156,11 @@ pub enum OutputTail {
 /// Audio-owned state with allocation-free, infallible block processing and
 /// history operations once the prepared configurations have been admitted.
 pub trait NativeProcessorRuntime: StdAny + Send {
-    fn process_block(&mut self, frames: &mut [StereoFrame]);
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    );
     /// Process with the content-origin clock at this node's input. The host
     /// aligns this borrowed clock with compensated audio; processors must not
     /// retain it. Time-independent implementations preserve the existing path.
@@ -158,14 +168,19 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         &mut self,
         frames: &mut [StereoFrame],
         _clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
-        self.process_block(frames);
+        self.process_block(frames, _resources);
     }
     /// Advance private state while preserving a bypassed signal.
-    fn process_bypassed_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         for frame in frames {
             let input = *frame;
-            self.process_block(std::slice::from_mut(frame));
+            self.process_block(std::slice::from_mut(frame), _resources);
             *frame = input;
         }
     }
@@ -176,8 +191,9 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         &mut self,
         frames: &mut [StereoFrame],
         _clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
-        self.process_bypassed_block(frames);
+        self.process_bypassed_block(frames, _resources);
     }
     fn reset(&mut self);
     /// True only when this runtime cannot produce any future output under
@@ -248,6 +264,14 @@ pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 65_536;
 /// Aggregate declared bytes in one runtime bank, counting one twin per instance.
 /// The actual paired runtime storage doubles this bound (2 MiB).
 pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 1_048_576;
+
+/// Borrowed signal boundary around an entire native effect entry.
+/// Input precedes host input trim; Output follows effect, routing and output trim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeSignalPhase {
+    Input,
+    Output,
+}
 
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the
 /// canonical project allocator, while this tag keeps track and return owners
@@ -527,6 +551,9 @@ impl NativeRuntimeChain {
         let mut declared_pair_bytes = 0_usize;
         let mut stateful_count = 0_usize;
         for instance in instances {
+            if let Some(configuration) = &instance.configuration {
+                configuration.require_asset_free_processing()?;
+            }
             if !instance.owner.is_valid() || instance.device_id == 0 || instance.sample_rate == 0 {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
@@ -1106,6 +1133,102 @@ impl NativeRuntimeChain {
         Ok(())
     }
 
+    /// Observe synchronous input/output borrows around each complete entry.
+    /// Samples must not be retained, allocated from, or used for blocking work.
+    pub fn process_block_tapped(
+        &mut self,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) {
+        Self::process_entries_tapped(&mut self.entries, frames, frame_offset, None, observer);
+    }
+
+    /// Process a prepared range with input/output taps and no content clock.
+    pub fn process_range_tapped(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        self.process_range_tapped_with_clock(range, frames, frame_offset, None, observer)
+    }
+
+    /// Clock-aware paired taps. Input is before host trim, Output after the
+    /// entire entry. Both phases have the same identity, offset and frame count.
+    pub fn process_range_tapped_with_clock(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        let entries = self
+            .entries
+            .get_mut(range)
+            .ok_or(DeviceContractError::InvalidDescriptor)?;
+        Self::process_entries_tapped(entries, frames, frame_offset, clock, observer);
+        Ok(())
+    }
+
+    fn process_entries_tapped(
+        entries: &mut [RuntimeEntry],
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) {
+        for entry in entries {
+            observer(
+                entry.owner,
+                entry.device_id,
+                entry.device_type,
+                NodeSignalPhase::Input,
+                frame_offset,
+                frames,
+            );
+            Self::process_entry(entry, frames, clock);
+            observer(
+                entry.owner,
+                entry.device_id,
+                entry.device_type,
+                NodeSignalPhase::Output,
+                frame_offset,
+                frames,
+            );
+        }
+    }
+
     fn process_entries(
         entries: &mut [RuntimeEntry],
         frames: &mut [StereoFrame],
@@ -1262,7 +1385,12 @@ impl<'a> NativeDeviceRegistry<'a> {
             .definition(type_id)
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let state = definition.default_state()?;
-        self.validate_current(definition, definition.migrate_state(&state)?)
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&state)?
+                .with_host_metadata_from(&state)?,
+        )
     }
     pub fn migrate_state(
         &self,
@@ -1271,9 +1399,12 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        self.validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )
     }
     pub fn patch_parameters(
         &self,
@@ -1283,17 +1414,22 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
-        snapshot.validate(&hex_lattice_contract::validated_state_descriptors(
-            definition, &current,
-        )?)?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
+        hex_lattice_contract::validate_parameter_snapshot_for_write(
+            definition, &current, snapshot,
+        )?;
         let patched = definition.patch_parameters(&current, snapshot)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&patched)?
+                .with_host_metadata_from(state)?,
+        )
     }
 
     pub fn patch_parameter(
@@ -1305,80 +1441,95 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
-        let descriptors = hex_lattice_contract::validated_state_descriptors(definition, &current)?;
-        let descriptor = descriptors
-            .iter()
-            .find(|descriptor| descriptor.id == parameter)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
+        hex_lattice_contract::validate_parameter_write(definition, &current, parameter, value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&patched)?
+                .with_host_metadata_from(state)?,
+        )
     }
     pub fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
     ) -> Result<StereoMatrix, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         definition.prepare_matrix(&current)
     }
     pub fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
-        definition.prepare_processor(&current, sample_rate)
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
+        definition.prepare_processor(&current, context)
     }
     pub fn prepare_device(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedNativeDevice, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         Ok(PreparedNativeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
-            processor: definition.prepare_processor(&current, sample_rate)?,
+            processor: definition.prepare_processor(&current, context)?,
         })
     }
     pub fn prepare_runtime_device(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         Ok(PreparedRuntimeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
-            processor: definition.prepare_runtime_factory(&current, sample_rate)?,
+            processor: definition.prepare_runtime_factory(&current, context)?,
         })
     }
     fn validate_current(
@@ -1533,6 +1684,11 @@ mod tests {
             .with_input_gain_millidb(SNAPSHOT_PATCH_INPUT_GAIN)
             .unwrap()
             .with_output_gain_millidb(SNAPSHOT_PATCH_OUTPUT_GAIN)
+            .unwrap()
+            .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+                slot: hex_lattice_contract::DeviceAssetSlot::new(1).unwrap(),
+                asset: hex_lattice_contract::DeviceAssetKey::new(42).unwrap(),
+            }])
             .unwrap();
         let snapshot = hex_lattice_contract::DeviceParameterSnapshot::new(&[(
             SNAPSHOT_PATCH_PARAMETER,
@@ -1544,6 +1700,7 @@ mod tests {
 
         assert_eq!(patched.input_gain_millidb(), SNAPSHOT_PATCH_INPUT_GAIN);
         assert_eq!(patched.output_gain_millidb(), SNAPSHOT_PATCH_OUTPUT_GAIN);
+        assert_eq!(patched.asset_references(), state.asset_references());
         assert_eq!(
             definition
                 .read_parameter(&patched, SNAPSHOT_PATCH_PARAMETER)
@@ -1578,7 +1735,12 @@ mod tests {
     }
 
     impl NativeProcessorRuntime for SplitAuditionRuntime {
-        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
 
         fn reset(&mut self) {
             self.requested = None;
@@ -1711,7 +1873,7 @@ mod tests {
         fn prepare_processor(
             &self,
             state: &NativeDeviceState,
-            _sample_rate: u32,
+            _context: &crate::DevicePreparationContext<'_>,
         ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
             if state.payload() != [1] {
                 return Err(DeviceContractError::MalformedState);
@@ -1731,7 +1893,11 @@ mod tests {
         }
     }
     impl NativeProcessorRuntime for IndependentRuntime {
-        fn process_block(&mut self, frames: &mut [StereoFrame]) {
+        fn process_block(
+            &mut self,
+            frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
             for frame in frames {
                 frame[0] += self.history;
                 frame[1] += self.history;
@@ -1780,7 +1946,11 @@ mod tests {
     }
 
     impl NativeProcessorRuntime for DelayedTailRuntime {
-        fn process_block(&mut self, frames: &mut [StereoFrame]) {
+        fn process_block(
+            &mut self,
+            frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
             for frame in frames {
                 let delayed = self.delay[0];
                 self.delay.rotate_left(1);
@@ -1818,14 +1988,14 @@ mod tests {
             let mut runtime = prepared.create_runtime();
             assert!(runtime.is_quiescent());
             let mut impulse = [[1.0, -0.5]];
-            runtime.process_block(&mut impulse);
+            runtime.process_block(&mut impulse, &crate::EMPTY_DEVICE_RESOURCES);
             assert_eq!(impulse, [[0.0, 0.0]]);
             assert!(!runtime.is_quiescent());
 
             let mut silence = [[0.0, 0.0]; 3];
             let mut processed = 0;
             for block in silence.chunks_mut(partition) {
-                runtime.process_block(block);
+                runtime.process_block(block, &crate::EMPTY_DEVICE_RESOURCES);
                 processed += block.len();
                 assert_eq!(runtime.is_quiescent(), processed == 3);
             }
@@ -1990,7 +2160,12 @@ mod tests {
     }
 
     impl NativeProcessorRuntime for RetargetRuntime {
-        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
         fn reset(&mut self) {}
         fn is_quiescent(&self) -> bool {
             true
@@ -2210,7 +2385,12 @@ mod tests {
     }
 
     impl NativeProcessorRuntime for IncompatibleRuntime {
-        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
         fn reset(&mut self) {}
         fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
             previous.as_any().is::<Self>()
@@ -2230,7 +2410,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2241,11 +2425,11 @@ mod tests {
         let mut feedback = prepared.create_runtime();
         assert!(feedback.is_quiescent());
         let mut excitation = [[1.0, 1.0]];
-        feedback.process_block(&mut excitation);
+        feedback.process_block(&mut excitation, &crate::EMPTY_DEVICE_RESOURCES);
         assert!(!feedback.is_quiescent());
         for _ in 0..32 {
             let mut silence = [[0.0, 0.0]; 7];
-            feedback.process_block(&mut silence);
+            feedback.process_block(&mut silence, &crate::EMPTY_DEVICE_RESOURCES);
             assert!(silence.iter().all(|frame| *frame != [0.0, 0.0]));
             assert!(!feedback.is_quiescent());
         }
@@ -2283,7 +2467,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2311,7 +2499,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                44_100,
+                &crate::DevicePreparationContext {
+                    sample_rate: 44_100,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2344,7 +2536,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2392,7 +2588,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2432,7 +2632,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2493,7 +2697,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();

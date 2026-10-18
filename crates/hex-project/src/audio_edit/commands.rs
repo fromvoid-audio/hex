@@ -127,12 +127,29 @@ pub(crate) fn apply(
         Command::SetAudioClipPitch { clip, .. }
         | Command::SetAudioClipMusical { clip, .. }
         | Command::SetAudioClipWarp { clip, .. }
+        | Command::SetAudioClipSampleBpm { clip, .. }
+        | Command::StretchAudioClipEdge { clip, .. }
         | Command::SetAudioClipSourceGain { clip, .. } => *clip,
         _ => return Err(Invalid("unsupported audio editing command")),
     };
     let mut clip = project.clip(id).cloned().ok_or(Invalid(
         "pitch, warp and source envelopes currently require an arrangement audio clip",
     ))?;
+    if let Command::StretchAudioClipEdge { edge, frame, .. } = command {
+        let frames = project
+            .asset(clip.asset)
+            .ok_or(Invalid("audio media missing"))?
+            .playback_frames();
+        let stretched = super::stretch::preview_audio_clip_stretch(
+            &clip,
+            edge,
+            frame,
+            project.tempo_map(),
+            frames,
+        )?;
+        *project.clip_mut(id)? = stretched;
+        return Ok(crate::Created::None);
+    }
     if clip.edit.is_none()
         && matches!(
             &command,
@@ -176,6 +193,38 @@ pub(crate) fn apply(
             } else {
                 Arc::make_mut(&mut edit.domain).warp_enabled = false;
             }
+        }
+        Command::SetAudioClipSampleBpm { tempo, .. } => {
+            if !edit.domain.warp_enabled {
+                return Err(Invalid("enable warp before editing sample bpm"));
+            }
+            let previous = edit.domain.sample_bpm;
+            let (numerator, denominator) = if let Some(previous) = previous {
+                (
+                    u64::from(tempo.micro_bpm()),
+                    u64::from(previous.micro_bpm()),
+                )
+            } else {
+                let source = TempoMap::constant(project.sample_rate(), tempo)?;
+                let desired = source.frame_to_beat(edit.domain.source_length)?.raw();
+                let current = edit
+                    .domain
+                    .warp
+                    .as_ref()
+                    .and_then(|w| w.markers.last())
+                    .ok_or(Invalid("warp markers missing"))?
+                    .beat
+                    .raw();
+                (desired, current)
+            };
+            super::stretch::retime(
+                edit,
+                numerator,
+                denominator,
+                clip.start,
+                project.tempo_map(),
+            )?;
+            Arc::make_mut(&mut edit.domain).sample_bpm = Some(tempo);
         }
         Command::SetAudioClipSourceGain { points, .. } => {
             Arc::make_mut(&mut edit.domain).source_gain = points
@@ -233,6 +282,7 @@ pub(crate) fn reset_region(
     let mut edit = AudioClipEdit::capture(&clip);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.pitch_cents = old.domain.pitch_cents;
+    domain.sample_bpm = old.domain.sample_bpm;
     domain.source_gain = old.domain.source_gain.clone();
     domain.warp = old.domain.warp.clone();
     domain.warp_enabled = old.domain.warp_enabled;
@@ -268,6 +318,17 @@ pub(crate) fn set_fade_envelope(
         .clip(id)
         .cloned()
         .ok_or(Invalid("audio clip is missing"))?;
+    set_clip_fade_envelope(&mut clip, fade, project.tempo_map())?;
+    validate_clip(project, &clip)?;
+    *project.clip_mut(id)? = clip;
+    Ok(crate::Created::None)
+}
+
+pub(crate) fn set_clip_fade_envelope(
+    clip: &mut Clip,
+    fade: ClipFade,
+    tempo: &TempoMap,
+) -> Result<(), Invalid> {
     let mut owned_edit = clip
         .edit
         .clone()
@@ -277,15 +338,12 @@ pub(crate) fn set_fade_envelope(
     domain.fade = fade;
     domain.fade_start = edit.view_start;
     domain.fade_projection = edit.musical_start.map(|beat| AudioFadeProjection {
-        tempo: project.tempo_map().clone(),
+        tempo: tempo.clone(),
         origin_beat_raw: i128::from(beat.raw()),
         local_start_raw: edit.view_start,
     });
     clip.edit = Some(owned_edit);
-    project_clip(&mut clip, project.tempo_map())?;
-    validate_clip(project, &clip)?;
-    *project.clip_mut(id)? = clip;
-    Ok(crate::Created::None)
+    project_clip(clip, tempo)
 }
 
 pub(crate) fn source_policy(
