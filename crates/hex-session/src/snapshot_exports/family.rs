@@ -241,7 +241,7 @@ mod tests {
         let session = crate::Session::new(48_000, 8, 1024).unwrap();
         Some(crate::service::view_state_owned(
             &session,
-            Default::default(),
+            hex_engine::empty_midi_preview_on_control(),
             revision,
             1,
             false,

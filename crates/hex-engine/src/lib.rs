@@ -3252,6 +3252,8 @@ pub mod playback;
 mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
+    SharedMidiArrangementPreview, empty_midi_preview_on_control,
+    visit_shared_midi_preview_storage_on_control,
 };
 pub use midi_template::{
     MIDI_SPAN_BUFFER_CAPACITY, MIDI_TEMPLATE_MAX_EDGES, MIDI_TEMPLATE_MAX_ONSETS,

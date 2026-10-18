@@ -74,7 +74,7 @@ pub struct ViewState {
     /// Worker-built transformed root peaks and exact audible crop coordinates.
     pub audio_clip_waveforms: SortedEntries<hex_project::ClipId, AudioClipWaveform>,
     /// Control-prepared MIDI clip summaries matching this project revision.
-    pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    pub midi_preview: hex_engine::SharedMidiArrangementPreview,
     /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.
     pub gain_preview: Result<hex_engine::SharedGainAutomationPreview, hex_engine::Invalid>,
     pub timeline_frames: u64,
@@ -896,7 +896,7 @@ fn try_submit(sender: &SyncSender<Request>, request: Request) -> Result<(), Subm
 
 fn view_state(
     session: &Session,
-    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    midi_preview: hex_engine::SharedMidiArrangementPreview,
     revision: u64,
     project_generation: u64,
     unsaved: bool,
@@ -914,7 +914,7 @@ fn view_state(
 
 pub(crate) fn view_state_owned(
     session: &Session,
-    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    midi_preview: hex_engine::SharedMidiArrangementPreview,
     revision: u64,
     project_generation: u64,
     unsaved: bool,
@@ -969,7 +969,7 @@ fn preview_view_state(
         project,
         waveforms: canonical.waveforms.clone(),
         audio_clip_waveforms: canonical.audio_clip_waveforms.clone(),
-        midi_preview: Arc::clone(prepared.midi_preview()),
+        midi_preview: prepared.midi_preview_on_control(),
         timeline_frames: content_end
             .saturating_add(rate.saturating_mul(2))
             .max(rate.saturating_mul(8)),
@@ -1232,11 +1232,11 @@ fn run_worker(
     let mut media_base: Option<PathBuf> = None;
     let mut document: Option<DocumentHandle> = None;
     let mut journal: Option<hex_storage::Journal> = None;
-    let mut midi_preview = Arc::new(hex_engine::MidiArrangementPreview::default());
+    let mut midi_preview = hex_engine::empty_midi_preview_on_control();
     let mut project_generation = 0_u64;
     let mut state = view_state(
         &session,
-        Arc::clone(&midi_preview),
+        midi_preview.clone(),
         revision,
         project_generation,
         unsaved,
@@ -1259,10 +1259,10 @@ fn run_worker(
     let mut tuning_gesture = TuningGestureMachine::default();
     let mut initial = match compile(&session, None) {
         Ok(prepared) => {
-            midi_preview = Arc::clone(prepared.midi_preview());
+            midi_preview = prepared.midi_preview_on_control();
             state = view_state(
                 &session,
-                Arc::clone(&midi_preview),
+                midi_preview.clone(),
                 revision,
                 project_generation,
                 unsaved,
@@ -1384,11 +1384,11 @@ fn run_worker(
                         if outcome.canonical_changed {
                             revision = revision.saturating_add(1);
                             unsaved = true;
-                            midi_preview = Arc::clone(prepared.midi_preview());
+                            midi_preview = prepared.midi_preview_on_control();
                             compiled = Some((revision, Arc::clone(&prepared)));
                             state = view_state(
                                 &session,
-                                Arc::clone(&midi_preview),
+                                midi_preview.clone(),
                                 revision,
                                 project_generation,
                                 unsaved,
@@ -1427,11 +1427,11 @@ fn run_worker(
                         if outcome.canonical_changed {
                             revision = revision.saturating_add(1);
                             unsaved = true;
-                            midi_preview = Arc::clone(prepared.midi_preview());
+                            midi_preview = prepared.midi_preview_on_control();
                             compiled = Some((revision, Arc::clone(&prepared)));
                             state = view_state(
                                 &session,
-                                Arc::clone(&midi_preview),
+                                midi_preview.clone(),
                                 revision,
                                 project_generation,
                                 unsaved,
@@ -2467,7 +2467,7 @@ fn run_worker(
                                     unsaved = false;
                                     state = view_state(
                                         &session,
-                                        Arc::clone(&midi_preview),
+                                        midi_preview.clone(),
                                         revision,
                                         project_generation,
                                         unsaved,
@@ -2506,7 +2506,7 @@ fn run_worker(
                                     error = commit.error;
                                     state = view_state(
                                         &session,
-                                        Arc::clone(&midi_preview),
+                                        midi_preview.clone(),
                                         revision,
                                         project_generation,
                                         unsaved,
@@ -2810,10 +2810,10 @@ fn run_worker(
                         ) {
                             Ok(prepared) => {
                                 compiled = Some((revision, Arc::clone(&prepared)));
-                                midi_preview = Arc::clone(prepared.midi_preview());
+                                midi_preview = prepared.midi_preview_on_control();
                                 state = view_state(
                                     &session,
-                                    Arc::clone(&midi_preview),
+                                    midi_preview.clone(),
                                     revision,
                                     project_generation,
                                     unsaved,
@@ -2843,10 +2843,10 @@ fn run_worker(
         let canonical_changed = replacement_revision.is_some();
         let canonical_prepared = if let Some(prepared) = replacement_revision {
             revision = revision.saturating_add(1);
-            midi_preview = Arc::clone(prepared.midi_preview());
+            midi_preview = prepared.midi_preview_on_control();
             state = view_state(
                 &session,
-                Arc::clone(&midi_preview),
+                midi_preview.clone(),
                 revision,
                 project_generation,
                 unsaved,
@@ -6726,10 +6726,12 @@ mod service_tests {
         assert!(refused.error.is_some());
         assert!(refused.playback.is_none());
         assert_eq!(refused.state.revision, redone.state.revision);
-        assert!(Arc::ptr_eq(
-            &refused.state.midi_preview,
-            &redone.state.midi_preview
-        ));
+        assert!(
+            refused
+                .state
+                .midi_preview
+                .shares_owner_with(&redone.state.midi_preview)
+        );
 
         service
             .submit(Request::SaveNew(path.clone()))
@@ -6738,10 +6740,12 @@ mod service_tests {
         assert!(saved.error.is_none());
         assert!(saved.playback.is_none());
         assert_eq!(saved.state.revision, redone.state.revision);
-        assert!(Arc::ptr_eq(
-            &saved.state.midi_preview,
-            &redone.state.midi_preview
-        ));
+        assert!(
+            saved
+                .state
+                .midi_preview
+                .shares_owner_with(&redone.state.midi_preview)
+        );
 
         service
             .submit(Request::Open(path))

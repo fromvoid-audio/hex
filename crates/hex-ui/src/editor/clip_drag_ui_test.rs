@@ -110,7 +110,9 @@ pub(super) fn editor_window(
                     project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
-                    midi_preview,
+                    midi_preview: hex_engine::SharedMidiArrangementPreview::new_on_control(
+                        midi_preview.as_ref().clone(),
+                    ),
                     gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                         hex_engine::GainAutomationPreview::default(),
                     )),
@@ -741,7 +743,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             project: old.project.clone(),
             waveforms,
             audio_clip_waveforms: Default::default(),
-            midi_preview: Arc::clone(&old.midi_preview),
+            midi_preview: old.midi_preview.clone(),
             gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                 hex_engine::GainAutomationPreview::default(),
             )),
@@ -1614,7 +1616,7 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
             project: hex_session::SharedProject::new_on_control(moved_project.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
-            midi_preview: Arc::new(moved_preview),
+            midi_preview: hex_engine::SharedMidiArrangementPreview::new_on_control(moved_preview),
             gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                 hex_engine::GainAutomationPreview::default(),
             )),

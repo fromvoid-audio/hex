@@ -38,8 +38,22 @@ fn actual_session_clip_and_exported_views_conserve_paired_waveform_and_pcm_field
         .unwrap();
     drop(revision);
     drop(pitched);
-    let first = view_state(&session, Arc::default(), 1, 1, false, None);
-    let second = view_state(&session, Arc::default(), 1, 1, false, None);
+    let first = view_state(
+        &session,
+        hex_engine::empty_midi_preview_on_control(),
+        1,
+        1,
+        false,
+        None,
+    );
+    let second = view_state(
+        &session,
+        hex_engine::empty_midi_preview_on_control(),
+        1,
+        1,
+        false,
+        None,
+    );
     assert_eq!(first.waveforms.len(), 1);
     assert_eq!(first.audio_clip_waveforms.len(), 1);
     assert!(!std::ptr::eq(

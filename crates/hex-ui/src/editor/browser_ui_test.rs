@@ -109,7 +109,7 @@ fn browser_drag_fixture_with_tracks(
                     project: hex_session::SharedProject::new_on_control(model.project().clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
-                    midi_preview: Arc::new(Default::default()),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
                     gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                         hex_engine::GainAutomationPreview::default(),
                     )),
@@ -580,7 +580,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                     project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
-                    midi_preview: Arc::new(Default::default()),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
                     gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                         hex_engine::GainAutomationPreview::default(),
                     )),
@@ -640,7 +640,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                     project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
-                    midi_preview: Arc::new(Default::default()),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
                     gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                         hex_engine::GainAutomationPreview::default(),
                     )),
@@ -792,7 +792,7 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
                     project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
-                    midi_preview: Arc::new(Default::default()),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
                     gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                         hex_engine::GainAutomationPreview::default(),
                     )),

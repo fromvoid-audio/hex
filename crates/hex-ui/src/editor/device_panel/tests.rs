@@ -4193,7 +4193,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
                     project: hex_session::SharedProject::new_on_control(initial_project.clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
-                    midi_preview: Arc::new(Default::default()),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
                     gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                         hex_engine::GainAutomationPreview::default(),
                     )),

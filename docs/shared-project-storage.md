@@ -85,3 +85,35 @@ mix, span and step fields are exhaustively inspected; new owned fields require
 explicit traversal. Independent equal-content previews retain distinct backing
 charges. This neither detects entirely unvisited owners nor establishes enclosing
 view completeness, construction peak, frozen custody or atomic publication.
+
+
+## Prepared MIDI-preview child
+
+`SharedMidiArrangementPreview` carries the existing private prepared-revision
+`OwnedShared` allocation and receipt together through a narrow crate-private
+bridge. The actual prepared owner, its extraction machinery and retirement path
+remain unchanged. Exports add handles to that same outer allocation, not copied
+preview bodies or adopted raw Arcs. The older prepared owner has no stored cache
+version; its exports report no cache identity rather than deriving one from an
+address or adding another version map.
+
+Explicit fresh empty previews allocate the qualified sized-empty-array origin.
+General defaults and raw/untracked owners remain Unknown, including through the
+bridge. Empty input Vec disposal occurs on control before that fresh allocation;
+this is not a proof of the earlier input/preparation peak. No legacy conversion
+or compatibility reader is added.
+
+Selected traversal charges outer header/body, each physical exported handle,
+the actual private shared clip-slice header/body and every sample Vec capacity,
+including empty reserved samples. Slice-entry inline Vec headers are charged in
+the slice body. Repeated outer exports do not duplicate embedded clip fields;
+separate equal allocations remain separate. The actual prepared owner is still
+a distinct live field: exported handles cannot stand in for it. Missing it must
+fail selected handle closure. Fixed clip/sample leaves are exhaustively matched.
+
+The new runtime oracles require a supported constructor build. They cover actual
+prepared allocation identity before producer retirement, omitted prepared/export
+aliases, repeated-visit deduplication, exact/minus-one retained budgets, reserved
+empty samples, independent empty headers and raw/default/unsupported refusal.
+Their post-construction observations do not establish whole-root inventory,
+construction peak, guarded publication, final retirement or usable Sampler UI.

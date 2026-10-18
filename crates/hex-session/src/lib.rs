@@ -579,7 +579,7 @@ impl Session {
         (
             Created,
             PlaybackProject,
-            Arc<hex_engine::MidiArrangementPreview>,
+            hex_engine::SharedMidiArrangementPreview,
         ),
         SessionError,
     > {
@@ -600,7 +600,7 @@ impl Session {
         Ok((
             created,
             prepared.arrangement().as_ref().clone(),
-            Arc::clone(prepared.midi_preview()),
+            prepared.midi_preview_on_control(),
         ))
     }
 
@@ -938,7 +938,7 @@ impl Session {
         (
             Created,
             PlaybackProject,
-            Arc<hex_engine::MidiArrangementPreview>,
+            hex_engine::SharedMidiArrangementPreview,
         ),
         SessionError,
     > {
@@ -946,7 +946,7 @@ impl Session {
         Ok((
             created,
             revision.arrangement().as_ref().clone(),
-            Arc::clone(revision.midi_preview()),
+            revision.midi_preview_on_control(),
         ))
     }
 
@@ -1285,13 +1285,13 @@ impl Session {
     /// Compile the previous history snapshot before committing Undo.
     pub fn undo_prepared_with_midi_preview(
         &mut self,
-    ) -> Result<Option<(PlaybackProject, Arc<hex_engine::MidiArrangementPreview>)>, SessionError>
+    ) -> Result<Option<(PlaybackProject, hex_engine::SharedMidiArrangementPreview)>, SessionError>
     {
         self.undo_prepared_revision(None).map(|result| {
             result.map(|prepared| {
                 (
                     prepared.arrangement().as_ref().clone(),
-                    Arc::clone(prepared.midi_preview()),
+                    prepared.midi_preview_on_control(),
                 )
             })
         })
@@ -1341,13 +1341,13 @@ impl Session {
     /// Compile the next history snapshot before committing Redo.
     pub fn redo_prepared_with_midi_preview(
         &mut self,
-    ) -> Result<Option<(PlaybackProject, Arc<hex_engine::MidiArrangementPreview>)>, SessionError>
+    ) -> Result<Option<(PlaybackProject, hex_engine::SharedMidiArrangementPreview)>, SessionError>
     {
         self.redo_prepared_revision(None).map(|result| {
             result.map(|prepared| {
                 (
                     prepared.arrangement().as_ref().clone(),
-                    Arc::clone(prepared.midi_preview()),
+                    prepared.midi_preview_on_control(),
                 )
             })
         })
@@ -1445,7 +1445,7 @@ impl Session {
     /// Compile the current snapshot once for playback and prepared UI summaries.
     pub fn compile_with_midi_preview(
         &self,
-    ) -> Result<(PlaybackProject, Arc<hex_engine::MidiArrangementPreview>), SessionError> {
+    ) -> Result<(PlaybackProject, hex_engine::SharedMidiArrangementPreview), SessionError> {
         if self.audio_mode == DocumentAudioMode::VerifiedStreaming {
             return Err(SessionError::Invalid(
                 "verified streaming requires protected native pages",
@@ -1454,7 +1454,7 @@ impl Session {
         let prepared = self.compile_prepared_revision(None)?;
         Ok((
             prepared.arrangement().as_ref().clone(),
-            Arc::clone(prepared.midi_preview()),
+            prepared.midi_preview_on_control(),
         ))
     }
 

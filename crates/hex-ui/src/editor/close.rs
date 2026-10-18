@@ -248,7 +248,7 @@ mod window_tests {
                         ),
                         waveforms: Default::default(),
                         audio_clip_waveforms: Default::default(),
-                        midi_preview: Arc::new(Default::default()),
+                        midi_preview: hex_engine::empty_midi_preview_on_control(),
                         gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                             hex_engine::GainAutomationPreview::default(),
                         )),
@@ -303,7 +303,7 @@ mod window_tests {
                     project: state.project.clone(),
                     waveforms: state.waveforms.clone(),
                     audio_clip_waveforms: state.audio_clip_waveforms.clone(),
-                    midi_preview: Arc::clone(&state.midi_preview),
+                    midi_preview: state.midi_preview.clone(),
                     gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                         hex_engine::GainAutomationPreview::default(),
                     )),
@@ -451,7 +451,7 @@ mod window_tests {
                         project: state.project.clone(),
                         waveforms: state.waveforms.clone(),
                         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
-                        midi_preview: Arc::clone(&state.midi_preview),
+                        midi_preview: state.midi_preview.clone(),
                         gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                             hex_engine::GainAutomationPreview::default(),
                         )),

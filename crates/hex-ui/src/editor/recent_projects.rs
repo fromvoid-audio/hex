@@ -292,7 +292,7 @@ mod tests {
                         ),
                         waveforms: Default::default(),
                         audio_clip_waveforms: Default::default(),
-                        midi_preview: Arc::new(Default::default()),
+                        midi_preview: hex_engine::empty_midi_preview_on_control(),
                         gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                             hex_engine::GainAutomationPreview::default(),
                         )),
@@ -336,7 +336,7 @@ mod tests {
                 project: current.project.clone(),
                 waveforms: Default::default(),
                 audio_clip_waveforms: Default::default(),
-                midi_preview: Arc::clone(&current.midi_preview),
+                midi_preview: current.midi_preview.clone(),
                 gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                     hex_engine::GainAutomationPreview::default(),
                 )),

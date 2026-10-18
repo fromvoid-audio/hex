@@ -278,7 +278,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             project: hex_session::SharedProject::new_on_control(history.project().clone()),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
-            midi_preview: Arc::clone(&old.midi_preview),
+            midi_preview: old.midi_preview.clone(),
             gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                 hex_engine::GainAutomationPreview::default(),
             )),
@@ -315,7 +315,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             project: old.project.clone(),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
-            midi_preview: Arc::clone(&old.midi_preview),
+            midi_preview: old.midi_preview.clone(),
             gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                 hex_engine::GainAutomationPreview::default(),
             )),

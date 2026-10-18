@@ -99,6 +99,22 @@ impl<T> std::ops::Deref for SharedMetadata<T> {
     }
 }
 
+// Narrow private bridge from the ACTUAL paired prepared-revision field. This
+// clones the existing receipt WITH its owner; raw/untracked parts stay Unknown.
+// It neither adopts an Arc nor adds a generic public owner/receipt constructor.
+impl SharedMetadata<crate::MidiArrangementPreview> {
+    pub(crate) fn clone_prepared_midi_on_control(
+        owner: &OwnedShared<crate::MidiArrangementPreview>,
+    ) -> Self {
+        Self {
+            owner: owner.clone_on_control(),
+            // The older prepared owner has no stored cache-version cell. Do
+            // not derive one from its address or create a second version map.
+            cache_identity: None,
+        }
+    }
+}
+
 impl<'a> crate::AudioRootStorageLedger<'a> {
     /// Register the actual paired outer field and header/body only. This does
     /// not declare any unseen payload child, peak, custody or final retirement.

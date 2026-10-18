@@ -289,10 +289,12 @@ mod tests {
         let project = hex_project::Project::new(48_000).unwrap();
         assert!(MidiArrangementPreview::default().clips.parts().is_none());
         assert!(
-            MidiArrangementPreview::from_sorted_clips(Vec::new())
-                .clips
-                .parts()
-                .is_none()
+            MidiArrangementPreview {
+                clips: OwnedShared::from_owned_vec(Vec::new())
+            }
+            .clips
+            .parts()
+            .is_none()
         );
         if !crate::pcm_arc::native_layout_known() {
             assert_eq!(

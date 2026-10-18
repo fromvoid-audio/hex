@@ -1140,7 +1140,7 @@ mod tests {
             project: state.project.clone(),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
-            midi_preview: Arc::clone(&state.midi_preview),
+            midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
             timeline_frames: state.timeline_frames,
             can_undo: false,
@@ -1199,7 +1199,7 @@ mod tests {
             project: hex_session::SharedProject::new_on_control(editor.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
-            midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+            midi_preview: hex_engine::empty_midi_preview_on_control(),
             gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                 hex_engine::GainAutomationPreview::default(),
             )),
@@ -1248,7 +1248,7 @@ mod tests {
             project: hex_session::SharedProject::new_on_control(moved_editor.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
-            midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+            midi_preview: hex_engine::empty_midi_preview_on_control(),
             gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                 hex_engine::GainAutomationPreview::default(),
             )),
@@ -1300,7 +1300,7 @@ mod tests {
             project: hex_session::SharedProject::new_on_control(editor.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
-            midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+            midi_preview: hex_engine::empty_midi_preview_on_control(),
             gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
                 hex_engine::GainAutomationPreview::default(),
             )),

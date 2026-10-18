@@ -17,7 +17,7 @@ fn copy_view(source: &ViewState) -> ViewState {
         project: source.project.clone(),
         waveforms: source.waveforms.clone(),
         audio_clip_waveforms: source.audio_clip_waveforms.clone(),
-        midi_preview: Arc::clone(&source.midi_preview),
+        midi_preview: source.midi_preview.clone(),
         gain_preview: source.gain_preview.clone(),
         timeline_frames: source.timeline_frames,
         can_undo: source.can_undo,

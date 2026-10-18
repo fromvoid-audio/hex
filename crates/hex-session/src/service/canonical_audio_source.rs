@@ -173,7 +173,14 @@ mod tests {
         }
         eprintln!("SUPPORTED actual canonical-source producer paired outer and model fields");
         let session = Session::new(48_000, 8, 1024).unwrap();
-        let first = view_state(&session, Arc::default(), 7, 11, false, None);
+        let first = view_state(
+            &session,
+            hex_engine::empty_midi_preview_on_control(),
+            7,
+            11,
+            false,
+            None,
+        );
         let actual = first.canonical_audio_source.as_ref().unwrap();
         let retained = actual.clone();
         let independent = SharedCanonicalAudioSource::new_on_control(

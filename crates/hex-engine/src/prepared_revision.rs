@@ -526,8 +526,14 @@ impl PreparedRevision {
         &self.session
     }
 
-    pub fn midi_preview(&self) -> &Arc<MidiArrangementPreview> {
+    #[cfg(test)]
+    pub(crate) fn midi_preview(&self) -> &Arc<MidiArrangementPreview> {
         &self.midi_preview
+    }
+    /// Export the actual retained constructor pair on control, never a raw Arc
+    /// upgrade or a copied preview body. Cleanup retains its existing owner.
+    pub fn midi_preview_on_control(&self) -> crate::SharedMidiArrangementPreview {
+        crate::SharedMetadata::clone_prepared_midi_on_control(&self.midi_preview)
     }
 
     pub fn contains_streamed_sources(&self) -> bool {

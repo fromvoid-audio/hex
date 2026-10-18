@@ -59,7 +59,15 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
         None,
     )
     .unwrap();
-    assert_eq!(prepared.midi_preview().get(clip).unwrap().samples.len(), 32);
+    assert_eq!(
+        prepared
+            .midi_preview_on_control()
+            .get(clip)
+            .unwrap()
+            .samples
+            .len(),
+        32
+    );
     let mut spans = MidiSpanBuffer::default();
     for owner in [
         SessionPlaybackOwner::Arrangement,

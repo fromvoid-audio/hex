@@ -275,7 +275,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         )
                         .unwrap(),
                         audio_clip_waveforms: prepared,
-                        midi_preview: Arc::clone(&old.midi_preview),
+                        midi_preview: old.midi_preview.clone(),
                         gain_preview: old.gain_preview.clone(),
                         timeline_frames: old.timeline_frames,
                         can_undo: old.can_undo,

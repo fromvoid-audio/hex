@@ -31,8 +31,22 @@ fn actual_canonical_views_snapshots_and_two_preview_producers_retain_paired_proj
         .instrument()
         .unwrap()
         .id();
-    let first = view_state(&session, Arc::default(), 1, 1, false, None);
-    let second = view_state(&session, Arc::default(), 1, 1, false, None);
+    let first = view_state(
+        &session,
+        hex_engine::empty_midi_preview_on_control(),
+        1,
+        1,
+        false,
+        None,
+    );
+    let second = view_state(
+        &session,
+        hex_engine::empty_midi_preview_on_control(),
+        1,
+        1,
+        false,
+        None,
+    );
     assert_eq!(first.project, second.project);
     assert!(!first.project.shares_owner_with(&second.project));
     let source = first

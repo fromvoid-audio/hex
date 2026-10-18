@@ -11,7 +11,7 @@ fn pending(revision: u64) -> Option<ViewState> {
     let session = crate::Session::new(48_000, 8, 1024).unwrap();
     Some(crate::service::view_state_owned(
         &session,
-        Default::default(),
+        hex_engine::empty_midi_preview_on_control(),
         revision,
         1,
         false,
@@ -172,7 +172,7 @@ fn sampler_panel_read_keeps_exact_old_empty_and_loaded_authored_snapshot_without
         .unwrap();
     let mut old = Some(crate::service::view_state_owned(
         &session,
-        Default::default(),
+        hex_engine::empty_midi_preview_on_control(),
         7,
         1,
         false,
@@ -195,7 +195,7 @@ fn sampler_panel_read_keeps_exact_old_empty_and_loaded_authored_snapshot_without
         .unwrap();
     let mut next = Some(crate::service::view_state_owned(
         &session,
-        Default::default(),
+        hex_engine::empty_midi_preview_on_control(),
         8,
         1,
         false,
