@@ -492,7 +492,7 @@ fn reused_candidate_rejection_is_allocation_free_and_keeps_the_active_graph()
     let mut output = [[0.0; 2]; BLOCK];
     measured_block(&mut callback, &mut output);
     assert_eq!(
-        control.status.applied_revision.load(Ordering::Acquire),
+        control.status().applied_revision.load(Ordering::Acquire),
         active_revision
     );
 
@@ -504,14 +504,14 @@ fn reused_candidate_rejection_is_allocation_free_and_keeps_the_active_graph()
     measured_block(&mut callback, &mut output);
 
     assert_eq!(
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
         Some((
             rejected_revision,
             hex_engine::PlaybackHandoffRejection::SessionRuntime
         ))
     );
     assert_eq!(
-        control.status.applied_revision.load(Ordering::Acquire),
+        control.status().applied_revision.load(Ordering::Acquire),
         active_revision,
         "the previously accepted graph remains active"
     );
@@ -555,10 +555,10 @@ fn conditional_fresh_runtime_publication_paths_are_callback_allocation_free()
         .map_err(|_| "conditional fresh publication failed")?;
     measured_block(&mut callback, &mut output);
     assert_eq!(
-        control.status.applied_revision.load(Ordering::Acquire),
+        control.status().applied_revision.load(Ordering::Acquire),
         accepted
     );
-    assert_eq!(control.status.rejected_revision(), None);
+    assert_eq!(control.status().rejected_revision(), None);
     assert_eq!(control.reclaim(), 0);
 
     // A command admitted after capture permanently rejects the candidate.
@@ -576,11 +576,11 @@ fn conditional_fresh_runtime_publication_paths_are_callback_allocation_free()
         .map_err(|_| "stale conditional fresh publication failed")?;
     measured_block(&mut callback, &mut output);
     assert_eq!(
-        control.status.applied_revision.load(Ordering::Acquire),
+        control.status().applied_revision.load(Ordering::Acquire),
         accepted
     );
     assert_eq!(
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
         Some((
             rejected,
             hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged
@@ -620,7 +620,7 @@ fn conditional_fresh_runtime_publication_paths_are_callback_allocation_free()
     assert_eq!(control.reclaim(), 2);
     measured_block(&mut callback, &mut output);
     assert_eq!(
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
         Some((
             rejected,
             hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged
@@ -644,7 +644,7 @@ fn assert_session_owner(
     clip: u64,
 ) {
     let snapshot = control
-        .status
+        .status()
         .session_routes(routes)
         .expect("route snapshot is available");
     assert_eq!(snapshot.count, track_count);
@@ -801,7 +801,7 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
         measured_block(&mut callback, &mut output);
     }
     assert!(output.iter().flatten().all(|sample| *sample == 0.0));
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
 
     let final_playback = Playback::try_from_prepared_with_session(Arc::clone(&first))?;
     control
@@ -1109,7 +1109,7 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
         .map_err(|_| "unchanged mutable handoff publication failed")?;
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
 
     let mut reclaimed = 0;
     let retirement = measure(|| reclaimed = control.reclaim());
@@ -1148,7 +1148,7 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
         .map_err(|_| "changed-source candidate publication failed")?;
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
-    assert!(control.status.rejected_revision().is_some());
+    assert!(control.status().rejected_revision().is_some());
     let rejected = measure(|| reclaimed = control.reclaim());
     assert!(
         reclaimed > 0,
@@ -1425,7 +1425,7 @@ fn auto_pan_prepared_callback_and_parameter_handoff_are_allocation_free()
         .publish(replacement)
         .map_err(|_| "edited playback publication failed")?;
     measured_block(&mut callback, &mut actual);
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
     let ramp_frames = (f64::from(RATE) * 0.005).ceil() as usize;
     let amount_target = f64::from(0.8_f32);
     for (index, actual_frame) in actual.iter().enumerate() {
@@ -1472,14 +1472,14 @@ fn play_from_callback_is_allocation_free_and_renders_from_requested_frame()
     compare_output(&actual, &expected);
     assert_eq!(
         control
-            .status
+            .status()
             .consumed_command
             .load(std::sync::atomic::Ordering::Acquire),
         ticket
     );
     assert_eq!(
         control
-            .status
+            .status()
             .position
             .load(std::sync::atomic::Ordering::Acquire),
         start + BLOCK as u64
@@ -1648,7 +1648,7 @@ fn prepared_edits_inherit_through_a_full_retirement_ring_without_callback_alloca
     compare_output(&output, &expected_initial);
     assert_eq!(
         control
-            .status
+            .status()
             .performance_frame
             .load(std::sync::atomic::Ordering::Acquire),
         128
@@ -1674,14 +1674,14 @@ fn prepared_edits_inherit_through_a_full_retirement_ring_without_callback_alloca
         )?;
         assert_eq!(
             control
-                .status
+                .status()
                 .applied_revision
                 .load(std::sync::atomic::Ordering::Acquire),
             revision as u64 + 1
         );
         assert_eq!(
             control
-                .status
+                .status()
                 .performance_frame
                 .load(std::sync::atomic::Ordering::Acquire),
             128 * (revision as u64 + 1)
@@ -1706,14 +1706,14 @@ fn prepared_edits_inherit_through_a_full_retirement_ring_without_callback_alloca
     )?;
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         3
     );
     assert_eq!(
         control
-            .status
+            .status()
             .performance_frame
             .load(std::sync::atomic::Ordering::Acquire),
         512
@@ -1730,14 +1730,14 @@ fn prepared_edits_inherit_through_a_full_retirement_ring_without_callback_alloca
     )?;
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         4
     );
     assert_eq!(
         control
-            .status
+            .status()
             .performance_frame
             .load(std::sync::atomic::Ordering::Acquire),
         640
@@ -1816,7 +1816,7 @@ fn fresh_project_and_shutdown_reclaim_graph_and_pcm_only_on_control() -> Result<
 
     let mut routes = [prepared::SessionRouteEntry::default(); prepared::SESSION_ROUTE_CAPACITY];
     let fresh_routes = control
-        .status
+        .status()
         .session_routes(&mut routes)
         .ok_or("fresh route snapshot")?;
     assert_eq!(fresh_routes.count, 0);
@@ -1870,7 +1870,7 @@ fn priority_stop_is_allocation_free_while_retirement_ring_is_full() -> Result<()
     assert!(output.iter().all(|frame| *frame == [0.0; 2]));
     assert!(
         !control
-            .status
+            .status()
             .playing
             .load(std::sync::atomic::Ordering::Acquire)
     );
@@ -2010,7 +2010,7 @@ fn sounding_midi_scene_switches_at_position(
     oracle.render(&mut expected)?;
     measured_block(&mut callback, &mut output);
     assert_eq!(output, expected);
-    assert!(control.status.rejected_action().is_none());
+    assert!(control.status().rejected_action().is_none());
     assert!(output.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
 
     for scene in [scene_b, scene_a, scene_b, scene_a, scene_b, scene_a] {
@@ -2028,7 +2028,7 @@ fn sounding_midi_scene_switches_at_position(
         oracle.render(&mut expected)?;
         measured_block(&mut callback, &mut output);
         assert_eq!(output, expected);
-        assert!(control.status.rejected_action().is_none());
+        assert!(control.status().rejected_action().is_none());
         assert!(output.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
     }
     control.request_shutdown();
@@ -2229,7 +2229,7 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
             .map_err(|_| "Return replacement publication failed")?;
         measured_block(&mut callback, &mut actual);
         assert_eq!(
-            control.status.applied_revision.load(Ordering::Acquire),
+            control.status().applied_revision.load(Ordering::Acquire),
             accepted_revision
         );
         compare_output(&actual, &expected_handoff);
@@ -2264,7 +2264,7 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
             .map_err(|_| "Utility Return replacement publication failed")?;
         measured_block(&mut callback, &mut actual);
         assert_eq!(
-            control.status.applied_revision.load(Ordering::Acquire),
+            control.status().applied_revision.load(Ordering::Acquire),
             accepted_revision
         );
         compare_output(&actual, &expected_handoff);
@@ -2371,7 +2371,7 @@ fn stateful_utility_handoff_at_position(
     for _ in 0..256 {
         measured_block(&mut callback, &mut output);
     }
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
 
     if bypass_instrument {
         editor.execute(Command::SetDeviceBypass {
@@ -2390,7 +2390,7 @@ fn stateful_utility_handoff_at_position(
             .publish(reenabled)
             .map_err(|_| "instrument re-enable publication failed")?;
         measured_block(&mut callback, &mut output);
-        assert!(control.status.rejected_revision().is_none());
+        assert!(control.status().rejected_revision().is_none());
     }
 
     // The prior graph retains completed stateful tail owners until a later
@@ -2521,7 +2521,7 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
     changed_oracle.render(&mut expected)?;
     measured_block(&mut callback, &mut actual);
     compare_output(&actual, &expected);
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
 
     let mut completed = 0;
     let retired = measure(|| completed = control.reclaim());
@@ -2679,7 +2679,7 @@ fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dy
     changed_oracle.render(&mut expected)?;
     measured_block(&mut callback, &mut actual);
     compare_output(&actual, &expected);
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
 
     let mut completed = 0;
     let retired = measure(|| completed = control.reclaim());
@@ -2805,7 +2805,7 @@ fn arrangement_instrument_bypass_at_position(
     changed_oracle.render(&mut expected)?;
     measured_block(&mut callback, &mut actual);
     compare_output(&actual, &expected);
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
 
     let mut bypassed_oracle =
         Playback::try_from_prepared_with_session(Arc::clone(&bypassed_revision))?;
@@ -2819,7 +2819,7 @@ fn arrangement_instrument_bypass_at_position(
     bypassed_oracle.render(&mut expected)?;
     measured_block(&mut callback, &mut actual);
     compare_output(&actual, &expected);
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
 
     let mut reenabled_oracle =
         Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
@@ -2833,7 +2833,7 @@ fn arrangement_instrument_bypass_at_position(
     reenabled_oracle.render(&mut expected)?;
     measured_block(&mut callback, &mut actual);
     compare_output(&actual, &expected);
-    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status().rejected_revision().is_none());
 
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut actual);

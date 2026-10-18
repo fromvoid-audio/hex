@@ -148,9 +148,9 @@ fn route_gate_refuses_audio_or_revision_mismatch() {
 fn faulted_or_shutdown_audio_cannot_admit_a_prepared_seek() {
     let (control, _callback, project, revision) = active_arrangement_control();
     for flag in [
-        &control.status.device_fault,
-        &control.status.render_fault,
-        &control.status.shutdown_complete,
+        &control.status().device_fault,
+        &control.status().render_fault,
+        &control.status().shutdown_complete,
     ] {
         flag.store(true, std::sync::atomic::Ordering::Release);
         assert!(capture_arrangement_fence(&control, &project, revision).is_none());
@@ -388,7 +388,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         .expect("stateful candidate apply");
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         candidate_revision
@@ -460,14 +460,14 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
     callback.begin_block();
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         active_revision,
         "the stale seek graph never becomes active"
     );
     assert_eq!(
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
         Some((
             audio_revision,
             hex_engine::playback::PlaybackHandoffRejection::FreshRuntimeCancelled
@@ -482,7 +482,7 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
         &mut status,
         &mut error,
         active_revision,
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
     ));
     assert!(pending_slot.is_none());
     assert_eq!(status, "arrangement seek ready · waiting for audio");

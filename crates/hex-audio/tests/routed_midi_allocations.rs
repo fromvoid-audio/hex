@@ -148,7 +148,7 @@ fn source_only_midi_fanout_launch_release_relaunch_and_handoff_have_no_callback_
     });
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         next

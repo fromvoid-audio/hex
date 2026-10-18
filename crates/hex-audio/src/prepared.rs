@@ -27,6 +27,8 @@ const COMMANDS: usize = 32;
 mod admission;
 mod eligible_publication;
 mod endpoints;
+mod worker_publication;
+pub use worker_publication::WorkerPublication;
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
@@ -807,7 +809,7 @@ pub struct PublicationControl {
     candidate_root: crate::candidate_custody::CandidateRoot,
     native_custody: bool,
     held_control_return: Option<ReturnedPublication>,
-    pub status: Arc<Status>,
+    pub(crate) status: Arc<Status>,
     rate: u32,
     revision: u64,
     command_storage_bytes: usize,
@@ -1086,6 +1088,10 @@ fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
 }
 
 impl PublicationControl {
+    /// Borrow telemetry without exposing its owning shared handle.
+    pub fn status(&self) -> &Status {
+        &self.status
+    }
     /// Correlation for nonowning client/view metadata, never custody authority.
     pub fn output_identity(&self) -> Option<u64> {
         Some(self.candidate_root.root_id())

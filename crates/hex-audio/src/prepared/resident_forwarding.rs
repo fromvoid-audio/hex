@@ -374,7 +374,7 @@ mod tests {
         client.activate();
         // Hold the worker's real cell guard; client methods must try, not wait.
         let held = worker
-            .control()
+            .owner_ref()
             .unwrap()
             .resident_forwarding
             .as_ref()

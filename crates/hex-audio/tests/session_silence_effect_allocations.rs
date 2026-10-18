@@ -122,7 +122,7 @@ fn stopped_session_audio_drains_live_filter_without_callback_allocation_or_drop(
         (0, 0, 0, 0)
     );
     assert_eq!(actual, expected);
-    assert!(control.status.rejected_action().is_none());
+    assert!(control.status().rejected_action().is_none());
     control.command(PlaybackCommand::Stop).unwrap();
     let stopped = measure(|| {
         callback.begin_block();

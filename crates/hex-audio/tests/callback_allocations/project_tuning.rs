@@ -85,9 +85,9 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
             let mut output = [[0.0; 2]; 137];
             measured_block(&mut callback, &mut output);
             assert!(
-                control.status.rejected_revision().is_none(),
+                control.status().rejected_revision().is_none(),
                 "{kind} at {index}: {:?}",
-                control.status.rejected_revision()
+                control.status().rejected_revision()
             );
             assert!(!input.is_cancelled(), "{kind}");
             assert!(output.iter().flatten().all(|sample| sample.is_finite()));
@@ -165,7 +165,7 @@ fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
             .unwrap();
         control.publish(next).unwrap();
         measured_block(&mut callback, &mut output);
-        assert!(control.status.rejected_revision().is_none());
+        assert!(control.status().rejected_revision().is_none());
         assert!(!input.is_cancelled());
         for (offset, frame) in output.iter().enumerate() {
             let expected = (std::f64::consts::TAU * (phase + hz * offset as f64 / f64::from(RATE)))
@@ -223,7 +223,7 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
         control.publish(candidate).unwrap();
         let mut output = [[0.0; 2]; 137];
         measured_block(&mut callback, &mut output);
-        assert!(control.status.rejected_revision().is_none());
+        assert!(control.status().rejected_revision().is_none());
         assert!(!input.is_cancelled());
         assert_ne!(input.held_keys()[0] & (1 << 60), 0);
         for frame in output {
@@ -267,7 +267,7 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
         control.publish(candidate).unwrap();
         let mut output = [[0.0; 2]; 137];
         measured_block(&mut callback, &mut output);
-        assert!(control.status.rejected_revision().is_none());
+        assert!(control.status().rejected_revision().is_none());
         assert!(!input.is_cancelled());
         if unsupported {
             assert_eq!(input.held_keys(), [0; 2]);

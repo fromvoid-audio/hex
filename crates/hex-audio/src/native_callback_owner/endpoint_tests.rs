@@ -80,7 +80,7 @@ fn actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease
         });
         let native = NativeRetirement::new(terminals, root.clone());
         let stream = crate::lifecycle::StreamOwner::prepared_custody(lease, Some(reaper), native);
-        let control = publication.control().unwrap();
+        let mut control = publication.control().unwrap();
         control.enable_native_custody().unwrap();
         let native_bytes = control
             .native_candidate_root()
@@ -295,7 +295,7 @@ fn exposed_resident_client_permanently_refuses_later_constructor_conversion() {
     let (data, errors, terminals, mut client, mut publication) =
         reserve_native_worker(control, callback, None);
     let mut retirement = NativeRetirement::new(terminals, root);
-    let control = publication.control().unwrap();
+    let mut control = publication.control().unwrap();
     control.enable_native_custody().unwrap();
     client.activate(); // still Resident, no graph and no preview request
     assert!(
@@ -351,7 +351,7 @@ fn unrelated_spectrum_reader_or_reaper_cannot_cover_the_actual_capture_construct
         // Wrong Reader is refused at the four-terminal constructor; wrong
         // Reaper is refused when persistent lifecycle custody is paired.
         retirement.bind_spectrum_reaper(Some(if wrong_reader { &reaper } else { &other_reaper }));
-        let control = publication.control().unwrap();
+        let mut control = publication.control().unwrap();
         control.enable_native_custody().unwrap();
         assert!(root.native_boundary_bytes().is_none());
         assert!(
@@ -374,4 +374,114 @@ fn unrelated_spectrum_reader_or_reaper_cannot_cover_the_actual_capture_construct
         other_reaper.shutdown_and_join().unwrap();
         crate::prepared::candidate_tests::finish(&mut retirement);
     }
+}
+
+/// Actual endpoint Boxes and constructor-paired terminals, not synthetic loans.
+#[test]
+fn affine_worker_publication_swap_keeps_actual_endpoint_root_status_and_terminal() {
+    let _serial = crate::prepared::candidate_tests::serial();
+    let (control_a, callback_a) = prepared::channel(48_000).unwrap();
+    let (control_b, callback_b) = prepared::channel(48_000).unwrap();
+    let (data_a, errors_a, mut terminals_a, mut client_a, mut worker_a) =
+        reserve_native_worker(control_a, callback_a, None);
+    let (data_b, errors_b, mut terminals_b, mut client_b, mut worker_b) =
+        reserve_native_worker(control_b, callback_b, None);
+    let before = |worker: &prepared::WorkerControl| {
+        let owner = worker.owner_ref().unwrap();
+        (
+            owner as *const _ as usize,
+            owner.output_identity(),
+            owner.status() as *const _ as usize,
+        )
+    };
+    let a = before(&worker_a);
+    let b = before(&worker_b);
+    assert_ne!(a.0, b.0);
+    assert_ne!(a.1, b.1);
+    assert_ne!(a.2, b.2);
+    {
+        let mut loan_a = worker_a.control().unwrap();
+        let mut loan_b = worker_b.control().unwrap();
+        let measured = allocation_counter::measure(|| {
+            std::mem::swap(&mut loan_a, &mut loan_b);
+            assert_eq!(loan_a.output_identity(), b.1);
+            assert_eq!(loan_b.output_identity(), a.1);
+            loan_a.status().device_fault.store(true, SeqCst);
+            loan_a.request_shutdown();
+            assert!(loan_a.status().device_fault.load(Acquire));
+            assert!(!loan_b.status().device_fault.load(Acquire));
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    assert_eq!(before(&worker_a), a);
+    assert_eq!(before(&worker_b), b);
+    assert!(
+        !worker_a
+            .control()
+            .unwrap()
+            .status()
+            .device_fault
+            .load(Acquire)
+    );
+    assert!(
+        worker_b
+            .control()
+            .unwrap()
+            .status()
+            .device_fault
+            .load(Acquire)
+    );
+    worker_a.close();
+    worker_b.close();
+    assert!(worker_a.control().is_none() && worker_b.control().is_none());
+    let owner_a = terminals_a
+        .endpoints
+        .as_mut()
+        .unwrap()
+        .publication
+        .take()
+        .unwrap();
+    let owner_b = terminals_b
+        .endpoints
+        .as_mut()
+        .unwrap()
+        .publication
+        .take()
+        .unwrap();
+    assert_eq!(
+        (
+            &*owner_a as *const _ as usize,
+            owner_a.output_identity(),
+            owner_a.status() as *const _ as usize
+        ),
+        a
+    );
+    assert_eq!(
+        (
+            &*owner_b as *const _ as usize,
+            owner_b.output_identity(),
+            owner_b.status() as *const _ as usize
+        ),
+        b
+    );
+    client_a.close();
+    client_b.close();
+    drop((
+        owner_a,
+        owner_b,
+        data_a,
+        errors_a,
+        data_b,
+        errors_b,
+        terminals_a,
+        terminals_b,
+    ));
 }

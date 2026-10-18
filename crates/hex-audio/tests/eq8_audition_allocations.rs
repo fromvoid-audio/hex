@@ -236,7 +236,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
     control.reclaim();
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         revision,
@@ -290,7 +290,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
     control.reclaim();
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         second_edit_revision,
@@ -344,7 +344,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
     control.reclaim();
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         edited_revision,
@@ -396,7 +396,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
     );
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         release_candidate_revision,

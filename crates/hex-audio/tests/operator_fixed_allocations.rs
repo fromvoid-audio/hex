@@ -385,11 +385,11 @@ fn operator_modulation_allocations(
         assert!(
             output == expected,
             "operator callback transfer PCM block={block} accepted={accepted:?} applied={}",
-            control.status.applied_revision.load(Ordering::Acquire)
+            control.status().applied_revision.load(Ordering::Acquire)
         );
         if let Some(accepted) = accepted {
             assert_eq!(
-                control.status.applied_revision.load(Ordering::Acquire),
+                control.status().applied_revision.load(Ordering::Acquire),
                 accepted
             );
         }
@@ -641,7 +641,7 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
             "compatible EQ8 parameter handoff callback allocation"
         );
         assert_eq!(
-            control.status.applied_revision.load(Ordering::Acquire),
+            control.status().applied_revision.load(Ordering::Acquire),
             accepted_revision
         );
         assert_eq!(output, expected, "compatible EQ8 handoff changed PCM");

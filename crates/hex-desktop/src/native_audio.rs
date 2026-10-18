@@ -35,7 +35,7 @@ struct Domain {
     retiring: bool,
 }
 impl Domain {
-    fn request_retirement(&mut self, control: &mut hex_audio::prepared::PublicationControl) {
+    fn request_retirement(&mut self, control: &mut hex_audio::prepared::WorkerPublication<'_>) {
         // Local cleanup intent survives Root's transition into Cleaning or
         // Complete (including verification failure before our first request).
         // Only exact report recovery removes this adapter record.
@@ -212,7 +212,7 @@ impl NativeAudioSink {
                 .map_err(Clone::clone)
                 .and_then(|policy| {
                     policy.configure(
-                        output
+                        &mut output
                             .publication
                             .control()
                             .ok_or("audio publication endpoint is closed")?,
@@ -289,7 +289,7 @@ impl NativeAudioSink {
             self.relinquish_output();
         }
     }
-    fn maintain_returns(&mut self, control: &mut hex_audio::prepared::PublicationControl) {
+    fn maintain_returns(&mut self, control: &mut hex_audio::prepared::WorkerPublication<'_>) {
         control.reclaim();
         for submitted in &mut self.submitted {
             if submitted
@@ -308,10 +308,10 @@ impl NativeAudioSink {
         }
     }
     fn drive_verified(&mut self, output: &mut WorkerPreparedOutput) {
-        let Some(control) = output.publication.control() else {
+        let Some(mut control) = output.publication.control() else {
             return;
         };
-        self.maintain_returns(control);
+        self.maintain_returns(&mut control);
         let Some(snapshot) = self.desired.clone() else {
             return;
         };
@@ -326,7 +326,9 @@ impl NativeAudioSink {
             );
             return;
         }
-        if control.status.device_fault.load(Acquire) || control.status.render_fault.load(Acquire) {
+        if control.status().device_fault.load(Acquire)
+            || control.status().render_fault.load(Acquire)
+        {
             self.observe(
                 context,
                 "fault",
@@ -356,7 +358,7 @@ impl NativeAudioSink {
                         .flatten()
                         .find(|d| d.token == token && !d.ready)
                     {
-                        domain.request_retirement(control);
+                        domain.request_retirement(&mut control);
                     }
                 }
             }
@@ -365,7 +367,7 @@ impl NativeAudioSink {
             let token = self.preparation.as_ref().map(|p| p.token);
             if token.is_some_and(|token| {
                 matches!(
-                    control.prepare_audio_candidate_on_control(token, |_| Ok(())),
+                    control.prepare_audio_candidate_on_control_unqualified(token, |_| Ok(())),
                     Err(reason) if reason != "candidate preparation is busy"
                 )
             }) {
@@ -434,7 +436,7 @@ impl NativeAudioSink {
             };
             let existing =
                 self.domains.iter().flatten().find(|d| {
-                    d.ready && !d.retiring && d.sources.covers(&snapshot, d.token, control)
+                    d.ready && !d.retiring && d.sources.covers(&snapshot, d.token, &control)
                 });
             let domain = existing.map(|d| d.token);
             let catalog = if let Some(d) = existing {
@@ -481,11 +483,11 @@ impl NativeAudioSink {
                 }
             }
         }
-        self.advance_preparation(control, policy);
+        self.advance_preparation(&mut control, policy);
     }
     fn advance_preparation(
         &mut self,
-        control: &mut hex_audio::prepared::PublicationControl,
+        control: &mut hex_audio::prepared::WorkerPublication<'_>,
         policy: AudioPolicy,
     ) {
         let Some(mut pending) = self.preparation.take() else {
@@ -601,29 +603,30 @@ impl NativeAudioSink {
             let record = pending
                 .domain
                 .and_then(|token| self.domains.iter().flatten().find(|d| d.token == token));
-            let prepared = control.prepare_audio_candidate_on_control(pending.token, |cell| {
-                for (asset, source) in pending.snapshot.required_sources() {
-                    match source {
-                        AudioSourceBinding::Resident(audio) => {
-                            cell.copy_resident_source_on_control(asset, audio)?
-                        }
-                        AudioSourceBinding::VerifiedFile(_) => {
-                            let metadata = record
-                                .and_then(|d| {
-                                    d.sources.metadata_for(hex_engine::StreamSourceKey::new(
-                                        pending.catalog,
-                                        asset,
-                                    ))
-                                })
-                                .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
-                            cell.add_streamed_source_on_control(metadata.clone())?;
+            let prepared =
+                control.prepare_audio_candidate_on_control_unqualified(pending.token, |cell| {
+                    for (asset, source) in pending.snapshot.required_sources() {
+                        match source {
+                            AudioSourceBinding::Resident(audio) => {
+                                cell.copy_resident_source_on_control(asset, audio)?
+                            }
+                            AudioSourceBinding::VerifiedFile(_) => {
+                                let metadata = record
+                                    .and_then(|d| {
+                                        d.sources.metadata_for(hex_engine::StreamSourceKey::new(
+                                            pending.catalog,
+                                            asset,
+                                        ))
+                                    })
+                                    .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
+                                cell.add_streamed_source_on_control(metadata.clone())?;
+                            }
                         }
                     }
-                }
-                pending
-                    .snapshot
-                    .prepare_candidate_on_control(pending.catalog, cell)
-            });
+                    pending
+                        .snapshot
+                        .prepare_candidate_on_control(pending.catalog, cell)
+                });
             match prepared {
                 Ok(hex_audio::AudioCandidatePreparationProgress::Ready) => pending.built = true,
                 Err("candidate preparation is busy") => {
@@ -676,7 +679,7 @@ impl NativeAudioSink {
     }
     fn fail_preparation(
         &mut self,
-        control: &mut hex_audio::prepared::PublicationControl,
+        control: &mut hex_audio::prepared::WorkerPublication<'_>,
         mut pending: Preparation,
         error: String,
     ) {
@@ -767,7 +770,7 @@ impl WorkerAudioSink for NativeAudioSink {
                     .is_some_and(|s| s.audio_mode() == DocumentAudioMode::VerifiedStreaming)
                 {
                     self.drive_verified(&mut output);
-                } else if let Some(control) = output.publication.control() {
+                } else if let Some(mut control) = output.publication.control() {
                     control.reclaim();
                     control.poll_resident_publication();
                 }

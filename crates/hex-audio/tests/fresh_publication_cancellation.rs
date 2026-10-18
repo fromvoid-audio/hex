@@ -72,9 +72,9 @@ fn cancelled_conditional_candidate_retires_without_callback_allocation_or_drop()
         FreshRuntimeCancellationResult::Cancelled
     );
     measured_block(&mut callback, &mut output);
-    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(control.status().applied_revision.load(Acquire), 1);
     assert_eq!(
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
         Some((candidate, PlaybackHandoffRejection::FreshRuntimeCancelled))
     );
     assert_eq!(output, [[0.25, -0.25]; 32], "old PCM remains active");
@@ -108,7 +108,7 @@ fn accepted_stale_backpressured_and_shutdown_candidates_remain_callback_bounded(
         )
         .expect("fresh candidate");
     measured_block(&mut callback, &mut output);
-    assert_eq!(control.status.applied_revision.load(Acquire), accepted);
+    assert_eq!(control.status().applied_revision.load(Acquire), accepted);
     assert_eq!(
         control.cancel_fresh_runtime_publication(accepted),
         FreshRuntimeCancellationResult::Complete
@@ -132,9 +132,9 @@ fn accepted_stale_backpressured_and_shutdown_candidates_remain_callback_bounded(
         )
         .expect("stale candidate");
     measured_block(&mut callback, &mut output);
-    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(control.status().applied_revision.load(Acquire), 1);
     assert_eq!(
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
         Some((rejected, PlaybackHandoffRejection::RuntimeFenceChanged))
     );
     assert_eq!(control.reclaim(), 1);
@@ -163,12 +163,12 @@ fn accepted_stale_backpressured_and_shutdown_candidates_remain_callback_bounded(
         FreshRuntimeCancellationResult::Cancelled
     );
     measured_block(&mut callback, &mut output);
-    assert_eq!(control.status.applied_revision.load(Acquire), 3);
-    assert_eq!(control.status.rejected_revision(), None);
+    assert_eq!(control.status().applied_revision.load(Acquire), 3);
+    assert_eq!(control.status().rejected_revision(), None);
     assert_eq!(control.reclaim(), 2);
     measured_block(&mut callback, &mut output);
     assert_eq!(
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
         Some((cancelled, PlaybackHandoffRejection::FreshRuntimeCancelled))
     );
     assert_eq!(control.reclaim(), 1);
@@ -192,7 +192,7 @@ fn accepted_stale_backpressured_and_shutdown_candidates_remain_callback_bounded(
     );
     measured_shutdown(&mut control, &mut callback, &mut output);
     assert_eq!(
-        control.status.rejected_revision(),
+        control.status().rejected_revision(),
         Some((
             shutting_down,
             PlaybackHandoffRejection::FreshRuntimeCancelled
@@ -212,5 +212,5 @@ fn accepted_stale_backpressured_and_shutdown_candidates_remain_callback_bounded(
         )
         .expect("queued shutdown candidate");
     measured_shutdown(&mut control, &mut callback, &mut output);
-    assert_eq!(control.status.rejected_revision(), None);
+    assert_eq!(control.status().rejected_revision(), None);
 }

@@ -81,8 +81,8 @@ impl WorkerControl {
     }
 
     /// Worker-side access only. The UI receives Client, never this endpoint.
-    pub fn control(&mut self) -> Option<&mut PublicationControl> {
-        self.endpoint.owner_mut()
+    pub fn control(&mut self) -> Option<WorkerPublication<'_>> {
+        self.endpoint.owner_mut().map(WorkerPublication::new)
     }
     pub fn close(&mut self) {
         if let Some(control) = self.endpoint.owner_mut() {

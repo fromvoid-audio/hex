@@ -108,12 +108,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     unchanged.push(elapsed);
                 }
             }
-            if control.status.rejected_action().is_some() {
+            if control.status().rejected_action().is_some() {
                 return Err("benchmark action was rejected".into());
             }
             let start = Instant::now();
             let snapshot = control
-                .status
+                .status()
                 .session_routes(black_box(&mut routes))
                 .ok_or("uncontended route snapshot unavailable")?;
             let elapsed = start.elapsed().as_nanos();

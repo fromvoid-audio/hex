@@ -814,8 +814,20 @@ The actual private Callback Status field now supplies a separate sealed
 construction initializes that field with fresh Arc::new(Status::try_new());
 matching data/error/client/publication fields are correlations with that actual
 origin, never raw Arc adoption. Public legacy Status construction is not an
-alternate receipt constructor. The native worker UI client exposes only a
-borrowed Status; generic raw legacy handle escape is not certified by this record.
+alternate receipt constructor. Client and split WorkerPublication expose only
+borrowed Status; the owning field is crate-private. Under Pulse2783/22751,
+WorkerControl::control returns an affine, private-construct WorkerPublication
+loan with explicit read/operation forwarding and no Deref, Clone or concrete
+mutable payload access. Swapping loans does not swap endpoint Boxes, terminal
+associations, queues, Root or Status. Legacy unsplit Control remains a separately
+unqualified mutable path.
+
+The explicitly named prepare_audio_candidate_on_control_unqualified operation
+still lends the actual mutable AudioCandidatePreparation child to a closure.
+That permits safe child extraction/replacement and remains OUTSIDE closed-graph
+conservation qualification. Before supported graph use it requires a nonextracting
+preparation facade or concrete typed operations; the endpoint loan alone is not
+complete callback custody, child ownership or admission proof.
 
 The record covers the requested full Status Arc allocation and actual fixed
 route Box backing. Compile-exhaustive concrete leaf checks cover every Status,

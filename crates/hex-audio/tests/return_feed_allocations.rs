@@ -171,7 +171,7 @@ fn assert_callback(automation: bool) {
         callback.begin_block();
         callback.render(&mut output).unwrap();
     }));
-    assert!(control.status.rejected_action().is_none());
+    assert!(control.status().rejected_action().is_none());
     assert!(
         control.reclaim() > 0,
         "old revision ownership must retire to the control side"

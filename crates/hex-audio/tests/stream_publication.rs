@@ -101,7 +101,7 @@ fn streamed_candidates_are_returned_before_publication_or_revision_admission() {
                 "caller keeps candidate"
             );
             callback.begin_block();
-            assert_eq!(control.status.applied_revision.load(Acquire), 0);
+            assert_eq!(control.status().applied_revision.load(Acquire), 0);
         }
     }
     // Refusal must not consume a publication slot or increment the revision.
@@ -133,7 +133,7 @@ fn streamed_candidates_are_returned_before_publication_or_revision_admission() {
     };
     assert_eq!(admitted, 1);
     callback.begin_block();
-    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(control.status().applied_revision.load(Acquire), 1);
     control.request_shutdown();
     callback.begin_block();
     control.reclaim();
