@@ -1092,3 +1092,35 @@ child selection, fresh complete compiler ingress, aggregate reservation before
 the first owner, failed parent retention and Service/native publication remain
 unfinished. Public native construction guards and Sampler registration remain
 closed; no usable device, panel, build or listening acceptance follows from it.
+
+The common compiler also has a private Track-child selection. Its existing row
+reservation creates each original meter and concrete Utility chain once, and
+moves them with their declarations into the actual retained Project. Sends move
+from those same pre-reserved rows. The common compiler prepares the canonical
+gain curve directly; this route does not first build and replace a copied gain
+curve. Existing legacy source/clip constructors remain unchanged.
+
+A present instrument requires the actual retained concrete Sampler preparation
+matching its Track/device/state/rate before Track child births; a type ID alone,
+a missing/stale table, or an opaque provider cannot qualify it. Direct and routed
+MIDI use the existing compiler's note spans, banks and retained context. Actual
+canonical instrument state remains an independently visited alias. Restoration,
+capacity traversal and pending control disposal use the existing Track rows;
+disposal explicitly refuses owners still held in the external Project.
+
+Four new tests cover Utility filter/bypass/gain-automation/sends equivalence,
+selected child aliases and exact budgets, partial error/panic retention,
+unsupported ingress before context transfer, and loaded direct/routed Sampler
+Tracks. The latter join the actual original resource bank, editor native-state
+history, Project context and Track children in a selected ledger, then retain
+factory-driven original PCM after editor/bank retirement. This is selected
+storage and a concrete factory PCM test, not a complete Project/root admission,
+renderer, callback, final-drop-panic or peak certificate.
+
+This private Track route currently refuses authored Arrangement audio clips and
+non-Sampler instrument providers. The ordinary public compiler retains their
+existing behavior. Track-only and Return-only selections are not yet the single
+combined private ingress. Their combined child projection, aggregate quote before
+any new owner, complete compiler products/failure custody, Service current/pending
+binding and guarded native publication remain required before registration. The
+full playable UI/loading/music workflow remains open.

@@ -1161,3 +1161,612 @@ fn compiler_source_rows_refuse_equal_independent_bank_before_attempt() {
         }));
     }
 }
+
+fn compiler_track_child_fixture(
+    filtered: bool,
+    bypassed: bool,
+    automation: bool,
+) -> hex_project::Project {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+    for name in ["first", "second"] {
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: name.into() })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+    }
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack { name: "bus".into() })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    let mut snapshot = editor.project().snapshot();
+    let definition = &hex_devices::utility::UTILITY_DEFINITION;
+    let state = definition
+        .patch_parameter(
+            &definition.default_state().unwrap(),
+            hex_devices::utility::parameter::DC_REMOVE,
+            ParameterValue::Bool(filtered),
+        )
+        .unwrap()
+        .with_input_gain_millidb(-6000)
+        .unwrap()
+        .with_output_gain_millidb(3000)
+        .unwrap();
+    snapshot.tracks[0].gain = 0.75;
+    snapshot.tracks[0].balance = -0.3;
+    snapshot.tracks[0]
+        .devices
+        .push(hex_project::DeviceSnapshot {
+            id: snapshot.next_id,
+            bypassed,
+            state,
+        });
+    snapshot.next_id += 1;
+    snapshot.tracks[0]
+        .sends
+        .push(hex_project::SendLevelSnapshot {
+            return_track: bus.value(),
+            gain: 0.25,
+        });
+    if automation {
+        snapshot.tracks[0].gain_envelope = vec![
+            GainPoint {
+                beat: BeatTime::ZERO,
+                gain: 0.5,
+                outgoing: GainInterpolation::Linear,
+            },
+            GainPoint {
+                beat: BeatTime::ONE,
+                gain: 1.2,
+                outgoing: GainInterpolation::Step,
+            },
+        ];
+    }
+    hex_project::Project::from_snapshot(snapshot).unwrap()
+}
+
+#[test]
+fn selected_track_children_use_original_births_and_same_mix_gain_sends_and_retirement() {
+    if !supported("selected_track_children_common_compiler") {
+        return;
+    }
+    for filtered in [false, true] {
+        for bypassed in [false, true] {
+            for automation in [false, true] {
+                eprintln!(
+                    "SUPPORTED selected_track_children filtered={filtered} bypassed={bypassed} automation={automation}"
+                );
+                let project = compiler_track_child_fixture(filtered, bypassed, automation);
+                let snapshot = project.snapshot();
+                let reference = crate::compile::project(&project, &BTreeMap::new()).unwrap();
+                let mut rows = ArrangementClips::default();
+                let effects = hex_devices::native_registry().unwrap();
+                let instruments = hex_devices::native_instrument_registry().unwrap();
+                let transforms = crate::audio_transform::AudioTransformPreparation::default();
+                let mut contexts = None;
+                let mut destination = None;
+                transforms
+                    .compile_transaction(|| {
+                        crate::compile::compile_project_into_with_children(
+                            &project,
+                            |_, _| panic!("no authored audio source"),
+                            None,
+                            &effects,
+                            &instruments,
+                            &mut contexts,
+                            &transforms,
+                            &mut destination,
+                            None,
+                            None,
+                            Some(&mut rows),
+                        )
+                    })
+                    .unwrap();
+                let actual = destination.as_mut().unwrap();
+                assert_eq!(actual.tracks.len(), 2);
+                for (index, (track, expected)) in
+                    actual.tracks.iter().zip(&reference.tracks).enumerate()
+                {
+                    let row = &rows.tracks.rows[index];
+                    assert_eq!(row.root_index, Some(index));
+                    assert!(row.meter.is_none() && row.chain.is_none() && row.track.is_none());
+                    assert_eq!(Arc::strong_count(&track.instrument_meter), 1);
+                    assert_eq!(Arc::strong_count(&track.device_chain), 1);
+                    assert!(
+                        row.meter_declaration
+                            .as_ref()
+                            .and_then(|d| d.parts(&track.instrument_meter))
+                            .is_some()
+                    );
+                    assert_eq!(track.mix, expected.mix);
+                    assert_eq!(track.source_mix, expected.source_mix);
+                    assert_eq!(track.sends.len(), expected.sends.len());
+                    for (send, other) in track.sends.iter().zip(&expected.sends) {
+                        assert_eq!(
+                            (send.return_index, send.gain),
+                            (other.return_index, other.gain)
+                        );
+                    }
+                    let knots = |track: &Track| {
+                        track
+                            .gain_envelope_knots()
+                            .iter()
+                            .map(|k| (k.frame(), k.gain(), k.outgoing()))
+                            .collect::<Vec<_>>()
+                    };
+                    assert_eq!(knots(track), knots(expected));
+                    if index == 0 {
+                        assert_eq!(track.device_chain.len(), 1);
+                        assert_eq!(track.device_chain[0].definition.is_some(), filtered);
+                        assert_eq!(track.device_chain[0].bypassed, bypassed);
+                    } else {
+                        assert!(track.device_chain.is_empty());
+                    }
+                }
+                let pointers = actual
+                    .tracks
+                    .iter()
+                    .map(|t| {
+                        (
+                            Arc::as_ptr(&t.instrument_meter),
+                            Arc::as_ptr(&t.device_chain),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                rows.tracks.capacity_at(false, &actual.tracks).unwrap();
+                assert_eq!(
+                    rows.tracks.dispose_next(&mut rows.rows),
+                    Err(AudioStorageError::UnknownStorage)
+                );
+                rows.tracks.preflight_root_restore(&actual.tracks).unwrap();
+                rows.tracks.restore_root_rows(&mut actual.tracks);
+                for (row, (meter, chain)) in rows.tracks.rows.iter().zip(pointers) {
+                    let track = row.track.as_ref().unwrap();
+                    assert_eq!(Arc::as_ptr(&track.instrument_meter), meter);
+                    assert_eq!(Arc::as_ptr(&track.device_chain), chain);
+                }
+                while rows.tracks.has_next() {
+                    rows.tracks.dispose_next(&mut rows.rows).unwrap();
+                }
+                rows.tracks.clear_disposed().unwrap();
+                assert_eq!(project.snapshot(), snapshot);
+            }
+        }
+    }
+}
+
+#[test]
+fn selected_track_children_partial_failure_keeps_actual_rows_and_refuses_unsupported_ingress() {
+    if !supported("selected_track_children_failure_inventory") {
+        return;
+    }
+    let collect = |rows: &TrackAssembly, roots: &Vec<Track>, budget| {
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(budget)?;
+        ledger.root(rows, crate::AudioStorageRole::Current)?;
+        ledger.vec(roots)?;
+        ledger.mutate(|ledger| rows.visit_audio_storage(ledger, roots))?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        let report = ledger.summary()?;
+        report.require_known_storage().unwrap();
+        assert_eq!(
+            report.require_complete(),
+            Err(crate::AudioStorageIncomplete::RetirementReceiptUnknown)
+        );
+        Ok::<_, AudioStorageError>(report)
+    };
+    let budget = crate::AudioStorageLedgerReservation {
+        data_rows: 512,
+        handle_rows: 512,
+        root_rows: 32,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    for panic in [false, true] {
+        eprintln!("SUPPORTED selected_track_children_failure_inventory panic={panic}");
+        let project = compiler_track_child_fixture(true, false, true);
+        let mut rows = ArrangementClips::default();
+        rows.tracks.fail_after = (!panic).then_some(0);
+        rows.tracks.panic_after = panic.then_some(0);
+        let effects = hex_devices::native_registry().unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let mut contexts = None;
+        let mut destination = None;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            transforms.compile_transaction(|| {
+                crate::compile::compile_project_into_with_children(
+                    &project,
+                    |_, _| panic!("no audio sources"),
+                    None,
+                    &effects,
+                    &instruments,
+                    &mut contexts,
+                    &transforms,
+                    &mut destination,
+                    None,
+                    None,
+                    Some(&mut rows),
+                )
+            })
+        }));
+        if panic {
+            assert!(result.is_err());
+        } else {
+            assert!(matches!(
+                result.unwrap(),
+                Err(crate::Invalid(
+                    "compiler paired Track destination is unavailable"
+                ))
+            ));
+        }
+        let actual = destination.as_mut().unwrap();
+        assert_eq!(actual.tracks.len(), 1);
+        assert_eq!(rows.tracks.rows[0].root_index, Some(0));
+        assert!(rows.tracks.rows[1].meter.is_some() && rows.tracks.rows[1].chain.is_some());
+        let meter = Arc::as_ptr(&actual.tracks[0].instrument_meter);
+        let chain = Arc::as_ptr(&actual.tracks[0].device_chain);
+        let state = Arc::as_ptr(
+            actual.tracks[0].device_chain[0]
+                .configuration
+                .as_ref()
+                .unwrap(),
+        );
+        let report = collect(&rows.tracks, &actual.tracks, budget).unwrap();
+        let mut exact = budget;
+        exact.max_retained_bytes = report.retained_bytes;
+        exact.max_construction_peak_bytes = report.construction_peak_bytes;
+        assert_eq!(
+            collect(&rows.tracks, &actual.tracks, exact).unwrap(),
+            report
+        );
+        exact.max_retained_bytes -= 1;
+        assert_eq!(
+            collect(&rows.tracks, &actual.tracks, exact),
+            Err(AudioStorageError::ReservationExceeded)
+        );
+        // A genuine extra physical meter field must join closure independently.
+        let exported = Arc::clone(&actual.tracks[0].instrument_meter);
+        assert!(collect(&rows.tracks, &actual.tracks, budget).is_err());
+        drop(exported);
+        rows.tracks.preflight_root_restore(&actual.tracks).unwrap();
+        rows.tracks.restore_root_rows(&mut actual.tracks);
+        let first = rows.tracks.rows[0].track.as_ref().unwrap();
+        assert_eq!(Arc::as_ptr(&first.instrument_meter), meter);
+        assert_eq!(Arc::as_ptr(&first.device_chain), chain);
+        assert_eq!(
+            Arc::as_ptr(first.device_chain[0].configuration.as_ref().unwrap()),
+            state
+        );
+        while rows.tracks.has_next() {
+            rows.tracks.dispose_next(&mut rows.rows).unwrap();
+            collect(&rows.tracks, &actual.tracks, budget).unwrap();
+        }
+        rows.tracks.clear_disposed().unwrap();
+    }
+    // Existing original-source/loaded instruments require their actual ingress,
+    // not adoption by this first meter/chain-only selection.
+    let (project, bank, _) = fixture(false, false, false, 1);
+    let pointer = bank.sources.as_ptr();
+    let mut rows = ArrangementClips::default();
+    let effects = hex_devices::native_registry().unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let transforms = crate::audio_transform::AudioTransformPreparation::default();
+    let mut contexts = Some(crate::owned_shared::OwnedShared::new_owned(
+        crate::shared_analytic::SharedAnalyticContextTable::default(),
+    ));
+    let context = Arc::as_ptr(contexts.as_ref().unwrap().arc());
+    let mut destination = None;
+    assert!(matches!(
+        crate::compile::compile_project_into_with_children(
+            &project,
+            |_, _| panic!("unsupported selection before source lookup"),
+            None,
+            &effects,
+            &instruments,
+            &mut contexts,
+            &transforms,
+            &mut destination,
+            None,
+            None,
+            Some(&mut rows),
+        ),
+        Err(crate::Invalid(
+            "compiler paired Track children are unavailable"
+        ))
+    ));
+    assert!(destination.is_none());
+    assert_eq!(Arc::as_ptr(contexts.as_ref().unwrap().arc()), context);
+    assert!(rows.tracks.phase == Phase::Vacant);
+    assert!(rows.tracks.rows.is_empty());
+    assert_eq!(bank.sources.as_ptr(), pointer);
+}
+
+#[test]
+fn selected_track_children_loaded_sampler_uses_actual_context_and_survives_restore_and_retirement()
+{
+    use crate::shared_analytic::SharedAnalyticContextTable;
+    if !supported("selected_track_children_loaded_sampler") {
+        return;
+    }
+    for routed in [false, true] {
+        eprintln!("SUPPORTED selected_track_children_loaded_sampler routed={routed}");
+        let (bank, identity, mut editor) =
+            crate::shared_analytic::sampler_tests::canonical_fixture().unwrap();
+        let source = editor.project().tracks()[0].id();
+        drop(identity);
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track: source,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+        if routed {
+            let state = editor
+                .project()
+                .track(source)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .state()
+                .clone();
+            let Created::Track(destination) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "destination".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            let device = editor
+                .project()
+                .track(destination)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            editor
+                .execute(Command::ReplaceDeviceState { device, state })
+                .unwrap();
+            editor
+                .execute(Command::SetMidiSource {
+                    destination,
+                    source: Some(source),
+                })
+                .unwrap();
+        }
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let effects = hex_devices::native_registry().unwrap();
+        let mut contexts = Some(
+            SharedAnalyticContextTable::prepare(
+                editor.project(),
+                &instruments,
+                None,
+                Some(crate::native_device_resources::DeviceResourcePreparation {
+                    bank: &bank,
+                    max_scope_metadata_bytes: 65_536,
+                }),
+            )
+            .unwrap(),
+        );
+        let table = Arc::as_ptr(contexts.as_ref().unwrap().arc());
+        let mut rows = ArrangementClips::default();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let mut destination = None;
+        transforms
+            .compile_transaction(|| {
+                crate::compile::compile_project_into_with_children(
+                    editor.project(),
+                    |_, _| panic!("device-only original is not an Arrangement audio clip"),
+                    None,
+                    &effects,
+                    &instruments,
+                    &mut contexts,
+                    &transforms,
+                    &mut destination,
+                    None,
+                    None,
+                    Some(&mut rows),
+                )
+            })
+            .unwrap();
+        assert!(contexts.is_none());
+        let actual = destination.as_mut().unwrap();
+        assert_eq!(Arc::as_ptr(actual.shared_contexts.arc()), table);
+        assert_eq!(actual.tracks.len(), if routed { 2 } else { 1 });
+        for (index, track) in actual.tracks.iter().enumerate() {
+            assert!(track.mutable_instrument);
+            assert_eq!(track.midi_source_index, (index == 1).then_some(0));
+            let instrument = track.instrument.as_ref().unwrap();
+            assert_eq!(Arc::as_ptr(instrument.shared_contexts.arc()), table);
+            assert_eq!(instrument.spans.len(), 1);
+            assert_eq!(
+                (instrument.spans[0].pitch, instrument.spans[0].velocity),
+                (60, 127)
+            );
+            assert_eq!(Arc::strong_count(&track.instrument_meter), 1);
+            assert_eq!(Arc::strong_count(&track.device_chain), 1);
+        }
+        let collect = |rows: &TrackAssembly, actual: &crate::Project| {
+            let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+                crate::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 4096,
+                    root_rows: 512,
+                    max_retained_bytes: 16 * 1024 * 1024,
+                    max_construction_peak_bytes: 16 * 1024 * 1024,
+                },
+            )
+            .unwrap();
+            ledger
+                .borrow_device_resource_bank_on_control(&bank, crate::AudioStorageRole::Caller)
+                .unwrap();
+            ledger
+                .borrow_editor_native_states_on_control(&editor)
+                .unwrap();
+            crate::shared_analytic::resource_storage::visit_table(
+                &actual.shared_contexts,
+                &mut ledger,
+                crate::AudioStorageRole::Caller,
+            )
+            .unwrap();
+            ledger.root(rows, crate::AudioStorageRole::Current).unwrap();
+            ledger.vec(&actual.tracks).unwrap();
+            ledger
+                .mutate(|ledger| rows.visit_audio_storage(ledger, &actual.tracks))
+                .unwrap();
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap();
+            let report = ledger.summary().unwrap();
+            report.require_known_storage().unwrap();
+            assert!(report.require_complete().is_err());
+            report
+        };
+        collect(&rows.tracks, actual);
+        rows.tracks.preflight_root_restore(&actual.tracks).unwrap();
+        rows.tracks.restore_root_rows(&mut actual.tracks);
+        collect(&rows.tracks, actual);
+        // The actual retained factory and canonical compiled note drive PCM;
+        // this is not a renderer publication or callback allocation test.
+        drop(editor);
+        drop(bank);
+        for row in &rows.tracks.rows {
+            let track = row.track.as_ref().unwrap();
+            let instrument = track.instrument.as_ref().unwrap();
+            let owner = instrument
+                .shared_contexts
+                .owner_for_device(track.instrument_id.unwrap())
+                .unwrap();
+            let state = track.instrument_state.as_ref().unwrap();
+            let factory = owner
+                .sampler_prepared_on_control(
+                    track.track_id.unwrap(),
+                    track.instrument_id.unwrap(),
+                    state,
+                    44_100,
+                )
+                .unwrap()
+                .unwrap();
+            let mut pair = hex_lattice::NativeInstrumentRuntimePair::new(
+                factory,
+                hex_lattice::NativeInstrumentRuntimeLimits {
+                    max_pair_bytes: 2 * 1024 * 1024,
+                    max_events_per_block: 259,
+                    max_active_occurrences: 32,
+                    max_tail_frames: 44_100 * 600,
+                },
+            )
+            .unwrap();
+            let note = &instrument.spans[0];
+            let mut pcm = [[0.0; 2]; 6];
+            pair.begin_block();
+            pair.process_block(
+                &[hex_lattice::NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 1,
+                    pitch: note.pitch,
+                    velocity: note.velocity,
+                }],
+                &mut pcm,
+                owner.resources(),
+            )
+            .unwrap();
+            pair.commit_block();
+            assert_eq!(&pcm[..4], &crate::native_device_resources::tests::PCM);
+            assert_eq!(&pcm[4..], &[[0.0; 2]; 2]);
+        }
+        while rows.tracks.has_next() {
+            rows.tracks.dispose_next(&mut rows.rows).unwrap();
+        }
+        rows.tracks.clear_disposed().unwrap();
+    }
+}
+
+#[test]
+fn selected_track_children_missing_or_stale_sampler_context_refuses_before_child_births() {
+    if !supported("selected_track_children_sampler_preflight") {
+        return;
+    }
+    for stale in [false, true] {
+        eprintln!("SUPPORTED selected_track_children_sampler_preflight stale={stale}");
+        let (bank, identity, mut editor) =
+            crate::shared_analytic::sampler_tests::canonical_fixture().unwrap();
+        let device = editor.project().tracks()[0].instrument().unwrap().id();
+        drop(identity);
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let effects = hex_devices::native_registry().unwrap();
+        let mut contexts = stale.then(|| {
+            crate::shared_analytic::SharedAnalyticContextTable::prepare(
+                editor.project(),
+                &instruments,
+                None,
+                Some(crate::native_device_resources::DeviceResourcePreparation {
+                    bank: &bank,
+                    max_scope_metadata_bytes: 65_536,
+                }),
+            )
+            .unwrap()
+        });
+        if stale {
+            let old = editor.project().tracks()[0].instrument().unwrap().state();
+            let mut state = hex_devices::sampler::state::SamplerState::from_native(old).unwrap();
+            state.transpose_semitones = 12.0;
+            let state = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(old.asset_references().to_vec())
+                .unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState { device, state })
+                .unwrap();
+        }
+        let pointer = contexts.as_ref().map(|value| Arc::as_ptr(value.arc()));
+        let mut rows = ArrangementClips::default();
+        let mut destination = None;
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        assert!(matches!(
+            crate::compile::compile_project_into_with_children(
+                editor.project(),
+                |_, _| panic!("preflight before source lookup"),
+                None,
+                &effects,
+                &instruments,
+                &mut contexts,
+                &transforms,
+                &mut destination,
+                None,
+                None,
+                Some(&mut rows),
+            ),
+            Err(crate::Invalid(
+                "compiler paired Track children are unavailable"
+            ))
+        ));
+        assert!(destination.is_none());
+        assert_eq!(
+            contexts.as_ref().map(|value| Arc::as_ptr(value.arc())),
+            pointer
+        );
+        assert!(rows.tracks.phase == Phase::Vacant);
+        assert!(rows.tracks.rows.is_empty());
+    }
+}

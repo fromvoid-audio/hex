@@ -899,7 +899,7 @@ fn selected_return_children_enter_common_compiler_once_and_restore_actual_births
                 let mut destination = None;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     transforms.compile_transaction(|| {
-                        crate::compile::compile_project_into_with_return_children(
+                        crate::compile::compile_project_into_with_children(
                             &project,
                             |asset, _| {
                                 if fault == 1 {
@@ -923,6 +923,7 @@ fn selected_return_children_enter_common_compiler_once_and_restore_actual_births
                             &mut destination,
                             None,
                             Some(&mut rows),
+                            None,
                         )
                     })
                 }));
@@ -1072,7 +1073,7 @@ fn selected_return_children_empty_dag_and_preflight_refusals_preserve_inputs() {
         let mut destination = None;
         let mut lookups = 0;
         let result = transforms.compile_transaction(|| {
-            crate::compile::compile_project_into_with_return_children(
+            crate::compile::compile_project_into_with_children(
                 &candidate,
                 |asset, _| {
                     lookups += 1;
@@ -1095,6 +1096,7 @@ fn selected_return_children_empty_dag_and_preflight_refusals_preserve_inputs() {
                 &mut destination,
                 None,
                 Some(&mut rows),
+                None,
             )
         });
         if mismatched {
@@ -1134,7 +1136,7 @@ fn selected_return_children_empty_dag_and_preflight_refusals_preserve_inputs() {
             ));
             let pointer = Arc::as_ptr(input.as_ref().unwrap().arc());
             assert!(matches!(
-                crate::compile::compile_project_into_with_return_children(
+                crate::compile::compile_project_into_with_children(
                     &candidate,
                     |_, _| panic!("moved rows cannot be selected twice"),
                     None,
@@ -1145,6 +1147,7 @@ fn selected_return_children_empty_dag_and_preflight_refusals_preserve_inputs() {
                     &mut second,
                     None,
                     Some(&mut rows),
+                    None,
                 ),
                 Err(crate::Invalid(
                     "compiler paired Return children are unavailable"

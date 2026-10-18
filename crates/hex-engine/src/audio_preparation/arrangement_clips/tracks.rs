@@ -154,6 +154,10 @@ fn gain_error(error: GainCopyError) -> AudioStorageError {
         GainCopyError::Incomplete => AudioStorageError::UnknownStorage,
     }
 }
+enum TrackConstruction {
+    OriginalClips,
+    CompilerChildren,
+}
 impl TrackAssembly {
     #[cfg(test)]
     pub(super) fn capacity(
@@ -342,6 +346,48 @@ impl TrackAssembly {
         project: &hex_project::Project,
         pairs: &[Pair],
     ) -> Result<(), AudioStorageError> {
+        self.reserve_rows(project, pairs, TrackConstruction::OriginalClips)
+    }
+    fn reserve_compiler_children(
+        &mut self,
+        project: &hex_project::Project,
+        contexts: Option<&crate::shared_analytic::SharedAnalyticContextTable>,
+    ) -> Result<(), AudioStorageError> {
+        // No public output/factory is adopted. Every present instrument must
+        // resolve through its actual retained concrete Sampler constructor.
+        if let Some(table) = contexts {
+            table.refuse_opaque_control_drop()?;
+        }
+        for track in project.tracks() {
+            if !track.clips().is_empty() {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+            if let Some(slot) = track.instrument() {
+                if slot.state().type_id() != hex_devices::sampler::state::TYPE_ID {
+                    return Err(AudioStorageError::UnsupportedGraph);
+                }
+                let owner = contexts
+                    .and_then(|table| table.owner_for_device(slot.id()))
+                    .ok_or(AudioStorageError::SourceMismatch)?;
+                owner
+                    .sampler_prepared_on_control(
+                        track.id(),
+                        slot.id(),
+                        slot.state(),
+                        project.sample_rate(),
+                    )
+                    .map_err(invalid)?
+                    .ok_or(AudioStorageError::UnsupportedConstructor)?;
+            }
+        }
+        self.reserve_rows(project, &[], TrackConstruction::CompilerChildren)
+    }
+    fn reserve_rows(
+        &mut self,
+        project: &hex_project::Project,
+        pairs: &[Pair],
+        construction: TrackConstruction,
+    ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.compiler_started
             || self.rows.iter().any(|r| {
@@ -363,8 +409,8 @@ impl TrackAssembly {
         }
         crate::gain_envelope::validate_project(project).map_err(invalid)?;
         if project.tracks().iter().any(|t| {
-            t.instrument().is_some()
-                || !t.midi_clips().is_empty()
+            (matches!(construction, TrackConstruction::OriginalClips)
+                && (t.instrument().is_some() || !t.midi_clips().is_empty()))
                 || t.devices()
                     .iter()
                     .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
@@ -404,13 +450,17 @@ impl TrackAssembly {
             let neutral =
                 PreparedTrackMix::new(1.0, t.balance(), t.muted() || (solo && !t.soloed()))
                     .map_err(invalid)?;
-            r.gain
-                .reserve(t.gain_envelope(), project.tempo_map(), neutral, t.gain())
-                .map_err(gain_error)?;
-            self.growth = self
-                .growth
-                .checked_add(r.gain.growth)
-                .ok_or(AudioStorageError::Overflow)?;
+            if matches!(construction, TrackConstruction::OriginalClips) {
+                r.gain
+                    .reserve(t.gain_envelope(), project.tempo_map(), neutral, t.gain())
+                    .map_err(gain_error)?;
+            }
+            if matches!(construction, TrackConstruction::OriginalClips) {
+                self.growth = self
+                    .growth
+                    .checked_add(r.gain.growth)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
             for clip in t.clips() {
                 let source = pairs
                     .iter()
@@ -448,9 +498,11 @@ impl TrackAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (r, t) in self.rows.iter_mut().zip(project.tracks()) {
-            r.gain
-                .fill(t.gain_envelope(), project.tempo_map())
-                .map_err(gain_error)?;
+            if matches!(construction, TrackConstruction::OriginalClips) {
+                r.gain
+                    .fill(t.gain_envelope(), project.tempo_map())
+                    .map_err(gain_error)?;
+            }
             r.meter = Some(OwnedShared::new_owned(hex_lattice::DeviceMeter::default()));
             r.chain = Some(r.utility.prepare(
                 t.devices(),
@@ -626,6 +678,9 @@ impl TrackAssembly {
             return Ok(());
         }
         let r = &mut self.rows[self.cursor];
+        if r.root_index.is_some() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         if let Some(t) = &r.track {
             if r.installed_ordinal != Some(r.ordinal)
                 || r.clips.capacity() != 0
@@ -1172,5 +1227,133 @@ impl super::ArrangementClips {
             project,
             bank,
         )
+    }
+}
+
+/// Private nonextracting common-compiler child selection over actual fresh
+/// paired destinations. No Arc, declaration, Track or mutable owner is returned.
+pub(crate) struct CompilerTrackChildren<'a> {
+    rows: &'a mut TrackAssembly,
+}
+impl super::ArrangementClips {
+    pub(crate) fn compiler_track_children_on_control<'a>(
+        &'a mut self,
+        project: &hex_project::Project,
+        contexts: Option<&crate::shared_analytic::SharedAnalyticContextTable>,
+    ) -> Result<CompilerTrackChildren<'a>, AudioStorageError> {
+        self.tracks.reserve_compiler_children(project, contexts)?;
+        Ok(CompilerTrackChildren {
+            rows: &mut self.tracks,
+        })
+    }
+}
+impl CompilerTrackChildren<'_> {
+    pub(crate) fn chain(
+        &self,
+        index: usize,
+    ) -> Result<&[crate::PreparedEffectInstance], AudioStorageError> {
+        let row = self
+            .rows
+            .rows
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if row.ordinal != index || row.root_index.is_some() || row.track.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let chain = row
+            .chain
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        row.utility.bytes(chain.arc())?;
+        Ok(chain.arc())
+    }
+    pub(crate) fn install(
+        &mut self,
+        index: usize,
+        plan: crate::track_output::CompiledTrackMix,
+        instrument: Option<crate::InstrumentTrack>,
+        target: &mut Vec<Track>,
+        metadata: (
+            crate::shared_analytic::TuningIdentity,
+            Option<u32>,
+            Option<u32>,
+            bool,
+            bool,
+            Option<usize>,
+        ),
+    ) -> Result<(), AudioStorageError> {
+        if let Some(value) = &instrument {
+            value.shared_contexts.refuse_opaque_control_drop()?;
+        }
+        self.chain(index)?;
+        let row = self
+            .rows
+            .rows
+            .get_mut(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if self.rows.phase != Phase::Reserved
+            || target.len() != index
+            || target.len() == target.capacity()
+            || row.id.is_none()
+            || row.handles.contains(&0)
+            || row.handles[0] == row.handles[1]
+            || row.meter.is_none()
+            || row.chain.is_none()
+            || row.meter_declaration.is_some()
+            || row.chain_declaration.is_some()
+            || row.installed_ordinal.is_some()
+            || !row.clips.is_empty()
+            || !row.pairs.is_empty()
+            || !row.midi.vacant()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        row.meter
+            .as_ref()
+            .and_then(OwnedShared::parts)
+            .ok_or(AudioStorageError::UnsupportedConstructor)?;
+        // All owners already reside in actual private destinations. Only fixed
+        // field moves remain until the complete Track enters the reserved Vec.
+        if let Some(meter) = row.meter.take() {
+            let (owner, declaration) = meter.into_paired_parts_on_control();
+            row.bare_meter = Some(owner);
+            row.meter_declaration = Some(declaration);
+        }
+        if let Some(chain) = row.chain.take() {
+            let (owner, declaration) = chain.into_paired_parts_on_control();
+            row.bare_chain = Some(owner);
+            row.chain_declaration = Some(declaration);
+        }
+        if let (Some(meter), Some(chain), Some(id)) =
+            (row.bare_meter.take(), row.bare_chain.take(), row.id)
+        {
+            target.push(
+                plan.assemble(mem::take(&mut row.clips), instrument, chain, meter)
+                    .with_track_id(id)
+                    .with_tuning_identity(metadata.0)
+                    .with_instrument_latency(metadata.1, metadata.2)
+                    .with_mutable_instrument(metadata.3, metadata.4)
+                    .with_midi_source_index(metadata.5)
+                    .with_sends(mem::take(&mut row.sends)),
+            );
+            row.installed_ordinal = Some(index);
+            row.root_index = Some(index);
+            row.compiler_complete = true;
+        }
+        if index + 1 == self.rows.active {
+            self.rows.phase = Phase::Installed;
+        }
+        #[cfg(test)]
+        {
+            assert_ne!(
+                self.rows.panic_after,
+                Some(index),
+                "paired compiler Track move panic"
+            );
+            if self.rows.fail_after == Some(index) {
+                return Err(AudioStorageError::Allocation);
+            }
+        }
+        Ok(())
     }
 }

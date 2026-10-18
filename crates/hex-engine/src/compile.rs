@@ -340,7 +340,7 @@ pub(crate) fn compile_project_into<'a>(
         &crate::OwnedAudioInputs,
     )>,
 ) -> Result<(), Invalid> {
-    compile_project_into_with_return_children(
+    compile_project_into_with_children(
         snapshot,
         resolve_source,
         previews,
@@ -351,11 +351,12 @@ pub(crate) fn compile_project_into<'a>(
         destination,
         compiler_bindings,
         None,
+        None,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_project_into_with_return_children<'a>(
+pub(crate) fn compile_project_into_with_children<'a>(
     snapshot: &'a hex_project::Project,
     mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
@@ -370,20 +371,32 @@ pub(crate) fn compile_project_into_with_return_children<'a>(
         &mut crate::audio_preparation::ArrangementClips,
         &crate::OwnedAudioInputs,
     )>,
-    paired_returns: Option<&mut crate::audio_preparation::ArrangementClips>,
+    return_children: Option<&mut crate::audio_preparation::ArrangementClips>,
+    track_children: Option<&mut crate::audio_preparation::ArrangementClips>,
 ) -> Result<(), Invalid> {
     if destination.is_some() || previews.as_ref().is_some_and(|clips| !clips.is_empty()) {
         return Err(Invalid("compiler destination is not vacant"));
     }
     // A selected row is an actual existing paired birth, never an arbitrary
     // compiler output or a declaration applied after construction.
-    if compiler_bindings.is_some() && paired_returns.is_some() {
+    if (compiler_bindings.is_some() && (return_children.is_some() || track_children.is_some()))
+        || (return_children.is_some() && track_children.is_some())
+    {
         return Err(Invalid("compiler row selections overlap"));
     }
-    let mut paired_returns = paired_returns
+    let mut paired_returns = return_children
         .map(|rows| rows.compiler_return_children_on_control(snapshot))
         .transpose()
         .map_err(|_| Invalid("compiler paired Return children are unavailable"))?;
+    let mut paired_tracks = track_children
+        .map(|rows| {
+            rows.compiler_track_children_on_control(
+                snapshot,
+                shared_contexts.as_ref().map(|owner| owner.as_ref()),
+            )
+        })
+        .transpose()
+        .map_err(|_| Invalid("compiler paired Track children are unavailable"))?;
     // Private optional correlation only: actual installed rows plus actual bank,
     // never a caller-authored provenance flag or output-adoption permit.
     let mut compiler_bindings = compiler_bindings
@@ -682,9 +695,21 @@ pub(crate) fn compile_project_into_with_return_children<'a>(
                 crate::midi_note_bank::MAX_ARRANGEMENT_NOTE_BANK_REFERENCES,
             )?;
         }
-        let effect_plan = compile_device_effects(track, registry, &device_context)?;
-        let device_chain = effect_plan.device_chain;
-        for device in &device_chain {
+        let effect_plan = if paired_tracks.is_none() {
+            Some(compile_device_effects(track, registry, &device_context)?)
+        } else {
+            None
+        };
+        let device_chain = if let Some(rows) = &paired_tracks {
+            rows.chain(track_index)
+                .map_err(|_| Invalid("compiler paired Track source is missing"))?
+        } else {
+            &effect_plan
+                .as_ref()
+                .ok_or(Invalid("compiler Track plan is missing"))?
+                .device_chain
+        };
+        for device in device_chain {
             if let Some(definition) = &device.definition {
                 stateful_count = stateful_count
                     .checked_add(1)
@@ -706,19 +731,21 @@ pub(crate) fn compile_project_into_with_return_children<'a>(
             }
         }
         let mut sends = Vec::new();
-        sends
-            .try_reserve_exact(track.sends().len())
-            .map_err(|_| Invalid("could not reserve compiled track sends"))?;
-        for send in track.sends() {
-            let return_index = snapshot
-                .return_tracks()
-                .iter()
-                .position(|candidate| candidate.id() == send.return_track())
-                .ok_or(Invalid("send return target is missing during compile"))?;
-            sends.push(crate::CompiledSend {
-                return_index,
-                gain: send.gain(),
-            });
+        if paired_tracks.is_none() {
+            sends
+                .try_reserve_exact(track.sends().len())
+                .map_err(|_| Invalid("could not reserve compiled track sends"))?;
+            for send in track.sends() {
+                let return_index = snapshot
+                    .return_tracks()
+                    .iter()
+                    .position(|candidate| candidate.id() == send.return_track())
+                    .ok_or(Invalid("send return target is missing during compile"))?;
+                sends.push(crate::CompiledSend {
+                    return_index,
+                    gain: send.gain(),
+                });
+            }
         }
         // All scalar/curve refusal happens before final shared child births.
         // The closed compiler can supply its original paired chain/meter to
@@ -728,9 +755,9 @@ pub(crate) fn compile_project_into_with_return_children<'a>(
             muted,
             track.balance(),
             track.instrument_position().unwrap_or(0),
-            effect_plan.fused,
-            effect_plan.prefix,
-            effect_plan.suffix,
+            effect_plan.as_ref().and_then(|plan| plan.fused),
+            effect_plan.as_ref().and_then(|plan| plan.prefix),
+            effect_plan.as_ref().and_then(|plan| plan.suffix),
             !device_chain.is_empty(),
         )?
         .prepare_gain_envelope(
@@ -740,21 +767,43 @@ pub(crate) fn compile_project_into_with_return_children<'a>(
             track.gain(),
         )?
         .prepare_instrument_metadata(track.instrument());
-        project.tracks.push(
-            track_plan
-                .assemble(
-                    clips,
-                    instrument,
-                    Arc::from(device_chain),
-                    Default::default(),
-                )
-                .with_track_id(track.id())
-                .with_midi_source_index((source_index != track_index).then_some(source_index))
-                .with_tuning_identity(shared_contexts.tuning_identity())
-                .with_instrument_latency(instrument_latency, instrument_runtime_latency)
-                .with_mutable_instrument(mutable_instrument, mutable_looping_source)
-                .with_sends(sends),
-        );
+        if let Some(rows) = &mut paired_tracks {
+            // Actual concrete Sampler preparation was checked before child
+            // births; sends and paired meter/chain move from existing rows.
+            let metadata = (
+                shared_contexts.tuning_identity(),
+                instrument_latency,
+                instrument_runtime_latency,
+                mutable_instrument,
+                mutable_looping_source,
+                (source_index != track_index).then_some(source_index),
+            );
+            rows.install(
+                track_index,
+                track_plan,
+                instrument,
+                &mut project.tracks,
+                metadata,
+            )
+            .map_err(|_| Invalid("compiler paired Track destination is unavailable"))?;
+        } else {
+            let effect_plan = effect_plan.ok_or(Invalid("compiler Track plan is missing"))?;
+            project.tracks.push(
+                track_plan
+                    .assemble(
+                        clips,
+                        instrument,
+                        Arc::from(effect_plan.device_chain),
+                        Default::default(),
+                    )
+                    .with_track_id(track.id())
+                    .with_midi_source_index((source_index != track_index).then_some(source_index))
+                    .with_tuning_identity(shared_contexts.tuning_identity())
+                    .with_instrument_latency(instrument_latency, instrument_runtime_latency)
+                    .with_mutable_instrument(mutable_instrument, mutable_looping_source)
+                    .with_sends(sends),
+            );
+        }
         if let Some(bindings) = &mut compiler_bindings {
             bindings
                 .finish_track(track_index, &project.tracks[track_index])
