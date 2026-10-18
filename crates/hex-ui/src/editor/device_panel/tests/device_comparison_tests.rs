@@ -927,7 +927,7 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
             .unwrap(),
         &original
     ));
-    let changed = send(Request::SetDeviceParameter {
+    let mut changed = send(Request::SetDeviceParameter {
         device,
         parameter: hex_lattice_contract::ParameterId::from_static(1),
         value: hex_lattice_contract::ParameterValue::Float(0.25),
@@ -945,7 +945,10 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
         "audible edits still prepare a graph"
     );
     let applied = control
-        .publish_with_policy(changed.playback.unwrap(), PublicationPolicy::InheritRuntime)
+        .publish_with_policy(
+            changed.playback.take().unwrap(),
+            PublicationPolicy::InheritRuntime,
+        )
         .unwrap();
     callback.begin_block();
     callback.render(&mut actual).unwrap();
