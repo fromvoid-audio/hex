@@ -1,6 +1,7 @@
 //! Compact, bounded left-side media and project browser.
 mod audition;
 mod samples;
+mod tree;
 
 use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
 use crate::theme;
@@ -164,6 +165,7 @@ pub(super) struct BrowserState {
     pending_places_save: Option<BrowserPlaces>,
     pub(super) places_status: Option<String>,
     samples: samples::SampleBrowser,
+    tree: tree::Tree,
     listing: Option<DirectoryListing>,
     loading: bool,
     pending_selection: Option<BrowserItemKey>,
@@ -239,6 +241,7 @@ impl BrowserState {
             pending_places_save: None,
             places_status: None,
             samples: samples::SampleBrowser::default(),
+            tree: tree::Tree::default(),
             listing: None,
             loading: false,
             pending_selection: None,
@@ -529,6 +532,7 @@ impl EditorView {
         self.browser.scans.pending = None;
         self.browser.loading = false;
         self.browser.error = None;
+        self.browser.tree.source_changed();
         self.browser.section = source;
         self.reset_browser_results();
         match &self.browser.section {
@@ -747,7 +751,7 @@ impl EditorView {
         {
             match entry.kind {
                 EntryKind::WaveAudio => self.play_browser_sample(entry.path, cx),
-                EntryKind::Directory => self.request_browser_scan(entry.path, cx),
+                EntryKind::Directory => self.expand_browser_folder(entry.path, cx),
                 EntryKind::Project => {}
             }
         }
@@ -1349,7 +1353,7 @@ impl EditorView {
             return;
         };
         match entry.kind {
-            EntryKind::Directory => self.request_browser_scan(entry.path, cx),
+            EntryKind::Directory => self.toggle_browser_folder(entry.path, false, cx),
             EntryKind::WaveAudio => self.import_browser_audio(entry.path),
             EntryKind::Project => self.open_browser_project(entry.path, cx),
         }
@@ -1427,7 +1431,12 @@ impl EditorView {
             .listing
             .as_ref()
             .filter(|listing| listing.directory == self.browser.directory);
-        match &self.browser.section {
+        let base = match &self.browser.section {
+            BrowserSection::Samples
+                if samples::ResultsMode::for_query(&query) == samples::ResultsMode::Hierarchy =>
+            {
+                self.browser.tree.roots(self.sample_roots())
+            }
             BrowserSection::Samples => self.browser.samples.visible(&query),
             BrowserSection::Place(root) if !query.is_empty() => self
                 .browser
@@ -1435,13 +1444,27 @@ impl EditorView {
                 .visible_with_listing(&query, Some(root), listing),
             BrowserSection::Place(_) => self.browser.samples.folder(&query, listing, false),
             BrowserSection::Collection(_) => Arc::new(Vec::new()),
+            BrowserSection::All if query.is_empty() => {
+                let mut roots = self.sample_roots();
+                roots.push(self.browser.directory.clone());
+                self.browser.tree.roots(roots)
+            }
             BrowserSection::All => self
                 .browser
                 .samples
                 .visible_with_listing(&query, None, listing),
             BrowserSection::Projects => self.browser.samples.folder(&query, listing, true),
             BrowserSection::Instruments => Arc::new(Vec::new()),
-        }
+        };
+        self.browser.tree.visible(
+            base,
+            &query,
+            match self.browser.section {
+                BrowserSection::Samples => tree::Files::Samples,
+                BrowserSection::Projects => tree::Files::Projects,
+                _ => tree::Files::All,
+            },
+        )
     }
 
     fn browser_visible_devices(
@@ -1495,6 +1518,7 @@ impl EditorView {
         }
 
         self.reconcile_browser_source(cx);
+        self.reconcile_browser_tree_requests(cx);
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
         let section = self.browser.section.clone();
@@ -1577,26 +1601,22 @@ impl EditorView {
                         .items_center()
                         .gap_1()
                         .child(self.browser_icon(
-                            "↑",
-                            "parent folder",
+                            "↻",
+                            "refresh browser source",
                             |view, _, cx| {
-                                if !matches!(&view.browser.section, BrowserSection::Place(root) if *root == view.browser.directory)
-                                    && let Some(parent) = view.browser.directory.parent().map(PathBuf::from)
-                                {
-                                    view.request_browser_scan(parent, cx);
-                                }
+                                view.refresh_browser_tree(cx);
                             },
                             cx,
                         ))
-                        .child(
-                            div().flex_1().min_w_0().overflow_hidden().text_xs().child(
-                                theme::text(
-                                    path.file_name()
-                                        .and_then(|name| name.to_str())
-                                        .unwrap_or("folder"),
-                                ),
-                            ),
-                        )
+                        .child(div().flex_1().min_w_0().overflow_hidden().text_xs().child(
+                            theme::text(if section == BrowserSection::All {
+                                "all folders"
+                            } else {
+                                path.file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("folder")
+                            }),
+                        ))
                         .child(folder_dialog),
                 );
         }
@@ -1803,6 +1823,18 @@ impl EditorView {
             }
         }
 
+        if let Some(status) = self.browser.tree.status.clone() {
+            panel = panel.child(
+                div()
+                    .h(px(18.0))
+                    .flex_shrink_0()
+                    .px_1()
+                    .overflow_hidden()
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .child(theme::text(status)),
+            );
+        }
         let preview = self.browser_selection_preview(cx);
         let sidebar = self.browser_sidebar(pane_width, cx);
         let editor = self.browser_tag_editor(pane_width, cx);
@@ -1916,7 +1948,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let icon = match entry.kind {
-            EntryKind::Directory => "▸",
+            EntryKind::Directory => self.browser.tree.icon(&entry.path),
             EntryKind::WaveAudio => "♫",
             EntryKind::Project => "▤",
         };
@@ -1984,7 +2016,7 @@ impl EditorView {
         let click_path = path.clone();
         let click_kind = entry.kind;
         let mut row = div()
-            .id(("library-entry", index))
+            .id(gpui::SharedString::from(tree::row_id(&path)))
             .debug_selector(|| format!("browser-entry-{index}"))
             .w_full()
             .min_w_0()
@@ -2023,9 +2055,11 @@ impl EditorView {
                     cx.notify();
                     if event.click_count >= 2 {
                         match click_kind {
-                            EntryKind::Directory => {
-                                view.request_browser_scan(click_path.clone(), cx)
-                            }
+                            EntryKind::Directory => view.toggle_browser_folder(
+                                click_path.clone(),
+                                event.modifiers.platform,
+                                cx,
+                            ),
                             EntryKind::WaveAudio => {
                                 // Sample double-click remains selection/audition.
                                 // Import is an explicit Enter or drag/drop action.
@@ -2110,40 +2144,53 @@ impl EditorView {
                 });
             });
         }
-        row.child(
-            div()
-                .w(px(16.0))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(icon)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .line_clamp(1)
-                .text_ellipsis()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text(
-                    if matches!(
-                        self.browser.section,
-                        BrowserSection::All | BrowserSection::Samples
-                    ) && entry.kind == EntryKind::WaveAudio
-                    {
-                        format!(
-                            "{} · {}",
-                            entry.name,
-                            entry.path.parent().map_or_else(String::new, |path| path
-                                .to_string_lossy()
-                                .into_owned())
-                        )
-                    } else {
-                        entry.name
-                    },
-                )),
-        )
+        let depth = self.browser.tree.depth(&path);
+        let mut control = div()
+            .w(px(16.0))
+            .flex_shrink_0()
+            .text_xs()
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .child(theme::text(icon));
+        if entry.kind == EntryKind::Directory {
+            let folder = path.clone();
+            control = control
+                .debug_selector(move || format!("browser-disclosure-{index}"))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                        view.toggle_browser_folder(folder.clone(), event.modifiers.platform, cx);
+                        view.browser
+                            .search
+                            .update(cx, |input, _| input.focus(window));
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }),
+                );
+        }
+        let tooltip = self.browser.tree.error(&path).map_or_else(
+            || path.to_string_lossy().into_owned(),
+            |error| format!("{} · {error}", path.display()),
+        );
+        row.tooltip(move |_, cx| layout::browser_label_tooltip(&tooltip, cx))
+            .child(
+                div()
+                    .w(px((depth as f32 * 12.0).min(96.0)))
+                    .max_w(relative(0.4))
+                    .flex_shrink_0(),
+            )
+            .child(control)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .line_clamp(1)
+                    .text_ellipsis()
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .debug_selector(move || format!("browser-entry-label-{index}"))
+                    .child(theme::text(entry.name)),
+            )
     }
 
     fn browser_device_row(
