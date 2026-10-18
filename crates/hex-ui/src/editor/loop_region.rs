@@ -41,6 +41,8 @@ impl EditorView {
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.active_clip_drag.is_some()
+            || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_midi_trim_drag.is_some()
             || self.active_fade_drag.is_some()
@@ -82,6 +84,20 @@ impl EditorView {
             .selected_clip_ids()
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
+        // Mode switches preserve the primary selection. Session-owned clips
+        // have no Arrangement extent and are not deleted/stale Arrangement IDs.
+        // Remove them in one bounded pass; unknown IDs must still refuse below.
+        for cell in state.project.session_cells() {
+            match cell.content() {
+                hex_project::SessionCellContent::Audio(clip) => {
+                    remaining.remove(&clip.id());
+                }
+                hex_project::SessionCellContent::Midi(clip) => {
+                    remaining.remove(&clip.id());
+                }
+                hex_project::SessionCellContent::Stop => {}
+            }
+        }
         if remaining.is_empty() {
             return Ok(None);
         }

@@ -15,7 +15,10 @@ Plain l remains an alias while musical typing is off; with musical typing on,
 unmodified l remains a note and command-l remains the explicit loop shortcut.
 Session l and the loop toolbar retain toggle behavior. Command-l is Arrangement-only.
 Text, numeric, rename, browser and other child editors retain focus ownership.
-Empty selection is a no-op. Stale non-empty ranges/clips refuse rather than
+Empty selection is a no-op. A retained Session-owned clip after switching to
+Arrangement has no Arrangement extent and is ignored; an unknown/deleted ID still
+refuses. Active browser-audio and native-device drops keep their edit ownership
+even if the editor retains keyboard focus. Stale non-empty ranges/clips refuse rather than
 falling back; active edits finish before a loop can be set.
 
 The existing SetLoopRegion command owns validation, one Undo/Redo and current
