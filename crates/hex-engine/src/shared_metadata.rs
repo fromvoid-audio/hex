@@ -87,6 +87,22 @@ impl<'a> crate::AudioRootStorageLedger<'a> {
     ) -> Result<(), crate::AudioStorageError> {
         self.mutate(|ledger| ledger.vec(value))
     }
+    /// Actual capacity-visible entry backing. Inline entry fields are included
+    /// here; owned children still require their module's traversal. The inline
+    /// container header belongs to its enclosing owner.
+    pub fn borrow_metadata_entries_backing_on_control<K: 'static, V: 'static>(
+        &mut self,
+        value: &'a hex_project::SortedEntries<K, V>,
+    ) -> Result<(), crate::AudioStorageError> {
+        self.mutate(|ledger| {
+            ledger.allocation(
+                crate::audio_storage::Owner::exclusive(value),
+                crate::audio_storage::Location("sorted-entry-buffer", 0),
+                value.capacity(),
+                std::mem::size_of::<(K, V)>(),
+            )
+        })
+    }
 }
 
 #[cfg(test)]

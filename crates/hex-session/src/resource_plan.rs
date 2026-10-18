@@ -34,6 +34,24 @@ pub struct ResidentPcmInventory<'a> {
     transforms: &'a hex_engine::audio_transform::AudioTransformPcmInventory<'a>,
 }
 impl ResidentPcmInventory<'_> {
+    /// Actual resident and retained-clip waveform map backing, paired summary
+    /// handles, pyramids and embedded PCM. Other resident-source fields,
+    /// transform/model metadata and enclosing Session storage remain separate.
+    /// This selected traversal cannot grant whole-root admission by itself.
+    pub fn visit_waveform_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        ledger.borrow_metadata_entries_backing_on_control(&self.session.media)?;
+        ledger.borrow_metadata_entries_backing_on_control(self.waveforms)?;
+        for resident in self.session.media.values() {
+            hex_media::waveform::borrow_shared_storage_on_control(&resident.waveform, ledger)?;
+        }
+        for waveform in self.waveforms.values() {
+            hex_media::waveform::borrow_shared_storage_on_control(&waveform.waveform, ledger)?;
+        }
+        Ok(())
+    }
     /// PCM fields only. Enclosing maps, transform caches, graph metadata and
     /// retirement/publication proof remain separate and must not be inferred.
     pub fn visit_on_control<'a>(

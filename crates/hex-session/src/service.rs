@@ -85,6 +85,29 @@ pub struct ViewState {
     pub document_path: Option<PathBuf>,
 }
 
+impl ViewState {
+    /// Borrow this actual exported view's waveform handles and map backings.
+    /// Project/source snapshots, previews and the enclosing view owner require
+    /// separate root traversal. This is not a freeze/publication permit.
+    pub fn visit_waveform_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        ledger.borrow_metadata_entries_backing_on_control(&self.waveforms)?;
+        ledger.borrow_metadata_entries_backing_on_control(&self.audio_clip_waveforms)?;
+        for waveform in self.waveforms.values() {
+            hex_media::waveform::borrow_shared_storage_on_control(waveform, ledger)?;
+        }
+        for waveform in self.audio_clip_waveforms.values() {
+            hex_media::waveform::borrow_shared_storage_on_control(&waveform.waveform, ledger)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod waveform_storage_tests;
+
 /// Control-side batch failure metadata; no decoded media crosses this boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioBatchMemberFailure {
