@@ -530,6 +530,66 @@ mod tests {
     use std::sync::Arc;
 
     #[gpui::test]
+    fn header_volume_begin_obeys_recording_fence_even_before_next_render(cx: &mut TestAppContext) {
+        let mut model = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+        let Created::Track(track) = model
+            .execute(Command::AddTrack {
+                name: "record guard".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = gpui::VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let rail = visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        // The widget was enabled at the last render. Arming can happen before
+        // its next render; admission must still reject the direct gesture.
+        editor.update(cx, |view, _| {
+            view.gain_recorder.mode = Mode::Ready;
+        });
+        visual.simulate_mouse_down(
+            rail.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        visual.simulate_mouse_move(
+            gpui::point(rail.right(), rail.center().y),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        visual.simulate_mouse_up(
+            rail.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        editor.read_with(cx, |view, _| {
+            assert!(view.device_gesture.snapshot().is_none());
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(view.pending_requests.is_empty());
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .gain(),
+                1.0
+            );
+        });
+    }
+
+    #[gpui::test]
     fn unavailable_output_discards_uncommitted_take_and_releases_edit_fence(
         cx: &mut TestAppContext,
     ) {
