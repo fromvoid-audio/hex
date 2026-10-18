@@ -276,7 +276,7 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        self.test_platform.cursor_style()
 +    }
 +
-@@ -307,0 +320,30 @@
+@@ -307,0 +320,32 @@
 +    /// Whether the test platform has an outstanding Open picker request.
 +    pub fn did_prompt_for_paths(&self) -> bool {
 +        self.test_platform.did_prompt_for_paths()
@@ -295,9 +295,11 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +    pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
 +        self.test_platform.pending_save_options()
 +    }
++    /// Complete the injected Open request with a platform error, without a panel.
 +    pub fn simulate_paths_error(&self, message: &str) {
 +        self.test_platform.simulate_paths_error(message);
 +    }
++    /// Complete the injected Save request with a platform error, without a panel.
 +    pub fn simulate_new_path_error(&self, message: &str) {
 +        self.test_platform.simulate_new_path_error(message);
 +    }
@@ -307,7 +309,7 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        crate::platform::mac::MacPlatform::picker_directory_url_for_test(directory)
 +    }
 +
-@@ -677,0 +720,89 @@
+@@ -677,0 +722,89 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {

@@ -335,9 +335,11 @@ impl TestAppContext {
     pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
         self.test_platform.pending_save_options()
     }
+    /// Complete the injected Open request with a platform error, without a panel.
     pub fn simulate_paths_error(&self, message: &str) {
         self.test_platform.simulate_paths_error(message);
     }
+    /// Complete the injected Save request with a platform error, without a panel.
     pub fn simulate_new_path_error(&self, message: &str) {
         self.test_platform.simulate_new_path_error(message);
     }
