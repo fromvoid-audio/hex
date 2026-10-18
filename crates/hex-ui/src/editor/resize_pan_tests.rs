@@ -107,7 +107,7 @@ fn fixture(
             editor.update(cx, |v, cx| {
                 v.state = Some(event.state);
                 v.viewport = viewport;
-                v.snap_grid = SnapGrid::Off;
+                v.snap_grid = SnapGrid::default().with_platform_modifier(true);
                 v.focus.focus(window);
                 cx.notify();
             });
@@ -370,4 +370,70 @@ fn resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan(
     });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
+}
+
+#[gpui::test]
+fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &mut TestAppContext) {
+    for stretch in [false, true] {
+        let (handle, editor, track, clip) = fixture(cx, false, None);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |v, cx| {
+            v.snap_grid = SnapGrid::default();
+            cx.notify();
+        });
+        let down = capture(&mut visual, clip, false, false);
+        let edge = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            point(px(lane.left + lane.width - 3.0), down.y)
+        });
+        visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let modifiers = Modifiers {
+            platform: true,
+            shift: stretch,
+            ..Modifiers::default()
+        };
+        visual.simulate_modifiers_change(modifiers);
+        visual.run_until_parked();
+        let now = Instant::now();
+        held_tick(&editor, &mut visual, now);
+        let preview = editor.read_with(&visual, |v, _| {
+            let d = v.active_trim_drag.as_ref().unwrap();
+            assert_eq!(d.stretch_modifier.get(), stretch);
+            assert!(d.snap_modifier.get());
+            d.preview.borrow().as_ref().unwrap().clip.clone()
+        });
+        visual.simulate_modifiers_change(Modifiers {
+            shift: stretch,
+            ..Modifiers::default()
+        });
+        visual.run_until_parked();
+        let snapped = editor.read_with(&visual, |v, _| {
+            v.active_trim_drag
+                .as_ref()
+                .unwrap()
+                .preview
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .clip
+                .clone()
+        });
+        assert_ne!(
+            preview, snapped,
+            "stationary Command changes snapping without losing stretch mode"
+        );
+        visual.simulate_modifiers_change(modifiers);
+        visual.run_until_parked();
+        visual.simulate_mouse_up(edge, MouseButton::Left, modifiers);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.clip(clip),
+                Some(&preview),
+                "release matches last actual modifier preview"
+            );
+            assert!(v.active_trim_drag.is_none());
+        });
+    }
 }
