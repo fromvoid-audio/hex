@@ -1,0 +1,56 @@
+{
+  "Cargo.lock": {
+    "before_blob": "07c6ba2d023918d73ebc24beca9f69e3c803251d",
+    "before_sha256": "c3eadb5a23be864f1c2d9839bb594774a65485b8b94abe5bbdfcbb269e31250f",
+    "after_blob": "3c1dd755e638c94f2573d3a58fcccd5bf185f556",
+    "after_sha256": "c914759f9e7312845a6418dbd6ca2f8adf46c3431bb5e0925ce93c4f6525e5a7"
+  },
+  "crates/hex-ui/Cargo.toml": {
+    "before_blob": "3c562797545bdb84b7953ddb0d3508929a7f3ac8",
+    "before_sha256": "605b5f5d7ab1c5c5225180fdf94b62bc24b92a429fbdaafe5dfb0b0f9c299dca",
+    "after_blob": "2d14257da1af41eaf2a929fa3ebcae0ece826c39",
+    "after_sha256": "1d9e001e844113ab1442ada687e292e66a72e696b24acc55e930816cf6a2ce58"
+  },
+  "crates/hex-ui/README.md": {
+    "before_blob": "d72a7a7a255fed1f942792573edb689ba64c3e78",
+    "before_sha256": "39a9ee8acef98cd252d469edb8ec8a6e053bc430a2d4ad85874abf1a4c12bb6c",
+    "after_blob": "d10a2e08a92181b69a3c5418851b1bfca3ab72a4",
+    "after_sha256": "7bef387d8b01a8355af267fe9895f7c12651b6fb0fcdae7fbf131509c5f8103b"
+  },
+  "crates/hex-ui/src/editor/browser/layout.rs": {
+    "before_blob": "5e9544cbbdd01e95974ed3f819421a4d62b2e2b4",
+    "before_sha256": "35d55f1e3fd35b2ff47f49b32765371c37feb2e8aa2eeee1e4ff50cd0edc6975",
+    "after_blob": "30abed746c57227bd62e31457cf4b9e3ecab09dc",
+    "after_sha256": "bdd3ebfa440e3d317364c73bfee368ace7370d862d5ae64b527c6597c9d4b44f"
+  },
+  "crates/hex-ui/src/editor/browser_input.rs": {
+    "before_blob": "a3bd98cb29c3d94d396b3519c9199c1856a14c94",
+    "before_sha256": "1a20a10f80704ca4c8b6463b516092d42ef8e2bc2e401da7741645da8c9c2c25",
+    "after_blob": "d2a8d419d718fa331e2fbce2dc569a27b6e2741c",
+    "after_sha256": "c6470d4e7a5c0877d32d2cb8b500d50523d10941f78cb30ead56e2968f607aee"
+  },
+  "crates/hex-ui/src/editor/browser_search_selection_ui_test.rs": {
+    "before_blob": null,
+    "before_sha256": null,
+    "after_blob": "80eb5389e6bbc42344e25ff4513a8443b36947ee",
+    "after_sha256": "376d79f7a382485761cbbbb1139d5f98fc5daabbf01945f5bd0462b728dbabd0"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_blob": "09aca5fbd80c3c013b8a1a09c5a9f3cd5e168cb5",
+    "before_sha256": "4298000f4c36a524605619bfbacbab7d59e25c35d597100fec020c8fef12de71",
+    "after_blob": "d7be9e535071236166983d9bab26fae24775d474",
+    "after_sha256": "e701801de9b4420bd07f1015de3ed29b6262f593c02a268f5c85f74ad73146ee"
+  },
+  "docs/browser-places.md": {
+    "before_blob": "5941573f4ee1897083d90a7eb53b591f9bfffd86",
+    "before_sha256": "33d4fa60efcef6f8436b05bf704d937a76172bc4663e98129a36570a6bb25a4d",
+    "after_blob": "b168bf4353c40097bf4b0d8156682790de63e066",
+    "after_sha256": "f33f9639b0b5db643b01013ccb9e6799883e4a0b2d1acf94f1f2da1061ef62c4"
+  },
+  "todo.md": {
+    "before_blob": "f2dcc64045e9f4c1004e775af939a01476730eb3",
+    "before_sha256": "a5e43bf601299d04250f642958b48caca28a58add2575b62ea7bb7b9d36a443a",
+    "after_blob": "7088b4c5dbbeee350ab040ae0c00d09e1ce082b7",
+    "after_sha256": "9455851ad8d1f041821189f583d6536c512bcb361b1e702e7f5f53b670085b95"
+  }
+}

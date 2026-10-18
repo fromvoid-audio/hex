@@ -1,0 +1,38 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.22s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-06f3ca1078ca4914)
+
+running 3 tests
+
+thread 'editor::browser::ui_test::search_selection::search_keyboard_selection_keeps_combining_graphemes_whole' (80271) panicked at crates/hex-ui/src/editor/browser_search_selection_ui_test.rs:150:5:
+assertion `left == right` failed: caret must cross i + combining dot as one grapheme
+  left: 1..1
+ right: 0..0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::search_selection::search_keyboard_selection_keeps_combining_graphemes_whole ... FAILED
+
+thread 'editor::browser::ui_test::search_selection::search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins' (80272) panicked at crates/hex-ui/src/editor/browser_search_selection_ui_test.rs:121:9:
+assertion `left == right` failed: held drag selects a substring
+  left: 1..1
+ right: 1..4
+test editor::browser::ui_test::search_selection::search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins ... FAILED
+
+thread 'editor::browser::ui_test::search_selection::search_focus_click_selects_query_and_replaces_after_real_workers' (80270) panicked at crates/hex-ui/src/editor/browser_search_selection_ui_test.rs:65:5:
+assertion `left == right` failed: first focus click must select the entire query
+  left: 4..4
+ right: 0..9
+test editor::browser::ui_test::search_selection::search_focus_click_selects_query_and_replaces_after_real_workers ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::search_selection::search_focus_click_selects_query_and_replaces_after_real_workers
+    editor::browser::ui_test::search_selection::search_keyboard_selection_keeps_combining_graphemes_whole
+    editor::browser::ui_test::search_selection::search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 744 filtered out; finished in 0.73s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

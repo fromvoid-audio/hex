@@ -1,0 +1,648 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 07c6ba2d..3c1dd755 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2788,6 +2788,7 @@ dependencies = [
+  "hex-session",
+  "hex-tuning",
+  "hex-widgets",
++ "unicode-segmentation",
+ ]
+ 
+ [[package]]
+diff --git a/crates/hex-ui/Cargo.toml b/crates/hex-ui/Cargo.toml
+index 3c562797..2d14257d 100644
+--- a/crates/hex-ui/Cargo.toml
++++ b/crates/hex-ui/Cargo.toml
+@@ -22,6 +22,7 @@ hex-preferences = { path = "../hex-preferences" }
+ hex-lattice-contract = { path = "../hex-lattice-contract" }
+ hex-widgets = { path = "../hex-widgets" }
+ gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
++unicode-segmentation = "=1.13.3"
+ 
+ [dev-dependencies]
+ hex-media = { path = "../hex-media" }
+diff --git a/crates/hex-ui/README.md b/crates/hex-ui/README.md
+index d72a7a7a..d10a2e08 100644
+--- a/crates/hex-ui/README.md
++++ b/crates/hex-ui/README.md
+@@ -7,7 +7,9 @@ Own GPUI views, display state, interactions, lowercase text, and bundled Ioskele
+ ## Dependencies
+ 
+ hex-project read-only metadata and commands; hex-session worker endpoints;
+-hex-mts safe publisher handle; hex-engine contracts; hex-audio and optional hex-midi service handles; GPUI. The backend is created and injected by hex-desktop.
++hex-mts safe publisher handle; hex-engine contracts; hex-audio and optional hex-midi service handles; GPUI; the already-locked unicode-segmentation package supplies complete grapheme
++boundaries in the existing native text-input primitive. The backend is created
++and injected by hex-desktop.
+ 
+ The optional controller input row selects a CoreMIDI endpoint/channel for the
+ selected instrument and dispatches a generation-bound engine lease through the
+diff --git a/crates/hex-ui/src/editor/browser/layout.rs b/crates/hex-ui/src/editor/browser/layout.rs
+index 5e9544cb..30abed74 100644
+--- a/crates/hex-ui/src/editor/browser/layout.rs
++++ b/crates/hex-ui/src/editor/browser/layout.rs
+@@ -150,6 +150,11 @@ impl EditorView {
+                     .on_mouse_down(
+                         MouseButton::Left,
+                         cx.listener(|view, _, window, cx| {
++                            if view.browser.results_focused {
++                                view.browser.search.update(cx, |input, cx| {
++                                    input.select_all_on_mouse_entry(window, cx)
++                                });
++                            }
+                             view.browser.results_focused = false;
+                             window.prevent_default();
+                             cx.notify();
+diff --git a/crates/hex-ui/src/editor/browser_input.rs b/crates/hex-ui/src/editor/browser_input.rs
+index a3bd98cb..d2a8d419 100644
+--- a/crates/hex-ui/src/editor/browser_input.rs
++++ b/crates/hex-ui/src/editor/browser_input.rs
+@@ -6,6 +6,14 @@ use gpui::{
+     UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, rgba, size,
+ };
+ use std::ops::Range;
++use unicode_segmentation::UnicodeSegmentation;
++
++#[derive(Clone, Copy)]
++struct MouseSelection {
++    anchor: usize,
++    origin: Point<Pixels>,
++    dragging: bool,
++}
+ 
+ gpui::actions!(
+     hex_browser_search,
+@@ -32,6 +40,7 @@ pub(super) struct BrowserSearch {
+     selected: Range<usize>,
+     reversed: bool,
+     marked: Option<Range<usize>>,
++    mouse_selection: Option<MouseSelection>,
+     last_layout: Option<ShapedLine>,
+     last_bounds: Option<Bounds<Pixels>>,
+     last_origin_x: Option<Pixels>,
+@@ -46,6 +55,7 @@ impl BrowserSearch {
+             selected: 0..0,
+             reversed: false,
+             marked: None,
++            mouse_selection: None,
+             last_layout: None,
+             last_bounds: None,
+             last_origin_x: None,
+@@ -67,12 +77,26 @@ impl BrowserSearch {
+         self.focus.focus(window);
+     }
+     pub(super) fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.mouse_selection = None;
+         self.focus(window);
+         self.unmark_text(window, cx);
+         self.select_all(&BrowserSelectAll, window, cx);
+     }
+ 
++    // Results share this input's FocusHandle. Their explicit mouse entry into
++    // text mode selects all too, while retaining the current down-point for drag.
++    pub(super) fn select_all_on_mouse_entry(
++        &mut self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let selection = self.mouse_selection;
++        self.focus_and_select_all(window, cx);
++        self.mouse_selection = selection;
++    }
++
+     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
++        self.mouse_selection = None;
+         self.content.clear();
+         self.selected = 0..0;
+         self.reversed = false;
+@@ -90,20 +114,21 @@ impl BrowserSearch {
+ 
+     fn previous_boundary(&self, offset: usize) -> usize {
+         self.content[..offset.min(self.content.len())]
+-            .char_indices()
+-            .last()
++            .grapheme_indices(true)
++            .next_back()
+             .map_or(0, |(index, _)| index)
+     }
+ 
+     fn next_boundary(&self, offset: usize) -> usize {
+         let offset = offset.min(self.content.len());
+-        self.content[offset..]
+-            .char_indices()
+-            .nth(1)
+-            .map_or(self.content.len(), |(index, _)| offset + index)
++        self.content
++            .grapheme_indices(true)
++            .find(|(index, _)| *index > offset)
++            .map_or(self.content.len(), |(index, _)| index)
+     }
+ 
+     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
++        self.mouse_selection = None;
+         let offset = offset.min(self.content.len());
+         if self.reversed {
+             self.selected.start = offset;
+@@ -118,6 +143,7 @@ impl BrowserSearch {
+     }
+ 
+     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
++        self.mouse_selection = None;
+         let offset = offset.min(self.content.len());
+         self.selected = offset..offset;
+         self.reversed = false;
+@@ -171,6 +197,7 @@ impl BrowserSearch {
+     }
+ 
+     fn select_all(&mut self, _: &BrowserSelectAll, _: &mut Window, cx: &mut Context<Self>) {
++        self.mouse_selection = None;
+         self.selected = 0..self.content.len();
+         self.reversed = false;
+         cx.notify();
+@@ -245,20 +272,81 @@ impl BrowserSearch {
+         if point.y > bounds.bottom() {
+             return self.content.len();
+         }
+-        line.closest_index_for_x(point.x - self.last_origin_x.unwrap_or(bounds.left()))
++        let index = line.closest_index_for_x(point.x - self.last_origin_x.unwrap_or(bounds.left()));
++        if index == self.content.len() {
++            return index;
++        }
++        self.content
++            .grapheme_indices(true)
++            .take_while(|(boundary, _)| *boundary <= index)
++            .last()
++            .map_or(0, |(boundary, _)| boundary)
+     }
+ 
+     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+-        if event.modifiers.shift {
+-            self.select_to(self.index_for_point(event.position), cx);
++        let offset = self.index_for_point(event.position);
++        let anchor = if event.modifiers.shift && self.focus.is_focused(window) {
++            if self.reversed {
++                self.selected.end
++            } else {
++                self.selected.start
++            }
+         } else {
+-            self.move_to(self.index_for_point(event.position), cx);
++            offset
++        };
++        self.unmark_text(window, cx);
++        if !self.clip_name && !self.focus.is_focused(window) {
++            self.focus_and_select_all(window, cx);
++        } else if event.modifiers.shift {
++            self.select_to(offset, cx);
++        } else {
++            self.move_to(offset, cx);
+         }
+         self.focus.focus(window);
++        self.mouse_selection = Some(MouseSelection {
++            anchor,
++            origin: event.position,
++            dragging: false,
++        });
+         if self.clip_name {
+             cx.stop_propagation();
+         }
+     }
++
++    fn mouse_move(
++        &mut self,
++        event: &gpui::MouseMoveEvent,
++        window: &Window,
++        cx: &mut Context<Self>,
++    ) {
++        let Some(selection) = self.mouse_selection else {
++            return;
++        };
++        if event.pressed_button != Some(MouseButton::Left) || !self.focus.is_focused(window) {
++            self.mouse_selection = None;
++            return;
++        }
++        // A focus click stays Select All through ordinary pointer jitter. A
++        // deliberate held drag selects from its down-point, even outside bounds.
++        if !selection.dragging
++            && f32::from(event.position.x - selection.origin.x).abs() < 2.0
++            && f32::from(event.position.y - selection.origin.y).abs() < 2.0
++        {
++            return;
++        }
++        if let Some(selection) = self.mouse_selection.as_mut() {
++            selection.dragging = true;
++        }
++        let offset = self.index_for_point(event.position);
++        let selected = selection.anchor.min(offset)..selection.anchor.max(offset);
++        let reversed = offset < selection.anchor;
++        if self.selected != selected || self.reversed != reversed {
++            self.selected = selected;
++            self.reversed = reversed;
++            cx.notify();
++        }
++        cx.stop_propagation();
++    }
+ }
+ 
+ impl EntityInputHandler for BrowserSearch {
+@@ -301,6 +389,7 @@ impl EntityInputHandler for BrowserSearch {
+         _: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        self.mouse_selection = None;
+         let range = range
+             .as_ref()
+             .map(|range| self.range_from_utf16(range))
+@@ -333,6 +422,7 @@ impl EntityInputHandler for BrowserSearch {
+         _: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        self.mouse_selection = None;
+         let range = range
+             .as_ref()
+             .map(|range| self.range_from_utf16(range))
+@@ -637,6 +727,23 @@ impl Element for BrowserSearchElement {
+         window: &mut Window,
+         cx: &mut App,
+     ) {
++        let pointer = self.input.clone();
++        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
++            if phase.bubble() {
++                pointer.update(cx, |input, cx| input.mouse_move(event, window, cx));
++            }
++        });
++        let release = self.input.clone();
++        window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, cx| {
++            if phase.bubble() && event.button == MouseButton::Left {
++                let owned = release.update(cx, |input, _| {
++                    input.mouse_selection.take().is_some() && input.focus.is_focused(window)
++                });
++                if owned {
++                    cx.stop_propagation();
++                }
++            }
++        });
+         let focus = self.input.read(cx).focus.clone();
+         window.handle_input(
+             &focus,
+diff --git a/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+new file mode 100644
+index 00000000..80eb5389
+--- /dev/null
++++ b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+@@ -0,0 +1,281 @@
++//! Actual input/UTF-16 selection checks; never a native focus-bug acceptance claim.
++use super::*;
++use gpui::EntityInputHandler;
++use std::ops::Range;
++
++fn selection(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) -> Range<usize> {
++    visual.update(|window, cx| {
++        let input = editor.read(cx).browser.search.clone();
++        input.update(cx, |input, cx| {
++            input.selected_text_range(false, window, cx).unwrap().range
++        })
++    })
++}
++
++fn caret_point(
++    editor: &gpui::Entity<EditorView>,
++    visual: &mut VisualTestContext,
++    offset: usize,
++) -> gpui::Point<gpui::Pixels> {
++    let bounds = visual.debug_bounds("browser-search").unwrap();
++    visual.update(|window, cx| {
++        let input = editor.read(cx).browser.search.clone();
++        input.update(cx, |input, cx| {
++            input
++                .bounds_for_range(offset..offset, bounds, window, cx)
++                .unwrap()
++                .center()
++        })
++    })
++}
++
++fn workers_and_ticks(
++    editor: &gpui::Entity<EditorView>,
++    visual: &mut VisualTestContext,
++    directory: &std::path::Path,
++) {
++    editor.update(visual, |view, cx| {
++        view.refresh_sample_catalog(cx);
++        view.request_browser_scan(directory.to_owned(), cx);
++    });
++    visual.run_until_parked();
++    for _ in 0..4 {
++        visual
++            .executor()
++            .advance_clock(std::time::Duration::from_millis(16));
++        visual.run_until_parked();
++    }
++}
++
++#[gpui::test]
++fn search_focus_click_selects_query_and_replaces_after_real_workers(cx: &mut TestAppContext) {
++    cx.update(super::super::super::bind_editor_keys);
++    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("kick hats");
++    visual.update(|window, cx| {
++        editor.update(cx, |view, cx| {
++            view.focus.focus(window);
++            cx.notify();
++        })
++    });
++    let point = caret_point(&editor, visual, 4);
++    visual.simulate_click(point, Modifiers::default());
++    assert_eq!(
++        selection(&editor, visual),
++        0..9,
++        "first focus click must select the entire query"
++    );
++    workers_and_ticks(&editor, visual, &directory.0);
++    assert_eq!(selection(&editor, visual), 0..9);
++    visual.simulate_input("snare");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "snare");
++        assert!(view.pending_requests.is_empty());
++        assert!(view.pending_audio_commands.is_empty());
++        assert_eq!(view.browser.playback_generation, 0);
++    });
++    visual.simulate_keystrokes("cmd-f");
++    assert_eq!(
++        selection(&editor, visual),
++        0..5,
++        "Command-F selects all while already focused"
++    );
++    visual.simulate_input("loop");
++    // Results use the same underlying FocusHandle; entering text mode is still a focus entry.
++    visual.simulate_keystrokes("down");
++    let point = caret_point(&editor, visual, 2);
++    visual.simulate_click(point, Modifiers::default());
++    assert_eq!(selection(&editor, visual), 0..4);
++    visual.simulate_input("hat");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "hat")
++    });
++}
++
++#[gpui::test]
++fn search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins(cx: &mut TestAppContext) {
++    cx.update(super::super::super::bind_editor_keys);
++    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("kick hats");
++    for entering in [false, true] {
++        if entering {
++            visual.update(|window, cx| {
++                editor.update(cx, |view, cx| {
++                    view.focus.focus(window);
++                    cx.notify();
++                })
++            });
++        }
++        let start = caret_point(&editor, visual, 1);
++        let end = caret_point(&editor, visual, 4);
++        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++        assert_eq!(
++            selection(&editor, visual),
++            if entering { 0..9 } else { 1..1 }
++        );
++        visual.update(|window, cx| {
++            let input = editor.read(cx).browser.search.clone();
++            input.update(cx, |input, cx| {
++                assert_eq!(
++                    input.text_for_range(0..9, &mut None, window, cx).as_deref(),
++                    Some("kick hats")
++                )
++            });
++        });
++        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++        assert_eq!(
++            selection(&editor, visual),
++            1..4,
++            "held drag selects a substring"
++        );
++        visual.simulate_mouse_move(start, MouseButton::Left, Modifiers::default());
++        assert_eq!(
++            selection(&editor, visual),
++            1..1,
++            "drag can return to its anchor"
++        );
++        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++        workers_and_ticks(&editor, visual, &directory.0);
++        assert_eq!(
++            selection(&editor, visual),
++            1..4,
++            "release/late worker must not select all again"
++        );
++    }
++    let category = visual.debug_bounds("browser-section-samples").unwrap();
++    visual.simulate_click(category.center(), Modifiers::default());
++    visual.simulate_resize(gpui::size(px(880.0), px(540.0)));
++    visual.run_until_parked();
++    assert_eq!(
++        selection(&editor, visual),
++        1..4,
++        "category/layout changes retain text selection"
++    );
++    visual.simulate_input("X");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "kx hats")
++    });
++}
++
++#[gpui::test]
++fn search_keyboard_selection_keeps_combining_graphemes_whole(cx: &mut TestAppContext) {
++    cx.update(super::super::super::bind_editor_keys);
++    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("İ🎛");
++    visual.simulate_keystrokes("cmd-a right left");
++    assert_eq!(selection(&editor, visual), 2..2);
++    visual.simulate_keystrokes("left");
++    assert_eq!(
++        selection(&editor, visual),
++        0..0,
++        "caret must cross i + combining dot as one grapheme"
++    );
++}
++
++#[gpui::test]
++fn search_selection_clipboard_ime_empty_and_long_query_keep_text_ownership(
++    cx: &mut TestAppContext,
++) {
++    cx.update(super::super::super::bind_editor_keys);
++    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("kick hats");
++    let caret = caret_point(&editor, visual, 1);
++    visual.simulate_click(caret, Modifiers::default());
++    assert_eq!(
++        selection(&editor, visual),
++        1..1,
++        "already focused click positions caret"
++    );
++    visual.simulate_keystrokes("shift-right shift-right shift-right cmd-c end cmd-v");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "kick hatsick")
++    });
++    visual.simulate_keystrokes("cmd-a cmd-x");
++    assert_eq!(selection(&editor, visual), 0..0);
++    visual.simulate_keystrokes("cmd-v");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "kick hatsick")
++    });
++    visual.simulate_keystrokes("cmd-f");
++    visual.update(|window, cx| {
++        let input = editor.read(cx).browser.search.clone();
++        input.update(cx, |input, cx| {
++            input.replace_and_mark_text_in_range(None, "İ🎛", Some(1..1), window, cx);
++            assert_eq!(input.marked_text_range(window, cx), Some(0..4));
++        });
++    });
++    visual.simulate_keystrokes("cmd-f");
++    assert_eq!(selection(&editor, visual), 0..4);
++    visual.update(|window, cx| {
++        let input = editor.read(cx).browser.search.clone();
++        input.update(cx, |input, cx| {
++            assert_eq!(input.marked_text_range(window, cx), None)
++        });
++    });
++    visual.simulate_input("hat");
++    visual.simulate_keystrokes("cmd-f backspace");
++    visual.update(|window, cx| {
++        editor.update(cx, |view, cx| {
++            view.focus.focus(window);
++            cx.notify();
++        })
++    });
++    let empty = caret_point(&editor, visual, 0);
++    visual.simulate_mouse_down(empty, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(
++        empty + point(px(1.0), px(0.0)),
++        MouseButton::Left,
++        Modifiers::default(),
++    );
++    visual.simulate_mouse_up(empty, MouseButton::Left, Modifiers::default());
++    assert_eq!(selection(&editor, visual), 0..0);
++    let long = "a".repeat(300) + "🎛";
++    visual.simulate_input(&long);
++    visual.simulate_keystrokes("cmd-f");
++    assert_eq!(selection(&editor, visual), 0..302);
++    let bounds = visual.debug_bounds("browser-search").unwrap();
++    // Selection follows a held pointer outside the field and releases outside safely.
++    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(
++        point(bounds.left() - px(10_000.0), bounds.center().y),
++        MouseButton::Left,
++        Modifiers::default(),
++    );
++    visual.simulate_mouse_move(
++        point(bounds.right() + px(10_000.0), bounds.center().y),
++        MouseButton::Left,
++        Modifiers::default(),
++    );
++    let outside = point(bounds.right() + px(10_000.0), bounds.center().y);
++    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
++    let released = selection(&editor, visual);
++    assert!(released.end <= 302);
++    visual.simulate_event(gpui::MouseMoveEvent {
++        position: bounds.center(),
++        pressed_button: None,
++        modifiers: Modifiers::default(),
++    });
++    assert_eq!(
++        selection(&editor, visual),
++        released,
++        "hover cannot mutate released selection"
++    );
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("x");
++    visual.simulate_keystrokes("cmd-shift-t");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "x");
++        assert!(view.pending_requests.is_empty());
++        assert!(view.pending_audio_commands.is_empty());
++        assert_eq!(view.browser.playback_generation, 0);
++    });
++}
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 09aca5fb..d7be9e53 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4016,3 +4016,6 @@ fn browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query(cx: &mut
+         assert!(view.last_enqueued_import_to_track.is_none());
+     });
+ }
++
++#[path = "browser_search_selection_ui_test.rs"]
++mod search_selection;
+diff --git a/docs/browser-places.md b/docs/browser-places.md
+index 5941573f..b168bf43 100644
+--- a/docs/browser-places.md
++++ b/docs/browser-places.md
+@@ -67,8 +67,13 @@ as category filters. Repeating Command-F from search/results replaces the query;
+ Escape clears it and restores text mode even if the query was already empty.
+ Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
+ query. Moving the caret or text selection leaves the result viewport unchanged;
+-only a changed query resets it. Clicking the search field restores caret editing
+-without moving the result viewport. Device and file highlights both require result
++only a changed query resets it. Clicking the search field from another control selects the entire query so the
++next typed text replaces it. Once already focused, clicks place the caret and
++held pointer drags select substrings. A deliberate drag on the initial focus
++click overrides Select All from its down-point; release, worker acknowledgments
++and repaint never reselect the whole query. Returning from result navigation to
++the text field is an explicit text-mode entry even though they share a FocusHandle.
++Text selection/caret movement does not move the result viewport. Device and file highlights both require result
+ focus. Open context/controller menus are dismissed; leaving theme
+ settings cancels its unsaved preview (an in-flight save must finish first).
+ A clip-name draft commits using the existing blur behavior before search takes focus.
+@@ -97,3 +102,26 @@ control with the browser collapsed; type a sample/project/device name; confirm
+ filtered results, repeat Command-F to replace the query, clear with Escape, and
+ drag a matched sample/device to its normal destination. Native macOS interaction
+ and reference parity remain unverified by cloud source tests.
++
++
++## Search text selection (Pulse #2805 / PR #411)
++
++Command-F always focuses/selects all, including when already focused. Mouse
++entry selects the current query; subsequent normal clicks, held drags, Shift
++selection, Command-A and clipboard operations retain normal text editing. A
++focus click tolerates small pointer jitter; an intentional held drag uses the
++initial down-point, can return to its anchor and releases safely outside the
++field. Selection-only changes do not change the query or prepare sample audio.
++Category changes, accepted filesystem work and resizing retain the selection.
++Native composition keeps the existing UTF-16 conversion/case-normalization;
++Command-F unmarks before replacing the query. Mouse hit positions and keyboard
++boundary operations use complete Unicode graphemes (the existing locked
++unicode-segmentation 1.13.3 package is now a direct UI dependency). The same
++input primitive retains case-preserving clip/track-name mode; first-click Select
++All is browser-only. No rendering/timer callback requests Select All.
++
++Rendered test-platform regressions demonstrate original missing focus-click
++Select All, missing drag selection and splitting a combining grapheme. This is
++new source selection behavior, not proof of resolution or native acceptance for
++separate mouse-focus issue #2794 / draft PR #400. Native mouse/clipboard/IME and
++shortcut checks remain coordinator-owned; no app replacement occurs in cloud.
+diff --git a/todo.md b/todo.md
+index f2dcc640..7088b4c5 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5135,3 +5135,11 @@ playback-stack example. The note-only fixture now explicitly refuses controller
+ events during preflight. Its focused regression passes; the same joint strict
+ Clippy command now passes. The negative compiler log is retained. This repairs
+ a verification fixture and adds no sampler/controller playback behavior.
++
++18 October 2026 — Pulse #2805 / canonical PR #411: browser search selects its
++query on mouse focus entry and Command-F, retains normal focused caret/partial
++mouse/keyboard selection, and keeps deliberate initial held-drag selection across
++release and async/layout updates. Unicode grapheme boundaries reuse the locked
++segmentation package. Source selection work is separate from unresolved #2794
++native focus diagnostics. Dedicated merger owns integration/full CI/merge;
++root owns native optimized acceptance and the current app remains untouched.

@@ -1,0 +1,11 @@
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 09aca5fb..d7be9e53 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4016,3 +4016,6 @@ fn browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query(cx: &mut
+         assert!(view.last_enqueued_import_to_track.is_none());
+     });
+ }
++
++#[path = "browser_search_selection_ui_test.rs"]
++mod search_selection;

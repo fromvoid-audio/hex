@@ -1,0 +1,66 @@
+{
+  "canonical_pr": 411,
+  "ticket": 2805,
+  "head": "66a3fc2a5762e6b2c754b937945480010044c507",
+  "tree": "32b4d6a5f1af009c0bee1a550f63a841da9fc232",
+  "expected_before": "c6010e5f4423f39fd791f264ea096f9b932cdb31",
+  "expected_before_tree": "a6fa820c38ed2c7c39e295e7065e6a688f936eba",
+  "changed_files": [
+    "Cargo.lock",
+    "crates/hex-ui/Cargo.toml",
+    "crates/hex-ui/README.md",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_input.rs",
+    "crates/hex-ui/src/editor/browser_search_selection_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "original_red": {
+    "source": "c6010e5f4423f39fd791f264ea096f9b932cdb31",
+    "log": "411-original-red.log",
+    "results": "3 actual rendered failures: first-focus click4..4 expected0..9; held drag1..1 expected1..4; combining-grapheme caret1..1 expected0..0; unchanged original production/no fixture failure"
+  },
+  "final_results": {
+    "browser": "81PASS0failed0ignored/667filtered, 411-checked-browser.log",
+    "name": "17PASS0failed0ignored/731filtered, 411-checked-name.log",
+    "strict_clippy": "UI featurealltargets-Dwarnings PASS",
+    "guards": "architecture/GPUI/style/fmt/diff all0, 411-checked-checks.json",
+    "fullCI": "not run by sourceowner; dedicated merger owns final integration/prospective fullCI/review/merge"
+  },
+  "retained_failures": {
+    "411-selection-expanded-green.log": "new test local variable point shadowed constructor function; compile diagnostic, fixed; not product red",
+    "411-final-clippy.log": "grapheme iterator last unnecessarily scanned full iterator; changed to next_back, all relevant tests/checks rerun; no waiver"
+  },
+  "dependency": "Direct pinned unicode-segmentation1.13.3 already in lock/GPUI graph; no new version/network/framework/vendor change",
+  "scope": "BrowserSearch mouse-entry/held-drag/release lifecycle, grapheme boundaries; toolbar results-to-text entry only. Clip/track-name primitive keeps case mode and no browser-style automatic SelectAll. No timer/render SelectAll. No editor mod/render/action/audio changes.32640b+4000a502 remain untouched.",
+  "known_limits": [
+    "Existing PCMDeclaredArcUnknown unsupported-wrapper build-script diagnostic retained; no native proof",
+    "Actual OS mouse/clipboard/IME acceptance open; no Mac app/input/install/launch/quit/permission/user-data actions",
+    "Not a claim to fix unreproduced2794 native mouse focus; user said current Hex normal/typing works, not mouse-specific acceptance"
+  ],
+  "files": {
+    "411-checked-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "411-checked-browser.log": "473770dbb33c661c2837698a8c7598bbb01aaff7a4252b53f0f486392047f4d9",
+    "411-checked-checks.json": "72ac48ae46a13e21dae51653e5ea7a31395b9fe37df07c6ff3b3e6941136012d",
+    "411-checked-clippy.log": "33ec70e75e9731bdb418529a2c1bd0140cddda7d71458ebd573ad358002ed458",
+    "411-checked-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "411-checked-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "411-checked-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "411-checked-name.log": "61d0bb6e6292d2e959a855b02d71fc24b90461d2113b294cb539431632ca366c",
+    "411-checked-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "411-final-browser.log": "fb1422b9d04550aeda79cd4e82211e19a8d8b567a5feef177110fd325e4804c3",
+    "411-final-checks.json": "0ca8b2c55259b9ca1ce7e2efe3455e720e819ba20fedb56347d1b800cabd582e",
+    "411-final-clippy.log": "bbaebdb1ecdaf28741f6eb54e9213855cfd12e7f092f98fd66cec952ae4f6aa2",
+    "411-final-name.log": "fc9c76698344bba8e5be9a88cb8cb3cafdbe1ac58fd9f01e2362f6a37b416c45",
+    "411-original-red.log": "2d2992555403ccc0b5efdb3fa91b4faefda6a05034ca2bdce8a1994e7d192a6e",
+    "411-original-regressions.rs": "76b3e3aa4590da65b69f64392cbed79ec15716abb9966f2f74e36139e6fd63ef",
+    "411-original-test-registration.patch": "17b7f09206200845ecb7b77b6c4ac0548e295a6b5a7fcb5f14cc9f3644c6fb94",
+    "411-selection-expanded-green-v2.log": "84050a2778b540f9a2fdaa1962397efe898d77315a137261bbc2920d6d92575f",
+    "411-selection-expanded-green.log": "c9ffd9b0b2017649655f0c30ad8d214bb22f746de3c2090d246bd042755887b2",
+    "411-selection-initial-green.log": "656426b2129425184fc82917979b90536f1a14d3d2049254ae55337a83b51e1d",
+    "before-after-hashes.json": "075266cb05782b293a58394e042528e8be06e8ce7624fe7c22476e225056f91a",
+    "native-checklist.md": "6834d9a4772fbcc51453c60246f634603fe4413be6c6ee4201733bc185b33af5",
+    "source.patch": "e2292f26bd7b728702a2cfa65c86ed7afa5644c983a9caebb0c870a4623c8ff7"
+  }
+}

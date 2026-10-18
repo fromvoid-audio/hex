@@ -1,0 +1,13 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.88s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 3 tests
+test editor::browser::ui_test::search_selection::search_keyboard_selection_keeps_combining_graphemes_whole ... ok
+test editor::browser::ui_test::search_selection::search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins ... ok
+test editor::browser::ui_test::search_selection::search_focus_click_selects_query_and_replaces_after_real_workers ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 744 filtered out; finished in 1.42s
+
