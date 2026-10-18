@@ -197,7 +197,6 @@ impl PreparedDeviceSample {
     pub fn visit_selected_storage_on_control<'a>(
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
-        role: AudioStorageRole,
     ) -> Result<(), AudioStorageError> {
         let Self {
             device,
@@ -213,7 +212,10 @@ impl PreparedDeviceSample {
         ledger.borrow_canonical_native_state_on_control(expected_state)?;
         ledger.borrow_canonical_native_state_on_control(state)?;
         ledger.borrow_metadata_path_backing_on_control(path)?;
-        self.visit_original_pcm_on_control(ledger, role)
+        match &self.source {
+            OriginalAudio::Stereo(audio) => ledger.borrow_embedded_native_audio_on_control(audio),
+            OriginalAudio::Mono(source) => ledger.borrow_embedded_native_source_on_control(source),
+        }
     }
     /// PCM fields only; outer staging/path/state metadata and complete graph
     /// custody/peak/publication/retirement are separate mandatory obligations.

@@ -20,6 +20,22 @@ impl<'a> AudioRootStorageLedger<'a> {
             ledger.resident(audio, Owner::exclusive(audio), handle)
         })
     }
+    /// Actual native source field embedded in an already charged parent.
+    /// Validate its closed constructor, then visit that SAME physical field at
+    /// most once. Another clone remains a separate handle obligation. This
+    /// neither registers a standalone root nor suppresses duplicate-root errors.
+    pub fn borrow_embedded_native_source_on_control(
+        &mut self,
+        source: &'a crate::OwnedAudioSource,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            crate::audio_input_storage::parts(source)?;
+            if ledger.contains_shared_field(source) {
+                return Ok(());
+            }
+            ledger.source(source)
+        })
+    }
     /// Visit an actual closed source field retained by a media/control owner.
     /// This leaf inventory is not a declaration for its enclosing container.
     pub fn borrow_native_source_on_control(

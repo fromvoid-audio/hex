@@ -479,7 +479,7 @@ fn pending_device_sample_inventory_joins_actual_history_command_states_path_and_
             let mut ledger = AudioRootStorageLedger::try_new_on_control(budget)?;
             pending.visit_original_pcm_on_control(&mut ledger, AudioStorageRole::Caller)?;
             let pcm = ledger.summary()?.data_bytes;
-            pending.visit_selected_storage_on_control(&mut ledger, AudioStorageRole::Caller)?;
+            pending.visit_selected_storage_on_control(&mut ledger)?;
             let staging = ledger.summary()?.data_bytes;
             let requested = |length| {
                 std::alloc::Layout::array::<std::sync::atomic::AtomicUsize>(2)
@@ -508,12 +508,23 @@ fn pending_device_sample_inventory_joins_actual_history_command_states_path_and_
             ledger.borrow_metadata_path_backing_on_control(path)?;
             ledger.validate_selected_shared_handles_on_control()?;
             let measured = ledger.summary()?;
-            pending.visit_selected_storage_on_control(&mut ledger, AudioStorageRole::Caller)?;
+            pending.visit_selected_storage_on_control(&mut ledger)?;
             ledger.borrow_editor_native_states_on_control(&session.editor)?;
             assert_eq!(ledger.summary()?, measured);
             assert!(measured.require_complete().is_err());
             Ok(measured)
         };
+        // The standalone root API stays STRICT; using it twice is still an
+        // error. Only the embedded-field visitor is idempotent for this field.
+        let mut direct = AudioRootStorageLedger::try_new_on_control(budget).unwrap();
+        pending
+            .visit_original_pcm_on_control(&mut direct, AudioStorageRole::Caller)
+            .unwrap();
+        assert_eq!(
+            pending.visit_original_pcm_on_control(&mut direct, AudioStorageRole::Caller),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        drop(direct);
         let measured = collect(budget).unwrap();
         let mut exact = budget;
         exact.max_retained_bytes = measured.retained_bytes;

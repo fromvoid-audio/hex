@@ -440,3 +440,13 @@ retains it through a prospective device snapshot, retires decoder/bank/model
 producers, and compares exact deep-zoom original samples. A newer snapshot with
 no prepared summary stays empty while the old read remains exact. Runtime
 qualification is pending; the borrowed read cannot escape its snapshot scope.
+
+The first native pending-inventory run at a891 reached supported Mono and refused
+with SourceMismatch: its supposedly embedded traversal repeated the strict
+standalone PCM-root API. That API intentionally rejects duplicate root rows.
+The correction uses actual embedded native source/audio field observers (as
+waveform/source children already do), preserving that strict root rejection.
+Repeated embedded visits deduplicate only the same immutable physical field;
+other physical owners remain required. The new regression explicitly retains a
+negative duplicate-root assertion. Mono/Stereo runtime requalification of the
+repair is required; no cap change, Unknown skip or swallowed mismatch is used.
