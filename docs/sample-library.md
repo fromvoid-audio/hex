@@ -16,6 +16,15 @@ waveform-aware Arrangement/Session drag paths remain shared.
 Projects retains its folder browser. Adding a folder persists the existing browser
 place and triggers a catalog scan without navigating away from Samples.
 
+Place results stay unavailable while the current folder availability scan is pending
+or has failed, including cached indexed matches and previously rendered audition/import
+controls. A successful current scan restores surviving selection by original path;
+source/query changes discard that saved selection. Folder refresh cancels queued/active
+Place audition. Scoped current-folder additions use the same case-insensitive,
+whitespace-separated full-path terms as the index. Global All composition retains its
+existing behavior. These are Pulse #2791 / PR397 source guarantees; optimized native
+acceptance remains separate.
+
 Global Command-F/All search composes this catalog with the current bounded folder
 snapshot and registered devices. It replaces the previous source selection, deduplicates
 original paths, and retains current-folder WAVs outside indexed roots. File rows
