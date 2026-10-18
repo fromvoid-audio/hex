@@ -13,6 +13,7 @@ mod axes;
 mod response;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
+pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
 
 const WINDOW_BEATS: u64 = 16;
 // Outer five percent of the inset logarithmic plot; existing node hits win.
@@ -1497,6 +1498,11 @@ pub(super) fn spectrum_intent_for_test(view: &EditorView, device: DeviceId) -> (
         view.device_panel.eq_spectrum.enabled(device),
         panel.show_input,
     )
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn graph_for_test(view: &EditorView, device: DeviceId) -> Entity<ResponseGraph> {
+    view.device_panel.eq_panels[&device].entity.clone()
 }
 
 #[cfg(test)]

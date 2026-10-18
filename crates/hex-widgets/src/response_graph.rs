@@ -331,13 +331,18 @@ impl ResponseGraph {
     }
 
     fn normalized_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
+        self.unclamped_position(position)
+            .map(|position| position.map(|value| value.clamp(0.0, 1.0)))
+    }
+
+    fn unclamped_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
         let bounds = self.plot_bounds()?;
         if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
             return None;
         }
         Some([
-            ((position.x - bounds.left()) / bounds.size.width).clamp(0.0, 1.0),
-            (1.0 - (position.y - bounds.top()) / bounds.size.height).clamp(0.0, 1.0),
+            (position.x - bounds.left()) / bounds.size.width,
+            1.0 - (position.y - bounds.top()) / bounds.size.height,
         ])
     }
 
@@ -345,16 +350,10 @@ impl ResponseGraph {
         if event.button != MouseButton::Left || self.drag.is_some() || self.press.is_some() {
             return;
         }
-        if self.axes.is_some()
-            && !self
-                .plot_bounds()
-                .is_some_and(|bounds| bounds.contains(&event.position))
-        {
-            return;
-        }
-        let Some(position) = self.normalized_position(event.position) else {
+        let Some(raw_position) = self.unclamped_position(event.position) else {
             return;
         };
+        let position = raw_position.map(|value| value.clamp(0.0, 1.0));
         let Some(bounds) = self.plot_bounds() else {
             return;
         };
@@ -365,13 +364,18 @@ impl ResponseGraph {
             .nodes
             .iter()
             .filter_map(|node| {
-                let dx = (node.position[0] - position[0]) * width;
-                let dy = (node.position[1] - position[1]) * height;
+                let dx = (node.position[0] - raw_position[0]) * width;
+                let dy = (node.position[1] - raw_position[1]) * height;
                 let distance = dx.mul_add(dx, dy * dy);
                 (distance <= NODE_RADIUS * NODE_RADIUS).then_some((distance, node.id))
             })
             .min_by(|left, right| left.0.total_cmp(&right.0));
         let Some((_, node_id)) = hit else {
+            // Visible boundary markers retain their full bounded hit radius.
+            // Only blank axis margins are excluded from node creation.
+            if self.axes.is_some() && !bounds.contains(&event.position) {
+                return;
+            }
             if self.creation_enabled && event.click_count == 1 {
                 if self.creation_drag_enabled {
                     self.press = Some(Press {

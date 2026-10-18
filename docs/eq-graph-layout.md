@@ -152,3 +152,55 @@ original source until included in the merger's actual candidate qualification.
 No old native report is relabeled, and no user app, backend, TCC or MTS operation
 is requested by these disposable tests. Shared device outline2829/433 and future
 shared spectrum fills2832/436 are separate source work.
+
+## selection, document and edge-hit review return
+
+The original24c62 native19 pass and the merger's combined2b1f51d1 full20 pass
+remain evidence for those exact sources. Fresh review found three additional
+omissions; the new `eq_review_` cases reproduce them on2b1 before repair:
+
+- An actual non-EQ header selection left the previous sparse EQ's public target
+  channel active, even after selection had changed.
+- New replaced the document with an empty project but retained the prior analyzer
+  waiting message. The replacement had no EQ card to run a panel-local cleanup.
+- An actual press four pixels beyond a boundary node was rejected in the axis
+  margin before the existing eight-pixel node-radius test ran.
+
+EQ-owned reconciliation now runs at the existing controller target-retirement
+hook and the shared panel's document/selection boundary. It retires sparse-EQ
+capture and cached pixels when the selected device is no longer an enabled sparse
+EQ, and clears its owned status on document-generation replacement. It preserves
+per-EQ Off intent within a project, unrelated save messages, legacy graph owners,
+the existing public target channel and its admission/token/generation rules. It
+creates no new analyzer owner, worker, callback or persisted state.
+
+Node hit-testing now measures the actual pointer's distance before rejecting a
+blank axis press. Value and drag coordinates retain their existing clamps. Tests
+click and drag the outward halves of20Hz,20kHz and±24db nodes, preserve their stable
+identity/kind/Q, verify canonical Undo, and still refuse blank-axis creation.
+The generation test exercises both actual New and disposable-file Open, with
+waiting and real closed-public-client status, preserving a newer unrelated save
+message. The ordinary-device test uses the real pointer selection path and public
+channel retirement, not a synthetic selected-device assignment.
+
+The private graph accessor used by these tests is the same test-only accessor as
+PR407; integration must keep one definition. PR407's pending Option-Q raw-delta
+and momentum repairs remain separate. This repair preserves the merger's combined
+GPUI font/quad support unchanged and does not modify Open/changelog/controller
+handlers outside the declared retirement hook.
+
+The finite new native selector, on the coordinator's immutable actual candidate,
+is:
+
+```sh
+cargo test -p hex-ui --lib --features ui-test-support --locked eq_ui_tests::graph_layout_tests::eq_review_ -- --nocapture
+```
+
+Require three positive cases and zero ignored; the inherited bounded fixture
+still requires the actual bundled font on macOS. Original cloud reds, fixture
+compile/selection-setup failures and subsequent greens remain source-bound.
+This command uses private temporary projects and headless public channels; no app,
+OS audio device, permission or user-file action is needed. Do not blindly repeat
+the old native19 for unchanged font/geometry source. Physical edge targeting,
+optimized pixels, real capture cessation after selection and listening remain
+coordinator/user acceptance, not claims from these simulated cases.

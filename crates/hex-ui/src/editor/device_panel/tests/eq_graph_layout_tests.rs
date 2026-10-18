@@ -1047,3 +1047,262 @@ fn eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_op
         editor.read_with(cx, |view, _| assert_eq!(read(view, device), before));
     }
 }
+
+#[gpui::test]
+fn eq_review_selection_of_non_eq_retires_actual_public_capture_target(cx: &mut TestAppContext) {
+    let (service, _, track, eq) = fixture(false);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.utility",
+            )),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let utility = state.project.track(track).unwrap().devices()[1].id();
+    let before = state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let (control, mut callback) = hex_audio::spectrum_target::channel();
+    editor.update(cx, |view, cx| {
+        view.device_panel.eq_spectrum.test_channel = Some(control);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1800.0), px(650.0)));
+    visual.run_until_parked();
+    let focus = editor.update(cx, |view, cx| view.device_panel.chain_window.focus(eq, cx));
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    let target = editor
+        .read_with(cx, |view, _| {
+            view.device_panel
+                .eq_spectrum
+                .test_channel
+                .as_ref()
+                .unwrap()
+                .desired()
+        })
+        .expect("focused eq defaults on");
+    callback.begin_block();
+    assert_eq!(callback.current(), Some(target));
+    let header = visual
+        .debug_bounds(selector("device-drag-title", utility))
+        .unwrap();
+    visual.simulate_click(header.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(utility));
+        assert!(
+            view.device_panel
+                .eq_spectrum
+                .test_channel
+                .as_ref()
+                .unwrap()
+                .desired()
+                .is_none(),
+            "non-eq selection must retire the previous eq capture"
+        );
+        assert!(view.device_panel.spectrum_result.is_none());
+        assert_eq!(view.state.as_ref().unwrap().project, before);
+        assert!(view.audio.is_none());
+    });
+    assert!(
+        callback.current().is_none(),
+        "retirement invalidates the accepted tap immediately"
+    );
+}
+
+#[gpui::test]
+fn eq_review_new_and_open_empty_projects_retire_only_owned_analyzer_status(
+    cx: &mut TestAppContext,
+) {
+    for open in [false, true] {
+        for status in ["waiting", "closed", "unrelated"] {
+            let (service, state, track, device) = fixture(false);
+            let (handle, editor, root) = bounded_window(cx, service, state, track);
+            let mut backend_owners = None;
+            if status == "closed" {
+                let (mut output, backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+                let mut client = output.take_client().unwrap();
+                client.close();
+                editor.update(cx, |view, _| {
+                    view.device_panel.eq_spectrum.test_client = Some(client)
+                });
+                backend_owners = Some((output, backend));
+            }
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.update(|window, _| window.activate_window());
+            visual.simulate_resize(size(px(1500.0), px(650.0)));
+            visual.run_until_parked();
+            let focus = editor.update(cx, |view, cx| {
+                view.device_panel.chain_window.focus(device, cx)
+            });
+            visual.update(|window, _| focus.focus(window));
+            visual.run_until_parked();
+            if status != "closed" {
+                let toggle = visual
+                    .debug_bounds(selector("eq8-spectrum", device))
+                    .unwrap();
+                visual.simulate_click(toggle.center(), Modifiers::default());
+                visual.simulate_click(toggle.center(), Modifiers::default());
+                visual.run_until_parked();
+            }
+            editor.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.device_panel.message.as_deref(),
+                    Some(if status == "closed" {
+                        "spectrum unavailable: audio output is closed"
+                    } else {
+                        "spectrum waits for available current project audio"
+                    })
+                )
+            });
+            let request = if open {
+                let path = root.0.join("empty.hex");
+                let fresh = Service::new(48_000, 8, 8_000_000).unwrap();
+                let _ = receive_service_event(&fresh);
+                fresh.submit(Request::SaveNew(path.clone())).unwrap();
+                assert!(receive_service_event(&fresh).error.is_none());
+                Request::Open(path)
+            } else {
+                Request::NewWithAudioMode {
+                    mode: hex_session::DocumentAudioMode::Resident,
+                    reservation: None,
+                }
+            };
+            let generation = editor.update(cx, |view, _| {
+                if status == "unrelated" {
+                    view.device_panel.message = Some("could not save project".into());
+                }
+                assert!(view.enqueue(request));
+                view.project_generation
+            });
+            pump_until(&editor, cx, |view| {
+                settled(view) && view.project_generation > generation
+            });
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
+                assert!(view.device_panel.selected_device.is_none());
+                assert_eq!(
+                    view.device_panel.message.as_deref(),
+                    if status == "unrelated" {
+                        Some("could not save project")
+                    } else {
+                        None
+                    },
+                    "Open={open}, old status={status}"
+                );
+                assert!(view.audio.is_none(), "fixture must stay headless");
+            });
+            editor.update(cx, |view, _| {
+                view.device_panel.eq_spectrum.test_client.take();
+            });
+            drop(backend_owners);
+        }
+    }
+}
+
+#[gpui::test]
+fn eq_review_boundary_node_outer_hit_wins_but_blank_axis_never_creates(cx: &mut TestAppContext) {
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let center = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(center, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    let initial = editor.read_with(cx, |view, _| read(view, device));
+    let graph = editor.read_with(cx, |view, _| eq_panel::graph_for_test(view, device));
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<
+        hex_widgets::ResponseGraphEvent,
+    >::new()));
+    let captured = events.clone();
+    let _subscription = graph.update(cx, |_, cx| {
+        cx.subscribe(
+            &graph,
+            move |_, _, event: &hex_widgets::ResponseGraphEvent, _| {
+                captured.borrow_mut().push(*event)
+            },
+        )
+    });
+    for (frequency, gain, x, y, outward) in [
+        (20.0, 0.0, 0.0, 0.5, point(px(-4.0), px(0.0))),
+        (20_000.0, 0.0, 1.0, 0.5, point(px(4.0), px(0.0))),
+        (
+            initial.nodes[0].frequency_hz,
+            -24.0,
+            0.5,
+            0.0,
+            point(px(0.0), px(4.0)),
+        ),
+        (
+            initial.nodes[0].frequency_hz,
+            24.0,
+            0.5,
+            1.0,
+            point(px(0.0), px(-4.0)),
+        ),
+    ] {
+        let mut expected = initial.clone();
+        expected.nodes[0].frequency_hz = frequency;
+        expected.nodes[0].gain_db = gain;
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::ReplaceDeviceState {
+                device,
+                state: expected.encode().unwrap()
+            })))
+        });
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == expected
+        });
+        visual.run_until_parked();
+        events.borrow_mut().clear();
+        let hit = plot(&mut visual, device, x, y) + outward;
+        visual.simulate_click(hit, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .any(|event| event.node_id == expected.nodes[0].id.value()
+                    && event.phase == hex_widgets::ResponseGraphPhase::Press),
+            "outer hit frequency{frequency}/gain{gain}"
+        );
+        assert_eq!(editor.read_with(cx, |view, _| read(view, device)), expected);
+        let moved = hit - outward.map(|value| value * 6.0);
+        visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) != expected
+        });
+        let dragged = editor.read_with(cx, |view, _| read(view, device));
+        assert_eq!(dragged.nodes.len(), 1);
+        assert_eq!(dragged.nodes[0].id, expected.nodes[0].id);
+        assert_eq!(dragged.nodes[0].kind, expected.nodes[0].kind);
+        assert_eq!(dragged.nodes[0].q, expected.nodes[0].q);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == expected
+        });
+        visual.run_until_parked();
+        events.borrow_mut().clear();
+        let blank = plot(&mut visual, device, 0.0, 0.25) + point(px(-4.0), px(0.0));
+        visual.simulate_click(blank, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            events.borrow().is_empty(),
+            "blank axis is not a creation or node hit"
+        );
+        assert_eq!(editor.read_with(cx, |view, _| read(view, device)), expected);
+    }
+}

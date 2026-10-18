@@ -24,13 +24,15 @@ impl SpectrumSelection {
 
 // The shared panel status can also carry save/edit failures. Retire only the
 // analyzer message that this intent owns, never an unrelated newer message.
-fn clear_status(view: &mut EditorView) {
+fn clear_status(view: &mut EditorView) -> bool {
     let owned = view.device_panel.eq_spectrum.status_message.take();
     if view.device_panel.message.as_deref() == Some(WAITING)
         || owned.is_some_and(|message| view.device_panel.message.as_deref() == Some(message))
     {
         view.device_panel.message = None;
+        return true;
     }
+    owned.is_some()
 }
 
 fn report_error(view: &mut EditorView, error: TargetError) {
@@ -51,10 +53,36 @@ fn report_error(view: &mut EditorView, error: TargetError) {
     view.device_panel.message = Some(message.into());
 }
 
-fn reconcile(view: &mut EditorView) {
+pub(in crate::editor) fn reconcile(view: &mut EditorView) -> bool {
+    let mut changed = false;
+    if view.device_panel.eq_spectrum.generation != view.project_generation {
+        clear_status(view);
+        let intent = &mut view.device_panel.eq_spectrum;
+        intent.generation = view.project_generation;
+        intent.revision = None;
+        intent.off.clear();
+        changed = true;
+    }
+    let selected = view
+        .device_panel
+        .selected_device
+        .filter(|device| {
+            view.device_panel.eq_spectrum.enabled(*device)
+                && view.state.as_ref().is_some_and(|state| {
+                    state
+                        .project
+                        .device(*device)
+                        .is_some_and(|device| device.state().type_id() == eq::EQ_TYPE_ID)
+                })
+        })
+        .map(DeviceId::value);
+    if selected.is_none() {
+        changed |= clear_status(view);
+    }
     let invalid_target = desired(view).is_some_and(|target| {
         target.identity.device_type == eq::EQ_TYPE_ID
-            && (target.project_generation != view.project_generation
+            && (selected != Some(target.identity.device_id)
+                || target.project_generation != view.project_generation
                 || !view.state.as_ref().is_some_and(|state| {
                     let matches = |device: &hex_project::Device| {
                         device.id().value() == target.identity.device_id
@@ -78,16 +106,12 @@ fn reconcile(view: &mut EditorView) {
     });
     if invalid_target {
         clear(view);
+        changed = true;
     }
 
     let intent = &mut view.device_panel.eq_spectrum;
-    if intent.generation != view.project_generation {
-        intent.generation = view.project_generation;
-        intent.revision = None;
-        intent.off.clear();
-    }
     let Some(state) = view.state.as_ref() else {
-        return;
+        return changed;
     };
     if intent.revision != Some(state.revision) {
         intent.off.retain(|device| {
@@ -98,6 +122,7 @@ fn reconcile(view: &mut EditorView) {
         });
         intent.revision = Some(state.revision);
     }
+    changed
 }
 
 fn desired(view: &EditorView) -> Option<SpectrumTarget> {
@@ -218,7 +243,9 @@ pub(super) fn sync_selected(
     // Both successful activation and refusal retire the previous tap's pixels.
     view.device_panel.spectrum_result = None;
     match select(view, identity, floor, rate) {
-        Ok(()) => clear_status(view),
+        Ok(()) => {
+            clear_status(view);
+        }
         Err(error) => report_error(view, error),
     }
 }

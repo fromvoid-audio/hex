@@ -1246,6 +1246,7 @@ impl EditorView {
     }
 
     fn retire_stale_spectrum_target(&mut self) -> bool {
+        let eq_changed = super::device_panel::reconcile_eq_spectrum(self);
         let target = self
             .audio
             .as_ref()
@@ -1260,7 +1261,7 @@ impl EditorView {
         if target.is_none() && self.device_panel.spectrum_result.take().is_some() {
             return true;
         }
-        false
+        eq_changed
     }
 
     fn processor_audition_target_is_visible_and_current(
