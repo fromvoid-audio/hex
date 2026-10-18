@@ -158,6 +158,22 @@ fn search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins(cx: &mut 
     );
     visual.simulate_input("X");
     editor.read_with(visual, |view, cx| {
+        assert_eq!(
+            view.browser.search.read(cx).content,
+            "kick hats",
+            "category click must leave actual text editing"
+        )
+    });
+    let field = visual.debug_bounds("browser-search").unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
+    assert_eq!(selection(&editor, visual), 0..9);
+    let start = caret_point(&editor, visual, 1);
+    let end = caret_point(&editor, visual, 4);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_input("X");
+    editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.search.read(cx).content, "kx hats")
     });
 }

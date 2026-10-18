@@ -77,24 +77,12 @@ struct PreviewSlot {
     error: Rc<RefCell<Option<String>>>,
 }
 
+#[cfg(not(test))]
 pub(super) fn default_preferences_path() -> PathBuf {
-    #[cfg(test)]
-    {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "hex-ui-test-places-{}-{}.json",
-            std::process::id(),
-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-    #[cfg(not(test))]
-    {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
-        hex_preferences::browser_places_path(&home)
-    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    hex_preferences::browser_places_path(&home)
 }
 
 fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
@@ -188,6 +176,8 @@ pub(super) struct BrowserState {
     error: Option<String>,
     resizing: bool,
     pub search: gpui::Entity<BrowserSearch>,
+    results_focus: gpui::FocusHandle,
+    // Selection/highlight activity, independent of actual query/navigation focus.
     results_focused: bool,
     selected_index: usize,
     scroll: gpui::UniformListScrollHandle,
@@ -222,14 +212,14 @@ impl BrowserState {
     pub fn new(
         cx: &mut Context<EditorView>,
         preferences_path: PathBuf,
-        #[cfg(all(test, feature = "ui-test-support"))] test_home: Option<PathBuf>,
+        #[cfg(test)] test_home: Option<PathBuf>,
     ) -> Self {
+        #[cfg(not(test))]
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
-        // Explicit fixture defaults precede discovery, catalog roots and fallback.
-        #[cfg(all(test, feature = "ui-test-support"))]
-        let home = test_home.unwrap_or(home);
+        #[cfg(test)]
+        let home = test_home.expect("editor test home must be resolved before startup");
         let music = home.join("Music");
         let search = cx.new(BrowserSearch::new);
         let mut previous_query = String::new();
@@ -272,6 +262,7 @@ impl BrowserState {
             error: None,
             resizing: false,
             search,
+            results_focus: cx.focus_handle(),
             results_focused: false,
             selected_index: 0,
             scroll: gpui::UniformListScrollHandle::new(),
@@ -418,11 +409,17 @@ impl EditorView {
 
     pub(super) fn start_browser_places_load(&mut self, cx: &mut Context<Self>) {
         let path = self.browser.preferences_path.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::load(&path) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::load(&path)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser_places_loaded(result, cx);
@@ -537,11 +534,17 @@ impl EditorView {
         };
         self.browser.places_save_in_flight = true;
         let path = self.browser.preferences_path.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::save(&path, &places) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::save(&path, &places)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser_places_saved(result, cx);
@@ -725,15 +728,19 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         self.browser.playback_in_flight = true;
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path = request.path.clone();
             let sample_rate = request.sample_rate;
             let result = cx
                 .background_executor()
-                .spawn(
-                    async move { hex_session::service::prepare_sample_preview(path, sample_rate) },
-                )
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_session::service::prepare_sample_preview(path, sample_rate)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser.playback_in_flight = false;
@@ -1005,15 +1012,19 @@ impl EditorView {
             self.browser.preview_preparations += 1;
         }
         self.browser.preview_in_flight = Some(request.clone());
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path = request.key.path.clone();
             let sample_rate = request.key.sample_rate;
             let result = cx
                 .background_executor()
-                .spawn(
-                    async move { hex_session::service::prepare_audio_preview(path, sample_rate) },
-                )
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_session::service::prepare_audio_preview(path, sample_rate)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser_audio_preview_finished(request, result, cx);
@@ -1193,12 +1204,18 @@ impl EditorView {
     }
 
     fn start_browser_scan(&mut self, request: ScanRequest, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path_for_scan = request.directory.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { scan_directory(path_for_scan) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    scan_directory(path_for_scan)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser_scan_finished(request, result, cx);
@@ -1273,11 +1290,9 @@ impl EditorView {
             .focus_handle()
             .is_focused(window)
         {
-            if self.browser.results_focused {
-                "hex_browser"
-            } else {
-                "hex_browser_search"
-            }
+            "hex_browser_search"
+        } else if self.browser.results_focus.is_focused(window) {
+            "hex_browser"
         } else {
             "hex_editor"
         }
@@ -1336,12 +1351,18 @@ impl EditorView {
         cx.notify();
     }
 
-    pub(super) fn browser_previous(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn browser_previous(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.move_browser_selection(false, cx);
+        if self.browser.results_focused {
+            self.browser.results_focus.focus(window);
+        }
     }
 
-    pub(super) fn browser_next(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn browser_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.move_browser_selection(true, cx);
+        if self.browser.results_focused {
+            self.browser.results_focus.focus(window);
+        }
     }
 
     fn move_browser_selection(&mut self, next: bool, cx: &mut Context<Self>) {
@@ -1407,6 +1428,7 @@ impl EditorView {
             .read(cx)
             .focus_handle()
             .is_focused(window)
+            || self.browser.results_focus.is_focused(window)
         {
             self.reset_browser_results();
             self.browser.search.update(cx, |input, cx| {
@@ -1971,14 +1993,34 @@ impl EditorView {
             )
             .size_full(),
         );
-        div().flex().min_h_0().flex_shrink_0().child(panel).child(
-            div()
-                .w(px(4.0))
-                .h_full()
-                .flex_shrink_0()
-                .min_h_0()
-                .child(resize),
-        )
+        div()
+            .track_focus(&self.browser.results_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    // Only explicit text entry keeps editing focus. Descendant text
+                    // inputs stop this local bubble; no global pointer interception.
+                    if view.browser.open {
+                        view.browser.results_focus.focus(window);
+                    } else {
+                        view.focus.focus(window);
+                    }
+                    window.prevent_default();
+                    cx.notify();
+                }),
+            )
+            .flex()
+            .min_h_0()
+            .flex_shrink_0()
+            .child(panel)
+            .child(
+                div()
+                    .w(px(4.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .min_h_0()
+                    .child(resize),
+            )
     }
 
     fn browser_row(
@@ -2076,18 +2118,17 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    // Even a stale painted row leaves query editing; availability
+                    // still gates every selection/audition/import action below.
+                    view.browser.results_focus.focus(window);
+                    window.prevent_default();
                     if view.browser_place_unavailable() {
+                        cx.notify();
                         cx.stop_propagation();
                         return;
                     }
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
-                    view.browser
-                        .search
-                        .update(cx, |input, _| input.focus(window));
-                    // Keep the editor's focusable ancestor from replacing the
-                    // explicit browser focus during this mouse-down's bubble.
-                    window.prevent_default();
                     view.browser_selection_audition(
                         (click_kind == EntryKind::WaveAudio).then(|| click_path.clone()),
                         cx,
@@ -2199,9 +2240,7 @@ impl EditorView {
                     MouseButton::Left,
                     cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                         view.toggle_browser_folder(folder.clone(), event.modifiers.platform, cx);
-                        view.browser
-                            .search
-                            .update(cx, |input, _| input.focus(window));
+                        view.browser.results_focus.focus(window);
                         window.prevent_default();
                         cx.stop_propagation();
                     }),
@@ -2276,9 +2315,7 @@ impl EditorView {
                 cx.listener(move |view, _, window, cx| {
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
-                    view.browser
-                        .search
-                        .update(cx, |input, _| input.focus(window));
+                    view.browser.results_focus.focus(window);
                     window.prevent_default();
                     cx.notify();
                 }),

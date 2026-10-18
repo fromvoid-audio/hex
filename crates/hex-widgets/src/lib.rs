@@ -20,9 +20,11 @@ mod numeric_text;
 mod response_graph;
 mod spectrum_plot;
 mod style;
+mod text_case;
 pub use spectrum_plot::{
     MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
 };
+pub use text_case::TextCase;
 
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
@@ -50,8 +52,8 @@ pub use numeric_control::{
     bind_numeric_control_keys,
 };
 pub use response_graph::{
-    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphEvent, ResponseGraphModel,
-    ResponseGraphNode, ResponseGraphPhase, bind_response_graph_keys,
+    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphEvent,
+    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase, bind_response_graph_keys,
 };
 pub use style::{
     CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceActionStyle, DeviceFrameStyle,

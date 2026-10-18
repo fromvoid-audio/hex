@@ -31,11 +31,15 @@ use bindings::{
     parameter_control_matches_identity,
 };
 mod gesture_adapter;
-pub(super) use gesture_adapter::{commit_owned_numeric_edit, dispatch_numeric_gesture};
+pub(super) use gesture_adapter::{
+    NumericGestureLease, commit_owned_numeric_edit, dispatch_bound_numeric_gesture,
+    dispatch_numeric_gesture, owns_numeric_gesture,
+};
 mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
 mod gate_panel;
 mod keyboard;
@@ -131,6 +135,7 @@ pub(super) struct DevicePanelState {
     operator_envelope_gestures:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
+    eq_spectrum: eq_panel::SpectrumSelection,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
@@ -293,6 +298,11 @@ pub(super) fn finalize_controls_except(
             None,
         ));
     }
+    controls.extend(
+        super::track_gain::controls_for_finalize(view, cx)
+            .into_iter()
+            .map(|(target, entity)| (target, entity, None)),
+    );
     controls.sort_by_key(|(target, _, _)| u8::from(Some(*target) != active));
     for (target, entity, parameter_key) in controls {
         let finalized =
@@ -439,6 +449,7 @@ pub(super) fn view(
         view.device_panel.selected_device = None;
         view.device_panel.generation = view.project_generation;
     }
+    reconcile_eq_spectrum(view);
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };
@@ -748,7 +759,7 @@ fn render_track(
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
-        GestureTarget::ReturnSend { .. } => false,
+        GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
             view.device_panel.controls.get(key),

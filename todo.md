@@ -17,6 +17,24 @@ No model, audio, DSP, shared widget or constructor changes. Final integrated
 full local CI/review belongs to the dedicated merger; native input acceptance
 and app delivery remain separate. Original focus-failure logs are preserved.
 
+## header volume automation indication — returned pulse2715 / PR331
+
+Restored explicit `auto` readout for authored gain envelopes and recorded touch
+lanes, rather than a disabled static-gain slider. Existing admission policy stays
+unchanged. Two bounded rendered regressions reproduce missing indication before
+repair and verify pointer attempts preserve canonical gain/history. No widget,
+actor, Audio or Engine changes; final integrated CI/native acceptance separate.
+
+## resident track-header volume — pulse2715 / PR331, 18 october2026
+
+Compact shared rail/dB controls use canonical gain and typed coalesced resident
+previews during held drag, one Undo on release and latest-canonical Cancel.
+Geometry, actor PCM/history and callback-allocation regressions are retained;
+see docs/track-header-volume.md for scope and finite native acceptance.
+VerifiedStreaming keeps functional +/- until linked2792/PR398 adds audible
+preview publication. Full integrated CI/review/merge belong to the dedicated
+merger; native listening/latency/app delivery remain separate and pending.
+
 ## prepared-batch final routing validation — pulse2790 / PR396, 18 october2026
 
 Public regressions reproduced two invalid commits before repair: adding a send
@@ -5183,3 +5201,70 @@ stacks frozen picker geometry PR #322; dedicated merger owns final prospective
 integration/full checks/merge. Native optimized picker/font/reopen acceptance
 remains open. PR #400 mouse-search diagnostics are frozen separately; this work
 does not claim to resolve the native focus report.
+
+## Place icon context grid — pulse2826 / PR430, 18 october 2026
+
+Reused merged326 path-keyed bundled icon persistence and shared popup. Custom
+Place right-click now anchors to the row, presents explicit Default Icon/reset
+and seven compact grid cells with current/hover/keyboard states and name tooltips.
+Normal track/clip/device list popups retain their layout. Actual pointer choices,
+keyboard grid navigation, same-named paths, compact geometry, reset/reopen and
+prior text/non-text focus regression cover the flow; original missing-grid red
+is retained. Home/Music and Library/Collections remain outside current custom
+identity support. Sole merger owns full prospective checks/integration; native
+physical appearance/accessibility/relaunch acceptance remains open.
+
+## consistent live input casing — pulse2810 / PR416, 18 october 2026
+
+Actual track rename shaped uppercase while editing and lowercase after commit.
+Name/search and themed numeric inputs now shape lowercase immediately, preserving
+original stored names, clipboard and parser values. A neutral injected case token
+shares raw-byte/shaped-byte offset mapping for expanded lowercase glyphs; native
+IME selection remains original UTF-16. Canonical rename Undo/Redo/save/reopen,
+actual typing/paste/cut/copy and marked Unicode/caret/scroll regressions cover the
+boundary. Source-path casing2649 stays intact. Dedicated merger owns final
+integration/full CI/merge; native app/IME/clipboard acceptance remains open.
+
+## explicit browser query focus — pulse2820 / PR426, 18 october 2026
+
+Actual category click left the search handle focused and typed qxj into its query.
+Navigation now owns a separate non-text focus handle; source/row/disclosure/blank/
+control/resize clicks leave query editing. Preview handlers explicitly transfer
+focus before their existing stopped bubble. Only field/CmdF entry edits text;
+Up/Down move into navigation and Escape keeps the current owner. Local browser
+events preserve held drag, query selection and backend/sample behavior. Private
+startup-root rendered matrix checks both layouts, typing isolation, workers/ticks,
+explicit return and close; prior focus assertions now reflect this new contract
+while retaining their audition/generation/device/drag assertions. Native acceptance
+and final prospective full CI/integration remain with root/sole merger.
+## browser picker label clipping — pulse2809 / PR415, 18 october 2026
+
+Rendered geometry reproduced a 19.5 px Collection-row shift at 80 px because
+the group heading wrapped. Picker headings now retain one line and stay mounted
+at narrow widths; source labels clip continuously beside the existing fixed icon
+column rather than ellipsizing or disappearing at 64 px. Open section settings
+also retain row geometry. The 23 px minimum, icon centers, palette, source actions,
+full-row hit targets and full-name tooltip handlers remain in use. Regression
+covers long Place names, zero label space, both settings states and resize back
+to normal; existing selection/hover/focus/audition regressions remain applicable.
+Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
+source handoff is separate from final integration/full CI/merge and delivery.
+
+- 18 October 2026 — Pulse2808 / PR414: common cfg(test) editor resolver allocates
+  unique private Home/Music/config before discovery, preserving explicit fixture
+  paths; no process environment or application feature-only behavior change.
+  Arc guards live in actual inner filesystem jobs, and owned-root cleanup is off
+  the UI thread after the last guard. Original ordinary-constructor RED configured
+  /home/agent. Five new regressions cover two-editor startup/catalog isolation,
+  missing-Music private fallback, explicit missing/corrupt/populated preferences,
+  and a real held catalog save after actual view release then cleanup. Session
+  worker joining/native delivery are not claimed; final candidate CI belongs to merger.
+
+- 18 October 2026 — Pulse2841 / PR444: minimum-width source-picker headings retain
+  their original line boxes while painting themed separator marks; full names have
+  tooltips. Near-minimum divider drags capture exactly23px with divider-derived
+  4px/8px capture/release hysteresis; other widths retain continuous resizing.
+  Original actual drag RED retained25px instead of23px. Rendered pointer regressions
+  cover all source-row/glyph positions, separator scene paint/text non-paint, long
+  labels, open settings and repeated capture/expansion. Sole merger owns final full
+  candidate checks/merge; native physical interaction and delivery remain open.
