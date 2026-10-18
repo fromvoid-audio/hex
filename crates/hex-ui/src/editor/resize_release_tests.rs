@@ -301,7 +301,15 @@ fn midi_resize_keeps_released_geometry_until_actual_worker_ack_and_one_history_s
                 (c.start(), c.length(), c.source_start()),
                 (desired.start(), desired.length(), desired.source_start())
             );
-            assert_eq!(c.source(), original.source());
+            assert_eq!(c.source().notes(), original.source().notes());
+            assert_eq!(
+                c.source().source_length(),
+                original.source().source_length()
+            );
+            assert_eq!(
+                (c.source().loop_start(), c.source().loop_end()),
+                (original.source().loop_start(), original.source().loop_end())
+            );
             c.clone()
         });
         visual.simulate_keystrokes("cmd-z");
@@ -402,6 +410,7 @@ fn install_pending_audio(v: &mut EditorView, clip: ClipId) -> Request {
         track,
         command: super::ResizeCommand::from_request(&request).unwrap(),
         remaining: None,
+        scroll_viewport: None,
         display: super::PendingTrimDisplay::Audio {
             original,
             prospective,
@@ -448,7 +457,7 @@ fn pending_resize_correlates_real_fifo_acceptance_failure_and_deferred_submissio
             v.receive(first);
             assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(1));
             assert_eq!(
-                v.audio_trim_display(track).is_some(),
+                v.audio_trim_display(track, None).is_some(),
                 !fail_resize,
                 "independent edits preserve preview; deletion invalidates its stable clip owner"
             );

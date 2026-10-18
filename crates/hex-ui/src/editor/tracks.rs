@@ -325,7 +325,7 @@ impl EditorView {
         clip_area = clip_area.child(content);
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
-        let live_midi_trim_preview = self.midi_trim_display(track_id);
+        let live_midi_trim_preview = self.midi_trim_display(track_id, None);
         if let Some((clip, preview)) = live_midi_trim_preview {
             let start_beat = preview.start();
             if let Some(end_beat) = start_beat
@@ -384,7 +384,7 @@ impl EditorView {
                 }
             }
         }
-        let live_trim_preview = self.audio_trim_display(track_id);
+        let live_trim_preview = self.audio_trim_display(track_id, None);
         if let Some((original_clip, preview_clip)) = live_trim_preview {
             let preview_start = preview_clip.start();
             if let Some(preview_end) = preview_start.checked_add(preview_clip.duration()) {
@@ -1058,7 +1058,7 @@ impl EditorView {
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
             let trim_preview = self
-                .midi_trim_display(track_id)
+                .midi_trim_display(track_id, Some(clip.id()))
                 .filter(|(original, _)| original.id() == clip.id())
                 .map(|(_, preview)| preview);
             let pixel_width = self
@@ -1223,7 +1223,7 @@ impl EditorView {
         let clip = self.fade_trim_preview(clip.id()).unwrap_or(clip);
         let clip_id = clip.id();
         let trim_preview_clip = self
-            .audio_trim_display(track)
+            .audio_trim_display(track, Some(clip_id))
             .filter(|(original, _)| original.id() == clip_id)
             .map(|(_, preview)| preview);
         let active_trim_preview = trim_preview_clip.is_some();
