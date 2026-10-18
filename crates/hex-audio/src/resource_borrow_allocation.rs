@@ -1044,3 +1044,60 @@ fn paired_project_body_and_nested_control_inspection_allocate_and_free_nothing()
     assert_eq!(ledger.selected_shared_counts_on_control(), (3, 4));
     assert!(ledger.summary().unwrap().require_complete().is_err());
 }
+
+#[test]
+fn retained_control_job_actual_inspection_allocates_clones_and_frees_nothing() {
+    use hex_engine::{
+        AudioRootStorageLedger, AudioStorageLedgerReservation, RetainedControlJob,
+        RetainedControlJobProgress,
+    };
+    fn pending(_: &mut [u32; 32]) -> Result<RetainedControlJobProgress, ()> {
+        Ok(RetainedControlJobProgress::Pending)
+    }
+    let mut source = Some(std::array::from_fn::<_, 32, _>(|index| index as u32));
+    let job = RetainedControlJob::try_from_owned_on_control(&mut source, 4096, pending).unwrap();
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+        data_rows: 8,
+        handle_rows: 8,
+        root_rows: 2,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    })
+    .unwrap();
+    if !hex_engine::retained_control_job_box_layout_supported() {
+        assert!(job.visit_outer_storage_on_control(&mut ledger).is_err());
+        eprintln!(
+            "unsupported retained-job constructor; actual inspection allocation qualification refused"
+        );
+        return;
+    }
+    eprintln!(
+        "SUPPORTED retained-job constructor, actual body/payload inspection allocation probe"
+    );
+    let mut checksum = 0_u64;
+    let measurement = allocation_counter::measure(|| {
+        for _ in 0..128 {
+            job.visit_outer_storage_on_control(&mut ledger).unwrap();
+            checksum += job
+                .inspect_payload::<[u32; 32], _>(|values| {
+                    values.iter().copied().map(u64::from).sum::<u64>()
+                })
+                .unwrap();
+            assert_eq!(ledger.summary().unwrap().data_allocations, 1);
+            assert_eq!(
+                ledger.summary().unwrap().data_bytes,
+                job.actual_body_layout_on_control().size()
+            );
+        }
+    });
+    assert_eq!(checksum, 496 * 128);
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}

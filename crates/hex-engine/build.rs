@@ -3,6 +3,8 @@
 mod midi_gate;
 #[path = "build_support/pcm_gate.rs"]
 mod pcm_gate;
+#[path = "build_support/retained_job_box_gate.rs"]
+mod retained_job_box_gate;
 #[path = "build_support/runtime_box_gate.rs"]
 mod runtime_box_gate;
 #[path = "build_support/state_gate.rs"]
@@ -75,6 +77,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build_support/midi_gate.rs");
     println!("cargo:rerun-if-changed=build_support/state_gate.rs");
     println!("cargo:rerun-if-changed=build_support/runtime_box_gate.rs");
+    println!("cargo:rerun-if-changed=build_support/retained_job_box_gate.rs");
     let host = env::var("HOST").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
     let target_flags = format!(
@@ -136,6 +139,7 @@ fn main() {
     let mut state_decision = Err("missing_compiler_observation");
     let mut midi_decision = Err("missing_compiler_observation");
     let mut box_decision = Err("missing_compiler_observation");
+    let mut retained_job_decision = Err("missing_compiler_observation");
     let decision = compiler
         .as_deref()
         .ok_or("missing_cargo_selected_compiler")
@@ -156,6 +160,7 @@ fn main() {
             state_decision = state_gate::decide(observed);
             midi_decision = midi_gate::decide(observed);
             box_decision = runtime_box_gate::decide(observed);
+            retained_job_decision = retained_job_box_gate::decide(observed);
             pcm_gate::decide(observed)
         });
     evidence.push_str(&format!("decision: {decision:?}\nrequested layout declaration only; no security/RSS/physical allocator claim\n"));
@@ -189,6 +194,33 @@ fn main() {
     println!(
         "cargo:rustc-env=HEX_SAMPLER_BOX_CONSTRUCTOR_FAMILY={}",
         runtime_box_gate::FAMILY
+    );
+    let retained_job_evidence = format!(
+        "{evidence}\ncontract: {}\ncompiler: {}\nconstructor: fresh sized Box::new(TypedJob<T,E>) then unsize SAME Box<dyn Job> without allocation\nlayout: actual dynamic TypedJob body (inline T plus fn pointer and padding); no Box header/vtable heap\ndecision: {retained_job_decision:?}\nrequested allocation only; payload children/custody/peak/publication/retirement separate\n",
+        retained_job_box_gate::FAMILY,
+        pcm_gate::COMMIT
+    );
+    let retained_job_saved = env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .is_some_and(|path| {
+            fs::write(
+                path.join("retained-control-job-box-build-evidence.txt"),
+                retained_job_evidence,
+            )
+            .is_ok()
+        });
+    println!(
+        "cargo:rustc-env=HEX_RETAINED_JOB_BOX_LAYOUT_KNOWN={}",
+        if retained_job_decision.is_ok() && saved && retained_job_saved {
+            "1"
+        } else {
+            "0"
+        }
+    );
+    println!("cargo:rustc-env=HEX_RETAINED_JOB_BOX_LAYOUT_TARGET={target}");
+    println!(
+        "cargo:rustc-env=HEX_RETAINED_JOB_BOX_CONSTRUCTOR_FAMILY={}",
+        retained_job_box_gate::FAMILY
     );
     let midi_evidence = format!(
         "{evidence}\ncontract: {}\ncompiler: {}\nconstructors: sized Arc::new; sized Arc::make_mut/clone_from_ref_in/UniqueArcUninit; unique get_mut retains allocation\ndecision: {midi_decision:?}\nrequested allocation only; no RSS/provenance/custody/retirement claim\n",

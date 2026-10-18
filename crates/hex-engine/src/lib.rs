@@ -86,6 +86,11 @@ pub use shared_analytic::inline_fixture::{
     InlineResourceFixtureConfiguration, InlineResourceHostFixture,
 };
 mod owned_shared;
+mod retained_control_job;
+pub use retained_control_job::{
+    RetainedControlJob, RetainedControlJobBuildError, RetainedControlJobFault,
+    RetainedControlJobProgress, retained_control_job_box_layout_supported,
+};
 mod shared_metadata;
 pub use shared_metadata::{SharedMetadata, SharedMetadataCacheIdentity};
 mod pcm_arc;

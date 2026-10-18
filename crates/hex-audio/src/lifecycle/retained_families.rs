@@ -28,13 +28,7 @@ pub enum RetainedFamilyError {
     Stale,
     Failed,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RetainedFamilyProgress {
-    Pending,
-    /// Audited adapter has actually disposed its child owners on control.
-    /// Never a generic assertion of storage completeness.
-    Disposed,
-}
+pub use hex_engine::RetainedControlJobProgress as RetainedFamilyProgress;
 /// Reserve before starting an export-capable Session. No owning shutdown send.
 #[derive(Debug)]
 pub struct RetainedFamilySlot {
@@ -57,22 +51,6 @@ impl<T> Clone for RetainedFamilyId<T> {
     }
 }
 
-trait Job: Send + Sync {
-    fn payload(&self) -> &dyn Any;
-    fn step(&mut self) -> Result<RetainedFamilyProgress, RetainedFamilyError>;
-}
-struct TypedJob<T> {
-    value: T,
-    step: fn(&mut T) -> Result<RetainedFamilyProgress, RetainedFamilyError>,
-}
-impl<T: Send + Sync + 'static> Job for TypedJob<T> {
-    fn payload(&self) -> &dyn Any {
-        &self.value
-    }
-    fn step(&mut self) -> Result<RetainedFamilyProgress, RetainedFamilyError> {
-        (self.step)(&mut self.value)
-    }
-}
 enum Phase {
     Vacant,
     Reserved,
@@ -82,8 +60,11 @@ enum Phase {
 struct Slot {
     generation: u64,
     phase: Phase,
-    job: Option<Box<dyn Job>>,
+    job: Option<hex_engine::RetainedControlJob>,
     first_panic: Option<Mutex<Box<dyn Any + Send>>>,
+    // Constructor component reservation survives a consumed final-Drop fault.
+    // It is not a claim about partially freed physical bytes/payload children.
+    body_reservation_bytes: usize,
 }
 /// Stable per-family guards, never a service-wide mutex around render work.
 /// The lifecycle scan only uses try_write; busy/failed families cannot block
@@ -131,6 +112,7 @@ impl RetainedFamilies {
                 phase: Phase::Vacant,
                 job: None,
                 first_panic: None,
+                body_reservation_bytes: 0,
             })
         });
         let identity = NEXT_TABLE
@@ -191,7 +173,9 @@ impl RetainedFamilies {
     ) -> Result<RetainedFamilyId<T>, RetainedFamilyError> {
         // Fresh requested Box body only. Child owners and old/new/input peak
         // are separate obligations; this number never certifies either.
-        if std::mem::size_of::<TypedJob<T>>() > max_job_body_bytes {
+        if hex_engine::RetainedControlJob::body_reservation_quote::<T, RetainedFamilyError>()
+            > max_job_body_bytes
+        {
             return Err(RetainedFamilyError::Reservation);
         }
         let mut slot = self
@@ -201,8 +185,20 @@ impl RetainedFamilies {
         if slot.generation != token.generation || !matches!(slot.phase, Phase::Reserved) {
             return Err(RetainedFamilyError::Stale);
         }
-        let value = source.take().ok_or(RetainedFamilyError::Stale)?;
-        slot.job = Some(Box::new(TypedJob { value, step }));
+        let job = hex_engine::RetainedControlJob::try_from_owned_on_control(
+            source,
+            max_job_body_bytes,
+            step,
+        )
+        .map_err(|error| match error {
+            hex_engine::RetainedControlJobBuildError::Reservation => {
+                RetainedFamilyError::Reservation
+            }
+            hex_engine::RetainedControlJobBuildError::MissingSource => RetainedFamilyError::Stale,
+        })?;
+        slot.job = Some(job);
+        slot.body_reservation_bytes =
+            hex_engine::RetainedControlJob::body_reservation_quote::<T, RetainedFamilyError>();
         slot.phase = Phase::Active;
         Ok(RetainedFamilyId {
             table: self.identity,
@@ -234,12 +230,53 @@ impl RetainedFamilies {
         if !matches!(slot.phase, Phase::Active) {
             return Err(RetainedFamilyError::Stale);
         }
-        let value = slot
-            .job
+        slot.job
             .as_ref()
-            .and_then(|job| job.payload().downcast_ref::<T>())
-            .ok_or(RetainedFamilyError::Stale)?;
-        Ok(read(value))
+            .and_then(|job| job.inspect_payload::<T, R>(read))
+            .ok_or(RetainedFamilyError::Stale)
+    }
+    fn inspect_on_control<T: Send + Sync + 'static, R>(
+        &self,
+        id: RetainedFamilyId<T>,
+        inspect: impl for<'a> FnOnce(&'a hex_engine::RetainedControlJob, &'a T) -> R,
+    ) -> Result<R, RetainedFamilyError> {
+        let token = RetainedFamilySlot {
+            table: id.table,
+            index: id.index,
+            generation: id.generation,
+        };
+        let slot = self
+            .slot(&token)?
+            .try_read()
+            .map_err(|_| RetainedFamilyError::Busy)?;
+        if slot.generation != id.generation || !matches!(slot.phase, Phase::Active | Phase::Failed)
+        {
+            return Err(RetainedFamilyError::Stale);
+        }
+        // A failed STEP retains the actual holder for accounting. A consumed
+        // final-Drop failure has no inspectable object: unresolved charge stays.
+        let job = slot.job.as_ref().ok_or(RetainedFamilyError::Failed)?;
+        job.inspect_payload::<T, _>(|payload| inspect(job, payload))
+            .ok_or(RetainedFamilyError::Stale)
+    }
+    fn unresolved_body_reservation<T>(
+        &self,
+        id: RetainedFamilyId<T>,
+    ) -> Result<Option<usize>, RetainedFamilyError> {
+        let token = RetainedFamilySlot {
+            table: id.table,
+            index: id.index,
+            generation: id.generation,
+        };
+        let slot = self
+            .slot(&token)?
+            .try_read()
+            .map_err(|_| RetainedFamilyError::Busy)?;
+        if slot.generation != id.generation {
+            return Err(RetainedFamilyError::Stale);
+        }
+        Ok((matches!(slot.phase, Phase::Failed) && slot.job.is_none())
+            .then_some(slot.body_reservation_bytes))
     }
     fn acknowledge<T: Send + Sync + 'static>(
         &self,
@@ -268,12 +305,10 @@ impl RetainedFamilies {
         if !matches!(slot.phase, Phase::Active) {
             return Err(RetainedFamilyError::Stale);
         }
-        let value = slot
-            .job
+        slot.job
             .as_ref()
-            .and_then(|job| job.payload().downcast_ref::<T>())
-            .ok_or(RetainedFamilyError::Stale)?;
-        acknowledge(value)
+            .and_then(|job| job.inspect_payload::<T, _>(acknowledge))
+            .ok_or(RetainedFamilyError::Stale)?
     }
     fn advance_one(&self) {
         let index = self.next_scan.fetch_add(1, Ordering::Relaxed) % self.slots.len();
@@ -287,13 +322,16 @@ impl RetainedFamilies {
             slot.phase = Phase::Failed;
             return;
         };
-        match catch_unwind(AssertUnwindSafe(|| job.step())) {
+        match catch_unwind(AssertUnwindSafe(|| job.step_on_control())) {
             Ok(Ok(RetainedFamilyProgress::Pending)) => {}
             Ok(Ok(RetainedFamilyProgress::Disposed)) => {
                 slot.phase = Phase::Failed;
                 let job = slot.job.take();
                 match catch_unwind(AssertUnwindSafe(|| drop(job))) {
-                    Ok(()) => slot.phase = Phase::Vacant,
+                    Ok(()) => {
+                        slot.body_reservation_bytes = 0;
+                        slot.phase = Phase::Vacant;
+                    }
                     Err(panic) => slot.first_panic = Some(Mutex::new(panic)),
                 }
             }
@@ -315,7 +353,7 @@ pub fn retained_family_table_reservation_quote(
 }
 /// Fresh job Box body component only, not child storage or old/new/input peak.
 pub fn retained_family_job_body_quote<T>() -> usize {
-    std::mem::size_of::<TypedJob<T>>()
+    hex_engine::RetainedControlJob::body_reservation_quote::<T, RetainedFamilyError>()
 }
 // This exact facade sequence is shared by production's public calls and
 // injected startup/exit/concurrent-construction tests. OnceLock serializes the
@@ -433,6 +471,30 @@ pub fn read_retained_family<T: Send + Sync + 'static, R>(
     read: impl for<'a> FnOnce(&'a T) -> R,
 ) -> Result<R, RetainedFamilyError> {
     persistent_table(&TABLE)?.read(id, read)
+}
+/// Actual accounting access also admits a failed-step holder; it does not
+/// reopen UI reads or claim a consumed final-Drop object is still inspectable.
+/// The concrete adapter must visit the payload, and hold this guard through
+/// publication preflight. This single-family operation is not a whole union.
+/// ```compile_fail
+/// use hex_audio::{RetainedFamilyId, inspect_retained_family_on_control};
+/// fn escape(id: RetainedFamilyId<u32>) {
+///     let _escaped = inspect_retained_family_on_control(id, |job, _| job);
+/// }
+/// ```
+pub fn inspect_retained_family_on_control<T: Send + Sync + 'static, R>(
+    id: RetainedFamilyId<T>,
+    inspect: impl for<'a> FnOnce(&'a hex_engine::RetainedControlJob, &'a T) -> R,
+) -> Result<R, RetainedFamilyError> {
+    persistent_table(&TABLE)?.inspect_on_control(id, inspect)
+}
+/// Unresolved constructor BODY reservation after consumed final-Drop failure.
+/// Not physical freed/retained bytes or a substitute for payload/peak charges.
+/// This reservation cannot be released or used to mark the family known.
+pub fn unresolved_retained_family_body_reservation_on_control<T>(
+    id: RetainedFamilyId<T>,
+) -> Result<Option<usize>, RetainedFamilyError> {
+    persistent_table(&TABLE)?.unresolved_body_reservation(id)
 }
 /// Durable final read acknowledgment through the already registered family.
 /// Bind only the concrete bounded bookkeeping adapter, never a render callback.

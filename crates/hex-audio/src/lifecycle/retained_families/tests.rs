@@ -478,7 +478,20 @@ fn review_correction_final_payload_drop_panic_retains_failed_slot_and_native_dis
     let failed = table
         .register(&first, &mut source, usize::MAX, disposed)
         .unwrap();
+    let original_body = table
+        .inspect_on_control(failed, |job, _| job.actual_body_layout_on_control().size())
+        .unwrap();
     table.advance_one();
+    assert_eq!(
+        table.unresolved_body_reservation(failed),
+        Ok(Some(original_body))
+    );
+    assert!(matches!(
+        table.inspect_on_control(failed, |_, _| panic!(
+            "consumed object must not be inspected"
+        )),
+        Err(RetainedFamilyError::Failed)
+    ));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     {
         let slot = table.slots[first.index].read().unwrap();
@@ -539,4 +552,54 @@ fn review_correction_final_payload_drop_panic_retains_failed_slot_and_native_dis
         matches!(table.reserve(), Err(RetainedFamilyError::Reservation)),
         "failed final Drop must remain charged/occupied"
     );
+}
+
+#[test]
+fn retained_job_failed_family_keeps_actual_body_available_for_control_inspection() {
+    fn refuses(_: &mut Payload) -> Result<RetainedFamilyProgress, RetainedFamilyError> {
+        Err(RetainedFamilyError::Failed)
+    }
+    let table = table();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let token = table.reserve().unwrap();
+    let mut pending = source(&drops);
+    let id = table
+        .register(&token, &mut pending, usize::MAX, refuses)
+        .unwrap();
+    table.advance_one();
+    assert!(matches!(
+        table.read(id, |_| ()),
+        Err(RetainedFamilyError::Failed)
+    ));
+    table
+        .inspect_on_control(id, |actual, payload| {
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            assert!(!payload.ready.load(Ordering::Acquire));
+            let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+                hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 8,
+                    handle_rows: 8,
+                    root_rows: 2,
+                    max_retained_bytes: 1_000_000,
+                    max_construction_peak_bytes: 1_000_000,
+                },
+            )
+            .unwrap();
+            if hex_engine::retained_control_job_box_layout_supported() {
+                eprintln!("SUPPORTED retained-job failed family actual outer accounting executed");
+                actual.visit_outer_storage_on_control(&mut ledger).unwrap();
+                assert_eq!(
+                    ledger.summary().unwrap().data_bytes,
+                    actual.actual_body_layout_on_control().size()
+                );
+            } else {
+                assert!(actual.visit_outer_storage_on_control(&mut ledger).is_err());
+                eprintln!("unsupported retained-job outer accounting refused");
+            }
+        })
+        .unwrap();
+    for _ in 0..4 {
+        table.advance_one();
+    }
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
