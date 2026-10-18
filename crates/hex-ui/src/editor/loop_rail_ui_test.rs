@@ -209,7 +209,7 @@ fn loop_rail_drag_continues_outside_rail_without_starting_lane_selection(cx: &mu
 }
 
 #[gpui::test]
-fn loop_rail_click_activates_resizable_ends_preserve_enable_and_toolbar_disables(
+fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_disables(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor) = loop_editor(cx, Some(LoopRegion::new(48_000, 192_000, false).unwrap()));
@@ -217,8 +217,12 @@ fn loop_rail_click_activates_resizable_ends_preserve_enable_and_toolbar_disables
     visual.run_until_parked();
 
     let midpoint = rail_point(&mut visual, 0.25);
-    visual.simulate_mouse_down(midpoint, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(midpoint, MouseButton::Left, Modifiers::default());
+    let command = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(midpoint, MouseButton::Left, command);
+    visual.simulate_mouse_up(midpoint, MouseButton::Left, command);
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((48_000, 192_000, true)));
 

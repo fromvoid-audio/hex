@@ -2,8 +2,8 @@
 use super::{EditorMode, EditorView, ViewState, musical_time::GridLine, viewport::Viewport};
 use crate::theme;
 use gpui::{
-    Bounds, Context, CursorStyle, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    canvas, div, prelude::*, px, relative, rgb,
+    Bounds, Context, CursorStyle, Div, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, canvas, div, prelude::*, px, relative, rgb,
 };
 use hex_project::{Command, LoopRegion};
 use hex_session::service::Request;
@@ -15,6 +15,7 @@ const EDGE_HIT_PIXELS: f32 = 6.0;
 #[derive(Clone, Copy, Debug)]
 enum EditMode {
     Paint { anchor: u64 },
+    Move { original: LoopRegion, anchor: u64 },
     ResizeStart { fixed_end: u64, enabled: bool },
     ResizeEnd { fixed_start: u64, enabled: bool },
 }
@@ -29,12 +30,16 @@ pub(super) struct LoopRailGesture {
     timeline_width: f32,
     mode: EditMode,
     preview: Option<LoopRegion>,
+    pointer_down_x: f32,
+    last_pointer_x: f32,
+    moved: bool,
+    toggle_on_click: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum Hover {
     Paint,
-    Activate,
+    Move,
     Resize,
 }
 
@@ -43,7 +48,7 @@ impl EditorView {
         &mut self,
         bounds: Bounds<gpui::Pixels>,
         x: f32,
-        free: bool,
+        modifiers: Modifiers,
         viewport: Viewport,
         region: Option<LoopRegion>,
     ) -> bool {
@@ -66,6 +71,8 @@ impl EditorView {
             || self.arrangement_pan.is_some()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
+            || modifiers.alt
+            || modifiers.control
             || !x.is_finite()
         {
             return false;
@@ -104,14 +111,10 @@ impl EditorView {
                     enabled: region.enabled(),
                 })
             } else if frame >= region.start() && frame < region.end() {
-                if !region.enabled() {
-                    return self.enqueue(Request::Edit(Command::SetLoopRegion {
-                        start: region.start(),
-                        end: region.end(),
-                        enabled: true,
-                    }));
-                }
-                return true;
+                Some(EditMode::Move {
+                    original: region,
+                    anchor: frame,
+                })
             } else {
                 None
             };
@@ -125,13 +128,23 @@ impl EditorView {
                     timeline_width,
                     mode,
                     preview: Some(region),
+                    pointer_down_x: x,
+                    last_pointer_x: x,
+                    moved: false,
+                    toggle_on_click: modifiers.platform,
                 });
                 return true;
             }
         }
 
-        let Some(anchor) = snap_frame(self, &state.project, frame, viewport, timeline_width, free)
-        else {
+        let Some(anchor) = snap_frame(
+            self,
+            &state.project,
+            frame,
+            viewport,
+            timeline_width,
+            modifiers.platform,
+        ) else {
             return false;
         };
         self.loop_rail_gesture = Some(LoopRailGesture {
@@ -143,11 +156,15 @@ impl EditorView {
             timeline_width,
             mode: EditMode::Paint { anchor },
             preview: None,
+            pointer_down_x: x,
+            last_pointer_x: x,
+            moved: false,
+            toggle_on_click: false,
         });
         true
     }
 
-    fn update_loop_rail_gesture(&mut self, x: f32, free: bool) -> bool {
+    fn update_loop_rail_gesture(&mut self, x: f32, modifiers: Modifiers) -> bool {
         let Some(mut gesture) = self.loop_rail_gesture.take() else {
             return false;
         };
@@ -158,6 +175,9 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || gesture.loop_region != state.project.loop_region()
+            || gesture.viewport != self.visible_viewport(state.timeline_frames)
+            || modifiers.alt
+            || modifiers.control
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -174,18 +194,51 @@ impl EditorView {
             self.loop_rail_gesture = Some(gesture);
             return true;
         };
+        gesture.last_pointer_x = x;
+        gesture.moved |= (x - gesture.pointer_down_x).abs() > 3.0;
+        if let EditMode::Move { original, anchor } = gesture.mode {
+            let delta = i128::from(frame) - i128::from(anchor);
+            let start = if modifiers.shift {
+                stepped_start(original, delta)
+            } else {
+                let candidate = (i128::from(original.start()) + delta).clamp(
+                    0,
+                    i128::from(u64::MAX - (original.end() - original.start())),
+                ) as u64;
+                snap_frame(
+                    self,
+                    &state.project,
+                    candidate,
+                    gesture.viewport,
+                    gesture.timeline_width,
+                    modifiers.platform,
+                )
+                .map(|start| start.min(u64::MAX - (original.end() - original.start())))
+            };
+            gesture.preview = start.and_then(|start| {
+                LoopRegion::new(
+                    start,
+                    start.checked_add(original.end() - original.start())?,
+                    original.enabled(),
+                )
+                .ok()
+            });
+            self.loop_rail_gesture = Some(gesture);
+            return true;
+        }
         let Some(frame) = snap_frame(
             self,
             &state.project,
             frame,
             gesture.viewport,
             gesture.timeline_width,
-            free,
+            modifiers.platform,
         ) else {
             self.loop_rail_gesture = Some(gesture);
             return true;
         };
         gesture.preview = match gesture.mode {
+            EditMode::Move { .. } => gesture.preview,
             EditMode::Paint { anchor } => {
                 let start = anchor.min(frame);
                 let end = anchor.max(frame);
@@ -207,11 +260,11 @@ impl EditorView {
         true
     }
 
-    fn finish_loop_rail_gesture(&mut self, x: f32, free: bool) -> bool {
+    fn finish_loop_rail_gesture(&mut self, x: f32, modifiers: Modifiers) -> bool {
         if self.loop_rail_gesture.is_none() {
             return false;
         }
-        self.update_loop_rail_gesture(x, free);
+        self.update_loop_rail_gesture(x, modifiers);
         let Some(gesture) = self.loop_rail_gesture.take() else {
             return true;
         };
@@ -225,10 +278,20 @@ impl EditorView {
         {
             return true;
         }
+        if !gesture.moved && gesture.toggle_on_click && modifiers.platform {
+            let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
+            return true;
+        }
+        if matches!(gesture.mode, EditMode::Move { .. }) && !gesture.moved {
+            return true;
+        }
         let Some(region) = gesture.preview else {
             self.error = Some("loop region needs a non-empty time range".into());
             return true;
         };
+        if Some(region) == gesture.loop_region {
+            return true;
+        }
         let _ = self.enqueue(Request::Edit(Command::SetLoopRegion {
             start: region.start(),
             end: region.end(),
@@ -262,7 +325,7 @@ impl EditorView {
         } else if super::seek::pointer_to_frame(x, left, width, viewport)
             .is_some_and(|frame| frame >= region.start() && frame < region.end())
         {
-            Hover::Activate
+            Hover::Move
         } else {
             Hover::Paint
         }
@@ -287,6 +350,7 @@ pub(super) fn view(
         .and_then(|gesture| gesture.preview)
         .or(current_region);
     let entity = cx.entity();
+    let modifier_entity = entity.clone();
     let rail = div()
         .h(px(RAIL_HEIGHT))
         .flex_shrink_0()
@@ -303,16 +367,28 @@ pub(super) fn view(
                 .flex_1()
                 .min_w_0()
                 .cursor(view.loop_rail_cursor)
+                .on_modifiers_changed(move |event, window, cx| {
+                    modifier_entity.update(cx, |view, cx| {
+                        if !view.focus.is_focused(window) {
+                            if view.cancel_loop_rail_gesture() { cx.notify(); }
+                            return;
+                        }
+                        if let Some(gesture) = view.loop_rail_gesture
+                            && view.update_loop_rail_gesture(gesture.last_pointer_x, event.modifiers) {
+                            cx.notify();
+                        }
+                    });
+                })
                 .tooltip(|_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
-                        description: "drag to set loop · click range to enable · l toggles · cmd for free placement".into(),
+                        description: "drag empty rail to set loop · drag bar to move · shift steps loop length · cmd-click toggles · cmd-drag is free".into(),
                     })
                     .into()
                 })
                 .child(loop_grid_layer(grid, viewport))
                 .children(
                     shown_region
-                        .and_then(|region| loop_region_bar(region, viewport)),
+                        .and_then(|region| loop_region_bar(region, viewport, &state.project)),
                 )
                 .child(
                     canvas(
@@ -328,14 +404,19 @@ pub(super) fn view(
                                     {
                                         return;
                                     }
-                                    let started = down_entity.update(cx, |view, _| {
-                                        view.begin_loop_rail_gesture(
+                                    let started = down_entity.update(cx, |view, cx| {
+                                        if view.track_name.is_editing() || view.clip_name_edit.is_some()
+                                            || view.project_tempo_editing(cx) || view.gain_numeric_editing(cx)
+                                            || view.sample_bpm_editing(cx) { return false; }
+                                        let started = view.begin_loop_rail_gesture(
                                             bounds,
                                             f32::from(event.position.x),
-                                            event.modifiers.platform,
+                                            event.modifiers,
                                             viewport,
                                             current_region,
-                                        )
+                                        );
+                                        if started { view.focus.focus(window); }
+                                        started
                                     });
                                     if started {
                                         cx.stop_propagation();
@@ -359,7 +440,7 @@ pub(super) fn view(
                                                     move_bounds,
                                                 ) {
                                                     Hover::Paint => CursorStyle::Crosshair,
-                                                    Hover::Activate => CursorStyle::PointingHand,
+                                                    Hover::Move => CursorStyle::OpenHand,
                                                     Hover::Resize => CursorStyle::ResizeLeftRight,
                                                 }
                                             } else {
@@ -377,9 +458,10 @@ pub(super) fn view(
                                         return;
                                     }
                                     let changed = move_entity.update(cx, |view, _| {
+                                        if !view.focus.is_focused(window) { return view.cancel_loop_rail_gesture(); }
                                         view.update_loop_rail_gesture(
                                             f32::from(event.position.x),
-                                            event.modifiers.platform,
+                                            event.modifiers,
                                         )
                                     });
                                     if changed {
@@ -395,9 +477,10 @@ pub(super) fn view(
                                         return;
                                     }
                                     let finished = up_entity.update(cx, |view, _| {
+                                        if !view.focus.is_focused(window) { return view.cancel_loop_rail_gesture(); }
                                         view.finish_loop_rail_gesture(
                                             f32::from(event.position.x),
-                                            event.modifiers.platform,
+                                            event.modifiers,
                                         )
                                     });
                                     if finished {
@@ -426,12 +509,10 @@ fn snap_frame(
     width: f32,
     free: bool,
 ) -> Option<u64> {
-    let snap = if free {
-        super::musical_time::SnapGrid::Off
-    } else {
-        view.snap_grid
-    };
-    snap.snap_frame(project, frame, viewport, width)
+    if free {
+        return Some(frame);
+    }
+    view.snap_grid.snap_frame(project, frame, viewport, width)
 }
 
 fn visible_region_pixels(
@@ -485,7 +566,11 @@ fn loop_grid_layer(lines: &[GridLine], viewport: Viewport) -> Div {
     div().absolute().inset_0().children(lines)
 }
 
-fn loop_region_bar(region: LoopRegion, viewport: Viewport) -> Option<Div> {
+fn loop_region_bar(
+    region: LoopRegion,
+    viewport: Viewport,
+    project: &hex_project::Project,
+) -> Option<Div> {
     let viewport_end = viewport.end()?;
     if viewport.length == 0 {
         return None;
@@ -510,8 +595,63 @@ fn loop_region_bar(region: LoopRegion, viewport: Viewport) -> Option<Div> {
             } else {
                 theme::PaletteRole::Muted
             })))
-            .opacity(if region.enabled() { 0.94 } else { 0.62 }),
+            .opacity(if region.enabled() { 0.94 } else { 0.62 })
+            .children(
+                (region.start() >= viewport.start && binary_duration(project, region)).then(|| {
+                    div()
+                        .debug_selector(|| "loop-binary-length-marker".into())
+                        .absolute()
+                        .left_0()
+                        .top(px(2.0))
+                        .size(px(5.0))
+                        .rounded_full()
+                        .bg(rgb(theme::color(theme::PaletteRole::Background)))
+                }),
+            ),
     )
+}
+
+/// Full-frame loop-length steps relative to the original start, including the
+/// origin when a further full negative/positive step would exceed checked bounds.
+fn stepped_start(region: LoopRegion, delta: i128) -> Option<u64> {
+    let length = region.end().checked_sub(region.start())?;
+    if length == 0 {
+        return None;
+    }
+    let magnitude = (delta.unsigned_abs() + u128::from(length) / 2) / u128::from(length);
+    let magnitude = i128::try_from(magnitude).ok()?;
+    let steps = if delta < 0 { -magnitude } else { magnitude };
+    let steps = steps.clamp(
+        -i128::from(region.start() / length),
+        i128::from((u64::MAX - region.end()) / length),
+    );
+    u64::try_from(i128::from(region.start()) + steps * i128::from(length)).ok()
+}
+
+/// Frame endpoints retain quantized musical intervals, not authored beat IDs.
+/// Accept a binary Q32.32 duration only if exact canonical forward rounding can
+/// place its two beat endpoints at these stored frames (no pixel/epsilon test).
+fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
+    let map = project.tempo_map();
+    let interval = |frame: u64| -> Option<(u128, u128)> {
+        let first = map.beat_lower_bound_for_frame(frame).ok()?;
+        let after = map.beat_lower_bound_for_frame(frame.checked_add(1)?).ok()?;
+        (first < after && first < hex_project::TempoMap::BEAT_RANGE_SENTINEL)
+            .then_some((first, after.checked_sub(1)?))
+    };
+    let Some((start_lo, start_hi)) = interval(region.start()) else {
+        return false;
+    };
+    let Some((end_lo, end_hi)) = interval(region.end()) else {
+        return false;
+    };
+    let minimum = end_lo.saturating_sub(start_hi).max(1);
+    let maximum = end_hi.saturating_sub(start_lo);
+    minimum
+        .checked_next_power_of_two()
+        .is_some_and(|candidate| {
+            candidate <= maximum && candidate < hex_project::TempoMap::BEAT_RANGE_SENTINEL
+        })
 }
 
 pub(super) fn cancel_stale(
