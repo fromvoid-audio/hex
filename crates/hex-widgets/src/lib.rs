@@ -21,10 +21,12 @@ mod response_graph;
 mod spectrum_plot;
 mod style;
 mod text_case;
+mod text_click_selection;
 pub use spectrum_plot::{
     MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
 };
 pub use text_case::TextCase;
+pub use text_click_selection::TextClickSelection;
 
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,

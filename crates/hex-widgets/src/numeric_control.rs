@@ -172,6 +172,13 @@ struct Press {
 }
 
 /// One reusable knob/slider and its independently editable numeric value.
+#[derive(Clone, Copy)]
+struct TextMouseSelection {
+    anchor: usize,
+    origin: Point<Pixels>,
+    dragging: bool,
+}
+
 pub struct NumericControl {
     accessibility_binding: Option<gpui::AccessibilityBinding>,
     accessibility_pending: bool,
@@ -194,6 +201,8 @@ pub struct NumericControl {
     pub(crate) last_bounds: Option<Bounds<Pixels>>,
     pub(crate) last_origin_x: Option<Pixels>,
     press: Option<Press>,
+    text_mouse: Option<TextMouseSelection>,
+    pub(crate) text_click: crate::TextClickSelection,
     pub(crate) style: ControlStyle,
     meter_readout: crate::DeviceMeterReadout,
     appearance: NumericControlAppearance,
@@ -286,6 +295,8 @@ impl NumericControl {
             last_bounds: None,
             last_origin_x: None,
             press: None,
+            text_mouse: None,
+            text_click: crate::TextClickSelection::default(),
             style,
             appearance,
             dial_layout,
@@ -384,6 +395,8 @@ impl NumericControl {
 
     /// Call before removing an active control so its caller can cancel the edit.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.text_mouse = None;
+        self.text_click.clear();
         if let Some(press) = self.press.take() {
             if press.dragging {
                 self.value = press.start_value;
@@ -429,6 +442,8 @@ impl NumericControl {
     }
 
     fn reset(&mut self, cx: &mut Context<Self>) {
+        self.text_mouse = None;
+        self.text_click.clear();
         let start = self.draft;
         let value = self.spec.default();
         // Reset finishes the local edit even when the value is already at its
@@ -516,12 +531,79 @@ impl NumericControl {
             })
     }
 
+    fn text_index_for_point(&self, at: Point<Pixels>) -> usize {
+        let (Some(bounds), Some(line)) = (self.last_bounds, self.last_layout.as_ref()) else {
+            return 0;
+        };
+        if at.y < bounds.top() {
+            return 0;
+        }
+        if at.y > bounds.bottom() {
+            return self.text.len();
+        }
+        let shaped = line.closest_index_for_x(at.x - self.last_origin_x.unwrap_or(bounds.left()));
+        self.style.text_case.source_offset(&self.text, shaped)
+    }
+
     fn value_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.enabled {
+            return;
+        }
+        let focused = self.focus.is_focused(window);
+        if !focused || event.modifiers.shift {
+            self.text_click.clear();
+        }
+        let mut gesture = self.text_click;
+        let toggle = (!event.modifiers.shift)
+            .then(|| {
+                gesture.selection_for_down(
+                    event.click_count,
+                    focused
+                        && self.editing
+                        && !self.text.is_empty()
+                        && self.selected == (0..self.text.len()),
+                )
+            })
+            .flatten();
+        if self.editing {
+            let offset = self.text_index_for_point(event.position);
+            let anchor = if event.modifiers.shift && focused {
+                if self.reversed {
+                    self.selected.end
+                } else {
+                    self.selected.start
+                }
+            } else {
+                offset
+            };
+            self.marked = None;
+            if !focused || toggle == Some(true) {
+                self.selected = 0..self.text.len();
+                self.reversed = false;
+            } else if event.modifiers.shift {
+                self.select_to(offset);
+            } else {
+                self.move_to(offset);
+            }
+            self.press = None;
+            self.text_mouse = Some(TextMouseSelection {
+                anchor,
+                origin: event.position,
+                dragging: false,
+            });
+            self.text_click = gesture;
+            self.focus.focus(window);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        self.text_mouse = None;
+        self.text_click = gesture;
         self.begin_press(PressTarget::Value, event, cx);
         self.focus.focus(window);
     }
@@ -532,11 +614,40 @@ impl NumericControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.text_mouse = None;
+        self.text_click.clear();
         self.begin_press(PressTarget::Control, event, cx);
         self.focus.focus(window);
     }
 
     fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> (bool, bool) {
+        if let Some(mut selection) = self.text_mouse {
+            if !self.editing || event.pressed_button != Some(MouseButton::Left) {
+                self.text_mouse = None;
+                self.text_click.clear();
+                return (true, false);
+            }
+            if !selection.dragging
+                && f32::from(event.position.x - selection.origin.x)
+                    .hypot(f32::from(event.position.y - selection.origin.y))
+                    < 2.0
+            {
+                return (true, false);
+            }
+            selection.dragging = true;
+            self.text_mouse = Some(selection);
+            self.text_click.clear();
+            let offset = self.text_index_for_point(event.position);
+            let selected = selection.anchor.min(offset)..selection.anchor.max(offset);
+            let reversed = offset < selection.anchor;
+            let changed = self.selected != selected || self.reversed != reversed;
+            self.selected = selected;
+            self.reversed = reversed;
+            if changed {
+                cx.notify();
+            }
+            return (true, changed);
+        }
         let Some(mut press) = self.press else {
             return (false, false);
         };
@@ -619,6 +730,10 @@ impl NumericControl {
     ) -> bool {
         if event.button != MouseButton::Left {
             return false;
+        }
+        if self.text_mouse.take().is_some() {
+            cx.notify();
+            return true;
         }
         let Some(press) = self.press.take() else {
             return false;
@@ -723,6 +838,8 @@ impl NumericControl {
     }
 
     fn enter(&mut self, _: &NumericEnter, _: &mut Window, cx: &mut Context<Self>) {
+        self.text_mouse = None;
+        self.text_click.clear();
         cx.stop_propagation();
         if !self.editing {
             return;
@@ -763,6 +880,8 @@ impl NumericControl {
     /// owner hides or removes the control. Invalid text remains visible and
     /// editing so the owner can refuse that lifecycle change.
     pub fn finish_edit(&mut self, cx: &mut Context<Self>) -> Result<(), NumericError> {
+        self.text_mouse = None;
+        self.text_click.clear();
         if let Some(press) = self.press.take() {
             if press.dragging {
                 cx.emit(NumericControlEvent {
@@ -868,6 +987,8 @@ impl NumericControl {
         finalized: NumericControlFinalValue,
         cx: &mut Context<Self>,
     ) {
+        self.text_mouse = None;
+        self.text_click.clear();
         if let Some(press) = self.press.take() {
             if press.dragging {
                 self.value = finalized.value;
@@ -901,6 +1022,8 @@ impl NumericControl {
     }
 
     fn escape(&mut self, _: &NumericEscape, _: &mut Window, cx: &mut Context<Self>) {
+        self.text_mouse = None;
+        self.text_click.clear();
         if self.press.is_some() {
             self.cancel(cx);
         } else if self.editing {
@@ -944,6 +1067,7 @@ impl NumericControl {
     }
 
     fn select_all(&mut self, _: &NumericSelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.invalidate_text_pointer_selection();
         cx.stop_propagation();
         if self.editing {
             self.selected = 0..self.text.len();
@@ -1045,13 +1169,20 @@ impl NumericControl {
         }
     }
 
+    pub(crate) fn invalidate_text_pointer_selection(&mut self) {
+        self.text_mouse = None;
+        self.text_click.clear();
+    }
+
     pub(crate) fn move_to(&mut self, offset: usize) {
+        self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         self.selected = offset..offset;
         self.reversed = false;
     }
 
     pub(crate) fn select_to(&mut self, offset: usize) {
+        self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         if self.reversed {
             self.selected.start = offset;
@@ -1516,7 +1647,7 @@ impl gpui::Render for NumericControl {
                 })
                 .unwrap_or(false)
         });
-        if self.press.is_some() {
+        if self.press.is_some() || self.text_mouse.is_some() {
             root.child(GestureCaptureElement {
                 move_entity: entity.clone(),
                 up_entity: entity,
