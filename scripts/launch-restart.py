@@ -7,9 +7,16 @@ import json
 import os
 from pathlib import Path
 import stat
+import signal
+import shutil
 import subprocess
 import tempfile
 import time
+
+
+SWIFTC = "/usr/bin/swiftc"
+COMPILE_TIMEOUT = 120
+OPERATION_TIMEOUT = 15
 
 
 class RestartError(Exception):
@@ -40,6 +47,11 @@ class NativeController:
     def __init__(self, root: Path, app: Path, output: Path, delivery):
         self.root, self.app, self.output, self.delivery = root, app, output, delivery
         self.seal = self.disk_identity() if app.exists() else None
+        self._helper_dir = None
+        self._binary = None
+        self._closed = False
+        self._failed = False
+        self._cleanup_blocked = False
 
     def disk_identity(self):
         self.delivery.verify(self.app)
@@ -47,23 +59,211 @@ class NativeController:
         info = executable.stat()
         return (info.st_dev, info.st_ino, self.delivery.sha(executable))
 
-    def call(self, operation: str, expected: Identity | None = None):
-        if operation != "snapshot" and (self.seal is None or self.disk_identity() != self.seal):
-            raise RestartError("installed application changed; no termination requested")
-        argv = ["/usr/bin/swift", "-module-cache-path", str(self.output / "swift-module-cache"),
-                str(self.root / "scripts/launch-restart.swift"), operation, str(self.app)]
-        if expected is not None:
-            argv.append(json.dumps(asdict(expected), separators=(",", ":")))
+    def _file_identity(self, path: Path, *, executable=False, owned=True):
+        # Source and private executable paths cannot pass through a symlink.
+        for component in (path, *path.parents):
+            if component.is_symlink():
+                raise RestartError("native helper path contains a symlink; no app control requested")
         try:
-            result = subprocess.run(argv, cwd=self.root, capture_output=True, text=True,
-                                    check=False, timeout=15)
-        except subprocess.TimeoutExpired as error:
-            raise RestartError("native app control timed out; escalation stopped") from error
-        with (self.output / "native-control.log").open("a") as log:
-            log.write(f"{operation}: exit {result.returncode}\n{result.stdout}{result.stderr}")
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise RestartError("native helper file identity is ambiguous; app control stopped")
+                stream = os.fdopen(descriptor, "rb")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with stream:
+                before = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                        or (owned and before.st_uid != os.getuid())
+                        or before.st_mode & 0o022
+                        or (executable and not before.st_mode & stat.S_IXUSR)
+                        or before.st_size > 64 * 1024 * 1024):
+                    raise RestartError("native helper file identity is ambiguous; app control stopped")
+                digest = hashlib.sha256()
+                while block := stream.read(64 * 1024):
+                    digest.update(block)
+                after = os.fstat(stream.fileno())
+                def stamp(info):
+                    return (info.st_dev, info.st_ino, info.st_size, info.st_mode,
+                            info.st_mtime_ns, info.st_ctime_ns, info.st_uid, info.st_nlink)
+                if stamp(before) != stamp(after) or stamp(path.lstat()) != stamp(after):
+                    raise RestartError("native helper file changed while inspected; app control stopped")
+                return (after.st_dev, after.st_ino, after.st_size, after.st_mode,
+                        after.st_mtime_ns, after.st_ctime_ns, digest.hexdigest())
+        except OSError as error:
+            raise RestartError(f"native helper/toolchain unavailable: {path}; app control stopped") from error
+
+    def _check_directory(self):
+        if self._helper_dir is None:
+            raise RestartError("native helper has no owned compilation workspace")
+        try:
+            info = self._helper_dir.lstat()
+        except OSError as error:
+            raise RestartError("native helper workspace is unavailable; cleanup refused") from error
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700
+                or (info.st_dev, info.st_ino) != self._directory_identity):
+            raise RestartError("native helper workspace identity changed; preserved without app control")
+
+    def _run_owned(self, argv, timeout, phase):
+        """Bound only this newly created session, never a discovered app/PID."""
+        self._check_directory()
+        started = time.monotonic()
+        status = "not started"
+        # Files avoid unbounded capture_output buffers and descendant pipe holds.
+        with tempfile.TemporaryFile(dir=self._helper_dir) as stdout, \
+                tempfile.TemporaryFile(dir=self._helper_dir) as stderr:
+            process = None
+            try:
+                process = subprocess.Popen(argv, cwd=self.root, stdin=subprocess.DEVNULL,
+                                           stdout=stdout, stderr=stderr, start_new_session=True)
+                try:
+                    code = process.wait(timeout=timeout)
+                except BaseException:
+                    # The group was created for this compiler/helper invocation;
+                    # its unreaped leader cannot be reused as another process.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except OSError as error:
+                        self._cleanup_blocked = True
+                        status = "owned child cleanup refused; workspace retained"
+                        raise RestartError(status) from error
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired as error:
+                        self._cleanup_blocked = True
+                        status = "owned child exit unconfirmed; workspace retained"
+                        raise RestartError(status) from error
+                    raise
+                status = f"exit {code}"
+                stdout.seek(0); stderr.seek(0)
+                out, err = stdout.read(1024 * 1024 + 1), stderr.read(1024 * 1024 + 1)
+                if len(out) > 1024 * 1024 or len(err) > 1024 * 1024:
+                    raise RestartError("native helper output exceeds bounded diagnostics")
+                return subprocess.CompletedProcess(argv, code, out.decode("utf-8"), err.decode("utf-8"))
+            except subprocess.TimeoutExpired as error:
+                status = "timed out; owned child stopped"
+                raise RestartError(f"native {phase} timed out; escalation stopped") from error
+            except OSError as error:
+                status = "could not start"
+                raise RestartError(f"native {phase} unavailable; escalation stopped") from error
+            except KeyboardInterrupt:
+                status = "interrupted; owned child stopped"
+                raise
+            finally:
+                stdout.seek(0); stderr.seek(0)
+                with (self.output / ("native-compile.log" if phase == "compile" else "native-control.log")).open("a") as log:
+                    log.write(f"{phase}: {status}; child_pid {process.pid if process else 'none'}; "
+                              f"budget {timeout}s; elapsed {time.monotonic()-started:.6f}s\n")
+                    log.write(stdout.read(1024 * 1024).decode("utf-8", errors="replace"))
+                    log.write(stderr.read(1024 * 1024).decode("utf-8", errors="replace"))
+
+    def _validate_helper(self):
+        self._check_directory()
+        if (self._file_identity(self.root / "scripts/launch-restart.swift") != self._source_identity
+                or self._file_identity(self._helper_dir / "launch-restart.swift") != self._copy_identity
+                or self._file_identity(self._binary, executable=True) != self._binary_identity):
+            raise RestartError("native helper source or executable changed; escalation stopped")
+
+    def _prepare_helper(self):
+        if self._closed or self._failed:
+            raise RestartError("native helper is closed or previously failed; no automatic retry")
+        if self._binary is not None:
+            self._validate_helper()
+            return self._binary
+        self._failed = True  # No second compiler attempt after abnormal exit.
+        source = self.root / "scripts/launch-restart.swift"
+        self._source_identity = self._file_identity(source)
+        compiler_identity = self._file_identity(Path(SWIFTC), executable=True, owned=False)
+        self._helper_dir = Path(tempfile.mkdtemp(prefix="native-helper-", dir=self.output))
+        info = self._helper_dir.lstat()
+        self._directory_identity = (info.st_dev, info.st_ino)
+        self._check_directory()
+        snapshot = self._helper_dir / "launch-restart.swift"
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            original = os.fdopen(descriptor, "rb")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with original, snapshot.open("xb") as stream:
+            raw = original.read(128 * 1024 + 1)
+            if len(raw) > 128 * 1024:
+                raise RestartError("native helper source exceeds its bounded size")
+            stream.write(raw)
+        snapshot.chmod(0o600)
+        self._copy_identity = self._file_identity(snapshot)
+        if self._copy_identity[-1] != self._source_identity[-1]:
+            raise RestartError("native helper source changed before compile; app control stopped")
+        self._binary = self._helper_dir / "launch-restart"
+        argv = [SWIFTC, "-module-cache-path", str(self._helper_dir / "modules"),
+                str(snapshot), "-o", str(self._binary)]
+        attempt = {"source": str(source), "source_identity": self._source_identity,
+                   "source_sha256": self._source_identity[-1], "source_copy": str(snapshot),
+                   "compiler": SWIFTC, "compiler_identity": compiler_identity,
+                   "compile_argv": argv, "compile_timeout_seconds": COMPILE_TIMEOUT,
+                   "operation_timeout_seconds": OPERATION_TIMEOUT}
+        # Diagnostic only, never read as authority or used for binary adoption.
+        with (self.output / "native-compile.json").open("x") as stream:
+            json.dump(attempt, stream, sort_keys=True, indent=2)
+            stream.write("\n")
+        result = self._run_owned(argv, COMPILE_TIMEOUT, "compile")
         if result.returncode:
-            raise RestartError(f"native app control refused; see {self.output / 'native-control.log'}")
-        return json.loads(result.stdout)
+            raise RestartError(f"native helper compile refused; see {self.output / 'native-compile.log'}")
+        self._binary_identity = self._file_identity(self._binary, executable=True)
+        if self._file_identity(Path(SWIFTC), executable=True, owned=False) != compiler_identity:
+            raise RestartError("native compiler changed during compilation; app control stopped")
+        self._validate_helper()
+        provenance = {"source": str(source), "source_identity": self._source_identity,
+                      "source_sha256": self._source_identity[-1], "source_copy": str(snapshot),
+                      "binary": str(self._binary), "binary_identity": self._binary_identity,
+                      "binary_sha256": self._binary_identity[-1], "compiler": SWIFTC,
+                      "compiler_identity": compiler_identity, "compile_argv": argv,
+                      "compile_timeout_seconds": COMPILE_TIMEOUT,
+                      "operation_timeout_seconds": OPERATION_TIMEOUT}
+        with (self.output / "native-helper.json").open("x") as stream:
+            json.dump(provenance, stream, sort_keys=True, indent=2)
+            stream.write("\n")
+        self._failed = False
+        return self._binary
+
+    def close(self):
+        self._closed = True
+        if self._cleanup_blocked:
+            raise RestartError("owned native child exit is unconfirmed; workspace retained")
+        if self._helper_dir is not None:
+            self._check_directory()
+            shutil.rmtree(self._helper_dir)
+            self._helper_dir = None
+
+    def call(self, operation: str, expected: Identity | None = None):
+        try:
+            if operation != "snapshot" and (self.seal is None or self.disk_identity() != self.seal):
+                raise RestartError("installed application changed; no termination requested")
+            binary = self._prepare_helper()
+            # Compilation may be cold/slow. Repeat the installed seal check at
+            # the actual operation boundary, before even invoking the helper.
+            if operation != "snapshot" and self.disk_identity() != self.seal:
+                raise RestartError("installed application changed; no termination requested")
+            argv = [str(binary), operation, str(self.app)]
+            if expected is not None:
+                argv.append(json.dumps(asdict(expected), separators=(",", ":")))
+            result = self._run_owned(argv, OPERATION_TIMEOUT, operation)
+            self._validate_helper()
+            if result.returncode:
+                raise RestartError(f"native app control refused; see {self.output / 'native-control.log'}")
+            try:
+                return json.loads(result.stdout)
+            except ValueError as error:
+                raise RestartError("invalid native app-control result; escalation stopped") from error
+        except BaseException:
+            self._failed = True
+            self.close()
+            raise
 
     def snapshot(self) -> list[Identity]:
         values = self.call("snapshot")
@@ -220,7 +420,12 @@ def prepare(root: Path, app: Path, source: str, ci, delivery, assert_no_raw,
                     delivery.check_install_workspace(workspace)
                 assert_no_raw(root)
                 controller = controller_factory(root, app, output, delivery)
-                stop_exact(controller)
+                try:
+                    stop_exact(controller)
+                finally:
+                    close = getattr(controller, "close", None)
+                    if close is not None:
+                        close()
                 delivery.assert_inactive(app)
                 assert_no_raw(root)
                 delivery.validate_source(runner, source, expected=frozen)

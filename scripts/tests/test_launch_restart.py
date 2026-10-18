@@ -114,14 +114,17 @@ class LifecycleTests(unittest.TestCase):
 
     def test_native_disk_replacement_and_native_errors_never_send_action(self):
         with tempfile.TemporaryDirectory() as d:
-            app = Path(d)/'hex.app'; app.mkdir(); out=Path(d)
-            c = restart.NativeController.__new__(restart.NativeController)
-            c.app=app; c.root=out; c.output=out; c.seal=(1,2,'old')
-            with patch.object(c,'disk_identity',return_value=(1,3,'new')), patch.object(restart.subprocess,'run') as run:
+            out=Path(d).resolve(); app=out/'hex.app'
+            c=restart.NativeController(out,app,out,Mock()); c.seal=(1,2,'old')
+            with patch.object(c,'disk_identity',return_value=(1,3,'new')), patch.object(restart.subprocess,'Popen') as run:
                 with self.assertRaisesRegex(restart.RestartError,'changed'): c.call('force')
                 run.assert_not_called()
-            with patch.object(c,'disk_identity',return_value=c.seal), patch.object(restart.subprocess,'run',side_effect=subprocess.TimeoutExpired('swift',15)):
+            c=restart.NativeController(out,app,out,Mock()); c.seal=(1,2,'old')
+            with patch.object(c,'disk_identity',return_value=c.seal), \
+                    patch.object(c,'_prepare_helper',return_value=out/'fixture-helper'), \
+                    patch.object(c,'_run_owned',side_effect=restart.RestartError('native quit timed out; escalation stopped')):
                 with self.assertRaisesRegex(restart.RestartError,'timed out'): c.call('quit')
+
 
 
 class ReleaseFixture(unittest.TestCase):
@@ -242,6 +245,7 @@ class PreflightTests(ReleaseFixture):
         self.assertEqual(self.owner.read_bytes(),raw);self.assertIsNone(self.runner.target_lock)
         self.assertEqual(self.prepare(),hashlib.sha256(raw).hexdigest())
         self.controller.request.assert_not_called()
+        self.assertEqual(self.controller.close.call_count,2)
         reports=list((self.f.repo/'artifacts/launch').glob('restart-*/restart-preflight.json'))
         self.assertEqual(len(reports),2)
         self.assertTrue(all(json.loads(p.read_text())['status']=='ready_for_build' for p in reports))
@@ -298,6 +302,7 @@ class PreflightTests(ReleaseFixture):
             with self.assertRaises(KeyboardInterrupt):self.prepare()
         self.assertEqual(self.owner.read_bytes(),raw);self.assertEqual(metadata.read_bytes(),b'Finder')
         self.assertIsNone(self.runner.target_lock)
+        self.controller.close.assert_called_once()
         report=next((self.f.repo/'artifacts/launch').glob('restart-*/restart-preflight.json'))
         self.assertEqual(json.loads(report.read_text())['status'],'interrupted')
         with delivery.activation_lock(self.app):pass

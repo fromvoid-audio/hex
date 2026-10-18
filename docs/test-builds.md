@@ -34,7 +34,19 @@ The `--test` spelling survives source-update re-exec.
 app before the normal update/build/start workflow. **Unsaved work may be lost.**
 It requests a native normal quit, waits up to ten seconds, then requests native
 forced termination of that same process if needed and waits up to five seconds.
-A native control operation has its own fifteen-second timeout. It never targets
+Before the first native request, the launcher compiles the exact Swift helper
+once into an exclusively owned private0700 temporary workspace. Cold compilation
+has a separate120-second budget; every native operation keeps its unchanged
+fifteen-second timeout and reuses that same binary. Original source, private copy
+and executable identities/hashes are rechecked; source/binary replacement, missing
+toolchain, compiler failure or timeout refuses without a fallback or app launch.
+Compiler/helper children created by this invocation are stopped on timeout or
+interrupt. The private helper/cache files are removed after control finishes;
+source/binary provenance and phase diagnostics remain with the restart report.
+If owned-child exit cannot be confirmed after bounded stopping, the private
+workspace is retained and further control/cleanup/retry refuses instead of
+claiming successful child retirement or opening an app.
+There is no persistent shared executable cache or silent warm-up. It never targets
 an app by name or PID alone: bundle URL, executable, development identifier and
 launch time are rechecked before every request, with the installed signature and
 sealed inventory verified as well. Multiple processes, a replacement identity,
