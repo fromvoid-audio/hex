@@ -91,7 +91,9 @@ impl EditorView {
         let id = track.id();
         let target = GestureTarget::TrackGain { track: id };
         let generation = self.project_generation;
-        if !self.track_gain_controls.bindings.contains_key(&id) {
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            self.track_gain_controls.bindings.entry(id)
+        {
             let config = NumericSpec::new(
                 0.0,
                 2.0,
@@ -166,15 +168,12 @@ impl EditorView {
                 },
             );
             let observation = cx.observe(&entity, |_, _, cx| cx.notify());
-            self.track_gain_controls.bindings.insert(
-                id,
-                Binding {
-                    entity,
-                    lease,
-                    _subscription: subscription,
-                    _observation: observation,
-                },
-            );
+            entry.insert(Binding {
+                entity,
+                lease,
+                _subscription: subscription,
+                _observation: observation,
+            });
         }
         let active = self
             .device_gesture

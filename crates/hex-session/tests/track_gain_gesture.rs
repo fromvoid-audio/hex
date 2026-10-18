@@ -324,16 +324,14 @@ fn audio_preview_preserves_balance_mute_and_postfader_return_and_save_finalizes_
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    let temp = Temp(
-        std::env::temp_dir().join(format!(
+    let temp = Temp(std::env::temp_dir().join(format!(
             "hex-track-gain-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        )),
-    );
+        )));
     std::fs::create_dir(&temp.0).unwrap();
     let path = temp.0.join("tone.wav");
     let data = vec![1000_i16; 4096]
