@@ -1008,7 +1008,6 @@ mod tests {
     use hex_session::service::ViewState;
     use std::{
         cell::{Cell, RefCell},
-        collections::BTreeMap,
         rc::Rc,
         sync::Arc,
     };
@@ -1139,8 +1138,8 @@ mod tests {
         let stale_revision = ViewState {
             canonical_audio_source: None,
             project: Arc::clone(&state.project),
-            waveforms: BTreeMap::new(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&state.midi_preview),
             gain_preview: state.gain_preview.clone(),
             timeline_frames: state.timeline_frames,
@@ -1198,8 +1197,8 @@ mod tests {
         let removed = ViewState {
             canonical_audio_source: None,
             project: Arc::new(editor.project().clone()),
-            waveforms: BTreeMap::new(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 500,
@@ -1245,8 +1244,8 @@ mod tests {
         let moved = ViewState {
             canonical_audio_source: None,
             project: Arc::new(moved_editor.project().clone()),
-            waveforms: BTreeMap::new(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 500,
@@ -1295,8 +1294,8 @@ mod tests {
         let state = ViewState {
             canonical_audio_source: None,
             project: Arc::new(editor.project().clone()),
-            waveforms: BTreeMap::new(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 500,

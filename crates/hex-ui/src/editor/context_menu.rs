@@ -439,9 +439,12 @@ mod tests {
             };
             let preview = if midi {
                 Arc::new(
-                    hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-                        .expect("midi preview")
-                        .1,
+                    hex_engine::compile::project_with_midi_preview(
+                        &project,
+                        &hex_project::SortedEntries::new(),
+                    )
+                    .expect("midi preview")
+                    .1,
                 )
             } else {
                 Arc::default()

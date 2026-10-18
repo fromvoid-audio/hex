@@ -169,7 +169,7 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
                 canonical_audio_source: None,
                 project: Arc::new(project_with_tracks(count)),
                 waveforms: Default::default(),
-                audio_clip_waveforms: std::collections::BTreeMap::new(),
+                audio_clip_waveforms: Default::default(),
                 midi_preview: Arc::default(),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: 384_000,

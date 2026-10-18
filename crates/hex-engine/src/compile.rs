@@ -14,13 +14,36 @@ pub enum PreparedAudioSource {
     Streamed(Arc<StreamedSourceMetadata>),
 }
 
+/// Borrowed control-only lookup, without copying an owning source map. This
+/// supplies no container layout, constructor provenance or storage admission.
+/// Current legacy callers may still query std maps; admitted container custody
+/// must separately inventory its actual capacity-visible owner fields.
+pub trait MediaLookup<V>: media_lookup_sealed::Sealed {
+    fn get(&self, asset: &AssetId) -> Option<&V>;
+}
+mod media_lookup_sealed {
+    pub trait Sealed {}
+    impl<V> Sealed for hex_project::SortedEntries<hex_project::AssetId, V> {}
+    impl<V> Sealed for std::collections::BTreeMap<hex_project::AssetId, V> {}
+}
+impl<V> MediaLookup<V> for hex_project::SortedEntries<AssetId, V> {
+    fn get(&self, asset: &AssetId) -> Option<&V> {
+        self.get(asset)
+    }
+}
+impl<V> MediaLookup<V> for BTreeMap<AssetId, V> {
+    fn get(&self, asset: &AssetId) -> Option<&V> {
+        self.get(asset)
+    }
+}
+
 /// A decoded media bank is separate from editable metadata and undo history.
 /// Every referenced asset must resolve with project-rate prepared PCM and the
 /// persisted playback frame count. Source-rate conversion happens before compile.
 /// Extra unused decoded assets are permitted.
 pub fn project(
     snapshot: &hex_project::Project,
-    media: &BTreeMap<AssetId, Audio>,
+    media: &dyn crate::compile::MediaLookup<Audio>,
 ) -> Result<Project, Invalid> {
     let registry = hex_devices::native_registry()
         .map_err(|_| Invalid("invalid built-in native device registry"))?;
@@ -29,7 +52,7 @@ pub fn project(
 
 pub fn project_with_registry(
     snapshot: &hex_project::Project,
-    media: &BTreeMap<AssetId, Audio>,
+    media: &dyn crate::compile::MediaLookup<Audio>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<Project, Invalid> {
     let instruments = hex_devices::native_instrument_registry()
@@ -51,7 +74,7 @@ pub fn project_with_registry(
 /// instrument catalog. Unknown instrument slots refuse publication.
 pub fn project_with_instrument_registry(
     snapshot: &hex_project::Project,
-    media: &BTreeMap<AssetId, Audio>,
+    media: &dyn crate::compile::MediaLookup<Audio>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
 ) -> Result<Project, Invalid> {
     let effects = hex_devices::native_registry()
@@ -76,7 +99,7 @@ pub fn project_with_instrument_registry(
 /// Unreferenced entries in the map are permitted.
 pub fn project_with_prepared_audio_sources(
     snapshot: &hex_project::Project,
-    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
     generation: u64,
 ) -> Result<Project, Invalid> {
     if generation == 0 {
@@ -103,7 +126,7 @@ pub fn project_with_prepared_audio_sources(
 /// retaining the caller's immutable instrument table when supplied.
 pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
     snapshot: &hex_project::Project,
-    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
     generation: u64,
     sine_table: Option<Arc<hex_devices::SineTable>>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
@@ -114,7 +137,7 @@ pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
 
 pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
     snapshot: &hex_project::Project,
-    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
     generation: u64,
     sine_table: Option<Arc<hex_devices::SineTable>>,
     shared_contexts: Option<
@@ -145,7 +168,7 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
 /// compiled instrument spans; painting never scans source notes.
 pub fn project_with_midi_preview(
     snapshot: &hex_project::Project,
-    media: &BTreeMap<AssetId, Audio>,
+    media: &dyn crate::compile::MediaLookup<Audio>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     project_with_midi_preview_and_table(snapshot, media, None)
 }
@@ -155,7 +178,7 @@ pub fn project_with_midi_preview(
 /// inventory across worker revisions.
 pub fn project_with_midi_preview_and_table(
     snapshot: &hex_project::Project,
-    media: &BTreeMap<AssetId, Audio>,
+    media: &dyn crate::compile::MediaLookup<Audio>,
     sine_table: Option<Arc<hex_devices::SineTable>>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let registry = hex_devices::native_registry()
@@ -173,7 +196,7 @@ pub fn project_with_midi_preview_and_table(
 
 pub(crate) fn project_with_midi_preview_and_table_and_instrument_registry(
     snapshot: &hex_project::Project,
-    media: &BTreeMap<AssetId, Audio>,
+    media: &dyn crate::compile::MediaLookup<Audio>,
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -191,7 +214,7 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_registry(
 
 pub(crate) fn project_with_midi_preview_and_table_and_instrument_contexts(
     snapshot: &hex_project::Project,
-    media: &BTreeMap<AssetId, Audio>,
+    media: &dyn crate::compile::MediaLookup<Audio>,
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -745,7 +768,7 @@ pub(crate) enum PreparedAudioSourceRef<'a> {
 pub(crate) fn resolve_resident<'a>(
     asset: &'a Asset,
     project_rate: u32,
-    resident_media: &'a BTreeMap<AssetId, Audio>,
+    resident_media: &'a dyn crate::compile::MediaLookup<Audio>,
 ) -> Result<PreparedAudioSourceRef<'a>, Invalid> {
     let audio = resident_media
         .get(&asset.id())
@@ -757,7 +780,7 @@ pub(crate) fn resolve_resident<'a>(
 pub(crate) fn resolve_prepared<'a>(
     asset: &'a Asset,
     project_rate: u32,
-    sources: &'a BTreeMap<AssetId, PreparedAudioSource>,
+    sources: &'a dyn crate::compile::MediaLookup<PreparedAudioSource>,
     generation: u64,
 ) -> Result<PreparedAudioSourceRef<'a>, Invalid> {
     match sources

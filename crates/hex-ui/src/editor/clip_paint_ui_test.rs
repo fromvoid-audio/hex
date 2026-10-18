@@ -164,9 +164,12 @@ fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestA
         };
         let mut canonical = Editor::new(project.clone(), 8).expect("canonical editor");
         let preview = if midi {
-            hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-                .expect("midi preview")
-                .1
+            hex_engine::compile::project_with_midi_preview(
+                &project,
+                &hex_project::SortedEntries::new(),
+            )
+            .expect("midi preview")
+            .1
         } else {
             Default::default()
         };
@@ -346,9 +349,12 @@ fn clip_review_visible_body_wins_over_occluded_edges(cx: &mut TestAppContext) {
             96_000
         };
         let preview = if midi {
-            hex_engine::compile::project_with_midi_preview(model.project(), &Default::default())
-                .unwrap()
-                .1
+            hex_engine::compile::project_with_midi_preview(
+                model.project(),
+                &hex_project::SortedEntries::new(),
+            )
+            .unwrap()
+            .1
         } else {
             Default::default()
         };

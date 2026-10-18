@@ -47,22 +47,16 @@ impl Session {
     pub fn source_plan_reservation(&self) -> Option<SourcePlanReservation> {
         self.source_reservation
     }
-    pub(crate) fn source_bindings(&self) -> BTreeMap<AssetId, AudioSourceBinding> {
+    pub(crate) fn source_bindings(&self) -> SortedEntries<AssetId, AudioSourceBinding> {
         self.project()
-            .assets()
-            .filter_map(|asset| {
+            .asset_entries_on_control()
+            .filter_map_values_on_control(|id, _| {
                 self.verified_sources
-                    .get(&asset.id())
+                    .get(id)
                     .cloned()
                     .map(AudioSourceBinding::VerifiedFile)
-                    .or_else(|| {
-                        self.audio(asset.id())
-                            .cloned()
-                            .map(AudioSourceBinding::Resident)
-                    })
-                    .map(|source| (asset.id(), source))
+                    .or_else(|| self.audio(*id).cloned().map(AudioSourceBinding::Resident))
             })
-            .collect()
     }
     fn remaining_source_reservation(
         &self,
@@ -145,9 +139,11 @@ impl Session {
                 "verified import differs from document reservation",
             ));
         }
+        self.verified_sources
+            .try_reserve_on_control(1, MAX_ASSETS)?;
         let command = verified_import_command(&source, destination);
         let commands = verified_audio_only_commands(self.project(), vec![command])?;
-        let mut bank = self.media_bank();
+        let mut bank = self.media_bank()?;
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
@@ -171,7 +167,8 @@ impl Session {
                             "import candidate has multiple new sources",
                         ));
                     }
-                    bank.verified.insert(id, source.clone());
+                    bank.verified
+                        .try_insert_on_control(id, source.clone(), MAX_ASSETS)?;
                     let prepared = prepare_with_waveforms(
                         candidate,
                         &bank,
@@ -182,7 +179,8 @@ impl Session {
                     )?;
                     Ok::<_, SessionError>((created, id, Arc::new(prepared)))
                 })?;
-        self.verified_sources.insert(id, source);
+        self.verified_sources
+            .try_insert_on_control(id, source, MAX_ASSETS)?;
         self.semantic_source_epoch = epoch;
         Ok((created, prepared))
     }
@@ -246,8 +244,10 @@ impl Session {
                     .ok_or(SessionError::Invalid("timeline end overflow"))?;
             }
         }
+        self.verified_sources
+            .try_reserve_on_control(sources.len(), MAX_ASSETS)?;
         let commands = verified_audio_only_commands(self.project(), commands)?;
-        let mut bank = self.media_bank();
+        let mut bank = self.media_bank()?;
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
@@ -265,7 +265,8 @@ impl Session {
                         if bank.contains_key(asset) {
                             return Err(SessionError::Invalid("verified batch asset collision"));
                         }
-                        bank.verified.insert(*asset, source.clone());
+                        bank.verified
+                            .try_insert_on_control(*asset, source.clone(), MAX_ASSETS)?;
                     }
                     let prepared = Arc::new(prepare_with_waveforms(
                         candidate,
@@ -282,7 +283,8 @@ impl Session {
         created.retain(|created| matches!(created, Created::Imported { .. }));
         for (created, source) in created.iter().zip(sources) {
             if let Created::Imported { asset, .. } = created {
-                self.verified_sources.insert(*asset, source);
+                self.verified_sources
+                    .try_insert_on_control(*asset, source, MAX_ASSETS)?;
             }
         }
         self.semantic_source_epoch = epoch;

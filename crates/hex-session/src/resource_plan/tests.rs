@@ -1,5 +1,5 @@
 use super::*;
-use crate::{PreparedImport, ResidentPcm, original_audio::OriginalAudio};
+use crate::{AudioSourceBinding, PreparedImport, ResidentPcm, original_audio::OriginalAudio};
 use hex_engine::{Audio, AudioStorageLedgerReservation};
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
@@ -73,6 +73,68 @@ fn fixture() -> Option<(Session, Vec<AssetId>)> {
     }
     ids.sort_unstable_by_key(|asset| asset.value());
     Some((session, ids))
+}
+
+#[test]
+fn actual_session_bank_and_exported_maps_keep_independent_backings_and_shared_children() {
+    let Some((session, ids)) = fixture() else {
+        return;
+    };
+    let bank = session.media_bank().unwrap();
+    let second_bank = session.media_bank().unwrap();
+    let bindings = session.source_bindings();
+    let waveforms = session.waveforms();
+    let second_waveforms = session.waveforms();
+    assert_eq!(bank.resident.len(), ids.len());
+    assert_eq!(bindings.len(), ids.len());
+    assert_eq!(waveforms.len(), ids.len());
+    assert!(!std::ptr::eq(
+        bank.resident.as_slice().as_ptr(),
+        second_bank.resident.as_slice().as_ptr()
+    ));
+    assert!(!std::ptr::eq(
+        waveforms.as_slice().as_ptr(),
+        second_waveforms.as_slice().as_ptr()
+    ));
+    assert_eq!(
+        bank.resident.backing_bytes().unwrap(),
+        bank.resident.capacity() * std::mem::size_of::<(AssetId, Audio)>()
+    );
+    for id in ids {
+        let original = session.audio(id).unwrap();
+        let copied = bank.resident.get(&id).unwrap();
+        let AudioSourceBinding::Resident(binding) = bindings.get(&id).unwrap() else {
+            panic!("resident binding")
+        };
+        // Pointer equality here tests sharing only; it grants no provenance or admission.
+        assert!(std::ptr::eq(
+            original.frames().as_ptr(),
+            copied.frames().as_ptr()
+        ));
+        assert!(std::ptr::eq(
+            original.frames().as_ptr(),
+            binding.frames().as_ptr()
+        ));
+        assert_eq!(copied.frames(), original.frames());
+        assert!(Arc::ptr_eq(
+            waveforms.get(&id).unwrap(),
+            &session.media.get(&id).unwrap().waveform
+        ));
+        assert!(Arc::ptr_eq(
+            waveforms.get(&id).unwrap(),
+            second_waveforms.get(&id).unwrap()
+        ));
+    }
+    // These actual copies survive the producing Session; they are distinct live
+    // container obligations, even though the PCM/summary children are shared.
+    drop(session);
+    assert!(
+        bank.resident
+            .values()
+            .all(|audio| audio.frames().len() == 4)
+    );
+    assert_eq!(waveforms.len(), 2);
+    assert_eq!(second_bank.resident.len(), 2);
 }
 fn state(ids: &[AssetId]) -> NativeDeviceState {
     NativeDeviceState::new(
@@ -152,21 +214,25 @@ fn device_only_mono_residency_keeps_original_and_waveform_without_stereo_derivat
     assert_eq!(waveform.source_frames, 4);
     let bins = waveform.cached_bin_count();
     let original_capacity = source.resident_pcm_capacity_frames().unwrap();
-    session.media.insert(
-        asset,
-        crate::ResidentAsset {
-            source_audio: OriginalAudio::Mono(source),
-            audio: None,
-            waveform: Arc::new(waveform),
-            frames: 4,
-        },
-    );
+    session
+        .media
+        .try_insert_on_control(
+            asset,
+            crate::ResidentAsset {
+                source_audio: OriginalAudio::Mono(source),
+                audio: None,
+                waveform: Arc::new(waveform),
+                frames: 4,
+            },
+            hex_project::MAX_ASSETS,
+        )
+        .unwrap();
     session.resident_frames = original_capacity as u64;
     session.resident_waveform_bins = bins;
     session.resident_waveform_bytes = bins * std::mem::size_of::<[hex_media::waveform::Peak; 2]>();
     drop(backing); // The accepted immutable waveform retains this same source root.
     assert!(session.audio(asset).is_none());
-    assert!(session.media_bank().resident.is_empty());
+    assert!(session.media_bank().unwrap().resident.is_empty());
     assert_eq!(session.media.get(&asset).unwrap().pcm().count(), 1);
     assert_eq!(session.resident_frames(), original_capacity as u64);
     assert_eq!(

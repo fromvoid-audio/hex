@@ -63,8 +63,9 @@ fn built_in_fm4_offline_export_matches_independent_carrier_pcm() {
             velocity: 127,
         })
         .expect("MIDI note");
-    let project = hex_engine::compile::project(editor.project(), &Default::default())
-        .expect("compile built-in FM4 arrangement");
+    let project =
+        hex_engine::compile::project(editor.project(), &hex_project::SortedEntries::new())
+            .expect("compile built-in FM4 arrangement");
     let unique = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "hex-fm4-export-{}-{unique}.wav",

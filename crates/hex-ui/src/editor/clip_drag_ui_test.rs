@@ -109,7 +109,7 @@ pub(super) fn editor_window(
                     canonical_audio_source: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
+                    audio_clip_waveforms: Default::default(),
                     midi_preview,
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: TIMELINE_FRAMES,
@@ -708,34 +708,37 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     let (handle, editor) = editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
         let old = view.state.as_ref().expect("project state");
-        let mut waveforms = BTreeMap::new();
-        waveforms.insert(
-            asset,
-            Arc::new(
-                CachedWaveform::from_peaks(
-                    96_000,
-                    vec![
-                        [
-                            CachedPeak {
-                                min: -0.7,
-                                max: 0.5,
-                            },
-                            CachedPeak {
-                                min: -0.4,
-                                max: 0.8,
-                            },
-                        ];
-                        64
-                    ],
-                )
-                .expect("waveform fixture"),
-            ),
-        );
+        let mut waveforms = hex_project::SortedEntries::new();
+        waveforms
+            .try_insert_on_control(
+                asset,
+                Arc::new(
+                    CachedWaveform::from_peaks(
+                        96_000,
+                        vec![
+                            [
+                                CachedPeak {
+                                    min: -0.7,
+                                    max: 0.5,
+                                },
+                                CachedPeak {
+                                    min: -0.4,
+                                    max: 0.8,
+                                },
+                            ];
+                            64
+                        ],
+                    )
+                    .expect("waveform fixture"),
+                ),
+                hex_project::MAX_ASSETS,
+            )
+            .unwrap();
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms,
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: old.timeline_frames,
@@ -969,9 +972,11 @@ fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppCont
 #[gpui::test]
 fn rendered_midi_trim_previews_note_geometry_and_commits_release_snap(cx: &mut TestAppContext) {
     let (project, source, _, clip) = midi_project();
-    let (_, midi_preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("compile midi preview");
+    let (_, midi_preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("compile midi preview");
     let (handle, editor) = editor_window(cx, project, Arc::new(midi_preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -1098,9 +1103,11 @@ fn rendered_midi_left_trim_keeps_source_note_timeline_position(cx: &mut TestAppC
         })
         .expect("second source note");
     let project = editor_model.project().clone();
-    let (_, midi_preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("compile midi preview");
+    let (_, midi_preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("compile midi preview");
     let (handle, editor) = editor_window(cx, project, Arc::new(midi_preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -1291,9 +1298,11 @@ fn command_modifier_bypasses_adaptive_snap_while_drag_is_held_and_on_release(
 #[gpui::test]
 fn command_modifier_temporarily_bypasses_beat_anchored_midi_drag_snap(cx: &mut TestAppContext) {
     let (project, source, target_track, clip) = midi_project();
-    let (_, midi_preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("compile midi preview");
+    let (_, midi_preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("compile midi preview");
     let (handle, editor) = editor_window(cx, project.clone(), Arc::new(midi_preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -1419,9 +1428,11 @@ fn rendered_midi_clip_drop_between_tracks_inserts_and_preserves_beat_anchor(
     cx: &mut TestAppContext,
 ) {
     let (project, source, anchor, clip) = midi_project();
-    let (_, preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("compile midi preview");
+    let (_, preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("compile midi preview");
     let (handle, editor) = editor_window(cx, project.clone(), Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     drag_source_to_inserted_track(
@@ -1439,9 +1450,11 @@ fn rendered_midi_clip_drop_between_tracks_inserts_and_preserves_beat_anchor(
 #[gpui::test]
 fn option_drag_copies_midi_clip_into_a_track_between_rows(cx: &mut TestAppContext) {
     let (project, source, anchor, clip) = midi_project();
-    let (_, preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("compile midi preview");
+    let (_, preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("compile midi preview");
     let (handle, editor) = editor_window(cx, project.clone(), Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     drag_source_to_inserted_track(
@@ -1461,9 +1474,11 @@ fn rendered_midi_clip_drop_below_last_track_inserts_without_workspace_jump(
     cx: &mut TestAppContext,
 ) {
     let (project, source, _, clip) = midi_project();
-    let (_, preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("compile midi preview");
+    let (_, preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("compile midi preview");
     let (handle, editor) = editor_window(cx, project.clone(), Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     drag_source_to_inserted_track(
@@ -1532,9 +1547,11 @@ fn dropping_clip_on_pinned_main_cancels_instead_of_appending_track(cx: &mut Test
 fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppContext) {
     let (project, source, target, clip) = midi_project();
     let original_project = project.clone();
-    let (_, preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("compile midi preview");
+    let (_, preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("compile midi preview");
     let (handle, editor) = editor_window(cx, project, Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     let (_drop_preview, release) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, 320.0);
@@ -1583,7 +1600,7 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
     );
     let (_, moved_preview) = hex_engine::compile::project_with_midi_preview(
         moved_project.project(),
-        &Default::default(),
+        &hex_project::SortedEntries::new(),
     )
     .expect("moved midi preview");
     editor.update(cx, |view, cx| {
@@ -1592,7 +1609,7 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
             canonical_audio_source: None,
             project: Arc::new(moved_project.project().clone()),
             waveforms: Default::default(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(moved_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: TIMELINE_FRAMES,
@@ -1775,7 +1792,7 @@ fn held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project(
             canonical_audio_source: None,
             project: previous.project.clone(),
             waveforms: previous.waveforms.clone(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: previous.midi_preview.clone(),
             gain_preview: previous.gain_preview.clone(),
             timeline_frames: previous.timeline_frames,

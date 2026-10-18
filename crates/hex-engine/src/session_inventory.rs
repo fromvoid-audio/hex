@@ -375,7 +375,7 @@ impl PreparedSessionInventory {
 
     pub fn prepare_with_media(
         project: &Project,
-        media: &BTreeMap<AssetId, Audio>,
+        media: &dyn crate::compile::MediaLookup<Audio>,
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
     ) -> Result<Self, crate::Invalid> {
@@ -395,7 +395,7 @@ impl PreparedSessionInventory {
     /// catalog. This shares the same registry boundary as Arrangement compile.
     pub fn prepare_with_media_and_instrument_registry(
         project: &Project,
-        media: &BTreeMap<AssetId, Audio>,
+        media: &dyn crate::compile::MediaLookup<Audio>,
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -412,7 +412,7 @@ impl PreparedSessionInventory {
 
     pub(crate) fn prepare_with_media_and_shared_contexts(
         project: &Project,
-        media: &BTreeMap<AssetId, Audio>,
+        media: &dyn crate::compile::MediaLookup<Audio>,
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -432,7 +432,7 @@ impl PreparedSessionInventory {
 
     pub fn prepare_with_prepared_audio_sources(
         project: &Project,
-        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
         expected_generation: u64,
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
@@ -456,7 +456,7 @@ impl PreparedSessionInventory {
 
     pub(crate) fn prepare_with_prepared_audio_sources_and_shared_contexts(
         project: &Project,
-        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
         expected_generation: u64,
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,

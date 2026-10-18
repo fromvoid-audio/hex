@@ -2960,7 +2960,7 @@ mod tests {
         .unwrap();
         let asset = project.assets().next().unwrap().id();
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize]).unwrap();
-        let media = [(asset, audio)].into_iter().collect();
+        let media: std::collections::BTreeMap<_, _> = [(asset, audio)].into_iter().collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
@@ -6155,9 +6155,10 @@ mod tests {
         })
         .unwrap();
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.5], [0.75, -1.0]]).unwrap();
-        let media = [(project.assets().next().unwrap().id(), audio)]
-            .into_iter()
-            .collect();
+        let media: std::collections::BTreeMap<_, _> =
+            [(project.assets().next().unwrap().id(), audio)]
+                .into_iter()
+                .collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,

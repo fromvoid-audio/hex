@@ -41,7 +41,7 @@ impl Session {
         let (project, track, source_gain) = isolated_source(self.project(), clip)?;
         let revision = hex_engine::PreparedRevision::prepare(
             &project,
-            &BTreeMap::new(),
+            &SortedEntries::new(),
             self.sine_table(),
             None,
         )

@@ -141,7 +141,10 @@ pub(super) fn open_source_with_mode(
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
             }
-            candidate.verified_sources.insert(asset.id(), source);
+            candidate
+                .verified_sources
+                .try_insert_on_control(asset.id(), source, hex_project::MAX_ASSETS)
+                .map_err(|error| error.to_string())?;
         }
         candidate.editor =
             hex_project::Editor::new(project, history_capacity).map_err(|e| e.to_string())?;

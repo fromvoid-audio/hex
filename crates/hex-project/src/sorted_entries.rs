@@ -40,13 +40,13 @@ impl<K, V> SortedEntries<K, V> {
     pub fn as_slice(&self) -> &[(K, V)] {
         &self.entries
     }
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> + ExactSizeIterator {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> + ExactSizeIterator + Clone {
         self.entries.iter().map(|(key, value)| (key, value))
     }
-    pub fn keys(&self) -> impl DoubleEndedIterator<Item = &K> + ExactSizeIterator {
+    pub fn keys(&self) -> impl DoubleEndedIterator<Item = &K> + ExactSizeIterator + Clone {
         self.entries.iter().map(|(key, _)| key)
     }
-    pub fn values(&self) -> impl DoubleEndedIterator<Item = &V> + ExactSizeIterator {
+    pub fn values(&self) -> impl DoubleEndedIterator<Item = &V> + ExactSizeIterator + Clone {
         self.entries.iter().map(|(_, value)| value)
     }
     pub fn values_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut V> + ExactSizeIterator {
@@ -80,6 +80,39 @@ impl<K, V> SortedEntries<K, V> {
         // Report actual capacity, never assume the request is the allocation.
         self.backing_bytes()?;
         Ok(())
+    }
+}
+impl<K: Copy, V> SortedEntries<K, V> {
+    /// Explicit control/display clone, preserving current infallible snapshot
+    /// behavior. Copied keys preserve order/uniqueness without sorting or a
+    /// temporary std map. This grants no construction-peak/admission claim.
+    pub fn filter_map_values_on_control<W>(
+        &self,
+        mut map: impl FnMut(&K, &V) -> Option<W>,
+    ) -> SortedEntries<K, W> {
+        SortedEntries {
+            entries: self
+                .entries
+                .iter()
+                .filter_map(|(key, value)| map(key, value).map(|value| (*key, value)))
+                .collect(),
+        }
+    }
+    /// Preparation variant: quote the complete old/new and child-clone peak
+    /// first, reserve exact input count, inspect actual capacity, then clone.
+    pub fn try_filter_map_values_on_control<W>(
+        &self,
+        max_entries: usize,
+        mut map: impl FnMut(&K, &V) -> Result<Option<W>, Invalid>,
+    ) -> Result<SortedEntries<K, W>, Invalid> {
+        let mut result = SortedEntries::new();
+        result.try_reserve_on_control(self.len(), max_entries)?;
+        for (key, value) in &self.entries {
+            if let Some(value) = map(key, value)? {
+                result.entries.push((*key, value));
+            }
+        }
+        Ok(result)
     }
 }
 impl<K: Ord, V> SortedEntries<K, V> {

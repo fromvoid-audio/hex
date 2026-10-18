@@ -9,9 +9,8 @@ use hex_engine::{
         ResourceCatalogReservation, ResourcePreparationError,
     },
 };
-use hex_project::{AssetId, ClipId};
+use hex_project::{AssetId, ClipId, SortedEntries};
 use std::{
-    collections::BTreeMap,
     mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -31,7 +30,7 @@ pub struct ResidentResourcePlanReservation {
 /// their fields. It owns no PCM; no RefCell guard escapes into a callback.
 pub struct ResidentPcmInventory<'a> {
     session: &'a Session,
-    waveforms: &'a BTreeMap<ClipId, AudioClipWaveform>,
+    waveforms: &'a SortedEntries<ClipId, AudioClipWaveform>,
     transforms: &'a hex_engine::audio_transform::AudioTransformPcmInventory<'a>,
 }
 impl ResidentPcmInventory<'_> {

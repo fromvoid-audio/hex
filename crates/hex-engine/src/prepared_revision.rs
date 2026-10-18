@@ -6,10 +6,10 @@ use crate::{
 use hex_devices::SineTable;
 pub(crate) mod assembly;
 use hex_project::{
-    AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
-    Project, TrackId,
+    Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity, Project,
+    TrackId,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedDeviceIdentity {
@@ -119,7 +119,7 @@ impl PreparedRevision {
     }
     pub fn prepare(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
@@ -144,7 +144,7 @@ impl PreparedRevision {
     /// family member without retaining source graphs or replaying intermediate edits.
     pub fn prepare_tuning_from(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_project: &Project,
         previous_revision: &Self,
@@ -219,7 +219,7 @@ impl PreparedRevision {
     /// Playback reports the actual fader content origin and remaining delay to Main.
     pub fn prepare_for_gain_recording(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
         track: TrackId,
@@ -230,7 +230,7 @@ impl PreparedRevision {
     /// Prepare transient recording with the control worker's existing transform lifecycle.
     pub fn prepare_for_gain_recording_with_audio_transforms(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
         track: TrackId,
@@ -278,7 +278,7 @@ impl PreparedRevision {
 
     pub(crate) fn prepare_with_instrument_registry(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -297,7 +297,7 @@ impl PreparedRevision {
 
     pub(crate) fn prepare_with_registries(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
@@ -317,7 +317,7 @@ impl PreparedRevision {
 
     pub fn prepare_with_audio_transforms(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
         transforms: &crate::audio_transform::AudioTransformPreparation,
@@ -339,7 +339,7 @@ impl PreparedRevision {
 
     fn prepare_with_registries_and_transforms(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
@@ -417,7 +417,7 @@ impl PreparedRevision {
     #[doc(hidden)]
     pub fn prepare_with_test_instrument_registry(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -436,7 +436,7 @@ impl PreparedRevision {
     #[doc(hidden)]
     pub fn prepare_with_test_registries(
         project: &Project,
-        media: &BTreeMap<AssetId, crate::Audio>,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
         table: Arc<SineTable>,
         previous: Option<&PreparedSessionInventory>,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
@@ -450,7 +450,7 @@ impl PreparedRevision {
     /// supplied nonzero project-open generation by the shared compiler resolver.
     pub fn prepare_with_prepared_audio_sources(
         project: &Project,
-        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
         expected_generation: u64,
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,

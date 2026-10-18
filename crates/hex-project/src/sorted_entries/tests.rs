@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn filtered_control_copies_preserve_keys_and_refuse_before_visiting_children() {
+    let source = SortedEntries::try_from_unsorted_on_control(
+        vec![
+            (3_u32, "third".to_string()),
+            (1, "first".into()),
+            (2, "second".into()),
+        ],
+        3,
+    )
+    .unwrap();
+    let display =
+        source.filter_map_values_on_control(|key, value| (*key != 2).then(|| value.clone()));
+    let prepared = source
+        .try_filter_map_values_on_control(3, |key, value| Ok((*key != 2).then(|| value.clone())))
+        .unwrap();
+    assert_eq!(display, prepared);
+    assert_eq!(prepared.keys().copied().collect::<Vec<_>>(), [1, 3]);
+    assert!(prepared.capacity() >= source.len());
+    assert!(!std::ptr::eq(
+        source.as_slice().as_ptr(),
+        prepared.as_slice().as_ptr()
+    ));
+    assert!(!std::ptr::eq(
+        display.as_slice().as_ptr(),
+        prepared.as_slice().as_ptr()
+    ));
+    let mut visits = 0;
+    assert!(
+        source
+            .try_filter_map_values_on_control::<String>(2, |_, _| {
+                visits += 1;
+                Ok(None)
+            })
+            .is_err()
+    );
+    assert_eq!(visits, 0);
+    assert!(
+        source
+            .try_filter_map_values_on_control::<String>(3, |key, value| {
+                if *key == 2 {
+                    Err(Invalid("canceled child copy"))
+                } else {
+                    Ok(Some(value.clone()))
+                }
+            })
+            .is_err()
+    );
+    assert_eq!(source.get(&2).unwrap(), "second");
+    let empty = source
+        .try_filter_map_values_on_control::<String>(3, |_, _| Ok(None))
+        .unwrap();
+    assert!(empty.is_empty());
+    assert!(empty.backing_bytes().unwrap() >= 3 * mem::size_of::<(u32, String)>());
+}
+
+#[test]
 fn sorted_lookup_replacement_removal_and_spare_backing_are_observed() {
     let mut entries = SortedEntries::new();
     entries.try_reserve_on_control(8, 16).unwrap();

@@ -282,8 +282,11 @@ mod tests {
     fn midi_and_session_sources_show_inline_drafts_without_launching(cx: &mut TestAppContext) {
         cx.update(crate::editor::bind_editor_keys);
         let (project, track, _, clip) = crate::editor::clip_drag_ui_test::midi_project();
-        let (_, preview) =
-            hex_engine::compile::project_with_midi_preview(&project, &Default::default()).unwrap();
+        let (_, preview) = hex_engine::compile::project_with_midi_preview(
+            &project,
+            &hex_project::SortedEntries::new(),
+        )
+        .unwrap();
         let (handle, editor) = editor_window(cx, project.clone(), Arc::new(preview));
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.update(|window, cx| {

@@ -2,7 +2,7 @@ use super::{EditorMode, clip_drag_ui_test};
 use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::Command;
 use hex_session::{CachedPeak, CachedWaveform, service::ViewState};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 #[gpui::test]
 fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
@@ -118,13 +118,15 @@ pub(super) fn audio_detail_fixture(
     );
     let (handle, editor) = clip_drag_ui_test::editor_window(cx, project.clone(), Arc::default());
     editor.update(cx, |view, window_cx| {
-        let mut waveforms = BTreeMap::new();
-        waveforms.insert(asset, peaks);
+        let mut waveforms = hex_project::SortedEntries::new();
+        waveforms
+            .try_insert_on_control(asset, peaks, hex_project::MAX_ASSETS)
+            .unwrap();
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
             project: Arc::new(project),
             waveforms,
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(Default::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 384_000,
@@ -582,7 +584,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
             canonical_audio_source: None,
             project: Arc::clone(&project_after_remove),
             waveforms: previous.waveforms.clone(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&previous.midi_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: previous.timeline_frames,
@@ -699,7 +701,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
             canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: old.gain_preview.clone(),
             timeline_frames: old.timeline_frames,
@@ -720,7 +722,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
             canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: old.gain_preview.clone(),
             timeline_frames: old.timeline_frames,
@@ -758,7 +760,7 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
             canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: old.gain_preview.clone(),
             timeline_frames: old.timeline_frames,

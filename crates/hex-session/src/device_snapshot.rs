@@ -22,7 +22,7 @@ impl Session {
             snapshot,
         )?;
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         let (_, prepared) = preview.execute_prepared(
             Command::ReplaceDeviceState { device, state },

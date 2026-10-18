@@ -15,7 +15,7 @@ use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, waveform::Waveform};
-use hex_project::{Command, Created, Project};
+use hex_project::{Command, Created, Project, SortedEntries};
 use hex_tuning::ProjectTuning;
 #[cfg(test)]
 mod audio_batch_tests;
@@ -67,9 +67,9 @@ pub struct ViewState {
     /// source freshness for streamed constructor publication.
     pub canonical_audio_source: Option<Arc<CanonicalAudioSourceSnapshot>>,
     pub project: Arc<Project>,
-    pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
+    pub waveforms: SortedEntries<hex_project::AssetId, Arc<Waveform>>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
-    pub audio_clip_waveforms: BTreeMap<hex_project::ClipId, AudioClipWaveform>,
+    pub audio_clip_waveforms: SortedEntries<hex_project::ClipId, AudioClipWaveform>,
     /// Control-prepared MIDI clip summaries matching this project revision.
     pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
     /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.

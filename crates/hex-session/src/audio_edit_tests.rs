@@ -102,7 +102,14 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
             Some(&previous),
         )
         .unwrap();
-    let root = Arc::clone(&session.audio_clip_waveforms.borrow()[&clip].waveform);
+    let root = Arc::clone(
+        &session
+            .audio_clip_waveforms
+            .borrow()
+            .get(&clip)
+            .unwrap()
+            .waveform,
+    );
     let (Created::Clip(tail), split) = session
         .command_prepared_revision(Command::SplitClip { clip, frame: 3_137 }, Some(&pitched))
         .unwrap()
@@ -111,9 +118,9 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
     };
     {
         let views = session.audio_clip_waveforms.borrow();
-        assert!(Arc::ptr_eq(&root, &views[&tail].waveform));
-        assert_eq!(views[&tail].offset, 3_137);
-        assert_eq!(views[&tail].length, 4_863);
+        assert!(Arc::ptr_eq(&root, &views.get(&tail).unwrap().waveform));
+        assert_eq!(views.get(&tail).unwrap().offset, 3_137);
+        assert_eq!(views.get(&tail).unwrap().length, 4_863);
     }
     session
         .command_prepared_revision(
@@ -126,7 +133,12 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
         .unwrap();
     assert!(Arc::ptr_eq(
         &root,
-        &session.audio_clip_waveforms.borrow()[&tail].waveform
+        &session
+            .audio_clip_waveforms
+            .borrow()
+            .get(&tail)
+            .unwrap()
+            .waveform
     ));
     let before = session.project().clone();
     let can_undo = session.can_undo();
@@ -150,7 +162,12 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
     );
     assert!(Arc::ptr_eq(
         &root,
-        &session.audio_clip_waveforms.borrow()[&tail].waveform
+        &session
+            .audio_clip_waveforms
+            .borrow()
+            .get(&tail)
+            .unwrap()
+            .waveform
     ));
     let mut renderer = hex_engine::Renderer::new(split.arrangement());
     renderer.play();

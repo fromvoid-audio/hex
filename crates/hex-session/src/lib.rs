@@ -8,14 +8,9 @@ use hex_media::{
 };
 use hex_project::{
     AssetId, Command, Created, Editor, Invalid as ProjectInvalid, MAX_ASSETS, Project,
+    SortedEntries,
 };
-use std::{
-    collections::{BTreeMap, HashMap},
-    error::Error,
-    fmt, mem,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{error::Error, fmt, mem, path::PathBuf, sync::Arc};
 
 pub mod arrangement_seek;
 mod audio_sources;
@@ -197,11 +192,11 @@ pub struct Session {
     editor: Editor,
     audio_transforms: hex_engine::audio_transform::AudioTransformPreparation,
     audio_clip_waveforms:
-        std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+        std::cell::RefCell<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     sine_table: Arc<hex_engine::SineTable>,
-    media: HashMap<AssetId, ResidentAsset>,
-    verified_sources: BTreeMap<AssetId, VerifiedAudioFile>,
+    media: SortedEntries<AssetId, ResidentAsset>,
+    verified_sources: SortedEntries<AssetId, VerifiedAudioFile>,
     semantic_source_epoch: u64,
     audio_mode: DocumentAudioMode,
     source_reservation: Option<SourcePlanReservation>,
@@ -222,12 +217,12 @@ impl Session {
             audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
                 Arc::clone(&shutdown),
             ),
-            audio_clip_waveforms: std::cell::RefCell::new(BTreeMap::new()),
+            audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor: Editor::new(Project::new(sample_rate)?, history_capacity)?,
             sine_table: Arc::new(hex_engine::SineTable::new()),
-            media: HashMap::new(),
-            verified_sources: BTreeMap::new(),
+            media: SortedEntries::new(),
+            verified_sources: SortedEntries::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
             source_reservation: None,
@@ -336,9 +331,9 @@ impl Session {
                 "prepared media does not match project assets",
             ));
         }
-        let mut media: HashMap<AssetId, ResidentAsset> = HashMap::new();
+        let mut media: SortedEntries<AssetId, ResidentAsset> = SortedEntries::new();
         media
-            .try_reserve(asset_count)
+            .try_reserve_on_control(asset_count, MAX_ASSETS)
             .map_err(|_| SessionError::Allocation)?;
         let mut resident_frames = 0_u64;
         let mut resident_waveform_bins = 0_usize;
@@ -380,7 +375,7 @@ impl Session {
                 .checked_add(bytes)
                 .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
             if media
-                .insert(
+                .try_insert_on_control(
                     asset_id,
                     ResidentAsset {
                         source_audio: prepared.source_audio,
@@ -388,7 +383,8 @@ impl Session {
                         waveform: Arc::new(waveform),
                         frames,
                     },
-                )
+                    MAX_ASSETS,
+                )?
                 .is_some()
             {
                 return Err(SessionError::Invalid("duplicate decoded project asset"));
@@ -399,12 +395,12 @@ impl Session {
             audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
                 Arc::clone(&shutdown),
             ),
-            audio_clip_waveforms: std::cell::RefCell::new(BTreeMap::new()),
+            audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor,
             sine_table,
             media,
-            verified_sources: BTreeMap::new(),
+            verified_sources: SortedEntries::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
             source_reservation: None,
@@ -426,7 +422,7 @@ impl Session {
     /// it never replaces canonical metadata or the currently accepted audio.
     pub fn audio_clip_waveforms(
         &self,
-    ) -> Result<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>, SessionError> {
+    ) -> Result<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>, SessionError> {
         self.audio_clip_waveforms
             .try_borrow()
             .map(|views| views.clone())
@@ -505,8 +501,8 @@ impl Session {
         waveform: Waveform,
         frames: u64,
         accounting: ResidentImportAccounting,
-    ) {
-        self.media.insert(
+    ) -> Result<(), SessionError> {
+        self.media.try_insert_on_control(
             id,
             ResidentAsset {
                 source_audio,
@@ -514,10 +510,12 @@ impl Session {
                 waveform: Arc::new(waveform),
                 frames,
             },
-        );
+            MAX_ASSETS,
+        )?;
         self.resident_frames = accounting.total_frames;
         self.resident_waveform_bins = accounting.total_waveform_bins;
         self.resident_waveform_bytes = accounting.total_waveform_bytes;
+        Ok(())
     }
 
     pub const fn resident_waveform_bins(&self) -> usize {
@@ -632,7 +630,7 @@ impl Session {
                 "audio media must be committed through a prepared import",
             ));
         }
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         self.editor
             .execute_prepared_transition(command, |source, candidate| {
@@ -662,7 +660,7 @@ impl Session {
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         let (_, prepared) = preview.execute_prepared_transition(
             Command::SetTuning(tuning),
@@ -706,7 +704,7 @@ impl Session {
             value,
         )?;
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         let (_, prepared) = preview.execute_prepared(
             Command::ReplaceDeviceState { device, state },
@@ -761,7 +759,7 @@ impl Session {
         let state =
             hex_engine::patch_native_device_parameter_for_class(class, &state, second.0, second.1)?;
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         let (_, prepared) = preview.execute_prepared(
             Command::ReplaceDeviceState { device, state },
@@ -856,7 +854,7 @@ impl Session {
             ));
         }
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         let (_, prepared) = preview.execute_prepared(
             Command::SetReturnSend {
@@ -965,7 +963,7 @@ impl Session {
             .checked_add(prepared.additional_pcm_frames(self.media.values().flat_map(|m| m.pcm()))?)
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
-        if self.media.try_reserve(1).is_err() {
+        if self.media.try_reserve_on_control(1, MAX_ASSETS).is_err() {
             return Err(SessionError::Allocation);
         }
         let bins = prepared.waveform.cached_bin_count();
@@ -980,7 +978,7 @@ impl Session {
             .resident_waveform_bytes
             .checked_add(waveform_bytes)
             .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
-        let mut candidate_media = self.media_bank();
+        let mut candidate_media = self.media_bank()?;
         let staged_audio = prepared.audio.clone();
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
@@ -1008,7 +1006,7 @@ impl Session {
                         "import candidate contains multiple new assets",
                     ));
                 }
-                candidate_media.insert(asset_id, staged_asset.clone());
+                candidate_media.insert(asset_id, staged_asset.clone())?;
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
@@ -1028,7 +1026,8 @@ impl Session {
             waveform: Arc::new(prepared.waveform),
             frames,
         };
-        self.media.insert(asset_id, resident);
+        self.media
+            .try_insert_on_control(asset_id, resident, MAX_ASSETS)?;
         self.resident_frames = new_resident_frames;
         self.resident_waveform_bins = new_resident_bins;
         self.resident_waveform_bytes = new_resident_waveform_bytes;
@@ -1084,11 +1083,11 @@ impl Session {
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
-            .try_reserve(1)
+            .try_reserve_on_control(1, MAX_ASSETS)
             .map_err(|_| SessionError::Allocation)?;
         let (new_resident_bins, new_resident_waveform_bytes) =
             self.reserve_waveform_accounting(&prepared.waveform)?;
-        let mut candidate_media = self.media_bank();
+        let mut candidate_media = self.media_bank()?;
         let staged_audio = prepared.audio.clone();
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
@@ -1133,7 +1132,7 @@ impl Session {
                         "import candidate contains multiple new assets",
                     ));
                 }
-                candidate_media.insert(asset_id, staged_asset.clone());
+                candidate_media.insert(asset_id, staged_asset.clone())?;
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
@@ -1147,7 +1146,7 @@ impl Session {
                 Ok((asset_id, revision))
             },
         )?;
-        self.media.insert(
+        self.media.try_insert_on_control(
             asset_id,
             ResidentAsset {
                 source_audio: prepared.source_audio,
@@ -1155,7 +1154,8 @@ impl Session {
                 waveform: Arc::new(prepared.waveform),
                 frames,
             },
-        );
+            MAX_ASSETS,
+        )?;
         self.resident_frames = new_resident_frames;
         self.resident_waveform_bins = new_resident_bins;
         self.resident_waveform_bytes = new_resident_waveform_bytes;
@@ -1188,11 +1188,11 @@ impl Session {
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
-            .try_reserve(1)
+            .try_reserve_on_control(1, MAX_ASSETS)
             .map_err(|_| SessionError::Allocation)?;
         let (new_resident_bins, new_resident_waveform_bytes) =
             self.reserve_waveform_accounting(&prepared.waveform)?;
-        let mut candidate_media = self.media_bank();
+        let mut candidate_media = self.media_bank()?;
         let staged_audio = prepared.audio.clone();
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
@@ -1228,7 +1228,7 @@ impl Session {
                         "import candidate contains multiple new assets",
                     ));
                 }
-                candidate_media.insert(asset_id, staged_asset.clone());
+                candidate_media.insert(asset_id, staged_asset.clone())?;
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
@@ -1253,7 +1253,7 @@ impl Session {
                 total_waveform_bins: new_resident_bins,
                 total_waveform_bytes: new_resident_waveform_bytes,
             },
-        );
+        )?;
         Ok((result, revision))
     }
 
@@ -1295,7 +1295,7 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         self.editor.undo_prepared_transition(|source, candidate| {
             let prepared = prepare_with_waveforms(
@@ -1351,7 +1351,7 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         self.editor.redo_prepared_transition(|source, candidate| {
             let prepared = prepare_with_waveforms(
@@ -1400,11 +1400,9 @@ impl Session {
     }
 
     /// Clone only the small asset map and its shared waveform handles.
-    pub fn waveforms(&self) -> BTreeMap<AssetId, Arc<Waveform>> {
+    pub fn waveforms(&self) -> SortedEntries<AssetId, Arc<Waveform>> {
         self.media
-            .iter()
-            .map(|(id, resident)| (*id, Arc::clone(&resident.waveform)))
-            .collect()
+            .filter_map_values_on_control(|_, resident| Some(Arc::clone(&resident.waveform)))
     }
 
     pub fn resident_asset_frames(&self, asset: AssetId) -> Option<u64> {
@@ -1454,7 +1452,7 @@ impl Session {
         }
         hex_engine::PreparedRevision::prepare_for_gain_recording_with_audio_transforms(
             self.project(),
-            &self.media_bank().resident,
+            &self.media_bank()?.resident,
             self.sine_table(),
             previous.map(|prepared| prepared.session().as_ref()),
             track,
@@ -1470,7 +1468,7 @@ impl Session {
     ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
         Ok(Arc::new(prepare_with_waveforms(
             self.project(),
-            &self.media_bank(),
+            &self.media_bank()?,
             self.sine_table(),
             previous.map(|artifact| artifact.session().as_ref()),
             &self.audio_transforms,
@@ -1478,18 +1476,21 @@ impl Session {
         )?))
     }
 
-    fn media_bank(&self) -> MediaBank {
-        MediaBank {
-            epoch: self.semantic_source_epoch,
-            resident: self
-                .media
-                .iter()
-                .filter_map(|(id, resident)| {
-                    resident.audio.as_ref().map(|audio| (*id, audio.clone()))
-                })
-                .collect(),
-            verified: self.verified_sources.clone(),
+    fn media_bank(&self) -> Result<MediaBank, SessionError> {
+        let mut resident = SortedEntries::new();
+        resident.try_reserve_on_control(self.media.len(), MAX_ASSETS)?;
+        for (id, entry) in &self.media {
+            if let Some(audio) = &entry.audio {
+                resident.try_insert_on_control(*id, audio.clone(), MAX_ASSETS)?;
+            }
         }
+        Ok(MediaBank {
+            epoch: self.semantic_source_epoch,
+            resident,
+            verified: self
+                .verified_sources
+                .try_clone_with_on_control(MAX_ASSETS, |key, value| Ok((*key, value.clone())))?,
+        })
     }
 }
 
@@ -1501,7 +1502,7 @@ fn prepare_with_waveforms(
     table: Arc<hex_engine::SineTable>,
     previous: Option<&hex_engine::PreparedSessionInventory>,
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
-    retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+    retained: &std::cell::RefCell<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>>,
 ) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
     let mut old = retained
         .try_borrow_mut()
@@ -1523,7 +1524,9 @@ fn prepare_with_waveforms(
         let requested_bins =
             (262_144 / prepared.arrangement().audio_clip_views().len().max(1)).clamp(1, 1_024);
         let mut roots: Vec<(Audio, Arc<Waveform>)> = Vec::new();
-        let mut next = BTreeMap::new();
+        let mut next = Vec::new();
+        next.try_reserve_exact(prepared.arrangement().audio_clip_views().len())
+            .map_err(|_| hex_engine::Invalid("could not reserve waveform entries"))?;
         for view in prepared.arrangement().audio_clip_views() {
             let waveform = if let Some((_, waveform)) = roots
                 .iter()
@@ -1550,15 +1553,17 @@ fn prepare_with_waveforms(
                 roots.push((view.audio.clone(), Arc::clone(&waveform)));
                 waveform
             };
-            next.insert(
+            next.push((
                 view.clip,
                 service::AudioClipWaveform {
                     waveform,
                     offset: view.offset,
                     length: view.length,
                 },
-            );
+            ));
         }
+        let next = SortedEntries::try_from_unsorted_on_control(next, hex_project::MAX_CLIPS)
+            .map_err(|error| hex_engine::Invalid(error.0))?;
         Ok((prepared, next))
     })?;
     *old = next;

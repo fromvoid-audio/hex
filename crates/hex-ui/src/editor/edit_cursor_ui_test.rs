@@ -97,9 +97,11 @@ fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAp
 fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, _, clip) = midi_project();
-    let (_, preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("midi preview");
+    let (_, preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("midi preview");
     let (handle, editor) = editor_window(cx, project, Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -1058,9 +1060,11 @@ fn stale_or_canceled_time_gesture_cannot_autoscroll(cx: &mut TestAppContext) {
 #[gpui::test]
 fn midi_time_move_preview_translates_cached_notes_to_the_destination(cx: &mut TestAppContext) {
     let (project, source, target, clip) = midi_project();
-    let (_, preview) =
-        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-            .expect("prepared midi preview");
+    let (_, preview) = hex_engine::compile::project_with_midi_preview(
+        &project,
+        &hex_project::SortedEntries::new(),
+    )
+    .expect("prepared midi preview");
     let (handle, editor) = editor_window(cx, project, Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();

@@ -5,7 +5,7 @@ pub struct CanonicalAudioSourceSnapshot {
     project: Arc<Project>,
     context: hex_engine::AudioSourceContext,
     mode: crate::DocumentAudioMode,
-    sources: BTreeMap<hex_project::AssetId, crate::AudioSourceBinding>,
+    sources: SortedEntries<hex_project::AssetId, crate::AudioSourceBinding>,
 }
 impl CanonicalAudioSourceSnapshot {
     pub(super) fn capture(
@@ -29,7 +29,7 @@ impl CanonicalAudioSourceSnapshot {
     }
     /// Immutable resolved bindings paired with this exact Project/context.
     /// Facts only: native publication must match actual retained source leases.
-    pub fn sources(&self) -> &BTreeMap<hex_project::AssetId, crate::AudioSourceBinding> {
+    pub fn sources(&self) -> &SortedEntries<hex_project::AssetId, crate::AudioSourceBinding> {
         &self.sources
     }
     /// Current musical references only, excluding bindings retained solely for
