@@ -45,7 +45,7 @@ device state or changing the ordinary EQ cascade.
 
 ## Dependencies
 
-This crate depends on the standard library, `hex-lattice`, and
+This crate depends on the standard library, `hex-lattice`, `hex-dsp` and
 `hex-lattice-contract` for validated linear stereo coefficients and the native
 device codec/metadata contract. The caller supplies the project sample rate and
 absolute note-relative frame positions; Utility and Saturator process
@@ -80,3 +80,9 @@ numbers or implement feedback/chase/polyphony. See
 The `device_conformance` example and registry-discovered authoring test use the
 opt-in lattice test helpers without a desktop, project, GPUI or CPAL. See
 [authoring](../../docs/native-device-authoring.md) for JSON reports and limits.
+
+Auto Pan and EQ expose optional state-aware parameter semantics through the
+neutral contract. Existing DSP, codecs and envelope evaluation are unchanged;
+EQ declarations retain node identity and legacy shelf restrictions. The authoring
+report includes a populated dynamic fixture. See
+[parameter semantics](../../docs/native-parameter-semantics.md).

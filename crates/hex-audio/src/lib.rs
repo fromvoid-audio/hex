@@ -209,3 +209,7 @@ pub mod worker_fixture;
 
 #[cfg(all(test, feature = "allocation-probe"))]
 mod eq_allocation;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod owned_effect_allocation;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod resource_borrow_allocation;
