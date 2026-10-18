@@ -464,6 +464,12 @@ fn midi_single_loop_growth_carves_audio_and_midi_neighbors_at_final_capacity_in_
                 .map(|t| t.clips().len() + t.midi_clips().len())
                 .sum::<usize>()
         };
+        println!(
+            "loop_growth capacity={at_capacity} before={} after={} tail_source_offset={}",
+            count(&before),
+            count(&after),
+            after.clip(audio).unwrap().source_offset()
+        );
         assert_eq!(count(&after), count(&before) - 1);
         if at_capacity {
             assert_eq!(count(&before), hex_project::MAX_CLIPS);
@@ -543,4 +549,191 @@ fn midi_single_loop_growth_late_midi_fragment_refusal_restores_prior_audio_and_r
     assert!(editor.can_redo());
     assert!(editor.redo());
     assert_eq!(editor.project().clip_name(clip), Some("redo remains"));
+}
+
+#[test]
+fn midi_loop_worker_prepares_real_repeat_timing_and_roundtrips_owned_document() {
+    use hex_session::service::{Event, Request, Service};
+    use std::time::{Duration, Instant};
+    fn next(service: &Service) -> Event {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(event) = service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                return event;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    fn edit(service: &Service, command: Command) -> Event {
+        service.submit(Request::Edit(command)).unwrap();
+        next(service)
+    }
+    // No EditorView, browser/catalog worker, audio adapter or process settings.
+    let files = super::external_audio_drop_ui_test::BatchFiles::new();
+    let wav = files.wav("loop-worker.wav", 48_000, 96_000);
+    let saved_path = wav.parent().unwrap().join("loop-worker.hex");
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    next(&service);
+    service.submit(Request::Import(wav)).unwrap();
+    let event = next(&service);
+    let track = event.state.project.tracks()[0].id();
+    let audio = event.state.project.tracks()[0].clips()[0].id();
+    let frame13 = event
+        .state
+        .project
+        .tempo_map()
+        .beat_to_frame(beat(13 * Q))
+        .unwrap();
+    edit(
+        &service,
+        Command::MoveClip {
+            clip: audio,
+            track,
+            start: frame13,
+        },
+    );
+    let event = edit(
+        &service,
+        Command::PlaceMidiClip {
+            track,
+            start: beat(10 * Q),
+            length: beat(2 * Q),
+        },
+    );
+    let Created::Clip(clip) = event.created.unwrap() else {
+        panic!("midi clip");
+    };
+    edit(
+        &service,
+        Command::SetMidiClipSource {
+            clip,
+            source_length: beat(8 * Q),
+            source_start: beat(2 * Q),
+            loop_start: beat(2 * Q),
+            loop_end: beat(4 * Q),
+            looping: false,
+            length: beat(2 * Q),
+        },
+    );
+    edit(
+        &service,
+        Command::AddMidiNote {
+            clip,
+            start: beat(2 * Q + Q / 4),
+            duration: beat(Q / 4),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        },
+    );
+    let event = edit(
+        &service,
+        Command::PlaceMidiClip {
+            track,
+            start: beat(12 * Q),
+            length: beat(Q),
+        },
+    );
+    let Created::Clip(victim) = event.created.unwrap() else {
+        panic!("midi neighbor");
+    };
+    let before = event.state.project.clone();
+    let next_values = values(
+        before.midi_clip(clip).unwrap(),
+        Gesture::Outer,
+        beat(15 * Q),
+    )
+    .unwrap();
+    let grown = edit(&service, overwrite_command(clip, next_values));
+    assert!(grown.request_complete);
+    assert!(
+        grown
+            .playback
+            .as_ref()
+            .and_then(|playback| playback.prepared_revision())
+            .is_some()
+    );
+    assert!(grown.state.project.midi_clip(victim).is_none());
+    let preview = grown.state.midi_preview.get(clip).unwrap();
+    assert_eq!(preview.occurrence_count, 3);
+    let expected: Vec<_> = [10 * Q + Q / 4, 12 * Q + Q / 4, 14 * Q + Q / 4]
+        .map(|b| {
+            grown
+                .state
+                .project
+                .tempo_map()
+                .beat_to_frame(beat(b))
+                .unwrap()
+        })
+        .into();
+    assert_eq!(
+        preview
+            .samples
+            .iter()
+            .map(|n| n.frame_start)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let after = grown.state.project.clone();
+    let frame15 = after.tempo_map().beat_to_frame(beat(15 * Q)).unwrap();
+    assert_eq!(
+        after.clip(audio).unwrap().source_offset(),
+        frame15 - frame13
+    );
+    service.submit(Request::Undo).unwrap();
+    assert_eq!(next(&service).state.project, before);
+    service.submit(Request::Redo).unwrap();
+    assert_eq!(next(&service).state.project, after);
+    // Separate tempo edit: MIDI cycles keep their authored beats when frame lengths differ.
+    let tempo_changed = edit(
+        &service,
+        Command::SetTempoPoint {
+            beat: beat(12 * Q),
+            tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+        },
+    );
+    let preview = tempo_changed.state.midi_preview.get(clip).unwrap();
+    let frames: Vec<_> = preview.samples.iter().map(|n| n.frame_start).collect();
+    assert_eq!(frames, vec![246_000, 291_000, 315_000]);
+    println!(
+        "loop_worker tempo_boundary_repeat_frames={frames:?}; beat cycle retained, prepared revision present"
+    );
+    assert_ne!(frames[1] - frames[0], frames[2] - frames[1]);
+    assert_eq!(
+        tempo_changed
+            .state
+            .project
+            .midi_clip(clip)
+            .unwrap()
+            .loop_end(),
+        beat(4 * Q)
+    );
+    let after = tempo_changed.state.project.clone();
+    service
+        .submit(Request::SaveNew(saved_path.clone()))
+        .unwrap();
+    let saved = next(&service);
+    assert!(saved.save_complete && saved_path.is_file());
+    service.submit(Request::Open(saved_path)).unwrap();
+    let reopened = next(&service);
+    assert!(reopened.open_complete && reopened.project_replaced);
+    assert_eq!(reopened.state.project, after);
+    assert_eq!(
+        reopened
+            .state
+            .midi_preview
+            .get(clip)
+            .unwrap()
+            .occurrence_count,
+        3
+    );
+    assert!(
+        reopened
+            .playback
+            .as_ref()
+            .and_then(|playback| playback.prepared_revision())
+            .is_some()
+    );
 }
