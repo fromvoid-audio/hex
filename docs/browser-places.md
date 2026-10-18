@@ -67,8 +67,13 @@ as category filters. Repeating Command-F from search/results replaces the query;
 Escape clears it and restores text mode even if the query was already empty.
 Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
 query. Moving the caret or text selection leaves the result viewport unchanged;
-only a changed query resets it. Clicking the search field restores caret editing
-without moving the result viewport. Device and file highlights both require result
+only a changed query resets it. Clicking the search field from another control selects the entire query so the
+next typed text replaces it. Once already focused, clicks place the caret and
+held pointer drags select substrings. A deliberate drag on the initial focus
+click overrides Select All from its down-point; release, worker acknowledgments
+and repaint never reselect the whole query. Returning from result navigation to
+the text field is an explicit text-mode entry even though they share a FocusHandle.
+Text selection/caret movement does not move the result viewport. Device and file highlights both require result
 focus. Open context/controller menus are dismissed; leaving theme
 settings cancels its unsaved preview (an in-flight save must finish first).
 A clip-name draft commits using the existing blur behavior before search takes focus.
@@ -97,3 +102,26 @@ control with the browser collapsed; type a sample/project/device name; confirm
 filtered results, repeat Command-F to replace the query, clear with Escape, and
 drag a matched sample/device to its normal destination. Native macOS interaction
 and reference parity remain unverified by cloud source tests.
+
+
+## Search text selection (Pulse #2805 / PR #411)
+
+Command-F always focuses/selects all, including when already focused. Mouse
+entry selects the current query; subsequent normal clicks, held drags, Shift
+selection, Command-A and clipboard operations retain normal text editing. A
+focus click tolerates small pointer jitter; an intentional held drag uses the
+initial down-point, can return to its anchor and releases safely outside the
+field. Selection-only changes do not change the query or prepare sample audio.
+Category changes, accepted filesystem work and resizing retain the selection.
+Native composition keeps the existing UTF-16 conversion/case-normalization;
+Command-F unmarks before replacing the query. Mouse hit positions and keyboard
+boundary operations use complete Unicode graphemes (the existing locked
+unicode-segmentation 1.13.3 package is now a direct UI dependency). The same
+input primitive retains case-preserving clip/track-name mode; first-click Select
+All is browser-only. No rendering/timer callback requests Select All.
+
+Rendered test-platform regressions demonstrate original missing focus-click
+Select All, missing drag selection and splitting a combining grapheme. This is
+new source selection behavior, not proof of resolution or native acceptance for
+separate mouse-focus issue #2794 / draft PR #400. Native mouse/clipboard/IME and
+shortcut checks remain coordinator-owned; no app replacement occurs in cloud.
