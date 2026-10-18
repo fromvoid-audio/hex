@@ -1,0 +1,18 @@
+{
+  "source": "1bd7af6816341c6827ca21c0b193a667f9a27073",
+  "tree": "5a6bfd073e3150c1b54e7983549dca6cfa30d561",
+  "baseline": "9c1a70a05d43d7d25db3ae7ca96a9429ebde403a",
+  "baseline_change": "ONLY copied create-new evidence harness from current source; production DSP remains original merged434 at9c1a",
+  "harness_sha256": "67c50e2361af2a5aa89e34cfd1a0758d1d46d1d9749c5bc6342599df1e9be761",
+  "wav_count": 240,
+  "listening": "NOT performed; synthetic original sources only; no commercial reference",
+  "scope": "First automatic Transients Forward100 vertical slice ONLY. Other controls still old path. Full detector and quality acceptance open. 120 before+120 after WAVs; same original fixtures/quantisation/fixed gain. Stop/Alternating remain comparison controls, not new WSOLA.",
+  "checks": {
+    "new_wsola_runtime": 3,
+    "actual_default_engine": 1,
+    "changed_affected": 17,
+    "strict_clippy": "Warp alltargets and Engine lib+tests pass",
+    "original_experiment_absolute_phase_red": "Preserved97bae; not reclassified or repeated. Test uses explicit attacks[0], still outside current automatic dispatch."
+  },
+  "development_failures": "Initial unpitched noise peak and Clippy failures preserved in logs. Candidate rounding fixed source of peak without loosening threshold. First comparison-script console failed only due filename ratio2.0 vs actual Rust ratio2; corrected script included; no product rerender/retry."
+}
