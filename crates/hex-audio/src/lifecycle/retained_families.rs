@@ -407,6 +407,72 @@ impl RetainedFamilies {
         slot.worker_route = None;
         Ok(())
     }
+    fn validate_worker_route<T: Send + Sync + 'static>(
+        &self,
+        worker: &hex_engine::RetainedControlCancellation,
+    ) -> Result<(), RetainedFamilyError> {
+        let route = worker.route_on_control();
+        let cell = self
+            .slots
+            .iter()
+            .find(|cell| cell.hint.matches(route))
+            .ok_or(RetainedFamilyError::Stale)?;
+        let slot = cell.try_read().map_err(|_| RetainedFamilyError::Busy)?;
+        let job = Self::validate_route(&slot, route)?;
+        if job.borrow_payload_on_control::<T>().is_none()
+            || slot.worker_route != Some(route)
+            || !cell.cancellation.matches_worker_on_control(worker, route)
+        {
+            return Err(RetainedFamilyError::Stale);
+        }
+        Ok(())
+    }
+    fn cancel_worker_route(
+        &self,
+        route: hex_engine::RetainedControlJobRoute,
+    ) -> Result<(), RetainedFamilyError> {
+        // The audited neutral endpoint was bound under actual holder validation.
+        // Hint only locates its immutable CELL, not authority for payload reads.
+        // A concurrent reuse cannot turn this old watermark into a new request.
+        let cell = self
+            .slots
+            .iter()
+            .find(|cell| cell.hint.matches(route))
+            .ok_or(RetainedFamilyError::Stale)?;
+        cell.cancellation.cancel(route);
+        Ok(())
+    }
+    fn finish_worker_route<T: Send + Sync + 'static>(
+        &self,
+        worker: &mut Option<hex_engine::RetainedControlCancellation>,
+    ) -> Result<(), RetainedFamilyError> {
+        let route = worker
+            .as_ref()
+            .ok_or(RetainedFamilyError::Stale)?
+            .route_on_control();
+        let cell = self
+            .slots
+            .iter()
+            .find(|cell| cell.hint.matches(route))
+            .ok_or(RetainedFamilyError::Stale)?;
+        // Durable control completion may wait for the bounded cleanup writer;
+        // native endpoints and ALL worker children must be retired BEFORE here.
+        // Never call with this same slot's reader/writer or native barrier held.
+        let mut slot = cell.write().map_err(|_| RetainedFamilyError::Failed)?;
+        let job = Self::validate_route(&slot, route)?;
+        if job.borrow_payload_on_control::<T>().is_none()
+            || slot.worker_route != Some(route)
+            || !cell.cancellation.matches_worker_on_control(
+                worker.as_ref().ok_or(RetainedFamilyError::Stale)?,
+                route,
+            )
+        {
+            return Err(RetainedFamilyError::Stale);
+        }
+        drop(worker.take());
+        slot.worker_route = None;
+        Ok(())
+    }
     fn read_route<T: Send + Sync + 'static, R>(
         &self,
         route: hex_engine::RetainedControlJobRoute,
@@ -735,6 +801,26 @@ pub fn finish_retained_family_worker_on_control<T>(
     worker: &mut Option<hex_engine::RetainedControlCancellation>,
 ) -> Result<(), RetainedFamilyError> {
     persistent_table(&TABLE)?.finish_worker(id, worker)
+}
+/// Validate actual bound worker/slot/type before neutral endpoint construction.
+pub fn validate_retained_family_worker_on_control<T: Send + Sync + 'static>(
+    worker: &hex_engine::RetainedControlCancellation,
+) -> Result<(), RetainedFamilyError> {
+    persistent_table(&TABLE)?.validate_worker_route::<T>(worker)
+}
+/// Direct signal request for the concrete prevalidated neutral adapter. No job
+/// lock/readiness/barrier. A retired route is stale, never a cleanup receipt.
+pub fn cancel_retained_family_worker_route(
+    route: hex_engine::RetainedControlJobRoute,
+) -> Result<(), RetainedFamilyError> {
+    persistent_table(&TABLE)?.cancel_worker_route(route)
+}
+/// Durable completion AFTER native/worker child retirement, outside all family
+/// guards. Failure retains unresolved slot charge and the caller's handle.
+pub fn finish_retained_family_worker_route_on_control<T: Send + Sync + 'static>(
+    worker: &mut Option<hex_engine::RetainedControlCancellation>,
+) -> Result<(), RetainedFamilyError> {
+    persistent_table(&TABLE)?.finish_worker_route::<T>(worker)
 }
 /// Neutral lookup hook only; the concrete adapter must validate Session
 /// incarnations and expose restricted queries. Generic callbacks grant no

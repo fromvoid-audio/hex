@@ -62,6 +62,21 @@ impl SnapshotFamilyInventoryGuard<'_> {
     }
 }
 impl SessionExportFamily {
+    /// Correlation/liveness check under the actual outer holder guard; it does
+    /// not freeze later cancellation, inventory or publication.
+    pub fn validate_producer_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+    ) -> Result<(), ExportRecordError> {
+        if key.family != self.identity {
+            return Err(ExportRecordError::Stale);
+        }
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        Ok(())
+    }
+
     /// Acquire AFTER all actual outer slots and BEFORE ledger/native barrier.
     /// Poison refuses. Failure consumes no source/reader and changes no custody.
     /// ```compile_fail

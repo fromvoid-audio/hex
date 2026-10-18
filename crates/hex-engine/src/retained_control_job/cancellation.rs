@@ -98,6 +98,12 @@ impl CancellationQuery for RetainedControlCancellation {
     }
 }
 impl RetainedControlCancellation {
+    /// Opaque correlation for the concrete neutral adapter, not numeric state,
+    /// ownership/provenance or an independently reusable publication permit.
+    pub fn route_on_control(&self) -> RetainedControlJobRoute {
+        self.route
+    }
+
     pub fn visit_storage_on_control<'a>(
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,

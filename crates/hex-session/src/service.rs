@@ -23,6 +23,8 @@ mod audio_sink;
 mod canonical_audio_source;
 pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
+mod worker_startup;
+use worker_startup::{ServiceStop, WorkerStartup};
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -589,8 +591,8 @@ pub struct Service {
     requests: SyncSender<Request>,
     events: Receiver<Event>,
     export_events: Receiver<ExportEvent>,
-    export_busy: Arc<AtomicBool>,
-    shutdown: Arc<AtomicBool>,
+    export_busy: AtomicBool,
+    shutdown: ServiceStop,
     arrangement_seek: Option<ArrangementSeekWorker>,
     _worker: JoinHandle<()>,
     _export_worker: JoinHandle<()>,
@@ -598,7 +600,7 @@ pub struct Service {
 
 impl Drop for Service {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
+        self.shutdown.request_cancel();
     }
 }
 
@@ -695,6 +697,32 @@ impl Service {
                     .map_err(|error| error.to_string().to_lowercase())
             }),
             Some(audio),
+            None,
+        )
+    }
+
+    /// Concrete desktop supplies a pre-escape registered/bound worker control.
+    /// Successful return means binding and thread spawn succeeded; actual device
+    /// initialization remains the existing asynchronous worker/offline flow.
+    /// No GUI acknowledgement or invented readiness state is introduced.
+    pub fn with_audio_sink_and_worker_control(
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        audio: Box<dyn WorkerAudioSink>,
+        control: crate::snapshot_exports::SnapshotWorkerControl,
+    ) -> Result<Self, ServiceError> {
+        Self::start_with_audio(
+            48_000,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            Arc::new(|path, prepared, start, frames| {
+                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
+                    .map_err(|error| error.to_string().to_lowercase())
+            }),
+            Some(audio),
+            Some(control),
         )
     }
 
@@ -712,6 +740,7 @@ impl Service {
             recovery,
             exporter,
             None,
+            None,
         )
     }
 
@@ -722,59 +751,112 @@ impl Service {
         recovery: Option<PathBuf>,
         exporter: Exporter,
         audio: Option<Box<dyn WorkerAudioSink>>,
+        control: Option<crate::snapshot_exports::SnapshotWorkerControl>,
     ) -> Result<Self, ServiceError> {
-        let shutdown = Arc::new(AtomicBool::new(false));
+        // Native initialization negotiates the rate asynchronously. Reject its
+        // other fallible model input before a Service/producer can escape, using
+        // the canonical constructor validation rather than a throwaway Session.
+        hex_project::Editor::validate_history_capacity(history_capacity)
+            .map_err(|error| ServiceError::Session(error.into()))?;
+        let (shutdown, worker_shutdown) = match control.as_ref() {
+            Some(control) => (
+                ServiceStop::Registered(control.stop_endpoint()),
+                SessionCancellation::Retained(
+                    control
+                        .worker_on_control()
+                        .map_err(|_| {
+                            ServiceError::Session(SessionError::Invalid(
+                                "document worker binding is unavailable",
+                            ))
+                        })?
+                        .clone(),
+                ),
+            ),
+            None => {
+                let flag = Arc::new(AtomicBool::new(false));
+                (
+                    ServiceStop::Unqualified(flag.clone()),
+                    SessionCancellation::Unqualified(flag),
+                )
+            }
+        };
         let session = if audio.is_none() {
             Some(
-                Session::new(sample_rate, history_capacity, max_resident_frames)
-                    .map_err(ServiceError::Session)?
-                    .with_shutdown(SessionCancellation::Unqualified(Arc::clone(&shutdown))),
+                Session::new_with_cancellation(
+                    sample_rate,
+                    history_capacity,
+                    max_resident_frames,
+                    worker_shutdown.clone(),
+                )
+                .map_err(ServiceError::Session)?,
             )
         } else {
             None
         };
+        let mut startup = WorkerStartup::new(session, control, worker_shutdown);
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
-        let export_busy = Arc::new(AtomicBool::new(false));
+        let export_busy = AtomicBool::new(false);
+        let worker_shutdown =
+            startup
+                .take_cancellation()
+                .ok_or(ServiceError::Session(SessionError::Invalid(
+                    "document worker cancellation is unavailable",
+                )))?;
+        startup.install_events(WorkerEvents::new(event_tx, worker_shutdown, audio));
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || run_export_worker(export_work_rx, export_event_tx, exporter))
             .map_err(ServiceError::Worker)?;
-        let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             .spawn(move || {
-                let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
-                let session = match session {
+                let Some(mut events) = startup.take_events() else {
+                    return;
+                };
+                if events.cancelled() {
+                    return;
+                }
+                let session = match startup.take_session() {
                     Some(session) => session,
                     None => {
                         let (rate, error) = match events.initialize() {
                             Ok(rate) => (rate, None),
                             Err(error) => (48_000, Some(error)),
                         };
-                        let Ok(session) = Session::new(rate, history_capacity, max_resident_frames)
-                        else {
+                        if events.cancelled() {
+                            return;
+                        }
+                        let Ok(session) = Session::new_with_cancellation(
+                            rate,
+                            history_capacity,
+                            max_resident_frames,
+                            events.cancellation_on_control().clone(),
+                        ) else {
                             return;
                         };
                         if let Some(error) = error {
                             events.startup_failed(error);
                         }
-                        session.with_shutdown(SessionCancellation::Unqualified(worker_shutdown))
+                        session
                     }
                 };
                 run_worker(
                     session,
-                    history_capacity,
                     request_rx,
                     events,
                     export_work_tx,
                     actor_export_events,
-                    recovery,
+                    WorkerRunContext {
+                        history_capacity,
+                        recovery,
+                        control: startup.control(),
+                    },
                 )
             })
             .map_err(ServiceError::Worker)?;
@@ -1211,15 +1293,24 @@ fn run_tuning_library_operation_in(
     (result, prepared)
 }
 
+struct WorkerRunContext<'a> {
+    history_capacity: usize,
+    recovery: Option<PathBuf>,
+    control: Option<&'a crate::snapshot_exports::SnapshotWorkerControl>,
+}
 fn run_worker(
     mut session: Session,
-    history_capacity: usize,
     requests: Receiver<Request>,
     mut events: WorkerEvents,
     export_work: SyncSender<ExportWork>,
     export_events: SyncSender<ExportEvent>,
-    recovery: Option<PathBuf>,
+    context: WorkerRunContext<'_>,
 ) {
+    let WorkerRunContext {
+        history_capacity,
+        recovery,
+        control: _worker_control,
+    } = context;
     let mut revision = 0_u64;
     let mut unsaved = false;
     enum ArrangementClipboard {
@@ -6431,8 +6522,8 @@ mod service_tests {
             requests,
             events,
             export_events,
-            export_busy: Arc::new(AtomicBool::new(false)),
-            shutdown: Arc::new(AtomicBool::new(false)),
+            export_busy: AtomicBool::new(false),
+            shutdown: ServiceStop::Unqualified(Arc::new(AtomicBool::new(false))),
             arrangement_seek: None,
             _worker: thread::spawn(|| {}),
             _export_worker: thread::spawn(|| {}),

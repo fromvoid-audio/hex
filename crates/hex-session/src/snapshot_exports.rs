@@ -10,6 +10,7 @@ mod event;
 mod family;
 mod storage;
 mod transport;
+mod worker_control;
 pub use family::{
     SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyInventoryGuard,
     SnapshotFamilyQueries, SnapshotProducerKey,
@@ -18,6 +19,7 @@ pub use transport::{
     SnapshotEventReads, SnapshotReadCapability, SnapshotReadContinuation, SnapshotReadOperations,
     SnapshotTransportError,
 };
+pub use worker_control::{SnapshotWorkerControl, SnapshotWorkerOperations, SnapshotWorkerStop};
 
 /// Component limits, taken from the same document/control reservation. They
 /// neither grant a new DATA allowance nor quote snapshot children/whole peak.

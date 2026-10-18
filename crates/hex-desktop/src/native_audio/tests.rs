@@ -27,7 +27,7 @@ struct ObservedSink {
     observation: Arc<Mutex<Observation>>,
 }
 impl WorkerAudioSink for ObservedSink {
-    fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
+    fn initialize(&mut self, shutdown: &dyn hex_engine::CancellationQuery) -> Result<u32, String> {
         self.inner.initialize(shutdown)
     }
     fn canonical_changed(&mut self, source: SharedCanonicalAudioSource) {

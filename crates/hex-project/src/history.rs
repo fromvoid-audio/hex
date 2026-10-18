@@ -10,10 +10,15 @@ pub struct Editor {
     capacity: usize,
 }
 impl Editor {
-    pub fn new(project: Project, capacity: usize) -> Result<Self, Invalid> {
+    /// Validate before worker startup without allocating a disposable project.
+    pub fn validate_history_capacity(capacity: usize) -> Result<(), Invalid> {
         if !(1..=128).contains(&capacity) {
             return Err(Invalid("history capacity must be 1..128"));
         }
+        Ok(())
+    }
+    pub fn new(project: Project, capacity: usize) -> Result<Self, Invalid> {
+        Self::validate_history_capacity(capacity)?;
         Ok(Self {
             project,
             undo: VecDeque::new(),

@@ -174,3 +174,6 @@ pub use inventory::{
     SnapshotFamilyInventory, SnapshotFamilyInventoryError,
     with_snapshot_family_inventory_on_control,
 };
+
+mod worker_control;
+pub use worker_control::bind_registered_worker_on_control;

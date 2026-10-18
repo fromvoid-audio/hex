@@ -17,7 +17,7 @@ use hex_ui::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationStat
 #[cfg(all(test, feature = "allocation-probe"))]
 use std::sync::Arc;
 use std::sync::{
-    atomic::{AtomicBool, Ordering::Acquire},
+    atomic::Ordering::Acquire,
     mpsc::{self, SyncSender, TrySendError},
 };
 
@@ -699,10 +699,10 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
-    fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
+    fn initialize(&mut self, shutdown: &dyn hex_engine::CancellationQuery) -> Result<u32, String> {
         self.request_open(None, None);
         loop {
-            if shutdown.load(Acquire) {
+            if shutdown.is_cancelled() {
                 self.close();
                 return Err("audio startup cancelled".into());
             }

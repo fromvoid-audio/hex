@@ -852,3 +852,67 @@ fn slot_signal_table_quote_charges_all_vacant_allocations_and_actual_worker_fiel
     exact.max_retained_bytes -= 1;
     assert!(collect(exact).is_err());
 }
+
+#[test]
+fn neutral_worker_route_checks_actual_signal_and_completes_after_writer_without_retry_queue() {
+    use hex_engine::CancellationQuery;
+    let table = table();
+    eprintln!("SUPPORTED actual neutral worker route/signal binding and durable completion");
+    let token = table.reserve().unwrap();
+    let id = table
+        .register(&token, &mut Some(1_u64), usize::MAX, |_: &mut u64| {
+            Ok(RetainedFamilyProgress::Pending)
+        })
+        .unwrap();
+    let (worker, _) = table.bind_worker(id).unwrap();
+    table.validate_worker_route::<u64>(&worker).unwrap();
+    assert_eq!(
+        table.validate_worker_route::<u32>(&worker),
+        Err(RetainedFamilyError::Stale)
+    );
+    let other_signal =
+        hex_engine::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+    let misleading = other_signal.bind_worker_on_control(worker.route_on_control());
+    assert_eq!(
+        table.validate_worker_route::<u64>(&misleading),
+        Err(RetainedFamilyError::Stale)
+    );
+    let writer = table.slots[token.index].write().unwrap();
+    table
+        .cancel_worker_route(worker.route_on_control())
+        .unwrap(); // no lookup guard
+    assert!(worker.is_cancelled());
+    std::thread::scope(|scope| {
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let table = &table;
+        scope.spawn(move || {
+            let mut worker = Some(worker);
+            started_tx.send(()).unwrap();
+            let result = table.finish_worker_route::<u64>(&mut worker);
+            done_tx.send((result, worker.is_none())).unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        let blocked = done_rx.recv_timeout(std::time::Duration::from_millis(20));
+        drop(writer); // release even when assertions below fail
+        assert!(matches!(
+            blocked,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            (Ok(()), true)
+        );
+    });
+    assert!(
+        table.slots[token.index]
+            .read()
+            .unwrap()
+            .worker_route
+            .is_none()
+    );
+}

@@ -11,7 +11,7 @@ pub trait WorkerAudioSink: Send {
     /// Negotiate the initial device rate on the lifecycle lane. An error leaves
     /// editing available at the explicit offline rate of 48000 Hz. Observe the
     /// shutdown flag while awaiting that lane; never wait for a UI response.
-    fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String>;
+    fn initialize(&mut self, shutdown: &dyn hex_engine::CancellationQuery) -> Result<u32, String>;
     /// Called before the corresponding canonical event can block on UI delivery.
     /// On generation replacement relinquish the previous publication/output
     /// first. Replacement opening must be polled, not awaited in this method.
@@ -31,15 +31,21 @@ pub trait WorkerAudioSink: Send {
 
 pub(super) struct WorkerEvents {
     sender: SyncSender<Event>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: SessionCancellation,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    pub(super) fn cancelled(&self) -> bool {
+        hex_engine::CancellationQuery::is_cancelled(&self.shutdown)
+    }
+    pub(super) fn cancellation_on_control(&self) -> &SessionCancellation {
+        &self.shutdown
+    }
     pub(super) fn new(
         sender: SyncSender<Event>,
-        shutdown: Arc<AtomicBool>,
+        shutdown: SessionCancellation,
         audio: Option<Box<dyn WorkerAudioSink>>,
     ) -> Self {
         Self {
@@ -95,7 +101,7 @@ impl WorkerEvents {
             }
         }
         loop {
-            if self.shutdown.load(Ordering::Acquire) {
+            if self.cancelled() {
                 return false;
             }
             self.poll();
@@ -114,7 +120,7 @@ impl WorkerEvents {
             return requests.recv().ok();
         }
         loop {
-            if self.shutdown.load(Ordering::Acquire) {
+            if self.cancelled() {
                 return None;
             }
             self.poll();
@@ -151,7 +157,7 @@ mod tests {
         fail: bool,
     }
     impl WorkerAudioSink for Sink {
-        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+        fn initialize(&mut self, _: &dyn hex_engine::CancellationQuery) -> Result<u32, String> {
             if self.fail {
                 Err("device unavailable".into())
             } else {

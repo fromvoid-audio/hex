@@ -8,14 +8,15 @@ pub use lifecycle::retained_families::{
     RetainedFamilyInventorySlot, RetainedFamilyProgress, RetainedFamilyReservation,
     RetainedFamilySlot, acknowledge_retained_family, acknowledge_retained_family_route,
     bind_retained_family_worker_on_control, cancel_retained_family_slot_on_control,
-    finish_retained_family_worker_on_control, inspect_retained_family_on_control,
+    cancel_retained_family_worker_route, finish_retained_family_worker_on_control,
+    finish_retained_family_worker_route_on_control, inspect_retained_family_on_control,
     read_retained_family, read_retained_family_route, register_retained_family_on_control,
     reserve_retained_families_on_control, reserve_retained_family_slot_on_control,
     retained_family_inventory_reservation_quote_on_control, retained_family_job_body_quote,
     retained_family_route_on_control, retained_family_table_reservation_quote,
     try_retained_family_inventory_on_control,
     unresolved_retained_family_body_reservation_on_control,
-    visit_retained_family_table_backing_on_control,
+    validate_retained_family_worker_on_control, visit_retained_family_table_backing_on_control,
 };
 pub use lifecycle::{
     RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen, request_initial_open,

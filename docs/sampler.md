@@ -502,3 +502,31 @@ Repeated embedded visits deduplicate only the same immutable physical field;
 other physical owners remain required. The new regression explicitly retains a
 negative duplicate-root assertion. Mono/Stereo runtime requalification of the
 repair is required; no cap change, Unknown skip or swallowed mismatch is used.
+
+### Registered worker startup and completion checkpoint
+
+The optional Service constructor now accepts an affine worker control bound by
+the concrete Desktop adapter to the actual registered Session family, physical
+cancellation signal and producer incarnation. The UI Service retains only a
+nonowning stop route. Cancellation advances the existing fixed-slot watermark
+without acquiring the job lock; completion runs after actual Session, transform,
+Event and startup query fields retire. It abandons the producer under a shared
+guard, releases that guard, then takes the completion writer. A failed completion
+is reported once and is not retried by Drop; persistent failed charges remain.
+
+One startup aggregate preserves that order through initialization cancellation
+and fallible startup. Invalid history capacity is checked by the canonical Editor
+validator before Service escape. Successful constructor return means validated
+binding and successful thread spawn, preserving the existing asynchronous device
+initialization/offline fallback. It does not mean device readiness. The export
+busy flag is now inline: it had no actual shared owner or worker clone.
+
+New protocol tests exercise cancellation during initialization with a held family
+read, full Event backpressure, invalid startup input, mismatched bindings, slot
+reuse and completion failure. These use an injected fake native endpoint, not
+CPAL or an installed app. Cloud strict checks compile the Engine/Audio/Session
+paths and the affine privacy doc passes; Desktop tests still require exact-source
+native execution. The default production backend still uses its existing legacy
+constructor. Actual production pre-escape registration, complete worker/native
+owner union and construction peak, atomic sample publication and the functional
+Sampler panel/DSP/workflow remain open. This checkpoint does not open admission.
