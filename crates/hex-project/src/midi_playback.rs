@@ -283,6 +283,32 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn bounded_once_keeps_authored_notes_but_stops_onsets_and_gates_at_selected_end() {
+        // A captured 2..6 cycle was switched off. The retained 0..12 source
+        // includes hidden notes; the selected remaining cycle must end at 6.
+        let bounded = MidiSourcePlayback::new(beat(12), beat(2), None, beat(20)).unwrap();
+        assert_eq!(bounded.source_length(), beat(12));
+        assert_eq!(tuples(bounded.note_occurrences(beat(4), beat(5)).unwrap()), vec![(0, 2, 2)]);
+        assert_eq!(bounded.note_occurrences(beat(6), beat(1)).unwrap().count(), 0);
+        assert_eq!(bounded.note_occurrences(beat(10), beat(2)).unwrap().count(), 0);
+        // Full authored bounds still validate the retained note, never the
+        // smaller audible window; true source overflow must still refuse.
+        assert!(bounded.note_occurrences(beat(11), beat(2)).is_err());
+        let ordinary = MidiSourcePlayback::new(beat(12), beat(2), None, beat(20)).unwrap();
+        assert_eq!(tuples(ordinary.note_occurrences(beat(10), beat(2)).unwrap()), vec![(0, 8, 2)]);
+    }
+
+    #[test]
+    fn bounded_once_tail_and_finite_outer_end_do_not_create_repeats_or_chase() {
+        let bounded = MidiSourcePlayback::new(beat(12), beat(5), None, beat(20)).unwrap();
+        assert_eq!(tuples(bounded.note_occurrences(beat(5), beat(6)).unwrap()), vec![(0, 0, 1)]);
+        assert_eq!(bounded.note_occurrences(beat(4), beat(6)).unwrap().count(), 0);
+        assert_eq!(bounded.note_occurrences(beat(7), beat(1)).unwrap().count(), 0);
+        let shorter = MidiSourcePlayback::new(beat(12), beat(2), None, beat(1)).unwrap();
+        assert_eq!(tuples(shorter.note_occurrences(beat(2), beat(8)).unwrap()), vec![(0, 0, 1)]);
+    }
+
     struct Segment {
         source_start: u64,
         source_end: u64,
