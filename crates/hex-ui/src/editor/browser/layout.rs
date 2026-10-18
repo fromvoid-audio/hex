@@ -159,6 +159,7 @@ impl EditorView {
             .child(
                 browser_pending("‹")
                     .id("browser-history-back")
+                    .debug_selector(|| "browser-history-back".to_owned())
                     .tooltip(|_, cx| {
                         cx.new(|_| super::super::transport::MiniTooltip {
                             description: theme::text("back · history pending"),
@@ -180,19 +181,12 @@ impl EditorView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            if view.browser.results_focused {
-                                view.browser.search.update(cx, |input, cx| {
-                                    input.select_all_on_mouse_entry(window, cx)
-                                });
-                            }
+                    .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                        if event.button == MouseButton::Left {
                             view.browser.results_focused = false;
-                            window.prevent_default();
                             cx.notify();
-                        }),
-                    )
+                        }
+                    }))
                     .child(self.browser.search.clone()),
             )
             .child(self.browser_icon(
@@ -283,9 +277,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             view.select_browser_source(BrowserSection::Collection(index), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
+                            view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
                         }),
@@ -337,9 +329,7 @@ impl EditorView {
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
                                 view.select_browser_source(section.clone(), cx);
-                                view.browser
-                                    .search
-                                    .update(cx, |input, _| input.focus(window));
+                                view.browser.results_focus.focus(window);
                                 window.prevent_default();
                                 cx.notify();
                             }),
@@ -434,6 +424,8 @@ impl EditorView {
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
             let path = place.clone();
             let icon_path = place.clone();
+            let row_bounds = Rc::new(std::cell::Cell::new(None::<gpui::Bounds<gpui::Pixels>>));
+            let measured_bounds = Rc::clone(&row_bounds);
             let name = if *place == self.browser.music {
                 "music"
             } else if *place == self.browser.home {
@@ -451,6 +443,7 @@ impl EditorView {
             );
             sidebar = sidebar.child(
                 div()
+                    .relative()
                     .id(("browser-place", index))
                     .debug_selector(move || format!("browser-place-{index}"))
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
@@ -474,9 +467,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             view.select_browser_source(BrowserSection::Place(path.clone()), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
+                            view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
                         }),
@@ -486,13 +477,23 @@ impl EditorView {
                         cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                             view.open_browser_place_icons(
                                 icon_path.clone(),
-                                event.position,
+                                row_bounds.get().map_or(event.position, |bounds| {
+                                    gpui::point(bounds.left(), bounds.bottom())
+                                }),
                                 window,
                                 cx,
                             );
                             window.prevent_default();
                             cx.stop_propagation();
                         }),
+                    )
+                    .child(
+                        canvas(
+                            move |bounds, _, _| measured_bounds.set(Some(bounds)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
                     )
                     .child(icon)
                     .child(

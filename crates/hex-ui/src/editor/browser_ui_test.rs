@@ -354,7 +354,7 @@ fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContext) {
+fn command_f_category_click_keeps_query_but_moves_real_focus_in_session(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     editor.update(cx, |view, cx| {
@@ -375,11 +375,18 @@ fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContex
             editor.read_with(cx, |view, cx| {
                 assert_eq!(
                     view.browser_key_context(window, cx),
-                    "hex_browser_search",
+                    "hex_browser",
                     "category {category}"
                 )
             });
         });
+        visual.simulate_input("y");
+        editor.read_with(visual, |view, cx| {
+            assert_eq!(view.browser.search.read(cx).content, "utilit")
+        });
+        let field = visual.debug_bounds("browser-search").unwrap();
+        visual.simulate_click(field.center(), Modifiers::default());
+        visual.simulate_keystrokes("right");
         visual.simulate_input("y");
         editor.read_with(visual, |view, cx| {
             assert_eq!(view.browser.search.read(cx).content, "utility")
@@ -393,7 +400,7 @@ fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
+fn command_f_escape_keeps_navigation_until_explicit_text_entry(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
@@ -413,9 +420,23 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
     visual.update(|window, cx| {
         editor.read_with(cx, |view, cx| {
             assert!(!view.browser.results_focused);
-            assert_eq!(view.browser_key_context(window, cx), "hex_browser_search");
+            assert_eq!(view.browser_key_context(window, cx), "hex_browser");
+            assert!(
+                !view
+                    .browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            );
         });
     });
+    visual.simulate_input("ignored");
+    editor.read_with(visual, |view, cx| {
+        assert!(view.browser.search.read(cx).content.is_empty())
+    });
+    let field = visual.debug_bounds("browser-search").unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
     visual.simulate_keystrokes("right");
     visual.simulate_input("loop");
     editor.read_with(visual, |view, cx| {
@@ -3247,9 +3268,27 @@ fn browser_waveform_click_is_manual_positioned_audition_and_retains_focus(cx: &m
             bounds.left() + bounds.size.width * fraction,
             bounds.center().y,
         );
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                view.browser.search.read(cx).focus(window);
+            })
+        });
         visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
         generation += 1;
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                assert!(
+                    !view
+                        .browser
+                        .search
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+                );
+                assert_eq!(view.browser_key_context(window, cx), "hex_browser");
+            })
+        });
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.browser.playback_generation, generation);
             assert!((view.browser.playback_fraction - fraction).abs() < 0.02);
@@ -3402,7 +3441,16 @@ fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestA
             visual.run_until_parked();
             visual.update(|window, cx| {
                 editor.read_with(cx, |view, cx| {
-                    assert_eq!(view.browser_key_context(window, cx), "hex_browser_search");
+                    assert_eq!(view.browser_key_context(window, cx), "hex_browser");
+                    assert!(
+                        !view
+                            .browser
+                            .search
+                            .read(cx)
+                            .focus_handle()
+                            .is_focused(window)
+                    );
+                    assert!(view.browser.results_focus.is_focused(window));
                 })
             });
             let source = editor.read_with(&visual, |view, _| view.browser.section.clone());
@@ -4307,7 +4355,7 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
         assert!(popup.right() <= window.bounds().size.width);
         assert!(popup.bottom() <= window.bounds().size.height);
     });
-    visual.simulate_keystrokes("space cmd-shift-t down enter");
+    visual.simulate_keystrokes("space cmd-shift-t right right enter");
     visual.run_until_parked();
     visual.update(|window, cx| {
         editor.read_with(cx, |view, cx| {
@@ -4330,11 +4378,8 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     let row = visual.debug_bounds("browser-place-3").unwrap();
     visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
-    let panel = visual.debug_bounds("context-menu-panel").unwrap();
-    visual.simulate_click(
-        point(panel.center().x, panel.top() + px(3.0 + 24.0 + 12.0)),
-        Modifiers::default(),
-    );
+    let sample = visual.debug_bounds("context-menu-choice-2").unwrap();
+    visual.simulate_click(sample.center(), Modifiers::default());
     visual.run_until_parked();
     let saved = hex_preferences::load(&config).unwrap();
     assert_eq!(saved.icon(&first), Some("samples"));
@@ -4433,7 +4478,7 @@ fn browser_place_icons_coalesced_save_errors_and_stale_menu_are_bounded(cx: &mut
     let row = visual.debug_bounds("browser-place-2").unwrap();
     visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
-    visual.simulate_keystrokes("down enter");
+    visual.simulate_keystrokes("right enter");
     visual.run_until_parked();
     editor.read_with(visual, |view, _| {
         assert!(
@@ -4570,13 +4615,13 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
             let row = visual.debug_bounds("browser-place-0").unwrap();
             visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
             visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
-            let selected = editor.read_with(visual, |view, _| {
-                view.context_menu.as_ref().unwrap().selected
-            });
-            for _ in 0..(index + 7 - selected) % 7 {
-                visual.simulate_keystrokes("down");
-            }
-            visual.simulate_keystrokes("enter");
+            let choice_index = if index == 0 { 0 } else { index + 1 };
+            let cell = visual
+                .debug_bounds(Box::leak(
+                    format!("context-menu-choice-{choice_index}").into_boxed_str(),
+                ))
+                .unwrap();
+            visual.simulate_click(cell.center(), Modifiers::default());
             visual.run_until_parked();
             let bounds = visual.debug_bounds("browser-picker-glyph-place-0").unwrap();
             let control = visual.debug_bounds("browser-control-⚙").unwrap();
@@ -4647,6 +4692,148 @@ fn browser_place_icons_preference_fixture_bounds_startup_before_workers(cx: &mut
 #[path = "browser_search_selection_ui_test.rs"]
 mod search_selection;
 
+#[gpui::test]
+fn browser_place_icon_grid_uses_clicked_row_reset_and_reopens(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let directory = PreferencesTestDirectory::new();
+    let config = directory.0.join("grid-browser.json");
+    let recent = directory.0.join("recent.json");
+    let first = directory.0.join("one/same");
+    let second = directory.0.join("two/same");
+    hex_preferences::save(
+        &config,
+        &hex_preferences::BrowserPlaces::new([first.clone(), second.clone()]).unwrap(),
+    )
+    .unwrap();
+    let (handle, editor) = place_icon_preferences_window(cx, &directory, &config, &recent);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-f");
+    for (row_index, choice, expected, width) in [
+        (2, 2, Some("samples"), 124.0),
+        (3, 6, Some("waveform"), 23.0),
+        (2, 0, None, 23.0),
+    ] {
+        let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+        let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
+        let target = divider.center() + point(px(width) - sidebar.size.width, px(0.0));
+        visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        let (source, generation) = editor.read_with(visual, |view, _| {
+            (
+                view.browser.section.clone(),
+                view.browser.playback_generation,
+            )
+        });
+        let row = visual
+            .debug_bounds(Box::leak(
+                format!("browser-place-{row_index}").into_boxed_str(),
+            ))
+            .unwrap();
+        // Two positions inside the same row must produce the same row anchor.
+        for fraction in [0.2, 0.8] {
+            let hit = point(row.left() + row.size.width * fraction, row.center().y);
+            visual.simulate_mouse_down(hit, MouseButton::Right, Modifiers::default());
+            visual.simulate_mouse_up(hit, MouseButton::Right, Modifiers::default());
+            let grid = visual
+                .debug_bounds("context-menu-icon-grid")
+                .expect("actual row context menu must contain a compact icon grid");
+            let first_cell = visual.debug_bounds("context-menu-choice-1").unwrap();
+            let second_cell = visual.debug_bounds("context-menu-choice-2").unwrap();
+            let next_row = visual.debug_bounds("context-menu-choice-5").unwrap();
+            assert_eq!(first_cell.top(), second_cell.top());
+            assert_eq!(first_cell.left(), next_row.left());
+            assert!(next_row.top() > first_cell.top());
+            assert!(grid.size.width <= px(120.0));
+            let panel = visual.debug_bounds("context-menu-panel").unwrap();
+            assert_eq!(panel.left(), row.left().max(px(4.0)));
+            assert_eq!(panel.top(), row.bottom());
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_keystrokes("cmd-f");
+        visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+        let current = editor.read_with(visual, |view, _| {
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .position(|item| item.checked)
+                .unwrap()
+        });
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("context-menu-current-{current}").into_boxed_str()
+                ))
+                .is_some()
+        );
+        let cell = visual
+            .debug_bounds(Box::leak(
+                format!("context-menu-choice-{choice}").into_boxed_str(),
+            ))
+            .unwrap();
+        if row_index == 3 {
+            visual.simulate_keystrokes("right right down enter");
+        } else {
+            visual.simulate_click(cell.center(), Modifiers::default());
+        }
+        visual.run_until_parked();
+        let path = if row_index == 2 { &first } else { &second };
+        assert_eq!(hex_preferences::load(&config).unwrap().icon(path), expected);
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                assert!(view.context_menu.is_none());
+                assert_eq!(view.browser.section, source);
+                assert_eq!(view.browser.playback_generation, generation);
+                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                assert!(
+                    view.browser
+                        .search
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window),
+                    "restore actual previous search focus, do not invent entry"
+                );
+            })
+        });
+    }
+    // A menu entered from non-text context restores that owner, not search.
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    let row = visual.debug_bounds("browser-place-3").unwrap();
+    visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+    visual.simulate_keystrokes("left up escape");
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            assert!(view.focus.is_focused(window));
+            assert!(
+                !view
+                    .browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            );
+        })
+    });
+    assert_eq!(
+        hex_preferences::load(&config).unwrap().icon(&second),
+        Some("waveform")
+    );
+    let (handle, reopened) = place_icon_preferences_window(cx, &directory, &config, &recent);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    reopened.read_with(visual, |view, _| {
+        assert_eq!(view.browser_place_glyph(&first), "□");
+        assert_eq!(view.browser_place_glyph(&second), "≋");
+    });
+}
+
+#[path = "browser_focus_ui_test.rs"]
+mod explicit_focus;
 #[gpui::test]
 fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     cx: &mut TestAppContext,

@@ -5183,6 +5183,18 @@ integration/full checks/merge. Native optimized picker/font/reopen acceptance
 remains open. PR #400 mouse-search diagnostics are frozen separately; this work
 does not claim to resolve the native focus report.
 
+## Place icon context grid — pulse2826 / PR430, 18 october 2026
+
+Reused merged326 path-keyed bundled icon persistence and shared popup. Custom
+Place right-click now anchors to the row, presents explicit Default Icon/reset
+and seven compact grid cells with current/hover/keyboard states and name tooltips.
+Normal track/clip/device list popups retain their layout. Actual pointer choices,
+keyboard grid navigation, same-named paths, compact geometry, reset/reopen and
+prior text/non-text focus regression cover the flow; original missing-grid red
+is retained. Home/Music and Library/Collections remain outside current custom
+identity support. Sole merger owns full prospective checks/integration; native
+physical appearance/accessibility/relaunch acceptance remains open.
+
 ## consistent live input casing — pulse2810 / PR416, 18 october 2026
 
 Actual track rename shaped uppercase while editing and lowercase after commit.
@@ -5194,6 +5206,18 @@ actual typing/paste/cut/copy and marked Unicode/caret/scroll regressions cover t
 boundary. Source-path casing2649 stays intact. Dedicated merger owns final
 integration/full CI/merge; native app/IME/clipboard acceptance remains open.
 
+## explicit browser query focus — pulse2820 / PR426, 18 october 2026
+
+Actual category click left the search handle focused and typed qxj into its query.
+Navigation now owns a separate non-text focus handle; source/row/disclosure/blank/
+control/resize clicks leave query editing. Preview handlers explicitly transfer
+focus before their existing stopped bubble. Only field/CmdF entry edits text;
+Up/Down move into navigation and Escape keeps the current owner. Local browser
+events preserve held drag, query selection and backend/sample behavior. Private
+startup-root rendered matrix checks both layouts, typing isolation, workers/ticks,
+explicit return and close; prior focus assertions now reflect this new contract
+while retaining their audition/generation/device/drag assertions. Native acceptance
+and final prospective full CI/integration remain with root/sole merger.
 ## browser picker label clipping — pulse2809 / PR415, 18 october 2026
 
 Rendered geometry reproduced a 19.5 px Collection-row shift at 80 px because
