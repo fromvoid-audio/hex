@@ -1644,3 +1644,7 @@ mod tests {
         state.project.clip(id).expect("clip").clone()
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "resize_terminal_tests.rs"]
+mod resize_terminal_tests;
