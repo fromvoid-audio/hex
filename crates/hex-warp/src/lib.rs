@@ -12,7 +12,7 @@ pub const MAX_SCRATCH_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_MAP_SEGMENTS: usize = 8_192;
 pub const MAX_POINTS: usize = 1_024;
 pub const MAX_WORK_UNITS: u64 = 1_000_000_000;
-pub const ALGORITHM_VERSION: u32 = 8;
+pub const ALGORITHM_VERSION: u32 = 9;
 const Q32: i128 = 1_i128 << 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -407,7 +407,7 @@ pub fn render(request: &Request<'_>, cancel: &mut dyn FnMut() -> bool) -> Result
     work.check(0)?;
     let frames = match request.mode {
         Mode::Resample | Mode::RePitch => resample::render(request, pitch, &mut work)?,
-        Mode::Beats { .. } => granular::beats(request, pitch, &mut work)?,
+        Mode::Beats { .. } => beats::render(request, pitch, &mut work)?,
         Mode::Tones { .. } | Mode::Texture { .. } => granular::grains(request, pitch, &mut work)?,
         Mode::Complex | Mode::ComplexPro { .. } => spectral::render(request, pitch, &mut work)?,
     };

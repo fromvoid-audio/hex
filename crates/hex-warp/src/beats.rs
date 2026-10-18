@@ -4,6 +4,7 @@ mod analysis;
 mod envelope;
 mod onsets;
 mod plan;
+mod stop;
 mod synthesis;
 use super::*;
 use resample::{BANK_BYTES, Bandlimited};
@@ -62,6 +63,17 @@ pub(super) fn render(
         return Ok(pcm);
     }
     let bank = Bandlimited::new(pitch, work)?;
+    if matches!(
+        request.mode,
+        Mode::Beats {
+            tail: Tail::Off,
+            ..
+        }
+    ) {
+        let mut pcm = stop::render(request, &anchors, &schedule, &bank, pitch, work)?;
+        envelope::apply(&schedule, &mut pcm, decay, work)?;
+        return Ok(pcm);
+    }
     let mut acc = Accumulator::new(
         request.output_frames,
         ring,
