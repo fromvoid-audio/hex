@@ -379,9 +379,8 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
             );
             visual.run_until_parked();
             let separator = visual.debug_bounds(separator_selector).unwrap();
-            let separator_order = visual
-                .rendered_quad_paint_order(separator_selector)
-                .unwrap();
+            let separator_layers = visual.rendered_quad_paint_layers(separator_selector, false);
+            assert!(!separator_layers.is_empty());
             let scale = visual.update(|window, _| window.scale_factor());
             for (i, selector) in selectors.iter().enumerate() {
                 let current = visual.debug_bounds(selector).unwrap();
@@ -408,26 +407,82 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                         && widths.right > zero
                 );
                 let scaled = current.scale(scale);
-                assert!(
-                    scaled.left() >= mask.left()
-                        && scaled.right() <= mask.right()
-                        && scaled.top() >= mask.top()
-                        && scaled.bottom() <= mask.bottom(),
-                    "all four painted strips inside actual ancestor mask: scaled={scaled:?} mask={mask:?}"
-                );
-                assert!(
-                    current.bottom() > separator.top() && current.bottom() <= separator.bottom(),
-                    "actual bottom stroke shares the separator's occluding strip"
-                );
-                let order = visual.rendered_quad_paint_order(selector).unwrap();
+                let layers = visual.rendered_quad_paint_layers(selector, true);
+                assert!(!layers.is_empty());
+                // Retained rendering may replay one border as several masked
+                // fragments. Check every pixel-center strip, not just the last
+                // matching fragment's mask.
+                let edges = [
+                    (
+                        scaled.left(),
+                        scaled.top(),
+                        scaled.right(),
+                        scaled.top() + widths.top,
+                    ),
+                    (
+                        scaled.left(),
+                        scaled.bottom() - widths.bottom,
+                        scaled.right(),
+                        scaled.bottom(),
+                    ),
+                    (
+                        scaled.left(),
+                        scaled.top(),
+                        scaled.left() + widths.left,
+                        scaled.bottom(),
+                    ),
+                    (
+                        scaled.right() - widths.right,
+                        scaled.top(),
+                        scaled.right(),
+                        scaled.bottom(),
+                    ),
+                ];
+                for (edge, (left, top, right, bottom)) in edges.iter().enumerate() {
+                    let x0 = f32::from(*left);
+                    let x1 = f32::from(*right);
+                    let y0 = f32::from(*top);
+                    let y1 = f32::from(*bottom);
+                    for x in (x0.floor() as i32)..(x1.ceil() as i32) {
+                        for y in (y0.floor() as i32)..(y1.ceil() as i32) {
+                            let x = x as f32 + 0.5;
+                            let y = y as f32 + 0.5;
+                            if x < x0 || x >= x1 || y < y0 || y >= y1 {
+                                continue;
+                            }
+                            let contains = |mask: &gpui::Bounds<gpui::ScaledPixels>| {
+                                x >= f32::from(mask.left())
+                                    && x < f32::from(mask.right())
+                                    && y >= f32::from(mask.top())
+                                    && y < f32::from(mask.bottom())
+                            };
+                            let order = layers.iter().filter(|(_, mask)| contains(mask))
+                                .map(|(order, _)| *order).max()
+                                .unwrap_or_else(|| panic!("missing edge {edge} at {x},{y}: bounds={scaled:?} last_mask={mask:?} layers={layers:?}"));
+                            let sep = separator.scale(scale);
+                            if x >= f32::from(sep.left())
+                                && x < f32::from(sep.right())
+                                && y >= f32::from(sep.top())
+                                && y < f32::from(sep.bottom())
+                            {
+                                for (separator_order, mask) in &separator_layers {
+                                    if contains(mask) {
+                                        assert!(
+                                            order > *separator_order,
+                                            "row separator covers edge {edge} at {x},{y}: clip={order:?} separator={separator_order:?}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 eprintln!(
-                    "border edge clip={} height={} selected={selected} clip_order={order:?} separator_order={separator_order:?} bounds={current:?} separator={separator:?}",
+                    "four edges clip={} height={} selected={selected} fragments={} separator_fragments={}",
                     clips[i].0.value(),
-                    f32::from(lane.size.height)
-                );
-                assert!(
-                    order > separator_order,
-                    "later row separator must not cover the completed clip border"
+                    f32::from(lane.size.height),
+                    layers.len(),
+                    separator_layers.len()
                 );
             }
             assert_eq!(

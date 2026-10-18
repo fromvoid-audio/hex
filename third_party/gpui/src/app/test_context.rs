@@ -731,26 +731,27 @@ impl VisualTestContext {
         })
     }
 
-    /// Completed quad paint position for a debug element. Pair with its actual
-    /// border/mask bounds to detect a later surface occluding an outline. This
-    /// is scene ordering evidence, not a native framebuffer/pixel readback.
-    pub fn rendered_quad_paint_order(&mut self, selector: &'static str) -> Option<(u32, usize)> {
+    /// Completed quad fragments for a debug element, including cache replay
+    /// masks. The caller can check coverage and ordering across all fragments.
+    /// This is scene evidence, not native framebuffer/pixel readback.
+    pub fn rendered_quad_paint_layers(
+        &mut self,
+        selector: &'static str,
+        border: bool,
+    ) -> Vec<((u32, usize), Bounds<crate::ScaledPixels>)> {
         self.update(|window, _| {
-            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
             let scaled = bounds.scale(window.scale_factor());
-            window
-                .rendered_frame
-                .scene
-                .quads
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, quad)| {
-                    quad.bounds == scaled
-                        && (!quad.background.is_transparent()
-                            || quad.border_widths != crate::Edges::default())
+            window.rendered_frame.scene.quads.iter().enumerate()
+                .filter(|(_, quad)| quad.bounds == scaled && if border {
+                    quad.border_widths != crate::Edges::default()
+                } else {
+                    !quad.background.is_transparent()
                 })
-                .map(|(index, quad)| (quad.order, index))
+                .map(|(index, quad)| ((quad.order, index), quad.content_mask.bounds))
+                .collect()
         })
     }
 

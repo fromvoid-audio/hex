@@ -246,10 +246,7 @@
 +}
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -120,6 +120,18 @@
- }
- 
- impl TestAppContext {
+@@ -122,0 +123,12 @@
 +    /// Verify private cached-scene replay against the retained legacy painter.
 +    /// Test support only; no window, native graphics or public scene API.
 +    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
@@ -262,13 +259,7 @@
 +        self.test_platform.cursor_style()
 +    }
 +
-     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
-     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
-         let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -675,6 +687,94 @@
- }
- 
- impl VisualTestContext {
+@@ -677,0 +690,89 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -313,26 +304,27 @@
 +        })
 +    }
 +
-+    /// Completed quad paint position for a debug element. Pair with its actual
-+    /// border/mask bounds to detect a later surface occluding an outline. This
-+    /// is scene ordering evidence, not a native framebuffer/pixel readback.
-+    pub fn rendered_quad_paint_order(&mut self, selector: &'static str) -> Option<(u32, usize)> {
++    /// Completed quad fragments for a debug element, including cache replay
++    /// masks. The caller can check coverage and ordering across all fragments.
++    /// This is scene evidence, not native framebuffer/pixel readback.
++    pub fn rendered_quad_paint_layers(
++        &mut self,
++        selector: &'static str,
++        border: bool,
++    ) -> Vec<((u32, usize), Bounds<crate::ScaledPixels>)> {
 +        self.update(|window, _| {
-+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
 +            let scaled = bounds.scale(window.scale_factor());
-+            window
-+                .rendered_frame
-+                .scene
-+                .quads
-+                .iter()
-+                .enumerate()
-+                .rev()
-+                .find(|(_, quad)| {
-+                    quad.bounds == scaled
-+                        && (!quad.background.is_transparent()
-+                            || quad.border_widths != crate::Edges::default())
++            window.rendered_frame.scene.quads.iter().enumerate()
++                .filter(|(_, quad)| quad.bounds == scaled && if border {
++                    quad.border_widths != crate::Edges::default()
++                } else {
++                    !quad.background.is_transparent()
 +                })
-+                .map(|(index, quad)| (quad.order, index))
++                .map(|(index, quad)| ((quad.order, index), quad.content_mask.bounds))
++                .collect()
 +        })
 +    }
 +
@@ -357,9 +349,6 @@
 +        })
 +    }
 +
-     /// Provides a `Window` and `App` for the duration of the closure.
-     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
-         self.cx
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
 @@ -35,0 +36,15 @@
