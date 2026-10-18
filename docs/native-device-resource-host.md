@@ -730,3 +730,30 @@ still requires the real paired allocation, rate and counters. It is neither a
 source lease nor a storage/custody proof. The new successful save→Event→idle
 regression fails with historical counter-only notification and passes with this
 repair, without manufacturing a revision or retaining another owning source.
+
+## constructor split preallocation
+
+The Engine construction cell can now preallocate its actual empty claimed-runtime
+wrapper separately from transfer. The non-clonable, lifetime-bound split object
+exclusively borrows that cell and exposes immutable constructor facts plus the
+existing constructor-only seal. It exports no owning runtime/PCM and grants no
+publication authority. Dropping it before transfer reclaims only empty fixed
+metadata and leaves the original owner in its original cell. The existing
+convenience split delegates to the same implementation.
+
+The successful transfer moves the actual runtime Box, groups and journal into
+that preallocated wrapper, retaining the original constructor as covering anchors.
+The final scalar storage declaration is copied after sealing, rather than using
+an earlier absent declaration. Source/runtime allocations and capacities are not
+rebuilt. New tests verify preflight drop/retry, original-owner preservation on seal
+refusal, actual allocation addresses across transfer, source PCM and bound normal
+retirement. The measured transfer alone allocates and frees nothing. Fabricated,
+static or concurrently mutable split handles fail compilation.
+
+This implements only the Engine preallocation part of primary decision22526.
+Actual publication-state/claim owners, metering setup, continuous eligible/terminal
+and external custody, a whole joint ledger/old-new-temporary reservation, cancel
+ordering and the reserved queue-write frontier still need integration. The actual
+preallocated wrapper must join that union and peak; its layout query is not an
+observed whole-graph budget or a reusable scalar permit. Existing native stage
+still invokes its legacy convenience path and is not claimed compliant/admitted.

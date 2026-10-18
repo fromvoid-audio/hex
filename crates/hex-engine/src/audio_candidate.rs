@@ -15,8 +15,8 @@ use crate::{
     OwnedAudioInputs, playback::Playback,
 };
 pub use claimed::{
-    AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateRuntimeStatus,
-    AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime,
+    AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidatePreparedSplit,
+    AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime,
 };
 pub use groups::{AudioCandidateRuntimeDisposed, AudioCandidateTransfer};
 use std::{

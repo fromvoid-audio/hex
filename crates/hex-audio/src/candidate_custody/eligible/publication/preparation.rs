@@ -802,6 +802,81 @@ mod tests {
         )
     }
     #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn preallocated_split_transfer_allocates_and_frees_nothing_and_preserves_runtime_storage() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported split allocation constructor; no positive transfer proof");
+            return;
+        }
+        eprintln!(
+            "SUPPORTED preallocated constructor split allocation probe; queue/native admission remains separate"
+        );
+        let (project, asset, audio) = project();
+        let mut cell =
+            hex_engine::AudioCandidatePreparation::try_new_on_control(1, reservation().storage)
+                .unwrap();
+        // Historical audio-clip fixture only, not Sampler original-PCM loading.
+        cell.copy_resident_source_on_control(asset, &audio).unwrap();
+        cell.prepare_on_control(
+            &project,
+            11,
+            hex_engine::AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 7,
+            },
+        )
+        .unwrap();
+        let identity = cell.owner_on_control().unwrap().identity();
+        let mut prepared = cell.preallocate_publication_split_on_control().unwrap();
+        prepared
+            .seal_constructor_on_control(
+                hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 2048,
+                    root_rows: 4,
+                    max_retained_bytes: 64 * 1024 * 1024,
+                    max_construction_peak_bytes: 64 * 1024 * 1024,
+                },
+                0,
+            )
+            .unwrap();
+        let mut result = None;
+        let measured = allocation_counter::measure(|| {
+            result = Some(prepared.transfer_on_control().unwrap());
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let (mut runtime, mut anchor) = result.unwrap();
+        assert_eq!(runtime.identity(), identity);
+        assert!(anchor.matches_current(&runtime));
+        assert!(cell.owner_on_control().is_none());
+        runtime
+            .apply_action(hex_engine::PlaybackAction::Transport(
+                hex_engine::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        let mut output = [[0.0; 2]; 8];
+        runtime
+            .render_with_post_node_observer(&mut output, None)
+            .unwrap();
+        assert_eq!(output, [[0.25; 2]; 8]);
+        assert!(anchor.recover_inputs_on_control().is_none());
+        let proof = runtime.dispose_on_control().unwrap();
+        let mut anchors = [Some(anchor)];
+        proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+        let anchor = anchors[0].as_mut().unwrap();
+        anchor.finish_disposal_on_control().unwrap();
+        drop(anchor.recover_inputs_on_control().unwrap());
+        cell.cleanup_on_control().unwrap();
+    }
+    #[test]
     fn reserved_slot_incarnation_survives_actual_preparation_close_and_normal_cleanup() {
         if !hex_engine::audio_storage_constructor_layout_supported() {
             return;

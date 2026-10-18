@@ -233,6 +233,9 @@ impl AudioCandidatePreparation {
     pub fn test_source_collection_identity(&self) -> (usize, usize) {
         (self.sources.as_ptr() as usize, self.sources.capacity())
     }
+    pub(super) fn owner_ref_on_control(&self) -> Option<&AudioCandidateOwner> {
+        self.owner.as_ref()
+    }
     pub(super) fn take_preflighted_owner(&mut self) -> Option<AudioCandidateOwner> {
         self.owner.take()
     }
