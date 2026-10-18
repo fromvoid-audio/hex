@@ -279,7 +279,9 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,
@@ -314,7 +316,9 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,

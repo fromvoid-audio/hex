@@ -68,3 +68,20 @@ peak, guards, atomic publication and retirement remain separate obligations.
 Fresh snapshot construction must be covered by the candidate construction quote
 before publication; post-construction retained observations cannot establish its
 historical peak.
+
+## Prepared gain-preview child
+
+`SharedGainAutomationPreview` uses the same existing immutable paired facade.
+Canonical and preview view producers consume their newly prepared owned preview
+once; exports clone the paired handle. There is no raw Arc upgrade, extra gain
+cache, PCM copy or mutable shared accessor. Typed consumer changes preserve gain
+curve query and editing behavior.
+
+The selected gain visitor charges the qualified outer body/header once, every
+physical shared field, actual track-entry capacity, each actual knot backing and
+both prepared touch backings. Inline Vec headers belong to their enclosing body
+or track entries. Empty reserved capacity stays charged after clear. Fixed knot,
+mix, span and step fields are exhaustively inspected; new owned fields require
+explicit traversal. Independent equal-content previews retain distinct backing
+charges. This neither detects entirely unvisited owners nor establishes enclosing
+view completeness, construction peak, frozen custody or atomic publication.

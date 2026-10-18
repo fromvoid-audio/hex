@@ -106,7 +106,8 @@ pub use native_device_view::{
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
-    MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
+    MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS, SharedGainAutomationPreview,
+    visit_shared_gain_preview_storage_on_control,
 };
 mod return_feed_plan;
 mod signal_graph;

@@ -41,6 +41,29 @@ impl GainEnvelopeKnot {
 pub struct GainAutomationPreview {
     tracks: Vec<(hex_project::TrackId, PreparedGainEnvelope)>,
 }
+/// Fresh preview values enter the existing paired facade once. Clones retain
+/// pairing; no raw Arc adoption or mutable gain-preview owner is exposed.
+/// ```compile_fail
+/// let raw = std::sync::Arc::new(hex_engine::GainAutomationPreview::default());
+/// let _: hex_engine::SharedGainAutomationPreview = raw.into();
+/// ```
+pub type SharedGainAutomationPreview = crate::SharedMetadata<GainAutomationPreview>;
+
+/// Actual selected outer/track/knot/touch storage. Enclosing view, every other
+/// owner and full construction/custody/publication obligations remain separate.
+pub fn visit_shared_gain_preview_storage_on_control<'a>(
+    owner: &'a SharedGainAutomationPreview,
+    ledger: &mut crate::AudioRootStorageLedger<'a>,
+) -> Result<(), crate::AudioStorageError> {
+    ledger.borrow_shared_metadata_body_on_control(owner)?;
+    ledger.mutate(|ledger| {
+        ledger.vec(&owner.tracks)?;
+        for (_, envelope) in &owner.tracks {
+            envelope.visit_audio_storage(ledger)?;
+        }
+        Ok(())
+    })
+}
 impl GainAutomationPreview {
     pub fn prepare(project: &Project) -> Result<Self, Invalid> {
         validate_project(project)?;
@@ -364,16 +387,34 @@ impl PreparedGainEnvelope {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             knots,
-            mix: _,
-            authored_points: _,
-            authored_units: _,
+            mix,
+            authored_points,
+            authored_units,
             touch,
-            fallback: _,
+            fallback,
         } = self;
-        if touch.allocated_bytes() != 0 {
-            return Err(crate::AudioStorageError::UnknownStorage);
+        let _: (&usize, &usize, &f32) = (authored_points, authored_units, fallback);
+        let PreparedTrackMix {
+            channel_gain,
+            effects,
+            muted,
+        } = mix;
+        let _: (&crate::Frame, &Option<hex_lattice::StereoMatrix>, &bool) =
+            (channel_gain, effects, muted);
+        let _: Option<hex_lattice::StereoMatrix> = *effects; // fixed Copy matrix
+        for GainEnvelopeKnot {
+            frame,
+            gain,
+            outgoing,
+        } in knots
+        {
+            let _: (&u64, &f64) = (frame, gain);
+            match outgoing {
+                GainInterpolation::Step | GainInterpolation::Linear => {}
+            }
         }
-        ledger.vec(knots)
+        ledger.vec(knots)?;
+        touch.visit_audio_storage(ledger)
     }
 }
 
@@ -442,5 +483,163 @@ mod tests {
             "measured prepared gain plan capacity: {totals:?}; knot layout {} bytes; not a process-memory or hardware-deadline bound",
             std::mem::size_of::<GainEnvelopeKnot>()
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_preview_storage_tests {
+    use super::*;
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation};
+    use hex_project::{
+        BeatTime, Command, Created, Editor, GainTouchContext, GainTouchSpan, GainTouchStep,
+    };
+    fn reservation() -> AudioStorageLedgerReservation {
+        AudioStorageLedgerReservation {
+            data_rows: 128,
+            handle_rows: 128,
+            root_rows: 8,
+            max_retained_bytes: 2_000_000,
+            max_construction_peak_bytes: 2_000_000,
+        }
+    }
+    fn children(preview: &GainAutomationPreview) -> usize {
+        preview.tracks.capacity()
+            * std::mem::size_of::<(hex_project::TrackId, PreparedGainEnvelope)>()
+            + preview
+                .tracks
+                .iter()
+                .map(|(_, envelope)| {
+                    envelope.knots.capacity() * std::mem::size_of::<GainEnvelopeKnot>()
+                        + envelope.touch.allocated_bytes()
+                })
+                .sum::<usize>()
+    }
+    #[test]
+    fn shared_gain_preview_actual_producer_aliases_and_distinct_children_match_exact_limits() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported paired gain-preview constructor; no positive storage proof");
+            return;
+        }
+        eprintln!("SUPPORTED actual prepared gain preview with knots and recorded touch storage");
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "gain".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let mut snapshot = editor.project().snapshot();
+        snapshot.tracks[0].gain_envelope = vec![
+            GainPoint {
+                beat: BeatTime::ZERO,
+                gain: 1.0,
+                outgoing: GainInterpolation::Linear,
+            },
+            GainPoint {
+                beat: BeatTime::from_quarters(4).unwrap(),
+                gain: 0.25,
+                outgoing: GainInterpolation::Step,
+            },
+        ];
+        snapshot.tracks[0].gain_touch_epoch = 1;
+        snapshot.tracks[0].gain_touch_spans = vec![GainTouchSpan {
+            start: BeatTime::ONE,
+            end: BeatTime::from_quarters(3).unwrap(),
+            context: GainTouchContext {
+                recording_epoch: 1,
+                project_generation: 0,
+                canonical_revision: 1,
+                audio_revision: 1,
+                transport_epoch: 1,
+                gesture_epoch: 1,
+                gesture_serial: 1,
+                sample_rate: 48_000,
+                loop_pass: 0,
+            },
+            steps: [(1, 0.5), (2, 1.5)]
+                .into_iter()
+                .enumerate()
+                .map(|(index, (quarter, gain))| {
+                    let beat = BeatTime::from_quarters(quarter).unwrap();
+                    GainTouchStep {
+                        beat,
+                        gain,
+                        origin_beat: beat,
+                        source_sequence: index as u64 + 1,
+                    }
+                })
+                .collect(),
+        }];
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let owner = SharedGainAutomationPreview::new_on_control(
+            GainAutomationPreview::prepare(&project).unwrap(),
+        );
+        assert_eq!(owner.value_at(track, 24_000), Some(0.5));
+        assert_eq!(owner.value_at(track, 48_000), Some(1.5));
+        let alias = owner.clone();
+        let separate = SharedGainAutomationPreview::new_on_control(owner.as_ref().clone());
+        assert!(!owner.shares_owner_with(&separate));
+        assert!(children(&owner) > 0);
+        let collect = |reservation| -> Result<_, crate::AudioStorageError> {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
+            ledger.borrow_shared_metadata_body_on_control(&owner)?;
+            let body = ledger.summary()?.data_bytes;
+            assert!(body > std::mem::size_of::<GainAutomationPreview>());
+            visit_shared_gain_preview_storage_on_control(&owner, &mut ledger)?;
+            assert_eq!(ledger.summary()?.data_bytes, body + children(&owner));
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err()
+            );
+            visit_shared_gain_preview_storage_on_control(&alias, &mut ledger)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            assert_eq!(ledger.summary()?.data_bytes, body + children(&owner));
+            // Selected closure cannot detect an entirely omitted independent
+            // owner: compare the actual separate allocation/backings explicitly.
+            visit_shared_gain_preview_storage_on_control(&separate, &mut ledger)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            assert_eq!(
+                ledger.summary()?.data_bytes,
+                body * 2 + children(&owner) + children(&separate)
+            );
+            assert!(ledger.summary()?.require_complete().is_err());
+            ledger.summary()
+        };
+        let measured = collect(reservation()).unwrap();
+        let mut exact = reservation();
+        exact.max_retained_bytes = measured.retained_bytes;
+        exact.max_construction_peak_bytes = measured.construction_peak_bytes;
+        assert_eq!(collect(exact).unwrap(), measured);
+        exact.max_retained_bytes -= 1;
+        assert!(collect(exact).is_err());
+        drop(owner);
+        drop(separate);
+        drop(project);
+        assert_eq!(alias.value_at(track, 48_000), Some(1.5));
+    }
+    #[test]
+    fn shared_gain_preview_empty_reserved_track_backing_is_charged_after_clear() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported paired gain-preview constructor; no positive storage proof");
+            return;
+        }
+        eprintln!("SUPPORTED gain preview empty reserved actual track backing");
+        let mut preview = GainAutomationPreview::default();
+        preview.tracks.try_reserve_exact(19).unwrap();
+        preview.tracks.clear();
+        let bytes = children(&preview);
+        assert!(bytes >= 19 * std::mem::size_of::<(hex_project::TrackId, PreparedGainEnvelope)>());
+        let owner = SharedGainAutomationPreview::new_on_control(preview);
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+        ledger
+            .borrow_shared_metadata_body_on_control(&owner)
+            .unwrap();
+        let body = ledger.summary().unwrap().data_bytes;
+        visit_shared_gain_preview_storage_on_control(&owner, &mut ledger).unwrap();
+        assert_eq!(ledger.summary().unwrap().data_bytes, body + bytes);
+        assert_eq!(ledger.summary().unwrap().data_allocations, 2);
     }
 }

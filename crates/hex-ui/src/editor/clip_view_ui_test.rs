@@ -128,7 +128,9 @@ pub(super) fn audio_detail_fixture(
             waveforms,
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(Default::default()),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: 384_000,
             can_undo: false,
             can_redo: false,
@@ -587,7 +589,9 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
             waveforms: previous.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&previous.midi_preview),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: previous.timeline_frames,
             can_undo: true,
             can_redo: previous.can_redo,

@@ -76,7 +76,7 @@ pub struct ViewState {
     /// Control-prepared MIDI clip summaries matching this project revision.
     pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
     /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.
-    pub gain_preview: Result<Arc<hex_engine::GainAutomationPreview>, hex_engine::Invalid>,
+    pub gain_preview: Result<hex_engine::SharedGainAutomationPreview, hex_engine::Invalid>,
     pub timeline_frames: u64,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -89,6 +89,19 @@ pub struct ViewState {
 }
 
 impl ViewState {
+    /// Actual prepared gain-preview owner/backings for this exported revision.
+    /// No enclosing view, Project/MIDI/PCM completeness or publication permit.
+    pub fn visit_gain_preview_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        match &self.gain_preview {
+            Ok(preview) => {
+                hex_engine::visit_shared_gain_preview_storage_on_control(preview, ledger)
+            }
+            Err(_) => Ok(()), // Invalid carries only a static diagnostic, no owned preview.
+        }
+    }
     /// Borrow this actual exported view's waveform handles and map backings.
     /// Project/source snapshots, previews and the enclosing view owner require
     /// separate root traversal. This is not a freeze/publication permit.
@@ -920,7 +933,8 @@ pub(crate) fn view_state_owned(
         canonical_audio_source: Some(SharedCanonicalAudioSource::new_on_control(
             CanonicalAudioSourceSnapshot::capture(&project, project_generation, revision, session),
         )),
-        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project)
+            .map(hex_engine::SharedGainAutomationPreview::new_on_control),
         project,
         waveforms: session.waveforms(),
         audio_clip_waveforms: session.audio_clip_waveforms().unwrap_or_default(),
@@ -950,7 +964,8 @@ fn preview_view_state(
     );
     Arc::new(ViewState {
         canonical_audio_source: None,
-        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project)
+            .map(hex_engine::SharedGainAutomationPreview::new_on_control),
         project,
         waveforms: canonical.waveforms.clone(),
         audio_clip_waveforms: canonical.audio_clip_waveforms.clone(),

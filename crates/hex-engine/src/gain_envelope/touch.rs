@@ -20,6 +20,26 @@ pub(super) struct PreparedTouch {
     steps: Vec<Step>,
 }
 impl PreparedTouch {
+    pub(super) fn visit_audio_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self { spans, steps } = self;
+        // Exhaustive fixed-leaf audit; future owned fields require traversal.
+        for Span {
+            start,
+            end,
+            steps: range,
+        } in spans
+        {
+            let _: (&u64, &u64, &Range<usize>) = (start, end, range);
+        }
+        for Step { frame, gain } in steps {
+            let _: (&u64, &f32) = (frame, gain);
+        }
+        ledger.vec(spans)?;
+        ledger.vec(steps)
+    }
     pub(super) fn preflight_bytes(lane: &GainLane) -> Option<usize> {
         let steps = lane
             .spans()
@@ -124,5 +144,33 @@ impl PreparedTouch {
     pub(super) fn allocated_bytes(&self) -> usize {
         self.spans.capacity() * std::mem::size_of::<Span>()
             + self.steps.capacity() * std::mem::size_of::<Step>()
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    #[test]
+    fn prepared_gain_touch_empty_reserved_spans_and_steps_keep_their_actual_backings() {
+        let mut touch = PreparedTouch::default();
+        touch.spans.try_reserve_exact(7).unwrap();
+        touch.steps.try_reserve_exact(13).unwrap();
+        touch.spans.clear();
+        touch.steps.clear();
+        let bytes = touch.spans.capacity() * std::mem::size_of::<Span>()
+            + touch.steps.capacity() * std::mem::size_of::<Step>();
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+            crate::AudioStorageLedgerReservation {
+                data_rows: 16,
+                handle_rows: 16,
+                root_rows: 4,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            },
+        )
+        .unwrap();
+        touch.visit_audio_storage(&mut ledger).unwrap();
+        assert_eq!(ledger.summary().unwrap().data_bytes, bytes);
+        assert_eq!(ledger.summary().unwrap().data_allocations, 2);
     }
 }

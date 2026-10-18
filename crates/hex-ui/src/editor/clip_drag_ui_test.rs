@@ -111,7 +111,9 @@ pub(super) fn editor_window(
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview,
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                        hex_engine::GainAutomationPreview::default(),
+                    )),
                     timeline_frames: TIMELINE_FRAMES,
                     can_undo: false,
                     can_redo: false,
@@ -740,7 +742,9 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             waveforms,
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,
@@ -1611,7 +1615,9 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(moved_preview),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: TIMELINE_FRAMES,
             can_undo: true,
             can_redo: false,
