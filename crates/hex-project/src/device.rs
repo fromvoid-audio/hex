@@ -19,6 +19,7 @@ pub struct Device {
     pub(crate) id: DeviceId,
     pub(crate) state: NativeDeviceState,
     pub(crate) bypassed: bool,
+    pub(crate) comparison: Option<crate::DeviceComparison>,
 }
 impl Device {
     pub fn id(&self) -> DeviceId {
@@ -100,7 +101,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceState { device, state } => {
-            project.device_mut(device)?.state = state;
+            project.device_mut(device)?.replace_state(state)?;
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceStateWithIdentityReservation {
@@ -124,8 +125,29 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             let next = expected_next_id
                 .checked_add(reserved_ids)
                 .ok_or(Invalid("project identity space exhausted"))?;
-            project.device_mut(device)?.state = state;
+            project.device_mut(device)?.replace_state(state)?;
             project.next_id = next;
+            Ok(crate::Created::None)
+        }
+        Command::CompareDevice {
+            device,
+            expected,
+            action,
+        } => {
+            project.device_mut(device)?.compare(expected, action)?;
+            Ok(crate::Created::None)
+        }
+        Command::ReplaceDeviceComparison {
+            device,
+            state,
+            comparison,
+        } => {
+            if let Some(value) = &comparison {
+                value.validate(&state)?;
+            }
+            let target = project.device_mut(device)?;
+            target.state = state;
+            target.comparison = comparison;
             Ok(crate::Created::None)
         }
         Command::SetDeviceBypass { device, bypassed } => {
@@ -155,6 +177,7 @@ fn insert_instrument(
     }
     let id = DeviceId(project.allocate_id()?);
     project.track_mut(track)?.instrument = Some(Device {
+        comparison: None,
         id,
         state,
         bypassed: false,
@@ -203,6 +226,7 @@ fn insert(
     target.devices.insert(
         index,
         Device {
+            comparison: None,
             id,
             state,
             bypassed: false,

@@ -1,8 +1,8 @@
 # shared device a/b comparison
 
-Implementation contract under review for Pulse2845 / PR447. This document is a
-source-backed proposal, not a statement that the feature is implemented or
-qualified. Audited source: main `bc06d7573ffa7f4d989bdff9553ed3108f4f0818`,
+Approved implementation contract for Pulse2845 / PR447. The model checkpoint
+implements canonical comparison; persistence, service/UI and complete acceptance
+remain in progress. This is not a claim that the end-user feature is qualified. Audited source: main `bc06d7573ffa7f4d989bdff9553ed3108f4f0818`,
 canonical intake retained in source checkpoint `38b008c859f3662787f3757a865071eebeec72be`.
 
 ## current boundaries
@@ -49,25 +49,25 @@ Current/Undo/Redo, project snapshots and the current-format persistence contract
 must retain both variants and the active slot. No historical-alpha reader or
 migration is required. No existing state-size or resource cap is raised.
 
-## decisions and writer coordination still required
+## approved settings and remaining writer coordination
 
-1. **Host settings:** the recommended contract compares provider payload and asset
+1. **Host settings:** the approved contract compares provider payload and asset
    bindings while bypass and host input/output trims remain device-wide, matching
    existing preset semantics. All stored variants must reflect current global
-   trims so switching cannot restore stale values. Slot-local host trims would
-   change that preset policy and require an explicit alternative contract.
+   trims so switching cannot restore stale values. Slot-local host trims are outside the approved comparison contract.
 2. **Actual custody:** Source4's published Sampler checkpoint `4372a09d` has
    `audio_storage/canonical_state.rs::project_native_states` visiting only
    `device.state()`, including current/Undo/Redo through the retained-project
    iterator. Source4 must include both actual fields in its existing ledger and
    aggregate before resource-backed A/B can be called integrated. This is not a
    new constructor, parallel ledger, ownership family or admission shortcut.
-3. **Asset persistence:** the audited shared project Device DTO has no asset
-   reference fields, while presets explicitly refuse asset references. A/B must
-   never silently omit inactive references. The current-format asset persistence
-   owner/contract must be coordinated with Source4 rather than being silently
-   broadened into a portable-media implementation here. Existing portable-preset
-   refusal remains visible for either slot; unmerged Sampler readiness is separate.
+3. **Asset persistence:** the current outer envelope already preserves active
+   bindings through `schema/device_assets.rs::Manifest`, after decoding the base
+   Device DTO. The initial DTO-only audit missed this wrapper; that inference was
+   corrected before any separate repair. Extend the existing current-format
+   manifest to preserve inactive bindings as well. Portable presets still refuse
+   asset-bound states without a portable manifest, checking either slot.
+   Unmerged Sampler/resource readiness remains separate.
 
 Source1 proposes Project's comparison/model/snapshot/reference hunks, shared
 Storage Device/preset codec hunks, bounded Session comparison/preset request

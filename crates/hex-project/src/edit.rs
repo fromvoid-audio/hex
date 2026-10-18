@@ -148,6 +148,18 @@ pub enum Command {
         device: DeviceId,
         bypassed: bool,
     },
+    /// Compare provider settings without changing bypass, routing or host trims.
+    CompareDevice {
+        device: DeviceId,
+        expected: crate::DeviceVariant,
+        action: crate::DeviceComparisonAction,
+    },
+    /// Restore a validated complete comparison pair (for current-format presets).
+    ReplaceDeviceComparison {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        comparison: Option<crate::DeviceComparison>,
+    },
     AddReturnTrack {
         name: String,
     },
@@ -774,6 +786,7 @@ pub(crate) fn insert_track_before(
             soloed: false,
             devices: Vec::new(),
             instrument: Some(crate::Device {
+                comparison: None,
                 id: DeviceId(instrument_id),
                 state: instrument_state,
                 bypassed: false,
@@ -1346,7 +1359,11 @@ impl Project {
             | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
             | Command::ReplaceDeviceStateWithIdentityReservation { .. }
-            | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
+            | Command::SetDeviceBypass { .. }
+            | Command::CompareDevice { .. }
+            | Command::ReplaceDeviceComparison { .. }) => {
+                crate::device::apply(self, device_command)
+            }
             return_command @ (Command::AddReturnTrack { .. }
             | Command::RemoveReturnTrack(_)
             | Command::RenameReturnTrack { .. }
