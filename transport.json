@@ -1,0 +1,14 @@
+{
+  "source": {
+    "commit": "2e954bed4b1213bbf220c076966c1b8b23209069",
+    "dirty": false,
+    "dirty_files": [],
+    "content_sha256": "4e1e538e9b7fadcb561778afae91c3c61c14a51bce2bf60c0268109165727cc9"
+  },
+  "tree": "480d8c33f3223e306c7782f37e54d124b2d7c96e",
+  "archive": "project-one-open-2e954bed-v3.tar.gz",
+  "bytes": 136540,
+  "sha256": "7b668346a0f679c4dbf0408ef0da0c46b889608f608ed28e941dce8c7f84ac71",
+  "payloads": 68,
+  "evidence_only": true
+}
