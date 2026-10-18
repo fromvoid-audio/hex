@@ -21,6 +21,8 @@ pub(super) struct State {
     writable: bool,
     changed_while_loading: bool,
     writes: Arc<Mutex<Writes>>,
+    #[cfg(test)]
+    save_gate: Option<Arc<SaveGate>>,
 }
 impl State {
     pub(super) fn new(path: PathBuf) -> Self {
@@ -31,6 +33,8 @@ impl State {
             writable: true,
             changed_while_loading: false,
             writes: Arc::default(),
+            #[cfg(test)]
+            save_gate: None,
         }
     }
 }
@@ -146,6 +150,8 @@ impl EditorView {
         }
         let path = self.project_directory.path.clone();
         #[cfg(test)]
+        let gate = self.project_directory.save_gate.take();
+        #[cfg(test)]
         let environment = Arc::clone(&self.test_environment);
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -153,6 +159,10 @@ impl EditorView {
                 .spawn(async move {
                     #[cfg(test)]
                     let _environment = environment;
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        gate.wait().await;
+                    }
                     // This owned worker drains the one latest pending value even if
                     // its view is dropped. No filesystem I/O occurs under the mutex.
                     let mut result: PreferenceResult<()> = Ok(());
@@ -229,6 +239,38 @@ impl EditorView {
             let _ = this.update(cx, |view, cx| ready(view, directory, cx));
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct SaveGate {
+    reached: std::sync::atomic::AtomicBool,
+    released: std::sync::atomic::AtomicBool,
+    waker: Mutex<Option<std::task::Waker>>,
+}
+#[cfg(test)]
+impl SaveGate {
+    async fn wait(&self) {
+        use std::{sync::atomic::Ordering, task::Poll};
+        self.reached.store(true, Ordering::Release);
+        std::future::poll_fn(|cx| {
+            let mut waker = self.waker.lock().expect("test gate");
+            if self.released.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                *waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+    fn release(&self) {
+        self.released
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(waker) = self.waker.lock().expect("test gate").take() {
+            waker.wake();
+        }
     }
 }
 

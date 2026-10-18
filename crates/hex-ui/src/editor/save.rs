@@ -89,9 +89,12 @@ impl EditorView {
         self.save_dialog_open = true;
         let generation = self.project_generation;
         self.with_project_picker_directory(cx, move |view, directory, cx| {
-            if !view.save_dialog_open || view.project_generation != generation {
+            if !view.save_dialog_open {
+                return;
+            }
+            if view.project_generation != generation {
                 view.save_dialog_open = false;
-                view.cancel_open_after_save();
+                cx.notify();
                 return;
             }
             let directory = directory.unwrap_or(fallback_directory);
@@ -99,10 +102,11 @@ impl EditorView {
             cx.spawn(async move |this, cx| {
                 let picked = response.await;
                 let _ = this.update(cx, |view, cx| {
+                    view.save_dialog_open = false;
                     if view.project_generation != generation {
+                        cx.notify();
                         return;
                     }
-                    view.save_dialog_open = false;
                     match picked {
                         Ok(Ok(Some(path))) => {
                             if super::device_panel::finalize_controls(view, cx) {
