@@ -3,6 +3,54 @@
 use super::*;
 use crate::native_device_resources::DeviceResourceConfiguration;
 
+/// Current authored filter path for the headless PCM/allocation oracle only.
+/// No source/Box provenance or native publication authority is granted here.
+pub fn sampler_clean_filter_runtime_for_allocation_probe(
+    view: hex_lattice::DeviceResourceView<'_>,
+    output_rate: u32,
+) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, hex_devices::Invalid> {
+    use hex_devices::sampler::{
+        metadata::parameter,
+        state::{AuthoredMode, SamplerState},
+    };
+    use hex_lattice_contract::{DeviceAssetReference, ParameterValue};
+    let refused = |_| hex_devices::Invalid("filtered sampler allocation fixture refused");
+    let mut state = SamplerState::for_source_frames(view.pcm.frames()).map_err(refused)?;
+    state.mode = AuthoredMode::Classic {
+        loop_region: Some(state.region),
+    };
+    state.voices = 4;
+    state
+        .filter
+        .patch_parameter(parameter::FILTER_ENABLED, ParameterValue::Bool(true))
+        .map_err(refused)?;
+    state
+        .filter
+        .patch_parameter(parameter::FILTER_SLOPE, ParameterValue::Choice(0))
+        .map_err(refused)?;
+    let state = state
+        .to_native()
+        .map_err(refused)?
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: view.slot,
+            asset: view.identity.asset,
+        }])
+        .map_err(refused)?;
+    let views = [view];
+    let resources = hex_lattice::BorrowedDeviceResources(&views);
+    let prepared = hex_devices::sampler::state::prepare_runtime_on_control(
+        &state,
+        &hex_lattice::DevicePreparationContext {
+            sample_rate: output_rate,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &resources,
+        },
+        MAX_MUTABLE_EVENTS_PER_QUERY,
+    )
+    .map_err(refused)?;
+    Ok(Box::new(prepared))
+}
+
 /// Unregistered sampler DSP allocation seam. It grants neither source storage
 /// provenance nor host graph admission; the audio probe retains its own input.
 pub fn sampler_runtime_for_allocation_probe(

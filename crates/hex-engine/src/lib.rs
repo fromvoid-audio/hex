@@ -82,6 +82,9 @@ pub mod native_device_resources;
 pub use mutable_instrument::resource_fixture::MutableResourceHostFixture;
 #[cfg(feature = "instrument-test-support")]
 #[doc(hidden)]
+pub use mutable_instrument::resource_fixture::sampler_clean_filter_runtime_for_allocation_probe;
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
 pub use mutable_instrument::resource_fixture::sampler_runtime_for_allocation_probe;
 #[cfg(feature = "instrument-test-support")]
 #[doc(hidden)]

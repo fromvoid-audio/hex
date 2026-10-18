@@ -38,6 +38,13 @@ pub mod parameter {
     pub const LOOP_END: ParameterId = ParameterId::from_static(20);
     pub const FADE_IN: ParameterId = ParameterId::from_static(21);
     pub const FADE_OUT: ParameterId = ParameterId::from_static(22);
+    pub const FILTER_ENABLED: ParameterId = ParameterId::from_static(23);
+    pub const FILTER_TYPE: ParameterId = ParameterId::from_static(24);
+    pub const FILTER_SLOPE: ParameterId = ParameterId::from_static(25);
+    pub const FILTER_CIRCUIT: ParameterId = ParameterId::from_static(26);
+    pub const FILTER_FREQUENCY: ParameterId = ParameterId::from_static(27);
+    pub const FILTER_RESONANCE: ParameterId = ParameterId::from_static(28);
+    pub const FILTER_MORPH: ParameterId = ParameterId::from_static(29);
 }
 const fn float(
     id: ParameterId,
@@ -78,7 +85,7 @@ const fn choice(
     }
 }
 use parameter::*;
-static PARAMETERS: [ParameterDescriptor; 22] = [
+static PARAMETERS: [ParameterDescriptor; 29] = [
     choice(MODE, "mode", &["classic", "one-shot", "slice"]),
     boolean(REVERSE, "reverse"),
     float(ROOT, "root", 0.0, 127.0, Some("note"), 60.0),
@@ -134,6 +141,13 @@ static PARAMETERS: [ParameterDescriptor; 22] = [
         Some("frames"),
         1.0,
     ),
+    super::filter::descriptors()[0],
+    super::filter::descriptors()[1],
+    super::filter::descriptors()[2],
+    super::filter::descriptors()[3],
+    super::filter::descriptors()[4],
+    super::filter::descriptors()[5],
+    super::filter::descriptors()[6],
 ];
 fn descriptor(id: ParameterId) -> Result<&'static ParameterDescriptor, Error> {
     PARAMETERS
@@ -211,6 +225,9 @@ impl NativeDeviceMetadata for SamplerMetadata {
         let DeviceStateRead::Sample(state) = DeviceStateRead::from_native(native)? else {
             return Ok(descriptor.default);
         };
+        if id.value() >= super::filter::FIRST {
+            return state.filter().read_parameter(id);
+        }
         Ok(match id {
             MODE => ParameterValue::Choice(match state.mode() {
                 SamplerReadMode::Classic { .. } => 0,
@@ -310,6 +327,9 @@ fn patch_authored(
 ) -> Result<(), Error> {
     if !enabled(state, id) {
         return Err(Error::InvalidParameterValue);
+    }
+    if id.value() >= super::filter::FIRST {
+        return state.filter.patch_parameter(id, value);
     }
     match (id, value) {
         (MODE, ParameterValue::Choice(mode)) => {

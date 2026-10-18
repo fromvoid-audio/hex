@@ -54,6 +54,7 @@ pub enum SamplerReadMode {
 #[derive(Clone, Copy, Debug)]
 pub struct SamplerStateRead<'a> {
     bytes: &'a [u8],
+    filter: FilterSettings,
 }
 impl<'a> SamplerStateRead<'a> {
     pub fn from_native(state: &'a NativeDeviceState) -> Result<Self, Error> {
@@ -79,7 +80,10 @@ impl<'a> SamplerStateRead<'a> {
         if bytes.len() != PREFIX + count * 4 || bytes[0] > 3 || bytes[1] > 1 || bytes[2] > 1 {
             return Err(Error::MalformedState);
         }
-        let read = Self { bytes };
+        let read = Self {
+            bytes,
+            filter: FilterSettings::decode(&bytes[112..PREFIX])?,
+        };
         let loop_region = Region {
             start: read.frame(16),
             end: read.frame(20),
@@ -191,6 +195,9 @@ impl<'a> SamplerStateRead<'a> {
     pub fn one_shot_fades_seconds(self) -> [f64; 2] {
         [self.value(9), self.value(10)]
     }
+    pub fn filter(self) -> FilterSettings {
+        self.filter
+    }
     fn settings(self, starts: &[usize]) -> Settings<'_> {
         Settings {
             region: self.region(),
@@ -244,6 +251,7 @@ impl<'a> SamplerStateRead<'a> {
             velocity_amount: self.velocity_amount(),
             envelope: self.envelope(),
             one_shot_fades_seconds: self.one_shot_fades_seconds(),
+            filter: self.filter,
         })
     }
 }

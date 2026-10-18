@@ -91,29 +91,51 @@ impl VoiceCoefficients {
         age_frames: u64,
         gate_frames: u64,
     ) -> StereoFrame {
-        let channels = match pcm {
-            DeviceResourcePcm::Mono(_) => SampleChannels::Mono,
-            DeviceResourcePcm::Stereo(_) => SampleChannels::Stereo,
-        };
-        if pcm.frames() != self.expected_frames || channels != self.channels {
+        let envelope = self.envelope_gain(age_frames, gate_frames);
+        if envelope == 0.0 {
             return [0.0; 2];
         }
+        let Some(sample) = self.interpolated_source(pcm, age_frames) else {
+            return [0.0; 2];
+        };
+        self.apply_amplitude(sample, envelope)
+    }
+    pub(super) fn apply_amplitude(&self, sample: [f64; 2], envelope: f64) -> StereoFrame {
+        std::array::from_fn(|channel| {
+            (sample[channel] * self.channel_gain[channel] * envelope)
+                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
+        })
+    }
+    pub(super) fn envelope_gain(&self, age_frames: u64, gate_frames: u64) -> f64 {
         let mut envelope = match self.gate {
             GateMode::Gate => self.envelope.sample(age_frames, gate_frames),
             GateMode::Trigger => self.envelope.held(age_frames),
         };
-        if envelope == 0.0 {
-            return [0.0; 2];
-        }
         let [fade_in, fade_out] = self.one_shot_fade_frames;
         if fade_in != 0 {
             envelope *= (age_frames as f64 / fade_in as f64).min(1.0);
         }
         if fade_out != 0 {
             let Some(last_age) = self.natural_frames().and_then(|end| end.checked_sub(1)) else {
-                return [0.0; 2];
+                return 0.0;
             };
             envelope *= (last_age.saturating_sub(age_frames) as f64 / fade_out as f64).min(1.0);
+        }
+        envelope
+    }
+    /// Source interpolation before per-voice filtering and amplitude. Keeping
+    /// f64 through both operations preserves finite extreme input behavior.
+    pub(super) fn interpolated_source(
+        &self,
+        pcm: DeviceResourcePcm<'_>,
+        age_frames: u64,
+    ) -> Option<[f64; 2]> {
+        let channels = match pcm {
+            DeviceResourcePcm::Mono(_) => SampleChannels::Mono,
+            DeviceResourcePcm::Stereo(_) => SampleChannels::Stereo,
+        };
+        if pcm.frames() != self.expected_frames || channels != self.channels {
+            return None;
         }
         // u64 * u64 fits u128 exactly, even at u64::MAX age. Integer modulo
         // preserves loop phase where conversion of age to f64 would lose it.
@@ -125,7 +147,7 @@ impl VoiceCoefficients {
                 position = start + (position - end) % (end - start);
             }
         } else if position >= (self.region.end - self.region.start) as u128 * ONE {
-            return [0.0; 2];
+            return None;
         }
         let index = (position >> FRACTION_BITS) as usize;
         let mut next = index + 1;
@@ -146,22 +168,15 @@ impl VoiceCoefficients {
             pcm.frame(source_index(index)),
             pcm.frame(source_index(next)),
         ) else {
-            return [0.0; 2];
+            return None;
         };
         if a.iter().chain(&b).any(|value| !value.is_finite()) {
-            return [0.0; 2];
+            return None;
         }
         let fraction = (position % ONE) as f64 / ONE as f64;
-        // Interpolate/gain in f64 so finite f32 endpoints do not overflow the
-        // subtraction. Saturation at the representation boundary avoids NaN/Inf
-        // from otherwise valid finite PCM and the bounded gain domain.
-        std::array::from_fn(|channel| {
-            let value = (f64::from(a[channel]) * (1.0 - fraction)
-                + f64::from(b[channel]) * fraction)
-                * self.channel_gain[channel]
-                * envelope;
-            value.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
-        })
+        Some(std::array::from_fn(|channel| {
+            f64::from(a[channel]) * (1.0 - fraction) + f64::from(b[channel]) * fraction
+        }))
     }
 
     /// Fill caller-owned output. Overflowed ages are defined silence; they do

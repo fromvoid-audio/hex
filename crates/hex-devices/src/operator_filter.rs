@@ -214,6 +214,16 @@ pub(crate) struct Frame {
     cascade: f64,
 }
 impl Frame {
+    pub(crate) fn audit_scalar_storage(&self) {
+        let Self {
+            g,
+            k,
+            weights,
+            wet,
+            cascade,
+        } = self;
+        let _: (&f64, &f64, &[f64; 3], &f64, &f64) = (g, k, weights, wet, cascade);
+    }
     /// Inactive history sentinel; activation installs the prepared target coefficients.
     pub(crate) const fn dry() -> Self {
         Self {
@@ -248,6 +258,10 @@ pub(crate) struct Carrier {
     states: [[f64; 2]; 2],
 }
 impl Carrier {
+    pub(crate) fn audit_scalar_storage(&self) {
+        let Self { states } = self;
+        let _: &[[f64; 2]; 2] = states;
+    }
     pub(crate) fn process(&mut self, input: f64, frame: Frame) -> f64 {
         let mut x = input;
         let mut first = 0.0;

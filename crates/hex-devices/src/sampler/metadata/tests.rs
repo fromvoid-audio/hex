@@ -18,6 +18,64 @@ fn loaded() -> NativeDeviceState {
 }
 
 #[test]
+fn clean_filter_controls_roundtrip_current_state_host_binding_and_strict_refusal() {
+    let original = loaded();
+    let mut state = original.clone();
+    for (id, value) in [
+        (FILTER_ENABLED, ParameterValue::Bool(true)),
+        (FILTER_TYPE, ParameterValue::Choice(4)),
+        (FILTER_SLOPE, ParameterValue::Choice(0)),
+        (FILTER_FREQUENCY, ParameterValue::Float(20_000.0)),
+        (FILTER_RESONANCE, ParameterValue::Float(80.0)),
+        (FILTER_MORPH, ParameterValue::Float(25.0)),
+    ] {
+        state = METADATA.patch_parameter(&state, id, value).unwrap();
+        assert_eq!(METADATA.read_parameter(&state, id).unwrap(), value);
+    }
+    let authored = SamplerState::from_native(&state).unwrap();
+    let reopened = authored.replace_in(&state).unwrap();
+    let read = super::super::state::SamplerStateRead::from_native(&reopened).unwrap();
+    assert_eq!(read.filter(), authored.filter);
+    assert_eq!(reopened.payload(), state.payload());
+    assert_eq!(reopened.asset_references(), original.asset_references());
+    assert!(reopened.shares_asset_reference_storage_with(&original));
+    assert_eq!(
+        reopened.output_gain_millidb(),
+        original.output_gain_millidb()
+    );
+    for mode in [1, 2, 0] {
+        state = METADATA
+            .patch_parameter(&state, MODE, ParameterValue::Choice(mode))
+            .unwrap();
+        assert_eq!(
+            SamplerState::from_native(&state).unwrap().filter,
+            authored.filter
+        );
+    }
+    for (id, value) in [
+        (FILTER_FREQUENCY, ParameterValue::Float(f32::NAN)),
+        (FILTER_FREQUENCY, ParameterValue::Float(19.0)),
+        (FILTER_FREQUENCY, ParameterValue::Float(20_001.0)),
+        (FILTER_RESONANCE, ParameterValue::Float(f32::INFINITY)),
+        (FILTER_MORPH, ParameterValue::Float(-0.1)),
+        (FILTER_CIRCUIT, ParameterValue::Choice(1)),
+        (FILTER_TYPE, ParameterValue::Choice(5)),
+    ] {
+        assert!(METADATA.patch_parameter(&state, id, value).is_err());
+    }
+    let mut malformed = state.payload().to_vec();
+    malformed[112] = 2;
+    assert!(
+        SamplerState::from_native(
+            &NativeDeviceState::new(TYPE_ID, STATE_VERSION, malformed).unwrap()
+        )
+        .is_err()
+    );
+    let old = NativeDeviceState::new(TYPE_ID, STATE_VERSION - 1, state.payload().to_vec()).unwrap();
+    assert!(METADATA.migrate_state(&old).is_err()); // No historical alpha reader.
+}
+
+#[test]
 fn one_shot_fades_bind_saved_scalars_to_pcm_and_preserve_host_metadata() {
     let original = loaded();
     assert!(!METADATA.parameter_enabled(&original, FADE_IN).unwrap());

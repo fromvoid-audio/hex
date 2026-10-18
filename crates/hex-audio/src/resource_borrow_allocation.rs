@@ -8,6 +8,110 @@ use hex_lattice_contract::{
 };
 
 #[test]
+fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
+    use hex_lattice::{
+        NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    };
+    let mono = [0.5, 1.0, -0.25, 0.75];
+    let stereo = mono.map(|value| [value, -value]);
+    // Independent bilinear Butterworth recurrence, not the TPT carrier code.
+    let k = (std::f64::consts::PI / 8.0).tan();
+    let norm = 1.0 / (1.0 + std::f64::consts::SQRT_2 * k + k * k);
+    let mut history = [0.0; 4];
+    let mut expected = [[0.0; 2]; 16];
+    for age in 0..8 {
+        let input = f64::from(mono[age % 4]);
+        let [x1, x2, y1, y2] = history;
+        let output = k * k * norm * (input + 2.0 * x1 + x2)
+            - 2.0 * (k * k - 1.0) * norm * y1
+            - (1.0 - std::f64::consts::SQRT_2 * k + k * k) * norm * y2;
+        history = [input, x1, output, y1];
+        expected[age] = [output as f32; 2];
+    }
+    for pcm in [
+        DeviceResourcePcm::Mono(&mono),
+        DeviceResourcePcm::Stereo(&stereo),
+    ] {
+        let views = [DeviceResourceView {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            identity: DeviceResourceIdentity {
+                asset: DeviceAssetKey::new(1).unwrap(),
+                content: [2; 32],
+                derivation_version: 1,
+                derivation: [3; 32],
+            },
+            sample_rate: 8000,
+            pcm,
+        }];
+        let resources = BorrowedDeviceResources(&views);
+        let prepared =
+            hex_engine::sampler_clean_filter_runtime_for_allocation_probe(views[0], 8000).unwrap();
+        let mut runtime = NativeInstrumentRuntimePair::new(
+            prepared.as_ref(),
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: 2 * 1024 * 1024,
+                max_events_per_block: 259,
+                max_active_occurrences: 32,
+                max_tail_frames: 8000 * 600,
+            },
+        )
+        .unwrap();
+        eprintln!(
+            "SUPPORTED actual enabled clean-filter sampler Mono/Stereo pair rollback, PCM oracle and128 allocation queries"
+        );
+        let sign = if matches!(pcm, DeviceResourcePcm::Mono(_)) {
+            1.0
+        } else {
+            -1.0
+        };
+        let mut checksum = [0.0; 2];
+        let measured = allocation_counter::measure(|| {
+            for occurrence_id in 1..=128 {
+                let events = [
+                    NativeInstrumentEvent::NoteOn {
+                        frame_offset: 0,
+                        occurrence_id,
+                        pitch: 60,
+                        velocity: 127,
+                    },
+                    NativeInstrumentEvent::NoteOff {
+                        frame_offset: 8,
+                        occurrence_id,
+                    },
+                ];
+                let mut a = [[0.0; 2]; 16];
+                runtime.begin_block();
+                runtime.process_block(&events, &mut a, &resources).unwrap();
+                runtime.rollback_block();
+                let mut b = [[0.0; 2]; 16];
+                runtime.begin_block();
+                runtime.process_block(&events, &mut b, &resources).unwrap();
+                runtime.commit_block();
+                assert_eq!(a, b);
+                for (value, expected) in b.iter().zip(expected) {
+                    assert!((value[0] - expected[0]).abs() < 1e-6);
+                    assert!((value[1] - expected[1] * sign).abs() < 1e-6);
+                    for lane in 0..2 {
+                        checksum[lane] += f64::from(value[lane]);
+                    }
+                }
+            }
+        });
+        let oracle = expected.iter().map(|v| f64::from(v[0])).sum::<f64>() * 128.0;
+        assert!((checksum[0] - oracle).abs() < 1e-4);
+        assert!((checksum[1] - oracle * f64::from(sign)).abs() < 1e-4);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+}
+#[test]
 fn sampler_pair_event_history_and_original_pcm_queries_allocate_and_free_nothing() {
     use hex_lattice::{
         NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,

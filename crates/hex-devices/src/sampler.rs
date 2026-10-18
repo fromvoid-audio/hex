@@ -6,6 +6,7 @@
 //! See `docs/sampler.md` for host asset and reference acceptance still required.
 mod binding;
 mod envelope;
+mod filter;
 pub mod metadata;
 mod plan;
 mod runtime;
@@ -13,6 +14,7 @@ pub mod state;
 mod voice;
 pub use binding::{BorrowedSamplerVoice, BoundSamplerPlan};
 pub use envelope::Envelope;
+pub use filter::FilterSettings;
 pub use plan::{PreparedSamplerPlan, SampleChannels, SampleShape};
 pub use runtime::{MAX_SAMPLER_RUNTIME_VOICES, PreparedSamplerRuntime};
 pub use voice::{Voice, VoiceCoefficients};

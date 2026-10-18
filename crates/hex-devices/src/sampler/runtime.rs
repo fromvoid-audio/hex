@@ -27,6 +27,7 @@ pub struct PreparedSamplerRuntime {
     tail: u64,
     velocity_amount: f64,
     max_events: usize,
+    filter: Option<crate::operator_filter::Frame>,
 }
 impl PreparedSamplerRuntime {
     /// Exact requested sized Box body for the closed constructor below.
@@ -46,11 +47,15 @@ impl PreparedSamplerRuntime {
             tail,
             velocity_amount,
             max_events,
+            filter,
         } = self;
         let _: &[PreparedKey; 128] = notes;
         let _: &Option<VoiceCoefficients> = common;
         let _: &Option<binding::SourceKey> = source;
         let _: (&usize, &u64, &f64, &usize) = (voices, tail, velocity_amount, max_events);
+        if let Some(frame) = filter {
+            frame.audit_scalar_storage();
+        }
         if let Some(source) = source {
             source.audit_scalar_storage();
         }
@@ -77,7 +82,17 @@ impl PreparedSamplerRuntime {
             tail: 0,
             velocity_amount: 0.0,
             max_events,
+            filter: None,
         })
+    }
+    pub(super) fn with_filter_on_control(
+        mut self,
+        filter: FilterSettings,
+        rate: u32,
+    ) -> Result<Self, hex_lattice_contract::DeviceContractError> {
+        let frame = filter.prepare(rate)?;
+        self.filter = (frame.wet != 0.0).then_some(frame);
+        Ok(self)
     }
     fn note(&self, pitch: u8) -> Option<VoiceCoefficients> {
         let key = self.notes.get(usize::from(pitch))?;
@@ -136,6 +151,7 @@ impl BoundSamplerPlan<'_> {
             tail,
             velocity_amount: self.plan.settings.velocity_amount,
             max_events,
+            filter: None,
         })
     }
 }
@@ -147,6 +163,7 @@ struct ActiveVoice {
     gain: f64,
     age: u64,
     gate: Option<u64>,
+    filter: [crate::operator_filter::Carrier; 2],
 }
 type Active = [Option<ActiveVoice>; MAX_SAMPLER_RUNTIME_VOICES];
 struct SamplerRuntime {
@@ -167,8 +184,12 @@ impl SamplerRuntime {
                 gain,
                 age,
                 gate,
+                filter,
             } = voice;
             let _: (&u64, &u8, &f64, &u64, &Option<u64>) = (occurrence, pitch, gain, age, gate);
+            for lane in filter {
+                lane.audit_scalar_storage();
+            }
         }
         for active in active.iter().flatten() {
             voice(active);
@@ -282,6 +303,7 @@ impl SamplerRuntime {
                         + self.prepared.velocity_amount * f64::from(velocity) / 127.0,
                     age: 0,
                     gate: None,
+                    filter: [crate::operator_filter::Carrier::default(); 2],
                 });
             }
         }
@@ -351,14 +373,25 @@ impl MutableInstrumentRuntime for SamplerRuntime {
                 }
                 next += 1;
             }
-            for voice in active.iter().flatten() {
+            for voice in active.iter_mut().flatten() {
                 let Some(mut note) = self.prepared.note(voice.pitch) else {
                     continue;
                 };
                 for channel_gain in &mut note.channel_gain {
                     *channel_gain *= voice.gain;
                 }
-                let sample = note.sample(view.pcm, voice.age, voice.gate.unwrap_or(u64::MAX));
+                let gate = voice.gate.unwrap_or(u64::MAX);
+                let sample = if let Some(filter) = self.prepared.filter {
+                    let Some(input) = note.interpolated_source(view.pcm, voice.age) else {
+                        continue;
+                    };
+                    let filtered = std::array::from_fn(|channel| {
+                        voice.filter[channel].process(input[channel], filter)
+                    });
+                    note.apply_amplitude(filtered, note.envelope_gain(voice.age, gate))
+                } else {
+                    note.sample(view.pcm, voice.age, gate)
+                };
                 for channel in 0..2 {
                     frame[channel] = (f64::from(frame[channel]) + f64::from(sample[channel]))
                         .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
@@ -400,6 +433,8 @@ impl MutableInstrumentRuntime for SamplerRuntime {
     }
 }
 
+#[cfg(test)]
+mod filter_tests;
 #[cfg(test)]
 mod tests;
 

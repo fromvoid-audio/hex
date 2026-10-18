@@ -43,7 +43,7 @@ handle preconstruction continuing in the same canonical implementation):
    source/loop/reverse, pitch/tuning/gain, ADSR, bounded voices/Trigger/Gate and
    rollback/partition kernels exist. Canonical manual Slice insert/move/remove
    now changes real note regions without pitch transposition. Finish real
-   filter/envelope modulation, LFO/modulation, retrigger/glide/voice behavior,
+   filter-envelope modulation, LFO/modulation, retrigger/glide/voice behavior,
    crop and prepared pitch-independent Warp through the implemented stretch
    boundary. Complete high-quality rate/pitch resampling and independent alias,
    transient/stereo/loop/partition tests; linear interpolation is not a quality
@@ -51,6 +51,8 @@ handle preconstruction continuing in the same canonical implementation):
    not just metadata. No historical-alpha conversion is required.
    One-Shot fades and atomic compound source/loop flag patching now have actual
    PCM/state regressions; their panel and canonical gesture wiring remain open.
+   The clean filter now has real mutable-voice DSP and current authored bindings;
+   its panel, modulation and live parameter-transition workflow are still open.
 4. **Functional clean native UI is not implemented yet.** Borrowed authored
    reads, exact source-bound waveform queries, geometry reuse and canonical
    Slice edit primitives are preparation, not a panel. Build the actual compact
@@ -610,3 +612,37 @@ not a reusable scalar permit. Actual worker/native enclosing storage, constructi
 overlap, cancellation linearization and the final infallible queue tail remain
 required before Sampler registration. The functional panel, complete DSP and
 musical workflow above remain the deliverable.
+
+## clean sampler filter
+
+Sampler's current authored format is version3. It adds bounded clean filter
+settings to version2's controls; historical alpha payloads are explicitly refused
+rather than converted. Current read/patch/save and source replacement preserve
+the filter, source binding and host gains. Empty devices still have no invented
+source or enabled controls.
+
+The implementation reuses Hex's existing Operator clean TPT carrier kernel:
+low-pass, high-pass, band-pass, notch and morph, with12/24db/oct settings,20..20000hz
+authored cutoff,0..100% resonance and morph. Clean is the only circuit offered.
+The default filter is off; default enabled settings use24,1000hz and0% resonance.
+Effective cutoff is clamped to45% of the actual output rate during control
+preparation, retaining the authored value for save/reopen and rate changes.
+No analog circuit or Live sonic/default parity is claimed.
+
+Each voice owns fixed filter history for each stereo lane. Filtering follows source
+interpolation and precedes velocity/pan/gain/ADSR and One-Shot fades, so an amp
+attack does not erase the filter's source onset. Voice end/amp lifetime remains
+the finite existing law; there is no extra unpriced tail, source clone, lookahead
+or callback coefficient design. Reset/rollback/history copy include the actual
+fixed filter states. Preparation and runtime leaf audits exhaustively include
+the reused kernel types, and their actual sized Box bodies grow within existing
+limits. Disabled filters preserve the original prepared sound and PCM exactly.
+
+Independent impulse difference-equation and cutoff-response tests cover both
+slopes, all modes/morph endpoints, stereo separation, amp ordering, partition,
+rollback, reset/history, extreme finite PCM/resonance and rate-clamp/bypass laws.
+Canonical parameter tests check current codec, host references/gains, mode changes
+and malformed/unsupported input. A filtered Mono/Stereo128-query actual pair probe
+compares an independent PCM oracle and measures total/net allocation/free zero.
+This is DSP/state evidence, not native listening, implemented panel, filter-envelope
+or LFO modulation, live parameter smoothing, registered host or graph admission.
