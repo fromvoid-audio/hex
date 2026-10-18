@@ -5127,3 +5127,11 @@ all cache budgets. Actual disclosure/query/refresh/clear input has a red/green
 regression. Source patch is isolated against29; its historical full20 pass is
 preserved and does not qualify the new patch. Merger owns future prospective full
 CI/integration/merge; no native/app operations were performed.
+
+After integrating merged373/main in389, the3bank tests and2callback probes
+pass unchanged. Joint engine+audio all-target Clippy with allocation-probe
+exposed an inherited non-exhaustive Expression match in the feature-gated
+playback-stack example. The note-only fixture now explicitly refuses controller
+events during preflight. Its focused regression passes; the same joint strict
+Clippy command now passes. The negative compiler log is retained. This repairs
+a verification fixture and adds no sampler/controller playback behavior.
