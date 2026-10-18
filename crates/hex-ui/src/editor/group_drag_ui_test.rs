@@ -192,3 +192,164 @@ fn dragging_nonprimary_selected_header_moves_all_three_clips_with_gaps_and_one_u
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
     });
 }
+
+fn begin_group(visual: &mut VisualTestContext, clips: &[ClipId]) -> gpui::Point<gpui::Pixels> {
+    for (i, clip) in clips.iter().enumerate() {
+        click(visual, *clip, i != 0);
+    }
+    let selector = Box::leak(format!("clip-drag-surface-{}", clips[1].value()).into_boxed_str());
+    let down = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let target = point(down.x + px(63.0), down.y);
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    target
+}
+#[gpui::test]
+fn group_escape_and_actual_gpui_capture_loss_never_commit_any_member(cx: &mut TestAppContext) {
+    for escape in [true, false] {
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let target = begin_group(&mut visual, &clips);
+        for id in &clips {
+            let selector = Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "all selected previews are actually rendered"
+            );
+        }
+        if escape {
+            visual.simulate_keystrokes("escape");
+        } else {
+            // Exercise actual GPUI drag-payload retirement, not a fabricated
+            // worker/canonical failure or claimed physical window deactivation.
+            visual.update(|window, cx| {
+                assert!(cx.stop_active_drag(window));
+            });
+        }
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.active_clip_drag.is_none());
+            assert_eq!(v.selected_clip_ids(), clips);
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.last_enqueued_edit.is_none());
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
+}
+#[gpui::test]
+fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_independent_edit(
+    cx: &mut TestAppContext,
+) {
+    for hold_ack in [true, false] {
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let target = begin_group(&mut visual, &clips);
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+        let event = editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::RenameClip {
+                clip: clips[0],
+                name: "independent rename".into()
+            })));
+            next(&v.service)
+        });
+        if hold_ack {
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            editor.update(&mut visual, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+        } else {
+            editor.update(&mut visual, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        }
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            assert!(v.active_clip_drag.is_none());
+            for id in &clips {
+                let old = before.clip(*id).unwrap();
+                let current = project.clip(*id).unwrap();
+                assert_eq!(current.start(), old.start());
+                assert_eq!(current.source_offset(), old.source_offset());
+            }
+            assert_eq!(project.clip(clips[0]).unwrap().name(), "independent rename");
+            assert!(
+                matches!(&v.last_enqueued_edit, Some(Command::RenameClip { .. })),
+                "no group command after pending/stale refusal"
+            );
+        });
+    }
+}
+#[gpui::test]
+fn stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release(
+    cx: &mut TestAppContext,
+) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, cx| {
+        v.snap_grid = SnapGrid::default();
+        cx.notify();
+    });
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let target = begin_group(&mut visual, &clips);
+    let positions = |v: &EditorView| {
+        let group = v.active_clip_drag.as_ref().unwrap().group.borrow();
+        let starts = clips
+            .iter()
+            .map(|id| {
+                let item = group.previews.iter().find(|p| p.id() == *id).unwrap();
+                let hex_project::ClipGroupContent::Audio(c) = &item.content else {
+                    panic!("audio group")
+                };
+                c.start()
+            })
+            .collect::<Vec<_>>();
+        for pair in starts.windows(2) {
+            assert_eq!(
+                pair[1] - pair[0],
+                48_000,
+                "one shared snap delta preserves off-grid gaps"
+            );
+        }
+        starts
+    };
+    let snapped = editor.read_with(&visual, |v, _| positions(v));
+    let command = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_modifiers_change(command);
+    let free = editor.read_with(&visual, |v, _| positions(v));
+    assert_ne!(
+        free, snapped,
+        "stationary modifier actually changes snapping"
+    );
+    visual.simulate_modifiers_change(Modifiers::default());
+    editor.read_with(&visual, |v, _| assert_eq!(positions(v), snapped));
+    // Release's current modifier wins without a preceding changed event.
+    visual.simulate_mouse_up(target, MouseButton::Left, command);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        for (id, expected) in clips.iter().zip(free) {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.clip(*id).unwrap().start(),
+                expected
+            );
+        }
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
