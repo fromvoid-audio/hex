@@ -189,7 +189,7 @@ impl EditorView {
     fn pending_trim_current(&self) -> Option<&PendingTrim> {
         let pending = self.pending_trim.as_ref()?;
         let state = self.state.as_ref()?;
-        (pending.generation == self.project_generation && pending.revision == state.revision)
+        (pending.generation == self.project_generation && pending.revision <= state.revision)
             .then_some(pending)
     }
 
