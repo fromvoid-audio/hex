@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.63s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::browser::ui_test::explicit_focus::browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing' (87453) panicked at crates/hex-ui/src/editor/browser_focus_ui_test.rs:101:21:
+browser-section-samples must not own query text focus
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::explicit_focus::browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::explicit_focus::browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 751 filtered out; finished in 0.25s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

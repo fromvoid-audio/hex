@@ -1,0 +1,69 @@
+{
+  "canonical_pr": 426,
+  "ticket": 2820,
+  "head": "db83a0a356412c470cc2d086a7a5c9a7adcdd9da",
+  "tree": "bc5008722dcc53db770b3cdbad3a5dafa5446946",
+  "expected_before": "c7972cbcb10ecc6460999e7fe9ee1f35757d8947",
+  "expected_before_tree": "7b9f4a06d409eb37d227e59408256c7671b69389",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/audition.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_focus_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_input.rs",
+    "crates/hex-ui/src/editor/browser_search_selection_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "original_red": {
+    "source": "c7972cbcb10ecc6460999e7fe9ee1f35757d8947",
+    "focus_owner": "0pass1fail actual Samples click retained SearchFocus; original-focus-owner-test.patch +426-original-focus-owner-red.log",
+    "typed": "0pass1fail actual Samples click then input qxj changed query; original-typed-test.patch +426-original-typed-red.log"
+  },
+  "final_results": {
+    "browser": "86PASS0failed0ignored667filtered, 24.55s; 426-browser-green-v2.log. Includes actual 34-target/mode matrix, workers/ticks, typing, return, Close, CmdF/held drag and strengthened 4 offset-click audition checks",
+    "command": "cargo test -p hex-ui --features ui-test-support --locked browser -- --nocapture",
+    "strict_clippy": "UI alltargets ui-test-support -Dwarnings PASS",
+    "guards": "architecture/GPUI/style/fmt/diff all0; 426-final-checks.json exact commands",
+    "source_identity": "working tree unchanged from tested tree through freeze; source commit performed after all checks, no source edits thereafter",
+    "fullCI": "not run; sole merger owns final prospective qualification"
+  },
+  "retained_diagnostics": {
+    "426-focus-matrix-green.log": "test compile tried private settings_visible; replaced with actual UI gear dismissal, no visibility relaxation",
+    "426-focus-matrix-green-v2.log": "missing history debug selector; added inert existing-control selector",
+    "426-browser-regressions.log": "82PASS4FAIL: inherited assertions required old auto-search focus/type fallthrough; updated to explicit-entry user contract while retaining drag/audition/device/generation assertions, then complete suite reran green"
+  },
+  "scope": "Real query/navigation focus separation in local browser handlers, not key-context-only boolean masking. Worker/paint no focus calls. Raw query/path identity, 416 case mapping, 411 selectAll/held drag, actual audition/offset preserved. No global mouse interception/model/audio/native/vendor changes.",
+  "known_limits": [
+    "Native physical pointer/IME/GPU acceptance open; no app/user-data actions",
+    "Separate2794/400 field-click focus-loss remains unresolved",
+    "Existing PCM declared Arc Unknown unsupported_wrapper build warning retained"
+  ],
+  "files": {
+    "426-browser-green-v2.log": "a663ff2c5ed9da05f5d2591b69d264cecc280311d3627e4346bb7aa10e6fbe4c",
+    "426-browser-regressions.log": "28a8fa5238b0d87b771a4b36d49808ad179a346792b90278d075ae9bd0939e09",
+    "426-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "426-final-checks.json": "58553d9266c129d5c5cada0ca1d74c883d2508336038ea697a6ad3f91f476b39",
+    "426-final-clippy.log": "bf9fd3c7ac11439d7f352a00977a28da3e5f385ad6cb42ab3786c7e0a09e7e19",
+    "426-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "426-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "426-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "426-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "426-focus-matrix-green-v2.log": "7314f83e1808589624a0ebb220d4d423c133001555001b2ff0f79a46625bf353",
+    "426-focus-matrix-green-v3.log": "228cb55514c18c4487e400baff2f73a0f66ce68b7872f8ab9dbb9d278780a697",
+    "426-focus-matrix-green.log": "533ca3a445ee9986ef2fc97016547c9e0eef4221235ce6b822d3a82c47b6fb38",
+    "426-original-focus-owner-red.log": "8482f8dd950be5a9952fd3e83a952ac961f0627a9e7523f3d2376d75b8f85cc9",
+    "426-original-focus-owner-test.rs": "45a0b80ec7041f313b15c78f0f4bcfc16591eb549b24a0d3b02b910f231212b8",
+    "426-original-red.log": "8482f8dd950be5a9952fd3e83a952ac961f0627a9e7523f3d2376d75b8f85cc9",
+    "426-original-test-registration.rs": "86aac0ab3010e23e2a484e1403c10edfc69b9381ce8c20ad978b6e8359c9faf9",
+    "426-original-typed-red.log": "cb6e748058ee0432eed0feb0d682b7a12662160618dcdf4d6026263fd6251cf5",
+    "426-original-typed-test.rs": "587b8a25edef38cfb8c61d2e486bf164119ff1ce5762b203f96c862cc0123d6e",
+    "before-after-hashes.json": "5f73683529aaaefd71f96fe662d274d6d32dffd797065521105c0c3322703724",
+    "integration-note.md": "e557bebcc2643f052d6c484be72d554df735cfc1032360779818b46bad09afa3",
+    "native-checklist.md": "9f1bba2b75e21604434beec25e968fead53321ab242a322f8194da93c9bc5991",
+    "original-focus-owner-test.patch": "5b8dda4e4c34cc9dccf2d55f9325b24d5c07612cbb240be133ee9d3a416f97a4",
+    "original-typed-test.patch": "4aeecb162faff6acb88729cbe203ec27701d3ea1a8e8394ad27aa36303b24fd1",
+    "source.patch": "4801c2b2073c2af1d9ca9a14c85ed270ae42a8cebd3eaa8c968a51b91dea6484"
+  }
+}

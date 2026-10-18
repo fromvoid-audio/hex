@@ -1,0 +1,788 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index b19f646e..89381cfa 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -173,6 +173,8 @@ pub(super) struct BrowserState {
+     error: Option<String>,
+     resizing: bool,
+     pub search: gpui::Entity<BrowserSearch>,
++    results_focus: gpui::FocusHandle,
++    // Selection/highlight activity, independent of actual query/navigation focus.
+     results_focused: bool,
+     selected_index: usize,
+     scroll: gpui::UniformListScrollHandle,
+@@ -249,6 +251,7 @@ impl BrowserState {
+             error: None,
+             resizing: false,
+             search,
++            results_focus: cx.focus_handle(),
+             results_focused: false,
+             selected_index: 0,
+             scroll: gpui::UniformListScrollHandle::new(),
+@@ -1233,11 +1236,9 @@ impl EditorView {
+             .focus_handle()
+             .is_focused(window)
+         {
+-            if self.browser.results_focused {
+-                "hex_browser"
+-            } else {
+-                "hex_browser_search"
+-            }
++            "hex_browser_search"
++        } else if self.browser.results_focus.is_focused(window) {
++            "hex_browser"
+         } else {
+             "hex_editor"
+         }
+@@ -1296,12 +1297,18 @@ impl EditorView {
+         cx.notify();
+     }
+ 
+-    pub(super) fn browser_previous(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
++    pub(super) fn browser_previous(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         self.move_browser_selection(false, cx);
++        if self.browser.results_focused {
++            self.browser.results_focus.focus(window);
++        }
+     }
+ 
+-    pub(super) fn browser_next(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
++    pub(super) fn browser_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         self.move_browser_selection(true, cx);
++        if self.browser.results_focused {
++            self.browser.results_focus.focus(window);
++        }
+     }
+ 
+     fn move_browser_selection(&mut self, next: bool, cx: &mut Context<Self>) {
+@@ -1367,6 +1374,7 @@ impl EditorView {
+             .read(cx)
+             .focus_handle()
+             .is_focused(window)
++            || self.browser.results_focus.is_focused(window)
+         {
+             self.reset_browser_results();
+             self.browser.search.update(cx, |input, cx| {
+@@ -1931,14 +1939,34 @@ impl EditorView {
+             )
+             .size_full(),
+         );
+-        div().flex().min_h_0().flex_shrink_0().child(panel).child(
+-            div()
+-                .w(px(4.0))
+-                .h_full()
+-                .flex_shrink_0()
+-                .min_h_0()
+-                .child(resize),
+-        )
++        div()
++            .track_focus(&self.browser.results_focus)
++            .on_mouse_down(
++                MouseButton::Left,
++                cx.listener(|view, _, window, cx| {
++                    // Only explicit text entry keeps editing focus. Descendant text
++                    // inputs stop this local bubble; no global pointer interception.
++                    if view.browser.open {
++                        view.browser.results_focus.focus(window);
++                    } else {
++                        view.focus.focus(window);
++                    }
++                    window.prevent_default();
++                    cx.notify();
++                }),
++            )
++            .flex()
++            .min_h_0()
++            .flex_shrink_0()
++            .child(panel)
++            .child(
++                div()
++                    .w(px(4.0))
++                    .h_full()
++                    .flex_shrink_0()
++                    .min_h_0()
++                    .child(resize),
++            )
+     }
+ 
+     fn browser_row(
+@@ -2042,9 +2070,7 @@ impl EditorView {
+                     }
+                     view.browser.selected_index = index;
+                     view.browser.results_focused = true;
+-                    view.browser
+-                        .search
+-                        .update(cx, |input, _| input.focus(window));
++                    view.browser.results_focus.focus(window);
+                     // Keep the editor's focusable ancestor from replacing the
+                     // explicit browser focus during this mouse-down's bubble.
+                     window.prevent_default();
+@@ -2159,9 +2185,7 @@ impl EditorView {
+                     MouseButton::Left,
+                     cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                         view.toggle_browser_folder(folder.clone(), event.modifiers.platform, cx);
+-                        view.browser
+-                            .search
+-                            .update(cx, |input, _| input.focus(window));
++                        view.browser.results_focus.focus(window);
+                         window.prevent_default();
+                         cx.stop_propagation();
+                     }),
+@@ -2236,9 +2260,7 @@ impl EditorView {
+                 cx.listener(move |view, _, window, cx| {
+                     view.browser.selected_index = index;
+                     view.browser.results_focused = true;
+-                    view.browser
+-                        .search
+-                        .update(cx, |input, _| input.focus(window));
++                    view.browser.results_focus.focus(window);
+                     window.prevent_default();
+                     cx.notify();
+                 }),
+diff --git a/crates/hex-ui/src/editor/browser/audition.rs b/crates/hex-ui/src/editor/browser/audition.rs
+index 25a76f72..a3a8af77 100644
+--- a/crates/hex-ui/src/editor/browser/audition.rs
++++ b/crates/hex-ui/src/editor/browser/audition.rs
+@@ -102,6 +102,7 @@ impl EditorView {
+             .on_mouse_down(
+                 MouseButton::Left,
+                 cx.listener(move |view, _, window, cx| {
++                    view.browser.results_focus.focus(window);
+                     window.prevent_default();
+                     cx.stop_propagation();
+                     action(view, cx);
+@@ -187,6 +188,7 @@ impl EditorView {
+             .on_mouse_down(
+                 MouseButton::Left,
+                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
++                    view.browser.results_focus.focus(window);
+                     window.prevent_default();
+                     cx.stop_propagation();
+                     if let (Some(path), Some(bounds)) = (&click_path, bounds.get())
+diff --git a/crates/hex-ui/src/editor/browser/layout.rs b/crates/hex-ui/src/editor/browser/layout.rs
+index 0e5239b3..e51eb73d 100644
+--- a/crates/hex-ui/src/editor/browser/layout.rs
++++ b/crates/hex-ui/src/editor/browser/layout.rs
+@@ -142,6 +142,7 @@ impl EditorView {
+             .child(
+                 browser_pending("‹")
+                     .id("browser-history-back")
++                    .debug_selector(|| "browser-history-back".to_owned())
+                     .tooltip(|_, cx| {
+                         cx.new(|_| super::super::transport::MiniTooltip {
+                             description: theme::text("back · history pending"),
+@@ -163,19 +164,12 @@ impl EditorView {
+                 div()
+                     .flex_1()
+                     .min_w_0()
+-                    .on_mouse_down(
+-                        MouseButton::Left,
+-                        cx.listener(|view, _, window, cx| {
+-                            if view.browser.results_focused {
+-                                view.browser.search.update(cx, |input, cx| {
+-                                    input.select_all_on_mouse_entry(window, cx)
+-                                });
+-                            }
++                    .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
++                        if event.button == MouseButton::Left {
+                             view.browser.results_focused = false;
+-                            window.prevent_default();
+                             cx.notify();
+-                        }),
+-                    )
++                        }
++                    }))
+                     .child(self.browser.search.clone()),
+             )
+             .child(self.browser_icon(
+@@ -267,9 +261,7 @@ impl EditorView {
+                         MouseButton::Left,
+                         cx.listener(move |view, _, window, cx| {
+                             view.select_browser_source(BrowserSection::Collection(index), cx);
+-                            view.browser
+-                                .search
+-                                .update(cx, |input, _| input.focus(window));
++                            view.browser.results_focus.focus(window);
+                             window.prevent_default();
+                             cx.notify();
+                         }),
+@@ -326,9 +318,7 @@ impl EditorView {
+                         MouseButton::Left,
+                         cx.listener(move |view, _, window, cx| {
+                             view.select_browser_source(section.clone(), cx);
+-                            view.browser
+-                                .search
+-                                .update(cx, |input, _| input.focus(window));
++                            view.browser.results_focus.focus(window);
+                             window.prevent_default();
+                             cx.notify();
+                         }),
+@@ -460,9 +450,7 @@ impl EditorView {
+                         MouseButton::Left,
+                         cx.listener(move |view, _, window, cx| {
+                             view.select_browser_source(BrowserSection::Place(path.clone()), cx);
+-                            view.browser
+-                                .search
+-                                .update(cx, |input, _| input.focus(window));
++                            view.browser.results_focus.focus(window);
+                             window.prevent_default();
+                             cx.notify();
+                         }),
+diff --git a/crates/hex-ui/src/editor/browser_focus_ui_test.rs b/crates/hex-ui/src/editor/browser_focus_ui_test.rs
+new file mode 100644
+index 00000000..5d6a82fa
+--- /dev/null
++++ b/crates/hex-ui/src/editor/browser_focus_ui_test.rs
+@@ -0,0 +1,295 @@
++//! Actual pointer/focus/input checks over private startup roots; no audio output.
++use super::*;
++
++fn fixture(
++    cx: &mut TestAppContext,
++) -> (
++    gpui::AnyWindowHandle,
++    gpui::Entity<EditorView>,
++    PreferencesTestDirectory,
++    std::path::PathBuf,
++) {
++    cx.update(crate::editor::bind_editor_keys);
++    let directory = PreferencesTestDirectory::new();
++    let samples = directory.0.join("samples");
++    std::fs::create_dir_all(samples.join("folder")).unwrap();
++    std::fs::write(samples.join("loop.wav"), mono_pcm_wav(24)).unwrap();
++    std::fs::write(samples.join("folder/child.wav"), mono_pcm_wav(24)).unwrap();
++    let bootstrap = cx.add_window(|_, _| Empty);
++    let handle = *bootstrap;
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.replace_root(cx, |window, cx| {
++                EditorView::new_for_test_with_browser_directory(
++                    window,
++                    cx,
++                    Service::new(48_000, 32, 8_000_000).unwrap(),
++                    &directory.0,
++                )
++            })
++        })
++        .unwrap();
++    editor.read_with(cx, |view, _| {
++        assert_eq!(view.browser.directory, samples);
++        assert_eq!(view.browser.places, vec![samples.clone()]);
++        assert_eq!(view.sample_roots(), vec![samples.clone()]);
++    });
++    (handle, editor, directory, samples)
++}
++
++#[gpui::test]
++fn browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _directory, samples) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    for mode in [
++        crate::editor::EditorMode::Arrangement,
++        crate::editor::EditorMode::Session,
++    ] {
++        for target in [
++            "browser-section-samples",
++            "browser-section-devices",
++            "browser-section-projects",
++            "browser-section-all",
++            "browser-collection-0",
++            "browser-place-0",
++            "browser-entry-0",
++            "browser-entry-1",
++            "browser-disclosure-0",
++            "browser-control-⚙",
++            "browser-sidebar-resize",
++            "browser-resize-handle",
++            "browser-sidebar",
++            "browser-selection-preview",
++            "browser-history-back",
++            "browser-audition-auto",
++            "browser-device-effect-hex.utility",
++        ] {
++            editor.update(visual, |view, cx| {
++                view.mode = mode;
++                view.browser.auto_audition = false;
++                view.browser.search.update(cx, |input, cx| input.clear(cx));
++                view.select_browser_source(BrowserSection::Place(samples.clone()), cx);
++                if target == "browser-device-effect-hex.utility" {
++                    view.select_browser_source(BrowserSection::Instruments, cx);
++                }
++                cx.notify();
++            });
++            visual.run_until_parked();
++            let search = visual.debug_bounds("browser-search").unwrap();
++            visual.simulate_click(search.center(), Modifiers::default());
++            visual.update(|window, cx| {
++                editor.read_with(cx, |view, cx| {
++                    assert!(
++                        view.browser
++                            .search
++                            .read(cx)
++                            .focus_handle()
++                            .is_focused(window)
++                    )
++                })
++            });
++            let bounds = visual
++                .debug_bounds(target)
++                .unwrap_or_else(|| panic!("missing target {target}"));
++            let hit = match target {
++                "browser-sidebar" => point(bounds.center().x, bounds.bottom() - px(4.0)),
++                "browser-selection-preview" => bounds.origin + point(px(5.0), px(5.0)),
++                _ => bounds.center(),
++            };
++            visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
++            if target.ends_with("resize") || target.ends_with("resize-handle") {
++                visual.simulate_mouse_move(
++                    bounds.center() + point(px(5.0), px(0.0)),
++                    MouseButton::Left,
++                    Modifiers::default(),
++                );
++            }
++            let release = if target.ends_with("resize") || target.ends_with("resize-handle") {
++                hit + point(px(5.0), px(0.0))
++            } else {
++                hit
++            };
++            visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
++            visual.run_until_parked();
++            let query = editor.read_with(visual, |view, cx| {
++                view.browser.search.read(cx).content.clone()
++            });
++            visual.simulate_input("qxj");
++            editor.read_with(visual, |view, cx| {
++                assert_eq!(
++                    view.browser.search.read(cx).content,
++                    query,
++                    "typing after {target} changed query"
++                )
++            });
++            visual.update(|window, cx| {
++                editor.read_with(cx, |view, cx| {
++                    assert!(
++                        !view
++                            .browser
++                            .search
++                            .read(cx)
++                            .focus_handle()
++                            .is_focused(window),
++                        "{target} must not own query text focus"
++                    );
++                    assert_eq!(view.browser_key_context(window, cx), "hex_browser");
++                })
++            });
++            editor.update(visual, |view, cx| {
++                assert_eq!(
++                    view.browser.search.read(cx).content,
++                    query,
++                    "typing after {target} changed query"
++                );
++                view.refresh_sample_catalog(cx);
++                view.request_browser_scan(samples.clone(), cx);
++            });
++            visual.run_until_parked();
++            for _ in 0..4 {
++                visual
++                    .executor()
++                    .advance_clock(std::time::Duration::from_millis(16));
++                visual.run_until_parked();
++            }
++            visual.update(|window, cx| {
++                editor.read_with(cx, |view, cx| {
++                    assert!(
++                        !view
++                            .browser
++                            .search
++                            .read(cx)
++                            .focus_handle()
++                            .is_focused(window),
++                        "worker restored query focus after {target}"
++                    );
++                    assert_eq!(view.browser.search.read(cx).content, query);
++                    assert!(view.pending_requests.is_empty());
++                    assert!(view.pending_audio_commands.is_empty());
++                })
++            });
++            let search = visual.debug_bounds("browser-search").unwrap();
++            visual.simulate_click(search.center(), Modifiers::default());
++            visual.simulate_input("loop");
++            editor.read_with(visual, |view, cx| {
++                assert_eq!(view.browser.search.read(cx).content, "loop")
++            });
++            if target == "browser-control-⚙" {
++                let gear = visual.debug_bounds(target).unwrap();
++                visual.simulate_click(gear.center(), Modifiers::default());
++            }
++        }
++    }
++}
++
++#[gpui::test]
++fn browser_query_entry_navigation_escape_and_close_have_real_focus_owners(cx: &mut TestAppContext) {
++    use gpui::EntityInputHandler;
++    let (handle, editor, _directory, samples) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    editor.update(visual, |view, cx| {
++        view.browser.auto_audition = false;
++        view.select_browser_source(BrowserSection::Place(samples.clone()), cx);
++    });
++    visual.run_until_parked();
++    let search = visual.debug_bounds("browser-search").unwrap();
++    visual.simulate_click(search.center(), Modifiers::default());
++    visual.simulate_input("loop");
++    visual.simulate_keystrokes("down");
++    visual.update(|window, cx| {
++        editor.read_with(cx, |view, cx| {
++            assert_eq!(view.browser_key_context(window, cx), "hex_browser");
++            assert!(
++                !view
++                    .browser
++                    .search
++                    .read(cx)
++                    .focus_handle()
++                    .is_focused(window)
++            );
++            assert!(view.browser.results_focus.is_focused(window));
++            assert!(view.browser.results_focused);
++        })
++    });
++    visual.simulate_input("qxj");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "loop")
++    });
++    visual.simulate_keystrokes("escape");
++    visual.update(|window, cx| {
++        editor.read_with(cx, |view, cx| {
++            assert!(view.browser.search.read(cx).content.is_empty());
++            assert_eq!(view.browser_key_context(window, cx), "hex_browser");
++        })
++    });
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("loop");
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("child");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "child")
++    });
++    let caret = visual.update(|window, cx| {
++        let input = editor.read(cx).browser.search.clone();
++        input.update(cx, |input, cx| {
++            input
++                .bounds_for_range(2..2, search, window, cx)
++                .unwrap()
++                .center()
++        })
++    });
++    visual.simulate_click(caret, Modifiers::default());
++    visual.simulate_input("Z");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "chzild")
++    });
++    editor.update(visual, |view, cx| view.refresh_sample_catalog(cx));
++    visual.run_until_parked();
++    visual.update(|window, cx| {
++        editor.read_with(cx, |view, cx| {
++            assert_eq!(view.browser_key_context(window, cx), "hex_browser_search")
++        })
++    });
++    let close = visual.debug_bounds("browser-control-×").unwrap();
++    visual.simulate_click(close.center(), Modifiers::default());
++    visual.update(|window, cx| {
++        editor.read_with(cx, |view, cx| {
++            assert!(!view.browser.open);
++            assert!(view.focus.is_focused(window));
++            assert!(
++                !view
++                    .browser
++                    .search
++                    .read(cx)
++                    .focus_handle()
++                    .is_focused(window)
++            );
++        })
++    });
++    visual.simulate_input("q");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "chzild")
++    });
++    visual.simulate_keystrokes("cmd-alt-b");
++    visual.update(|window, cx| {
++        editor.read_with(cx, |view, cx| {
++            assert!(view.browser.open);
++            assert!(
++                !view
++                    .browser
++                    .search
++                    .read(cx)
++                    .focus_handle()
++                    .is_focused(window)
++            );
++        })
++    });
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("loop");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.search.read(cx).content, "loop")
++    });
++}
+diff --git a/crates/hex-ui/src/editor/browser_input.rs b/crates/hex-ui/src/editor/browser_input.rs
+index 46b23828..1c3dd232 100644
+--- a/crates/hex-ui/src/editor/browser_input.rs
++++ b/crates/hex-ui/src/editor/browser_input.rs
+@@ -84,18 +84,6 @@ impl BrowserSearch {
+         self.select_all(&BrowserSelectAll, window, cx);
+     }
+ 
+-    // Results share this input's FocusHandle. Their explicit mouse entry into
+-    // text mode selects all too, while retaining the current down-point for drag.
+-    pub(super) fn select_all_on_mouse_entry(
+-        &mut self,
+-        window: &mut Window,
+-        cx: &mut Context<Self>,
+-    ) {
+-        let selection = self.mouse_selection;
+-        self.focus_and_select_all(window, cx);
+-        self.mouse_selection = selection;
+-    }
+-
+     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
+         self.mouse_selection = None;
+         self.content.clear();
+@@ -315,9 +303,8 @@ impl BrowserSearch {
+             origin: event.position,
+             dragging: false,
+         });
+-        if self.clip_name {
+-            cx.stop_propagation();
+-        }
++        // The field owns this click; its browser parent owns non-text clicks.
++        cx.stop_propagation();
+     }
+ 
+     fn mouse_move(
+@@ -781,7 +768,9 @@ impl Element for BrowserSearchElement {
+             ElementInputHandler::new(bounds, self.input.clone()),
+             cx,
+         );
+-        if let Some(selection) = state.selection.take() {
++        if focus.is_focused(window)
++            && let Some(selection) = state.selection.take()
++        {
+             window.paint_quad(selection);
+         }
+         if let Some(line) = state.line.take() {
+diff --git a/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+index 80eb5389..73f002f3 100644
+--- a/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+@@ -157,6 +157,22 @@ fn search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins(cx: &mut
+         "category/layout changes retain text selection"
+     );
+     visual.simulate_input("X");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(
++            view.browser.search.read(cx).content,
++            "kick hats",
++            "category click must leave actual text editing"
++        )
++    });
++    let field = visual.debug_bounds("browser-search").unwrap();
++    visual.simulate_click(field.center(), Modifiers::default());
++    assert_eq!(selection(&editor, visual), 0..9);
++    let start = caret_point(&editor, visual, 1);
++    let end = caret_point(&editor, visual, 4);
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    visual.simulate_input("X");
+     editor.read_with(visual, |view, cx| {
+         assert_eq!(view.browser.search.read(cx).content, "kx hats")
+     });
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 43042ffe..e625364c 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -354,7 +354,7 @@ fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
+ }
+ 
+ #[gpui::test]
+-fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContext) {
++fn command_f_category_click_keeps_query_but_moves_real_focus_in_session(cx: &mut TestAppContext) {
+     cx.update(super::super::bind_editor_keys);
+     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+     editor.update(cx, |view, cx| {
+@@ -375,12 +375,19 @@ fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContex
+             editor.read_with(cx, |view, cx| {
+                 assert_eq!(
+                     view.browser_key_context(window, cx),
+-                    "hex_browser_search",
++                    "hex_browser",
+                     "category {category}"
+                 )
+             });
+         });
+         visual.simulate_input("y");
++        editor.read_with(visual, |view, cx| {
++            assert_eq!(view.browser.search.read(cx).content, "utilit")
++        });
++        let field = visual.debug_bounds("browser-search").unwrap();
++        visual.simulate_click(field.center(), Modifiers::default());
++        visual.simulate_keystrokes("right");
++        visual.simulate_input("y");
+         editor.read_with(visual, |view, cx| {
+             assert_eq!(view.browser.search.read(cx).content, "utility")
+         });
+@@ -393,7 +400,7 @@ fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContex
+ }
+ 
+ #[gpui::test]
+-fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
++fn command_f_escape_keeps_navigation_until_explicit_text_entry(cx: &mut TestAppContext) {
+     cx.update(super::super::bind_editor_keys);
+     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+     let visual = &mut VisualTestContext::from_window(handle, cx);
+@@ -413,9 +420,23 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
+     visual.update(|window, cx| {
+         editor.read_with(cx, |view, cx| {
+             assert!(!view.browser.results_focused);
+-            assert_eq!(view.browser_key_context(window, cx), "hex_browser_search");
++            assert_eq!(view.browser_key_context(window, cx), "hex_browser");
++            assert!(
++                !view
++                    .browser
++                    .search
++                    .read(cx)
++                    .focus_handle()
++                    .is_focused(window)
++            );
+         });
+     });
++    visual.simulate_input("ignored");
++    editor.read_with(visual, |view, cx| {
++        assert!(view.browser.search.read(cx).content.is_empty())
++    });
++    let field = visual.debug_bounds("browser-search").unwrap();
++    visual.simulate_click(field.center(), Modifiers::default());
+     visual.simulate_keystrokes("right");
+     visual.simulate_input("loop");
+     editor.read_with(visual, |view, cx| {
+@@ -3247,9 +3268,27 @@ fn browser_waveform_click_is_manual_positioned_audition_and_retains_focus(cx: &m
+             bounds.left() + bounds.size.width * fraction,
+             bounds.center().y,
+         );
++        visual.update(|window, cx| {
++            editor.read_with(cx, |view, cx| {
++                view.browser.search.read(cx).focus(window);
++            })
++        });
+         visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+         visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+         generation += 1;
++        visual.update(|window, cx| {
++            editor.read_with(cx, |view, cx| {
++                assert!(
++                    !view
++                        .browser
++                        .search
++                        .read(cx)
++                        .focus_handle()
++                        .is_focused(window)
++                );
++                assert_eq!(view.browser_key_context(window, cx), "hex_browser");
++            })
++        });
+         editor.read_with(&visual, |view, _| {
+             assert_eq!(view.browser.playback_generation, generation);
+             assert!((view.browser.playback_fraction - fraction).abs() < 0.02);
+@@ -3402,7 +3441,16 @@ fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestA
+             visual.run_until_parked();
+             visual.update(|window, cx| {
+                 editor.read_with(cx, |view, cx| {
+-                    assert_eq!(view.browser_key_context(window, cx), "hex_browser_search");
++                    assert_eq!(view.browser_key_context(window, cx), "hex_browser");
++                    assert!(
++                        !view
++                            .browser
++                            .search
++                            .read(cx)
++                            .focus_handle()
++                            .is_focused(window)
++                    );
++                    assert!(view.browser.results_focus.is_focused(window));
+                 })
+             });
+             let source = editor.read_with(&visual, |view, _| view.browser.section.clone());
+@@ -4132,3 +4180,6 @@ fn browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query(cx: &mut
+ 
+ #[path = "browser_search_selection_ui_test.rs"]
+ mod search_selection;
++
++#[path = "browser_focus_ui_test.rs"]
++mod explicit_focus;
+diff --git a/docs/browser-places.md b/docs/browser-places.md
+index b168bf43..b69d63e8 100644
+--- a/docs/browser-places.md
++++ b/docs/browser-places.md
+@@ -64,8 +64,9 @@ case-insensitively; indexed samples use the sample library's multi-term path mat
+ All ignores the Samples source-folder filter and deduplicates original WAV paths
+ across the catalog and folder, retaining folder WAVs outside indexed roots. Samples, devices and projects remain available
+ as category filters. Repeating Command-F from search/results replaces the query;
+-Escape clears it and restores text mode even if the query was already empty.
+-Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
++Escape clears the query while retaining its current text or navigation owner;
++it never re-enters text editing from results. Category clicks retain the query
++and move actual focus to browser navigation, including in Session. Active IME composition is unmarked before selecting the whole
+ query. Moving the caret or text selection leaves the result viewport unchanged;
+ only a changed query resets it. Clicking the search field from another control selects the entire query so the
+ next typed text replaces it. Once already focused, clicks place the caret and
+@@ -83,7 +84,7 @@ numeric drafts pass through the existing finalization barrier: valid values comm
+ before focus moves; invalid values preserve their draft and focus for repair.
+ Device rows retain drag-to-track/rail behavior; Enter on an
+ all-view device displays that instruction rather than importing a file. Clicking a
+-device keeps browser keyboard focus in Session too. The first arrow key selects
++device keeps browser navigation focus in Session too. The first arrow key selects
+ the first match; subsequent arrows move through results. Query/category changes
+ reveal the first row. Accepted background scans preserve the selected file path
+ or device identity when new files change row offsets.
+@@ -125,3 +126,16 @@ Select All, missing drag selection and splitting a combining grapheme. This is
+ new source selection behavior, not proof of resolution or native acceptance for
+ separate mouse-focus issue #2794 / draft PR #400. Native mouse/clipboard/IME and
+ shortcut checks remain coordinator-owned; no app replacement occurs in cloud.
++
++## explicit search entry — pulse2820 / PR426
++
++Only the search field itself and Command-F enter query editing. Sources, Places,
++folders, disclosures, sample/device rows, blank browser space, toolbar, preview
++controls and resize handles use a distinct non-text navigation focus owner.
++Down/Up from query results transfer to that owner; returning to the field selects
++the query on entry and retains ordinary focused caret/drag selection thereafter.
++Selection/highlight state is independent of the actual input handle. Pointer
++handlers run in their local browser scope; painting/workers never restore focus.
++Close returns focus to the editor. This is separate from the unresolved native
++field-click focus-loss report2794 and the future double-click refinement2817.
++Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
+diff --git a/todo.md b/todo.md
+index 7c5393ce..23ce9532 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5166,3 +5166,16 @@ IME selection remains original UTF-16. Canonical rename Undo/Redo/save/reopen,
+ actual typing/paste/cut/copy and marked Unicode/caret/scroll regressions cover the
+ boundary. Source-path casing2649 stays intact. Dedicated merger owns final
+ integration/full CI/merge; native app/IME/clipboard acceptance remains open.
++
++## explicit browser query focus — pulse2820 / PR426, 18 october 2026
++
++Actual category click left the search handle focused and typed qxj into its query.
++Navigation now owns a separate non-text focus handle; source/row/disclosure/blank/
++control/resize clicks leave query editing. Preview handlers explicitly transfer
++focus before their existing stopped bubble. Only field/CmdF entry edits text;
++Up/Down move into navigation and Escape keeps the current owner. Local browser
++events preserve held drag, query selection and backend/sample behavior. Private
++startup-root rendered matrix checks both layouts, typing isolation, workers/ticks,
++explicit return and close; prior focus assertions now reflect this new contract
++while retaining their audition/generation/device/drag assertions. Native acceptance
++and final prospective full CI/integration remain with root/sole merger.
