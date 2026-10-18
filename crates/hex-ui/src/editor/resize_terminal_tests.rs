@@ -426,3 +426,86 @@ fn terminal_uses_current_loop_and_open_gain_lane_display_extent(cx: &mut TestApp
         });
     }
 }
+
+#[gpui::test]
+fn restart_offline_completion_cannot_retire_a_later_resize_ordinal(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let mut visual = VisualTestContext::from_window(f.window, cx);
+    f.editor.update(&mut visual, |v, _| {
+        assert!(v.restart_audio_for_current_document());
+        // Service::new has NO audio adapter: this exercises the actual queued
+        // completion without opening an OS device or substituting a fake ack.
+        let resize = install(v, f.clip);
+        assert!(v.enqueue(resize));
+        let submitted = v.worker_requests_pending;
+        let ordinal = v.pending_trim.as_ref().unwrap().remaining;
+        let restart = event(&v.service);
+        assert!(restart.request_complete);
+        assert_eq!(restart.error.as_deref(), Some("audio adapter unavailable"));
+        v.receive(restart);
+        eprintln!("restart offline earlier completion: counted={submitted} resize_ordinal={ordinal:?} owner_retained={}", v.pending_trim.is_some());
+        assert!(v.pending_trim.is_some(), "actual earlier restart completion cannot be the resize terminal");
+        assert_eq!(submitted, 2, "actual restart is counted exactly once alongside actual resize");
+        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(1));
+        assert_eq!(v.viewport, Some(OWNED));
+        v.receive(ok(&v.service));
+        normalized(v);
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+}
+
+#[gpui::test]
+fn restart_offline_pending_work_blocks_actual_resize_capture_until_completion(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    let mut visual = VisualTestContext::from_window(f.window, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let restart = f.editor.update(&mut visual, |v, _| {
+        assert!(v.restart_audio_for_current_document());
+        // Hold the REAL worker event outside the UI receiver until after input,
+        // so controller polling cannot turn this into a timing-dependent race.
+        let event = event(&v.service);
+        assert!(event.request_complete);
+        assert_eq!(event.error.as_deref(), Some("audio adapter unavailable"));
+        event
+    });
+    let selector = Box::leak(format!("clip-trim-right-{}", f.clip.value()).into_boxed_str());
+    let down = visual.debug_bounds(selector).unwrap().center();
+    let moved = gpui::point(down.x - gpui::px(12.0), down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    f.editor.read_with(&visual, |v, _| {
+        assert!(
+            v.active_trim_drag.is_none(),
+            "unacknowledged real restart fences actual pointer admission"
+        );
+        assert!(v.pending_trim.is_none());
+        assert_eq!(v.worker_requests_pending, 1);
+    });
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    f.editor.update(&mut visual, |v, cx| {
+        v.receive(restart);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    f.editor
+        .read_with(&visual, |v, _| assert!(v.active_trim_drag.is_some()));
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    f.editor.update(&mut visual, |v, _| {
+        assert_eq!(v.worker_requests_pending, 0);
+        v.restart_request_id = u64::MAX;
+        assert!(
+            !v.restart_audio_for_current_document(),
+            "real exhausted-id refusal submits nothing"
+        );
+        assert_eq!(v.worker_requests_pending, 0, "no count on refusal");
+    });
+}

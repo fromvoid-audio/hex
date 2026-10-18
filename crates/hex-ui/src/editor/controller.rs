@@ -142,6 +142,7 @@ impl EditorView {
         };
         match self.service.submit(request) {
             Ok(()) => {
+                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
                 self.pending_restart_request = Some((project_generation, request_id));
                 self.status = "preparing audio output".into();
                 true

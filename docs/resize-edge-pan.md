@@ -22,7 +22,9 @@ canonical-valid viewport within that timer step, found in bounded integer-frame
 probes. It does not discard the remaining valid travel or relax the positive
 interval/source rules. Prepared warp capability limits (including the existing
 1/8–8 stretch range) still refuse unsupported releases atomically; model-positive
-preview alone does not establish preparation acceptance. MIDI retains its existing canonical clamp. Grid
+preview alone does not establish preparation acceptance. Audio and MIDI timer
+steps consume only the portion applied by the canonical source/minimum clamp.
+Grid
 quantization does not prematurely stop held scrolling. Preview and release use
 the current snap modifier; Shift still chooses the existing audio stretch path.
 No separate timer, DSP, waveform-cache, fade gesture or source mapping is added.
@@ -75,3 +77,32 @@ preview metadata and display horizon. It must retain one key, counter and
 viewport owner; its original preview/Undo tests and old native receipts stay
 separate until the composed exact source is checked. Dedicated merger owns
 combined qualification; physical viewport/capture/audio acceptance remains open.
+
+## Returned FIFO and partial-clamp checks
+
+Actual successful `RestartAudio` submission increments the same existing worker
+pending count exactly once. Its earlier completion cannot retire a later trim,
+and outstanding restart work fences new trim capture. Real offline Service tests
+exercise the normal `audio adapter unavailable` completion without opening a
+backend or substituting acknowledgments; refused submissions add no count.
+
+A valid but clamped full timer candidate is distinct from a fully applied step.
+The bounded prefix search finds the first viewport that reaches that same
+canonical clip, so the view moves only by the actually applied edge displacement.
+Unconstrained movement stays constant-work; each integer search takes at most
+64 metadata-only probes. Real nonloop audio-source and MIDI-minimum tests cover
+partial steps, stationary no-drift, release and Undo. No model minimum, snap,
+source limit or prepared-DSP admission bound is relaxed.
+
+The MIDI model's minimum is one Q32 beat unit. At the tested tempo its endpoints
+both project to integer frame96000, and existing painting omits that zero-frame
+rectangle. The regression asserts this exact projection and actual minimum
+release/Undo, not invented visible geometry. Existing nonzero-extent rendered
+cases still check alignment. This is not a new sub-frame rendering solution.
+
+An unrelated lower audio-event editor must not take focus on an outside release
+when it owns no gesture: doing so cancels a valid Arrangement trim before drop.
+Its outside handler now changes focus only when it actually retires its own
+audio-event gesture. Active outside cancellation still retains event focus,
+clears its preview and submits no edit. Deliberate foreign-focus trim cancellation
+remains unchanged.
