@@ -1,0 +1,26 @@
+{
+  "source": "503f9c78e614196742d012b9dbfee693a02427ec",
+  "tree": "088e19558baa15368653965d91a436124fee7bba",
+  "filename": "hex-sampler-503f9c78-utility-cost-evidence.tar.gz",
+  "bytes": 11433,
+  "sha256": "e91d345f559e274cc72641fa669af9ef1ce2c963c815426182f5f6545f6d9424",
+  "members": 10,
+  "payloads": 9,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility.rs",
+      "before": "9b646f33823263af4cc64de9c07ae100577374061c0870354bf4a98786e85f1d",
+      "after": "4c28ae3a8c437b4600004a7e2ac9354015c81379089e5a9b079290d2effd828e"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility/allowance.rs",
+      "before": "38f29910c6214aa5ee9f1bde3b8d19dd91ea71109292b11774b461f149e1682d",
+      "after": "c73c2472c3f4bbb3836ab6b0b629c42d9c58d41732d6c06603e18dd1f2e5f3e6"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility/allowance/tests.rs",
+      "before": "051e55c03d798071ff645610bd742952631a120bfb32c67ac1e1c17601ca16c1",
+      "after": "41287a3012cb36133e7ec0112a05dc6c4aec9f178e19b23e877b229279b191f5"
+    }
+  ]
+}
