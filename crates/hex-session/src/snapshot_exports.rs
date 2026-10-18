@@ -10,7 +10,8 @@ mod family;
 mod storage;
 mod transport;
 pub use family::{
-    SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyQueries, SnapshotProducerKey,
+    SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyInventoryGuard,
+    SnapshotFamilyQueries, SnapshotProducerKey,
 };
 pub use transport::{
     SnapshotEventReads, SnapshotReadCapability, SnapshotReadContinuation, SnapshotReadOperations,

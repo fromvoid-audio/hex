@@ -638,3 +638,9 @@ pub(super) fn advance_registered_family_on_control() {
 
 #[cfg(test)]
 mod tests;
+
+mod inventory;
+pub use inventory::{
+    RetainedFamilyInventory, RetainedFamilyInventoryIncarnation, RetainedFamilyInventoryPhase,
+    RetainedFamilyInventorySlot, try_retained_family_inventory_on_control,
+};

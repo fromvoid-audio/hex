@@ -1,7 +1,7 @@
 //! Concrete Session adapter payload for the existing lifecycle family hook.
 //! No audio/GPUI edge, owning child export, registry admission or byte release.
 use super::*;
-use std::sync::{RwLock, TryLockError};
+use std::sync::{RwLock, RwLockReadGuard, TryLockError};
 
 /// Exactly one active producer receives this correlation at construction.
 /// It carries no family/snapshot owner and cannot fabricate a read capability.
@@ -22,7 +22,53 @@ pub struct SessionExportFamily {
     records: RwLock<SnapshotExportRecords>,
     abandoned: AtomicBool,
 }
+/// Control-only structural inventory guard. No records, model, waveform owner
+/// or mutable payload escapes. Atomics for ACK/derive/abandon are NOT frozen.
+/// Kept on its acquiring thread; outer job guard must outlive this guard.
+/// ```compile_fail
+/// fn transfer(guard: hex_session::snapshot_exports::SnapshotFamilyInventoryGuard<'static>) {
+///     std::thread::spawn(move || drop(guard));
+/// }
+/// ```
+pub struct SnapshotFamilyInventoryGuard<'a> {
+    records: RwLockReadGuard<'a, SnapshotExportRecords>,
+}
+impl SnapshotFamilyInventoryGuard<'_> {
+    pub fn inventory_revision(&self) -> u64 {
+        self.records.inventory_revision()
+    }
+    pub fn snapshot_count(&self) -> usize {
+        self.records
+            .snapshots
+            .iter()
+            .filter(|record| record.snapshot.is_some())
+            .count()
+    }
+    pub fn visit_selected_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.records.visit_selected_storage_on_control(ledger)
+    }
+}
 impl SessionExportFamily {
+    /// Acquire AFTER all actual outer slots and BEFORE ledger/native barrier.
+    /// Poison refuses. Failure consumes no source/reader and changes no custody.
+    /// ```compile_fail
+    /// fn escape(family: &hex_session::snapshot_exports::SessionExportFamily)
+    ///     -> hex_session::snapshot_exports::SnapshotFamilyInventoryGuard<'static> {
+    ///     family.try_inventory_guard_on_control().unwrap()
+    /// }
+    /// ```
+    pub fn try_inventory_guard_on_control(
+        &self,
+    ) -> Result<SnapshotFamilyInventoryGuard<'_>, ExportRecordError> {
+        let records = self.records.try_read().map_err(|error| match error {
+            TryLockError::WouldBlock => ExportRecordError::Busy,
+            TryLockError::Poisoned(_) => ExportRecordError::Stale,
+        })?;
+        Ok(SnapshotFamilyInventoryGuard { records })
+    }
     pub fn try_new_on_control(
         limits: SnapshotExportReservation,
     ) -> Result<(Self, SnapshotProducerKey), ExportRecordError> {
@@ -353,5 +399,70 @@ mod tests {
             other.abandon_on_control(&producer),
             Err(ExportRecordError::Stale)
         );
+    }
+}
+
+#[cfg(test)]
+mod inventory_guard_tests {
+    use super::*;
+    #[test]
+    fn structural_snapshot_guard_blocks_insertion_but_preserves_durable_ack_and_abandonment() {
+        let (mut family, producer) =
+            SessionExportFamily::try_new_on_control(SnapshotExportReservation {
+                snapshot_records: 2,
+                read_records: 2,
+                max_bookkeeping_bytes: 16_384,
+            })
+            .unwrap();
+        let session = crate::Session::new(48_000, 8, 1024).unwrap();
+        let view = |revision| {
+            crate::service::view_state_owned(
+                &session,
+                hex_engine::empty_midi_preview_on_control(),
+                revision,
+                1,
+                false,
+                None,
+            )
+        };
+        let snapshot = family
+            .insert_on_control(&producer, &mut Some(view(7)))
+            .unwrap();
+        let read = family.reserve_read_on_control(&producer, snapshot).unwrap();
+        let mut refused = Some(view(8));
+        let address = std::ptr::from_ref(&refused.as_ref().unwrap().project);
+        let guard = family.try_inventory_guard_on_control().unwrap();
+        let revision = guard.inventory_revision();
+        assert_eq!(guard.snapshot_count(), 1);
+        assert_eq!(
+            family.insert_on_control(&producer, &mut refused),
+            Err(ExportRecordError::Busy)
+        );
+        assert_eq!(
+            address,
+            std::ptr::from_ref(&refused.as_ref().unwrap().project)
+        );
+        assert_eq!(
+            family.read_with(&read, |snapshot| snapshot.revision()),
+            Ok(7)
+        );
+        family.release_read(read).unwrap();
+        family.abandon_on_control(&producer).unwrap();
+        assert_eq!(guard.inventory_revision(), revision);
+        assert_eq!(
+            guard.snapshot_count(),
+            1,
+            "ACK does not remove the structural owner"
+        );
+        assert!(
+            family.abandoned.load(Ordering::Acquire),
+            "inner guard is not an atomic cancellation freeze"
+        );
+        drop(guard);
+        assert_eq!(
+            family.cleanup_one_on_control(),
+            Ok(SnapshotFamilyCleanup::Disposed)
+        );
+        assert!(refused.is_some());
     }
 }

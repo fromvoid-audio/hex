@@ -99,6 +99,18 @@ impl RetainedControlJob {
     ) -> Option<R> {
         self.job.payload().downcast_ref::<T>().map(inspect)
     }
+    /// Lifetime-bound ACTUAL payload dispatch for the control inventory adapter.
+    /// This is not UI read access or a storage-completeness declaration. T may
+    /// contain cloneable owners; only the audited closed adapter may qualify it.
+    /// No mutable payload, replacement, Box or constructor receipt escapes.
+    /// ```compile_fail
+    /// fn escape(job: &hex_engine::RetainedControlJob) -> &'static String {
+    ///     job.borrow_payload_on_control::<String>().unwrap()
+    /// }
+    /// ```
+    pub fn borrow_payload_on_control<T: 'static>(&self) -> Option<&T> {
+        self.job.payload().downcast_ref::<T>()
+    }
     /// Dedicated control cleanup only; no mutable payload or Box escapes.
     /// Caller latches panics/errors and never retries a partial destructor.
     pub fn step_on_control(

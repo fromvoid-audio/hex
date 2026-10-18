@@ -167,3 +167,47 @@ path. The oracle awaits native compilation/execution; no allocation/runtime
 result follows from source inspection. Its test serialization uses the existing
 two-slot table unchanged, with actual control retirement before releasing the
 fixture gate. No backend or GUI is opened.
+
+## All-family guard boundary (primary22146)
+
+The first implementation acquires every configured actual outer slot in index
+order, including vacant slots. A vacancy is protected against reservation or
+registration during inspection. The pre-reserved guard Vec checks actual returned
+capacity against its component scratch allowance before acquiring any guards;
+failure releases only inspection guards and preserves sources/custody. Inline
+headers, backing capacity, sealed Box bodies, inner lists/records and all other
+roots remain separate charges within the existing numerical limits.
+
+Slot views expose borrowed actual job/phase/incarnation/failure/reservation facts.
+Reserved, failed, poisoned, panic-bearing or consumed states cannot qualify intact
+first-graph custody. A failed-step job may remain inspectable diagnostically;
+consumed final-Drop reservation is not an inspectable body or freed bytes. Active
+phase/type dispatch does not qualify payload children. Checked opaque incarnation
+observations are correlation, never reusable publication permits.
+
+The narrow engine control payload borrow exists only to acquire the concrete
+Session inner inventory guard. It exposes no mutation or Box, but generic T can
+contain cloneable owners; it must never enter UI capability dispatch or count as
+provider completeness. Inner guards expose selected traversal and scalar queries,
+not records/ViewState/owning children. They stay on their acquiring thread and
+cannot outlive their actual payload/outer guard. Inner shared guards freeze
+structural owners, not read-release/derivation or independent abandonment atomics.
+Durable ACK remains available, and existing cancellation publication linearization
+is still required.
+
+New component oracles cover three actual fresh scalar jobs plus a protected
+vacant slot, all-slot writer refusal, actual guard/table/Box bytes, scratch
+exact/minus-one, stale incarnation, partial-acquisition contention/poison custody,
+reserved/failed/panic/consumed refusal, and an actual Session inner guard allowing
+ACK/abandon while refusing insertion without source loss. They await runtime
+execution; scalar protocol fixtures are not three fully admitted Sampler graphs.
+Compile-fail tests cover actual payload/inner guard lifetime, acquiring-thread
+restriction and borrowed-slot/drop order.
+
+The non-static inner guard Vec cannot use the current Any/'static Vec ledger
+observer. This exact typing limitation is primary follow-up22152. No proxy byte
+claim, static cast, self-referential aggregate or alternate observer has been
+implemented pending its narrow resolution. The production all-family adapter,
+complete joint peak, cancellation-safe native publication and full Sampler
+admission remain open. The established order stays all outers, all inners, ledger,
+then the existing short native barrier last, with guards held throughout.
