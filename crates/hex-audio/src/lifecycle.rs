@@ -17,6 +17,8 @@ use std::{
     time::Duration,
 };
 
+pub(crate) mod retained_families;
+
 static OCCUPIED: AtomicBool = AtomicBool::new(false);
 static OPEN_STATE: OnceLock<Arc<OpenState>> = OnceLock::new();
 static SERVICE: OnceLock<Result<SyncSender<LifecycleMessage<Opened, Retirement>>, String>> =
@@ -467,8 +469,24 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
 fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
+    try_open: impl FnMut(Option<u32>, bool) -> Option<Result<T, String>>,
+    retire: impl FnMut(R),
+) {
+    run_lifecycle_with_control_jobs(
+        receiver,
+        is_occupied,
+        try_open,
+        retire,
+        retained_families::advance_registered_family_on_control,
+    );
+}
+
+fn run_lifecycle_with_control_jobs<T: Send + 'static, R: Send + 'static>(
+    receiver: Receiver<LifecycleMessage<T, R>>,
+    is_occupied: impl Fn() -> bool,
     mut try_open: impl FnMut(Option<u32>, bool) -> Option<Result<T, String>>,
     mut retire: impl FnMut(R),
+    mut advance_control_family: impl FnMut(),
 ) {
     enum Phase {
         Queued,
@@ -485,6 +503,7 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
     let mut failed_retirement: Option<R> = None;
     let mut failed_cleanup: Option<crate::candidate_custody::CandidateRoot> = None;
     loop {
+        advance_control_family();
         if failed_retirement.is_some() || failed_cleanup.is_some() {
             thread::sleep(Duration::from_millis(250));
             continue;

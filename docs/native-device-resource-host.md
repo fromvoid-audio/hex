@@ -535,3 +535,39 @@ The canonical model-source oracle also exercises an actual mutable Operator
 Arrangement descriptor: omitting its retained identity fails closure; including
 the real field closes, and it retains the original body/notes after canonical
 model retirement. It remains a selected-view oracle, not whole-root proof.
+
+## retained application family boundary (in progress)
+
+The lifecycle service now has an explicitly reserved, separately bounded table
+for application-control families. It does not reuse CandidateRoot's singleton
+cleanup slot, native Retirement, archive, receipt, event queue or quarantine.
+Slot reservation precedes family construction/registration; registration moves
+one fresh payload into persistent service custody before a future read capability
+can escape. Cancel/refusal preserves the unexported source. One step per loop
+visits one family using a nonblocking per-family write guard. Held readers and
+failed families do not stop another family or native retirement/reopen dispatch.
+No service-wide/native-publication lock is held through read callbacks.
+
+A table/family generation and exact typed dispatch bind the actual retained job;
+these are routing facts, not provenance, storage completeness or a release of
+bytes. Per-family read guards protect its actual allocation. The generic neutral
+hook does not authorize arbitrary adapters: desktop must bind the audited Session
+adapter exposing only scoped model/WaveformRead queries. Box bodies and every
+payload child still require actual typed constructor/storage traversal. The table
+backing visitor visits only the real Vec backing; it makes no complete assertion.
+Table/job component quotes consume the same existing joint retained/peak budget,
+never a new allowance per output reopening. No default family capacity is chosen.
+
+Cleanup errors/panics latch the exact slot, retain its unresolved reservation and
+never retry the partial destructor. A step panic retains the actual job; a final
+job-destructor panic leaves an unresolved failed slot and retained panic payload,
+not a claim that partially dropped storage is known or physically freed. Persistent
+service custody survives a lost wake hint or service startup failure. Vacancy
+requires the adapter's completed child disposal and successful final job Drop.
+
+This remains source work, not admitted native processing. The concrete Session
+family adapter, full snapshot child traversal, joint old/new/temporary peak,
+actual family guards through publication preflight, sealed UI capability delivery
+and saturated final-retirement proof remain open. Existing UI still uses its
+previous ownership route. Do not treat the neutral hook or selected component
+tests as full graph admission or a delivered playable Sampler.

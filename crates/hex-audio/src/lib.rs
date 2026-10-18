@@ -2,6 +2,13 @@ mod device;
 mod render_fault;
 pub mod sample_preview;
 pub use device::{PreparedOutput, WorkerPreparedOutput};
+pub use lifecycle::retained_families::{
+    RetainedFamilyError, RetainedFamilyId, RetainedFamilyProgress, RetainedFamilyReservation,
+    RetainedFamilySlot, cancel_retained_family_slot_on_control, read_retained_family,
+    register_retained_family_on_control, reserve_retained_families_on_control,
+    reserve_retained_family_slot_on_control, retained_family_job_body_quote,
+    retained_family_table_reservation_quote, visit_retained_family_table_backing_on_control,
+};
 pub use lifecycle::{
     RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen, request_initial_open,
     request_recovery_open, request_worker_open,
