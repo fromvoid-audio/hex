@@ -931,7 +931,9 @@ fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original);
     });
     visual.update(|window, cx| {
+        eprintln!("partial actual drag={} pointer={pointer:?}", cx.has_active_drag());
         let v = editor.read(cx);
+        eprintln!("partial actual lane={:?}", v.drag_lanes[&track]);
         eprintln!("partial release before midi={midi} focus={} active_audio={} active_midi={} current_audio={} last={:?} pending={}", v.focus.is_focused(window), v.active_trim_drag.is_some(), v.active_midi_trim_drag.is_some(), v.active_trim_drag.as_ref().is_some_and(|d| v.trim_drag_current(d)), v.last_enqueued_edit, v.worker_requests_pending);
     });
     visual.simulate_mouse_up(pointer, MouseButton::Left, Modifiers::default());
