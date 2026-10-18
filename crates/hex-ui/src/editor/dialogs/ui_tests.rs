@@ -1146,3 +1146,5 @@ fn selected_open_path_survives_owned_restore_before_render_and_opens_once(cx: &m
         assert!(view.pending_open_path.is_none() && !view.project_open.busy());
     });
 }
+
+mod recovery_name_tests;

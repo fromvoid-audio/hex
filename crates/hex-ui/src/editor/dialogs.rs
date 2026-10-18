@@ -85,6 +85,15 @@ impl EditorView {
             cx.notify();
             return;
         }
+        // Native pickers retain logical text focus. Finish the existing
+        // blur/Enter rename before Open admission blocks ordinary edits; the
+        // selected-path reconciliation already waits for its canonical worker.
+        if !self.finalize_track_name_for_open(window, cx)
+            || !self.finalize_clip_name_for_open(window, cx)
+        {
+            cx.notify();
+            return;
+        }
         let Some((generation, serial)) = self.start_open_picker() else {
             cx.notify();
             return;

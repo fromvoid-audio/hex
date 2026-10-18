@@ -18,12 +18,21 @@ Cancel and load failure preserve the current project, history and original media
 An in-flight intent prevents a second replacement or ordinary edit. Existing
 recording admission and device-control finalization retain their guards.
 
+Track and clip name drafts follow their existing Enter/blur rule before the
+picker starts: a current valid draft becomes one canonical, Undoable rename.
+The selected Open waits for that worker result before classifying the document.
+Save includes the name, Cancel keeps it, and Don't Save discards it only after a
+successful replacement. Invalid, stale or temporarily blocked drafts refuse
+Open without consuming the draft. Manual recovery/relink actions cannot replace
+an active picker or selected Open intent; the already-owned audio-recovery
+Restore token remains permitted to finish without consuming the selected path.
+
 New retains its existing matching-second-invocation status confirmation; this
 Open change does not redesign New. A successful replacement publishes fresh
 history. Resident and verified-streaming choices remain explicit; unavailable
 verified streaming refuses rather than falling back to another mode.
 
-Sixteen bounded rendered regressions install disposable browser/settings paths
+Bounded rendered regressions install disposable browser/settings paths
 before workers start. They cover actual window/application dispatch, focused and
 unfocused editors, multiple/non-editor/closed windows, rerendering, canonical
 worker save/open success, both save paths, cancellation, failures, original media
