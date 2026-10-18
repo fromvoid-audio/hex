@@ -1,0 +1,8 @@
+{
+  "source": "920a677c2be28357ee62d1eae325c7239101b49a",
+  "tree": "e712d7646df1a0b267a3a4ac0cbea3be3d67ae44",
+  "scope": "c1 Forward all envelopes, not complete c/d or readiness",
+  "checks": "2 envelope tests at six values across3ratios+explicit/fixedlogical schedules; changed actual Engine envelope/cache/version/Undo1; strict Warpalltargets Clippy PASS.",
+  "audio": "80 fixedgain synthetic WAVs/settings at50, no perfile normalization or actuallistening; Stop/Alternating oldpath controls remainexplicit",
+  "remaining": "Alternating protectedreflections/Stop/adaptive short material/fullperformance+realmusical listening+export closure; samecaps/oneoutput/cache; no Samplerwrites"
+}

@@ -1,0 +1,452 @@
+[
+  {
+    "path": "envelope50-after/dc-44100-original.wav",
+    "bytes": 88244,
+    "sha256": "c9269d36e6269554322ec4490278e5372994d6b6ecb328b4ae56a43c2df3e2c5"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio0.5-back-and-forth.wav",
+    "bytes": 44144,
+    "sha256": "7aa0c8d0917bf21120f699bd9ee3453480511fb344d7aa9356e25ceaa0045feb"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio0.5-forward.wav",
+    "bytes": 44144,
+    "sha256": "d4823e1c53da17865a2383bc2a6704e1f3169bc02765640caaa930fe59bceace"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio0.5-stop.wav",
+    "bytes": 44144,
+    "sha256": "7aa0c8d0917bf21120f699bd9ee3453480511fb344d7aa9356e25ceaa0045feb"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio1.375-back-and-forth.wav",
+    "bytes": 121320,
+    "sha256": "10a6d34531dd4447ce26228fbbf48f86a3751bc1b14e20349545325910040811"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio1.375-forward.wav",
+    "bytes": 121320,
+    "sha256": "2282c5906de91ca5fd598f1c2c54960f33e604b3792bf1f1e43a01bfacb80752"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio1.375-stop.wav",
+    "bytes": 121320,
+    "sha256": "5eb9faef0d7303b5a6abd3d57182fce1c45f72847916a2d9b7277a48c4385b8f"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio2-back-and-forth.wav",
+    "bytes": 176444,
+    "sha256": "4884023e70bb3a04c2ae037c86cb3228621f48cb1a5205d125ddfe13256e170e"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio2-forward.wav",
+    "bytes": 176444,
+    "sha256": "b1b8aeafa0edb17f928b5e6d6d7fd9d0a57059b17e99b6fe5e128ea35130bd74"
+  },
+  {
+    "path": "envelope50-after/dc-44100-ratio2-stop.wav",
+    "bytes": 176444,
+    "sha256": "ec41bdd2357fe5952e34f40bcad88924ba6fe8a53be069f8fe638f4e7c98ad60"
+  },
+  {
+    "path": "envelope50-after/dc-48000-original.wav",
+    "bytes": 96044,
+    "sha256": "2dc9f523058900ea8ac88d80120bf93c206e51bdd6d71bf9eb15e0f3ad36f157"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio0.5-back-and-forth.wav",
+    "bytes": 48044,
+    "sha256": "113c23fd86c19ae7473a5630d763469ed3775d6d5d28a5cb7417ff14235498e2"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio0.5-forward.wav",
+    "bytes": 48044,
+    "sha256": "c8ae177c0d199b1a6ffd92026baf2c61742d87304f8aea11f9ff1c96e19fd9d0"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio0.5-stop.wav",
+    "bytes": 48044,
+    "sha256": "113c23fd86c19ae7473a5630d763469ed3775d6d5d28a5cb7417ff14235498e2"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio1.375-back-and-forth.wav",
+    "bytes": 132044,
+    "sha256": "0cf1b5c13a3eb3eb0642e614f7884cf68cb36ad4cfca79345faad0cd03ee2b95"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio1.375-forward.wav",
+    "bytes": 132044,
+    "sha256": "5444619aa1e10f7f2040631d7ead8af741dc65bbbfc750001a0e4626bfd368a1"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio1.375-stop.wav",
+    "bytes": 132044,
+    "sha256": "234b2589e324618f34cae1e3ccb5bf9e2eeaf920512183d7999eb6a27d9c4f93"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio2-back-and-forth.wav",
+    "bytes": 192044,
+    "sha256": "81da483673d565fbb119975a83b5826ec37920a01a897ae1447258c9bafce3b0"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio2-forward.wav",
+    "bytes": 192044,
+    "sha256": "d5da49bd7178879369edca88b380a135d7c6a0bc4fb92ea19441c1a02ac4db7b"
+  },
+  {
+    "path": "envelope50-after/dc-48000-ratio2-stop.wav",
+    "bytes": 192044,
+    "sha256": "4f5aed42d6f62f5f37c66df7e6dc14cf78c79d53d498485cbb965c6180680aa0"
+  },
+  {
+    "path": "envelope50-after/hats-44100-original.wav",
+    "bytes": 88244,
+    "sha256": "55d008d1e83f8ef65a3071fdcbd374047d880f9cc621f0ed2a374613eb279154"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio0.5-back-and-forth.wav",
+    "bytes": 44144,
+    "sha256": "631a5010769bce6c0d775ef7da1f1b4c1ee92c3bbb41bab1acb72e0698d59ae7"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio0.5-forward.wav",
+    "bytes": 44144,
+    "sha256": "e3cf34f21054e538475eafaad16bc3a2c6567a88074d7c4310de4d59f3bd0d6a"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio0.5-stop.wav",
+    "bytes": 44144,
+    "sha256": "631a5010769bce6c0d775ef7da1f1b4c1ee92c3bbb41bab1acb72e0698d59ae7"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio1.375-back-and-forth.wav",
+    "bytes": 121320,
+    "sha256": "1e27b53ec857f34a3b98eb1b42555aca3b8d07e4dba473eb46fdc1173e454757"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio1.375-forward.wav",
+    "bytes": 121320,
+    "sha256": "7766846e53838d10720c65795987815f013d7df288a6ac2eba953deb0abf11a3"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio1.375-stop.wav",
+    "bytes": 121320,
+    "sha256": "528137fd46b7a454f14aa5a9a1644703ec854a30d9b7e49abb41ddd516c115f0"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio2-back-and-forth.wav",
+    "bytes": 176444,
+    "sha256": "218c850e5cc5a4901c2df9550aaae408597ae8f0ed8f0ee4b3123c49b464b5e8"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio2-forward.wav",
+    "bytes": 176444,
+    "sha256": "ebf042097b358d2b4fe6523fd083572076fd9d2582827a31e96259448c877b61"
+  },
+  {
+    "path": "envelope50-after/hats-44100-ratio2-stop.wav",
+    "bytes": 176444,
+    "sha256": "41ff977bc11eeb953c947f9dcf739709cf0e92f4323c34de176e6ac041e39adc"
+  },
+  {
+    "path": "envelope50-after/hats-48000-original.wav",
+    "bytes": 96044,
+    "sha256": "034260df0edcc66b8c1804316d2a4b951021b0d8ba7b2bb30e79a735662df3ed"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio0.5-back-and-forth.wav",
+    "bytes": 48044,
+    "sha256": "c84f263a5b9f35f614f00c7c23cbfcbc6fbbe15bb6c03955e0d0a4d249c0e52c"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio0.5-forward.wav",
+    "bytes": 48044,
+    "sha256": "4e5108557f1263e04b1266d45c92af615b1057791ebd83411822ac4309f28460"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio0.5-stop.wav",
+    "bytes": 48044,
+    "sha256": "c84f263a5b9f35f614f00c7c23cbfcbc6fbbe15bb6c03955e0d0a4d249c0e52c"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio1.375-back-and-forth.wav",
+    "bytes": 132044,
+    "sha256": "c440fd3ff030da29a8ee29731e1327a05c6cd630dbd86491f0ac92fdf1aa121a"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio1.375-forward.wav",
+    "bytes": 132044,
+    "sha256": "002200ce22ada6c19857e2adc753b31e665410a1d8eb28c2ce7eee7a39f4c721"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio1.375-stop.wav",
+    "bytes": 132044,
+    "sha256": "fc81b8d8ed1f19636b3ea5188088108e52579feea4fc6c584d9b42df82d45b4f"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio2-back-and-forth.wav",
+    "bytes": 192044,
+    "sha256": "f81f75ebc6773d4020ba4b9671465b9e937145391f7657a9d2a39f59397a26fe"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio2-forward.wav",
+    "bytes": 192044,
+    "sha256": "b09c6a65cdfb56dff1a4cb6b83330fda4b4818c817c7ba07b4e219478e7093e9"
+  },
+  {
+    "path": "envelope50-after/hats-48000-ratio2-stop.wav",
+    "bytes": 192044,
+    "sha256": "f81f75ebc6773d4020ba4b9671465b9e937145391f7657a9d2a39f59397a26fe"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-original.wav",
+    "bytes": 88244,
+    "sha256": "129cb3df3c9fd5f7bae13b56c0614e3d877588fb20d84ff691ac7b1b912b717a"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio0.5-back-and-forth.wav",
+    "bytes": 44144,
+    "sha256": "8d41d5e4bcdcd2a60db7f18543ae64f462f30221add422527838cf9ac35f3d57"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio0.5-forward.wav",
+    "bytes": 44144,
+    "sha256": "0c23cb0fe1a88859081cfe7166b6eda89496d087fe71834c8313775b40fe82a4"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio0.5-stop.wav",
+    "bytes": 44144,
+    "sha256": "8d41d5e4bcdcd2a60db7f18543ae64f462f30221add422527838cf9ac35f3d57"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio1.375-back-and-forth.wav",
+    "bytes": 121320,
+    "sha256": "e0dfdb871c42abc5af9cb4911777fe18deeb438b8c89acd1d2a6e23c47a5fe7c"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio1.375-forward.wav",
+    "bytes": 121320,
+    "sha256": "1586c9fc7b1bc115d202486b5808d868a71d46dc85831577cda8447bdd4a3f9c"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio1.375-stop.wav",
+    "bytes": 121320,
+    "sha256": "0770466dbed3acb236f5ad5087d8f43918d45a5c67ffddeddb4f8970256503d3"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio2-back-and-forth.wav",
+    "bytes": 176444,
+    "sha256": "d04a00232ed190cb9e764beaa63039ad140a5d033050751d67dc8f9b6114ebf2"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio2-forward.wav",
+    "bytes": 176444,
+    "sha256": "4a5ce5602ba142cbdc521a9e22c8ad9487339109bf3d2d02f966294efc487433"
+  },
+  {
+    "path": "envelope50-after/kick-sub-44100-ratio2-stop.wav",
+    "bytes": 176444,
+    "sha256": "65f97dfd81b93e574d7ea5eebde424cd4ff0d342bc41b43d885dccc3e952bf32"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-original.wav",
+    "bytes": 96044,
+    "sha256": "afddc0cb2e7e960c56c4d1ee3fa4668ed7959d213e2668889264af14ab22b6f5"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio0.5-back-and-forth.wav",
+    "bytes": 48044,
+    "sha256": "b85bdb9a4fc041442a46511cfe34ada837578278f4e8c31431ebeb602f9f0ce4"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio0.5-forward.wav",
+    "bytes": 48044,
+    "sha256": "d4e8c5f4155317dde060bee89504095689d007b5df402b38be0da6f3d6d2022c"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio0.5-stop.wav",
+    "bytes": 48044,
+    "sha256": "b85bdb9a4fc041442a46511cfe34ada837578278f4e8c31431ebeb602f9f0ce4"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio1.375-back-and-forth.wav",
+    "bytes": 132044,
+    "sha256": "082771c5860f6d06348b9726f9710952eef663dfbd3a0a364344b0951edbf2c8"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio1.375-forward.wav",
+    "bytes": 132044,
+    "sha256": "670460d00cd5296156f919cc6d9d0d44c50e75603d03614633146a622331583c"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio1.375-stop.wav",
+    "bytes": 132044,
+    "sha256": "308bb13900e03beacde2151d7402e15bc03fe62765e7e418014b95e621f7123b"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio2-back-and-forth.wav",
+    "bytes": 192044,
+    "sha256": "7651efe37b973352619f897cbf77f89fd0784741d53bb6a915778bd2a12ed0a1"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio2-forward.wav",
+    "bytes": 192044,
+    "sha256": "79742a6d5532d6dcc704981fceee67c7f994bb119842e3ca256e16519a5b33ab"
+  },
+  {
+    "path": "envelope50-after/kick-sub-48000-ratio2-stop.wav",
+    "bytes": 192044,
+    "sha256": "c808c66179bbb869d25218caf49a6cb16874b770ad22bc9525bd66b182442394"
+  },
+  {
+    "path": "envelope50-after/metrics.csv",
+    "bytes": 21255,
+    "sha256": "c4d5150a23baedc2b7e67ac9535e683fe34621155a2617876a20c7dd49d9211a"
+  },
+  {
+    "path": "envelope50-after/settings.txt",
+    "bytes": 230,
+    "sha256": "430e5466169951f0dcdb86177ac0301a1d418c9215bbc8c737667cf871b97061"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-original.wav",
+    "bytes": 88244,
+    "sha256": "b70136c6aa53f7710a3a4c589dc022eff02e7077a38c417b31da59914e181e01"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio0.5-back-and-forth.wav",
+    "bytes": 44144,
+    "sha256": "f2fba423a14f3bb70db62cff6e7aad15cede3021dd7ebfada8231187a3b8a2ed"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio0.5-forward.wav",
+    "bytes": 44144,
+    "sha256": "3e5191fb5d9605a46587c0e77afcdea33cf27788566368f601e3b02ec480f481"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio0.5-stop.wav",
+    "bytes": 44144,
+    "sha256": "f2fba423a14f3bb70db62cff6e7aad15cede3021dd7ebfada8231187a3b8a2ed"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio1.375-back-and-forth.wav",
+    "bytes": 121320,
+    "sha256": "cb5914dabda278ee6c8b5259f2e8414d24662ce469b3f0837b1924abd3f41ece"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio1.375-forward.wav",
+    "bytes": 121320,
+    "sha256": "6872261fd2908e3edafd431a1d36657aa0ae9980c5b411ae033e32c08cbb9772"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio1.375-stop.wav",
+    "bytes": 121320,
+    "sha256": "03fb43e2c1f6a2a2ea56d15d864fca9099cb380f72e9876f4d3f10adaf1bd667"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio2-back-and-forth.wav",
+    "bytes": 176444,
+    "sha256": "c31f27cc5920a5a182eb86150fb5869875947d49d1c961c15a43e06ff6771f8e"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio2-forward.wav",
+    "bytes": 176444,
+    "sha256": "b23aa4dc5194cdeff72c3346eef38c787e7de308038b349c48209c351ca6a2a4"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-44100-ratio2-stop.wav",
+    "bytes": 176444,
+    "sha256": "89f20e2a08e8f21df838a654b8a4df0bed083c15cc8e001905b5aa89fc83d2d0"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-original.wav",
+    "bytes": 96044,
+    "sha256": "8415dec933af51bf873feef6daf148985dd9ea99a01d75d794c3ae33a00a62ab"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio0.5-back-and-forth.wav",
+    "bytes": 48044,
+    "sha256": "585a1891e172b6a561a031c999e645622f72532a0a503c0e416c4d0a283b64f3"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio0.5-forward.wav",
+    "bytes": 48044,
+    "sha256": "b038bf8a5af695ffee57027c6a97f33d3110dba4ced63da49b0d793750f20de2"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio0.5-stop.wav",
+    "bytes": 48044,
+    "sha256": "585a1891e172b6a561a031c999e645622f72532a0a503c0e416c4d0a283b64f3"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio1.375-back-and-forth.wav",
+    "bytes": 132044,
+    "sha256": "662624a0723f00d734b6ef1576c697a0904aef8a92bfa8b491f9fd7c5854e97f"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio1.375-forward.wav",
+    "bytes": 132044,
+    "sha256": "ec9aa7a803550d83464ee21f3d507e584fed496ae67fd3a39d3f58b610cc3ab9"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio1.375-stop.wav",
+    "bytes": 132044,
+    "sha256": "8c5bebcbbc6924a34b0c380a2df0aa35b1935ca183654698f9be9d2ef6fb97d7"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio2-back-and-forth.wav",
+    "bytes": 192044,
+    "sha256": "091e15300be70d1120530e4705585119940ebbe98ec69d060f0f251a7385253a"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio2-forward.wav",
+    "bytes": 192044,
+    "sha256": "e45807bac6aa2e727e4bf962f05ce0f390d9ba5d86155194dad381593a0b12ec"
+  },
+  {
+    "path": "envelope50-after/stereo-tone-48000-ratio2-stop.wav",
+    "bytes": 192044,
+    "sha256": "198e3fe8fd920215f31b35f701211083b17ce94063be5904dea40fd4bf2f6cdf"
+  },
+  {
+    "path": "logs/hex-beats-2847-envelope-consumer-clippy.log",
+    "bytes": 134,
+    "sha256": "aff7864a82ffcae1888eab06ff75c3f2c329b21d31c7204a0213be7363180d9c"
+  },
+  {
+    "path": "logs/hex-beats-2847-envelope-engine.log",
+    "bytes": 646,
+    "sha256": "f701943b78b2d6ec925be0adab4ec2870b8a78863adfc4671ba422f29ef06878"
+  },
+  {
+    "path": "logs/hex-beats-2847-envelope-final-clippy.log",
+    "bytes": 134,
+    "sha256": "a9482160e1b681fe2377dfa34c45daa74a3135e6252c585458ebe8227291c7d5"
+  },
+  {
+    "path": "logs/hex-beats-2847-envelope-final.log",
+    "bytes": 537,
+    "sha256": "71c42752047016d74d4bb2ff88a07b6fe7106c51883e90db2754c39d68e19875"
+  },
+  {
+    "path": "logs/hex-beats-2847-envelope-first-clippy.log",
+    "bytes": 134,
+    "sha256": "ded854623ea0e8ad718f589388c67ddc1249f91c600a54fe8a30b632875accf1"
+  },
+  {
+    "path": "logs/hex-beats-2847-envelope-first.log",
+    "bytes": 537,
+    "sha256": "d93842feb9c7fbaf0232278124fad1794a33ab08626995c364d421236121155b"
+  },
+  {
+    "path": "logs/hex-beats-2847-envelope50-render.log",
+    "bytes": 265,
+    "sha256": "595bd67e7f5854dfe76d9dcc6b565992d809536b7597acf694a201ebcdeac2b7"
+  },
+  {
+    "path": "provenance.json",
+    "bytes": 691,
+    "sha256": "5c4ad6fbecfabb8aa86d88e82f8fa3aeaae003567cb0206fd57a9900f8d9852b"
+  }
+]
