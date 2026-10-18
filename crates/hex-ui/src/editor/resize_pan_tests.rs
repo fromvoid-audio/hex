@@ -712,11 +712,26 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
     let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
+    if !refuse {
+        // Real distant content makes the edge-band time offset exceed the
+        // existing two-second canonical display margin, without synthetic state.
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(168).unwrap(),
+                length: BeatTime::from_quarters(4).unwrap()
+            })));
+        });
+        pump(&editor, &mut visual);
+    }
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let down = capture(&mut visual, clip, midi, false);
     let edge = editor.read_with(&visual, |v, _| {
         let lane = v.drag_lanes[&track];
-        point(px(lane.left + lane.width - 3.0), down.y)
+        point(
+            px(lane.left + lane.width - if refuse { 3.0 } else { 23.0 }),
+            down.y,
+        )
     });
     let modifiers = Modifiers {
         shift: refuse,
@@ -776,7 +791,7 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
             track,
-            start: BeatTime::from_quarters(128).unwrap(),
+            start: BeatTime::from_quarters(512).unwrap(),
             length: BeatTime::from_quarters(4).unwrap()
         })));
     });
