@@ -1,3 +1,14 @@
+## project File actions after focus loss — pulse2815 / PR421
+
+Actual rendered dispatch reproduced New/Open being lost without editor focus,
+then one Open waiting for a second invocation. Active-window fallbacks retain
+focused precedence. The selected Open now continues through Save / Don't Save /
+Cancel and successful canonical save once; cancellation/failure/stale results
+preserve the current document/history/media. Sixteen bounded rendered cases and
+two legacy selected-path assertions cover this workflow; native picker/physical
+acceptance and merger-owned full integration checks remain separate.
+See docs/project-file-actions.md. No app actions or backend changes.
+
 ## selected-device removal focus repair — pulse2796 / PR402
 
 Returned review reproduced a blurred window after real card Backspace and worker

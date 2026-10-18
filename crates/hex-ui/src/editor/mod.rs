@@ -329,6 +329,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     theme::load_fonts(cx)?;
     bind_editor_keys(cx);
     menus::install(cx, &[]);
+    dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
             cx.quit();
@@ -605,6 +606,7 @@ pub(super) struct EditorView {
     session_capability_message: Option<String>,
     play_intent: play_intent::Tracker,
     opening_project: bool,
+    project_open: dialogs::project_open::State,
     pending_open_path: Option<std::path::PathBuf>,
     pending_open_mode: Option<hex_session::DocumentAudioMode>,
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
@@ -1094,6 +1096,7 @@ impl EditorView {
             session_capability_message: None,
             play_intent: play_intent::Tracker::default(),
             opening_project: false,
+            project_open: dialogs::project_open::State::default(),
             pending_open_path: None,
             pending_open_mode: None,
             requested_audio_mode: None,

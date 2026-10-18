@@ -335,6 +335,16 @@ impl TestAppContext {
         self.test_platform.simulate_new_path_selection(select_path);
     }
 
+    /// Whether the test platform has an outstanding Open picker request.
+    pub fn did_prompt_for_paths(&self) -> bool {
+        self.test_platform.did_prompt_for_paths()
+    }
+
+    /// Complete the test platform Open picker; this does not show a native picker.
+    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
+        self.test_platform.simulate_paths_selection(paths);
+    }
+
     /// Simulates clicking a button in an platform-level alert dialog.
     #[track_caller]
     pub fn simulate_prompt_answer(&self, button: &str) {

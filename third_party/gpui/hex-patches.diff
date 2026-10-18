@@ -246,10 +246,7 @@
 +}
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -120,6 +120,18 @@
- }
-
- impl TestAppContext {
+@@ -122,0 +123,12 @@
 +    /// Verify private cached-scene replay against the retained legacy painter.
 +    /// Test support only; no window, native graphics or public scene API.
 +    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
@@ -262,13 +259,7 @@
 +        self.test_platform.cursor_style()
 +    }
 +
-     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
-     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
-         let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -140,6 +152,24 @@
-             fn_name,
-             on_quit: Rc::new(RefCell::new(Vec::default())),
-         }
+@@ -142,0 +155,18 @@
 +    }
 +
 +    /// Opt into real macOS font registration and shaping for a disposable test.
@@ -287,13 +278,18 @@
 +        app.text_system = Arc::clone(&text_system);
 +        self.text_system = text_system;
 +        Ok(())
-     }
-
-     /// Create a single TestAppContext, for non-multi-client tests
-@@ -675,6 +705,95 @@
- }
-
- impl VisualTestContext {
+@@ -307,0 +338,10 @@
++    /// Whether the test platform has an outstanding Open picker request.
++    pub fn did_prompt_for_paths(&self) -> bool {
++        self.test_platform.did_prompt_for_paths()
++    }
++
++    /// Complete the test platform Open picker; this does not show a native picker.
++    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
++        self.test_platform.simulate_paths_selection(paths);
++    }
++
+@@ -677,0 +718,89 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -383,9 +379,6 @@
 +        })
 +    }
 +
-     /// Provides a `Window` and `App` for the duration of the closure.
-     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
-         self.cx
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
 @@ -35,0 +36,15 @@
@@ -2136,11 +2129,56 @@
 +    native_accessibility::revoke_object(this);
 --- a/src/platform/test/platform.rs
 +++ b/src/platform/test/platform.rs
-@@ -93,0 +94,4 @@
+@@ -88,9 +88,14 @@
+ pub(crate) struct TestPrompts {
+     multiple_choice: VecDeque<TestPrompt>,
+     new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
++    paths: VecDeque<oneshot::Sender<Result<Option<Vec<PathBuf>>>>>,
+ }
+
+ impl TestPlatform {
 +    pub(crate) fn cursor_style(&self) -> CursorStyle {
 +        *self.active_cursor.lock()
 +    }
 +
+     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
+         #[cfg(target_os = "windows")]
+         let bitmap_factory = unsafe {
+@@ -153,6 +158,21 @@
+             )
+         };
+         prompt.tx.send(ix).ok();
++    }
++
++    pub(crate) fn did_prompt_for_paths(&self) -> bool {
++        !self.prompts.borrow().paths.is_empty()
++    }
++
++    pub(crate) fn simulate_paths_selection(&self, paths: Option<Vec<PathBuf>>) {
++        let tx = self
++            .prompts
++            .borrow_mut()
++            .paths
++            .pop_front()
++            .expect("no pending open paths prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Ok(paths)).ok();
+     }
+
+     pub(crate) fn has_pending_prompt(&self) -> bool {
+@@ -335,7 +355,11 @@
+         &self,
+         _options: crate::PathPromptOptions,
+     ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
+-        unimplemented!()
++        let (tx, rx) = oneshot::channel();
++        self.background_executor()
++            .set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
++        self.prompts.borrow_mut().paths.push_back(tx);
++        rx
+     }
+
+     fn prompt_for_new_path(
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
 @@ -555,0 +556 @@
