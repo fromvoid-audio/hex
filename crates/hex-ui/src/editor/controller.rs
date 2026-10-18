@@ -2278,7 +2278,9 @@ impl EditorView {
             });
             return false;
         }
-        if !request.is_project_open() {
+        // An owned recovery continuation is not a new user intent: a selected
+        // picker path may still be awaiting the next render's Open reconciliation.
+        if !request.is_project_open() && !recovery_restore {
             self.pending_open_path = None;
         }
         if matches!(

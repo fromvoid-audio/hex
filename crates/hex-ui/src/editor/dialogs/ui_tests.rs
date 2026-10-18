@@ -1059,3 +1059,90 @@ fn returned_open_picker_admits_own_recovery_restore_without_admitting_edits(
         assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
     });
 }
+
+#[gpui::test]
+fn selected_open_path_survives_owned_restore_before_render_and_opens_once(cx: &mut TestAppContext) {
+    use hex_session::service::Request;
+    use std::{cell::Cell, rc::Rc};
+    let directory = Directory::new();
+    let (path, target) = saved_destination(&directory);
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    let old_generation = editor.read_with(cx, |view, _| view.project_generation);
+    editor.update(cx, |view, _| view.recover_audio());
+    let recovery = editor.read_with(cx, |view, _| view.pending_recovery_generation.unwrap());
+    let injected = Rc::new(Cell::new(false));
+    let seen = Rc::clone(&injected);
+    let chosen = path.clone();
+    // Notification runs after the real picker continuation chose the path and
+    // before the next render reconciles it. Inject the actual internal request
+    // at that production cutpoint, without a fake picker or direct Open call.
+    let _subscription = cx.update(|cx| {
+        cx.observe(&editor, move |editor, cx| {
+            editor.update(cx, |view, _| {
+                if view.pending_open_path.as_ref() != Some(&chosen) || seen.replace(true) {
+                    return;
+                }
+                assert!(!view.enqueue(Request::Edit(hex_project::Command::AddTrack {
+                    name: "must not be inserted".into(),
+                })));
+                assert!(!view.enqueue(Request::RestorePlayback {
+                    generation: recovery + 1,
+                }));
+                assert!(view.enqueue(Request::RestorePlayback {
+                    generation: recovery
+                }));
+                assert_eq!(
+                    view.pending_open_path.as_ref(),
+                    Some(&chosen),
+                    "owned recovery must not consume the picker-selected Open intent"
+                );
+                assert_eq!(
+                    view.pending_open_mode,
+                    Some(hex_session::DocumentAudioMode::Resident)
+                );
+            });
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    select_open(&mut visual, cx, path.clone());
+    assert!(
+        injected.get(),
+        "real picker callback must reach the tested ordering"
+    );
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.project_open.busy()
+    });
+    visual.run_until_parked();
+    assert!(
+        cx.has_pending_prompt(),
+        "the first Open continues after recovery"
+    );
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project, before.project);
+        assert_eq!(state.revision, before.revision);
+        assert_eq!(
+            (state.can_undo, state.can_redo, state.unsaved),
+            (before.can_undo, before.can_redo, before.unsaved)
+        );
+    });
+    cx.simulate_prompt_answer("don't save");
+    visual.run_until_parked();
+    pump(&editor, cx, |view| {
+        settled(view) && view.project_generation == old_generation + 1
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project, target);
+        assert_eq!(state.document_path.as_ref(), Some(&path));
+        assert_eq!(view.project_generation, old_generation + 1);
+        assert!(!state.can_undo && !state.unsaved);
+        assert!(view.pending_open_path.is_none() && !view.project_open.busy());
+    });
+}
