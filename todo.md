@@ -5155,3 +5155,27 @@ clicks, inert hover, focus and resize state across those widths. Targeted result
 and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
 full CI/integration/merge; optimized native drag/hover/optical acceptance remains
 open. No installed app, persisted schema or user files changed.
+
+## consistent live input casing — pulse2810 / PR416, 18 october 2026
+
+Actual track rename shaped uppercase while editing and lowercase after commit.
+Name/search and themed numeric inputs now shape lowercase immediately, preserving
+original stored names, clipboard and parser values. A neutral injected case token
+shares raw-byte/shaped-byte offset mapping for expanded lowercase glyphs; native
+IME selection remains original UTF-16. Canonical rename Undo/Redo/save/reopen,
+actual typing/paste/cut/copy and marked Unicode/caret/scroll regressions cover the
+boundary. Source-path casing2649 stays intact. Dedicated merger owns final
+integration/full CI/merge; native app/IME/clipboard acceptance remains open.
+
+## explicit browser query focus — pulse2820 / PR426, 18 october 2026
+
+Actual category click left the search handle focused and typed qxj into its query.
+Navigation now owns a separate non-text focus handle; source/row/disclosure/blank/
+control/resize clicks leave query editing. Preview handlers explicitly transfer
+focus before their existing stopped bubble. Only field/CmdF entry edits text;
+Up/Down move into navigation and Escape keeps the current owner. Local browser
+events preserve held drag, query selection and backend/sample behavior. Private
+startup-root rendered matrix checks both layouts, typing isolation, workers/ticks,
+explicit return and close; prior focus assertions now reflect this new contract
+while retaining their audition/generation/device/drag assertions. Native acceptance
+and final prospective full CI/integration remain with root/sole merger.
