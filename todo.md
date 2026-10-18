@@ -5164,3 +5164,41 @@ stacks frozen picker geometry PR #322; dedicated merger owns final prospective
 integration/full checks/merge. Native optimized picker/font/reopen acceptance
 remains open. PR #400 mouse-search diagnostics are frozen separately; this work
 does not claim to resolve the native focus report.
+
+## consistent live input casing — pulse2810 / PR416, 18 october 2026
+
+Actual track rename shaped uppercase while editing and lowercase after commit.
+Name/search and themed numeric inputs now shape lowercase immediately, preserving
+original stored names, clipboard and parser values. A neutral injected case token
+shares raw-byte/shaped-byte offset mapping for expanded lowercase glyphs; native
+IME selection remains original UTF-16. Canonical rename Undo/Redo/save/reopen,
+actual typing/paste/cut/copy and marked Unicode/caret/scroll regressions cover the
+boundary. Source-path casing2649 stays intact. Dedicated merger owns final
+integration/full CI/merge; native app/IME/clipboard acceptance remains open.
+
+## explicit browser query focus — pulse2820 / PR426, 18 october 2026
+
+Actual category click left the search handle focused and typed qxj into its query.
+Navigation now owns a separate non-text focus handle; source/row/disclosure/blank/
+control/resize clicks leave query editing. Preview handlers explicitly transfer
+focus before their existing stopped bubble. Only field/CmdF entry edits text;
+Up/Down move into navigation and Escape keeps the current owner. Local browser
+events preserve held drag, query selection and backend/sample behavior. Private
+startup-root rendered matrix checks both layouts, typing isolation, workers/ticks,
+explicit return and close; prior focus assertions now reflect this new contract
+while retaining their audition/generation/device/drag assertions. Native acceptance
+and final prospective full CI/integration remain with root/sole merger.
+
+## shared text double-click toggle — pulse2817 / PR423, 18 october 2026
+
+Original actual input regressions showed repeated query double-clicks never
+select all again and numeric draft clicks reformat the uncommitted text. A tiny
+local shared snapshot now toggles against pre-first-click selection, surviving
+release/repaint and invalidating on text/IME/keyboard/drag. Query/name caret and
+raw Unicode mapping remain; numeric editing-only selection retains draft and
+emits no value events, using the existing active gesture capture. Existing knob
+reset/adjustment/finalization and browser no-doubleclick-import remain separate.
+Focused source tests cover real click pairs, rapid pairs, partial drag/release,
+workers/window resize, composition and empty text. Frozen426+returned7c4d is a
+material input dependency, not new main integration. Sole merger owns final
+prospective full CI/integration; native physical mouse/IME acceptance stays open.

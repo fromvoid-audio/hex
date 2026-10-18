@@ -64,8 +64,9 @@ case-insensitively; indexed samples use the sample library's multi-term path mat
 All ignores the Samples source-folder filter and deduplicates original WAV paths
 across the catalog and folder, retaining folder WAVs outside indexed roots. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
-Escape clears it and restores text mode even if the query was already empty.
-Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
+Escape clears the query while retaining its current text or navigation owner;
+it never re-enters text editing from results. Category clicks retain the query
+and move actual focus to browser navigation, including in Session. Active IME composition is unmarked before selecting the whole
 query. Moving the caret or text selection leaves the result viewport unchanged;
 only a changed query resets it. Clicking the search field from another control selects the entire query so the
 next typed text replaces it. Once already focused, clicks place the caret and
@@ -83,7 +84,7 @@ numeric drafts pass through the existing finalization barrier: valid values comm
 before focus moves; invalid values preserve their draft and focus for repair.
 Device rows retain drag-to-track/rail behavior; Enter on an
 all-view device displays that instruction rather than importing a file. Clicking a
-device keeps browser keyboard focus in Session too. The first arrow key selects
+device keeps browser navigation focus in Session too. The first arrow key selects
 the first match; subsequent arrows move through results. Query/category changes
 reveal the first row. Accepted background scans preserve the selected file path
 or device identity when new files change row offsets.
@@ -168,3 +169,36 @@ Select All, missing drag selection and splitting a combining grapheme. This is
 new source selection behavior, not proof of resolution or native acceptance for
 separate mouse-focus issue #2794 / draft PR #400. Native mouse/clipboard/IME and
 shortcut checks remain coordinator-owned; no app replacement occurs in cloud.
+
+## explicit search entry — pulse2820 / PR426
+
+Only the search field itself and Command-F enter query editing. Sources, Places,
+folders, disclosures, sample/device rows, blank browser space, toolbar, preview
+controls and resize handles use a distinct non-text navigation focus owner.
+Down/Up from query results transfer to that owner; returning to the field selects
+the query on entry and retains ordinary focused caret/drag selection thereafter.
+Selection/highlight state is independent of the actual input handle. Pointer
+handlers run in their local browser scope; painting/workers never restore focus.
+Close returns focus to the editor. This is separate from the unresolved native
+field-click focus-loss report2794 and the future double-click refinement2817.
+Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
+
+## repeated text double-click selection — pulse2817 / PR423
+
+First query focus click and Command-F still select all. In focused editable text,
+a double-click on a full selection collapses to the clicked caret; the next
+selects all again. Partial/collapsed selections double-click to select all. The
+local gesture remembers selection before the first click, so its ordinary caret
+placement cannot erase the toggle's starting state. Native 1/2 and rapid 3/4 click
+pairs share that policy; no timer/global mouse hook is added. Single clicks,
+Shift selection, held drag and release keep their usual semantics. Keyboard,
+text/IME replacement and focus entry invalidate stale gesture snapshots; worker
+completion/paint does not. Selection alone changes no query, preview or project.
+
+Shared name fields preserve original Unicode/raw paths and the presentation-only
+lowercase mapping; clipboard/IME ranges remain source UTF-16. Already edited
+numeric text uses the same toggle without reformatting its draft or emitting a
+value edit. Knob reset and nonediting numeric adjustment remain separate gestures.
+Rendered tests exercise actual down/up click counts, partial/drag/release,
+filesystem worker/tick/resize updates, Unicode composition and empty text. Native
+physical mouse/IME/accessibility acceptance remains coordinator-owned and open.

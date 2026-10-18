@@ -354,7 +354,7 @@ fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContext) {
+fn command_f_category_click_keeps_query_but_moves_real_focus_in_session(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     editor.update(cx, |view, cx| {
@@ -375,11 +375,18 @@ fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContex
             editor.read_with(cx, |view, cx| {
                 assert_eq!(
                     view.browser_key_context(window, cx),
-                    "hex_browser_search",
+                    "hex_browser",
                     "category {category}"
                 )
             });
         });
+        visual.simulate_input("y");
+        editor.read_with(visual, |view, cx| {
+            assert_eq!(view.browser.search.read(cx).content, "utilit")
+        });
+        let field = visual.debug_bounds("browser-search").unwrap();
+        visual.simulate_click(field.center(), Modifiers::default());
+        visual.simulate_keystrokes("right");
         visual.simulate_input("y");
         editor.read_with(visual, |view, cx| {
             assert_eq!(view.browser.search.read(cx).content, "utility")
@@ -393,7 +400,7 @@ fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
+fn command_f_escape_keeps_navigation_until_explicit_text_entry(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
@@ -413,9 +420,23 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
     visual.update(|window, cx| {
         editor.read_with(cx, |view, cx| {
             assert!(!view.browser.results_focused);
-            assert_eq!(view.browser_key_context(window, cx), "hex_browser_search");
+            assert_eq!(view.browser_key_context(window, cx), "hex_browser");
+            assert!(
+                !view
+                    .browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            );
         });
     });
+    visual.simulate_input("ignored");
+    editor.read_with(visual, |view, cx| {
+        assert!(view.browser.search.read(cx).content.is_empty())
+    });
+    let field = visual.debug_bounds("browser-search").unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
     visual.simulate_keystrokes("right");
     visual.simulate_input("loop");
     editor.read_with(visual, |view, cx| {
@@ -3247,9 +3268,27 @@ fn browser_waveform_click_is_manual_positioned_audition_and_retains_focus(cx: &m
             bounds.left() + bounds.size.width * fraction,
             bounds.center().y,
         );
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                view.browser.search.read(cx).focus(window);
+            })
+        });
         visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
         generation += 1;
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                assert!(
+                    !view
+                        .browser
+                        .search
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+                );
+                assert_eq!(view.browser_key_context(window, cx), "hex_browser");
+            })
+        });
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.browser.playback_generation, generation);
             assert!((view.browser.playback_fraction - fraction).abs() < 0.02);
@@ -3402,7 +3441,16 @@ fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestA
             visual.run_until_parked();
             visual.update(|window, cx| {
                 editor.read_with(cx, |view, cx| {
-                    assert_eq!(view.browser_key_context(window, cx), "hex_browser_search");
+                    assert_eq!(view.browser_key_context(window, cx), "hex_browser");
+                    assert!(
+                        !view
+                            .browser
+                            .search
+                            .read(cx)
+                            .focus_handle()
+                            .is_focused(window)
+                    );
+                    assert!(view.browser.results_focus.is_focused(window));
                 })
             });
             let source = editor.read_with(&visual, |view, _| view.browser.section.clone());
@@ -4571,3 +4619,6 @@ fn browser_place_icons_preference_fixture_bounds_startup_before_workers(cx: &mut
 
 #[path = "browser_search_selection_ui_test.rs"]
 mod search_selection;
+
+#[path = "browser_focus_ui_test.rs"]
+mod explicit_focus;
