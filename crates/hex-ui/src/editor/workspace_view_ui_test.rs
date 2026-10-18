@@ -104,6 +104,14 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
         assert_eq!(v.worker_requests_pending, 0);
         assert!(v.pending_requests.is_empty());
     });
+    for width in [880.0, 1280.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(540.0)));
+        visual.run_until_parked();
+        let name = visual.debug_bounds("arrange view").unwrap();
+        let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+        assert!(name.size.width > gpui::px(0.0));
+        assert!(name.origin.x >= toolbar.origin.x && name.right() <= toolbar.right());
+    }
 }
 
 #[gpui::test]
@@ -196,7 +204,8 @@ fn workspace_tab_from_track_header_preserves_rename_input_and_returns_to_workspa
     let track = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
     let selector =
         Box::leak(format!("arrangement-track-header-{}", track.value()).into_boxed_str());
-    let point = visual.debug_bounds(selector).unwrap().center();
+    let bounds = visual.debug_bounds(selector).unwrap();
+    let point = bounds.origin + gpui::point(gpui::px(12.0), gpui::px(9.0));
     visual.simulate_click(point, Modifiers::default());
     visual
         .update(|window, cx| editor.read_with(cx, |v, _| assert!(v.track_header_focused(window))));
