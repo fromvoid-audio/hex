@@ -87,6 +87,110 @@ pub(super) struct MidiTrimDrag {
     pub(super) preview: Rc<RefCell<Option<MidiClipTrim>>>,
 }
 
+enum PendingTrimDisplay {
+    Audio {
+        original: Clip,
+        prospective: Box<Clip>,
+        asset_frames: u64,
+    },
+    Midi {
+        original: Rc<MidiClip>,
+        prospective: MidiClipTrim,
+    },
+}
+
+impl EditorView {
+    fn pending_trim_current(&self) -> Option<&PendingTrim> {
+        let pending = self.pending_trim.as_ref()?;
+        let state = self.state.as_ref()?;
+        if pending.generation != self.project_generation || pending.revision > state.revision {
+            return None;
+        }
+        // Independent revisions may complete ahead of this queued request.
+        // Its exact stable source owner, not revision equality alone, decides
+        // whether the accepted prospective geometry still belongs here.
+        let track = state.project.track(pending.track)?;
+        let current = match &pending.display {
+            PendingTrimDisplay::Audio {
+                original,
+                asset_frames,
+                ..
+            } => {
+                track.clips().iter().any(|clip| clip == original)
+                    && state.project.asset(original.asset())?.playback_frames() == *asset_frames
+            }
+            PendingTrimDisplay::Midi { original, .. } => track
+                .midi_clips()
+                .iter()
+                .any(|clip| clip == original.as_ref()),
+        };
+        current.then_some(pending)
+    }
+
+    pub(super) fn audio_trim_display(
+        &self,
+        track: TrackId,
+        only: Option<hex_project::ClipId>,
+    ) -> Option<(Clip, Clip)> {
+        if let Some(drag) = self.active_trim_drag.as_ref()
+            && drag.source_track == track
+            && only.is_none_or(|id| id == drag.clip.id())
+            && self.trim_drag_current(drag)
+            && let Some(preview) = drag.preview.borrow().as_ref()
+        {
+            return Some((drag.clip.clone(), preview.clip.clone()));
+        }
+        let pending = self.pending_trim.as_ref()?;
+        if pending.track != track {
+            return None;
+        }
+        let PendingTrimDisplay::Audio {
+            original,
+            prospective,
+            ..
+        } = &pending.display
+        else {
+            return None;
+        };
+        if only.is_some_and(|id| id != original.id()) {
+            return None;
+        }
+        self.pending_trim_current()?;
+        Some((original.clone(), prospective.as_ref().clone()))
+    }
+
+    pub(super) fn midi_trim_display(
+        &self,
+        track: TrackId,
+        only: Option<hex_project::ClipId>,
+    ) -> Option<(Rc<MidiClip>, MidiClipTrim)> {
+        if let Some(drag) = self.active_midi_trim_drag.as_ref()
+            && drag.source_track == track
+            && only.is_none_or(|id| id == drag.clip.id())
+            && self.midi_trim_drag_current(drag)
+            && let Some(preview) = *drag.preview.borrow()
+        {
+            return Some((Rc::clone(&drag.clip), preview));
+        }
+        let pending = self.pending_trim.as_ref()?;
+        if pending.track != track {
+            return None;
+        }
+        let PendingTrimDisplay::Midi {
+            original,
+            prospective,
+        } = &pending.display
+        else {
+            return None;
+        };
+        if only.is_some_and(|id| id != original.id()) {
+            return None;
+        }
+        self.pending_trim_current()?;
+        Some((Rc::clone(original), *prospective))
+    }
+}
+
 fn frame_at_x(x: f32, lane: LaneBounds, viewport: Viewport) -> Option<u64> {
     if !x.is_finite()
         || !lane.left.is_finite()
@@ -105,13 +209,16 @@ fn corrected_edge_frame(pointer_frame: u64, grab_delta: i128) -> u64 {
     (i128::from(pointer_frame) - grab_delta).clamp(0, i128::from(u64::MAX)) as u64
 }
 
-/// One resize terminal owner. PR403 adds optional display metadata to this
-/// same record; no separate completion key, FIFO counter or viewport owner.
+/// One resize owner: terminal core plus validated prospective display metadata.
+/// No separate completion key, FIFO counter or viewport owner.
 pub(super) struct PendingTrim {
     generation: u64,
+    revision: u64,
+    track: TrackId,
     command: ResizeCommand,
     remaining: Option<usize>,
     scroll_viewport: Option<Viewport>,
+    display: PendingTrimDisplay,
 }
 pub(super) struct RetiredTrimViewport {
     generation: u64,
@@ -178,6 +285,9 @@ impl EditorView {
     pub(super) fn trim_request_submitted(&mut self) {
         if let Some(pending) = self.pending_trim.as_mut() {
             pending.remaining = Some(self.worker_requests_pending);
+            if let Some(state) = &self.state {
+                pending.revision = state.revision;
+            }
         }
     }
     /// Take only our own FIFO terminal before receive installs its canonical
@@ -1066,6 +1176,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         if target_track != drag.source_track || !drag_admitted(self) {
+            self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -1077,6 +1188,7 @@ impl EditorView {
         };
         if !midi_payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
             self.error = Some("midi clip trim canceled · project changed".into());
+            self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             cx.notify();
             return;
         }
@@ -1098,8 +1210,15 @@ impl EditorView {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
+        let request = Request::Edit(Command::TrimMidiClipEdge {
+            clip: drag.clip.id(),
+            edge: drag.edge,
+            beat,
+        });
         self.pending_trim = Some(PendingTrim {
             generation: drag.project_generation,
+            revision: drag.revision,
+            track: drag.source_track,
             command: ResizeCommand::Midi {
                 clip: drag.clip.id(),
                 edge: drag.edge,
@@ -1107,12 +1226,12 @@ impl EditorView {
             },
             remaining: None,
             scroll_viewport: drag.scroll.get().viewport,
+            display: PendingTrimDisplay::Midi {
+                original: Rc::clone(&drag.clip),
+                prospective: preview,
+            },
         });
-        let accepted = self.enqueue(Request::Edit(Command::TrimMidiClipEdge {
-            clip: drag.clip.id(),
-            edge: drag.edge,
-            beat,
-        }));
+        let accepted = self.enqueue(request);
         if !accepted {
             self.pending_trim = None;
         }
@@ -1170,6 +1289,12 @@ impl EditorView {
     /// A private resize may navigate beyond the current display extent, never
     /// beyond its checked viewport or into a stale owner's project/geometry.
     pub(super) fn trim_display_end(&self) -> Option<u64> {
+        if let Some(pending) = self.pending_trim_current()
+            && let Some(viewport) = pending.scroll_viewport
+            && self.viewport == Some(viewport)
+        {
+            return viewport.end();
+        }
         if !drag_admitted(self) {
             return None;
         }
@@ -1234,6 +1359,7 @@ impl EditorView {
             return;
         }
         if target_track != drag.source_track || !drag_admitted(self) {
+            self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -1245,6 +1371,7 @@ impl EditorView {
         };
         if !payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
             self.error = Some("clip trim canceled · project changed".into());
+            self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             cx.notify();
             return;
         }
@@ -1272,18 +1399,7 @@ impl EditorView {
             return;
         }
         let stretch = drag.stretch_modifier.get();
-        self.pending_trim = Some(PendingTrim {
-            generation: drag.project_generation,
-            command: ResizeCommand::Audio {
-                clip: drag.clip.id(),
-                edge: drag.edge,
-                frame,
-                stretch,
-            },
-            remaining: None,
-            scroll_viewport: drag.scroll.get().viewport,
-        });
-        let accepted = self.enqueue(Request::Edit(if stretch {
+        let request = Request::Edit(if stretch {
             Command::StretchAudioClipEdge {
                 clip: drag.clip.id(),
                 edge: drag.edge,
@@ -1295,7 +1411,26 @@ impl EditorView {
                 edge: drag.edge,
                 frame,
             }
-        }));
+        });
+        self.pending_trim = Some(PendingTrim {
+            generation: drag.project_generation,
+            revision: drag.revision,
+            track: drag.source_track,
+            command: ResizeCommand::Audio {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                frame,
+                stretch,
+            },
+            remaining: None,
+            scroll_viewport: drag.scroll.get().viewport,
+            display: PendingTrimDisplay::Audio {
+                original: drag.clip.clone(),
+                prospective: Box::new(preview),
+                asset_frames: drag.asset_playback_frames,
+            },
+        });
+        let accepted = self.enqueue(request);
         if !accepted {
             self.pending_trim = None;
         }
@@ -1678,6 +1813,10 @@ mod tests {
         state.project.clip(id).expect("clip").clone()
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "resize_release_tests.rs"]
+mod resize_release_tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "resize_terminal_tests.rs"]

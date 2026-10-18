@@ -810,6 +810,67 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
 }
 
 #[gpui::test]
+fn fitted_resize_release_keeps_accepted_pan_horizon_until_exact_worker_terminal(
+    cx: &mut TestAppContext,
+) {
+    for midi in [false, true] {
+        let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let down = capture(&mut visual, clip, midi, false);
+        let edge = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            point(px(lane.left + lane.width - 3.0), down.y)
+        });
+        visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        held_tick(&editor, &mut visual, Instant::now());
+        let viewport = editor.read_with(&visual, |v, _| {
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames)
+        });
+        let selector = if midi {
+            "midi-trim-live-preview"
+        } else {
+            "trim-live-preview"
+        };
+        let held = visual.debug_bounds(selector).unwrap();
+        visual.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds(selector).unwrap(),
+            held,
+            "released fitted preview midi={midi}"
+        );
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_trim.is_some());
+            assert_eq!(
+                v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+                viewport
+            );
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_trim.is_none());
+            assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+            let state = v.state.as_ref().unwrap();
+            assert_eq!(
+                v.visible_viewport(state.timeline_frames),
+                viewport,
+                "canonical accepted viewport midi={midi}"
+            );
+            assert_ne!(state.project.snapshot(), before);
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+    }
+}
+
+#[gpui::test]
 fn partial_clamped_audio_source_pan_does_not_overshoot_applied_edge(cx: &mut TestAppContext) {
     check_partial_clamped_pan(cx, false);
 }
