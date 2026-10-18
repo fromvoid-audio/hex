@@ -716,7 +716,11 @@ impl VisualTestContext {
     pub fn rendered_border(
         &mut self,
         selector: &'static str,
-    ) -> Option<(crate::Hsla, crate::Edges<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
+    ) -> Option<(
+        crate::Hsla,
+        crate::Edges<crate::ScaledPixels>,
+        Bounds<crate::ScaledPixels>,
+    )> {
         self.update(|window, _| {
             let bounds = window.rendered_frame.debug_bounds.get(selector)?;
             let scaled = bounds.scale(window.scale_factor());
@@ -727,7 +731,36 @@ impl VisualTestContext {
                 .iter()
                 .rev()
                 .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
-                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
+                .map(|quad| {
+                    (
+                        quad.border_color,
+                        quad.border_widths,
+                        quad.content_mask.bounds,
+                    )
+                })
+        })
+    }
+
+    /// Completed quad paint position for a debug element. Pair with its actual
+    /// border/mask bounds to detect a later surface occluding an outline. This
+    /// is scene ordering evidence, not a native framebuffer/pixel readback.
+    pub fn rendered_quad_paint_order(&mut self, selector: &'static str) -> Option<(u32, usize)> {
+        self.update(|window, _| {
+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
+            let scaled = bounds.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, quad)| {
+                    quad.bounds == scaled
+                        && (!quad.background.is_transparent()
+                            || quad.border_widths != crate::Edges::default())
+                })
+                .map(|(index, quad)| (quad.order, index))
         })
     }
 
@@ -737,7 +770,10 @@ impl VisualTestContext {
     pub fn rendered_surface_geometry(
         &mut self,
         selector: &'static str,
-    ) -> Option<(crate::Corners<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
+    ) -> Option<(
+        crate::Corners<crate::ScaledPixels>,
+        Bounds<crate::ScaledPixels>,
+    )> {
         self.update(|window, _| {
             let bounds = window.rendered_frame.debug_bounds.get(selector)?;
             let scaled = bounds.scale(window.scale_factor());
