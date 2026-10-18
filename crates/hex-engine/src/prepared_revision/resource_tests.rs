@@ -440,3 +440,116 @@ fn sampler_source_replacement_handoff_preserves_old_trigger_and_plays_new_sessio
         );
     }
 }
+
+#[test]
+fn sampler_bypass_keeps_validated_source_and_can_resume_both_musical_routes() {
+    for mono in [false, true] {
+        let Some((source, mut editor)) = source_fixture(mono) else {
+            return;
+        };
+        let track = editor.project().tracks()[0].id();
+        let session_clip = musical_clips(&mut editor, track);
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let media = BTreeMap::<hex_project::AssetId, crate::Audio>::new();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let sine = crate::SharedSineTable::new_on_control();
+        let prepare = |project: &hex_project::Project, previous| {
+            PreparedRevision::prepare_with_audio_transforms_and_device_resources(
+                project,
+                &media,
+                sine.clone(),
+                previous,
+                &transforms,
+                DeviceResourcePreparation {
+                    bank: &source,
+                    max_scope_metadata_bytes: 65_536,
+                },
+            )
+        };
+        let bypassed = Arc::new(prepare(editor.project(), None).unwrap());
+        let pointer = pcm_address(&bypassed, track);
+        // Bypass does not skip current-format/source validation or silently
+        // accept an unavailable resource graph.
+        assert!(PreparedRevision::prepare(editor.project(), &media, sine.clone(), None).is_err());
+        let current = editor.project().device(device).unwrap().state();
+        let malformed = hex_lattice_contract::NativeDeviceState::new(
+            current.type_id(),
+            current.state_version(),
+            vec![255],
+        )
+        .unwrap()
+        .with_asset_references(current.asset_references().to_vec())
+        .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: malformed,
+            })
+            .unwrap();
+        assert!(prepare(editor.project(), Some(bypassed.session())).is_err());
+        assert!(editor.undo());
+        for session in [false, true] {
+            let mut silent = playback(Arc::clone(&bypassed));
+            if session {
+                silent
+                    .apply(SessionPlaybackCommand::LaunchClip {
+                        clip: session_clip,
+                        quantization: LaunchQuantization::Immediate,
+                    })
+                    .unwrap();
+            }
+            silent.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut output = [[9.0; 2]; 6];
+            silent.render(&mut output).unwrap();
+            assert_eq!(output, [[0.0; 2]; 6]);
+        }
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: false,
+            })
+            .unwrap();
+        let active = Arc::new(prepare(editor.project(), Some(bypassed.session())).unwrap());
+        assert_eq!(pcm_address(&active, track), pointer);
+        drop(bypassed);
+        drop(source);
+        drop(editor);
+        let original = crate::native_device_resources::tests::PCM;
+        let original = if mono {
+            original.map(|v| [v[0]; 2])
+        } else {
+            original
+        };
+        for session in [false, true] {
+            let mut playing = playback(Arc::clone(&active));
+            if session {
+                playing
+                    .apply(SessionPlaybackCommand::LaunchClip {
+                        clip: session_clip,
+                        quantization: LaunchQuantization::Immediate,
+                    })
+                    .unwrap();
+            }
+            playing.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut output = [[0.0; 2]; 6];
+            playing.render(&mut output).unwrap();
+            assert_eq!(&output[..4], &original);
+            assert_eq!(&output[4..], &[[0.0; 2]; 2]);
+        }
+        eprintln!(
+            "SUPPORTED actual Sampler bypass mono={mono}, retained validated source and Arrangement/Session resume PCM"
+        );
+    }
+}

@@ -554,7 +554,14 @@ impl SharedAnalyticContextTable {
             .map_err(|_| Invalid("could not reserve instrument continuation identities"))?;
 
         for track in project.tracks() {
-            let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
+            // A bypassed concrete Sampler still needs its validated source and
+            // factory retained for closed preparation/reenabling. Its playback
+            // remains disabled by the normal Arrangement/Session slot checks.
+            // Other instruments preserve their existing context preparation.
+            let Some(device) = track.instrument().filter(|device| {
+                !device.bypassed()
+                    || device.state().type_id() == hex_devices::sampler::state::TYPE_ID
+            }) else {
                 continue;
             };
             if device.state().type_id() == hex_devices::sampler::state::TYPE_ID {

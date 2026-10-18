@@ -713,3 +713,11 @@ and both bank handles before finishing. Independent mixed PCM checks cover both
 Mono and Stereo old sources beside the new stereo sample. This exercises audible
 old-law/source continuity; it does not qualify native constructor lineage,
 callback allocation/final-drop, full graph peak or atomic Service publication.
+
+Bypassed Samplers now retain their concrete validated source/factory during
+preparation, while ordinary slot enable checks keep Arrangement and Session
+silent. Previously preparation skipped this context and fell through to the
+unavailable registry type. Both layouts now cover bypass silence, malformed
+state/missing-resource refusal, Undo of invalid replacement, then re-enable with
+the same PCM address and independent playback after editor/bank retirement.
+This fixes headless preparation behavior; it opens no registry/native admission.
