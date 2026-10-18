@@ -313,7 +313,8 @@ pub(super) fn render_body(
         );
     }
     toolbar = toolbar.child(theme::text(format!("{} / 64", state.nodes.len())));
-    toolbar = toolbar.child(spectrum::toggle(view, cx, device, owner));
+    let control = spectrum::toggle(view, cx, device, owner);
+    toolbar = toolbar.child(control);
     let show_input = view
         .device_panel
         .eq_panels
