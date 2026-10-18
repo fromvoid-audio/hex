@@ -1,0 +1,9 @@
+{
+  "file": "hex-2722-fixture-source-evidence-v1.tar.gz",
+  "bytes": 174596,
+  "sha256": "9bce73a4161a7a521fd21dda646e42feaad79d8a61ddc006d1fe22c76870ae14",
+  "payloads": 29,
+  "candidate": "b34a522ebbe754da00934fa9c405e75133f17dc1",
+  "tree": "60b5479328205706cfd6bdeab7913f78ea8ef784",
+  "warning": "Evidence-only; NEVER build/merge/checkout ref as CODE. FullCI remains merger-owned and pending; targeted original receipts keep their own source identities."
+}
