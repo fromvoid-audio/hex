@@ -21,8 +21,8 @@ struct PreparedKey {
 #[derive(Clone, PartialEq)]
 pub struct PreparedSamplerRuntime {
     notes: [PreparedKey; 128],
-    common: VoiceCoefficients,
-    source: binding::SourceKey,
+    common: Option<VoiceCoefficients>,
+    source: Option<binding::SourceKey>,
     voices: usize,
     tail: u64,
     velocity_amount: f64,
@@ -49,8 +49,12 @@ impl PreparedSamplerRuntime {
         } = self;
         let _: &[PreparedKey; 128] = notes;
         let _: (&usize, &u64, &f64, &usize) = (voices, tail, velocity_amount, max_events);
-        source.audit_scalar_storage();
-        common.audit_scalar_storage();
+        if let Some(source) = source {
+            source.audit_scalar_storage();
+        }
+        if let Some(common) = common {
+            common.audit_scalar_storage();
+        }
         for PreparedKey { step, start, end } in notes {
             let _: (&u64, &u32, &u32) = (step, start, end);
         }
@@ -58,17 +62,33 @@ impl PreparedSamplerRuntime {
             bytes: std::mem::size_of::<Self>(),
         }
     }
+    /// Honest unbound preparation: no invented source, region, key or PCM.
+    pub(super) fn empty_on_control(max_events: usize) -> Result<Self, Invalid> {
+        if !(1..=MAX_EVENTS).contains(&max_events) {
+            return Err(Invalid("sampler event count exceeds its fixed capacity"));
+        }
+        Ok(Self {
+            notes: [PreparedKey::default(); 128],
+            common: None,
+            source: None,
+            voices: MAX_SAMPLER_RUNTIME_VOICES,
+            tail: 0,
+            velocity_amount: 0.0,
+            max_events,
+        })
+    }
     fn note(&self, pitch: u8) -> Option<VoiceCoefficients> {
         let key = self.notes.get(usize::from(pitch))?;
-        (key.step != 0).then(|| {
-            let mut note = self.common;
-            note.step = key.step;
-            note.region = Region {
-                start: key.start as usize,
-                end: key.end as usize,
-            };
-            note
-        })
+        if key.step == 0 {
+            return None;
+        }
+        let mut note = self.common?;
+        note.step = key.step;
+        note.region = Region {
+            start: key.start as usize,
+            end: key.end as usize,
+        };
+        Some(note)
     }
 }
 impl BoundSamplerPlan<'_> {
@@ -108,8 +128,8 @@ impl BoundSamplerPlan<'_> {
         }
         Ok(PreparedSamplerRuntime {
             notes,
-            common: common.ok_or(Invalid("sampler needs at least one mapped key"))?,
-            source: self.source,
+            common: Some(common.ok_or(Invalid("sampler needs at least one mapped key"))?),
+            source: Some(self.source),
             voices,
             tail,
             velocity_amount: self.plan.settings.velocity_amount,
@@ -275,14 +295,18 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         if events.len() > self.prepared.max_events {
             return Err(Error::EventCapacityExceeded);
         }
-        // Resolve the original slot from actual inventory, not a same-index substitute.
-        if !(0..resources
-            .len()
-            .min(hex_lattice_contract::MAX_DEVICE_ASSET_REFERENCES))
-            .filter_map(|index| resources.get(index))
-            .any(|view| self.prepared.source.matches(view))
-        {
-            return Err(Error::ResourceUnavailable);
+        match self.prepared.source {
+            Some(source)
+                if !(0..resources
+                    .len()
+                    .min(hex_lattice_contract::MAX_DEVICE_ASSET_REFERENCES))
+                    .filter_map(|index| resources.get(index))
+                    .any(|view| source.matches(view)) =>
+            {
+                return Err(Error::ResourceUnavailable);
+            }
+            None if !resources.is_empty() => return Err(Error::ResourceUnavailable),
+            _ => {}
         }
         let mut active = self.active;
         let mut cursor = 0;
@@ -303,11 +327,14 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         frames: &mut [StereoFrame],
         resources: &dyn DeviceResources,
     ) {
+        let Some(source) = self.prepared.source else {
+            return;
+        };
         let pcm = (0..resources
             .len()
             .min(hex_lattice_contract::MAX_DEVICE_ASSET_REFERENCES))
             .filter_map(|index| resources.get(index))
-            .find(|view| self.prepared.source.matches(*view));
+            .find(|view| source.matches(*view));
         let Some(view) = pcm else { return };
         let mut active = self.active;
         let mut next = 0;
@@ -373,7 +400,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
 #[cfg(test)]
 mod tests;
 
-// Loaded native adapter only. Registration/resource publication remain the
+// Native adapter only. Registration/resource publication remain the
 // host's separate admission boundary; this implementation retains no PCM.
 impl hex_lattice::NativeInstrumentDefinition for super::metadata::SamplerMetadata {
     fn prepare_instrument(
@@ -384,14 +411,6 @@ impl hex_lattice::NativeInstrumentDefinition for super::metadata::SamplerMetadat
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
     > {
-        use hex_lattice_contract::DeviceContractError as Error;
-        if matches!(
-            super::state::DeviceState::from_native(state)?,
-            super::state::DeviceState::Empty
-        ) {
-            return Err(Error::AssetResourcesUnavailable);
-        }
-        context.validate_for(state)?;
         // Matches the existing native host's 256 authored events plus three
         // boundary events. This does not increase its query or voice ceilings.
         let prepared = super::state::prepare_runtime_on_control(state, context, 259)?;

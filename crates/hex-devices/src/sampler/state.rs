@@ -79,7 +79,19 @@ pub fn prepare_runtime_on_control(
     context: &hex_lattice::DevicePreparationContext<'_>,
     max_events: usize,
 ) -> Result<PreparedSamplerRuntime, Error> {
-    let authored = SamplerState::from_native(state)?;
+    if context.sample_rate == 0 {
+        return Err(Error::InvalidParameterValue);
+    }
+    let authored = match DeviceState::from_native(state)? {
+        DeviceState::Sample(authored) => authored,
+        DeviceState::Empty => {
+            if !context.resources.is_empty() {
+                return Err(Error::AssetResourcesUnavailable);
+            }
+            return PreparedSamplerRuntime::empty_on_control(max_events)
+                .map_err(|_| Error::InvalidParameterValue);
+        }
+    };
     let reference = state
         .asset_references()
         .first()

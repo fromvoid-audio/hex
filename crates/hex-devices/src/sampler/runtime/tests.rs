@@ -401,7 +401,7 @@ fn native_loaded_adapter_uses_mutable_original_pcm_and_keeps_registry_gate_close
 }
 
 #[test]
-fn native_loaded_adapter_refuses_empty_missing_and_mismatched_sources() {
+fn native_adapter_refuses_unexpected_empty_resources_and_missing_or_mismatched_loaded_sources() {
     use hex_lattice::NativeInstrumentDefinition;
     use hex_lattice_contract::{DeviceAssetReference, NativeDeviceMetadata};
     let pcm = [1.0; 4];
@@ -437,4 +437,116 @@ fn native_loaded_adapter_refuses_empty_missing_and_mismatched_sources() {
             .prepare_instrument(&wrong, &context)
             .is_err()
     );
+}
+
+#[test]
+fn empty_native_sampler_is_silent_without_source_or_invented_voice_region() {
+    use hex_lattice::{NativeInstrumentDefinition, PreparedNativeInstrument};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let state = super::super::metadata::METADATA.default_state().unwrap();
+    let tuning = hex_lattice::TuningTable::default();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 44_100,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let prepared = super::super::state::prepare_runtime_on_control(&state, &context, 259).unwrap();
+    assert!(prepared.source.is_none());
+    assert!(prepared.common.is_none());
+    assert_eq!(prepared.max_release_tail_frames(), 0);
+    assert_eq!(
+        prepared.control_storage_declaration(),
+        hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+            bytes: std::mem::size_of::<PreparedSamplerRuntime>(),
+        }
+    );
+    for pitch in 0..128 {
+        assert!(prepared.note(pitch).is_none());
+        assert!(PreparedNativeInstrument::validate_event_note(&prepared, pitch, 127).is_ok());
+    }
+    assert!(std::mem::size_of_val(&prepared) <= hex_lattice::MAX_SHARED_ANALYTIC_CONTEXT_BYTES);
+    let definition = super::super::metadata::METADATA
+        .prepare_instrument(&state, &context)
+        .unwrap();
+    assert!(definition.prepare_note(60, 127).is_err());
+    assert!(definition.prepare_mutable_runtime().unwrap().is_some());
+    let mut pair = pair(&prepared);
+    let events = (0..128)
+        .map(|pitch| on(0, u64::from(pitch) + 1, pitch))
+        .chain((1..=128).map(|occurrence| off(1, occurrence)))
+        .collect::<Vec<_>>();
+    for commit in [false, true, false, true] {
+        let mut output = [[0.25, -0.5]; 2];
+        pair.begin_block();
+        pair.process_block(&events, &mut output, context.resources)
+            .unwrap();
+        assert_eq!(output, [[0.25, -0.5]; 2]);
+        if commit {
+            pair.commit_block();
+        } else {
+            pair.rollback_block();
+        }
+    }
+    pair.reset();
+    assert!(
+        crate::native_instrument_registry()
+            .unwrap()
+            .definition(super::super::state::TYPE_ID)
+            .is_none()
+    );
+}
+
+#[test]
+fn empty_sampler_refuses_bad_context_and_never_inherits_loaded_voice_history() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let state = super::super::metadata::METADATA.default_state().unwrap();
+    let tuning = hex_lattice::TuningTable::default();
+    let mut context = hex_lattice::DevicePreparationContext {
+        sample_rate: 44_100,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    for invalid_events in [0, MAX_EVENTS + 1] {
+        assert!(
+            super::super::state::prepare_runtime_on_control(&state, &context, invalid_events)
+                .is_err()
+        );
+    }
+    let prepared = super::super::state::prepare_runtime_on_control(&state, &context, 259).unwrap();
+    let mut empty_pair = pair(&prepared);
+    context.sample_rate = 0;
+    assert!(super::super::state::prepare_runtime_on_control(&state, &context, 259).is_err());
+    let pcm = [1.0; 4];
+    let view = view(&pcm);
+    let loaded = prepare(
+        view,
+        Mode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        16,
+    );
+    let loaded_pair = pair(&loaded);
+    assert!(!empty_pair.can_inherit_from(&loaded_pair));
+    assert!(!loaded_pair.can_inherit_from(&empty_pair));
+    empty_pair.begin_block();
+    let mut unchanged = [[0.125, -0.25]; 2];
+    let resources = BorrowedDeviceResources(&[view]);
+    assert_eq!(
+        empty_pair.process_block(&[], &mut unchanged, &resources),
+        Err(Error::ResourceUnavailable)
+    );
+    assert_eq!(unchanged, [[0.125, -0.25]; 2]);
+    empty_pair.rollback_block();
+    empty_pair.begin_block();
+    assert!(
+        empty_pair
+            .process_block(
+                &[on(0, 1, 128)],
+                &mut unchanged,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            )
+            .is_err()
+    );
+    assert_eq!(unchanged, [[0.125, -0.25]; 2]);
+    empty_pair.rollback_block();
 }

@@ -350,3 +350,16 @@ compares playback against an independent original PCM fixture. This is a private
 preparation milestone, not full retained-root admission, renderer publication,
 registration, keyboard/export qualification, or a usable native panel. Its runtime
 result must be recorded separately from successful compilation.
+
+### Empty runtime before sample loading
+
+The unbound authored state now prepares the same fixed concrete mutable runtime
+with absent source/coefficient fields and an empty key table. It has no fake
+region, PCM, resource scope or note. Valid MIDI contributes silence to existing
+output; invalid events and unexpected resources refuse before changing it.
+Rollback/commit/reset and empty/loaded history incompatibility remain explicit.
+Loaded preparation scans finite PCM once through the existing bound-plan path.
+The optional fields participate in the exhaustive fixed-leaf audit; actual body
+layout remains computed from the concrete runtime type. The device is still
+unregistered, and this runtime milestone does not establish whole-host admission
+or a complete native empty/load workflow.
