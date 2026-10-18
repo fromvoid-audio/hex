@@ -1,0 +1,71 @@
+{
+  "source": "a456846c4e9b57cf0b8694a7dc8219dd165edfe1",
+  "tree": "d4d36b93751cd867103340e3f3c8f6fb92508378",
+  "filename": "hex-sampler-a456846c-closed-aggregate-checkpoint-evidence.tar.gz",
+  "bytes": 112770,
+  "sha256": "8a325a542c0772fb14000bd154290df7612738dbe650972f0847717673283edc",
+  "members": 43,
+  "payloads": 42,
+  "files": [
+    {
+      "path": "crates/hex-engine/README.md",
+      "before": "34dbea8f9c4f0d8895cd70b810e2e1ac55678a23e82c24073a43bf8f49f31f84",
+      "after": "1de5045864faf5ef34ded90f15bb23fee12dba77fe2d18c6161d829c08330b47"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips.rs",
+      "before": "7a41ef5c2d80aa0b21eb3e5a5d5f8d3ce7f8f015eb9efc51b8c8c3e15857589c",
+      "after": "82789e2291f146c9b15aa574565a57165678323fc05ae0340a947743f0d44603"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      "before": "5fd332ae9343bd71b951ae7e5565f30803a3ffb3f71fb24d3808545940d6940a",
+      "after": "40eb6e3f0f526b3cbb137c208546606d8fb343ddb4e6d87a4b06d87e1556723c"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "before": null,
+      "after": "b3f546b8983710708705c0d6eaf9069d2088a39e9767ac8b14ae343565fdc82b"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
+      "before": null,
+      "after": "83b008b8a01be8a4ed794d96235439d79f4114ebe0c7e891a7e604bc441d4445"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/arithmetic.rs",
+      "before": "7cc416479a215b81043be213d51596b223f5c69d5f4de62d83fab6ff2585e511",
+      "after": "d13d1340c6a76a6fb1c9dbb8166083c47cb49695cf779db3187040103537c2e4"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/mod.rs",
+      "before": "12f074ad115c46223087d320f152ba737b0d084d86a446773bb877a5296199de",
+      "after": "8e86072bff2532fa0a43a595be5f7534bbb5acbc0d681dcd723d3dc2b0cd9fb4"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/pcm_inventory.rs",
+      "before": "a026e7735ae0afceb0a0a75061f9b31a0800764771bada58a536789e68bb6490",
+      "after": "e950afa3c009a6edeb8ddad9bb4e607e33e975891f7b4da12d203abecb4eeb85"
+    },
+    {
+      "path": "crates/hex-engine/src/compile.rs",
+      "before": "dec84528fa4e48012df9e8b8c571962e2ee194bf7609c38e382d13cc661fe4c4",
+      "after": "af16ef68b8475bef2ceed3c45fa4d5c634ae43c2e85f0e901ae3fe79ea9ef3bc"
+    },
+    {
+      "path": "crates/hex-engine/src/compile/sampler_cost.rs",
+      "before": null,
+      "after": "6389499bc4544485730faeec5f8abe68ac1cebd0f9aa731a6dbaa36de4474886"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "2228b686549dab5997e7dba5faba675f1d83d6a0d8c28236d4f9483285ce2a5e",
+      "after": "f55f2a542e3a9d95d8e61c7bfca12a3c6538379c2dba64d4229983a8d9cf9ac3"
+    },
+    {
+      "path": "scripts/check-architecture.py",
+      "before": "8db15c60b03e837d03c1308f8080b0e43e2d6d4940268fa924ef81861360810b",
+      "after": "8278787784012392dd792bf0a85c12db7e3d85ced21602f7108f6df9a9c23f81"
+    }
+  ]
+}
