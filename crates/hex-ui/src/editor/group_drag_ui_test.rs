@@ -353,3 +353,144 @@ fn stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_releas
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
 }
+
+#[gpui::test]
+fn mixed_audio_midi_group_uses_real_track_offsets_or_refuses_whole_vertical_move(
+    cx: &mut TestAppContext,
+) {
+    for fits in [true, false] {
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let mut targets = Vec::new();
+        for name in ["middle", "last"] {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::AddMidiTrack { name: name.into() })));
+            });
+            pump(&editor, &mut visual);
+            targets.push(editor.read_with(&visual, |v, _| {
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .tracks()
+                    .last()
+                    .unwrap()
+                    .id()
+            }));
+        }
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track: targets[0],
+                start: hex_project::BeatTime::from_quarters(6).unwrap(),
+                length: hex_project::BeatTime::ONE
+            })));
+        });
+        pump(&editor, &mut visual);
+        let midi = editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(targets[0])
+                .unwrap()
+                .midi_clips()[0]
+                .id()
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
+                clip: midi,
+                start: hex_project::BeatTime::ZERO,
+                duration: hex_project::BeatTime::ONE,
+                pitch: 69,
+                channel: 0,
+                velocity: 100
+            })));
+        });
+        pump(&editor, &mut visual);
+        let anchor = clips[1];
+        click(&mut visual, anchor, false);
+        click(&mut visual, midi, true);
+        let before = editor.read_with(&visual, |v, _| {
+            assert_eq!(v.selected_clip_ids(), vec![anchor, midi]);
+            v.state.as_ref().unwrap().project.snapshot()
+        });
+        let selector = Box::leak(format!("clip-drag-surface-{}", anchor.value()).into_boxed_str());
+        let down = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0), down.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let destination = targets[usize::from(!fits)];
+        let target = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&destination];
+            point(down.x + px(63.0), px(lane.top + lane.height / 2.0))
+        });
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        let planned = editor.read_with(&visual, |v, _| {
+            assert_eq!(v.selected_clip_ids(), vec![anchor, midi]);
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            let drag = v.active_clip_drag.as_ref().unwrap();
+            let plan = drag.group.borrow().previews.clone();
+            assert_eq!(plan.len(), if fits { 2 } else { 0 });
+            plan
+        });
+        if fits {
+            for id in [anchor, midi] {
+                let selector =
+                    Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
+                assert!(
+                    visual.debug_bounds(selector).is_some(),
+                    "both audio and MIDI previews actually paint"
+                );
+            }
+        }
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            if !fits {
+                assert_eq!(project.snapshot(), before);
+                return project.snapshot();
+            }
+            assert!(v.error.is_none(), "{:?}", v.error);
+            for item in &planned {
+                let row = project.track(item.track).unwrap();
+                match &item.content {
+                    hex_project::ClipGroupContent::Audio(c) => assert!(row.clips().contains(c)),
+                    hex_project::ClipGroupContent::Midi(c) => assert!(row.midi_clips().contains(c)),
+                }
+            }
+            assert!(
+                project
+                    .track(targets[0])
+                    .unwrap()
+                    .clips()
+                    .iter()
+                    .any(|c| c.id() == anchor)
+            );
+            assert!(
+                project
+                    .track(targets[1])
+                    .unwrap()
+                    .midi_clips()
+                    .iter()
+                    .any(|c| c.id() == midi)
+            );
+            project.snapshot()
+        });
+        if fits {
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+            });
+            visual.simulate_keystrokes("cmd-shift-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+            });
+        }
+    }
+}

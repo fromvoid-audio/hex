@@ -279,3 +279,85 @@ fn identical_group_move_preserves_redo_and_canonical_data() {
     assert_eq!(f.editor.project(), &before);
     assert!(f.editor.can_redo());
 }
+
+#[test]
+fn clip_limit_uses_complete_final_group_and_refuses_atomically_before_preparation() {
+    for split_victim in [false, true] {
+        let mut f = fixture();
+        let mut project = f.editor.project().clone();
+        let asset = project.clip(f.audio).unwrap().asset();
+        if split_victim {
+            // The original group does not overlap this later victim. Its
+            // destination is strictly inside, adding one retained fragment.
+            project
+                .apply(Command::PlaceClip {
+                    track: f.tracks[0],
+                    asset,
+                    start: 168_000,
+                    duration: 312_000,
+                    source_offset: 0,
+                    source_length: 96_000,
+                    looping: true,
+                })
+                .unwrap();
+        }
+        let count = project
+            .tracks()
+            .iter()
+            .map(|t| t.clips().len() + t.midi_clips().len())
+            .sum::<usize>();
+        let template = project.clip(f.audio).unwrap().clone();
+        project
+            .audio_clips_mut(f.tracks[2])
+            .unwrap()
+            .try_reserve_exact(MAX_CLIPS - count)
+            .unwrap();
+        for index in 0..MAX_CLIPS - count {
+            let mut clip = template.clone();
+            clip.id = ClipId(project.allocate_id().unwrap());
+            clip.start = 10_000_000 + index as u64 * 2;
+            clip.duration = 1;
+            clip.source_offset = 0;
+            clip.source_length = 1;
+            clip.source_phase = 0;
+            clip.looping = false;
+            clip.edit = None;
+            clip.fade = crate::ClipFade::neutral(1).unwrap();
+            project.audio_clips_mut(f.tracks[2]).unwrap().push(clip);
+        }
+        assert_eq!(Project::from_snapshot(project.snapshot()).unwrap(), project);
+        f.editor = Editor::new(project, 8).unwrap();
+        let before = f.editor.project().clone();
+        let edit = command(
+            &f,
+            f.audio,
+            f.tracks[0],
+            ClipGroupPosition::Audio(if split_victim { 192_000 } else { 72_000 }),
+        );
+        let mut preparations = 0;
+        let result = f.editor.execute_validated(edit, |candidate| {
+            preparations += 1;
+            assert_eq!(
+                candidate
+                    .tracks()
+                    .iter()
+                    .map(|t| t.clips().len() + t.midi_clips().len())
+                    .sum::<usize>(),
+                MAX_CLIPS
+            );
+            Ok::<(), Invalid>(())
+        });
+        if split_victim {
+            assert!(result.is_err());
+            assert_eq!(preparations, 0);
+            assert_eq!(f.editor.project(), &before);
+            assert!(!f.editor.can_undo() && !f.editor.can_redo());
+        } else {
+            result.unwrap();
+            assert_eq!(preparations, 1);
+            assert!(f.editor.undo());
+            assert_eq!(f.editor.project(), &before);
+            assert!(f.editor.redo());
+        }
+    }
+}
