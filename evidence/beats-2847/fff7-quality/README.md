@@ -10,8 +10,8 @@ all54 actual recording outcomes and200 synthetic fixed/default WAVs.
 
 Large gzip archives are byte-split to24,000,000-byte parts to keep individual
 Git blobs bounded. ARCHIVES.json gives exact ordered parts, sizes and SHA256s.
-For each split archive, concatenate part00, part01, part02 IN THAT ORDER into the
-listed archive name; verify the FULL archive SHA256 before extraction. No change
+For each split archive, concatenate ALL parts in the exact ARCHIVES.json order
+(part00 onward, INCLUDING part03 for the phrase) into the listed archive name; verify the FULL archive SHA256 before extraction. No change
 of compression or audio encoding is involved in splitting. Smaller tar.gz files
 are directly usable. Each archive includes per-WAV/file manifests and settings.
 Evidence branch only: do not merge these media into product source/library.
