@@ -25,10 +25,38 @@ release ownership safeguards. Its receipt records `source-only` verification,
 evidence, never a passing test report. Cargo can reuse valid dependencies normally.
 
 `./launch --test` adds full exact-source local CI before the same build and start
-workflow. Save and quit hex before either mode. The launcher refuses to
-replace the installed app while it is running and also refuses when a raw
-`hex-desktop` executable is running, before CI or Cargo build work; it never kills
-a process. The `--test` spelling survives source-update re-exec.
+workflow. Without the explicit restart option below, save and quit hex before
+either mode. Ordinary launch refuses to replace a running installed app or a raw
+`hex-desktop` process before CI or Cargo build work, and never terminates one.
+The `--test` spelling survives source-update re-exec.
+
+`./launch --force-restart` opts in to quitting the verified stable development
+app before the normal update/build/start workflow. **Unsaved work may be lost.**
+It requests a native normal quit, waits up to ten seconds, then requests native
+forced termination of that same process if needed and waits up to five seconds.
+A native control operation has its own fifteen-second timeout. It never targets
+an app by name or PID alone: bundle URL, executable, development identifier and
+launch time are rechecked before every request, with the installed signature and
+sealed inventory verified as well. Multiple processes, a replacement identity,
+unverifiable app or busy activation/build lock refuse without retargeting.
+Ctrl-C stops further escalation, recovery and launch. A cancelled normal quit
+can still be followed by force under this explicit option; omit the option to
+retain the ordinary save-and-quit guard.
+
+Matching well-formed pending release ownership can be recovered only for this
+checkout/common repository, actual target inode, compatible package inventory
+and known ancestor source. The exact inspected owner bytes are rechecked under
+the existing release mutation lock. Existing installer recovery handles only its
+fixed owned paths and regular Finder metadata; unknown files, symlinks, legacy
+journals and foreign ownership refuse and remain preserved. No arbitrary operator
+adoption, project/settings/media cleanup, old-bundle collection or artifact reuse
+is added. The fresh candidate is rebuilt and verified; build or install failure
+preserves recoverable state and never opens an app. Inspect the actual diagnostic
+before retrying, including when no app is running.
+
+The option remains test-free unless combined with `--test`; both flags survive
+source update. It cannot be combined with installed-only `--open`. This is future
+operator invocation, not permission for unattended force-quit during verification.
 
 `./launch --open` verifies and opens the installed optimized app without Git, CI,
 Cargo or replacement. It can activate an already running installed app. Missing or

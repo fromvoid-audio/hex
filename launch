@@ -195,7 +195,7 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
         delivery.assert_inactive(app)
         assert_no_raw_desktop_process(root)
     except (delivery.DeliveryError, OSError, subprocess.CalledProcessError) as error:
-        raise LaunchError(f"configured app must be saved and quit before launch; no process was terminated: {error}") from error
+        raise LaunchError(f"configured app is not inactive; replacement was not started: {error}") from error
 
     tested = "--test" in (argv or [])
     if tested:
@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("launch interrupted; no further app termination, cleanup or launch attempted", file=sys.stderr)
         return 130
-    except (LaunchError, restart.RestartError, ci.InterruptedRun, ci.TargetCacheError, OSError,
+    except (LaunchError, restart.RestartError, delivery.DeliveryError, ci.InterruptedRun, ci.TargetCacheError, OSError,
             ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print(f"launch stopped: {error}", file=sys.stderr)
         return 1

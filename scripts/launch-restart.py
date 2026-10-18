@@ -167,10 +167,16 @@ def recovery_hash(runner, ci, source: str, ancestor) -> str | None:
             raise RestartError("release owner source is not known prior main; no implicit adoption")
         if record["state"] == "ready":
             artifact = record["artifact"]
-            path = Path(artifact["path"])
-            if (not hexadecimal(artifact["sha256"], 64) or not isinstance(record["build_argv"], list)
-                    or not path.is_absolute() or not path.resolve().is_relative_to(target / "release")
-                    or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != artifact["sha256"]):
+            if not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}:
+                raise RestartError("ready release artifact is inconsistent; preserved for inspection")
+            try:
+                path = Path(artifact["path"])
+                if not path.is_absolute() or not path.resolve().is_relative_to(target / "release"):
+                    raise RestartError("ready release artifact is outside release; preserved for inspection")
+                actual = runner.identify_release_artifact(path, record["build_argv"])
+            except (ci.TargetCacheError, OSError, TypeError, ValueError) as error:
+                raise RestartError("ready release artifact is inconsistent; preserved for inspection") from error
+            if actual != artifact:
                 raise RestartError("ready release artifact is inconsistent; preserved for inspection")
             return None
         return hashlib.sha256(raw).hexdigest()
@@ -201,6 +207,7 @@ def prepare(root: Path, app: Path, source: str, ci, delivery, assert_no_raw,
             lock = ci.CargoTargetLock(lock_path, {"operation": "force-restart-preflight",
                                                 "workspace_root": str(root), "commit": source})
             lock.acquire()
+            runner.target_lock = lock
             try:
                 expected = recovery_hash(runner, ci, source, lambda old, new:
                     subprocess.run(["git", "merge-base", "--is-ancestor", old, new], cwd=root,
@@ -222,6 +229,7 @@ def prepare(root: Path, app: Path, source: str, ci, delivery, assert_no_raw,
                               source=frozen)
             finally:
                 error = lock.release()
+                runner.target_lock = None
                 if error:
                     raise RestartError(error)
         return expected
