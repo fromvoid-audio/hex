@@ -53,6 +53,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
                 loop_start_raw: 0,
                 loop_end_raw: 256 << 32,
                 looping: false,
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 notes,
             }]),
             sends: Vec::new(),

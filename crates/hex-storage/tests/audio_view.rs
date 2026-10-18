@@ -118,3 +118,36 @@ fn current_format_rejects_missing_placement_phase_clock_and_unknown_field() {
         );
     }
 }
+
+#[test]
+fn exhausted_once_consumed_cursor_and_signed_boundary_roundtrip_exactly() {
+    for musical in [false, true] {
+        let (project, clip) = fixture(AudioViewMode::Once);
+        let mut s = project.snapshot();
+        s.tracks[0].audio_clips_mut().unwrap()[0]
+            .edit
+            .as_mut()
+            .unwrap()
+            .placement
+            .as_mut()
+            .unwrap()
+            .cycle_phase = 60_000;
+        let mut e = Editor::new(Project::from_snapshot(s).unwrap(), 8).unwrap();
+        if musical {
+            e.execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        }
+        let bytes = hex_storage::encode(e.project()).unwrap();
+        let decoded = hex_storage::decode(&bytes).unwrap();
+        assert_eq!(decoded.snapshot(), e.project().snapshot());
+        let p = AudioViewProjection::new(decoded.clip(clip).unwrap(), decoded.tempo_map()).unwrap();
+        assert_eq!(
+            (p.logical_first_boundary(), p.occurrence_count()),
+            (-36_000, 0)
+        );
+        assert!(p.occurrence(0).is_err());
+    }
+}

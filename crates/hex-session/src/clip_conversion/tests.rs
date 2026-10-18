@@ -22,6 +22,85 @@ impl Drop for Folder {
 fn beat(n: u64) -> BeatTime {
     BeatTime::from_raw(n << 32)
 }
+
+#[test]
+fn bounded_once_session_bounce_bridge_preserves_full_source_and_selected_end() {
+    let (mut session, _, clip) = fixture();
+    for (start, pitch) in [(1_u64 << 32, 65), (5_u64 << 31, 70)] {
+        session
+            .command(Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_raw(start),
+                duration: BeatTime::from_raw(1 << 30),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    session
+        .command(Command::SetMidiClipSourceWithOverwrite {
+            clip,
+            source_length: beat(3),
+            source_start: beat(1),
+            loop_start: beat(1),
+            loop_end: beat(2),
+            looping: true,
+            length: beat(3),
+        })
+        .unwrap();
+    session
+        .command(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(3),
+            source_start: beat(1),
+            loop_start: beat(1),
+            loop_end: beat(2),
+            looping: false,
+            length: beat(3),
+        })
+        .unwrap();
+    let Created::Scene(scene) = session
+        .command(Command::AddScene {
+            name: "copy".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(copied) = session
+        .command(Command::CopyArrangementMidiToSession {
+            source: clip,
+            scene,
+        })
+        .unwrap()
+    else {
+        panic!("copy")
+    };
+    let original = session.project().snapshot();
+    let range = session.project().midi_bounce_range(copied).unwrap();
+    assert_eq!(range, (0, 24_000));
+    let (isolated, _, _) = isolated_source(session.project(), copied).unwrap();
+    let only = &isolated.tracks()[0].midi_clips()[0];
+    assert_eq!(
+        only.source().one_shot_boundary(),
+        hex_project::MidiOneShotBoundary::LoopEnd
+    );
+    assert_eq!(
+        (only.source_length(), only.source_start(), only.length()),
+        (beat(3), beat(1), beat(1))
+    );
+    assert_eq!(only.notes().len(), 3);
+    assert_eq!(
+        only.source_playback()
+            .unwrap()
+            .note_occurrences(BeatTime::from_raw(5 << 31), BeatTime::from_raw(1 << 30))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(session.project().snapshot(), original);
+}
 fn fixture() -> (Session, hex_project::TrackId, ClipId) {
     let mut session = Session::new(48_000, 32, 1_000_000).unwrap();
     let Created::Track(track) = session

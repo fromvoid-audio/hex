@@ -163,7 +163,7 @@ fn fractional_tempo_occurrences_use_absolute_beats_not_a_repeated_frame_period()
         periods.push(a.destination_end - a.destination_start);
     }
     assert_ne!(periods[1], periods[2]);
-    assert_eq!(p.logical_first_boundary(), expected[1]);
+    assert_eq!(p.logical_first_boundary(), i128::from(expected[1]));
     let preview = preview_view_resize(
         c,
         tempo,
@@ -179,8 +179,8 @@ fn fractional_tempo_occurrences_use_absolute_beats_not_a_repeated_frame_period()
     n.fade = ClipFade::neutral(n.duration).unwrap();
     let shorter = Project::from_snapshot(s).unwrap();
     let short = AudioViewProjection::new(shorter.clip(id).unwrap(), shorter.tempo_map()).unwrap();
-    assert!(short.logical_first_boundary() > short.outer_frame_bounds().1);
-    assert_eq!(short.logical_first_boundary(), expected[1]);
+    assert!(short.logical_first_boundary() > i128::from(short.outer_frame_bounds().1));
+    assert_eq!(short.logical_first_boundary(), i128::from(expected[1]));
 }
 
 #[test]
@@ -316,39 +316,195 @@ fn clock_toggle_and_move_retain_selected_cycle_phase_and_project_current_origin(
 }
 
 #[test]
-fn once_left_trim_refuses_silence_only_start_instead_of_revealing_hidden_source() {
-    let (mut e, id) = frame_fixture(AudioViewMode::Once);
-    let before = e.project().snapshot();
-    // The audible remaining cycle ends at frame18000, outer clip at48000.
-    // Strict phase<cycle cannot represent a leading view of silence only.
-    assert!(
+fn once_silence_tail_trim_split_and_extend_back_preserve_consumed_origin() {
+    for cut in [18_000, 30_000] {
+        let (mut e, id) = frame_fixture(AudioViewMode::Once);
+        let before = e.project().snapshot();
+        let root = e
+            .project()
+            .clip(id)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain
+            .clone();
         e.execute(Command::TrimClipEdge {
             clip: id,
             edge: TrimEdge::Left,
-            frame: 30_000
+            frame: cut,
         })
-        .is_err()
-    );
-    assert_eq!(e.project().snapshot(), before);
-    assert!(
-        e.execute(Command::SplitClip {
+        .unwrap();
+        let c = e.project().clip(id).unwrap();
+        let p = AudioViewProjection::new(c, e.project().tempo_map()).unwrap();
+        assert_eq!(p.outer_frame_bounds(), (cut, 48_000));
+        assert_eq!(p.root_origin(), -18_000);
+        assert_eq!(p.logical_first_boundary(), 18_000);
+        assert_eq!(p.occurrence_count(), 0);
+        assert!(p.occurrence(0).is_err());
+        assert_eq!(
+            c.audio_edit().unwrap().placement.unwrap().cycle_phase,
+            6_000 + cut
+        );
+        assert!(std::sync::Arc::ptr_eq(
+            &root,
+            &c.audio_edit().unwrap().domain
+        ));
+        e.execute(Command::TrimClipEdge {
             clip: id,
-            frame: 30_000
+            edge: TrimEdge::Left,
+            frame: 0,
         })
-        .is_err()
+        .unwrap();
+        assert_eq!(e.project().snapshot(), before);
+        let p = AudioViewProjection::new(e.project().clip(id).unwrap(), e.project().tempo_map())
+            .unwrap();
+        assert_eq!(p.occurrence(0).unwrap().destination_end, 18_000);
+        assert!(e.undo());
+        assert!(e.undo());
+        assert_eq!(e.project().snapshot(), before);
+    }
+    let (mut e, id) = frame_fixture(AudioViewMode::Once);
+    let root = e
+        .project()
+        .clip(id)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .clone();
+    let Created::Clip(right) = e
+        .execute(Command::SplitClip {
+            clip: id,
+            frame: 30_000,
+        })
+        .unwrap()
+    else {
+        panic!("split");
+    };
+    let c = e.project().clip(right).unwrap();
+    let p = AudioViewProjection::new(c, e.project().tempo_map()).unwrap();
+    assert_eq!(p.outer_frame_bounds(), (30_000, 48_000));
+    assert_eq!((p.root_origin(), p.occurrence_count()), (-18_000, 0));
+    assert!(std::sync::Arc::ptr_eq(
+        &root,
+        &c.audio_edit().unwrap().domain
+    ));
+    assert!(e.undo());
+    assert!(e.redo());
+    assert_eq!(
+        AudioViewProjection::new(e.project().clip(right).unwrap(), e.project().tempo_map())
+            .unwrap()
+            .occurrence_count(),
+        0
     );
-    assert_eq!(e.project().snapshot(), before);
-    e.execute(Command::TrimClipEdge {
+}
+
+#[test]
+fn consumed_once_boundary_toggle_marker_and_clock_conversion_are_explicit() {
+    let (e, id) = frame_fixture(AudioViewMode::Once);
+    let mut s = e.project().snapshot();
+    s.tracks[0].audio_clips_mut().unwrap()[0]
+        .edit
+        .as_mut()
+        .unwrap()
+        .placement
+        .as_mut()
+        .unwrap()
+        .cycle_phase = 60_000;
+    let mut e = Editor::new(Project::from_snapshot(s).unwrap(), 32).unwrap();
+    let original = e.project().snapshot();
+    let p =
+        AudioViewProjection::new(e.project().clip(id).unwrap(), e.project().tempo_map()).unwrap();
+    assert_eq!(
+        (
+            p.root_origin(),
+            p.logical_first_boundary(),
+            p.occurrence_count()
+        ),
+        (-72_000, -36_000, 0)
+    );
+    e.execute(Command::SetAudioClipMusical {
         clip: id,
-        edge: TrimEdge::Left,
-        frame: 12_000,
+        enabled: true,
     })
     .unwrap();
     let p =
         AudioViewProjection::new(e.project().clip(id).unwrap(), e.project().tempo_map()).unwrap();
-    assert_eq!(p.outer_frame_bounds(), (12_000, 48_000));
-    assert_eq!(p.occurrence_count(), 1);
-    assert_eq!(p.occurrence(0).unwrap().destination_end, 18_000);
+    assert_eq!(
+        (p.logical_first_boundary(), p.occurrence_count()),
+        (-36_000, 0)
+    );
+    e.execute(Command::SetAudioClipMusical {
+        clip: id,
+        enabled: false,
+    })
+    .unwrap();
+    assert_eq!(e.project().snapshot(), original);
+    e.execute(Command::ResizeAudioClipView {
+        clip: id,
+        operation: AudioViewResizeOperation::OuterEnd {
+            project_frame: 96_000,
+        },
+    })
+    .unwrap();
+    let c = e.project().clip(id).unwrap();
+    assert_eq!(
+        c.audio_edit().unwrap().placement.unwrap().mode,
+        AudioViewMode::Once
+    );
+    assert_eq!(
+        AudioViewProjection::new(c, e.project().tempo_map())
+            .unwrap()
+            .occurrence_count(),
+        0
+    );
+    e.execute(Command::ResizeAudioClipView {
+        clip: id,
+        operation: AudioViewResizeOperation::CycleEnd {
+            project_frame: 12_000,
+        },
+    })
+    .unwrap();
+    assert_eq!(
+        e.project()
+            .clip(id)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .placement
+            .unwrap()
+            .cycle_phase,
+        60_000
+    );
+    assert_eq!(
+        AudioViewProjection::new(e.project().clip(id).unwrap(), e.project().tempo_map())
+            .unwrap()
+            .occurrence_count(),
+        1
+    );
+    assert!(e.undo());
+    assert!(e.undo());
+    e.execute(Command::SetClipLooping {
+        clip: id,
+        looping: true,
+    })
+    .unwrap();
+    let p =
+        AudioViewProjection::new(e.project().clip(id).unwrap(), e.project().tempo_map()).unwrap();
+    assert_eq!(p.occurrence_count(), 3);
+    assert_eq!(
+        e.project()
+            .clip(id)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .placement
+            .unwrap()
+            .cycle_phase,
+        12_000
+    );
+    assert!(e.undo());
+    assert_eq!(e.project().snapshot(), original);
 }
 
 #[test]
@@ -439,7 +595,7 @@ fn invalid_clock_phase_zero_span_and_overflow_refuse_without_altering_original()
             cycle_phase: 0,
         },
         AudioViewPlacement {
-            mode: AudioViewMode::Once,
+            mode: AudioViewMode::Repeat,
             outer_length: AudioDomainClock::Frames(48_000),
             cycle_phase: 24_000,
         },

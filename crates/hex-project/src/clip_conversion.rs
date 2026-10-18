@@ -134,7 +134,7 @@ pub(crate) fn midi_to_audio(
 
 impl Project {
     /// Finite bounce window: Arrangement placement, or a Session source's initial
-    /// pass through its loop end (source end for one-shots), at the current tempo.
+    /// pass through its effective playback end, at the current tempo.
     pub fn midi_bounce_range(&self, id: ClipId) -> Result<(u64, u64), Invalid> {
         let (start, end) = if let Some(clip) = self.midi_clip(id) {
             (
@@ -148,11 +148,10 @@ impl Project {
             )
         } else if let Some(clip) = self.session_midi_clip(id) {
             let source = clip.source();
-            let end = if source.looping() {
-                source.loop_end()
-            } else {
-                source.source_length()
-            };
+            let end = source.effective_end();
+            if source.source_start() >= end {
+                return Err(Invalid("no remaining one-shot material"));
+            }
             (BeatTime::ZERO, beat_length(source.source_start(), end)?)
         } else {
             return Err(Invalid("midi clip no longer exists"));

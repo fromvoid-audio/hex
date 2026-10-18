@@ -68,13 +68,15 @@ The model now has the root/Source4-approved optional Copy-only
 `AudioViewPlacement { mode, outer_length: AudioDomainClock, cycle_phase }` on
 `AudioClipEdit`. The selected `view_start..view_end` stays in the same retained
 processing domain. Outer length uses that domain's clock and must be positive;
-phase is strictly inside the selected cycle. `None` retains ordinary semantics;
+Repeat phase is strictly inside the selected cycle. Once phase is an unwrapped
+consumed offset and can equal or exceed the cycle, yielding no occurrences. `None` retains ordinary semantics;
 `Some(Once)` remains after Looping off. No additional placement origin is
 serialized; the retained domain's preexisting frozen fade metadata is unchanged.
 
 `AudioViewProjection::new(clip, tempo)` borrows the canonical clip and tempo map.
-It exposes outer frame bounds, a logical first boundary even beyond the outer
-end, an O(1) occurrence count, and checked indexed occurrences. Each occurrence
+It exposes outer frame bounds, a signed historical first boundary (which may
+precede time zero or lie beyond the outer end), the signed root origin even
+for silence, an O(1) occurrence count, and checked indexed occurrences. Each occurrence
 contains a signed root origin (raw beats or frames), its full projected root
 frame length/origin, root-relative crop frames and absolute destination frames.
 For beat roots the first origin is `musical_start - view_start - cycle_phase`;
@@ -94,13 +96,21 @@ changes the origin. Clock conversions and Shift stretch preserve the placement
 clock/phase law. The lower-fade path no longer mistakes one root end for the
 outer end of a repeated view. These are model tests, not PCM/gesture acceptance.
 
-Strict phase bounds currently refuse a Once left trim/split whose result would
-start in the silent tail after its remaining cycle. That state cannot be
-represented by phase strictly less than the cycle; it never reveals hidden
-source to approximate silence. This finite limitation was returned to root.
-The initial marker policy for an existing raw source loop with no view placement
-also remains a root coordination item; no new source-to-Warp conversion is
-invented. The existing processing root and its raw source loop/phase are kept.
+Once left trim/split can retain a silence-only tail without revealing hidden
+source. Forward trim advances both start and the consumed offset without modulo;
+extending back recovers the same root origin and audible portion. Exhausted Once
+branches before inside-root arithmetic. Marker edits retain the consumed cursor;
+outer resizing changes length only. Explicit Looping on normalizes the offset
+modulo the selected cycle; Looping off preserves it. Checked clock conversion
+uses the actual signed origin rather than an inside-root cursor lookup.
+No empty-output Engine allocation or PCM acceptance is claimed from model tests.
+
+A first capture with no placement uses the CURRENT processed crop, even if the
+retained raw processing domain loops. It preserves that raw recipe and phase.
+An existing placement keeps its selected cycle. No source-to-Warp converter or
+PCM flattening is introduced. Runtime loop-handle activation for an existing
+Once placement still needs explicit atomic intent alongside outer resizing;
+plain `OuterEnd` deliberately changes only outer length.
 
 The current-format audio DTO requires a placement field (including explicit
 null), rejects unknown fields, and retains Once/Repeat and both clock variants.
@@ -132,6 +142,14 @@ query delegates to this constructor. Source4 still must adapt the separate
 Session template path and audit both actual compiler paths; model/codec tests
 are not proof of that unfinished runtime integration. No notes or controls are
 removed.
+
+The approved MIDI silence-tail amendment is NOT implemented in this checkpoint:
+bounded Once still rejects an exhausted source cursor. Its shape/policy validator,
+checked trim, silent split with fresh NoteIds, numeric controls and both compiler
+paths remain required. The Session bounce bridge now preserves the actual policy
+and selected end; a Session source with no remaining material explicitly refuses
+before creating any replacement asset/history. Arrangement retains its positive
+authored outer duration, including silence. This bridge is not new export support.
 
 The existing linear export path explicitly refuses mutable Arrangement MIDI
 source loops; prepared preview success does not clear that limitation. Full445

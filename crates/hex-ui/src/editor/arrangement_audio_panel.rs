@@ -55,7 +55,13 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         source_length,
         source_end,
         source_phase: clip.source_phase(),
-        looping: clip.looping(),
+        looping: clip
+            .audio_edit()
+            .and_then(|edit| edit.placement)
+            .map_or_else(
+                || clip.looping(),
+                |placement| placement.mode == hex_project::AudioViewMode::Repeat,
+            ),
         gain: clip.gain(),
         asset_frames: asset.playback_frames(),
         sample_rate: state.project.sample_rate(),

@@ -369,6 +369,9 @@ pub(crate) fn source_policy(
         .ok_or(Invalid("audio domain is missing"))?;
     let edit = Arc::make_mut(&mut owned_edit);
     if let (Some(placement), Some(looping)) = (&mut edit.placement, looping) {
+        if looping {
+            placement.cycle_phase %= edit.view_end - edit.view_start;
+        }
         placement.mode = if looping {
             AudioViewMode::Repeat
         } else {

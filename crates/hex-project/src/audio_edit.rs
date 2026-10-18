@@ -231,7 +231,9 @@ pub fn audio_projection_frame(tempo: &TempoMap, beat_raw: i128) -> Result<i128, 
             ))
             .map(i128::from);
     }
-    if beat_raw < -i128::from(u64::MAX) {
+    // A legal Once cursor and selected root offset are each u64. Their
+    // technical signed origin can therefore precede zero by up to two ranges.
+    if beat_raw < -2 * i128::from(u64::MAX) {
         return Err(Invalid("audio projection precedes bounded beat range"));
     }
     let numerator = beat_raw
@@ -538,10 +540,6 @@ impl AudioClipEdit {
                             .ok_or(Invalid("audio outer end overflow"))?,
                     )?
                     .raw();
-                let phase_end = self
-                    .view_start
-                    .checked_add(p.cycle_phase)
-                    .ok_or(Invalid("audio cycle phase overflow"))?;
                 Ok(AudioViewPlacement {
                     mode: p.mode,
                     outer_length: AudioDomainClock::Beats(BeatTime::from_raw(
@@ -549,9 +547,10 @@ impl AudioClipEdit {
                             .checked_sub(outer_start)
                             .ok_or(Invalid("audio outer beat span invalid"))?,
                     )),
-                    cycle_phase: beat_at(phase_end)?
-                        .checked_sub(start)
-                        .ok_or(Invalid("audio phase beat span invalid"))?,
+                    cycle_phase: u64::try_from(
+                        i128::from(outer_start) - origin_beat - i128::from(start),
+                    )
+                    .map_err(|_| Invalid("audio consumed offset is not representable in beats"))?,
                 })
             })
             .transpose()?;
@@ -595,17 +594,13 @@ impl AudioClipEdit {
                             .checked_add(p.outer_length.length())
                             .ok_or(Invalid("audio outer end overflow"))?,
                     ))?;
-                    let phase_frame = audio_projection_frame(
-                        tempo,
-                        self.projection_origin()?
-                            + i128::from(self.view_start)
-                            + i128::from(p.cycle_phase),
-                    )?;
                     Ok(AudioViewPlacement {
                         mode: p.mode,
                         outer_length: AudioDomainClock::Frames(last - first),
-                        cycle_phase: u64::try_from(phase_frame - origin_frame - i128::from(start))
-                            .map_err(|_| Invalid("audio phase frame span invalid"))?,
+                        cycle_phase: u64::try_from(
+                            i128::from(first) - origin_frame - i128::from(start),
+                        )
+                        .map_err(|_| Invalid("audio phase frame span invalid"))?,
                     })
                 } else {
                     Ok(p)

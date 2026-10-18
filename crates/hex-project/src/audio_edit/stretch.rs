@@ -35,7 +35,9 @@ pub(super) fn retime(
             denominator,
         )?));
         placement.cycle_phase = scale(placement.cycle_phase, numerator, denominator)?;
-        if placement.cycle_phase >= edit.view_end - edit.view_start {
+        if placement.mode == AudioViewMode::Repeat
+            && placement.cycle_phase >= edit.view_end - edit.view_start
+        {
             return Err(Invalid("stretched cycle phase exceeds selected interval"));
         }
     }

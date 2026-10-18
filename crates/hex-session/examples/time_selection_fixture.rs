@@ -65,6 +65,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
                 loop_start_raw: 0,
                 loop_end_raw: length,
                 looping: false,
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 notes,
             });
         }

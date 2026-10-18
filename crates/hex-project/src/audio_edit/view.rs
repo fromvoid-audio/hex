@@ -45,7 +45,7 @@ pub struct AudioViewProjection<'a> {
     phase: u64,
     count: u64,
     outer_frames: (u64, u64),
-    first_boundary: u64,
+    first_boundary: i128,
 }
 
 impl<'a> AudioViewProjection<'a> {
@@ -118,18 +118,20 @@ impl<'a> AudioViewProjection<'a> {
         } else {
             (cycle, 0, AudioViewMode::Once)
         };
-        if length == 0 || phase >= cycle {
+        if length == 0 || (mode == AudioViewMode::Repeat && phase >= cycle) {
             return Err(Invalid("audio outer length or cycle phase is invalid"));
         }
         let end = start
             .checked_add(length)
             .ok_or(Invalid("audio outer end overflow"))?;
-        let first_length = cycle - phase;
-        let first_end = start
-            .checked_add(first_length)
-            .ok_or(Invalid("audio first boundary overflow"))?;
-        let count = if mode == AudioViewMode::Repeat && length > first_length {
-            1 + (length - first_length).div_ceil(cycle)
+        // Exhausted Once views retain an unwrapped cursor. Do not subtract
+        // phase from cycle or form a physical in-root position in this branch.
+        let exhausted = mode == AudioViewMode::Once && phase >= cycle;
+        let first_end = i128::from(start) + i128::from(cycle) - i128::from(phase);
+        let count = if exhausted {
+            0
+        } else if mode == AudioViewMode::Repeat && length > cycle - phase {
+            1 + (length - (cycle - phase)).div_ceil(cycle)
         } else {
             1
         };
@@ -156,11 +158,17 @@ impl<'a> AudioViewProjection<'a> {
             phase,
             count,
             outer_frames,
-            first_boundary: frame(first_end)?,
+            first_boundary: if beat_clock {
+                audio_projection_frame(tempo, first_end)?
+            } else {
+                first_end
+            },
         };
         // Reject an empty/oversized first projection at construction; indexed
         // later projections are checked separately across varying tempo maps.
-        value.occurrence(0)?;
+        if count > 0 {
+            value.occurrence(0)?;
+        }
         Ok(value)
     }
 
@@ -170,12 +178,17 @@ impl<'a> AudioViewProjection<'a> {
     pub fn outer_frame_bounds(&self) -> (u64, u64) {
         self.outer_frames
     }
-    /// Canonical first boundary, including when it lies beyond the outer end.
-    pub fn logical_first_boundary(&self) -> u64 {
+    /// Historical signed boundary. It may precede the clip or time zero;
+    /// callers must range-check before drawing, never clamp it to project zero.
+    pub fn logical_first_boundary(&self) -> i128 {
         self.first_boundary
     }
     pub fn occurrence_count(&self) -> u64 {
         self.count
+    }
+    /// Technical root origin in the declared domain clock, even for silence.
+    pub fn root_origin(&self) -> i128 {
+        i128::from(self.start) - i128::from(self.view_start) - i128::from(self.phase)
     }
     fn frame(&self, position: i128) -> Result<i128, Invalid> {
         if self.beat_clock {
@@ -192,8 +205,7 @@ impl<'a> AudioViewProjection<'a> {
         let offset = i128::from(index)
             .checked_mul(i128::from(self.cycle))
             .ok_or(Invalid("audio occurrence origin overflow"))?;
-        let root_origin =
-            i128::from(self.start) - i128::from(self.view_start) - i128::from(self.phase) + offset;
+        let root_origin = self.root_origin() + offset;
         let root_frame_origin = self.frame(root_origin)?;
         let root_last = self.frame(
             root_origin
@@ -292,10 +304,7 @@ pub fn preview_view_resize(
     } else {
         project_frame
     };
-    let delta = position
-        .checked_sub(start)
-        .filter(|n| *n > 0)
-        .ok_or(Invalid("loop boundary must follow clip start"))?;
+    let delta = i128::from(position) - i128::from(start);
     let length_clock = |n| match clock {
         AudioDomainClock::Frames(_) => AudioDomainClock::Frames(n),
         AudioDomainClock::Beats(_) => AudioDomainClock::Beats(BeatTime::from_raw(n)),
@@ -307,21 +316,27 @@ pub fn preview_view_resize(
     });
     match operation {
         AudioViewResizeOperation::OuterEnd { .. } => {
-            placement.outer_length = length_clock(delta);
-            placement.mode = AudioViewMode::Repeat;
+            let length = u64::try_from(delta)
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or(Invalid("loop outer end must follow clip start"))?;
+            placement.outer_length = length_clock(length);
         }
         AudioViewResizeOperation::CycleEnd { .. } => {
             if old.is_none() {
                 return Err(Invalid("first repeat boundary requires a captured cycle"));
             }
-            let cycle = delta
-                .checked_add(placement.cycle_phase)
-                .ok_or(Invalid("audio cycle end overflow"))?;
+            let cycle = u64::try_from(delta + i128::from(placement.cycle_phase))
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or(Invalid("audio cycle end must follow selected start"))?;
             view_end = view_start
                 .checked_add(cycle)
                 .filter(|n| *n <= clock.length())
                 .ok_or(Invalid("audio cycle exceeds its retained root"))?;
-            placement.cycle_phase %= cycle;
+            if placement.mode == AudioViewMode::Repeat {
+                placement.cycle_phase %= cycle;
+            }
         }
     }
     let projected = AudioViewProjection::from_parts(
@@ -384,11 +399,7 @@ pub(super) fn trim_placement(
                 phase.rem_euclid(i128::from(cycle)) as u64
             } else {
                 u64::try_from(phase)
-                    .ok()
-                    .filter(|n| *n < cycle)
-                    .ok_or(Invalid(
-                        "once trim must begin inside its selected remaining cycle",
-                    ))?
+                    .map_err(|_| Invalid("once trim consumed offset exceeds range"))?
             };
             (position, length)
         }
