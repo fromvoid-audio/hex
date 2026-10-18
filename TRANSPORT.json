@@ -1,0 +1,8 @@
+{
+  "source": "15bf3b6cffbe6881257e2683da7c611bc34b428f",
+  "tree": "c29e3c99c7ba12cd98cbfcbc806f80be5e9398d6",
+  "archive": "changelog-2804-15bf3b6c-handoff-v1.tar.gz",
+  "bytes": 137646,
+  "sha256": "044c8ee5c7e33c09a132bbf114fdbc6e684c200d484f3cead909609e9512bbd6",
+  "scope": "immutable evidence only; never build evidence ref"
+}
