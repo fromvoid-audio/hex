@@ -1,0 +1,31 @@
+{
+  "canonical_pr": 341,
+  "source_patch": "4bd2abc4c3507b230d4e3336f5b7e097022e62df",
+  "tree": "98e6c181810ad31fd912d0315d328ffff0076ee9",
+  "expected_before": "29d973301f64fdb30461427c88d36a6f3b0a1c7f",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser/tree.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-layout.md",
+    "todo.md"
+  ],
+  "review_thread": "PRRT_kwDOVB_C-s6trg4M",
+  "red": "on exact29, actual disclosure/query/refresh/clear input starts0folderrequests; freshindex but stalehierarchy afterqueryclear",
+  "green": "on4bd samecase starts2folderrequests; fresh child shown/oldremoved;77browser tests pass,0failed/0ignored;featureUIalltargetclippy/architecture/GPUI/style/fmt all0",
+  "scope": "Tree.refresh only production hunk; bounded expanded paths sorted parent-first; queue/source_changed/epochs/serials/cache budgets/workerlane unchanged",
+  "fullCI": "none here; old29full20pass preserved, does not qualify newpatch; merger owns future actualprospective fullCI/integration/merge",
+  "files": {
+    "341-hidden-refresh-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "341-hidden-refresh-browser-green.log": "7a9181bee5ed233561d6bd5abd2c621df1758bf53a2af9dea169c4b5baa27812",
+    "341-hidden-refresh-clippy.log": "8c408ea6bd31118447aea4d9394d61778bc5d1527342e6fabb54b6a63273585b",
+    "341-hidden-refresh-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "341-hidden-refresh-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "341-hidden-refresh-red-instrumentation.patch": "dd353f0c1a21efaf5fda6bd0af44670c78d6995f4943753680d096d73f848728",
+    "341-hidden-refresh-red.log": "f0c873e4c936a6858db616b863fee26dceaacd912bf3f4692fbd917334ebcf87",
+    "341-hidden-refresh-regression.rs": "6f6de55a8cf73936fcaf7ceb9a0f3fc0cf0cbce9522b62ea6aef864626fe678d",
+    "341-hidden-refresh-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "before-and-after-hashes.json": "ab03a93093eafeb9ff086f1177df25e93bc441a657abd9a0752efa4cfeea5053",
+    "canonical.patch": "1daf71e47b800ad1cea1c2a6bd3ae3c00c6d82ce29400c1404a1303942cb5464",
+    "native-checklist.md": "d47c338ca0fd8e80a8e6eea2a8baebcbd6190d9d0ef21f200ca258ad62e43a00"
+  }
+}

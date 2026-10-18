@@ -1,0 +1,168 @@
+diff --git a/crates/hex-ui/src/editor/browser/tree.rs b/crates/hex-ui/src/editor/browser/tree.rs
+index 59330a1a..9e8f385c 100644
+--- a/crates/hex-ui/src/editor/browser/tree.rs
++++ b/crates/hex-ui/src/editor/browser/tree.rs
+@@ -404,22 +404,20 @@ impl Tree {
+     }
+ 
+     fn refresh(&mut self) {
+-        let visible: Vec<_> = self
+-            .snapshot
+-            .borrow()
+-            .as_ref()
+-            .map(|snapshot| {
+-                snapshot
+-                    .entries
+-                    .iter()
+-                    .filter(|entry| self.expanded.contains(&entry.path))
+-                    .map(|entry| entry.path.clone())
+-                    .collect()
+-            })
+-            .unwrap_or_default();
++        // The rendered snapshot may be filtered or contain only indexed files.
++        // Refresh the already-bounded expansion set, retaining cached rows until
++        // each replacement arrives. Parents run first so removed branches retire
++        // their queued descendants before those descendants can start.
++        let mut expanded: Vec<_> = self.expanded.iter().cloned().collect();
++        expanded.sort_by(|left, right| {
++            left.components()
++                .count()
++                .cmp(&right.components().count())
++                .then_with(|| left.cmp(right))
++        });
+         self.source_changed();
+         self.status = None;
+-        for path in visible {
++        for path in expanded {
+             self.queue(path);
+         }
+     }
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 6547ff4a..09aca5fb 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -3930,3 +3930,89 @@ fn place_correctness_refresh_retains_identity_only_after_current_success(cx: &mu
+         cx.notify();
+     });
+ }
++
++#[gpui::test]
++fn browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query(cx: &mut TestAppContext) {
++    let (handle, editor, _, directory, visible_sample) = browser_drag_fixture(cx);
++    let branch = directory.0.join("branch");
++    std::fs::create_dir(&branch).unwrap();
++    let old = branch.join("old.wav");
++    let fresh = branch.join("fresh.wav");
++    std::fs::write(&old, mono_pcm_wav(16)).unwrap();
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    editor.update(&mut visual, |view, cx| {
++        view.browser.auto_audition = false;
++        view.select_browser_source(BrowserSection::Samples, cx);
++        cx.notify();
++    });
++    visual.run_until_parked();
++    for row in [0, 1] {
++        let selector = Box::leak(format!("browser-disclosure-{row}").into_boxed_str());
++        let disclosure = visual.debug_bounds(selector).unwrap();
++        visual.simulate_mouse_down(disclosure.center(), MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_up(disclosure.center(), MouseButton::Left, Modifiers::default());
++        visual.run_until_parked();
++    }
++    let before = editor.read_with(&visual, |view, cx| {
++        assert!(
++            view.browser_visible_entries(cx)
++                .iter()
++                .any(|entry| entry.path == old)
++        );
++        view.browser.tree.requests_started
++    });
++    editor.update(&mut visual, |view, cx| {
++        view.browser.search.update(cx, |input, cx| {
++            input.content = "loop".into();
++            cx.notify();
++        });
++    });
++    visual.run_until_parked();
++    editor.read_with(&visual, |view, cx| {
++        let entries = view.browser_visible_entries(cx);
++        assert_eq!(entries.len(), 1);
++        assert_eq!(entries[0].path, visible_sample);
++    });
++    std::fs::remove_file(&old).unwrap();
++    std::fs::write(&fresh, mono_pcm_wav(32)).unwrap();
++    editor.update(&mut visual, |view, cx| view.refresh_browser_tree(cx));
++    visual.run_until_parked();
++    editor.read_with(&visual, |view, _| {
++        assert!(
++            view.browser
++                .samples
++                .catalog
++                .entries()
++                .iter()
++                .any(|entry| entry.path == fresh)
++        );
++        println!(
++            "hidden-branch refresh started {} folder requests",
++            view.browser.tree.requests_started - before
++        );
++    });
++    editor.update(&mut visual, |view, cx| {
++        view.browser.search.update(cx, |input, cx| input.clear(cx));
++    });
++    visual.run_until_parked();
++    assert!(
++        visual.debug_bounds("browser-entry-label-2").is_some(),
++        "expanded child row must be rendered after clearing query"
++    );
++    editor.read_with(&visual, |view, cx| {
++        let entries = view.browser_visible_entries(cx);
++        assert!(
++            entries.iter().any(|entry| entry.path == fresh),
++            "clearing query restored stale cached contents despite refresh"
++        );
++        assert!(!entries.iter().any(|entry| entry.path == old));
++        assert_eq!(
++            view.browser.tree.requests_started - before,
++            2,
++            "only the two already-expanded folders need enumeration"
++        );
++        assert!(view.pending_audio_commands.is_empty());
++        assert!(view.last_enqueued_import_to_track.is_none());
++    });
++}
+diff --git a/docs/browser-layout.md b/docs/browser-layout.md
+index 2ffb19b6..7753fbe4 100644
+--- a/docs/browser-layout.md
++++ b/docs/browser-layout.md
+@@ -197,3 +197,11 @@ items (folders plus files), while flat indexed query results report sample match
+ Expanding a folder can change the item count without discovering another WAV. The
+ label does not enumerate collapsed folders or imply a total sample count. Pulse2728
+ counter follow-up; optimized native acceptance remains open.
++
++Tree refresh revalidates the existing bounded expanded-folder set even when an
++indexed query hides its rows. Parents refresh before descendants; removed branches
++retire their queued children through the existing cancellation checks. Cached rows
++remain until replacement, and clearing a query restores refreshed content. This
++does not open collapsed folders or change the folder/entry/path-byte budgets. The
++hidden-branch refresh regression uses actual disclosure input and a disposable WAV
++replacement, distinguishing fresh index data from stale cached hierarchy data.
+diff --git a/todo.md b/todo.md
+index 52b11714..0817ba0a 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5105,3 +5105,14 @@ source repair and browser contract checks are recorded separately in Pulse2791.
+ Dedicated merger owns final prospective full CI/integration/merge. Optimized native
+ availability/query and unchanged audition/drag acceptance remain coordinator-owned;
+ no installed app or user files changed during this source work.
++
++### inline-tree refresh of query-hidden expansions — pulse2728 / PR341
++
++Returned review PRRT_kwDOVB_C-s6trg4M reproduced on canonical29d97330: refresh during
++indexed search started zero folder requests; clearing the query restored a removed
++WAV despite a fresh sample index. Refresh now queues the bounded expanded-folder
++set parent-first, preserving cached rows, existing epochs/serials, one worker and
++all cache budgets. Actual disclosure/query/refresh/clear input has a red/green
++regression. Source patch is isolated against29; its historical full20 pass is
++preserved and does not qualify the new patch. Merger owns future prospective full
++CI/integration/merge; no native/app operations were performed.
