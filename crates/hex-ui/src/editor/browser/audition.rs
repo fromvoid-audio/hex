@@ -1,7 +1,7 @@
 //! One bounded sample transport row; cached peaks never decode during painting.
 use super::*;
 use gpui::{Bounds, fill, point, size};
-use hex_session::{CachedPeak, CachedWaveform};
+use hex_session::CachedPeak;
 
 /// Normalize hit geometry without trusting stale or zero-width bounds.
 fn hit_fraction(x: f32, left: f32, width: f32) -> Option<f64> {
@@ -29,7 +29,7 @@ fn combined_peak(channels: &[CachedPeak; 2]) -> CachedPeak {
     }
 }
 
-fn mini_waveform(waveform: Arc<CachedWaveform>) -> Div {
+fn mini_waveform(waveform: hex_session::SharedWaveform) -> Div {
     div().absolute().inset_0().child(
         canvas(
             |_, _, _| (),
@@ -224,7 +224,7 @@ impl EditorView {
             }
             let metadata = slot.metadata.borrow().clone();
             if let Some(metadata) = metadata {
-                waveform = waveform.child(mini_waveform(Arc::clone(&metadata.waveform)));
+                waveform = waveform.child(mini_waveform(metadata.waveform.clone()));
             } else {
                 let label = if slot.error.borrow().is_some() {
                     "unavailable"

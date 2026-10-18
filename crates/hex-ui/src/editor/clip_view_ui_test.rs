@@ -97,7 +97,7 @@ pub(super) fn audio_detail_fixture(
 ) {
     let (project, track, _, clip) = clip_drag_ui_test::audio_project();
     let asset = project.clip(clip).expect("clip").asset();
-    let peaks = Arc::new(
+    let peaks = hex_session::SharedWaveform::new_on_control(
         CachedWaveform::from_peaks(
             96_000,
             vec![

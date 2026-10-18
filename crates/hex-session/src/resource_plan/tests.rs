@@ -4,7 +4,6 @@ use hex_engine::{Audio, AudioStorageLedgerReservation};
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
 };
-use std::sync::Arc;
 
 fn limits() -> ResidentResourcePlanReservation {
     ResidentResourcePlanReservation {
@@ -116,14 +115,13 @@ fn actual_session_bank_and_exported_maps_keep_independent_backings_and_shared_ch
             binding.frames().as_ptr()
         ));
         assert_eq!(copied.frames(), original.frames());
-        assert!(Arc::ptr_eq(
-            waveforms.get(&id).unwrap(),
-            &session.media.get(&id).unwrap().waveform
-        ));
-        assert!(Arc::ptr_eq(
-            waveforms.get(&id).unwrap(),
-            second_waveforms.get(&id).unwrap()
-        ));
+        assert!(
+            (waveforms.get(&id).unwrap())
+                .shares_owner_with(&session.media.get(&id).unwrap().waveform)
+        );
+        assert!(
+            (waveforms.get(&id).unwrap()).shares_owner_with(second_waveforms.get(&id).unwrap())
+        );
     }
     // These actual copies survive the producing Session; they are distinct live
     // container obligations, even though the PCM/summary children are shared.
@@ -221,7 +219,7 @@ fn device_only_mono_residency_keeps_original_and_waveform_without_stereo_derivat
             crate::ResidentAsset {
                 source_audio: OriginalAudio::Mono(source),
                 audio: None,
-                waveform: Arc::new(waveform),
+                waveform: crate::SharedWaveform::new_on_control(waveform),
                 frames: 4,
             },
             hex_project::MAX_ASSETS,

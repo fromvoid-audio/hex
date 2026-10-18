@@ -192,6 +192,25 @@ fn visit<'a>(
     Ok(())
 }
 impl<'a> AudioRootStorageLedger<'a> {
+    /// Actual retained lease field embedded in an already charged metadata
+    /// body. Repeated borrows of that same field do not create extra handles or
+    /// charge its inline header twice. All existing root/PCM checks still apply.
+    pub fn borrow_embedded_original_source_lease_on_control(
+        &mut self,
+        lease: &'a OriginalSourceLease,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            if ledger.contains_shared_field(lease) {
+                return Ok(());
+            }
+            visit(
+                &lease.root,
+                crate::audio_storage::Owner::exclusive(lease),
+                lease.handle,
+                ledger,
+            )
+        })
+    }
     pub fn borrow_original_source_lease_on_control(
         &mut self,
         lease: &'a OriginalSourceLease,

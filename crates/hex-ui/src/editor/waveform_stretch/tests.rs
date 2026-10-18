@@ -168,7 +168,7 @@ fn geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map() {
     use crate::editor::waveform_geometry::{WaveformGeometryRequest, cached_waveform_geometry};
     use gpui::{Bounds, point, px, size};
     let (editor, id) = fixture();
-    let source = Arc::new(
+    let source = hex_session::SharedWaveform::new_on_control(
         CachedWaveform::from_peaks(
             88_200,
             (0..128)

@@ -154,7 +154,7 @@ impl Session {
             residents.push(ResidentAsset {
                 source_audio: member.source_audio,
                 audio: Some(member.audio),
-                waveform: Arc::new(member.waveform),
+                waveform: crate::SharedWaveform::new_on_control(member.waveform),
                 frames,
             });
         }

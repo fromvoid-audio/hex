@@ -22,7 +22,7 @@ pub(super) struct WaveformPreview<'a> {
     pub(super) original: &'a Clip,
     pub(super) preview: &'a Clip,
     pub(super) tempo: &'a hex_project::TempoMap,
-    pub(super) asset: Option<&'a Arc<CachedWaveform>>,
+    pub(super) asset: Option<&'a hex_session::SharedWaveform>,
     pub(super) prepared: Option<&'a hex_session::service::AudioClipWaveform>,
 }
 
@@ -77,7 +77,7 @@ pub(super) fn preview_waveform_view_cached(
             return None;
         }
         Some(timeline_waveform_view_cached(
-            Arc::clone(&prepared.waveform),
+            prepared.waveform.clone(),
             WaveformMapping::Prepared {
                 timeline_origin: preview.start(),
                 root_offset: offset,
@@ -93,7 +93,7 @@ pub(super) fn preview_waveform_view_cached(
             return None;
         }
         Some(timeline_waveform_view_cached(
-            Arc::clone(asset?),
+            asset?.clone(),
             WaveformMapping::Clip {
                 clip: preview.clone(),
                 timeline_origin: preview.start(),
@@ -114,7 +114,7 @@ pub(super) fn prepared_waveform_view_cached(
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
     waveform_canvas(
-        Arc::clone(&prepared.waveform),
+        prepared.waveform.clone(),
         WaveformMapping::Prepared {
             timeline_origin: clip.start(),
             root_offset: prepared.offset,
@@ -130,7 +130,7 @@ pub(super) fn prepared_waveform_view_cached(
 /// Arrangement clips and both resize previews use the lane's stable lattice.
 /// Other waveform consumers keep their own fitted source view.
 pub(super) fn timeline_waveform_view_cached(
-    waveform: Arc<CachedWaveform>,
+    waveform: hex_session::SharedWaveform,
     mapping: WaveformMapping,
     visible_start: u64,
     visible_end: u64,
@@ -148,14 +148,14 @@ pub(super) fn timeline_waveform_view_cached(
 }
 
 pub(super) fn waveform_view_at(
-    waveform: &Arc<CachedWaveform>,
+    waveform: &hex_session::SharedWaveform,
     clip: &Clip,
     timeline_origin: u64,
     visible_start: u64,
     visible_end: u64,
 ) -> Div {
     waveform_canvas(
-        Arc::clone(waveform),
+        waveform.clone(),
         WaveformMapping::Clip {
             clip: clip.clone(),
             timeline_origin,
@@ -168,14 +168,14 @@ pub(super) fn waveform_view_at(
 }
 
 pub(super) fn waveform_view_cached(
-    waveform: &Arc<CachedWaveform>,
+    waveform: &hex_session::SharedWaveform,
     clip: &Clip,
     visible_start: u64,
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
     waveform_canvas(
-        Arc::clone(waveform),
+        waveform.clone(),
         WaveformMapping::Clip {
             clip: clip.clone(),
             timeline_origin: clip.start(),
@@ -188,7 +188,7 @@ pub(super) fn waveform_view_cached(
 }
 
 pub(super) fn waveform_source_segment_view(
-    waveform: Arc<CachedWaveform>,
+    waveform: hex_session::SharedWaveform,
     timeline_origin: u64,
     visible_start: u64,
     visible_end: u64,
@@ -204,7 +204,7 @@ pub(super) fn waveform_source_segment_view(
 }
 
 pub(super) fn waveform_source_segment_gain_view_cached(
-    waveform: Arc<CachedWaveform>,
+    waveform: hex_session::SharedWaveform,
     timeline_origin: u64,
     visible_start: u64,
     visible_end: u64,
@@ -224,13 +224,13 @@ pub(super) fn waveform_source_segment_gain_view_cached(
     )
 }
 
-pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>) -> Div {
+pub(super) fn waveform_summary_view(waveform: hex_session::SharedWaveform) -> Div {
     let end = u64::try_from(waveform.source_frames).unwrap_or(u64::MAX);
     waveform_source_segment_view(waveform, 0, 0, end)
 }
 
 pub(super) fn waveform_canvas(
-    waveform: Arc<CachedWaveform>,
+    waveform: hex_session::SharedWaveform,
     mapping: WaveformMapping,
     visible_start: u64,
     visible_end: u64,

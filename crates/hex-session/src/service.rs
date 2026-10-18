@@ -14,7 +14,7 @@ use crate::{DocumentAudioMode, Session, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
-use hex_media::{Limits, ResampleLimits, waveform::Waveform};
+use hex_media::{Limits, ResampleLimits};
 use hex_project::{Command, Created, Project, SortedEntries};
 use hex_tuning::ProjectTuning;
 #[cfg(test)]
@@ -56,7 +56,7 @@ const EXPORT_EVENT_CAPACITY: usize = 1;
 
 #[derive(Clone)]
 pub struct AudioClipWaveform {
-    pub waveform: Arc<Waveform>,
+    pub waveform: crate::SharedWaveform,
     pub offset: u64,
     pub length: u64,
 }
@@ -67,7 +67,7 @@ pub struct ViewState {
     /// source freshness for streamed constructor publication.
     pub canonical_audio_source: Option<Arc<CanonicalAudioSourceSnapshot>>,
     pub project: Arc<Project>,
-    pub waveforms: SortedEntries<hex_project::AssetId, Arc<Waveform>>,
+    pub waveforms: SortedEntries<hex_project::AssetId, crate::SharedWaveform>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
     pub audio_clip_waveforms: SortedEntries<hex_project::ClipId, AudioClipWaveform>,
     /// Control-prepared MIDI clip summaries matching this project revision.
@@ -175,7 +175,7 @@ pub struct ExportEvent {
 pub struct AudioPreview {
     pub playback_frames: u64,
     pub sample_rate: u32,
-    pub waveform: Arc<Waveform>,
+    pub waveform: crate::SharedWaveform,
 }
 
 /// Decode and convert an audio source using the same limits and conversion path
@@ -187,7 +187,7 @@ pub fn prepare_audio_preview(
     let audio = prepare_sample_preview(path, project_sample_rate)?;
     let playback_frames = u64::try_from(audio.frames().len())
         .map_err(|_| "converted frame count exceeds project range".to_owned())?;
-    let waveform = Arc::new(
+    let waveform = crate::SharedWaveform::new_on_control(
         hex_media::waveform::summarize(&audio, BROWSER_PREVIEW_BINS)
             .map_err(|error| error.to_string().to_lowercase())?,
     );

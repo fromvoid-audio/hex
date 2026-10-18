@@ -1,6 +1,25 @@
 use super::*;
 use crate::audio_only_inputs::{SourceStorage, SourceStorageKind};
 impl<'a> AudioRootStorageLedger<'a> {
+    /// Actual native PCM field already embedded in a separately charged body.
+    /// Re-observing the same immutable field is idempotent; another physical
+    /// clone remains a separate handle. This never charges its inline header
+    /// again or upgrades unknown PCM, and is not complete enclosing storage.
+    pub fn borrow_embedded_native_audio_on_control(
+        &mut self,
+        audio: &'a crate::Audio,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            let handle = audio
+                .native_handle
+                .map(|h| h.get())
+                .ok_or(AudioStorageError::UnknownStorage)?;
+            if ledger.contains_shared_field(audio) {
+                return Ok(());
+            }
+            ledger.resident(audio, Owner::exclusive(audio), handle)
+        })
+    }
     /// Visit an actual closed source field retained by a media/control owner.
     /// This leaf inventory is not a declaration for its enclosing container.
     pub fn borrow_native_source_on_control(

@@ -85,6 +85,8 @@ pub use shared_analytic::inline_fixture::{
     InlineResourceFixtureConfiguration, InlineResourceHostFixture,
 };
 mod owned_shared;
+mod shared_metadata;
+pub use shared_metadata::SharedMetadata;
 mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{

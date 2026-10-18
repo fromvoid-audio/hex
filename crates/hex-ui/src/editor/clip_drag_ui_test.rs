@@ -712,7 +712,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
         waveforms
             .try_insert_on_control(
                 asset,
-                Arc::new(
+                hex_session::SharedWaveform::new_on_control(
                     CachedWaveform::from_peaks(
                         96_000,
                         vec![

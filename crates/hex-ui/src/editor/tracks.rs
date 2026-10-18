@@ -61,7 +61,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
     if let Some(waveform) = waveform_visual {
         ghost = ghost.children([waveform]);
     } else if let Some(waveform) = &payload.ghost_waveform {
-        ghost = ghost.children([waveform_summary_view(std::sync::Arc::clone(waveform))]);
+        ghost = ghost.children([waveform_summary_view(waveform.clone())]);
     } else {
         ghost = ghost.child(
             div()
@@ -512,7 +512,7 @@ impl EditorView {
                         .borrow()
                         .as_ref()
                         .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
-                        .map(|metadata| std::sync::Arc::clone(&metadata.waveform))
+                        .map(|metadata| metadata.waveform.clone())
                 {
                     drop_preview = drop_preview.children([waveform_source_segment_view(
                         waveform,
@@ -1357,7 +1357,7 @@ impl EditorView {
                 });
                 let prepared = preview.as_ref().unwrap_or(prepared);
                 content = content.child(super::waveform::timeline_waveform_view_cached(
-                    std::sync::Arc::clone(&prepared.waveform),
+                    prepared.waveform.clone(),
                     super::waveform_geometry::WaveformMapping::Prepared {
                         timeline_origin: clip.start(),
                         root_offset: prepared.offset,
@@ -1378,7 +1378,7 @@ impl EditorView {
                 match waveform {
                     Some(waveform) => {
                         content = content.child(super::waveform::timeline_waveform_view_cached(
-                            std::sync::Arc::clone(waveform),
+                            waveform.clone(),
                             super::waveform_geometry::WaveformMapping::Clip {
                                 clip: clip.clone(),
                                 timeline_origin: clip.start(),

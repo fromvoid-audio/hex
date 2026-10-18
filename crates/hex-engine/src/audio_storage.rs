@@ -520,6 +520,12 @@ impl<'a> AudioRootStorageLedger<'a> {
         let owner = Owner::shared(owner);
         self.data.iter().any(|row| row.owner.same(owner))
     }
+    pub(crate) fn contains_shared_field<T: 'static>(&self, value: &'a T) -> bool {
+        let field = Owner::exclusive(value);
+        self.handles
+            .iter()
+            .any(|row| row.field.same(field) && row.location == Location("handle-field", 0))
+    }
     /// An additional physical field may only refer to DATA already declared by
     /// the actual constructor custody. Equal contents never supply that link.
     pub(crate) fn existing_shared<T: 'static + ?Sized>(

@@ -27,7 +27,7 @@ pub(super) struct ClipDrag {
     pub(super) destination: Rc<Cell<Option<ClipDropDestination>>>,
     pub(super) insertion_line_y: Rc<Cell<Option<f32>>>,
     pub(super) ghost_label: String,
-    pub(super) ghost_waveform: Option<std::sync::Arc<hex_session::CachedWaveform>>,
+    pub(super) ghost_waveform: Option<hex_session::SharedWaveform>,
     pub(super) lane_hovered: Rc<Cell<bool>>,
     pub(super) last_pointer: Rc<Cell<Option<(f32, f32)>>>,
 }

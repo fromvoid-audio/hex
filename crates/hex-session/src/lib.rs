@@ -34,7 +34,7 @@ pub mod import_batch;
 pub mod import_batch_decode;
 pub mod service;
 pub mod tuning_gesture;
-pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
+pub use hex_media::waveform::{Peak as CachedPeak, SharedWaveform, Waveform as CachedWaveform};
 
 #[derive(Debug)]
 pub enum SessionError {
@@ -176,7 +176,7 @@ struct ResidentAsset {
     // Device-only originals need no project-rate stereo derivative. Clip
     // imports still prepare it before publication; never decode on playback.
     audio: Option<Audio>,
-    waveform: Arc<Waveform>,
+    waveform: SharedWaveform,
     frames: u64,
 }
 
@@ -380,7 +380,7 @@ impl Session {
                     ResidentAsset {
                         source_audio: prepared.source_audio,
                         audio: Some(audio),
-                        waveform: Arc::new(waveform),
+                        waveform: SharedWaveform::new_on_control(waveform),
                         frames,
                     },
                     MAX_ASSETS,
@@ -507,7 +507,7 @@ impl Session {
             ResidentAsset {
                 source_audio,
                 audio: Some(audio),
-                waveform: Arc::new(waveform),
+                waveform: SharedWaveform::new_on_control(waveform),
                 frames,
             },
             MAX_ASSETS,
@@ -1023,7 +1023,7 @@ impl Session {
         let resident = ResidentAsset {
             source_audio: prepared.source_audio,
             audio: Some(staged_audio),
-            waveform: Arc::new(prepared.waveform),
+            waveform: crate::SharedWaveform::new_on_control(prepared.waveform),
             frames,
         };
         self.media
@@ -1151,7 +1151,7 @@ impl Session {
             ResidentAsset {
                 source_audio: prepared.source_audio,
                 audio: Some(staged_audio),
-                waveform: Arc::new(prepared.waveform),
+                waveform: crate::SharedWaveform::new_on_control(prepared.waveform),
                 frames,
             },
             MAX_ASSETS,
@@ -1393,16 +1393,16 @@ impl Session {
         }
     }
 
-    pub fn waveform(&self, asset: AssetId) -> Option<Arc<Waveform>> {
+    pub fn waveform(&self, asset: AssetId) -> Option<SharedWaveform> {
         self.media
             .get(&asset)
-            .map(|resident| Arc::clone(&resident.waveform))
+            .map(|resident| resident.waveform.clone())
     }
 
     /// Clone only the small asset map and its shared waveform handles.
-    pub fn waveforms(&self) -> SortedEntries<AssetId, Arc<Waveform>> {
+    pub fn waveforms(&self) -> SortedEntries<AssetId, SharedWaveform> {
         self.media
-            .filter_map_values_on_control(|_, resident| Some(Arc::clone(&resident.waveform)))
+            .filter_map_values_on_control(|_, resident| Some(resident.waveform.clone()))
     }
 
     pub fn resident_asset_frames(&self, asset: AssetId) -> Option<u64> {
@@ -1523,7 +1523,7 @@ fn prepare_with_waveforms(
         // and per-root metadata). Dense projects receive coarser truthful peaks.
         let requested_bins =
             (262_144 / prepared.arrangement().audio_clip_views().len().max(1)).clamp(1, 1_024);
-        let mut roots: Vec<(Audio, Arc<Waveform>)> = Vec::new();
+        let mut roots: Vec<(Audio, SharedWaveform)> = Vec::new();
         let mut next = Vec::new();
         next.try_reserve_exact(prepared.arrangement().audio_clip_views().len())
             .map_err(|_| hex_engine::Invalid("could not reserve waveform entries"))?;
@@ -1532,25 +1532,26 @@ fn prepare_with_waveforms(
                 .iter()
                 .find(|(audio, _)| audio.shares_pcm_with(&view.audio))
             {
-                Arc::clone(waveform)
+                waveform.clone()
             } else {
                 // Existing summaries retain exact PCM identity for safe cross-revision reuse.
                 let existing = old.values().find(|entry| {
                     entry.waveform.shares_audio_with(&view.audio)
                         && entry.waveform.bins.len() <= requested_bins
                 });
-                let waveform =
-                    if let Some(existing) = existing {
-                        Arc::clone(&existing.waveform)
-                    } else {
-                        Arc::new(waveform::summarize(&view.audio, requested_bins).map_err(
-                            |_| hex_engine::Invalid("transformed waveform preparation failed"),
-                        )?)
-                    };
+                let waveform = if let Some(existing) = existing {
+                    existing.waveform.clone()
+                } else {
+                    SharedWaveform::new_on_control(
+                        waveform::summarize(&view.audio, requested_bins).map_err(|_| {
+                            hex_engine::Invalid("transformed waveform preparation failed")
+                        })?,
+                    )
+                };
                 roots.try_reserve(1).map_err(|_| {
                     hex_engine::Invalid("audio waveform root index allocation failed")
                 })?;
-                roots.push((view.audio.clone(), Arc::clone(&waveform)));
+                roots.push((view.audio.clone(), waveform.clone()));
                 waveform
             };
             next.push((

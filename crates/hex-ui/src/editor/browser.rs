@@ -342,9 +342,9 @@ fn browser_audio_drag_ghost(
     if let Some(waveform) = waveform_visual {
         ghost = ghost.children([waveform]);
     } else if let Some(metadata) = metadata {
-        ghost = ghost.children([super::waveform::waveform_summary_view(Arc::clone(
-            &metadata.waveform,
-        ))]);
+        ghost = ghost.children([super::waveform::waveform_summary_view(
+            metadata.waveform.clone(),
+        )]);
     } else {
         ghost = ghost.child(
             div()
@@ -1053,7 +1053,7 @@ impl EditorView {
                         .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
                         .map(|metadata| {
                             super::waveform::waveform_source_segment_view(
-                                Arc::clone(&metadata.waveform),
+                                metadata.waveform.clone(),
                                 start,
                                 visible_start,
                                 visible_end,
@@ -1461,7 +1461,7 @@ impl EditorView {
             cx.processor(move |view, range: std::ops::Range<usize>, _window, cx| {
                 range
                     .filter_map(|index| {
-                        if let Some(entry) = entries.get(index).cloned() {
+                        if let Some(entry) = entries.getindex.cloned() {
                             Some(view.browser_row(index, entry, cx))
                         } else {
                             devices.get(index.saturating_sub(file_count)).cloned().map(
@@ -1590,7 +1590,7 @@ impl EditorView {
                                         move |view, range: std::ops::Range<usize>, _window, cx| {
                                             range
                                                 .filter_map(|index| {
-                                                    entries.get(index).cloned().map(
+                                                    entries.getindex.cloned().map(
                                                         |(class, entry)| {
                                                             view.browser_device_row(
                                                                 index, class, entry, cx,

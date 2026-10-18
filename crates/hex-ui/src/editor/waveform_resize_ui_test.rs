@@ -24,7 +24,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
             canonical.project().tempo_map(),
         )
         .unwrap();
-    let peaks = Arc::new(
+    let peaks = hex_session::SharedWaveform::new_on_control(
         CachedWaveform::from_peaks(
             96_000,
             vec![
@@ -38,7 +38,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
         .unwrap(),
     );
     let prepared = AudioClipWaveform {
-        waveform: Arc::clone(&peaks),
+        waveform: peaks.clone(),
         offset: 0,
         length: 96_000,
     };
@@ -77,7 +77,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
         .is_none()
     );
     let short_root = AudioClipWaveform {
-        waveform: Arc::new(
+        waveform: hex_session::SharedWaveform::new_on_control(
             CachedWaveform::from_peaks(
                 95_999,
                 vec![
@@ -195,7 +195,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                 // Distinct bipolar and sparse stereo sample summaries, with silence
                 // between impulses. These are accepted cache fixtures, not generated
                 // preview peaks; the renderer must keep reading the same Arc.
-                let peaks = Arc::new(
+                let peaks = hex_session::SharedWaveform::new_on_control(
                     CachedWaveform::from_peaks(
                         frames as usize,
                         (0..127)
@@ -222,7 +222,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     )
                     .unwrap(),
                 );
-                let prepared_peaks = Arc::new(
+                let prepared_peaks = hex_session::SharedWaveform::new_on_control(
                     CachedWaveform::from_peaks(
                         frames as usize,
                         (0..127)
@@ -255,7 +255,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         .try_insert_on_control(
                             clip,
                             AudioClipWaveform {
-                                waveform: Arc::clone(&prepared_peaks),
+                                waveform: prepared_peaks.clone(),
                                 offset,
                                 length: original.clip(clip).unwrap().duration(),
                             },
@@ -270,7 +270,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         canonical_audio_source: None,
                         project: Arc::clone(&old.project),
                         waveforms: hex_project::SortedEntries::try_from_unsorted_on_control(
-                            vec![(asset, Arc::clone(&peaks))],
+                            vec![(asset, peaks.clone())],
                             hex_project::MAX_ASSETS,
                         )
                         .unwrap(),
@@ -334,7 +334,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                             let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
                             (preview.start(), offset)
                         });
-                        let root_matches = Arc::ptr_eq(&rendered[0].source, expected_source);
+                        let root_matches = (rendered[0].source).shares_owner_with(expected_source);
                         if !rendered[0].spans.iter().all(|span| *span > 1.0)
                             || !root_matches || rendered[0].prepared != expected_mapping
                         {
@@ -369,7 +369,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         rendered[0].spans.iter().all(|span| *span > 1.0),
                         "waveform must remain visible after the drag ends"
                     );
-                    assert!(Arc::ptr_eq(&rendered[0].source, expected_source));
+                    assert!((rendered[0].source).shares_owner_with(expected_source));
                 });
             }
         }

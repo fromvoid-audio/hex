@@ -171,7 +171,7 @@ pub(in crate::editor) fn view(
             let end_frame = source_frame.checked_add(visible_end - visible_start)?;
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
                 element = element.child(waveform::waveform_source_segment_gain_view_cached(
-                    std::sync::Arc::clone(&prepared.waveform),
+                    prepared.waveform.clone(),
                     0,
                     source_root + (visible_start - start),
                     source_root + (visible_end - start),

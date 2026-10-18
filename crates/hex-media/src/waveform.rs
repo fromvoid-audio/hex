@@ -21,6 +21,42 @@ pub struct Waveform {
     samples: Option<SampleBacking>,
 }
 
+/// Canonical shared summary with its fresh outer-constructor receipt retained
+/// beside the actual owner. No raw Arc adoption or mutable shared access.
+pub type SharedWaveform = hex_engine::SharedMetadata<Waveform>;
+
+#[cfg(test)]
+mod shared_storage_tests;
+
+/// Actual outer field/body, pyramid capacities and retained PCM child. Every
+/// physical field is deduplicated in the existing ledger, even across exported
+/// aliases. A header-only prior visit cannot hide an unvisited nested child.
+/// This is selected storage, not whole-root custody/peak/retirement admission.
+pub fn borrow_shared_storage_on_control<'a>(
+    owner: &'a SharedWaveform,
+    ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+) -> Result<(), hex_engine::AudioStorageError> {
+    ledger.borrow_shared_metadata_body_on_control(owner)?;
+    let Waveform {
+        source_frames: _,
+        bins,
+        levels,
+        samples,
+    } = owner.as_ref();
+    ledger.borrow_metadata_vec_backing_on_control(bins)?;
+    ledger.borrow_metadata_vec_backing_on_control(levels)?;
+    for level in levels {
+        ledger.borrow_metadata_vec_backing_on_control(level)?;
+    }
+    match samples {
+        None => Ok(()),
+        Some(SampleBacking::Audio(audio)) => ledger.borrow_embedded_native_audio_on_control(audio),
+        Some(SampleBacking::Original(source)) => {
+            ledger.borrow_embedded_original_source_lease_on_control(source)
+        }
+    }
+}
+
 #[derive(Debug)]
 enum SampleBacking {
     Audio(Audio),
@@ -235,7 +271,7 @@ pub fn summarize(audio: &Audio, requested_bins: usize) -> Result<Waveform, Impor
 }
 
 /// Worker-only summary retaining the actual closed original source for deep
-/// zoom. Share the finished immutable summary with Arc<Waveform>; no infallible
+/// zoom. Share the finished immutable summary with SharedWaveform; no infallible
 /// Waveform clone can create an unreserved native source handle.
 pub fn summarize_original(
     source: &OriginalSourceLease,

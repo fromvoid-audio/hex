@@ -26,7 +26,7 @@ pub(super) struct WaveformGeometryCache {
 
 struct WaveformGeometryEntry {
     key: WaveformGeometryKey,
-    source: Arc<CachedWaveform>,
+    source: hex_session::SharedWaveform,
     geometry: Arc<WaveformGeometry>,
     columns: usize,
 }
@@ -86,7 +86,7 @@ pub(super) struct WaveformChannelGeometry {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) struct RenderedWaveformSample {
-    pub(super) source: Arc<CachedWaveform>,
+    pub(super) source: hex_session::SharedWaveform,
     pub(super) prepared: Option<(u64, u64)>,
     pub(super) spans: [f32; 2],
 }
@@ -95,12 +95,12 @@ impl WaveformGeometryCache {
     fn get(
         &mut self,
         key: WaveformGeometryKey,
-        source: &Arc<CachedWaveform>,
+        source: &hex_session::SharedWaveform,
     ) -> Option<Arc<WaveformGeometry>> {
         let index = self
             .entries
             .iter()
-            .position(|entry| entry.key == key && Arc::ptr_eq(&entry.source, source))?;
+            .position(|entry| entry.key == key && entry.source.shares_owner_with(source))?;
         let entry = self.entries.remove(index)?;
         let geometry = Arc::clone(&entry.geometry);
         self.entries.push_back(entry);
@@ -110,7 +110,7 @@ impl WaveformGeometryCache {
     fn insert(
         &mut self,
         key: WaveformGeometryKey,
-        source: Arc<CachedWaveform>,
+        source: hex_session::SharedWaveform,
         geometry: Arc<WaveformGeometry>,
         columns: usize,
     ) {
@@ -158,7 +158,7 @@ impl WaveformGeometryCache {
         self.entries
             .iter()
             .map(|entry| RenderedWaveformSample {
-                source: Arc::clone(&entry.source),
+                source: entry.source.clone(),
                 prepared: match entry.key.mapping {
                     WaveformMappingKey::Prepared {
                         timeline_origin,
@@ -243,7 +243,7 @@ pub(super) struct WaveformGeometryRequest<'a> {
 
 pub(super) fn cached_waveform_geometry(
     cache: &std::cell::RefCell<WaveformGeometryCache>,
-    waveform: &Arc<CachedWaveform>,
+    waveform: &hex_session::SharedWaveform,
     request: &WaveformGeometryRequest<'_>,
 ) -> Option<Arc<WaveformGeometry>> {
     let mut key = waveform_geometry_key(
@@ -273,7 +273,7 @@ pub(super) fn cached_waveform_geometry(
     if let Ok(mut cache) = cache.try_borrow_mut() {
         cache.insert(
             key,
-            Arc::clone(waveform),
+            waveform.clone(),
             Arc::clone(&geometry),
             geometry.columns,
         );
@@ -518,8 +518,8 @@ mod tests {
     use crate::editor::waveform::waveform_column_count;
     use std::time::Instant;
 
-    fn waveform() -> Arc<CachedWaveform> {
-        Arc::new(
+    fn waveform() -> hex_session::SharedWaveform {
+        hex_session::SharedWaveform::new_on_control(
             CachedWaveform::from_peaks(
                 96_000,
                 (0..4096)
@@ -798,18 +798,16 @@ mod tests {
         let cache_key = key(0, extent);
         let geometry = geometry(&source, 0, extent);
         let mut cache = WaveformGeometryCache::default();
-        cache.insert(
-            cache_key.clone(),
-            Arc::clone(&source),
-            Arc::clone(&geometry),
-            32,
-        );
+        cache.insert(cache_key.clone(), source.clone(), Arc::clone(&geometry), 32);
         assert!(Arc::ptr_eq(
             &cache.get(cache_key.clone(), &source).expect("cache hit"),
             &geometry,
         ));
         assert!(
-            Arc::strong_count(&source) >= 2,
+            cache
+                .entries
+                .iter()
+                .any(|entry| entry.source.shares_owner_with(&source)),
             "cache retains source identity"
         );
 
@@ -878,7 +876,7 @@ mod tests {
             let cache_key = key(origin, extent);
             cache.insert(
                 cache_key,
-                Arc::clone(&source),
+                source.clone(),
                 geometry(&source, origin, extent),
                 4_000,
             );
@@ -956,7 +954,7 @@ mod tests {
         for index in 0..(MAX_CACHED_WAVEFORM_ENTRIES + 1) as u64 {
             entry_bounded.insert(
                 key(index, extent),
-                Arc::clone(&source),
+                source.clone(),
                 Arc::clone(&path_geometry),
                 1,
             );
@@ -969,7 +967,7 @@ mod tests {
         for index in 0..17_u64 {
             column_bounded.insert(
                 key(index, extent),
-                Arc::clone(&source),
+                source.clone(),
                 Arc::clone(&path_geometry),
                 MAX_WAVEFORM_COLUMNS_FOR_TEST,
             );
