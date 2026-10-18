@@ -475,17 +475,20 @@ fn compile_project_inner<'a>(
             .iter()
             .any(|clip| clip.source().looping());
         let mutable_instrument = mutable_limits.is_some();
-        let clips = track
-            .clips()
-            .iter()
-            .map(|clip| {
-                let asset = snapshot
-                    .asset(clip.asset())
-                    .ok_or(Invalid("project asset missing"))?;
-                let source = resolve_source(asset, snapshot.sample_rate())?;
-                let compiled = transforms.compile_clip(snapshot, clip, asset, source)?;
-                if let Some(compiled) = &compiled
-                    && let Some(audio) = &compiled.audio
+        // Reserve one visible backing before compiling any clip. Avoid the
+        // temporary Vec<Option<Clip>> plus flatten/collect ownership overlap,
+        // whose growth otherwise complicates the closed constructor quote.
+        let mut clips = Vec::new();
+        clips
+            .try_reserve_exact(track.clips().len())
+            .map_err(|_| Invalid("could not reserve compiled audio clips"))?;
+        for clip in track.clips() {
+            let asset = snapshot
+                .asset(clip.asset())
+                .ok_or(Invalid("project asset missing"))?;
+            let source = resolve_source(asset, snapshot.sample_rate())?;
+            if let Some(compiled) = transforms.compile_clip(snapshot, clip, asset, source)? {
+                if let Some(audio) = &compiled.audio
                     && audio.frames._derived.is_some()
                 {
                     audio_clip_views
@@ -498,12 +501,9 @@ fn compile_project_inner<'a>(
                         length: compiled.end - compiled.start,
                     });
                 }
-                Ok::<_, Invalid>(compiled)
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect();
+                clips.push(compiled);
+            }
+        }
         let muted = track.muted() || (any_soloed && !track.soloed());
         if source_index != track_index && previews.is_some() && !track.midi_clips().is_empty() {
             // Authored preview remains on its canonical owner even when that owner's
