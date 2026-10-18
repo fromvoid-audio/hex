@@ -1,0 +1,256 @@
+//! Actual title-strip paint with disposable worker/catalog startup.
+use super::super::{EditorView, external_audio_drop_ui_test::BatchFiles, viewport::Viewport};
+use crate::theme;
+use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
+use hex_project::{BeatTime, ClipFlavor, ClipId, Command, Created, ElementColor, TrackId};
+use hex_session::service::{Event, Request, Service};
+use std::time::{Duration, Instant};
+
+struct Fixture {
+    _files: BatchFiles,
+    window: gpui::AnyWindowHandle,
+    editor: Entity<EditorView>,
+    track: TrackId,
+    audio: ClipId,
+    midi: ClipId,
+}
+fn next(service: &Service) -> Event {
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(event) = service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            return event;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+fn fixture(cx: &mut TestAppContext) -> Fixture {
+    cx.update(super::super::bind_editor_keys);
+    let files = BatchFiles::new();
+    let wav = files.wav("clip-title.wav", 48_000, 96_000);
+    let directory = wav.parent().unwrap();
+    std::fs::create_dir(directory.join("samples")).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next(&service);
+    service.submit(Request::Import(wav.clone())).unwrap();
+    let event = next(&service);
+    let source = &event.state.project.tracks()[0];
+    let track = source.id();
+    let audio = source.clips()[0].id();
+    service
+        .submit(Request::Edit(Command::SetTrackColor {
+            track,
+            color: ElementColor::Cyan,
+        }))
+        .unwrap();
+    next(&service);
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::from_quarters(6).unwrap(),
+            length: BeatTime::ONE,
+        }))
+        .unwrap();
+    let event = next(&service);
+    let Created::Clip(midi) = event.created.unwrap() else {
+        panic!("MIDI clip")
+    };
+    service
+        .submit(Request::Edit(Command::SetClipFlavor {
+            clip: audio,
+            flavor: ClipFlavor::Muted,
+        }))
+        .unwrap();
+    next(&service);
+    service
+        .submit(Request::Edit(Command::SetClipFlavor {
+            clip: midi,
+            flavor: ClipFlavor::Accent,
+        }))
+        .unwrap();
+    let event = next(&service);
+    let window = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(window, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
+            });
+            editor.update(cx, |v, cx| {
+                assert_eq!(v.browser.directory, directory.join("samples"));
+                assert_eq!(v.browser.places, vec![directory.join("samples")]);
+                v.state = Some(event.state);
+                v.viewport = Some(Viewport {
+                    start: 0,
+                    length: 192_000,
+                });
+                v.focus.focus(window);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    Fixture {
+        _files: files,
+        window,
+        editor,
+        track,
+        audio,
+        midi,
+    }
+}
+fn selector(prefix: &str, clip: ClipId) -> &'static str {
+    Box::leak(format!("{prefix}-{}", clip.value()).into_boxed_str())
+}
+fn click(v: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
+    let p = v
+        .debug_bounds(selector("clip-name", clip))
+        .unwrap()
+        .center();
+    v.simulate_mouse_down(p, MouseButton::Left, modifiers);
+    v.simulate_mouse_up(p, MouseButton::Left, modifiers);
+    v.run_until_parked();
+}
+fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let done = editor.update(&mut *visual, |v, cx| {
+            if v.tick(cx) {
+                cx.notify();
+            }
+            v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+        });
+        if done {
+            visual.run_until_parked();
+            return;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[gpui::test]
+fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    let mut visual = VisualTestContext::from_window(f.window, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let bounds =
+        [f.audio, f.midi].map(|id| visual.debug_bounds(selector("clip-name", id)).unwrap());
+    let original_audio = f.editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(f.audio)
+            .unwrap()
+            .clone()
+    });
+    let original_midi = f.editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_clip(f.midi)
+            .unwrap()
+            .clone()
+    });
+    for color in [ElementColor::Cyan, ElementColor::Rose] {
+        if color == ElementColor::Rose {
+            f.editor.update(&mut visual, |v, _| {
+                v.enqueue(Request::Edit(Command::SetTrackColor {
+                    track: f.track,
+                    color,
+                }));
+            });
+            pump(&f.editor, &mut visual);
+        }
+        for select in [false, true] {
+            if select {
+                click(&mut visual, f.audio, Modifiers::default());
+                click(
+                    &mut visual,
+                    f.midi,
+                    Modifiers {
+                        platform: true,
+                        ..Modifiers::default()
+                    },
+                );
+            } else {
+                f.editor.update(&mut visual, |v, cx| {
+                    v.selected_clip = None;
+                    v.reconcile_clip_selection();
+                    cx.notify();
+                });
+                visual.run_until_parked();
+            }
+            for (i, (clip, flavor, prefix)) in [
+                (f.audio, ClipFlavor::Muted, "clip-visual"),
+                (f.midi, ClipFlavor::Accent, "midi-clip-visual"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let header = selector("clip-name", clip);
+                let actual = visual
+                    .rendered_background(header)
+                    .expect("actual completed title quad");
+                let expected = theme::clip_fill(color, flavor, select);
+                assert_eq!(
+                    actual,
+                    gpui::Background::from(gpui::rgb(expected)),
+                    "painted title {clip:?} {color:?} {flavor:?} selected={select}"
+                );
+                assert_ne!(
+                    actual,
+                    gpui::Background::from(gpui::rgb(theme::color(theme::PaletteRole::Raised))),
+                    "title retains inherited hue"
+                );
+                assert_eq!(
+                    visual.debug_bounds(header).unwrap(),
+                    bounds[i],
+                    "colors and selection preserve header hit bounds"
+                );
+                let outer = visual.debug_bounds(selector(prefix, clip)).unwrap();
+                assert!(
+                    bounds[i].top() >= outer.top() && bounds[i].bottom() <= outer.bottom(),
+                    "minimum row contains title strip"
+                );
+                assert_eq!(
+                    visual.rendered_border(selector(prefix, clip)).unwrap().0,
+                    gpui::Hsla::from(gpui::rgb(if select {
+                        theme::color(theme::PaletteRole::Primary)
+                    } else {
+                        0x000000
+                    })),
+                    "selection outline remains independent"
+                );
+                eprintln!(
+                    "title painted clip={} hue={color:?} flavor={flavor:?} selected={select} fill={expected:06x}",
+                    clip.value()
+                );
+            }
+        }
+    }
+    // Existing header selection and inline-name focus still own their inputs.
+    click(&mut visual, f.audio, Modifiers::default());
+    visual.simulate_keystrokes("cmd-r");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("clip-name-input")
+            .unwrap()
+            .intersects(&bounds[0])
+    );
+    visual.simulate_input("title draft");
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    f.editor.read_with(&visual, |v, _| {
+        assert!(v.clip_name_edit.is_none());
+        let project = &v.state.as_ref().unwrap().project;
+        assert_eq!(project.clip(f.audio).unwrap(), &original_audio);
+        assert_eq!(project.midi_clip(f.midi).unwrap(), &original_midi);
+    });
+}

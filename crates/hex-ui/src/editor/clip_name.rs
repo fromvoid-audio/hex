@@ -408,3 +408,7 @@ mod tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "clip_header_color_tests.rs"]
+mod color_tests;
