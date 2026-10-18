@@ -2,6 +2,7 @@
 //! and no owner getter: cancellation must retain this cell until explicit normal
 //! cleanup, while a failed cell remains quarantined by its host.
 use super::*;
+mod original_resources;
 use hex_project::{AssetId, Project};
 
 pub struct AudioCandidatePreparation {
@@ -14,6 +15,8 @@ pub struct AudioCandidatePreparation {
     draft: Option<AudioCandidateDraft>,
     owner: Option<AudioCandidateOwner>,
     owner_runtime_done: bool,
+    original_resource_attempted: bool,
+    original_resource_refused: bool,
     cleaning: bool,
     complete: bool,
     failed: bool,
@@ -56,6 +59,8 @@ impl AudioCandidatePreparation {
             draft: Some(AudioCandidateDraft::new_on_control()),
             owner: None,
             owner_runtime_done: false,
+            original_resource_attempted: false,
+            original_resource_refused: false,
             cleaning: false,
             complete: false,
             failed: false,
@@ -69,7 +74,8 @@ impl AudioCandidatePreparation {
         Ok(result)
     }
     fn collecting(&self, asset: AssetId) -> Result<(), AudioStorageError> {
-        if self.failed
+        if self.original_resource_attempted
+            || self.failed
             || self.cleaning
             || self.complete
             || self.bank.is_some()
@@ -84,7 +90,7 @@ impl AudioCandidatePreparation {
         }
         Ok(())
     }
-    fn validate_collection_bytes(&self, additional: usize) -> Result<(), AudioStorageError> {
+    fn collection_bytes(&self) -> Result<usize, AudioStorageError> {
         let data = self.sources.iter().try_fold(0usize, |n, (_, source)| {
             let (payload, overhead) = crate::audio_input_storage::parts(source)?;
             n.checked_add(payload)
@@ -111,8 +117,14 @@ impl AudioCandidatePreparation {
                 )
             })
             .and_then(|n| n.checked_add(data))
-            .and_then(|n| n.checked_add(additional))
             .and_then(|n| n.checked_add(self.reservation.caller_retained_bytes))
+            .ok_or(AudioStorageError::Overflow)?;
+        Ok(total)
+    }
+    fn validate_collection_bytes(&self, additional: usize) -> Result<(), AudioStorageError> {
+        let total = self
+            .collection_bytes()?
+            .checked_add(additional)
             .ok_or(AudioStorageError::Overflow)?;
         let peak = total
             .checked_add(self.reservation.caller_construction_bytes)
@@ -184,7 +196,10 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
     ) -> Result<(), AudioStorageError> {
-        if self.failed
+        // The resource-aware private complete-compiler route is still closed.
+        // Refuse BEFORE allocating/consuming clip inputs on this legacy entry.
+        if self.original_resource_attempted
+            || self.failed
             || self.cleaning
             || self.complete
             || self.owner.is_some()

@@ -42,6 +42,36 @@ impl AudioCandidatePreparation {
     }
 }
 impl AudioCandidatePreparationOperations<'_> {
+    /// Invoke the concrete borrowed original producer after validating this
+    /// reserved cell's local allowance and vacant phase/destination. Success is
+    /// retained immediately inside its actual transferred preparation custody.
+    /// The same-worker source/candidate binding, aggregate before-first-owner
+    /// reservation and final guarded publication remain separate requirements.
+    /// No bank, owner or mutable preparation reference is returned or accepted.
+    /// ```compile_fail
+    /// use hex_engine::{AudioCandidatePreparationOperations, CancellationQuery};
+    /// use hex_engine::native_device_resources::{DeviceResourceBank, OriginalResourceBankPlan, OriginalResourcePlanReservation};
+    /// fn extract(loan: &mut AudioCandidatePreparationOperations<'_>, plan: &OriginalResourceBankPlan<'_>, allowance: OriginalResourcePlanReservation, cancel: &dyn CancellationQuery) -> DeviceResourceBank {
+    ///     loan.install_original_resources_on_control(plan, allowance, cancel).unwrap()
+    /// }
+    /// ```
+    /// ```compile_fail
+    /// use hex_engine::{AudioCandidatePreparationOperations, CancellationQuery};
+    /// use hex_engine::native_device_resources::{DeviceResourceBank, OriginalResourcePlanReservation};
+    /// fn adopt(loan: &mut AudioCandidatePreparationOperations<'_>, bank: DeviceResourceBank, allowance: OriginalResourcePlanReservation, cancel: &dyn CancellationQuery) {
+    ///     loan.install_original_resources_on_control(&bank, allowance, cancel).unwrap();
+    /// }
+    /// ```
+    pub fn install_original_resources_on_control(
+        &mut self,
+        plan: &crate::native_device_resources::OriginalResourceBankPlan<'_>,
+        allowance: crate::native_device_resources::OriginalResourcePlanReservation,
+        cancel: &dyn crate::CancellationQuery,
+    ) -> Result<(), crate::native_device_resources::ResourcePreparationError> {
+        self.preparation
+            .install_original_resources_on_control(plan, allowance, cancel)
+    }
+
     /// Existing legacy-resident copy path; no raw Audio owner is adopted.
     /// This operation is not original-resource provenance or peak certification.
     pub fn copy_resident_source_on_control(

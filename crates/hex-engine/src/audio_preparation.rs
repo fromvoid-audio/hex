@@ -93,6 +93,9 @@ pub struct AudioArrangementCapacity {
     pub input_container_bytes: usize,
     pub declared_source_bytes: usize,
     pub retained_stage_bytes: usize,
+    /// Reserved local producer ceilings, not observed union or instantaneous peak.
+    pub original_resource_retained_allowance: usize,
+    pub original_resource_construction_allowance: usize,
     pub construction_peak_bytes: usize,
     pub session: crate::SessionSourceCapacity,
     pub structure: crate::SessionStructureCapacity,

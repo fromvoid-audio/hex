@@ -442,3 +442,24 @@ Tests cover original mixed-rate Mono/Stereo pointers and lifetime, raw-input
 refusal, exact/minus-one temporary metadata, empty reserved backing, cancellation
 and compile-time privacy/lifetime/mutation restrictions. The existing Session
 producer and actual pending editor-transition tests use this same kernel.
+
+The affine preparation operations now expose a concrete borrowed-plan install
+operation returning only success/refusal. It validates the actual cell's vacant
+phase/destination and remaining local retained/construction ceilings before
+invoking the producer. Nested input/catalog/temporary ceilings must fit that
+scope. The resulting original bank moves immediately into the transferred
+custodian, with no allocation, clone, cancellation query or fallible work after
+successful production. Its scope ceilings remain recorded as allowances, not
+observed physical union or an instantaneous peak.
+
+Once a producer starts, that cell cannot invoke it again. Reported cancellation
+or refusal allows ordinary explicit control cleanup; a producer unwind retains
+the first payload and failed cell and refuses retry/cleanup as complete. The
+existing generic compiler entry and later source collection refuse before further
+allocations after an original install attempt. Only the future resource-aware
+private complete-compiler entry may advance that state. Tests exercise actual
+Mono/Stereo installation through the loan, preflight-before-query, one attempt,
+actual source/custody alias closure, control cleanup, reported cancellation and
+an injected caught query panic. New compilefail cases forbid an owning bank
+argument or return. These do not supply the actual worker/candidate source binding,
+aggregate prequote, complete compiler, native joint publication or usable device.
