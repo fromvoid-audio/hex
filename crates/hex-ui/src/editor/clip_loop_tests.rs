@@ -293,6 +293,24 @@ fn midi_loop_invalid_and_prepare_refusal_keep_project_ids_history_and_redo() {
 #[test]
 fn midi_loop_noop_preserves_redo_and_boundary_overflow_refuses() {
     let (mut editor, clip) = fixture(2 * Q, 8 * Q, true);
+    // First capture deliberately changes ordinary SourceEnd into bounded LoopEnd.
+    // Reasserting an already captured loop is the no-op whose Redo must survive.
+    let captured = values(
+        editor.project().midi_clip(clip).unwrap(),
+        Gesture::Outer,
+        beat(18 * Q),
+    )
+    .unwrap();
+    apply(&mut editor, clip, captured);
+    assert_eq!(
+        editor
+            .project()
+            .midi_clip(clip)
+            .unwrap()
+            .source()
+            .one_shot_boundary(),
+        hex_project::MidiOneShotBoundary::LoopEnd
+    );
     editor
         .execute(Command::RenameClip {
             clip,

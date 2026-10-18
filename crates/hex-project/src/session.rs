@@ -471,13 +471,6 @@ pub(crate) fn apply(
             loop_end,
             looping,
         } => {
-            crate::midi::validate_source(
-                source_length,
-                source_start,
-                loop_start,
-                loop_end,
-                looping,
-            )?;
             let target = project
                 .session_midi_clip(clip)
                 .ok_or(Invalid("session midi clip no longer exists"))?;

@@ -156,3 +156,40 @@ fn current_format_refuses_missing_or_unknown_boundary() {
     }
     assert!(hex_storage::decode(&original).is_ok());
 }
+
+#[test]
+fn exhausted_once_cursors_roundtrip_full_values_notes_and_both_owners() {
+    let mut snapshot = fixture().snapshot();
+    let hex_project::TrackContentSnapshot::Hybrid { midi_clips, .. } =
+        &mut snapshot.tracks[0].content
+    else {
+        panic!("hybrid")
+    };
+    midi_clips[0].source_start_raw = u64::MAX;
+    let hex_project::SessionCellContentSnapshot::Midi(cell) =
+        &mut snapshot.session.cells[0].content
+    else {
+        panic!("midi cell")
+    };
+    cell.source.source_start_raw = beat(20).raw();
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let decoded = hex_storage::decode(&hex_storage::encode(&project).unwrap()).unwrap();
+    assert_eq!(decoded.snapshot(), project.snapshot());
+    let hex_project::SessionCellContent::Midi(cell) = decoded.session_cells()[0].content() else {
+        panic!("cell")
+    };
+    for source in [decoded.tracks()[0].midi_clips()[0].source(), cell.source()] {
+        let playback = source.source_playback(beat(20)).unwrap();
+        assert!(!playback.has_initial_pass());
+        assert_eq!(playback.initial_remaining(), BeatTime::ZERO);
+        assert_eq!(source.notes().len(), 1);
+        assert_eq!(source.notes()[0].start(), beat(10));
+        assert_eq!(
+            playback
+                .note_occurrences(beat(10), beat(2))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+}

@@ -1,5 +1,5 @@
 //! Grid-stepped, atomic editing for MIDI source and Arrangement regions.
-use hex_project::{MidiSource, Project};
+use hex_project::{MidiOneShotBoundary, MidiSource, Project};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SourceField {
@@ -44,6 +44,7 @@ pub(super) struct SourceValues {
     pub(super) loop_start: u64,
     pub(super) loop_end: u64,
     pub(super) looping: bool,
+    pub(super) one_shot_boundary: MidiOneShotBoundary,
 }
 
 impl SourceValues {
@@ -60,6 +61,7 @@ impl SourceValues {
             loop_start: source.loop_start().raw(),
             loop_end: source.loop_end().raw(),
             looping: source.looping(),
+            one_shot_boundary: source.one_shot_boundary(),
         }
     }
 }
@@ -150,7 +152,9 @@ pub(super) fn adjust(
             } else {
                 values.source_length
             };
-            if start >= exclusive_end {
+            if start >= exclusive_end
+                && (values.looping || values.one_shot_boundary == MidiOneShotBoundary::SourceEnd)
+            {
                 return Err("source start must precede its playback end");
             }
             values.source_start = start;
@@ -174,7 +178,20 @@ pub(super) fn adjust(
             }
             values.loop_end = end;
         }
-        SourceField::Looping => values.looping = !values.looping,
+        SourceField::Looping => {
+            if !values.looping {
+                values.source_start = values
+                    .one_shot_boundary
+                    .loop_activation_start(
+                        hex_project::BeatTime::from_raw(values.source_start),
+                        hex_project::BeatTime::from_raw(values.loop_start),
+                        hex_project::BeatTime::from_raw(values.loop_end),
+                    )
+                    .map_err(|_| "midi loop activation would be invalid")?
+                    .raw();
+            }
+            values.looping = !values.looping;
+        }
     }
 
     if values.arrangement_length == 0
@@ -182,7 +199,9 @@ pub(super) fn adjust(
         || values.loop_start >= values.loop_end
         || values.loop_end > values.source_length
         || (values.looping && values.source_start >= values.loop_end)
-        || (!values.looping && values.source_start >= values.source_length)
+        || (!values.looping
+            && values.one_shot_boundary == MidiOneShotBoundary::SourceEnd
+            && values.source_start >= values.source_length)
     {
         return Err("midi source settings would be invalid");
     }
@@ -203,6 +222,7 @@ mod tests {
             loop_start: 4,
             loop_end: 8,
             looping: false,
+            one_shot_boundary: MidiOneShotBoundary::SourceEnd,
         }
     }
 
@@ -360,6 +380,7 @@ mod tests {
             loop_start: 0,
             loop_end: 6 * BeatTime::ONE.raw(),
             looping: false,
+            one_shot_boundary: MidiOneShotBoundary::SourceEnd,
         };
         let command = edit_command(editor.project(), clip, values).expect("session source owner");
         assert!(matches!(command, Command::SetSessionMidiClipSource { .. }));
@@ -382,5 +403,32 @@ mod tests {
         assert_eq!(source.source_length().raw(), values.source_length);
         assert_eq!(source.source_start().raw(), values.source_start);
         assert_eq!(source.notes().len(), 1);
+    }
+    #[test]
+    fn captured_once_numeric_cursor_and_explicit_loop_toggle_preserve_policy() {
+        let mut once = values();
+        once.one_shot_boundary = MidiOneShotBoundary::LoopEnd;
+        once.source_start = 14;
+        let consumed = adjust(once, SourceField::SourceStart, 1, 2, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(consumed.source_start, 16);
+        let repeated = adjust(consumed, SourceField::Looping, 1, 1, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated.source_start, 4);
+        assert!(repeated.looping);
+        assert_eq!(repeated.one_shot_boundary, MidiOneShotBoundary::LoopEnd);
+        let stopped = adjust(repeated, SourceField::Looping, 1, 1, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.source_start, 4);
+        assert!(!stopped.looping);
+        let marker = adjust(consumed, SourceField::LoopEnd, -1, 2, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(marker.source_start, 16);
+        assert_eq!(marker.loop_end, 6);
+        assert!(adjust(values(), SourceField::SourceStart, 1, 14, 0).is_err());
     }
 }

@@ -128,25 +128,37 @@ Ordinary sources retain `SourceEnd`; the new loop-capture overwrite command
 sets `LoopEnd`. Numeric edits and Looping toggles preserve this policy. The
 effective end is the loop end while repeating or bounded Once, otherwise the
 full authored source end. Notes remain validated and retained against the full
-source length. A bounded Once start must precede its selected end, even with
-Looping off. Snapshot, COW/copy and current-format MIDI codecs retain the policy;
+source length. Bounded Once accepts an unwrapped consumed cursor, including at
+or beyond the selected end; its remaining playback is then empty. Snapshot,
+COW/copy and current-format MIDI codecs retain the policy and exact cursor;
 missing or unknown current-format policy values refuse explicitly.
 
 `MidiSource::source_playback(duration)` is the shared checked constructor for
-Arrangement and Session consumers. It calls
-`MidiSourcePlayback::new_with_initial_end`, which independently validates authored
-note bounds and clips audible onsets/gates at the selected end. The ordinary
-constructor retains its prior behavior. `effective_end()` exposes the same
+Arrangement and Session consumers. Bounded Once uses the explicit
+`MidiSourcePlayback::new_bounded_one_shot`; other policies retain the strict
+constructor. Both validate authored note bounds and clip audible onsets/gates
+at the selected end. `has_initial_pass()` and `initial_remaining()` expose zero
+remaining source beats for an exhausted cursor without subtraction underflow.
+The ordinary constructor retains its prior behavior. `effective_end()` exposes the same
 source-owned law without a compiler-owned mirror. Arrangement's existing clip
 query delegates to this constructor. Source4 still must adapt the separate
 Session template path and audit both actual compiler paths; model/codec tests
 are not proof of that unfinished runtime integration. No notes or controls are
 removed.
 
-The approved MIDI silence-tail amendment is NOT implemented in this checkpoint:
-bounded Once still rejects an exhausted source cursor. Its shape/policy validator,
-checked trim, silent split with fresh NoteIds, numeric controls and both compiler
-paths remain required. The Session bounce bridge now preserves the actual policy
+The model/UI silence-tail amendment separates source shape from cursor policy.
+Left trim advances the unwrapped Once cursor and can extend back to recover its
+original source origin. A split or overwrite beginning in silence retains the
+complete source/window/policy and assigns fresh NoteIds to the new right source;
+cuts through sounding material keep the existing carry/retrigger behavior.
+Capacity and cursor-overflow refusals preserve project IDs and history. Numeric
+source editing allows consumed cursors, while explicit Repeat activation alone
+normalizes an exhausted cursor into its retained loop; ordinary commands and
+loads never repair invalid Repeat cursors. Both actual compiler paths still need
+the shared policy-aware mapping verified; Session's separate template currently
+uses the old strict constructor/full source end. This is an explicit runtime
+dependency, not proof of playback/export completion.
+The Session bounce bridge preserves the actual policy
 and selected end; a Session source with no remaining material explicitly refuses
 before creating any replacement asset/history. Arrangement retains its positive
 authored outer duration, including silence. This bridge is not new export support.

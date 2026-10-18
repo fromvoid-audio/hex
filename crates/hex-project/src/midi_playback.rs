@@ -79,6 +79,50 @@ impl MidiSourcePlayback {
         })
     }
 
+    /// Explicit captured-cycle Once mapping. The cursor is unwrapped: after
+    /// consuming the selected end, the finite outer region is silent. Authored
+    /// note validation still uses the complete source, never the cursor extent.
+    /// Ordinary `new` and `new_with_initial_end` deliberately remain strict.
+    pub fn new_bounded_one_shot(
+        source_length: BeatTime,
+        source_start: BeatTime,
+        arrangement_duration: BeatTime,
+        initial_end: BeatTime,
+    ) -> Result<Self, Invalid> {
+        if source_length == BeatTime::ZERO || arrangement_duration == BeatTime::ZERO {
+            return Err(Invalid(
+                "midi source and arrangement durations must be positive",
+            ));
+        }
+        if initial_end == BeatTime::ZERO || initial_end > source_length {
+            return Err(Invalid(
+                "midi selected playback end must be inside its source",
+            ));
+        }
+        Ok(Self {
+            source_length,
+            source_start,
+            initial_end,
+            loop_range: None,
+            arrangement_duration,
+        })
+    }
+
+    /// Whether the unwrapped cursor has any first-pass source remaining.
+    pub fn has_initial_pass(self) -> bool {
+        self.source_start < self.initial_end
+    }
+
+    /// Source beats to the first boundary, before finite Arrangement clipping.
+    /// Exhausted captured Once sources have no remaining first pass.
+    pub fn initial_remaining(self) -> BeatTime {
+        if self.has_initial_pass() {
+            BeatTime::from_raw(self.initial_end.raw() - self.source_start.raw())
+        } else {
+            BeatTime::ZERO
+        }
+    }
+
     /// Construct the current canonical one-shot mapping for a clip.
     pub fn one_shot(length: BeatTime) -> Result<Self, Invalid> {
         Self::new(length, BeatTime::ZERO, None, length)
@@ -317,6 +361,44 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn exhausted_bounded_once_is_empty_and_ordinary_mapping_remains_strict() {
+        for cursor in [beat(6), beat(20), BeatTime::from_raw(u64::MAX)] {
+            let p = MidiSourcePlayback::new_bounded_one_shot(beat(12), cursor, beat(20), beat(6))
+                .unwrap();
+            assert!(!p.has_initial_pass());
+            assert_eq!(p.initial_remaining(), BeatTime::ZERO);
+            assert_eq!(p.source_start(), cursor);
+            assert_eq!(p.source_length(), beat(12));
+            assert_eq!(p.note_occurrences(beat(4), beat(5)).unwrap().count(), 0);
+            assert_eq!(p.note_occurrences(beat(10), beat(2)).unwrap().count(), 0);
+            assert!(p.note_occurrences(beat(12), beat(1)).is_err());
+            assert!(
+                MidiSourcePlayback::new_with_initial_end(beat(12), cursor, None, beat(20), beat(6))
+                    .is_err()
+            );
+            if cursor >= beat(12) {
+                assert!(MidiSourcePlayback::new(beat(12), cursor, None, beat(20)).is_err());
+            }
+        }
+        let p =
+            MidiSourcePlayback::new_bounded_one_shot(beat(12), beat(2), beat(20), beat(6)).unwrap();
+        assert!(p.has_initial_pass());
+        assert_eq!(p.initial_remaining(), beat(4));
+        assert_eq!(
+            tuples(p.note_occurrences(beat(4), beat(5)).unwrap()),
+            vec![(0, 2, 2)]
+        );
+        assert!(
+            MidiSourcePlayback::new_bounded_one_shot(beat(12), beat(20), BeatTime::ZERO, beat(6))
+                .is_err()
+        );
+        assert!(
+            MidiSourcePlayback::new_bounded_one_shot(beat(12), beat(20), beat(1), beat(13))
+                .is_err()
+        );
     }
 
     #[test]

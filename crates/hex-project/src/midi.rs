@@ -13,6 +13,32 @@ pub enum MidiOneShotBoundary {
     LoopEnd,
 }
 
+impl MidiOneShotBoundary {
+    /// Explicit loop activation only. Loads and ordinary source setters never
+    /// normalize cursors. Captured Once silence may intentionally resume Repeat;
+    /// an intro before loop_start remains an intro, and SourceEnd is unchanged.
+    pub fn loop_activation_start(
+        self,
+        cursor: BeatTime,
+        loop_start: BeatTime,
+        loop_end: BeatTime,
+    ) -> Result<BeatTime, Invalid> {
+        if loop_start >= loop_end {
+            return Err(Invalid("midi source loop must have positive length"));
+        }
+        if self == Self::LoopEnd && cursor >= loop_end {
+            let period = loop_end.raw() - loop_start.raw();
+            let phase = (cursor.raw() - loop_start.raw()) % period;
+            return loop_start
+                .raw()
+                .checked_add(phase)
+                .map(BeatTime::from_raw)
+                .ok_or(Invalid("midi source cursor overflow"));
+        }
+        Ok(cursor)
+    }
+}
+
 /// Independently-owned MIDI event source shared by Arrangement and Session clips.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSource {
@@ -85,6 +111,14 @@ impl MidiSource {
             self.looping,
             self.one_shot_boundary,
         )?;
+        if !self.looping && self.one_shot_boundary == MidiOneShotBoundary::LoopEnd {
+            return MidiSourcePlayback::new_bounded_one_shot(
+                self.source_length,
+                self.source_start,
+                duration,
+                self.loop_end,
+            );
+        }
         MidiSourcePlayback::new_with_initial_end(
             self.source_length,
             self.source_start,
@@ -167,7 +201,9 @@ impl MidiClip {
                 } else {
                     start.saturating_sub(source_start)
                 };
-                let max_start = if self.looping() {
+                let max_start = if self.looping()
+                    || self.source.one_shot_boundary == MidiOneShotBoundary::LoopEnd
+                {
                     end - 1
                 } else {
                     let remaining = self.source.effective_end().raw() - source_start - 1;
@@ -194,7 +230,8 @@ impl MidiClip {
                             + ((advanced - u128::from(self.loop_end().raw())) % u128::from(period))
                                 as u64
                     } else {
-                        advanced as u64
+                        u64::try_from(advanced)
+                            .map_err(|_| Invalid("midi source cursor overflow"))?
                     }
                 };
                 (new_start, end, source)
@@ -328,12 +365,10 @@ pub(crate) fn validate_clip(start: BeatTime, length: BeatTime) -> Result<(), Inv
     Ok(())
 }
 
-pub(crate) fn validate_source(
+fn validate_source_shape(
     source_length: BeatTime,
-    source_start: BeatTime,
     loop_start: BeatTime,
     loop_end: BeatTime,
-    looping: bool,
 ) -> Result<(), Invalid> {
     if source_length == BeatTime::ZERO {
         return Err(Invalid("midi source length must be positive"));
@@ -341,13 +376,24 @@ pub(crate) fn validate_source(
     if loop_start >= loop_end || loop_end > source_length {
         return Err(Invalid("midi source loop must be inside its source"));
     }
-    if looping && source_start >= loop_end {
-        return Err(Invalid("midi source start must precede its loop end"));
-    }
-    if !looping && source_start >= source_length {
-        return Err(Invalid("midi source start must be inside its source"));
-    }
     Ok(())
+}
+
+pub(crate) fn validate_source(
+    source_length: BeatTime,
+    source_start: BeatTime,
+    loop_start: BeatTime,
+    loop_end: BeatTime,
+    looping: bool,
+) -> Result<(), Invalid> {
+    validate_source_boundary(
+        source_length,
+        source_start,
+        loop_start,
+        loop_end,
+        looping,
+        MidiOneShotBoundary::SourceEnd,
+    )
 }
 
 pub(crate) fn validate_source_boundary(
@@ -358,13 +404,57 @@ pub(crate) fn validate_source_boundary(
     looping: bool,
     boundary: MidiOneShotBoundary,
 ) -> Result<(), Invalid> {
-    validate_source(source_length, source_start, loop_start, loop_end, looping)?;
-    if boundary == MidiOneShotBoundary::LoopEnd && source_start >= loop_end {
-        return Err(Invalid(
-            "bounded midi source start must precede its selected end",
-        ));
+    validate_source_shape(source_length, loop_start, loop_end)?;
+    if looping && source_start >= loop_end {
+        return Err(Invalid("midi source start must precede its loop end"));
+    }
+    if !looping && boundary == MidiOneShotBoundary::SourceEnd && source_start >= source_length {
+        return Err(Invalid("midi source start must be inside its source"));
     }
     Ok(())
+}
+
+/// Only a cut at/after a captured Once playback end may retain the unwrapped
+/// source directly. Sounding cuts keep the existing materialized gate contract.
+fn silent_tail_cursor(clip: &MidiClip, start: BeatTime) -> Result<Option<BeatTime>, Invalid> {
+    if clip.looping() || clip.source.one_shot_boundary != MidiOneShotBoundary::LoopEnd {
+        return Ok(None);
+    }
+    let delta = start
+        .raw()
+        .checked_sub(clip.start.raw())
+        .ok_or(Invalid("midi fragment precedes its source clip"))?;
+    let cursor = clip
+        .source_start()
+        .raw()
+        .checked_add(delta)
+        .ok_or(Invalid("midi source cursor overflow"))?;
+    Ok((cursor >= clip.loop_end().raw()).then_some(BeatTime::from_raw(cursor)))
+}
+
+fn copy_retained_once_source(source: &MidiSource, cursor: BeatTime) -> Result<MidiSource, Invalid> {
+    validate_source_boundary(
+        source.source_length,
+        cursor,
+        source.loop_start,
+        source.loop_end,
+        source.looping,
+        source.one_shot_boundary,
+    )?;
+    let mut notes = Vec::new();
+    notes
+        .try_reserve_exact(source.notes.len())
+        .map_err(|_| Invalid("could not reserve retained midi notes"))?;
+    notes.extend_from_slice(&source.notes);
+    Ok(MidiSource {
+        source_length: source.source_length,
+        source_start: cursor,
+        loop_start: source.loop_start,
+        loop_end: source.loop_end,
+        looping: source.looping,
+        one_shot_boundary: source.one_shot_boundary,
+        notes,
+    })
 }
 
 pub(crate) fn validate_note(
@@ -527,6 +617,51 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let right_length = crate::BeatTime::from_raw(end - beat.raw());
             validate_clip(original.start, left_length)?;
             validate_clip(beat, right_length)?;
+
+            if let Some(cursor) = silent_tail_cursor(&original, beat)? {
+                let added = original.notes().len();
+                if note_count(project)
+                    .checked_add(added)
+                    .is_none_or(|count| count > MAX_NOTES)
+                {
+                    return Err(Invalid("midi note limit reached"));
+                }
+                let id_count = added
+                    .checked_add(1)
+                    .ok_or(Invalid("midi split id count overflow"))?;
+                project
+                    .track_mut(track)?
+                    .content
+                    .midi_clips
+                    .try_reserve(1)
+                    .map_err(|_| Invalid("could not reserve midi clip storage"))?;
+                let mut source = copy_retained_once_source(original.source(), cursor)?;
+                let (first_id, _) = project.allocate_id_range(id_count)?;
+                for (index, note) in source.notes.iter_mut().enumerate() {
+                    let offset =
+                        u64::try_from(index).map_err(|_| Invalid("project id space exhausted"))?;
+                    note.id = NoteId(
+                        first_id
+                            .checked_add(1)
+                            .and_then(|id| id.checked_add(offset))
+                            .ok_or(Invalid("project id space exhausted"))?,
+                    );
+                }
+                let mut left = original;
+                left.length = left_length;
+                let right = MidiClip {
+                    name: left.name.clone(),
+                    flavor: left.flavor,
+                    id: ClipId(first_id),
+                    start: beat,
+                    length: right_length,
+                    source: Arc::new(source),
+                };
+                let clips = &mut project.track_mut(track)?.content.midi_clips;
+                clips[clip_index] = left;
+                clips.insert(clip_index + 1, right);
+                return Ok(Created::Clip(ClipId(first_id)));
+            }
 
             // Materialize the finite playback that belongs in the right
             // region. This includes a clipped occurrence already sounding at
@@ -1179,16 +1314,20 @@ pub(crate) fn overwrite_midi_interval(
             None
         };
         let mut plan_occurrences = 0_usize;
-        if right_range.is_some() {
-            let playback = clip.source_playback()?;
-            for note in clip.notes() {
-                let plan = playback.note_occurrences(note.start, note.duration)?;
-                let count = usize::try_from(plan.count()).map_err(|_| {
-                    Invalid("midi overwrite occurrence count exceeds addressable range")
-                })?;
-                plan_occurrences = plan_occurrences
-                    .checked_add(count)
-                    .ok_or(Invalid("midi overwrite occurrence count overflow"))?;
+        if let Some((right_start, _)) = right_range {
+            if silent_tail_cursor(&clip, BeatTime::from_raw(right_start))?.is_some() {
+                plan_occurrences = clip.notes().len();
+            } else {
+                let playback = clip.source_playback()?;
+                for note in clip.notes() {
+                    let plan = playback.note_occurrences(note.start, note.duration)?;
+                    let count = usize::try_from(plan.count()).map_err(|_| {
+                        Invalid("midi overwrite occurrence count exceeds addressable range")
+                    })?;
+                    plan_occurrences = plan_occurrences
+                        .checked_add(count)
+                        .ok_or(Invalid("midi overwrite occurrence count overflow"))?;
+                }
             }
             occurrence_bound = occurrence_bound
                 .checked_add(plan_occurrences)
@@ -1244,38 +1383,53 @@ pub(crate) fn overwrite_midi_interval(
                 .ok_or(Invalid("midi note count overflow"))?;
         }
         let right = if let Some((right_start, right_end)) = right_range {
-            let playback = original.source_playback()?;
-            let mut notes = Vec::new();
-            notes
-                .try_reserve_exact(occurrence_count)
-                .map_err(|_| Invalid("could not reserve midi overwrite notes"))?;
-            for note in original.notes() {
-                let occurrences = playback.note_occurrences(note.start, note.duration)?;
-                for occurrence in occurrences.iter() {
-                    let absolute_start = original
-                        .start
-                        .raw()
-                        .checked_add(occurrence.timeline_start().raw())
-                        .ok_or(Invalid("midi note timeline overflow"))?;
-                    let absolute_end = absolute_start
-                        .checked_add(occurrence.gate_duration().raw())
-                        .ok_or(Invalid("midi note gate overflow"))?;
-                    let kept_start = absolute_start.max(right_start);
-                    let kept_end = absolute_end.min(right_end);
-                    if kept_start < kept_end {
-                        notes.push(MidiNote {
-                            id: NoteId(0),
-                            start: BeatTime::from_raw(kept_start - right_start),
-                            duration: BeatTime::from_raw(kept_end - kept_start),
-                            pitch: note.pitch,
-                            channel: note.channel,
-                            velocity: note.velocity,
-                        });
+            let retained = silent_tail_cursor(&original, BeatTime::from_raw(right_start))?;
+            let source = if let Some(cursor) = retained {
+                copy_retained_once_source(original.source(), cursor)?
+            } else {
+                let playback = original.source_playback()?;
+                let mut notes = Vec::new();
+                notes
+                    .try_reserve_exact(occurrence_count)
+                    .map_err(|_| Invalid("could not reserve midi overwrite notes"))?;
+                for note in original.notes() {
+                    let occurrences = playback.note_occurrences(note.start, note.duration)?;
+                    for occurrence in occurrences.iter() {
+                        let absolute_start = original
+                            .start
+                            .raw()
+                            .checked_add(occurrence.timeline_start().raw())
+                            .ok_or(Invalid("midi note timeline overflow"))?;
+                        let absolute_end = absolute_start
+                            .checked_add(occurrence.gate_duration().raw())
+                            .ok_or(Invalid("midi note gate overflow"))?;
+                        let kept_start = absolute_start.max(right_start);
+                        let kept_end = absolute_end.min(right_end);
+                        if kept_start < kept_end {
+                            notes.push(MidiNote {
+                                id: NoteId(0),
+                                start: BeatTime::from_raw(kept_start - right_start),
+                                duration: BeatTime::from_raw(kept_end - kept_start),
+                                pitch: note.pitch,
+                                channel: note.channel,
+                                velocity: note.velocity,
+                            });
+                        }
                     }
                 }
-            }
+                let length = BeatTime::from_raw(right_end - right_start);
+                MidiSource {
+                    source_length: length,
+                    source_start: BeatTime::ZERO,
+                    loop_start: BeatTime::ZERO,
+                    loop_end: length,
+                    looping: false,
+                    one_shot_boundary: MidiOneShotBoundary::SourceEnd,
+                    notes,
+                }
+            };
             generated_notes_total = generated_notes_total
-                .checked_add(notes.len())
+                .checked_add(source.notes.len())
                 .ok_or(Invalid("midi note count overflow"))?;
             let length = BeatTime::from_raw(right_end - right_start);
             Some(MidiClip {
@@ -1288,15 +1442,7 @@ pub(crate) fn overwrite_midi_interval(
                 },
                 start: BeatTime::from_raw(right_start),
                 length,
-                source: Arc::new(MidiSource {
-                    source_length: length,
-                    source_start: BeatTime::ZERO,
-                    loop_start: BeatTime::ZERO,
-                    loop_end: length,
-                    looping: false,
-                    one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-                    notes,
-                }),
+                source: Arc::new(source),
             })
         } else {
             None
