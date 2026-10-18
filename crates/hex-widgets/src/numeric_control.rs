@@ -317,7 +317,7 @@ impl NumericControl {
         self.value
     }
 
-    /// Text currently shown in the editable value field.
+    /// Original editable draft, preserving parser and clipboard semantics.
     pub fn display_text(&self) -> &str {
         &self.text
     }
@@ -1034,9 +1034,11 @@ impl NumericControl {
 
     pub(crate) fn value_string(&self) -> String {
         if self.editing {
-            self.text.clone()
+            self.style.text_case.present(&self.text)
         } else {
-            self.spec.format(self.draft).unwrap_or_default()
+            self.style
+                .text_case
+                .present(&self.spec.format(self.draft).unwrap_or_default())
         }
     }
 

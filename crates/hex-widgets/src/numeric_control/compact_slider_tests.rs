@@ -15,6 +15,7 @@ const STYLE: ControlStyle = ControlStyle {
     dial_rail: 0x000000,
     hover: 0x404040,
     font_size: 10.0,
+    text_case: crate::TextCase::Preserve,
 };
 
 struct Root {
