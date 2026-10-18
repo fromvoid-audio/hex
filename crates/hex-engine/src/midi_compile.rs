@@ -1,5 +1,6 @@
 //! Bounded control-side compilation of MIDI edges and stateless note spans.
 use crate::Invalid;
+mod construction;
 use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
 
@@ -250,6 +251,15 @@ pub(crate) fn compile_instrument_track(
     if track.midi_clips().is_empty() {
         return Ok(None);
     }
+    // The closed mutable/Sampler and silent branches have an empty note bank.
+    // Quote only this constructor's own storage, not the enclosing context or
+    // caller preview Vec. Legacy analytic/preview behavior stays separate.
+    let construction_cost =
+        if previews.is_none() && (mutable_limits.is_some() || instrument.is_none()) {
+            Some(construction::quote(track, instrument.is_some())?)
+        } else {
+            None
+        };
     // Mutable factories never read an analytic note bank. Other instruments
     // reserve their full authored-key scratch once, before any key is appended.
     let needs_keys = instrument.is_some() && mutable_limits.is_none();
@@ -436,12 +446,16 @@ pub(crate) fn compile_instrument_track(
         .try_reserve_exact(spans.len())
         .map_err(|_| Invalid("could not reserve instrument span index"))?;
     let root = build_interval_tree(&spans, 0, spans.len(), &mut nodes);
+    let bank = bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty);
+    if let Some(cost) = construction_cost {
+        cost.validate_actual(&spans, &nodes, &bank)?;
+    }
     Ok(Some(crate::InstrumentTrack {
         spans,
         nodes,
         root,
         timeline_end,
-        bank: bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
+        bank,
         shared_contexts,
         mutable,
     }))
