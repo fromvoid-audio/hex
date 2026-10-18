@@ -54,7 +54,11 @@ pub(super) fn render(
     // Work::scratch is a maximum recorder, not an adder. Quote the complete
     // concurrently live plan/search/filter/ring family before its first Vec.
     work.scratch(
-        plan_bytes + onsets::scratch(request.input.sample_rate) + BANK_BYTES + ring * 24 + 4096,
+        plan_bytes
+            + onsets::scratch(request.input.sample_rate)
+            + BANK_BYTES
+            + ring * 24
+            + synthesis::SEARCH_BYTES,
     )?;
     let anchors = analysis::prepare(request, pitch, work)?;
     let schedule = plan::Schedule::prepare(request, &anchors, work)?;
@@ -84,7 +88,7 @@ pub(super) fn render(
         request.output_frames,
         ring,
         work,
-        plan_bytes + BANK_BYTES + 4096,
+        plan_bytes + BANK_BYTES + synthesis::SEARCH_BYTES,
     )?;
     let mut output = 0;
     let mut source = anchors[0].source;

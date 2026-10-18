@@ -15,6 +15,12 @@ fn linear(input: Input<'_>, position: f64, lower: i128, upper: i128) -> [f64; 2]
     let f = position - position.floor();
     std::array::from_fn(|c| a[c] * (1.0 - f) + b[c] * f)
 }
+#[derive(Clone, Copy)]
+struct Screen {
+    sum: [f64; 2],
+    square: f64,
+    count: f64,
+}
 struct Search<'r, 'a> {
     request: &'r Request<'a>,
     step: f64,
@@ -27,10 +33,15 @@ struct Search<'r, 'a> {
     previous_square: f64,
     count: f64,
 }
-// The existing 4096-byte search quote covers both construction storage and
-// the live search plus comparison records, including the new overlap array.
+// Quote the concurrently live overlap, separated screening peaks and full
+// finalist records before construction, within the unchanged scratch ceiling.
+pub(super) const SEARCH_BYTES: usize = 8192;
 const _: () = assert!(
-    std::mem::size_of::<Search<'static, 'static>>() * 2 + std::mem::size_of::<Match>() * 3 <= 4096
+    std::mem::size_of::<Search<'static, 'static>>() * 2
+        + std::mem::size_of::<Match>() * 13
+        + std::mem::size_of::<(f64, f64)>() * 8
+        + std::mem::size_of::<Screen>() * 2
+        <= SEARCH_BYTES
 );
 impl Search<'_, '_> {
     fn scan<const PRUNED: bool>(
@@ -54,6 +65,95 @@ impl Search<'_, '_> {
         }
         Ok(selected)
     }
+    fn screened(
+        &self,
+        lo: f64,
+        hi: f64,
+        nominal: f64,
+        predicted: f64,
+        mut selected: Match,
+        work: &mut Work<'_>,
+    ) -> Result<Match, Error> {
+        // The coarse pass covers the complete search width. Keep separated
+        // peaks so a broad local maximum cannot consume all finalist slots.
+        let step = f64::from((self.request.input.sample_rate / 4_000).max(1));
+        let full_points = self.overlap.clamp(1, 64);
+        let points = full_points.min(16);
+        work.check(points as u64 * 6)?;
+        let mut screen = Screen {
+            sum: [0.0; 2],
+            square: 0.0,
+            count: 0.0,
+        };
+        for i in 0..points {
+            if let Some(x) = self.previous[i * full_points / points] {
+                screen.count += 1.0;
+                for (c, value) in x.iter().enumerate() {
+                    screen.sum[c] += value;
+                    screen.square += value * value;
+                }
+            }
+        }
+        let mut peaks = [(0.0_f64, f64::NEG_INFINITY); 8];
+        let mut position = lo;
+        while position <= hi {
+            let score = self
+                .score_sampled(position, nominal, Some(screen), work)?
+                .score;
+            work.check(32)?;
+            let nearby = peaks
+                .iter()
+                .position(|p| p.1.is_finite() && (p.0 - position).abs() < step * 2.0);
+            let index = nearby.unwrap_or_else(|| {
+                peaks
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
+                    .unwrap()
+                    .0
+            });
+            if score > peaks[index].1 {
+                peaks[index] = (position, score);
+            }
+            position += step;
+        }
+        let mut full = [selected; 10];
+        let mut count = 0;
+        for position in std::iter::once(nominal)
+            .chain(std::iter::once(predicted.clamp(lo, hi)))
+            .chain(peaks.iter().filter(|p| p.1.is_finite()).map(|p| p.0))
+        {
+            let next = self.score(position, nominal, work)?;
+            full[count] = next;
+            count += 1;
+            if next.score > selected.score {
+                selected = next;
+            }
+        }
+        // Refine more than one fully rescored peak before the final sub-sample
+        // search; a sparse screening score is never the returned Match.
+        full[..count].sort_unstable_by(|a, b| b.score.total_cmp(&a.score));
+        work.check(100)?;
+        for seed in full.iter().take(count.min(3)) {
+            selected = self.scan::<true>(
+                (seed.position - step).max(lo),
+                (seed.position + step).min(hi),
+                0.5,
+                nominal,
+                selected,
+                work,
+            )?;
+        }
+        let best = selected.position;
+        self.scan::<true>(
+            (best - 0.5).max(lo),
+            (best + 0.5).min(hi),
+            0.125,
+            nominal,
+            selected,
+            work,
+        )
+    }
     fn can_improve(
         &self,
         position: f64,
@@ -70,6 +170,15 @@ impl Search<'_, '_> {
         Ok(1.0 - 0.002 * displacement * displacement > selected_score)
     }
     fn score(&self, position: f64, nominal: f64, work: &mut Work<'_>) -> Result<Match, Error> {
+        self.score_sampled(position, nominal, None, work)
+    }
+    fn score_sampled(
+        &self,
+        position: f64,
+        nominal: f64,
+        screen: Option<Screen>,
+        work: &mut Work<'_>,
+    ) -> Result<Match, Error> {
         let Self {
             request,
             step,
@@ -82,18 +191,25 @@ impl Search<'_, '_> {
             previous_square,
             count,
         } = *self;
-        let points = overlap.clamp(1, 64);
-        // The previous overlap's six units per point are computed once when
-        // constructing Search. Only the ten candidate-dependent units repeat.
+        let full_points = overlap.clamp(1, 64);
+        let points = if screen.is_some() {
+            full_points.min(16)
+        } else {
+            full_points
+        };
+        // Both full and screening previous moments are computed once per
+        // grain. Charge only the candidate-dependent ten units per sample.
         work.check(points as u64 * 10)?;
-        let sx = previous_sum;
+        let sx = screen.map_or(previous_sum, |s| s.sum);
+        let count = screen.map_or(count, |s| s.count);
         let mut sy = [0.0; 2];
-        let mut xx = previous_square;
+        let mut xx = screen.map_or(previous_square, |s| s.square);
         let mut yy = 0.0;
         let mut xy = 0.0;
-        for (i, previous) in previous.iter().enumerate().take(points) {
-            let at = i * overlap / points;
-            if let Some(x) = previous {
+        for i in 0..points {
+            let index = i * full_points / points;
+            let at = index * overlap / full_points;
+            if let Some(x) = previous[index] {
                 let y = linear(request.input, position + at as f64 * step, lower, upper);
                 for c in 0..2 {
                     sy[c] += y[c];
@@ -209,6 +325,7 @@ pub(super) fn planned_bed(
     let first_map = request.map.position(start as i128)?;
     let last_map = request.map.position(end as i128)?;
     let mut out = start as i128 - hop as i128;
+    let mut previous_position: Option<(f64, f64)> = None;
     while out < end as i128 {
         work.check(16)?;
         let center = out + hop as i128;
@@ -274,7 +391,7 @@ pub(super) fn planned_bed(
         if !forced {
             nominal = nominal.clamp(minimum, maximum);
         }
-        let range = (f64::from(request.input.sample_rate) * 0.012 * pitch)
+        let range = (f64::from(request.input.sample_rate) * 0.040 * pitch)
             .min((source_end - source_start) * 0.25)
             .max(1.0);
         // Every candidate compares against the same immutable overlap. Cache
@@ -320,22 +437,15 @@ pub(super) fn planned_bed(
             acc.preview(out + hop as i128 / 2)
         };
         if !forced && reference.is_some() {
-            let step = f64::from((request.input.sample_rate / 8_000).max(1));
             // At a physical endpoint keep the bounded search WIDTH by moving
             // it inward; halving it can remove the only phase-coherent bass
             // candidate and manufacture end-of-region modulation.
             let lo = (nominal - range).clamp(minimum, (maximum - 2.0 * range).max(minimum));
             let hi = (lo + 2.0 * range).min(maximum);
-            selected = search.scan::<true>(lo, hi, step, nominal, selected, work)?;
-            let best = selected.position;
-            selected = search.scan::<true>(
-                (best - step).max(lo),
-                (best + step).min(hi),
-                0.125,
-                nominal,
-                selected,
-                work,
-            )?;
+            let predicted = previous_position
+                .filter(|(_, direction)| *direction == step)
+                .map_or(nominal, |(position, _)| position + hop as f64 * step);
+            selected = search.screened(lo, hi, nominal, predicted, selected, work)?;
             if selected.correlation < 0.5 {
                 // With no useful alignment evidence, unpitched stochastic
                 // material needs no fractional reconstruction. A nearest
@@ -352,6 +462,7 @@ pub(super) fn planned_bed(
                 selected = search.score(position, nominal, work)?;
             }
         }
+        previous_position = Some((selected.position, step));
         work.check(grain as u64 * 64)?;
         for i in 0..grain {
             let at = out + i as i128;
@@ -617,5 +728,143 @@ mod search_tests {
         println!(
             "exhaustive/pruned complete-Match bit identity: {comparisons} coarse/fine comparisons, positive overlap; overshoot/zero/ties/adjacent/NaNs/stereo directions"
         );
+    }
+    #[test]
+    fn screened_finalists_match_full_search_quality_on_shared_stereo_overlaps() {
+        let mut cases = 0;
+        for pattern in 0..5 {
+            let source: Vec<Frame> = (0..4096)
+                .map(|i| {
+                    let t = i as f64 / 16000.0;
+                    let x = match pattern {
+                        0 => 0.4,
+                        1 => 0.4 * (std::f64::consts::TAU * 27.5 * t).sin(),
+                        2 => {
+                            0.25 * (std::f64::consts::TAU * 73.0 * t).sin()
+                                + 0.1 * (std::f64::consts::TAU * 151.0 * t).sin()
+                        }
+                        3 => 0.3 * (std::f64::consts::TAU * (180.0 * t + 300.0 * t * t)).sin(),
+                        _ => {
+                            (((i as u32).wrapping_mul(747796405).wrapping_add(2891336453)
+                                ^ ((i as u32).wrapping_mul(1597334677)))
+                                as f64
+                                / u32::MAX as f64
+                                - 0.5)
+                                * 0.5
+                        }
+                    };
+                    [
+                        x as f32,
+                        (-x * 0.7
+                            + if pattern == 2 {
+                                0.03 * (i as f64 * 0.14).sin()
+                            } else {
+                                0.0
+                            }) as f32,
+                    ]
+                })
+                .collect();
+            let map = TimeMap::new(
+                vec![MapSegment {
+                    output_start: 0,
+                    output_end: 4096,
+                    source_start_q32: 0,
+                    source_end_q32: 4096_i128 << 32,
+                }],
+                4096,
+            )
+            .unwrap();
+            let request = Request {
+                input: Input {
+                    frames: &source,
+                    sample_rate: 16000,
+                    region_start: 0,
+                    region_length: 4096,
+                    phase: 0,
+                    looping: false,
+                    envelope: &[],
+                },
+                attacks: &[],
+                map: &map,
+                output_frames: 4096,
+                pitch_cents: 0,
+                mode: Mode::Beats {
+                    division_frames: None,
+                    tail: Tail::Forward,
+                    decay: 100,
+                },
+            };
+            for direction in [-1.0, 1.0] {
+                for known in [1340.0, 1660.0] {
+                    let previous = std::array::from_fn(|i| {
+                        Some(source[(known + i as f64 * 5.0 * direction) as usize].map(f64::from))
+                    });
+                    let mut sum = [0.0; 2];
+                    let mut square = 0.0;
+                    for x in previous.iter().flatten() {
+                        for c in 0..2 {
+                            sum[c] += x[c];
+                            square += x[c] * x[c];
+                        }
+                    }
+                    let search = Search {
+                        request: &request,
+                        step: direction,
+                        overlap: 320,
+                        range: 640.0,
+                        lower: 0,
+                        upper: 4095,
+                        previous,
+                        previous_sum: sum,
+                        previous_square: square,
+                        count: 64.0,
+                    };
+                    assert!(search.previous[32].is_some());
+                    let mut cancel = || false;
+                    let mut work = Work {
+                        cancel: &mut cancel,
+                        used: 0,
+                        scratch: 0,
+                        base_scratch: 0,
+                    };
+                    let initial = search.score(1500.0, 1500.0, &mut work).unwrap();
+                    work.used = 0;
+                    let mut exhaustive = search
+                        .scan::<false>(860.0, 2140.0, 4.0, 1500.0, initial, &mut work)
+                        .unwrap();
+                    let best = exhaustive.position;
+                    exhaustive = search
+                        .scan::<false>(best - 4.0, best + 4.0, 0.125, 1500.0, exhaustive, &mut work)
+                        .unwrap();
+                    let exhaustive_work = work.used;
+                    work.used = 0;
+                    let screened = search
+                        .screened(860.0, 2140.0, 1500.0, 1500.0, initial, &mut work)
+                        .unwrap();
+                    let screened_work = work.used;
+                    assert_eq!(
+                        bits(screened),
+                        bits(search.score(screened.position, 1500.0, &mut work).unwrap())
+                    );
+                    assert!(
+                        screened.score >= exhaustive.score - 0.025,
+                        "pattern{pattern}/dir{direction}/known{known}: screened{} exhaustive{}",
+                        screened.score,
+                        exhaustive.score
+                    );
+                    assert!(screened.correlation >= exhaustive.correlation - 0.025);
+                    assert!(
+                        screened_work < exhaustive_work,
+                        "screening must save actual charged work"
+                    );
+                    println!(
+                        "screen/full stereo quality {pattern}/{direction}/{known}: scores{}/{}; work{screened_work}/{exhaustive_work}",
+                        screened.score, exhaustive.score
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 20);
     }
 }

@@ -124,7 +124,7 @@ pub(super) fn render(
             + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>()
             + plan::scratch(request)
             + BANK_BYTES
-            + 4096,
+            + synthesis::SEARCH_BYTES,
     )?;
     let mut bounds = SourceBounds::new(physical);
     let guard = f64::from(request.input.sample_rate) / 125.0;
