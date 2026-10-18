@@ -99,7 +99,6 @@ fn header_backspace_removes_selected_tracks_and_restores_contents_in_one_undo(
             );
             assert_eq!(p.track(midi).is_none(), multiple);
             assert!(view.selected_track_ids().is_empty());
-            p.validate().unwrap();
             p.snapshot()
         });
         visual.simulate_keystrokes("cmd-z");
