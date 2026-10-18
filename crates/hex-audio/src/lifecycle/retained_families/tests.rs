@@ -312,3 +312,231 @@ fn final_acknowledgment_runs_beside_render_reads_without_losing_release_to_busy(
         Err(RetainedFamilyError::Stale)
     );
 }
+
+#[test]
+fn review_correction_once_construction_serializes_actual_backing_and_conflicting_configuration() {
+    use std::sync::Barrier;
+    let persistent = Arc::new(OnceLock::new());
+    let readiness = Arc::new(super::super::ServiceReadiness::new());
+    let constructs = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let overlap = Arc::new(AtomicUsize::new(0));
+    let starts = Arc::new(AtomicUsize::new(0));
+    let barrier = Arc::new(Barrier::new(8));
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for caller in 0..8 {
+            let (persistent, readiness, constructs, active, overlap, starts, barrier) = (
+                Arc::clone(&persistent),
+                Arc::clone(&readiness),
+                Arc::clone(&constructs),
+                Arc::clone(&active),
+                Arc::clone(&overlap),
+                Arc::clone(&starts),
+                Arc::clone(&barrier),
+            );
+            workers.push(scope.spawn(move || {
+                barrier.wait();
+                configure_table(
+                    &persistent,
+                    &readiness,
+                    || {
+                        constructs.fetch_add(1, Ordering::SeqCst);
+                        let in_construction = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        overlap.fetch_max(in_construction, Ordering::SeqCst);
+                        let result = RetainedFamilies::new(RetainedFamilyReservation {
+                            family_slots: 2 + caller % 2,
+                            max_table_bytes: 16_384,
+                        });
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        result
+                    },
+                    || {
+                        starts.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+            }));
+        }
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| **result == Err(RetainedFamilyError::Reservation))
+                .count(),
+            7
+        );
+    });
+    assert_eq!(constructs.load(Ordering::SeqCst), 1);
+    assert_eq!(overlap.load(Ordering::SeqCst), 1);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert!(readiness.ready());
+    assert!([2, 3].contains(&persistent_table(&persistent).unwrap().slots.len()));
+    assert_eq!(
+        configure_table(
+            &persistent,
+            &readiness,
+            || panic!("conflict must not construct"),
+            || panic!("conflict must not start")
+        ),
+        Err(RetainedFamilyError::Reservation)
+    );
+}
+
+#[test]
+fn review_correction_public_facade_sequence_refuses_new_work_after_startup_failure_and_worker_exit()
+{
+    use super::super::{ServiceExitGuard, ServiceReadiness};
+    let persistent = OnceLock::new();
+    let failed_start = ServiceReadiness::new();
+    assert_eq!(
+        configure_table(
+            &persistent,
+            &failed_start,
+            || Ok(table()),
+            || Err(RetainedFamilyError::Failed)
+        ),
+        Err(RetainedFamilyError::Failed)
+    );
+    assert!(
+        persistent_table(&persistent).is_ok(),
+        "persistent custody differs from worker readiness"
+    );
+    assert!(matches!(
+        reserve_slot(&persistent, &failed_start),
+        Err(RetainedFamilyError::Failed)
+    ));
+    assert!(!failed_start.ready());
+
+    let live = OnceLock::new();
+    let status = ServiceReadiness::new();
+    configure_table(&live, &status, || Ok(table()), || Ok(())).unwrap();
+    let first = reserve_slot(&live, &status).unwrap();
+    let second = reserve_slot(&live, &status).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut existing = source(&drops);
+    let id = register_slot(&live, &status, &first, &mut existing, usize::MAX, step).unwrap();
+    assert!(existing.is_none());
+    // This is the same guard that is the first local in the actual worker.
+    drop(ServiceExitGuard(&status));
+    assert!(!status.ready());
+    status.spawned();
+    assert!(
+        !status.ready(),
+        "a late spawn receipt must not resurrect a dead worker"
+    );
+    assert!(matches!(
+        reserve_slot(&live, &status),
+        Err(RetainedFamilyError::Failed)
+    ));
+    let mut pending = source(&drops);
+    assert!(matches!(
+        register_slot(&live, &status, &second, &mut pending, usize::MAX, step),
+        Err(RetainedFamilyError::Failed)
+    ));
+    assert!(pending.is_some());
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    persistent_table(&live).unwrap().cancel(&second).unwrap();
+    assert!(persistent_table(&live).unwrap().read(id, |_| ()).is_ok());
+    assert!(
+        persistent_table(&live).unwrap().slots[first.index]
+            .read()
+            .unwrap()
+            .job
+            .is_some()
+    );
+}
+
+#[test]
+fn review_correction_final_payload_drop_panic_retains_failed_slot_and_native_dispatch_progress() {
+    use super::super::{
+        LifecycleMessage, OpenState, enqueue_open, run_lifecycle_with_control_jobs,
+    };
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    struct FinalPanic(Arc<AtomicUsize>);
+    impl Drop for FinalPanic {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("intentional final payload destructor fault");
+        }
+    }
+    fn disposed(_: &mut FinalPanic) -> Result<RetainedFamilyProgress, RetainedFamilyError> {
+        Ok(RetainedFamilyProgress::Disposed)
+    }
+    let table = Arc::new(table());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first = table.reserve().unwrap();
+    let mut source = Some(FinalPanic(Arc::clone(&calls)));
+    let failed = table
+        .register(&first, &mut source, usize::MAX, disposed)
+        .unwrap();
+    table.advance_one();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    {
+        let slot = table.slots[first.index].read().unwrap();
+        assert!(matches!(slot.phase, Phase::Failed));
+        assert!(
+            slot.job.is_none(),
+            "partially destroyed owner is not retried/relabelled known"
+        );
+        assert!(slot.first_panic.is_some());
+    }
+    let second = table.reserve().unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut pending = self::source(&drops);
+    let live = table
+        .register(&second, &mut pending, usize::MAX, step)
+        .unwrap();
+    table
+        .read(live, |value| value.ready.store(true, Ordering::Release))
+        .unwrap();
+    let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<(), ()>>(3);
+    let state = Arc::new(OpenState::new());
+    let mut open = enqueue_open(&sender, &state, None).unwrap();
+    assert!(sender.try_send(LifecycleMessage::Retire((), None)).is_ok());
+    let occupied = Arc::new(AtomicBool::new(true));
+    let observing = Arc::clone(&occupied);
+    let opening = Arc::clone(&occupied);
+    let scanning = Arc::clone(&table);
+    let worker = std::thread::spawn(move || {
+        run_lifecycle_with_control_jobs(
+            receiver,
+            || observing.load(Ordering::Acquire),
+            |_, _| (!opening.load(Ordering::Acquire)).then_some(Ok(())),
+            |_| occupied.store(false, Ordering::Release),
+            || scanning.advance_one(),
+        )
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(result) = open.try_take().unwrap() {
+            result.unwrap();
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(open);
+    drop(sender);
+    worker.join().unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        table.read(failed, |_| ()),
+        Err(RetainedFamilyError::Failed)
+    ));
+    let available = table.reserve().unwrap();
+    assert_eq!(available.index, second.index);
+    assert!(
+        matches!(table.reserve(), Err(RetainedFamilyError::Reservation)),
+        "failed final Drop must remain charged/occupied"
+    );
+}

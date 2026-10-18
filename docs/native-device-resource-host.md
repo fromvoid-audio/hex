@@ -571,3 +571,12 @@ actual family guards through publication preflight, sealed UI capability deliver
 and saturated final-retirement proof remain open. Existing UI still uses its
 previous ownership route. Do not treat the neutral hook or selected component
 tests as full graph admission or a delivered playable Sampler.
+
+Table initialization uses the once-initialization closure for the entire
+construction, so concurrent/conflicting calls cannot construct a second backing
+outside the one-table quote. Lifecycle spawn/exit readiness is independent of
+persistent custody: terminal startup/worker failure refuses new reservations and
+registrations while preserving existing jobs and cancellation of unregistered
+slots. The worker's exit guard marks failure; a late spawn receipt cannot revive
+it. Injected startup/exit tests use the same configure/reserve/register facade
+functions as the public entrypoints, not only a preconstructed table fixture.

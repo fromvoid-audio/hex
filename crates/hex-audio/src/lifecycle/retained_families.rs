@@ -11,7 +11,7 @@ use std::{
 };
 
 static NEXT_TABLE: AtomicU64 = AtomicU64::new(1);
-static TABLE: OnceLock<RetainedFamilies> = OnceLock::new();
+static TABLE: OnceLock<Result<RetainedFamilies, RetainedFamilyError>> = OnceLock::new();
 
 /// Component bytes must come from the existing joint retained/peak allowance.
 #[derive(Clone, Copy, Debug)]
@@ -317,33 +317,90 @@ pub fn retained_family_table_reservation_quote(
 pub fn retained_family_job_body_quote<T>() -> usize {
     std::mem::size_of::<TypedJob<T>>()
 }
+// This exact facade sequence is shared by production's public calls and
+// injected startup/exit/concurrent-construction tests. OnceLock serializes the
+// entire constructor, not just installation of an already allocated backing.
+fn configure_table(
+    table: &OnceLock<Result<RetainedFamilies, RetainedFamilyError>>,
+    readiness: &super::ServiceReadiness,
+    construct: impl FnOnce() -> Result<RetainedFamilies, RetainedFamilyError>,
+    start: impl FnOnce() -> Result<(), RetainedFamilyError>,
+) -> Result<(), RetainedFamilyError> {
+    let mut constructed = false;
+    let result = table.get_or_init(|| {
+        constructed = true;
+        construct()
+    });
+    result.as_ref().map_err(|error| *error)?;
+    if !constructed {
+        return Err(RetainedFamilyError::Reservation);
+    }
+    if let Err(error) = start() {
+        readiness.failed();
+        return Err(error);
+    }
+    readiness.spawned();
+    if !readiness.ready() {
+        return Err(RetainedFamilyError::Failed);
+    }
+    Ok(())
+}
+fn persistent_table(
+    table: &OnceLock<Result<RetainedFamilies, RetainedFamilyError>>,
+) -> Result<&RetainedFamilies, RetainedFamilyError> {
+    table
+        .get()
+        .ok_or(RetainedFamilyError::Reservation)?
+        .as_ref()
+        .map_err(|error| *error)
+}
+fn reserve_slot(
+    table: &OnceLock<Result<RetainedFamilies, RetainedFamilyError>>,
+    readiness: &super::ServiceReadiness,
+) -> Result<RetainedFamilySlot, RetainedFamilyError> {
+    let table = persistent_table(table)?;
+    if !readiness.ready() {
+        return Err(RetainedFamilyError::Failed);
+    }
+    table.reserve()
+}
+fn register_slot<T: Send + Sync + 'static>(
+    table: &OnceLock<Result<RetainedFamilies, RetainedFamilyError>>,
+    readiness: &super::ServiceReadiness,
+    slot: &RetainedFamilySlot,
+    source: &mut Option<T>,
+    max_job_body_bytes: usize,
+    step: fn(&mut T) -> Result<RetainedFamilyProgress, RetainedFamilyError>,
+) -> Result<RetainedFamilyId<T>, RetainedFamilyError> {
+    let table = persistent_table(table)?;
+    if !readiness.ready() {
+        return Err(RetainedFamilyError::Failed);
+    }
+    table.register(slot, source, max_job_body_bytes, step)
+}
 pub fn reserve_retained_families_on_control(
     limits: RetainedFamilyReservation,
 ) -> Result<(), RetainedFamilyError> {
-    if TABLE.get().is_some() {
-        return Err(RetainedFamilyError::Reservation);
-    }
-    TABLE
-        .set(RetainedFamilies::new(limits)?)
-        .map_err(|_| RetainedFamilyError::Reservation)?;
-    // Startup failure leaves static custody intact and no exported capability.
-    super::service().map_err(|_| RetainedFamilyError::Failed)?;
-    Ok(())
+    configure_table(
+        &TABLE,
+        &super::SERVICE_READINESS,
+        || RetainedFamilies::new(limits),
+        || {
+            super::service()
+                .map(|_| ())
+                .map_err(|_| RetainedFamilyError::Failed)
+        },
+    )
 }
 pub fn reserve_retained_family_slot_on_control() -> Result<RetainedFamilySlot, RetainedFamilyError>
 {
-    TABLE
-        .get()
-        .ok_or(RetainedFamilyError::Reservation)?
-        .reserve()
+    reserve_slot(&TABLE, &super::SERVICE_READINESS)
 }
 pub fn cancel_retained_family_slot_on_control(
     slot: &RetainedFamilySlot,
 ) -> Result<(), RetainedFamilyError> {
-    TABLE
-        .get()
-        .ok_or(RetainedFamilyError::Reservation)?
-        .cancel(slot)
+    // Cancellation remains operational without a worker: it contains no owner.
+    persistent_table(&TABLE)?.cancel(slot)
 }
 /// Neutral custody hook only. Desktop must bind the audited concrete Session
 /// adapter and actual joint inventory. Arbitrary jobs remain storage-Unknown.
@@ -353,10 +410,14 @@ pub fn register_retained_family_on_control<T: Send + Sync + 'static>(
     max_job_body_bytes: usize,
     step: fn(&mut T) -> Result<RetainedFamilyProgress, RetainedFamilyError>,
 ) -> Result<RetainedFamilyId<T>, RetainedFamilyError> {
-    TABLE
-        .get()
-        .ok_or(RetainedFamilyError::Reservation)?
-        .register(slot, source, max_job_body_bytes, step)
+    register_slot(
+        &TABLE,
+        &super::SERVICE_READINESS,
+        slot,
+        source,
+        max_job_body_bytes,
+        step,
+    )
 }
 /// Read callbacks hold only the individual family guard. The concrete Session
 /// adapter must expose restricted queries, never public ViewState/child owners.
@@ -371,10 +432,7 @@ pub fn read_retained_family<T: Send + Sync + 'static, R>(
     id: RetainedFamilyId<T>,
     read: impl for<'a> FnOnce(&'a T) -> R,
 ) -> Result<R, RetainedFamilyError> {
-    TABLE
-        .get()
-        .ok_or(RetainedFamilyError::Reservation)?
-        .read(id, read)
+    persistent_table(&TABLE)?.read(id, read)
 }
 /// Durable final read acknowledgment through the already registered family.
 /// Bind only the concrete bounded bookkeeping adapter, never a render callback.
@@ -383,10 +441,7 @@ pub fn acknowledge_retained_family<T: Send + Sync + 'static>(
     id: RetainedFamilyId<T>,
     acknowledge: impl FnOnce(&T) -> Result<(), RetainedFamilyError>,
 ) -> Result<(), RetainedFamilyError> {
-    TABLE
-        .get()
-        .ok_or(RetainedFamilyError::Reservation)?
-        .acknowledge(id, acknowledge)
+    persistent_table(&TABLE)?.acknowledge(id, acknowledge)
 }
 /// Actual service Vec backing only. Enclosing/static storage and every live job
 /// body/payload/panic owner need their separate typed traversal. This produces
@@ -394,13 +449,12 @@ pub fn acknowledge_retained_family<T: Send + Sync + 'static>(
 pub fn visit_retained_family_table_backing_on_control<'a>(
     ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
 ) -> Result<(), hex_engine::AudioStorageError> {
-    let table = TABLE
-        .get()
-        .ok_or(hex_engine::AudioStorageError::UnknownStorage)?;
+    let table =
+        persistent_table(&TABLE).map_err(|_| hex_engine::AudioStorageError::UnknownStorage)?;
     ledger.borrow_metadata_vec_backing_on_control(&table.slots)
 }
 pub(super) fn advance_registered_family_on_control() {
-    if let Some(table) = TABLE.get() {
+    if let Ok(table) = persistent_table(&TABLE) {
         table.advance_one();
     }
 }

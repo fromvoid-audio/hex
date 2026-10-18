@@ -8,7 +8,7 @@ use std::{
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{
-            AtomicBool, AtomicU64,
+            AtomicBool, AtomicU8, AtomicU64,
             Ordering::{AcqRel, Acquire, Release},
         },
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
@@ -23,6 +23,30 @@ static OCCUPIED: AtomicBool = AtomicBool::new(false);
 static OPEN_STATE: OnceLock<Arc<OpenState>> = OnceLock::new();
 static SERVICE: OnceLock<Result<SyncSender<LifecycleMessage<Opened, Retirement>>, String>> =
     OnceLock::new();
+// 0: not started, 1: successfully spawned, 2: terminal startup/worker failure.
+// A late successful spawn notification cannot resurrect an exited worker.
+static SERVICE_READINESS: ServiceReadiness = ServiceReadiness::new();
+struct ServiceReadiness(AtomicU8);
+impl ServiceReadiness {
+    const fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+    fn spawned(&self) {
+        let _ = self.0.compare_exchange(0, 1, AcqRel, Acquire);
+    }
+    fn failed(&self) {
+        self.0.store(2, Release);
+    }
+    fn ready(&self) -> bool {
+        self.0.load(Acquire) == 1
+    }
+}
+struct ServiceExitGuard<'a>(&'a ServiceReadiness);
+impl Drop for ServiceExitGuard<'_> {
+    fn drop(&mut self) {
+        self.0.failed();
+    }
+}
 // Defensive fallback if the service unexpectedly exits. Static storage retains
 // at most the one leased stream until process exit; reopening stays disabled.
 static QUARANTINE: Mutex<Option<Retirement>> = Mutex::new(None);
@@ -613,6 +637,7 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>
             thread::Builder::new()
                 .name("hex-audio-lifecycle".into())
                 .spawn(move || {
+                    let _exit = ServiceExitGuard(&SERVICE_READINESS);
                     run_lifecycle_selected(
                         receiver,
                         || OCCUPIED.load(Acquire),
@@ -627,7 +652,11 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>
                         retire_prepared_output,
                     );
                 })
-                .map_err(|error| format!("could not start audio lifecycle worker: {error}"))?;
+                .map_err(|error| {
+                    SERVICE_READINESS.failed();
+                    format!("could not start audio lifecycle worker: {error}")
+                })?;
+            SERVICE_READINESS.spawned();
             Ok(sender)
         })
         .as_ref()
