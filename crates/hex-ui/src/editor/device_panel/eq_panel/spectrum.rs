@@ -119,7 +119,8 @@ fn context(view: &EditorView) -> Option<(u64, u32)> {
     if view.device_panel.eq_spectrum.test_channel.is_some()
         || view.device_panel.eq_spectrum.test_client.is_some()
     {
-        // Only the public control channel is injected, never a Client/backend.
+        // Fixture admission only: a real target channel or guarded Client.
+        // Neither path opens an OS audio device or supplies fabricated frames.
         return Some((1, 48_000));
     }
     let audio = view.audio.as_ref()?;
