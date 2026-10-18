@@ -7,8 +7,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
 
 mod family;
+mod transport;
 pub use family::{
     SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyQueries, SnapshotProducerKey,
+};
+pub use transport::{
+    SnapshotEventReads, SnapshotReadCapability, SnapshotReadContinuation, SnapshotReadOperations,
+    SnapshotTransportError,
 };
 
 /// Component limits, taken from the same document/control reservation. They

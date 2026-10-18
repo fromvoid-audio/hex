@@ -13,6 +13,7 @@ fn event(project: hex_session::SharedProject, revision: u64, replaced: bool) -> 
             .expect("test revision"),
     );
     Event {
+        snapshot_reads: Default::default(),
         state: Arc::new(ViewState {
             canonical_audio_source: None,
             project,

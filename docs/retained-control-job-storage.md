@@ -43,3 +43,41 @@ alongside separately required child/family reservations. The scalar reservation 
 not a claim about physically freed/retained bytes. Only actual successful final
 Drop permits vacancy and clears that component reservation. Panic payload storage
 and partial children never become known merely because the outer holder was known.
+
+## Nonowning transport route
+
+The fresh job constructor mints a checked, never-reused opaque route before
+consuming its source. The route stays in the holder; the Box payload layout is
+unchanged. Identity exhaustion preserves the pending source. Holder/token fields
+are inline parent charges, not new allocations or a payload qualification.
+
+A route hint is stored beside each actual per-family guard in the same
+capacity-accounted table backing. Registration installs the actual holder under
+its writer before publishing the hint. Successful disposal clears the hint with
+the vacancy transition. Failed/consumed records remain charged. Lookup checks the
+actual holder route, active phase and concrete payload under the guard; a stale
+hint cannot dispatch to a replacement. Neither routing nor downcast establishes
+resource provenance.
+
+The Session read capability contains only that route, one private reserved read
+stamp and static operations. The private Desktop adapter revalidates the actual
+registered Session family and exact read before binding. There is no Clone;
+derivation reserves a distinct read and can refuse. Scoped continuations are
+stack-local and expose only `SnapshotRead`. Moves/discarded Events do not enqueue
+an owner or require lifecycle readiness. Canonical/device-preview/tuning-preview
+read slots drop independently with the Event, including unpainted returns.
+
+Durable release takes the selected outer shared guard and then the records
+shared guard. It can wait for a current writer; it is not wait-free and must not
+run under a corresponding same-thread writer. It takes no native barrier or
+service-wide callback lock. Audited production release/report operations return
+errors without panic; a failed ACK is reported and does not claim retirement,
+release reservation bytes, or retry an owning destructor. Generic public hooks
+remain unqualified and cannot certify arbitrary callbacks or children.
+
+This transport slice does not yet replace the legacy owning Event/ViewState and
+UI frame/canvas fields, wire worker publication to a fully inventoried admitted
+root, quote the full joint old/new/temporary peak, or establish atomic publication
+and saturated whole-root retirement. Those paths remain closed for referenced
+registry processing. Protocol tests using actual Events/registered service hooks
+are not CPAL, GUI or app-delivery acceptance.

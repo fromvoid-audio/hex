@@ -66,12 +66,24 @@ struct Slot {
     // It is not a claim about partially freed physical bytes/payload children.
     body_reservation_bytes: usize,
 }
+/// Hint bytes live in the same capacity-accounted slot backing, outside its
+/// guard solely for bounded selection. A hint never validates the actual job.
+struct SlotCell {
+    hint: hex_engine::RetainedControlJobRouteHint,
+    slot: RwLock<Slot>,
+}
+impl std::ops::Deref for SlotCell {
+    type Target = RwLock<Slot>;
+    fn deref(&self) -> &Self::Target {
+        &self.slot
+    }
+}
 /// Stable per-family guards, never a service-wide mutex around render work.
 /// The lifecycle scan only uses try_write; busy/failed families cannot block
 /// unrelated native work. A read protects the actual boxed family allocation.
 struct RetainedFamilies {
     identity: u64,
-    slots: Vec<RwLock<Slot>>,
+    slots: Vec<SlotCell>,
     next_scan: AtomicUsize,
 }
 impl RetainedFamilies {
@@ -83,7 +95,7 @@ impl RetainedFamilies {
             .checked_add(
                 limits
                     .family_slots
-                    .checked_mul(std::mem::size_of::<RwLock<Slot>>())
+                    .checked_mul(std::mem::size_of::<SlotCell>())
                     .ok_or(RetainedFamilyError::Reservation)?,
             )
             .filter(|n| *n <= limits.max_table_bytes)
@@ -99,21 +111,22 @@ impl RetainedFamilies {
             .checked_add(
                 slots
                     .capacity()
-                    .checked_mul(std::mem::size_of::<RwLock<Slot>>())
+                    .checked_mul(std::mem::size_of::<SlotCell>())
                     .ok_or(RetainedFamilyError::Reservation)?,
             )
             .ok_or(RetainedFamilyError::Reservation)?;
         if actual > limits.max_table_bytes {
             return Err(RetainedFamilyError::Reservation);
         }
-        slots.resize_with(limits.family_slots, || {
-            RwLock::new(Slot {
+        slots.resize_with(limits.family_slots, || SlotCell {
+            hint: hex_engine::RetainedControlJobRouteHint::new(),
+            slot: RwLock::new(Slot {
                 generation: 0,
                 phase: Phase::Vacant,
                 job: None,
                 first_panic: None,
                 body_reservation_bytes: 0,
-            })
+            }),
         });
         let identity = NEXT_TABLE
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
@@ -151,6 +164,7 @@ impl RetainedFamilies {
         }
         self.slots
             .get(token.index)
+            .map(|cell| &cell.slot)
             .ok_or(RetainedFamilyError::Stale)
     }
     fn cancel(&self, token: &RetainedFamilySlot) -> Result<(), RetainedFamilyError> {
@@ -195,11 +209,17 @@ impl RetainedFamilies {
                 RetainedFamilyError::Reservation
             }
             hex_engine::RetainedControlJobBuildError::MissingSource => RetainedFamilyError::Stale,
+            hex_engine::RetainedControlJobBuildError::IdentityExhausted => {
+                RetainedFamilyError::Exhausted
+            }
         })?;
+        let route = job.route();
         slot.job = Some(job);
         slot.body_reservation_bytes =
             hex_engine::RetainedControlJob::body_reservation_quote::<T, RetainedFamilyError>();
         slot.phase = Phase::Active;
+        // Actual holder is installed under the writer BEFORE route visibility.
+        self.slots[token.index].hint.publish(route);
         Ok(RetainedFamilyId {
             table: self.identity,
             index: token.index,
@@ -234,6 +254,76 @@ impl RetainedFamilies {
             .as_ref()
             .and_then(|job| job.inspect_payload::<T, R>(read))
             .ok_or(RetainedFamilyError::Stale)
+    }
+    fn registered_route<T: Send + Sync + 'static>(
+        &self,
+        id: RetainedFamilyId<T>,
+    ) -> Result<hex_engine::RetainedControlJobRoute, RetainedFamilyError> {
+        let token = RetainedFamilySlot {
+            table: id.table,
+            index: id.index,
+            generation: id.generation,
+        };
+        let slot = self
+            .slot(&token)?
+            .try_read()
+            .map_err(|_| RetainedFamilyError::Busy)?;
+        if slot.generation != id.generation || !matches!(slot.phase, Phase::Active) {
+            return Err(RetainedFamilyError::Stale);
+        }
+        let job = slot.job.as_ref().ok_or(RetainedFamilyError::Failed)?;
+        job.inspect_payload::<T, _>(|_| job.route())
+            .ok_or(RetainedFamilyError::Stale)
+    }
+    fn read_route<T: Send + Sync + 'static, R>(
+        &self,
+        route: hex_engine::RetainedControlJobRoute,
+        read: impl for<'a> FnOnce(&'a T) -> R,
+    ) -> Result<R, RetainedFamilyError> {
+        let cell = self
+            .slots
+            .iter()
+            .find(|cell| cell.hint.matches(route))
+            .ok_or(RetainedFamilyError::Stale)?;
+        let slot = cell.try_read().map_err(|_| RetainedFamilyError::Busy)?;
+        let job = Self::validate_route(&slot, route)?;
+        job.inspect_payload::<T, _>(read)
+            .ok_or(RetainedFamilyError::Stale)
+    }
+    fn validate_route(
+        slot: &Slot,
+        route: hex_engine::RetainedControlJobRoute,
+    ) -> Result<&hex_engine::RetainedControlJob, RetainedFamilyError> {
+        if matches!(slot.phase, Phase::Failed) {
+            return Err(RetainedFamilyError::Failed);
+        }
+        if !matches!(slot.phase, Phase::Active) {
+            return Err(RetainedFamilyError::Stale);
+        }
+        let job = slot.job.as_ref().ok_or(RetainedFamilyError::Failed)?;
+        if job.route() != route {
+            return Err(RetainedFamilyError::Stale);
+        }
+        // The never-reused actual holder route identifies this incarnation;
+        // a hint left over from a prior slot generation cannot pass this check.
+        Ok(job)
+    }
+    fn acknowledge_route<T: Send + Sync + 'static>(
+        &self,
+        route: hex_engine::RetainedControlJobRoute,
+        acknowledge: impl FnOnce(&T) -> Result<(), RetainedFamilyError>,
+    ) -> Result<(), RetainedFamilyError> {
+        let cell = self
+            .slots
+            .iter()
+            .find(|cell| cell.hint.matches(route))
+            .ok_or(RetainedFamilyError::Stale)?;
+        // Not wait-free: may wait for a current writer. No readiness gate or
+        // native barrier; MUST NOT run while this thread holds its writer.
+        let slot = cell.read().map_err(|_| RetainedFamilyError::Failed)?;
+        let job = Self::validate_route(&slot, route)?;
+        job.inspect_payload::<T, _>(acknowledge)
+            .ok_or(RetainedFamilyError::Stale)?
     }
     fn inspect_on_control<T: Send + Sync + 'static, R>(
         &self,
@@ -331,6 +421,7 @@ impl RetainedFamilies {
                     Ok(()) => {
                         slot.body_reservation_bytes = 0;
                         slot.phase = Phase::Vacant;
+                        self.slots[index].hint.clear();
                     }
                     Err(panic) => slot.first_panic = Some(Mutex::new(panic)),
                 }
@@ -471,6 +562,30 @@ pub fn read_retained_family<T: Send + Sync + 'static, R>(
     read: impl for<'a> FnOnce(&'a T) -> R,
 ) -> Result<R, RetainedFamilyError> {
     persistent_table(&TABLE)?.read(id, read)
+}
+/// Bind a registered active actual typed holder, never an unregistered token.
+pub fn retained_family_route_on_control<T: Send + Sync + 'static>(
+    id: RetainedFamilyId<T>,
+) -> Result<hex_engine::RetainedControlJobRoute, RetainedFamilyError> {
+    persistent_table(&TABLE)?.registered_route(id)
+}
+/// Neutral lookup hook only; the concrete adapter must validate Session
+/// incarnations and expose restricted queries. Generic callbacks grant no
+/// resource/admission authority. No service-wide/native barrier is held.
+pub fn read_retained_family_route<T: Send + Sync + 'static, R>(
+    route: hex_engine::RetainedControlJobRoute,
+    read: impl for<'a> FnOnce(&'a T) -> R,
+) -> Result<R, RetainedFamilyError> {
+    persistent_table(&TABLE)?.read_route(route, read)
+}
+/// Durable bounded bookkeeping, using shared outer/inner guards in that order.
+/// May wait for a writer; never call while holding either corresponding writer.
+/// No worker-readiness gate, owning enqueue, native barrier or retry fallback.
+pub fn acknowledge_retained_family_route<T: Send + Sync + 'static>(
+    route: hex_engine::RetainedControlJobRoute,
+    acknowledge: impl FnOnce(&T) -> Result<(), RetainedFamilyError>,
+) -> Result<(), RetainedFamilyError> {
+    persistent_table(&TABLE)?.acknowledge_route(route, acknowledge)
 }
 /// Actual accounting access also admits a failed-step holder; it does not
 /// reopen UI reads or claim a consumed final-Drop object is still inspectable.

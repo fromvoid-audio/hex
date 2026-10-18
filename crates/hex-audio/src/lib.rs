@@ -4,10 +4,12 @@ pub mod sample_preview;
 pub use device::{PreparedOutput, WorkerPreparedOutput};
 pub use lifecycle::retained_families::{
     RetainedFamilyError, RetainedFamilyId, RetainedFamilyProgress, RetainedFamilyReservation,
-    RetainedFamilySlot, acknowledge_retained_family, cancel_retained_family_slot_on_control,
-    inspect_retained_family_on_control, read_retained_family, register_retained_family_on_control,
+    RetainedFamilySlot, acknowledge_retained_family, acknowledge_retained_family_route,
+    cancel_retained_family_slot_on_control, inspect_retained_family_on_control,
+    read_retained_family, read_retained_family_route, register_retained_family_on_control,
     reserve_retained_families_on_control, reserve_retained_family_slot_on_control,
-    retained_family_job_body_quote, retained_family_table_reservation_quote,
+    retained_family_job_body_quote, retained_family_route_on_control,
+    retained_family_table_reservation_quote,
     unresolved_retained_family_body_reservation_on_control,
     visit_retained_family_table_backing_on_control,
 };

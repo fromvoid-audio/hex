@@ -38,6 +38,7 @@ fn project_with_returns(count: usize) -> (Project, Vec<ReturnId>) {
 
 fn completed_event(state: &ViewState) -> Event {
     Event {
+        snapshot_reads: Default::default(),
         state: Arc::new(ViewState {
             canonical_audio_source: None,
             project: state.project.clone(),

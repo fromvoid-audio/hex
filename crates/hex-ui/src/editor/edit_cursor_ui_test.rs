@@ -1300,6 +1300,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         assert!(view.time_range_move_display().is_some());
     });
     let failed = editor.read_with(cx, |view, _| Event {
+        snapshot_reads: Default::default(),
         state: Arc::clone(view.state.as_ref().expect("current project state")),
         playback: None,
         status: None,

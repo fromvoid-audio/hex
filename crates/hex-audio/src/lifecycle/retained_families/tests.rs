@@ -603,3 +603,99 @@ fn retained_job_failed_family_keeps_actual_body_available_for_control_inspection
     }
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn neutral_route_lookup_revalidates_actual_replacement_job_and_refuses_stale_hint_or_type() {
+    let table = table();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let slot = table.reserve().unwrap();
+    let first = table
+        .register(&slot, &mut source(&drops), usize::MAX, step)
+        .unwrap();
+    let route = table.registered_route(first).unwrap();
+    assert_eq!(
+        table.read_route::<Payload, _>(route, |value| value.ready.load(Ordering::Acquire)),
+        Ok(false)
+    );
+    assert_eq!(
+        table.read_route::<String, _>(route, |_| ()),
+        Err(RetainedFamilyError::Stale)
+    );
+    table
+        .acknowledge_route::<Payload>(route, |value| {
+            value.ready.store(true, Ordering::Release);
+            Ok(())
+        })
+        .unwrap();
+    table.advance_one();
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        table.read_route::<Payload, _>(route, |_| ()),
+        Err(RetainedFamilyError::Stale)
+    );
+    let replacement_slot = table.reserve().unwrap();
+    assert_eq!(replacement_slot.index, slot.index);
+    let replacement = table
+        .register(&replacement_slot, &mut source(&drops), usize::MAX, step)
+        .unwrap();
+    let replacement_route = table.registered_route(replacement).unwrap();
+    assert_ne!(route, replacement_route);
+    // A stale/misleading hint cannot validate the replacement's actual holder.
+    table.slots[replacement_slot.index].hint.publish(route);
+    assert_eq!(
+        table.read_route::<Payload, _>(route, |_| panic!("stale dispatch")),
+        Err(RetainedFamilyError::Stale)
+    );
+    assert_eq!(
+        table.acknowledge_route::<Payload>(route, |_| panic!("stale ACK")),
+        Err(RetainedFamilyError::Stale)
+    );
+    assert!(
+        !table
+            .read(replacement, |value| value.ready.load(Ordering::Acquire))
+            .unwrap()
+    );
+    table.slots[replacement_slot.index]
+        .hint
+        .publish(replacement_route);
+    assert_eq!(
+        table.read_route::<Payload, _>(replacement_route, |_| 17),
+        Ok(17)
+    );
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn neutral_route_ack_uses_shared_guard_without_worker_readiness_and_failed_jobs_refuse() {
+    let table = table();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let slot = table.reserve().unwrap();
+    let id = table
+        .register(&slot, &mut source(&drops), usize::MAX, step)
+        .unwrap();
+    let route = table.registered_route(id).unwrap();
+    table
+        .read_route::<Payload, _>(route, |_| {
+            // The actual outer shared guard is held. ACK acquires another shared
+            // guard, never a try-write, owning enqueue or native/device barrier.
+            table
+                .acknowledge_route::<Payload>(route, |value| {
+                    value.ready.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .unwrap();
+        })
+        .unwrap();
+    // Same production lookup/ACK kernels intentionally have no readiness input.
+    table.slots[slot.index].write().unwrap().phase = Phase::Failed;
+    assert_eq!(
+        table.acknowledge_route::<Payload>(route, |_| panic!("failed ACK")),
+        Err(RetainedFamilyError::Failed)
+    );
+    assert_eq!(
+        table.read_route::<Payload, _>(route, |_| panic!("failed read")),
+        Err(RetainedFamilyError::Failed)
+    );
+    assert!(table.slots[slot.index].read().unwrap().job.is_some());
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}

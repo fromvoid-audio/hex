@@ -190,3 +190,40 @@ fn retained_job_selector_has_separate_family_and_refuses_every_unsupported_obser
         );
     }
 }
+
+#[test]
+fn job_route_is_fresh_move_stable_and_identity_exhaustion_preserves_source() {
+    use std::sync::atomic::AtomicU64;
+    let mut source = Some([1_u8; 7]);
+    let exhausted = AtomicU64::new(u64::MAX);
+    assert!(matches!(
+        RetainedControlJob::try_from_counter_on_control(
+            &mut source,
+            usize::MAX,
+            pending,
+            &exhausted,
+        ),
+        Err(RetainedControlJobBuildError::IdentityExhausted)
+    ));
+    assert_eq!(source, Some([1_u8; 7]));
+    let first =
+        RetainedControlJob::try_from_owned_on_control(&mut source, usize::MAX, pending).unwrap();
+    let route = first.route();
+    let second =
+        RetainedControlJob::try_from_owned_on_control(&mut Some([1_u8; 7]), usize::MAX, pending)
+            .unwrap();
+    assert_ne!(route, second.route());
+    let moved = first;
+    assert_eq!(route, moved.route());
+    let hint = RetainedControlJobRouteHint::new();
+    assert!(!hint.matches(route));
+    hint.publish(route);
+    assert!(hint.matches(route));
+    assert!(!hint.matches(second.route()));
+    hint.clear();
+    assert!(!hint.matches(route));
+    assert_eq!(
+        moved.actual_body_layout_on_control(),
+        Layout::new::<TypedJob<[u8; 7], ()>>()
+    );
+}

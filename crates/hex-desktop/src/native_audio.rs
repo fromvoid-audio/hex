@@ -14,8 +14,9 @@ use hex_session::{
     service::{Service, SharedCanonicalAudioSource, WorkerAudioSink},
 };
 use hex_ui::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
+#[cfg(all(test, feature = "allocation-probe"))]
+use std::sync::Arc;
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering::Acquire},
     mpsc::{self, SyncSender, TrySendError},
 };

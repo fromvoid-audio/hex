@@ -124,6 +124,9 @@ pub struct AudioBatchMemberFailure {
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
+    /// Bound before channel insertion; these slots do not qualify remaining
+    /// legacy owning view fields for supported native graph admission.
+    pub snapshot_reads: crate::snapshot_exports::SnapshotEventReads,
     pub playback: Option<Playback>,
     pub status: Option<String>,
     pub error: Option<String>,
@@ -1252,6 +1255,7 @@ fn run_worker(
             );
             compiled = Some((revision, Arc::clone(&prepared)));
             Event {
+                snapshot_reads: Default::default(),
                 state: Arc::clone(&state),
                 playback: Some(native_playback(prepared)),
                 status: Some("project ready".into()),
@@ -1282,6 +1286,7 @@ fn run_worker(
             }
         }
         Err(error) => Event {
+            snapshot_reads: Default::default(),
             state: Arc::clone(&state),
             playback: None,
             status: None,
@@ -3004,6 +3009,7 @@ fn run_worker(
             }
         }
         if !events.send(Event {
+            snapshot_reads: Default::default(),
             state: Arc::clone(&state),
             playback,
             status,

@@ -1,6 +1,8 @@
 //! The one sealed fresh Box constructor used by lifecycle retained-control jobs.
 //! Outer layout qualification never declares the payload's children known.
 use std::{alloc::Layout, any::Any};
+mod route;
+pub use route::{RetainedControlJobRoute, RetainedControlJobRouteHint};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RetainedControlJobProgress {
@@ -13,6 +15,7 @@ pub struct RetainedControlJobFault;
 pub enum RetainedControlJobBuildError {
     Reservation,
     MissingSource,
+    IdentityExhausted,
 }
 trait Job: Send + Sync {
     fn payload(&self) -> &dyn Any;
@@ -42,6 +45,7 @@ impl<T: Send + Sync + 'static, E: 'static> Job for TypedJob<T, E> {
 /// ```
 pub struct RetainedControlJob {
     job: Box<dyn Job>,
+    route: RetainedControlJobRoute,
 }
 impl RetainedControlJob {
     /// Requested body component before source consumption. Input/old job/child
@@ -54,9 +58,21 @@ impl RetainedControlJob {
         max_body_bytes: usize,
         step: fn(&mut T) -> Result<RetainedControlJobProgress, E>,
     ) -> Result<Self, RetainedControlJobBuildError> {
+        Self::try_from_counter_on_control(source, max_body_bytes, step, &route::NEXT_ROUTE)
+    }
+    fn try_from_counter_on_control<T: Send + Sync + 'static, E: 'static>(
+        source: &mut Option<T>,
+        max_body_bytes: usize,
+        step: fn(&mut T) -> Result<RetainedControlJobProgress, E>,
+        counter: &std::sync::atomic::AtomicU64,
+    ) -> Result<Self, RetainedControlJobBuildError> {
         if Self::body_reservation_quote::<T, E>() > max_body_bytes {
             return Err(RetainedControlJobBuildError::Reservation);
         }
+        if source.is_none() {
+            return Err(RetainedControlJobBuildError::MissingSource);
+        }
+        let route = RetainedControlJobRoute::mint(counter)?;
         let value = source
             .take()
             .ok_or(RetainedControlJobBuildError::MissingSource)?;
@@ -64,7 +80,12 @@ impl RetainedControlJob {
         // no caller raw owner, detached receipt or virtual origin assertion.
         let job: Box<TypedJob<T, E>> = Box::new(TypedJob { value, step });
         let job: Box<dyn Job> = job;
-        Ok(Self { job })
+        Ok(Self { job, route })
+    }
+    /// Routing correlation only. Registration and actual guarded lookup remain
+    /// mandatory; this token owns nothing and certifies no payload or storage.
+    pub fn route(&self) -> RetainedControlJobRoute {
+        self.route
     }
     /// Actual typed dispatch only. This does not certify T/its owned children.
     /// ```compile_fail
