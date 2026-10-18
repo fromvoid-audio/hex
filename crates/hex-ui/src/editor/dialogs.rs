@@ -40,7 +40,7 @@ pub(super) fn install_project_actions(cx: &mut gpui::App) {
             cx.defer(move |cx| {
                 let _ = window.update(cx, |_, window, cx| {
                     if let Some(Some(view)) = window.root::<EditorView>() {
-                        view.update(cx, |view, cx| handler(view, cx));
+                        view.update(cx, handler);
                     }
                 });
             });
