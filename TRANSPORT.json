@@ -1,0 +1,66 @@
+{
+  "source": "f20804ccc24283ade79dcff2e5bb8a11b04568ac",
+  "tree": "ec26909cbbfd24fdde179d12838029ddee21fc75",
+  "filename": "hex-sampler-f20804cc-root-retirement-evidence.tar.gz",
+  "bytes": 161279,
+  "sha256": "11501c2d74995116936d3089699f7566ad5f02d933955416573a2b5ffa0baa9c",
+  "members": 45,
+  "payloads": 44,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/audio_preparation.rs",
+      "before": "e32de4f199ef9c1c9d93b8e9c76636b016308bda5f059fa4f3e066635dea46de",
+      "after": "b883e57204defffc7678fcf37c9a39a14613fab3b21865e008aa1563d3d8ff75"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips.rs",
+      "before": "82789e2291f146c9b15aa574565a57165678323fc05ae0340a947743f0d44603",
+      "after": "715370864dd5e456d73ebab1faa85c58f14149371404fdb201688b2e2f7088fd"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      "before": "40eb6e3f0f526b3cbb137c208546606d8fb343ddb4e6d87a4b06d87e1556723c",
+      "after": "015b3f656d1f65d7232bb37570a04674645459477c7b31c8cc22e25cacee2f0d"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/lifecycle_tests.rs",
+      "before": null,
+      "after": "e6ab0c59ab078c778a8a921723ea81660e0ae3659ba5d0d24957d5ac969f70e3"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "before": "b3f546b8983710708705c0d6eaf9069d2088a39e9767ac8b14ae343565fdc82b",
+      "after": "9a80c0c09515b16e7bdd604700904d9f63b5238d6df83d2499284c396801f01e"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
+      "before": "83b008b8a01be8a4ed794d96235439d79f4114ebe0c7e891a7e604bc441d4445",
+      "after": "be01da78df29aa54cbfd6b61e2548d6cdf573d17e0c241bfececfd72bf849ddd"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/track_tests.rs",
+      "before": "a0d4023fd7218d447548a84359ad5a5c94807053b92ca5e391983644982ebf69",
+      "after": "75522e34637d2d8212f3f50feea17e6a48c706a0a3eb4ffd963759b6aee5493c"
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic.rs",
+      "before": "1172fa84e56be155f89ab69459e0e2203b083a2f9a0b9b38558d4f5f735f8bf3",
+      "after": "fb21820a7d5ba5e5668ffcbf61ab452c3fb0201b7df08c7999a18fb253a06ffc"
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/cleanup_tests.rs",
+      "before": "ec37a73bec3fce44ece71bac7af6fe4c92a376ce8cf95a9c37b2d283dfadc061",
+      "after": "ea1510439d98f8c279bba06b3b7ef038db28dde30845d239aaa3a24c9e26b1ea"
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/resource_storage.rs",
+      "before": "5a1b40300a4851faa4f8c25b3caadaac704390cc5807e5818ed84157cfa0cd26",
+      "after": "a4337b0288583dc544d41781568c1a469f24a1813f11cbd06bb089c28a90be85"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "f55f2a542e3a9d95d8e61c7bfca12a3c6538379c2dba64d4229983a8d9cf9ac3",
+      "after": "2b56eff25b9f01baf38de58fccb6a1bbbf9ee078d70b2788b29cbd460a2f61a2"
+    }
+  ]
+}
