@@ -279,3 +279,36 @@ fn lifecycle_retire_and_reopen_dispatch_complete_while_a_family_read_is_held() {
     }
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn final_acknowledgment_runs_beside_render_reads_without_losing_release_to_busy() {
+    let table = table();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let token = table.reserve().unwrap();
+    let mut pending = source(&drops);
+    let id = table
+        .register(&token, &mut pending, usize::MAX, step)
+        .unwrap();
+    table
+        .read(id, |_| {
+            table
+                .acknowledge(id, |value| {
+                    value.ready.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .unwrap();
+            for _ in 0..2 {
+                table.advance_one();
+            }
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+        })
+        .unwrap();
+    for _ in 0..2 {
+        table.advance_one();
+    }
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        table.acknowledge(id, |_| panic!("stale ack must not execute")),
+        Err(RetainedFamilyError::Stale)
+    );
+}

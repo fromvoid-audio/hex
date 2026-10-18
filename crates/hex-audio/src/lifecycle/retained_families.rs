@@ -241,6 +241,40 @@ impl RetainedFamilies {
             .ok_or(RetainedFamilyError::Stale)?;
         Ok(read(value))
     }
+    fn acknowledge<T: Send + Sync + 'static>(
+        &self,
+        id: RetainedFamilyId<T>,
+        acknowledge: impl FnOnce(&T) -> Result<(), RetainedFamilyError>,
+    ) -> Result<(), RetainedFamilyError> {
+        let token = RetainedFamilySlot {
+            table: id.table,
+            index: id.index,
+            generation: id.generation,
+        };
+        // A valid read must not lose its durable release merely because a
+        // bounded control step currently has the family writer. This shared
+        // guard does not wait for another rendering reader or native barrier.
+        // The concrete adapter's outstanding read forbids an owning destructor.
+        let slot = self
+            .slot(&token)?
+            .read()
+            .map_err(|_| RetainedFamilyError::Failed)?;
+        if slot.generation != id.generation {
+            return Err(RetainedFamilyError::Stale);
+        }
+        if matches!(slot.phase, Phase::Failed) {
+            return Err(RetainedFamilyError::Failed);
+        }
+        if !matches!(slot.phase, Phase::Active) {
+            return Err(RetainedFamilyError::Stale);
+        }
+        let value = slot
+            .job
+            .as_ref()
+            .and_then(|job| job.payload().downcast_ref::<T>())
+            .ok_or(RetainedFamilyError::Stale)?;
+        acknowledge(value)
+    }
     fn advance_one(&self) {
         let index = self.next_scan.fetch_add(1, Ordering::Relaxed) % self.slots.len();
         let Ok(mut slot) = self.slots[index].try_write() else {
@@ -341,6 +375,18 @@ pub fn read_retained_family<T: Send + Sync + 'static, R>(
         .get()
         .ok_or(RetainedFamilyError::Reservation)?
         .read(id, read)
+}
+/// Durable final read acknowledgment through the already registered family.
+/// Bind only the concrete bounded bookkeeping adapter, never a render callback.
+/// Its live read prevents an owning cleanup step; no owning payload is returned.
+pub fn acknowledge_retained_family<T: Send + Sync + 'static>(
+    id: RetainedFamilyId<T>,
+    acknowledge: impl FnOnce(&T) -> Result<(), RetainedFamilyError>,
+) -> Result<(), RetainedFamilyError> {
+    TABLE
+        .get()
+        .ok_or(RetainedFamilyError::Reservation)?
+        .acknowledge(id, acknowledge)
 }
 /// Actual service Vec backing only. Enclosing/static storage and every live job
 /// body/payload/panic owner need their separate typed traversal. This produces

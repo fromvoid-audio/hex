@@ -6,6 +6,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
 
+mod family;
+pub use family::{
+    SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyQueries, SnapshotProducerKey,
+};
+
 /// Component limits, taken from the same document/control reservation. They
 /// neither grant a new DATA allowance nor quote snapshot children/whole peak.
 #[derive(Clone, Copy, Debug)]
@@ -21,6 +26,7 @@ pub enum ExportRecordError {
     Exhausted,
     Stale,
     Closed,
+    Busy,
 }
 /// Nonowning producer correlation only. A stamp is not a source lease.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +50,7 @@ struct SnapshotRecord {
     snapshot: Option<SharedMetadata<ViewState>>,
     retired: bool,
     readers: AtomicUsize,
+    cleanup_started: bool,
 }
 struct ReadRecord {
     generation: AtomicU64,
@@ -157,6 +164,7 @@ impl SnapshotExportRecords {
             snapshot: None,
             retired: false,
             readers: AtomicUsize::new(0),
+            cleanup_started: false,
         });
         reads.resize_with(limits.read_records, ReadRecord::vacant);
         let family = NEXT_FAMILY
@@ -203,6 +211,7 @@ impl SnapshotExportRecords {
         record.snapshot = Some(SharedMetadata::new_on_control(snapshot));
         record.generation = generation;
         record.retired = false;
+        record.cleanup_started = false;
         self.revision = revision;
         Ok(SnapshotStamp {
             family: self.family,
