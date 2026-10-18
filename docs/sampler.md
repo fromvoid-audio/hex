@@ -15,8 +15,9 @@ gate it. Pulse2679 revision17 preserves the full existing feature acceptance.
 PR296 and PR369 remain merged kernel/lifetime prerequisites. PR389 remains the
 canonical resource foundation; selected storage/ABI proofs do not complete it.
 
-Remaining critical path (rooted stage checkpoint 0bec, with metering and claim
-handle preconstruction continuing in the same canonical implementation):
+Remaining critical path (candidate-local stage/claim guards and selected compiler
+inventory/retirement prerequisites exist; aggregate construction and publication
+are still unfinished in the same canonical implementation):
 
 1. **Ownership and publication blocking registration.** Selected PCM, canonical
    model/state, waveform, gain/MIDI preview, retained-record and pending-decoder
@@ -43,7 +44,7 @@ handle preconstruction continuing in the same canonical implementation):
    source/loop/reverse, pitch/tuning/gain, ADSR, bounded voices/Trigger/Gate and
    rollback/partition kernels exist. Canonical manual Slice insert/move/remove
    now changes real note regions without pitch transposition. Finish real
-   filter-envelope modulation, LFO/modulation, retrigger/glide/voice behavior,
+   remaining pitch/filter modulation, retrigger/glide/voice behavior,
    crop and prepared pitch-independent Warp through the implemented stretch
    boundary. Complete high-quality rate/pitch resampling and independent alias,
    transient/stereo/loop/partition tests; linear interpolation is not a quality
@@ -51,8 +52,10 @@ handle preconstruction continuing in the same canonical implementation):
    not just metadata. No historical-alpha conversion is required.
    One-Shot fades and atomic compound source/loop flag patching now have actual
    PCM/state regressions; their panel and canonical gesture wiring remain open.
-   The clean filter now has real mutable-voice DSP and current authored bindings;
-   its panel, modulation and live parameter-transition workflow are still open.
+   The clean filter, per-voice filter ADSR and amplitude/pan LFO now have real
+   mutable-voice DSP, current authored bindings and independent PCM/allocation
+   checks. Their panel and live parameter-transition workflow remain open;
+   this does not complete the remaining modulation or listening acceptance.
 4. **Functional clean native UI is not implemented yet.** Borrowed authored
    reads, exact source-bound waveform queries, geometry reuse and canonical
    Slice edit primitives are preparation, not a panel. Build the actual compact

@@ -781,13 +781,55 @@ impl PreparedSessionInventory {
             }
         }
 
+        // Clip-reuse comparison is finished. Reuse its scalar backing for
+        // per-destination key bounds instead of adding another scratch owner.
+        let mut note_key_counts = current_midi_counts;
+        note_key_counts.fill(0);
+        drop(previous_midi_counts);
+        let mut key_total = 0usize;
+        for (destination, clip) in project
+            .session_cells()
+            .iter()
+            .filter_map(|cell| match cell.content() {
+                SessionCellContent::Midi(clip) => Some((cell.track(), clip)),
+                _ => None,
+            })
+            .chain(
+                routed_plan
+                    .sources(project)
+                    .map(|(destination, _, clip)| (destination, clip)),
+            )
+        {
+            let count = clip.source().notes().len();
+            key_total = key_total
+                .checked_add(count)
+                .filter(|total| *total <= hex_project::MAX_NOTES)
+                .ok_or(crate::Invalid("Session MIDI note bank key limit reached"))?;
+            let index = instrument_track_indices
+                .get(&destination)
+                .copied()
+                .ok_or(crate::Invalid("Session MIDI track is missing"))?;
+            let bound = note_key_counts
+                .get_mut(index)
+                .ok_or(crate::Invalid("Session MIDI track index is invalid"))?;
+            *bound = bound
+                .checked_add(count)
+                .ok_or(crate::Invalid("Session MIDI note bank key count overflow"))?;
+        }
         let mut note_keys_by_track = Vec::new();
         note_keys_by_track
             .try_reserve_exact(instrument_configs.len())
             .map_err(|_| crate::Invalid("could not reserve Session note bank index"))?;
-        note_keys_by_track.resize_with(instrument_configs.len(), || {
-            crate::midi_note_bank::PreparedMidiNoteBank::empty_keys()
-        });
+        for (index, (config, count)) in instrument_configs.iter().zip(note_key_counts).enumerate() {
+            let needs_keys = config.mutable_runtime.is_none()
+                && !unchanged_sources
+                    .get(index)
+                    .copied()
+                    .ok_or(crate::Invalid("Session source reuse index is invalid"))?;
+            note_keys_by_track.push(crate::midi_note_bank::PreparedMidiNoteBank::reserved_keys(
+                if needs_keys { count } else { 0 },
+            )?);
+        }
         let mut session_note_key_count = 0_usize;
         for cell in project.session_cells() {
             let SessionCellContent::Midi(clip) = cell.content() else {
@@ -807,6 +849,14 @@ impl PreparedSessionInventory {
                 .get(track_index)
                 .copied()
                 .ok_or(crate::Invalid("Session source reuse index is invalid"))?
+            {
+                continue;
+            }
+            if instrument_configs
+                .get(track_index)
+                .ok_or(crate::Invalid("Session MIDI track index is invalid"))?
+                .mutable_runtime
+                .is_some()
             {
                 continue;
             }
@@ -836,6 +886,14 @@ impl PreparedSessionInventory {
                 ))?;
             if session_note_key_count > hex_project::MAX_NOTES {
                 return Err(crate::Invalid("routed Session MIDI note key limit reached"));
+            }
+            if instrument_configs
+                .get(index)
+                .ok_or(crate::Invalid("routed Session MIDI track index is invalid"))?
+                .mutable_runtime
+                .is_some()
+            {
+                continue;
             }
             let keys = note_keys_by_track
                 .get_mut(index)

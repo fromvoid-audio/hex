@@ -299,6 +299,18 @@ impl PreparedMidiNoteBank {
         Vec::new()
     }
 
+    /// Scratch for a compiler's checked authored-note bound. The requested
+    /// count includes duplicate keys; sorting/deduplication happens later.
+    pub(crate) fn reserved_keys(note_count: usize) -> Result<NoteKeys, Invalid> {
+        if note_count > hex_project::MAX_NOTES {
+            return Err(Invalid("midi note bank key limit reached"));
+        }
+        let mut keys = Self::empty_keys();
+        keys.try_reserve_exact(note_count)
+            .map_err(|_| Invalid("could not reserve midi note bank keys"))?;
+        Ok(keys)
+    }
+
     pub(crate) fn add_key(keys: &mut NoteKeys, pitch: u8, velocity: u8) -> Result<(), Invalid> {
         if pitch > 127 {
             return Err(Invalid("midi note pitch is outside the valid range"));
@@ -593,6 +605,52 @@ mod tests {
         _resources: &dyn hex_lattice::DeviceResources,
     ) -> [f32; 2] {
         [payload[0] as f32, (payload[1] + payload[2]) as f32]
+    }
+
+    #[test]
+    fn reserved_note_key_scratch_keeps_backing_through_duplicates_and_bank_reuse() {
+        assert!(PreparedMidiNoteBank::reserved_keys(hex_project::MAX_NOTES + 1).is_err());
+        assert_eq!(
+            PreparedMidiNoteBank::reserved_keys(0).unwrap().capacity(),
+            0
+        );
+        for count in [1, 4096, hex_project::MAX_NOTES] {
+            let mut keys = PreparedMidiNoteBank::reserved_keys(count).unwrap();
+            let pointer = keys.as_ptr();
+            let capacity = keys.capacity();
+            assert!(capacity >= count);
+            for index in 0..count {
+                PreparedMidiNoteBank::add_key(&mut keys, 60 + (index % 2) as u8, 100).unwrap();
+            }
+            assert_eq!(keys.len(), count);
+            assert_eq!(keys.as_ptr(), pointer);
+            assert_eq!(keys.capacity(), capacity);
+            assert!(PreparedMidiNoteBank::add_key(&mut keys, 60, 0).is_err());
+            assert_eq!(keys.len(), count);
+            let instrument = ProbeInstrument {
+                identity: 13,
+                preparations: AtomicUsize::new(0),
+            };
+            let bank = PreparedMidiNoteBank::prepare(&mut keys, &instrument, None, None).unwrap();
+            let distinct = count.min(2);
+            assert_eq!(keys.len(), distinct);
+            assert_eq!(instrument.preparations.load(Ordering::Relaxed), distinct);
+            assert_eq!(keys.as_ptr(), pointer);
+            assert_eq!(keys.capacity(), capacity);
+            let reused =
+                PreparedMidiNoteBank::prepare(&mut keys, &instrument, Some(&bank), None).unwrap();
+            assert!(Arc::ptr_eq(&bank, &reused));
+            assert_eq!(instrument.preparations.load(Ordering::Relaxed), distinct);
+            let PreparedMidiNote::Inline(note) =
+                bank.sampler(bank.index(60, 100).unwrap()).unwrap().note
+            else {
+                panic!("probe note")
+            };
+            assert_eq!(
+                note.sample(0, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                [13.0, 160.0]
+            );
+        }
     }
 
     #[test]

@@ -221,3 +221,14 @@ required aggregate preconstruction allowance or the set of retained aliases.
 A routed-source regression checks two independent descriptor destinations with
 the same actual MIDI source, preserving track IDs and source identity. Complete
 compiler ingress and its old/new/temporary peak reservation remain open.
+
+Analytic note-bank key scratch is now reserved once from checked authored-note
+counts before filling. Session reuses its finished clip-count Vec for per-track
+key counts and retires the previous-count scratch before allocating key buffers;
+it still counts direct and routed notes against the same limit. Mutable factories
+do not build unused analytic-key lists. Silent/bypassed analytic paths and actual
+previous-bank reuse retain their existing behavior. The scratch regression checks
+zero, duplicate-heavy and maximum-note inputs, stable pointer/capacity through
+fill and deduplication, invalid-note refusal and actual bank reuse/PCM. This
+bounds one helper's requested growth; the aggregate entry must still reserve its
+backing and all other live owners/scratch before construction.

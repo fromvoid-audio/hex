@@ -250,7 +250,20 @@ pub(crate) fn compile_instrument_track(
     if track.midi_clips().is_empty() {
         return Ok(None);
     }
-    let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::empty_keys();
+    // Mutable factories never read an analytic note bank. Other instruments
+    // reserve their full authored-key scratch once, before any key is appended.
+    let needs_keys = instrument.is_some() && mutable_limits.is_none();
+    let key_bound = track.midi_clips().iter().try_fold(0usize, |total, clip| {
+        total
+            .checked_add(clip.notes().len())
+            .filter(|count| *count <= hex_project::MAX_NOTES)
+            .ok_or(Invalid("midi note bank key limit reached"))
+    })?;
+    let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::reserved_keys(if needs_keys {
+        key_bound
+    } else {
+        0
+    })?;
     let mut clip_counts = Vec::new();
     clip_counts
         .try_reserve_exact(track.midi_clips().len())
@@ -266,7 +279,7 @@ pub(crate) fn compile_instrument_track(
                 .count();
             let count = usize::try_from(count)
                 .map_err(|_| Invalid("compiled midi occurrence count overflow"))?;
-            if count != 0 && instrument.is_some() {
+            if count != 0 && needs_keys {
                 crate::midi_note_bank::PreparedMidiNoteBank::add_key(
                     &mut keys,
                     note.pitch(),
