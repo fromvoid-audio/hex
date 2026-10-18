@@ -63,7 +63,18 @@ fn fixture(
         let Created::Clip(clip) = event.created.unwrap() else {
             panic!("clip")
         };
-        (event, track, clip)
+        service
+            .submit(Request::Edit(Command::SetMidiClipSource {
+                clip,
+                source_length: BeatTime::from_raw(4 << 32),
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: BeatTime::from_raw(4 << 32),
+                looping: true,
+                length: BeatTime::from_raw(4 << 32),
+            }))
+            .unwrap();
+        (next(&service), track, clip)
     } else {
         service
             .submit(Request::Import(files.wav("resize.wav", 48_000, 96_000)))
@@ -243,4 +254,120 @@ fn held_resize_can_pan_right_beyond_original_fitted_display_extent(cx: &mut Test
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
     }
+}
+
+#[gpui::test]
+fn resize_edge_cancel_and_stale_owners_cannot_scroll_or_commit(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        for stale in [false, true] {
+            let (handle, editor, track, clip) = fixture(
+                cx,
+                midi,
+                Some(Viewport {
+                    start: 72_000,
+                    length: 192_000,
+                }),
+            );
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            let down = capture(&mut visual, clip, midi, false);
+            let edge = editor.read_with(&visual, |v, _| {
+                let lane = v.drag_lanes[&track];
+                point(px(lane.left + lane.width - 3.0), down.y)
+            });
+            visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let now = Instant::now();
+            held_tick(&editor, &mut visual, now);
+            if stale {
+                editor.update(&mut visual, |v, _| {
+                    v.project_generation = v.project_generation.wrapping_add(1);
+                });
+            } else {
+                visual.simulate_keystrokes("escape");
+                visual.run_until_parked();
+            }
+            held_tick(&editor, &mut visual, now + Duration::from_millis(100));
+            editor.read_with(&visual, |v, _| {
+                assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.trim_display_end().is_none());
+            });
+            let viewport = editor.read_with(&visual, |v, _| v.viewport);
+            held_tick(&editor, &mut visual, now + Duration::from_secs(10));
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.viewport, viewport, "no stray timer movement")
+            });
+            visual.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| {
+                assert!(
+                    v.last_enqueued_edit.is_none(),
+                    "retired payload cannot commit"
+                )
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, clip) = fixture(
+        cx,
+        false,
+        Some(Viewport {
+            start: 1_000,
+            length: 192_000,
+        }),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let down = capture(&mut visual, clip, false, true);
+    let edge = editor.read_with(&visual, |v, _| {
+        let lane = v.drag_lanes[&track];
+        point(px(lane.left + 3.0), down.y)
+    });
+    visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let now = Instant::now();
+    held_tick(&editor, &mut visual, now);
+    editor.read_with(&visual, |v, _| assert_eq!(v.viewport.unwrap().start, 0));
+    held_tick(&editor, &mut visual, now + Duration::from_secs(5));
+    editor.read_with(&visual, |v, _| assert_eq!(v.viewport.unwrap().start, 0));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, cx| {
+        assert!(v.enqueue(Request::Edit(Command::SetClipLooping {
+            clip,
+            looping: false
+        })));
+        v.viewport = None;
+        cx.notify();
+    });
+    pump(&editor, &mut visual);
+    let down = capture(&mut visual, clip, false, false);
+    let edge = editor.read_with(&visual, |v, _| {
+        let lane = v.drag_lanes[&track];
+        point(px(lane.left + lane.width - 3.0), down.y)
+    });
+    visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| {
+        v.visible_viewport(v.state.as_ref().unwrap().timeline_frames)
+    });
+    held_tick(&editor, &mut visual, Instant::now());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+            before,
+            "no panning away from exhausted source"
+        );
+        let drag = v.active_trim_drag.as_ref().unwrap();
+        assert_eq!(
+            drag.preview.borrow().as_ref().unwrap().clip.duration(),
+            96_000
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
 }
