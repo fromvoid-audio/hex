@@ -458,10 +458,14 @@ impl EditorView {
         };
         let entries = self.browser_visible_entries(cx);
         let index = match selection {
-            BrowserItemKey::File(path) => entries
-                .iter()
-                .position(|entry| entry.path == path)
-                .or_else(|| {
+            BrowserItemKey::File(path) => {
+                if let Some(index) = entries.iter().position(|entry| entry.path == path) {
+                    if entries[index].kind != EntryKind::WaveAudio {
+                        self.browser_selection_audition(None, cx);
+                    }
+                    Some(index)
+                } else {
+                    self.browser_selection_audition(None, cx);
                     entries
                         .iter()
                         .enumerate()
@@ -470,7 +474,8 @@ impl EditorView {
                         })
                         .max_by_key(|(_, entry)| entry.path.components().count())
                         .map(|(index, _)| index)
-                }),
+                }
+            }
             BrowserItemKey::Device(class, id) => self
                 .browser_visible_devices(cx)
                 .iter()

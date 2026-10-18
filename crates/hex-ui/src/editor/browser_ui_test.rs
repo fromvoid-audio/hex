@@ -3605,7 +3605,29 @@ fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mu
             nested
         )
     });
-    visual.simulate_keystrokes("left");
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes("down");
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(
+            view.browser_visible_entries(cx)[view.browser.selected_index].path,
+            sample
+        );
+        view.browser.playback_generation = 10;
+        view.browser.playback_path = Some(sample.clone());
+        view.browser.playback_output = Some((1, 1));
+        view.browser.playback_phase = hex_audio::sample_preview::Phase::Preparing;
+        view.browser.playback_pending = Some(super::PlaybackPreviewRequest {
+            generation: 10,
+            output_generation: 1,
+            output_identity: 1,
+            start_fraction: 0.5,
+            path: sample.clone(),
+            sample_rate: 48_000,
+        });
+    });
+    let disclosure = visual.debug_bounds("browser-disclosure-1").unwrap();
+    visual.simulate_mouse_down(disclosure.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(disclosure.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, cx| {
         assert!(
@@ -3618,6 +3640,24 @@ fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mu
             view.browser_visible_entries(cx)[view.browser.selected_index].path,
             nested
         );
+        assert_eq!(view.browser.playback_generation, 11);
+        assert!(view.browser.playback_pending.is_none());
+        assert!(view.browser.playback_output.is_none());
+        assert_eq!(
+            view.browser.playback_phase,
+            hex_audio::sample_preview::Phase::Idle
+        );
+    });
+    visual.simulate_keystrokes("left");
+    visual.simulate_keystrokes("left");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert!(
+            !view
+                .browser_visible_entries(cx)
+                .iter()
+                .any(|entry| entry.path == nested)
+        )
     });
 }
 
