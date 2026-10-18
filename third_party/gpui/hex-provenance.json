@@ -195,7 +195,7 @@
     "tests/action_macros.rs": "47b69024f403feb6cb63c9990a6993b8582856146f5a6ae16984714321956a84"
   },
   "patched_files": {
-    "src/app/test_context.rs": "b47f5bf049fce2759690a41208aed1483c2133f56064960893fcd634cdeeb20d",
+    "src/app/test_context.rs": "c0efc27c93bc706e9f6492ce6db21fe11108cd2c3ba3a4386824057b20080be0",
     "src/bounds_tree.rs": "084f0084e9cee9eb75d0b3f8592cd8e8477adb8d969f1426e99367a4b79cf226",
     "src/elements/div.rs": "d9d7cebcc439e61eefc47869ea16c7f0d3794b6359959414f85e5f712fd9a1f9",
     "src/gpui.rs": "b26a450e27b580824e68b48cbceb200e39fa03ea8f8c39599d30e41784adc2f8",

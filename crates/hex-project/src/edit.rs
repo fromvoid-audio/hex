@@ -761,10 +761,11 @@ pub(crate) fn insert_track_before(
     let instrument_state = crate::default_instrument_state()?;
     let (first_id, instrument_id) = project.allocate_id_range(2)?;
     let id = TrackId(first_id);
+    let color = crate::appearance::new_track_color(project);
     project.tracks.insert(
         index,
         Track {
-            color: crate::ElementColor::default(),
+            color,
             gain_lane: crate::GainLane::default(),
             id,
             name,

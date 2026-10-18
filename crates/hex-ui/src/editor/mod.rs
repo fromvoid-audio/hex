@@ -102,6 +102,7 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
@@ -248,6 +249,7 @@ actions!(
         BrowserNext,
         BrowserActivate,
         BrowserPreviewSelected,
+        BrowserCollapseFolder,
         BrowserEscape,
         ToggleSolo,
         AdditiveSolo,
@@ -360,6 +362,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", BrowserNext, Some("hex_browser")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser")),
         KeyBinding::new("right", BrowserPreviewSelected, Some("hex_browser")),
+        KeyBinding::new("left", BrowserCollapseFolder, Some("hex_browser")),
         KeyBinding::new("escape", BrowserEscape, Some("hex_browser")),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser_search")),
         KeyBinding::new("down", BrowserNext, Some("hex_browser_search")),
@@ -539,6 +542,7 @@ pub(super) struct EditorView {
     gain_lane: gain_lane::GainLane,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
+    track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
@@ -655,6 +659,7 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
@@ -784,6 +789,29 @@ impl EditorView {
         )
     }
 
+    /// Bound discovery before any browser worker starts; never change process settings.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_browser_directory(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        directory: &std::path::Path,
+    ) -> Self {
+        Self::new_with_browser_paths(
+            window,
+            cx,
+            service,
+            Err("offline ui test".into()),
+            (
+                directory.join("browser.json"),
+                directory.join("recent-projects.json"),
+                directory.join("theme.json"),
+            ),
+            Some(directory.join("samples")),
+            None,
+        )
+    }
+
     fn new_with_browser_preferences_path(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -793,6 +821,37 @@ impl EditorView {
         recent_projects_path: std::path::PathBuf,
         theme_preferences_path: std::path::PathBuf,
     ) -> Self {
+        Self::new_with_browser_paths(
+            window,
+            cx,
+            service,
+            output,
+            (
+                preferences_path,
+                recent_projects_path,
+                theme_preferences_path,
+            ),
+            #[cfg(all(test, feature = "ui-test-support"))]
+            None,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            None,
+        )
+    }
+
+    fn new_with_browser_paths(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        output: Result<crate::EditorAudio, String>,
+        paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+        #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
+            std::path::PathBuf,
+        >,
+        #[cfg(all(test, feature = "ui-test-support"))] test_browser_home: Option<
+            std::path::PathBuf,
+        >,
+    ) -> Self {
+        let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
             Err(error) => (
@@ -907,7 +966,12 @@ impl EditorView {
             }
         });
         focus.focus(window);
-        let browser = browser::BrowserState::new(cx, preferences_path);
+        let browser = browser::BrowserState::new(
+            cx,
+            preferences_path,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            test_browser_home,
+        );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
@@ -931,6 +995,7 @@ impl EditorView {
             gain_lane: gain_lane::GainLane::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
+            track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
@@ -1049,6 +1114,7 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
             active_midi_trim_drag: None,
@@ -1092,6 +1158,11 @@ impl EditorView {
             pending_time_range_move: None,
             suppress_cursor_click: false,
         };
+        #[cfg(all(test, feature = "ui-test-support"))]
+        if let Some(directory) = test_browser_directory {
+            view.browser.directory = directory.clone();
+            view.browser.places = vec![directory];
+        }
         view.browser_scan_initial(cx);
         view.start_recent_projects_load(cx);
         view.start_theme_preferences_load(cx);
@@ -1293,6 +1364,8 @@ impl EditorView {
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        // Only a current resize owner may extend the transient display extent.
+        let horizon = horizon.max(self.trim_display_end().unwrap_or(0));
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)
