@@ -17,6 +17,8 @@ mod clip_clipboard_ui_test;
 mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_loop_tests;
 mod clip_name;
 mod clip_selection;
 
