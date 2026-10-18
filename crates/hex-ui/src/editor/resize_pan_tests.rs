@@ -74,6 +74,7 @@ fn fixture(
         service
             .submit(Request::Edit(Command::MoveClip {
                 clip,
+                track,
                 start: 96_000,
             }))
             .unwrap();
