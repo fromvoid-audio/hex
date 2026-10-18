@@ -22,6 +22,7 @@ hex-preferences = { path = "../hex-preferences" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
 hex-widgets = { path = "../hex-widgets" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
+unicode-segmentation = "=1.13.3"
 
 [dev-dependencies]
 hex-media = { path = "../hex-media" }

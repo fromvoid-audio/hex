@@ -2788,6 +2788,7 @@ dependencies = [
  "hex-session",
  "hex-tuning",
  "hex-widgets",
+ "unicode-segmentation",
 ]
 
 [[package]]
