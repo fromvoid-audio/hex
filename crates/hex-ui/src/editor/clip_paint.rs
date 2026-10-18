@@ -22,6 +22,7 @@ impl EditorView {
     fn clip_paint_available(&self) -> bool {
         self.mode == EditorMode::Arrangement
             && self.clip_name_edit.is_none()
+            && !self.track_name.is_editing()
             && !self.edit_pending()
             && self.context_menu.is_none()
             && !self.opening_project

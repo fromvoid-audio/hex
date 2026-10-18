@@ -2574,6 +2574,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-stream",
+ "hex-tuning",
  "rtrb",
 ]
 
@@ -2610,6 +2611,7 @@ dependencies = [
  "hex-engine",
  "hex-media",
  "hex-midi",
+ "hex-mts",
  "hex-project",
  "hex-session",
  "hex-stream",
@@ -2620,12 +2622,17 @@ dependencies = [
 name = "hex-devices"
 version = "0.1.0"
 dependencies = [
+ "hex-dsp",
  "hex-lattice",
  "hex-lattice-contract",
 ]
 
 [[package]]
 name = "hex-diagnostics"
+version = "0.1.0"
+
+[[package]]
+name = "hex-dsp"
 version = "0.1.0"
 
 [[package]]
@@ -2636,6 +2643,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "hex-tuning",
  "hex-warp",
 ]
 
@@ -2647,6 +2655,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "hex-tuning",
  "rustix 1.1.5",
 ]
 
@@ -2654,7 +2663,9 @@ dependencies = [
 name = "hex-lattice"
 version = "0.1.0"
 dependencies = [
+ "hex-dsp",
  "hex-lattice-contract",
+ "hex-tuning",
 ]
 
 [[package]]
@@ -2682,6 +2693,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-mts"
+version = "0.1.0"
+dependencies = [
+ "hex-tuning",
+ "mts-esp-master-adapter",
+]
+
+[[package]]
 name = "hex-plugin-scan"
 version = "0.1.0"
 dependencies = [
@@ -2705,6 +2724,7 @@ name = "hex-project"
 version = "0.1.0"
 dependencies = [
  "hex-lattice-contract",
+ "hex-tuning",
 ]
 
 [[package]]
@@ -2717,6 +2737,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-storage",
+ "hex-tuning",
  "serde_json",
 ]
 
@@ -2727,6 +2748,8 @@ dependencies = [
  "fs2",
  "hex-lattice-contract",
  "hex-project",
+ "hex-tuning",
+ "libc",
  "serde",
  "serde_json",
 ]
@@ -2744,6 +2767,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-tuning"
+version = "0.1.0"
+
+[[package]]
 name = "hex-ui"
 version = "0.1.0"
 dependencies = [
@@ -2753,10 +2780,13 @@ dependencies = [
  "hex-engine",
  "hex-lattice-contract",
  "hex-library",
+ "hex-media",
  "hex-midi",
+ "hex-mts",
  "hex-preferences",
  "hex-project",
  "hex-session",
+ "hex-tuning",
  "hex-widgets",
 ]
 
@@ -3625,6 +3655,13 @@ checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mts-esp-master-adapter"
+version = "0.1.0"
+dependencies = [
+ "libloading",
 ]
 
 [[package]]

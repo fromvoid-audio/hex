@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -25,6 +26,57 @@ import uuid
 ROOT = Path(__file__).resolve().parent.parent
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
+
+
+@contextmanager
+def terminal_progress(label: str, *, announce: bool = True):
+    """Show activity only around work whose child output is captured/logged.
+
+    Callers must not print or inherit subprocess terminal output in this scope.
+    Redirected stdout or stderr gets one plain stage line and no worker thread.
+    """
+    stream = sys.stderr
+    if not (sys.stdout.isatty() and stream.isatty()):
+        if announce:
+            print(f"{label}...", file=stream, flush=True)
+        yield
+        return
+
+    stopped = threading.Event()
+
+    def draw(frame: str) -> None:
+        # Leave a spare column so a narrow/resized terminal never wraps frames.
+        width = max(1, shutil.get_terminal_size().columns - 1)
+        stream.write(f"\r\033[2K{(frame + ' ' + label)[:width]}")
+        stream.flush()
+
+    def animate() -> None:
+        frames = "/-\\|"
+        index = 0
+        while not stopped.wait(0.1):
+            try:
+                draw(frames[index % len(frames)])
+            except (OSError, ValueError):
+                # A display error must not replace the actual subprocess result.
+                return
+            index += 1
+
+    worker = threading.Thread(target=animate, name="hex-terminal-progress")
+    try:
+        draw("|")
+        worker.start()
+        yield
+    finally:
+        stopped.set()
+        try:
+            if worker.ident is not None:
+                worker.join()
+        finally:
+            try:
+                stream.write("\r\033[2K")
+                stream.flush()
+            except (OSError, ValueError):
+                pass
 
 
 @dataclass(frozen=True)
@@ -935,7 +987,8 @@ class LocalCiRunner:
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: running", flush=True)
         try:
-            with log_path.open("w", encoding="utf-8") as log:
+            with log_path.open("w", encoding="utf-8") as log, \
+                    terminal_progress(f"checking {step.step_id}", announce=False):
                 result = subprocess.run(
                     list(step.argv),
                     cwd=self.root,

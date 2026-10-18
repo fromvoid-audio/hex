@@ -108,6 +108,7 @@ impl EditorView {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -117,6 +118,7 @@ impl EditorView {
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
             || self.active_midi_trim_drag.is_some()
         {
             return false;
@@ -185,6 +187,7 @@ impl EditorView {
             || self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -194,6 +197,7 @@ impl EditorView {
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
             || self.active_midi_trim_drag.is_some()
         {
             return false;
@@ -242,6 +246,7 @@ impl EditorView {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -251,6 +256,7 @@ impl EditorView {
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
             || self.active_midi_trim_drag.is_some()
         {
             return false;
@@ -317,6 +323,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -326,6 +333,7 @@ impl EditorView {
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
             || self.active_midi_trim_drag.is_some()
         {
             return false;
@@ -386,6 +394,7 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.close_prompt_open
             || self.opening_project
@@ -470,6 +479,7 @@ impl EditorView {
                 .as_ref()
                 .is_none_or(|state| state.revision != gesture.revision)
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -577,6 +587,12 @@ impl EditorView {
             return;
         }
         let Some(range) = self.normalized_time_selection() else {
+            if !cut {
+                let clips = self.selected_clip_ids();
+                if !clips.is_empty() {
+                    self.enqueue(Request::CopyClips(clips));
+                }
+            }
             return;
         };
         self.enqueue(if cut {
@@ -701,6 +717,7 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.close_prompt_open
             || self.opening_project
@@ -831,17 +848,37 @@ impl EditorView {
         y: f32,
         viewport: super::viewport::Viewport,
     ) -> bool {
+        let (ordinary, fade) = self.clip_pointer_handles(track, x, y, viewport);
+        ordinary || fade
+    }
+    pub(super) fn pointer_hits_fade_control(&self, x: f32, y: f32) -> bool {
+        let Some((track, _)) = self.visible_lane_at(x, y) else {
+            return false;
+        };
         let Some(state) = self.state.as_ref() else {
-            return true;
+            return false;
+        };
+        self.clip_pointer_handles(track, x, y, self.visible_viewport(state.timeline_frames))
+            .1
+    }
+    fn clip_pointer_handles(
+        &self,
+        track: TrackId,
+        x: f32,
+        y: f32,
+        viewport: super::viewport::Viewport,
+    ) -> (bool, bool) {
+        let Some(state) = self.state.as_ref() else {
+            return (true, false);
         };
         let Some(track) = state.project.track(track) else {
-            return true;
+            return (true, false);
         };
         let Some(lane) = self.drag_lanes.get(&track.id()) else {
-            return true;
+            return (true, false);
         };
         let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
-            return true;
+            return (true, false);
         };
         let handle_hit = |start: u64, end: u64, minimum: f32| {
             let visible_start = start.max(viewport.start);
@@ -873,14 +910,20 @@ impl EditorView {
             .find_map(|clip| {
                 let preview = state.midi_preview.get(clip.id())?;
                 handle_hit(preview.frame_start, preview.frame_end, 4.0)
+                    .map(|ordinary| (ordinary, false))
             })
             .or_else(|| {
                 track.clips().iter().rev().find_map(|clip| {
                     let end = clip.start().checked_add(clip.duration())?;
-                    handle_hit(clip.start(), end, 3.0)
+                    handle_hit(clip.start(), end, 3.0).map(|ordinary| {
+                        (
+                            ordinary,
+                            self.fade_handle_hit(state, track.id(), clip, x, y, viewport),
+                        )
+                    })
                 })
             })
-            .unwrap_or(false)
+            .unwrap_or((false, false))
     }
 
     pub(super) fn time_selection_overlay(

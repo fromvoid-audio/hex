@@ -53,10 +53,20 @@ impl Editor {
         command: Command,
         prepare: impl FnOnce(&Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        self.execute_prepared_transition(command, |_, candidate| prepare(candidate))
+    }
+    /// Prepare against the exact borrowed source and candidate before one atomic
+    /// history commit. No caller clone is needed to prove a tuning-only delta.
+    pub fn execute_prepared_transition<T, E: From<Invalid>>(
+        &mut self,
+        command: Command,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<(Created, T), E> {
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
-        let prepared = prepare(&candidate)?;
+        let prepared = prepare(&self.project, &candidate)?;
         // No-op controls should neither add history nor erase a redo branch.
         if candidate == self.project {
             return Ok((result, prepared));
@@ -88,6 +98,7 @@ impl Editor {
         for command in commands {
             results.push(candidate.apply(command)?);
         }
+        candidate.validate_device_asset_references()?;
         // Reserve before preparation/commit. No history allocation follows it.
         self.undo
             .try_reserve(1)
@@ -122,6 +133,13 @@ impl Editor {
         &mut self,
         prepare: impl FnOnce(&Project) -> Result<T, E>,
     ) -> Result<Option<T>, E> {
+        self.undo_prepared_transition(|_, candidate| prepare(candidate))
+    }
+    /// Borrow source and target before changing either history stack.
+    pub fn undo_prepared_transition<T, E: From<Invalid>>(
+        &mut self,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
         let Some(previous) = self.undo.back() else {
             return Ok(None);
         };
@@ -131,7 +149,7 @@ impl Editor {
         self.redo
             .try_reserve(1)
             .map_err(|_| E::from(Invalid("could not reserve redo history")))?;
-        let prepared = prepare(&candidate)?;
+        let prepared = prepare(&self.project, &candidate)?;
         let Some(_) = self.undo.pop_back() else {
             return Err(E::from(Invalid("undo history changed during preparation")));
         };
@@ -158,6 +176,13 @@ impl Editor {
         &mut self,
         prepare: impl FnOnce(&Project) -> Result<T, E>,
     ) -> Result<Option<T>, E> {
+        self.redo_prepared_transition(|_, candidate| prepare(candidate))
+    }
+    /// Borrow source and target before changing either history stack.
+    pub fn redo_prepared_transition<T, E: From<Invalid>>(
+        &mut self,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
         let Some(next) = self.redo.last() else {
             return Ok(None);
         };
@@ -167,7 +192,7 @@ impl Editor {
         self.undo
             .try_reserve(1)
             .map_err(|_| E::from(Invalid("could not reserve undo history")))?;
-        let prepared = prepare(&candidate)?;
+        let prepared = prepare(&self.project, &candidate)?;
         let Some(_) = self.redo.pop() else {
             return Err(E::from(Invalid("redo history changed during preparation")));
         };

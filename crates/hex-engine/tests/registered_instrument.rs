@@ -65,8 +65,12 @@ impl NativeInstrumentDefinition for ConstantDefinition {
     fn prepare_instrument(
         &self,
         _: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -116,7 +120,13 @@ impl PreparedSharedAnalyticContext for ConstantSharedContext {
         Ok(PreparedSharedAnalyticNote::new(payload, 4))
     }
 
-    fn sample(&self, note: &PreparedSharedAnalyticNote, age: u64, gate: u64) -> StereoFrame {
+    fn sample(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> StereoFrame {
         if age < gate.saturating_add(note.release_frames()) {
             [
                 f32::from_bits(note.payload()[0] as u32),
@@ -132,6 +142,7 @@ fn constant_sample(
     age: u64,
     gate: u64,
     release: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> StereoFrame {
     if age < gate.saturating_add(release) {
         [

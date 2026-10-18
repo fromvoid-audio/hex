@@ -106,8 +106,9 @@ of these substitutes for the others.
 | Crate | Owns | Depends on |
 | --- | --- | --- |
 | hex-lattice-contract | Neutral device identifiers, descriptors and versioned opaque state | std |
-| hex-lattice | Native processing registry and validated memoryless stereo matrix DSP | hex-lattice-contract, std |
-| hex-devices | Registered original sine/envelope and linear Utility DSP | hex-lattice, hex-lattice-contract, std |
+| hex-dsp | Host-independent stereo kernels and validated amplitude/decibel units | std |
+| hex-lattice | Native processing registry, prepared/runtime lifecycle and compatibility reexports of stereo kernels | hex-lattice-contract, hex-dsp, std |
+| hex-devices | Registered original device algorithms and their state codecs | hex-lattice, hex-lattice-contract, hex-dsp, std |
 | hex-project | Canonical editable arrangement, stable IDs, transactional edits, history | hex-lattice-contract, std |
 | hex-media | Bounded control-side WAV decode and cached waveform peaks | hex-engine, std |
 | hex-session | Canonical editor controller, retained decoded assets, import preparation, compilation and bounded export coordination | hex-project, hex-media, hex-engine, hex-storage, hex-export, hex-lattice-contract, std |

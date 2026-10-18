@@ -47,6 +47,32 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_post_node_observer(output, observer)
     }
+
+    /// Paired borrowed native entry input/output observations.
+    pub fn render_with_node_signal_observer(
+        &mut self,
+        output: &mut [crate::Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .render_with_node_signal_observer(output, observer)
+    }
+    /// Borrowed project/device observations through the current owner only.
+    pub fn render_with_signal_observers(
+        &mut self,
+        output: &mut [crate::Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .render_with_signal_observers(output, observer, project)
+    }
+    pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
+        self.current_playback()
+            .is_some_and(|p| p.project_output_supported(tracks))
+    }
     /// Borrow exact protected pages through the existing transactional kernel.
     /// The host must preflight the next chunk; this does not certify readiness.
     pub fn render_with_pages_and_post_node_observer<P: crate::MediaPages + ?Sized>(
@@ -58,6 +84,30 @@ impl ClaimedAudioCandidateRuntime {
         self.current_playback_mut()
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_pages_and_post_node_observer(output, pages, observer)
+    }
+
+    /// Paired borrowed native entry input/output observations.
+    pub fn render_with_pages_and_node_signal_observer<P: crate::MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .render_with_pages_and_node_signal_observer(output, pages, observer)
+    }
+    /// Page-backed counterpart with no additional render or owner extraction.
+    pub fn render_with_pages_and_signal_observers<P: crate::MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .render_with_pages_and_signal_observers(output, pages, observer, project)
     }
     /// Match cancellation against the same prepared action/runtime's route targets.
     pub fn stream_action_targets_track(

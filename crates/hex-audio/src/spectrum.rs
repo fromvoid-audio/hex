@@ -54,7 +54,8 @@ impl Error for SpectrumError {}
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpectrumFrame {
     pub sample_rate_hz: u32,
-    /// Peak amplitude in each logarithmic band, in dBFS, with a -120 dBFS floor.
+    /// Peak amplitude in logarithmic bands, with power interpolation for bands
+    /// narrower than one FFT bin. Values use dBFS with a -120 dBFS floor.
     pub bins_dbfs: [f32; SPECTRUM_BANDS],
 }
 
@@ -62,7 +63,8 @@ pub struct SpectrumFrame {
 struct Band {
     first_bin: usize,
     end_bin: usize,
-    nearest_bin: usize,
+    center_bin: f64,
+    interpolate: bool,
 }
 
 /// Fixed-window FFT and logarithmic stereo spectrum reducer.
@@ -123,7 +125,9 @@ impl SpectrumKernel {
     /// Stereo power is averaged between channels before conversion to dBFS, so
     /// opposite-polarity material does not cancel. Each output band reports its
     /// strongest FFT-bin amplitude, corrected for the Hann window's coherent
-    /// gain. Inputs above full scale may produce positive dBFS values.
+    /// gain. Sub-bin-width display bands interpolate adjacent bin powers at
+    /// their centers; this does not increase the window's resolving power.
+    /// Inputs above full scale may produce positive dBFS values.
     pub fn analyze(&mut self, frames: &[[f32; 2]]) -> Result<SpectrumFrame, SpectrumError> {
         if frames.len() != FFT_SIZE {
             return Err(SpectrumError::InvalidFrameCount(frames.len()));
@@ -157,23 +161,20 @@ impl SpectrumKernel {
 
         let bins_dbfs = std::array::from_fn(|band_index| {
             let band = self.bands[band_index];
-            let mut maximum_power = 0.0f64;
-            if band.first_bin < band.end_bin {
-                for bin in band.first_bin..band.end_bin {
-                    let right_power = normalized_bin_power(
-                        self.real[bin],
-                        self.imaginary[bin],
-                        bin,
-                        self.window_sum,
-                    );
-                    maximum_power = maximum_power.max((self.left_power[bin] + right_power) * 0.5);
-                }
-            } else {
-                let bin = band.nearest_bin;
+            let power_at = |bin| {
                 let right_power =
                     normalized_bin_power(self.real[bin], self.imaginary[bin], bin, self.window_sum);
-                maximum_power = (self.left_power[bin] + right_power) * 0.5;
-            }
+                (self.left_power[bin] + right_power) * 0.5
+            };
+            let maximum_power = if band.interpolate {
+                let lower = band.center_bin.floor() as usize;
+                let fraction = band.center_bin - lower as f64;
+                power_at(lower) * (1.0 - fraction) + power_at(lower + 1) * fraction
+            } else {
+                (band.first_bin..band.end_bin)
+                    .map(power_at)
+                    .fold(0.0f64, f64::max)
+            };
             if maximum_power <= 1.0e-12 {
                 FLOOR_DBFS
             } else {
@@ -224,13 +225,12 @@ fn build_bands(sample_rate_hz: u32) -> [Band; SPECTRUM_BANDS] {
         let first_bin = ((lower / resolution).ceil() as usize).clamp(1, POSITIVE_BIN_COUNT - 1);
         let end_bin = ((upper / resolution).ceil() as usize).clamp(1, POSITIVE_BIN_COUNT);
         let center = (lower * upper).sqrt();
-        let nearest_bin = (center / resolution)
-            .round()
-            .clamp(1.0, (POSITIVE_BIN_COUNT - 1) as f64) as usize;
+        let center_bin = (center / resolution).clamp(0.0, (POSITIVE_BIN_COUNT - 2) as f64);
         Band {
             first_bin,
             end_bin: end_bin.max(first_bin),
-            nearest_bin,
+            center_bin,
+            interpolate: upper - lower < resolution || first_bin >= end_bin,
         }
     })
 }
@@ -329,6 +329,47 @@ mod tests {
         let (lower, upper) = band_bounds_hz(48_000, peak).expect("peak band bounds");
         assert!((lower..upper).contains(&1500.0));
         assert!((frame.bins_dbfs[peak] + 6.0206).abs() < 0.02);
+    }
+
+    #[test]
+    fn sparse_bass_geometry_avoids_repeating_nearest_bin_steps() {
+        let mut kernel = SpectrumKernel::new(48_000).unwrap();
+        let frame = kernel.analyze(&stereo_tone(48_000, 5, 0.5, -1.0)).unwrap();
+        let repeated = frame.bins_dbfs[..24]
+            .windows(2)
+            .filter(|pair| pair[0] > FLOOR_DBFS && pair[0].to_bits() == pair[1].to_bits())
+            .count();
+        println!(
+            "58.59375 hz bass fixture: {repeated} adjacent non-floor repeated levels in first 24 bands"
+        );
+        assert_eq!(
+            repeated, 0,
+            "distinct log positions must interpolate the coarse bins instead of repeating nearest values"
+        );
+    }
+
+    #[test]
+    fn interpolated_bass_and_half_bin_tones_keep_bounded_level_and_frequency_error() {
+        for (bin, max_error) in [(5.0, 1.0), (128.5, 1.5)] {
+            let mut kernel = SpectrumKernel::new(48_000).unwrap();
+            let frames: Vec<_> = (0..FFT_SIZE)
+                .map(|index| {
+                    let sample = (std::f64::consts::TAU * bin * index as f64 / FFT_SIZE as f64)
+                        .sin() as f32
+                        * 0.5;
+                    [sample, -sample]
+                })
+                .collect();
+            let frame = kernel.analyze(&frames).unwrap();
+            let peak = peak_bin(&frame);
+            let (low, high) = band_bounds_hz(48_000, peak).unwrap();
+            let frequency = bin as f32 * 48_000.0 / FFT_SIZE as f32;
+            assert!((frame.bins_dbfs[peak] + 6.0206).abs() < max_error);
+            assert!(
+                frequency >= low - 48_000.0 / FFT_SIZE as f32
+                    && frequency <= high + 48_000.0 / FFT_SIZE as f32
+            );
+        }
     }
 
     #[test]

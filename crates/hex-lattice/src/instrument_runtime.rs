@@ -250,17 +250,24 @@ pub trait MutableInstrumentRuntime: Any + Send {
         &self,
         events: &[NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn crate::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError>;
 
     /// Apply a previously preflighted event slice and add generated audio to
     /// `frames`. Events at an equal frame offset are observed in slice order.
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]);
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    );
 
     /// Opt-in musical processing; legacy devices retain their existing path.
     fn preflight_clock(
         &self,
         _clock: Option<&dyn NativeInstrumentClock>,
         _frames: usize,
+        _resources: &dyn crate::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         Ok(())
     }
@@ -269,8 +276,9 @@ pub trait MutableInstrumentRuntime: Any + Send {
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         _clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
-        self.process_block(events, frames);
+        self.process_block(events, frames, _resources);
     }
 
     fn reset(&mut self);
@@ -322,6 +330,7 @@ pub enum NativeInstrumentRuntimeError {
     IncompatibleHistory,
     IncompatibleTwins,
     BlockNotStarted,
+    ResourceUnavailable,
 }
 
 impl NativeInstrumentRuntimeError {
@@ -334,6 +343,7 @@ impl NativeInstrumentRuntimeError {
             Self::IncompatibleHistory => "native instrument runtime histories are incompatible",
             Self::IncompatibleTwins => "native instrument runtime twins are incompatible",
             Self::BlockNotStarted => "native instrument runtime block was not started",
+            Self::ResourceUnavailable => "native instrument resource inventory is unavailable",
         }
     }
 }
@@ -477,10 +487,13 @@ impl NativeInstrumentRuntimePair {
         &self,
         events: &[NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn crate::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         validate_event_batch(events, frame_count, self.max_events_per_block)?;
-        self.primary.preflight_events(events, frame_count)?;
-        self.scratch.preflight_events(events, frame_count)
+        self.primary
+            .preflight_events(events, frame_count, _resources)?;
+        self.scratch
+            .preflight_events(events, frame_count, _resources)
     }
 
     /// Validate and process one block/segment. Generic ordering and payload
@@ -490,8 +503,9 @@ impl NativeInstrumentRuntimePair {
         &mut self,
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
-        self.process_block_with_clock(events, frames, None)
+        self.process_block_with_clock(events, frames, None, _resources)
     }
 
     /// Clock-aware transactional segment. All clock/event preflight completes
@@ -501,14 +515,18 @@ impl NativeInstrumentRuntimePair {
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         if !self.block_started {
             return Err(NativeInstrumentRuntimeError::BlockNotStarted);
         }
         validate_event_batch(events, frames.len(), self.max_events_per_block)?;
-        self.scratch.preflight_events(events, frames.len())?;
-        self.scratch.preflight_clock(clock, frames.len())?;
-        self.scratch.process_block_with_clock(events, frames, clock);
+        self.scratch
+            .preflight_events(events, frames.len(), _resources)?;
+        self.scratch
+            .preflight_clock(clock, frames.len(), _resources)?;
+        self.scratch
+            .process_block_with_clock(events, frames, clock, _resources);
         Ok(())
     }
 
@@ -841,6 +859,7 @@ mod tests {
             &self,
             events: &[NativeInstrumentEvent],
             frame_count: usize,
+            _resources: &dyn crate::DeviceResources,
         ) -> Result<(), NativeInstrumentRuntimeError> {
             let mut voices = self.voices;
             let mut previous_offset = 0;
@@ -896,7 +915,12 @@ mod tests {
             Ok(())
         }
 
-        fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]) {
+        fn process_block(
+            &mut self,
+            events: &[NativeInstrumentEvent],
+            frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
             let mut event_index = 0;
             for (frame_index, frame) in frames.iter_mut().enumerate() {
                 while events
@@ -1057,7 +1081,7 @@ mod tests {
         let unchanged = frames;
         pair.begin_block();
         assert_eq!(
-            pair.process_block(&[expression], &mut frames),
+            pair.process_block(&[expression], &mut frames, &crate::EMPTY_DEVICE_RESOURCES),
             Err(NativeInstrumentRuntimeError::InvalidEventBatch)
         );
         assert_eq!(frames, unchanged);
@@ -1144,6 +1168,7 @@ mod tests {
             &self,
             events: &[NativeInstrumentEvent],
             _frame_count: usize,
+            _resources: &dyn crate::DeviceResources,
         ) -> Result<(), NativeInstrumentRuntimeError> {
             if events.is_empty() {
                 Ok(())
@@ -1152,7 +1177,12 @@ mod tests {
             }
         }
 
-        fn process_block(&mut self, _events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]) {
+        fn process_block(
+            &mut self,
+            _events: &[NativeInstrumentEvent],
+            frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
             for frame in frames {
                 frame[0] += self.value;
             }
@@ -1302,7 +1332,9 @@ mod tests {
     ) -> Vec<StereoFrame> {
         let mut frames = vec![[0.0, 0.0]; frame_count];
         runtime.begin_block();
-        runtime.process_block(events, &mut frames).unwrap();
+        runtime
+            .process_block(events, &mut frames, &crate::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
         runtime.commit_block();
         frames
     }
@@ -1319,7 +1351,7 @@ mod tests {
                 Ok(PreparedAnalyticNote::new(
                     [0; ANALYTIC_NOTE_PAYLOAD_WORDS],
                     0,
-                    |_, _, _, _| [0.0, 0.0],
+                    |_, _, _, _, _| [0.0, 0.0],
                 ))
             }
         }
@@ -1403,7 +1435,9 @@ mod tests {
         let mut mixed = new_pair(1, 2);
         let mut chain_input = [[0.25, -0.5]; 5];
         mixed.begin_block();
-        mixed.process_block(&events, &mut chain_input).unwrap();
+        mixed
+            .process_block(&events, &mut chain_input, &crate::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
         mixed.commit_block();
         let expected: [[f32; 2]; 5] =
             std::array::from_fn(|index| [0.25 + generated[index][0], -0.5 + generated[index][1]]);
@@ -1432,6 +1466,7 @@ mod tests {
             .process_block(
                 &[event_off(0, 1), event_on(0, 2, 60, 100)],
                 &mut off_then_on,
+                &crate::EMPTY_DEVICE_RESOURCES,
             )
             .unwrap();
         runtime.commit_block();
@@ -1442,7 +1477,8 @@ mod tests {
         assert_eq!(
             runtime.process_block(
                 &[event_on(0, 3, 60, 100), event_off(0, 2)],
-                &mut on_then_off
+                &mut on_then_off,
+                &crate::EMPTY_DEVICE_RESOURCES,
             ),
             Err(NativeInstrumentRuntimeError::EventCapacityExceeded)
         );
@@ -1470,32 +1506,48 @@ mod tests {
     fn event_only_preflight_checks_generic_bounds_and_both_histories_without_processing() {
         let mut runtime = new_pair(1, 2);
         let on = [event_on(0, 11, 60, 100)];
-        assert!(runtime.preflight_event_batch(&on, 1).is_ok());
+        assert!(
+            runtime
+                .preflight_event_batch(&on, 1, &crate::EMPTY_DEVICE_RESOURCES)
+                .is_ok()
+        );
         assert!(runtime.committed_is_quiescent());
         assert_eq!(
-            runtime.preflight_event_batch(&[event_on(1, 11, 60, 100)], 1),
+            runtime.preflight_event_batch(
+                &[event_on(1, 11, 60, 100)],
+                1,
+                &crate::EMPTY_DEVICE_RESOURCES
+            ),
             Err(NativeInstrumentRuntimeError::InvalidEventBatch)
         );
         assert_eq!(
-            runtime.preflight_event_batch(&[on[0]; 9], 1),
+            runtime.preflight_event_batch(&[on[0]; 9], 1, &crate::EMPTY_DEVICE_RESOURCES),
             Err(NativeInstrumentRuntimeError::EventCapacityExceeded)
         );
         runtime.begin_block();
-        runtime.process_block(&on, &mut [[0.0; 2]]).unwrap();
+        runtime
+            .process_block(&on, &mut [[0.0; 2]], &crate::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
         // Only scratch has the active ID; a primary-only check would accept it.
         assert_eq!(
-            runtime.preflight_event_batch(&on, 1),
+            runtime.preflight_event_batch(&on, 1, &crate::EMPTY_DEVICE_RESOURCES),
             Err(NativeInstrumentRuntimeError::InvalidEventBatch)
         );
         runtime.rollback_block();
         assert!(runtime.committed_is_quiescent());
         runtime.begin_block();
-        assert!(runtime.preflight_event_batch(&on, 1).is_ok());
-        runtime.process_block(&on, &mut [[0.0; 2]]).unwrap();
+        assert!(
+            runtime
+                .preflight_event_batch(&on, 1, &crate::EMPTY_DEVICE_RESOURCES)
+                .is_ok()
+        );
+        runtime
+            .process_block(&on, &mut [[0.0; 2]], &crate::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
         runtime.commit_block();
         // Commit swaps twins: only primary now has the active ID.
         assert_eq!(
-            runtime.preflight_event_batch(&on, 1),
+            runtime.preflight_event_batch(&on, 1, &crate::EMPTY_DEVICE_RESOURCES),
             Err(NativeInstrumentRuntimeError::InvalidEventBatch)
         );
         assert!(!runtime.committed_is_quiescent());
@@ -1531,7 +1583,10 @@ mod tests {
             runtime.begin_block();
             let mut untouched = [[4.0, -2.0]; 3];
             let before = untouched;
-            assert_eq!(runtime.process_block(&events, &mut untouched), Err(error));
+            assert_eq!(
+                runtime.process_block(&events, &mut untouched, &crate::EMPTY_DEVICE_RESOURCES),
+                Err(error)
+            );
             assert_eq!(untouched, before);
             runtime.rollback_block();
         }
@@ -1551,7 +1606,11 @@ mod tests {
         runtime.begin_block();
         let mut failed = [[0.0, 0.0]; 4];
         runtime
-            .process_block(&[event_off(1, 7)], &mut failed)
+            .process_block(
+                &[event_off(1, 7)],
+                &mut failed,
+                &crate::EMPTY_DEVICE_RESOURCES,
+            )
             .unwrap();
         runtime.rollback_block();
 

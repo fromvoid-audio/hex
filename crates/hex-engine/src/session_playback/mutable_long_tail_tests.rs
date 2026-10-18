@@ -53,6 +53,7 @@ impl MutableInstrumentRuntime for FiniteTailRuntime {
         &self,
         events: &[NativeInstrumentEvent],
         _: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         let mut gated = self.gated;
         for event in events {
@@ -67,7 +68,12 @@ impl MutableInstrumentRuntime for FiniteTailRuntime {
         }
         Ok(())
     }
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let mut events = events.iter().peekable();
         for (offset, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.peek() {
