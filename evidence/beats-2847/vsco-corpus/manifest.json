@@ -1,0 +1,132 @@
+{
+  "publisher": "VSCO 2 Community Edition \u2014 Versilian Studios / Sam Gossner; Ivy Audio / Simon Dalzell; sample cutting Elan Hickler/Soundemote",
+  "publisher_homepage": "http://vis.versilstudios.net/vsco-community.html",
+  "repository": "https://github.com/sgossner/VSCO-2-CE",
+  "source_commit": "440300901dfe9275fd84e0b7763af1f8443ae62e",
+  "rights": "CC0 1.0 Universal. Retain accompanying publisher requests/credits, including request not to sell samples directly. Test/evidence intake only; not production library.",
+  "listening": "not performed; no sonic quality, commercial comparison, or original BPM claim",
+  "rights_files": [
+    {
+      "path": "README.md",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/README.md",
+      "bytes": 751,
+      "sha256": "8fbf399338661e6c76585ad9e75eb10324f823935168e0567553293a83f200a0"
+    },
+    {
+      "path": "Readme.txt",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/Readme.txt",
+      "bytes": 1838,
+      "sha256": "101ddb88eb013900cc911834ecbdfbd49497bcd913bf09417160b9677952bb38"
+    },
+    {
+      "path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/LICENSE",
+      "bytes": 6555,
+      "sha256": "36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673"
+    }
+  ],
+  "audio": [
+    {
+      "publisher_path": "Strings/Solo Contrabass/SusNV/BKCtbss_SusNV_A1_v1_rr1.wav",
+      "path": "BKCtbss_SusNV_A1_v1_rr1.wav",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/Strings/Solo%20Contrabass/SusNV/BKCtbss_SusNV_A1_v1_rr1.wav",
+      "bytes": 1249496,
+      "git_blob": "1bffe0476c289a25c3404d023a37e26d473dee48",
+      "sha256": "06057880075d08c3f5a9df78bb7ec07f4cd41bd26e09a69f7a2e92cc66f308d9",
+      "wav_format_code": 1,
+      "channels": 2,
+      "sample_rate": 44100,
+      "bits_per_sample": 16,
+      "block_align": 4,
+      "frames": 312348,
+      "duration_seconds": 7.082721088435374,
+      "original_bpm": null,
+      "content_or_pitch_label": "publisher filename only, not listening verified"
+    },
+    {
+      "publisher_path": "Strings/Solo Contrabass/Pizz/BKCtbss_Pizz_A1_v1_rr1.wav",
+      "path": "BKCtbss_Pizz_A1_v1_rr1.wav",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/Strings/Solo%20Contrabass/Pizz/BKCtbss_Pizz_A1_v1_rr1.wav",
+      "bytes": 623260,
+      "git_blob": "311a5027a127715530f1e723a21f7927d280d493",
+      "sha256": "c88e632ac4f716d4e85112d6ea5bbe2d27d67019296787c25d27178a9e5f18ac",
+      "wav_format_code": 1,
+      "channels": 2,
+      "sample_rate": 44100,
+      "bits_per_sample": 16,
+      "block_align": 4,
+      "frames": 155789,
+      "duration_seconds": 3.5326303854875283,
+      "original_bpm": null,
+      "content_or_pitch_label": "publisher filename only, not listening verified"
+    },
+    {
+      "publisher_path": "Strings/Cello Section/trem/trem_B2_v2_1.wav",
+      "path": "trem_B2_v2_1.wav",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/Strings/Cello%20Section/trem/trem_B2_v2_1.wav",
+      "bytes": 1816706,
+      "git_blob": "8ba6739037b2536455aa1e4209ced38c5fe12f09",
+      "sha256": "2ce55bf91c06e69d4666a61456665a139683ad625373d8e483240ea7e1580148",
+      "wav_format_code": 1,
+      "channels": 2,
+      "sample_rate": 44100,
+      "bits_per_sample": 24,
+      "block_align": 6,
+      "frames": 302777,
+      "duration_seconds": 6.865691609977325,
+      "original_bpm": null,
+      "content_or_pitch_label": "publisher filename only, not listening verified"
+    },
+    {
+      "publisher_path": "Percussion/Timpani/Rolls/Timpani5_Roll_v4_rr1_Sum.wav",
+      "path": "Timpani5_Roll_v4_rr1_Sum.wav",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/Percussion/Timpani/Rolls/Timpani5_Roll_v4_rr1_Sum.wav",
+      "bytes": 2967320,
+      "git_blob": "6edd78469dbff041770d9701a77196dd497218e9",
+      "sha256": "794123bbe4625ab4abc4fb31de27dcfc4276de7cc4fc2df5e50271e27e5c5d0e",
+      "wav_format_code": 1,
+      "channels": 2,
+      "sample_rate": 44100,
+      "bits_per_sample": 16,
+      "block_align": 4,
+      "frames": 741804,
+      "duration_seconds": 16.82095238095238,
+      "original_bpm": null,
+      "content_or_pitch_label": "publisher filename only, not listening verified"
+    },
+    {
+      "publisher_path": "VSCO 1 Percussion/drums/snare/drum1/snare1_f_1.wav",
+      "path": "snare1_f_1.wav",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/VSCO%201%20Percussion/drums/snare/drum1/snare1_f_1.wav",
+      "bytes": 193630,
+      "git_blob": "0150e2c94ad1c83b071944e3cfb286752546c894",
+      "sha256": "a2b30cc19bd5688ee6d11629b53d24192c5dcc2033f41332cea9a789bc87b744",
+      "wav_format_code": 1,
+      "channels": 2,
+      "sample_rate": 44100,
+      "bits_per_sample": 24,
+      "block_align": 6,
+      "frames": 32264,
+      "duration_seconds": 0.731609977324263,
+      "original_bpm": null,
+      "content_or_pitch_label": "publisher filename only, not listening verified"
+    },
+    {
+      "publisher_path": "VSCO 1 Percussion/varMetal/Cymbals/susp/susp_FX_scrape_rapid.wav",
+      "path": "susp_FX_scrape_rapid.wav",
+      "url": "https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/VSCO%201%20Percussion/varMetal/Cymbals/susp/susp_FX_scrape_rapid.wav",
+      "bytes": 1300906,
+      "git_blob": "c30706a1e4abb4124aa016c6b82658e5ff346463",
+      "sha256": "1dfbb36b90f4d6e213b1b192894d332b7b9ebf1de37a9a3e7c27d908ebb4a12f",
+      "wav_format_code": 1,
+      "channels": 2,
+      "sample_rate": 44100,
+      "bits_per_sample": 24,
+      "block_align": 6,
+      "frames": 216810,
+      "duration_seconds": 4.916326530612245,
+      "original_bpm": null,
+      "content_or_pitch_label": "publisher filename only, not listening verified"
+    }
+  ]
+}
