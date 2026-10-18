@@ -81,10 +81,7 @@ fn fixture(
     }
     // Consume the current worker state without making a synthetic project view.
     service
-        .submit(Request::Edit(Command::SetClipGain {
-            clip: clips[0],
-            gain: 1.0,
-        }))
+        .submit(Request::Edit(Command::Gain { track, gain: 1.0 }))
         .unwrap();
     let event = next(&service);
     let handle = *cx.add_window(|_, _| gpui::Empty);
