@@ -1341,3 +1341,7 @@ mod tests {
         state.project.clip(id).expect("clip").clone()
     }
 }
+
+#[cfg(test)]
+#[path = "stretch_limit_tests.rs"]
+mod stretch_limit_tests;
