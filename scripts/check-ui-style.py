@@ -52,7 +52,7 @@ widgets = (
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
-    'picker_label(', 'picker_heading(',
+    'picker_label(', 'picker_heading(', 'picker_group_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.
     'self.browser_audition_row(', 'mini_waveform(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
@@ -85,7 +85,7 @@ widgets = (
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
-    'lights)', 'crate::build_info::label()', 'version_label()', 'debug_button()',
+    'lights)', 'crate::build_info::label()', 'crate::build_info::editor_label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     # Device preset header actions reuse themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button(',
