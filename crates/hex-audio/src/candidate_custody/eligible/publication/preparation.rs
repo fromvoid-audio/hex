@@ -582,10 +582,16 @@ impl Custody {
         if barrier.closing || barrier.retiring {
             return Err("candidate Root is closing");
         }
+        // Preserve the existing outer-root -> eligible-bank order, retaining
+        // the ACTUAL preparation-cancellation exclusion through queue commit.
+        // External family/worker inspection will precede these native guards;
+        // this candidate-local operation does not yet provide that joint proof.
+        let mut bank = lock(&self.bank);
         let owner = split
             .owner_on_control()
             .ok_or("candidate preparation is not ready")?;
-        let plan = self.preflight_stage(
+        let plan = Self::preflight_stage_with_bank(
+            &bank,
             root,
             owner,
             &execution.domains,
@@ -598,8 +604,9 @@ impl Custody {
         }
         execution.pending = true;
         // Only the preallocated transfer moves owners. This remains the legacy
-        // candidate-local stage: final claim binding/continuous native guards and
-        // the actual joint ledger still need the separate closed-graph route.
+        // candidate-local stage: the actual joint ledger/source/cancel frontier
+        // still needs the separate closed-graph route. The held eligible guard
+        // excludes native preparation cancellation, not the worker watermark.
         let parts = catch_unwind(AssertUnwindSafe(|| split.transfer_on_control()));
         let (runtime, anchors) = match parts {
             Ok(Ok(parts)) => parts,
@@ -610,24 +617,34 @@ impl Custody {
             Err(payload) => {
                 execution.failed = true;
                 work.publication.failed_payloads[token.slot] = Some(payload);
-                let mut bank = lock(&self.bank);
                 bank.publication.slots[token.slot].phase = Phase::Failed;
                 self.mark_closing(&mut bank);
                 return Err("candidate preparation is incomplete");
             }
         };
+        // Read only the actual privately retained constructor halves. This
+        // Engine check traverses their owned fields/receipts without locking a
+        // native bank or invoking provider/user code. No Root/Life clone occurs.
+        let matched = anchors
+            .constructor_claims(&runtime)
+            .is_some_and(|proof| proof.summary() == Some(summary));
         let domains = std::mem::take(&mut execution.domains);
-        let (queued, ticket) = self.commit_stage(StageCommit {
-            runtime,
-            anchors,
-            domains,
-            header,
-            summary,
-            plan,
-            state,
-        });
+        let (queued, ticket) = self.commit_stage_with_bank(
+            StageCommit {
+                runtime,
+                anchors,
+                domains,
+                header,
+                summary,
+                plan,
+                state,
+            },
+            matched,
+            &mut bank,
+        );
         enqueue(queued);
         execution.pending = false;
+        drop(bank);
         drop(barrier);
         self.advance_runtime_preparations(&mut work.publication, false);
         Ok(ticket)
@@ -759,6 +776,9 @@ impl Custody {
 mod tests {
     use super::*;
     fn root() -> CandidateRoot {
+        root_with_rows(4096, 4096)
+    }
+    fn root_with_rows(member_rows: usize, transfer_rows: usize) -> CandidateRoot {
         let root = CandidateRoot::new(2).unwrap();
         root.0
             .eligible
@@ -767,8 +787,8 @@ mod tests {
                 AudioCandidatePublicationReservation {
                     runtime_slots: 2,
                     archive_slots: 2,
-                    member_rows: 4096,
-                    transfer_rows: 4096,
+                    member_rows,
+                    transfer_rows,
                     receipt_rows: 2,
                     data_rows: 4096,
                     handle_rows: 4096,
@@ -838,6 +858,121 @@ mod tests {
             asset,
             hex_engine::Audio::new(48000, vec![[0.25; 2]; 8]).unwrap(),
         )
+    }
+    #[test]
+    fn rooted_stage_holds_terminal_and_preparation_cancellation_guards_through_enqueue() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported rooted native guard test; no positive stage proof");
+            return;
+        }
+        eprintln!("SUPPORTED actual rooted stage guards, cancel-before refusal and normal return");
+        for cancel_before in [true, false] {
+            let (project, asset, audio) = project();
+            // The older root() fixture covers partial construction only. This
+            // case stages a complete runtime, so reserve its independently
+            // quoted actual project rows without changing any DATA ceiling.
+            let quote =
+                hex_engine::AudioCandidateReservationQuote::for_project(&project, 1).unwrap();
+            let root = root_with_rows(quote.member_rows, quote.transfer_rows);
+            let custody = &root.0.eligible;
+            let mut limits = reservation();
+            limits.member_rows = quote.member_rows;
+            limits.transfer_rows = quote.transfer_rows;
+            limits.storage = quote
+                .storage_reservation(8 * std::mem::size_of::<hex_engine::Frame>())
+                .unwrap();
+            limits.handle_rows = limits.storage.handle_obligations;
+            let token = custody
+                .reserve_runtime_preparation(limits, Vec::new())
+                .ok()
+                .unwrap();
+            let mut identity = None;
+            custody
+                .with_runtime_preparation(token, |cell| {
+                    cell.copy_resident_source_on_control(asset, &audio)?;
+                    cell.prepare_on_control(
+                        &project,
+                        11,
+                        hex_engine::AudioSourceContext {
+                            project_generation: 2,
+                            editor_revision: 8,
+                        },
+                    )?;
+                    identity = cell.owner_on_control().map(|owner| owner.identity());
+                    Ok(())
+                })
+                .unwrap();
+            if cancel_before {
+                assert!(custody.cancel_runtime_preparation(token));
+            }
+            let mut queued = None;
+            let result = custody.stage_runtime_preparation(
+                &root,
+                token,
+                Header {
+                    revision: 1,
+                    context_generation: 2,
+                    policy: crate::prepared::PublicationPolicy::InheritRuntime,
+                },
+                48_000,
+                |value| {
+                    // Test-only queue observer. Production supplies its already
+                    // reserved rtrb write, not an application callback.
+                    assert!(matches!(
+                        root.0.bank.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ));
+                    assert!(matches!(
+                        custody.bank.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ));
+                    assert!(matches!(
+                        custody.work.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ));
+                    queued = Some(value);
+                },
+            );
+            if cancel_before {
+                assert!(result.is_err());
+                assert!(queued.is_none());
+                let mut work = lock(&custody.work);
+                let owner = work.publication.preparations[token.slot]
+                    .as_mut()
+                    .unwrap()
+                    .cell
+                    .as_mut()
+                    .unwrap()
+                    .owner_on_control()
+                    .unwrap();
+                assert_eq!(Some(owner.identity()), identity);
+                assert_eq!(
+                    owner.phase(),
+                    hex_engine::AudioCandidateDisposalPhase::Owned
+                );
+                drop(work);
+                std::thread::scope(|scope| {
+                    scope.spawn(|| root.advance_on_control()).join().unwrap();
+                });
+            } else {
+                let ticket = result.unwrap();
+                // Once accepted, constructor cancellation cannot retake this
+                // owner; the existing publication/return protocol owns it.
+                assert!(!custody.cancel_runtime_preparation(token));
+                custody
+                    .ingest_publication(&root, queued.unwrap().reject_before_install())
+                    .ok()
+                    .unwrap();
+                std::thread::scope(|scope| {
+                    scope.spawn(|| root.advance_on_control()).join().unwrap();
+                });
+                let returned = custody.recover_publication(&ticket).unwrap();
+                assert_eq!(Some(returned.disposed.identity()), identity);
+                assert!(returned.inputs.owning_handle_count() > 0);
+                assert!(custody.recover_publication(&ticket).is_none());
+            }
+            assert!(custody.complete());
+        }
     }
     #[test]
     #[cfg(feature = "allocation-probe")]
