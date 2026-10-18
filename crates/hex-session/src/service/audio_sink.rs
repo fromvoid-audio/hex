@@ -15,7 +15,7 @@ pub trait WorkerAudioSink: Send {
     /// Called before the corresponding canonical event can block on UI delivery.
     /// On generation replacement relinquish the previous publication/output
     /// first. Replacement opening must be polled, not awaited in this method.
-    fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
+    fn canonical_changed(&mut self, source: SharedCanonicalAudioSource);
     /// Advance bounded preparation/return work; no UI polling is required.
     fn poll(&mut self);
     /// Start a correlated reopen on the existing lifecycle lane. Implementations
@@ -89,7 +89,7 @@ impl WorkerEvents {
         if let Some(source) = &event.state.canonical_audio_source {
             if self.last_context != Some(source.context()) {
                 if let Some(audio) = self.audio.as_mut() {
-                    audio.canonical_changed(Arc::clone(source));
+                    audio.canonical_changed(source.clone());
                 }
                 self.last_context = Some(source.context());
             }
@@ -158,7 +158,7 @@ mod tests {
                 Ok(44100)
             }
         }
-        fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+        fn canonical_changed(&mut self, source: SharedCanonicalAudioSource) {
             let context = source.context();
             self.observed.sources.lock().unwrap().push((
                 context.project_generation,

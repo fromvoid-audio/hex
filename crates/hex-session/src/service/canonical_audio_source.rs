@@ -1,6 +1,42 @@
 //! Immutable canonical Project/counter pairing owned by the existing worker.
 //! Correlation only: constructor custody and exact page protection remain separate.
 use super::*;
+
+/// Actual fresh canonical snapshot owner. Clones preserve its constructor pair;
+/// no raw Arc adoption or mutable child access is available on this facade.
+/// Its child bindings, Project, construction peak and custody remain separate.
+///
+/// ```compile_fail
+/// fn adopt(raw: std::sync::Arc<hex_session::service::CanonicalAudioSourceSnapshot>) {
+///     let _: hex_session::service::SharedCanonicalAudioSource = raw.into();
+/// }
+/// ```
+pub type SharedCanonicalAudioSource = hex_engine::SharedMetadata<CanonicalAudioSourceSnapshot>;
+
+/// Visit the actual paired snapshot and its currently supported resident children.
+/// Every other live snapshot/model/media owner must be visited separately. This
+/// neither seals the graph nor supplies construction peak or publication custody.
+/// Verified-file facts remain unsupported here rather than inferred from a path.
+pub fn visit_canonical_source_selected_storage_on_control<'a>(
+    owner: &'a SharedCanonicalAudioSource,
+    ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+) -> Result<(), hex_engine::AudioStorageError> {
+    ledger.borrow_shared_metadata_body_on_control(owner)?;
+    crate::visit_shared_project_selected_storage_on_control(&owner.project, ledger)?;
+    ledger.borrow_metadata_entries_backing_on_control(&owner.sources)?;
+    for binding in owner.sources.values() {
+        match binding {
+            crate::AudioSourceBinding::Resident(audio) => {
+                ledger.borrow_embedded_native_audio_on_control(audio)?;
+            }
+            crate::AudioSourceBinding::VerifiedFile(_) => {
+                return Err(hex_engine::AudioStorageError::UnknownStorage);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct CanonicalAudioSourceSnapshot {
     project: crate::SharedProject,
     context: hex_engine::AudioSourceContext,
@@ -128,6 +164,82 @@ mod tests {
         .ok()
         .unwrap()
     }
+    #[test]
+    fn paired_canonical_source_actual_producer_aliases_and_independent_bodies_conserve_limits() {
+        use hex_engine::{AudioRootStorageLedger, AudioStorageLedgerReservation};
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported canonical-source outer constructor; no positive storage proof");
+            return;
+        }
+        eprintln!("SUPPORTED actual canonical-source producer paired outer and model fields");
+        let session = Session::new(48_000, 8, 1024).unwrap();
+        let first = view_state(&session, Arc::default(), 7, 11, false, None);
+        let actual = first.canonical_audio_source.as_ref().unwrap();
+        let retained = actual.clone();
+        let independent = SharedCanonicalAudioSource::new_on_control(
+            CanonicalAudioSourceSnapshot::capture(&first.project, 7, 11, &session),
+        );
+        assert!(actual.shares_owner_with(&retained));
+        assert!(!actual.shares_owner_with(&independent));
+        assert_eq!(actual.context(), independent.context());
+        assert!(actual.project.shares_owner_with(&independent.project));
+        let reservation = AudioStorageLedgerReservation {
+            data_rows: 128,
+            handle_rows: 128,
+            root_rows: 16,
+            max_retained_bytes: 2_000_000,
+            max_construction_peak_bytes: 2_000_000,
+        };
+        let collect = |reservation| -> Result<_, hex_engine::AudioStorageError> {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
+            ledger.borrow_shared_metadata_body_on_control(actual)?;
+            let outer = ledger.summary()?.data_bytes;
+            assert!(outer > std::mem::size_of::<CanonicalAudioSourceSnapshot>());
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err()
+            );
+            // An alias is a separate physical field, but not another body.
+            ledger.borrow_shared_metadata_body_on_control(&retained)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            assert_eq!(ledger.summary()?.data_bytes, outer);
+            ledger.borrow_shared_metadata_body_on_control(&independent)?;
+            assert_eq!(ledger.summary()?.data_bytes, outer * 2);
+            assert_eq!(ledger.selected_shared_counts_on_control(), (2, 3));
+            // Visit the actual nested Project fields once despite outer aliases.
+            visit_canonical_source_selected_storage_on_control(actual, &mut ledger)?;
+            visit_canonical_source_selected_storage_on_control(&retained, &mut ledger)?;
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err()
+            );
+            visit_canonical_source_selected_storage_on_control(&independent, &mut ledger)?;
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err()
+            );
+            crate::visit_shared_project_selected_storage_on_control(&first.project, &mut ledger)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            assert!(ledger.summary()?.require_complete().is_err()); // no whole-root seal
+            ledger.summary()
+        };
+        let measured = collect(reservation).unwrap();
+        let mut exact = reservation;
+        exact.max_retained_bytes = measured.retained_bytes;
+        exact.max_construction_peak_bytes = measured.construction_peak_bytes;
+        assert_eq!(collect(exact).unwrap(), measured);
+        exact.max_retained_bytes -= 1;
+        assert!(collect(exact).is_err());
+        drop(session);
+        drop(first);
+        drop(independent);
+        assert_eq!(retained.context().editor_revision, 11);
+        assert_eq!(retained.sample_rate(), 48_000);
+    }
+
     #[test]
     fn canonical_worker_captures_project_and_counters_together_and_preview_cannot_mint_context() {
         let service = Service::new(48000, 16, 0).unwrap();

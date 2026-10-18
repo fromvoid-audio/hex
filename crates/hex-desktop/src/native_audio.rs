@@ -11,7 +11,7 @@ use hex_audio::{
 use hex_engine::AudioSourceContext;
 use hex_session::{
     AudioSourceBinding, DocumentAudioMode,
-    service::{CanonicalAudioSourceSnapshot, Service, WorkerAudioSink},
+    service::{Service, SharedCanonicalAudioSource, WorkerAudioSink},
 };
 use hex_ui::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 use std::sync::{
@@ -49,7 +49,7 @@ struct Submitted {
 }
 struct Preparation {
     token: AudioCandidatePreparationToken,
-    snapshot: Arc<CanonicalAudioSourceSnapshot>,
+    snapshot: SharedCanonicalAudioSource,
     catalog: u64,
     domain: Option<AudioCandidateDomainToken>,
     bound: bool,
@@ -61,7 +61,7 @@ pub(super) struct NativeAudioSink {
     events: SyncSender<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
     pending_observation: Option<EditorAudioEvent>,
-    desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
+    desired: Option<SharedCanonicalAudioSource>,
     output: Option<WorkerPreparedOutput>,
     output_generation: Option<u64>,
     output_identity: Option<u64>,
@@ -311,7 +311,7 @@ impl NativeAudioSink {
             return;
         };
         self.maintain_returns(control);
-        let Some(snapshot) = self.desired.as_ref().map(Arc::clone) else {
+        let Some(snapshot) = self.desired.clone() else {
             return;
         };
         let context = snapshot.context();
@@ -466,7 +466,7 @@ impl NativeAudioSink {
                 Ok(token) => {
                     self.preparation = Some(Preparation {
                         token,
-                        snapshot: Arc::clone(&snapshot),
+                        snapshot: snapshot.clone(),
                         catalog,
                         domain,
                         bound: domain.is_some(),
@@ -715,7 +715,7 @@ impl WorkerAudioSink for NativeAudioSink {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
-    fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+    fn canonical_changed(&mut self, source: SharedCanonicalAudioSource) {
         let previous = self
             .desired
             .as_ref()

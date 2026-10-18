@@ -27,7 +27,10 @@ pub mod preset;
 mod recovery;
 #[cfg(test)]
 mod verified_source_tests;
-pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
+pub use canonical_audio_source::{
+    CanonicalAudioSourceSnapshot, SharedCanonicalAudioSource,
+    visit_canonical_source_selected_storage_on_control,
+};
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
@@ -65,7 +68,7 @@ pub struct AudioClipWaveform {
 pub struct ViewState {
     /// Present only for a canonical worker snapshot. Preview views cannot mint
     /// source freshness for streamed constructor publication.
-    pub canonical_audio_source: Option<Arc<CanonicalAudioSourceSnapshot>>,
+    pub canonical_audio_source: Option<SharedCanonicalAudioSource>,
     pub project: crate::SharedProject,
     pub waveforms: SortedEntries<hex_project::AssetId, crate::SharedWaveform>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
@@ -911,12 +914,9 @@ pub(crate) fn view_state_owned(
             .unwrap_or(0),
     );
     ViewState {
-        canonical_audio_source: Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
-            &project,
-            project_generation,
-            revision,
-            session,
-        ))),
+        canonical_audio_source: Some(SharedCanonicalAudioSource::new_on_control(
+            CanonicalAudioSourceSnapshot::capture(&project, project_generation, revision, session),
+        )),
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),

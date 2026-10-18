@@ -30,7 +30,7 @@ impl WorkerAudioSink for ObservedSink {
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         self.inner.initialize(shutdown)
     }
-    fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+    fn canonical_changed(&mut self, source: SharedCanonicalAudioSource) {
         if source
             .required_sources()
             .any(|(_, binding)| matches!(binding, AudioSourceBinding::VerifiedFile(_)))

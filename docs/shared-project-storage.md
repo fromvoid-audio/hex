@@ -45,3 +45,26 @@ docs reject raw adoption and mutation. An existing audio allocation harness prob
 128 repeated paired-body/model/MIDI/state inspections after ledger reservation;
 its result must be executed on a supported constructor build before claiming
 zero allocation/free. No native visual/listening or playable Sampler claim follows.
+
+## Canonical source snapshot parent
+
+`service::SharedCanonicalAudioSource` carries the same existing restricted
+`SharedMetadata` pairing for the actual fresh `CanonicalAudioSourceSnapshot`.
+The worker constructs it once; event, native desired-source and preparation
+copies clone the paired handle. No raw `Arc` adoption or mutable owner accessor
+is added. Project/context capture, source selection and native publication
+behavior remain unchanged.
+
+`visit_canonical_source_selected_storage_on_control` visits that actual outer
+field/body, its actual paired Project field, source-map capacity and resident
+PCM fields. Repeated outer aliases do not invent additional embedded Project
+fields. Independent snapshots retain separate outer allocations even when they
+share a Project. Verified-file facts remain unsupported by this selected visitor;
+its known outer body never qualifies an unseen child.
+
+This is selected inventory, not a complete exported-view/root visitor. Preview
+owners, enclosing records, every other live owner, old/new/temporary construction
+peak, guards, atomic publication and retirement remain separate obligations.
+Fresh snapshot construction must be covered by the candidate construction quote
+before publication; post-construction retained observations cannot establish its
+historical peak.
