@@ -1,0 +1,308 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index b81fc69e..3bad068b 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -1895,25 +1895,34 @@ impl EditorView {
+             .flex_col()
+             .child(panel.w_full().flex_1().min_h_0().min_w_0())
+             .child(preview);
++        // The rail belongs to the fixed base column. The optional editor is a
++        // sibling of that WHOLE column, so neither opening control can move.
+         panel = div()
+             .w(px(pane_width + editor_width))
+             .flex_shrink_0()
+             .min_h_0()
+             .flex()
+-            .flex_col()
+             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+-            .child(toolbar)
+             .child(
+                 div()
+-                    .flex_1()
++                    .w(px(pane_width))
++                    .flex_shrink_0()
+                     .min_h_0()
+                     .flex()
+-                    .child(sidebar)
+-                    .child(self.browser_sidebar_resize(pane_width, cx))
+-                    .child(panel)
+-                    .children(editor),
+-            );
++                    .flex_col()
++                    .child(toolbar)
++                    .child(
++                        div()
++                            .flex_1()
++                            .min_h_0()
++                            .flex()
++                            .child(sidebar)
++                            .child(self.browser_sidebar_resize(pane_width, cx))
++                            .child(panel),
++                    ),
++            )
++            .children(editor);
+ 
+         let entity = cx.entity();
+         let mut resize = div()
+diff --git a/crates/hex-ui/src/editor/browser/layout.rs b/crates/hex-ui/src/editor/browser/layout.rs
+index 0e2db9f6..86d5b5c8 100644
+--- a/crates/hex-ui/src/editor/browser/layout.rs
++++ b/crates/hex-ui/src/editor/browser/layout.rs
+@@ -200,7 +200,7 @@ impl EditorView {
+             ))
+             .child(self.browser_icon(
+                 "⋮",
+-                "open tag editor",
++                "show or hide tag editor",
+                 |view, _, cx| {
+                     view.browser.layout.editor_visible = !view.browser.layout.editor_visible;
+                     cx.notify();
+@@ -742,9 +742,10 @@ impl EditorView {
+                     .child(div().flex_1().min_w_0())
+                     .child(self.browser_icon(
+                         "⋯",
+-                        "open full tag editor",
++                        "show or hide tag editor",
+                         |view, _, cx| {
+-                            view.browser.layout.editor_visible = true;
++                            view.browser.layout.editor_visible =
++                                !view.browser.layout.editor_visible;
+                             cx.notify();
+                         },
+                         cx,
+diff --git a/crates/hex-ui/src/editor/browser_tag_editor_geometry_ui_test.rs b/crates/hex-ui/src/editor/browser_tag_editor_geometry_ui_test.rs
+new file mode 100644
+index 00000000..cb8ffd04
+--- /dev/null
++++ b/crates/hex-ui/src/editor/browser_tag_editor_geometry_ui_test.rs
+@@ -0,0 +1,176 @@
++//! Real GPUI bounds and stationary-pointer gestures for the outward tag column.
++use super::*;
++
++fn fixture(
++    cx: &mut TestAppContext,
++) -> (
++    gpui::AnyWindowHandle,
++    gpui::Entity<EditorView>,
++    PreferencesTestDirectory,
++) {
++    let directory = PreferencesTestDirectory::new();
++    let (handle, editor) = place_icon_preferences_window(
++        cx,
++        &directory,
++        &directory.0.join("browser.json"),
++        &directory.0.join("recent.json"),
++    );
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let music = visual.debug_bounds("browser-place-0").unwrap();
++    visual.simulate_click(music.center(), Modifiers::default());
++    visual.run_until_parked();
++    assert!(
++        visual.debug_bounds("browser-entry-0").is_some(),
++        "positive WAV fixture must be rendered"
++    );
++    let automatic = visual.debug_bounds("browser-audition-auto").unwrap();
++    visual.simulate_click(automatic.center(), Modifiers::default());
++    let sample = visual.debug_bounds("browser-entry-0").unwrap();
++    visual.simulate_click(sample.center(), Modifiers::default());
++    visual.run_until_parked();
++    editor.read_with(visual, |view, _| {
++        let key = view
++            .browser
++            .preview_selected
++            .as_ref()
++            .expect("actual sample selection prepared metadata");
++        assert!(view.browser.preview_cache[key].metadata.borrow().is_some());
++        assert!(!view.browser.auto_audition);
++    });
++    (handle, editor, directory)
++}
++
++fn picker_width(visual: &mut VisualTestContext, width: f32) {
++    let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
++    let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
++    let target = divider.center() + point(px(width) - sidebar.size.width, px(0.0));
++    visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++    visual.run_until_parked();
++    assert_eq!(
++        visual.debug_bounds("browser-sidebar").unwrap().size.width,
++        px(width)
++    );
++}
++
++const STATIONARY: [&str; 16] = [
++    "browser-toolbar",
++    "browser-search",
++    "browser-history-back",
++    "browser-control-≡",
++    "browser-control-⋮",
++    "browser-control-×",
++    "browser-sidebar",
++    "browser-sidebar-resize",
++    "browser-entry-0",
++    "browser-tag-selector",
++    "browser-selection-preview",
++    "browser-control-⋯",
++    "browser-audition-row",
++    "browser-audition-auto",
++    "browser-audition-transport",
++    "browser-audition-waveform",
++];
++
++#[gpui::test]
++fn browser_tag_editor_stationary_rail_and_full_height_outward_column(cx: &mut TestAppContext) {
++    let (handle, editor, _directory) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    for width in [124.0, 23.0] {
++        picker_width(visual, width);
++        for affordance in ["browser-control-⋮", "browser-control-⋯"] {
++            let before = STATIONARY.map(|selector| visual.debug_bounds(selector).unwrap());
++            let outer = visual.debug_bounds("browser-resize-handle").unwrap();
++            let generation = editor.read_with(visual, |view, _| view.browser.playback_generation);
++            let (key, metadata, preparations) = editor.read_with(visual, |view, _| {
++                let key = view.browser.preview_selected.as_ref().unwrap().clone();
++                (
++                    key.clone(),
++                    Rc::clone(&view.browser.preview_cache[&key].metadata),
++                    view.browser.preview_preparations,
++                )
++            });
++            let pointer = visual.debug_bounds(affordance).unwrap().center();
++            for _ in 0..3 {
++                visual.simulate_click(pointer, Modifiers::default());
++                visual.run_until_parked();
++                let column = visual
++                    .debug_bounds("browser-tag-editor")
++                    .expect("actual toggle opened tag column");
++                for (selector, expected) in STATIONARY.into_iter().zip(before) {
++                    assert_eq!(
++                        visual.debug_bounds(selector).unwrap(),
++                        expected,
++                        "opening from {affordance} moved {selector} at picker width {width}"
++                    );
++                }
++                let toolbar = visual.debug_bounds("browser-toolbar").unwrap();
++                let preview = visual.debug_bounds("browser-selection-preview").unwrap();
++                assert_eq!(
++                    column.top(),
++                    toolbar.top(),
++                    "tag column starts alongside top rail"
++                );
++                assert_eq!(
++                    column.left(),
++                    toolbar.right(),
++                    "column is outward of the WHOLE base browser"
++                );
++                assert_eq!(
++                    column.bottom(),
++                    preview.bottom(),
++                    "column spans browser height"
++                );
++                assert!(column.right() > outer.left());
++                assert_eq!(
++                    visual.debug_bounds("browser-resize-handle").unwrap().left(),
++                    column.right()
++                );
++                // No pointer movement: the original affordance must still be hit and close.
++                visual.simulate_click(pointer, Modifiers::default());
++                visual.run_until_parked();
++                assert!(
++                    visual.debug_bounds("browser-tag-editor").is_none(),
++                    "second stationary click must close from {affordance}"
++                );
++                for (selector, expected) in STATIONARY.into_iter().zip(before) {
++                    assert_eq!(
++                        visual.debug_bounds(selector).unwrap(),
++                        expected,
++                        "closing moved {selector}"
++                    );
++                }
++                assert_eq!(visual.debug_bounds("browser-resize-handle").unwrap(), outer);
++            }
++            editor.read_with(visual, |view, _| {
++                assert_eq!(view.browser.playback_generation, generation);
++                assert_eq!(
++                    view.browser.preview_preparations, preparations,
++                    "tag toggles must not reprepare sample metadata"
++                );
++                assert!(Rc::ptr_eq(
++                    &metadata,
++                    &view.browser.preview_cache[&key].metadata
++                ));
++                assert!(metadata.borrow().is_some());
++                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
++            });
++        }
++    }
++}
++
++#[gpui::test]
++fn browser_tag_editor_mini_strip_is_a_stationary_two_click_toggle(cx: &mut TestAppContext) {
++    let (handle, _editor, _directory) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    let pointer = visual.debug_bounds("browser-control-⋯").unwrap().center();
++    visual.simulate_click(pointer, Modifiers::default());
++    assert!(visual.debug_bounds("browser-tag-editor").is_some());
++    visual.simulate_click(pointer, Modifiers::default());
++    assert!(
++        visual.debug_bounds("browser-tag-editor").is_none(),
++        "mini-strip toggle must close on second actual click at identical coordinates"
++    );
++}
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 306c6e49..01c6dadd 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4894,3 +4894,6 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
+         assert!(view.pending_audio_commands.is_empty());
+     });
+ }
++
++#[path = "browser_tag_editor_geometry_ui_test.rs"]
++mod tag_editor_geometry;
+diff --git a/docs/browser-layout.md b/docs/browser-layout.md
+index c01a0c74..b22e9808 100644
+--- a/docs/browser-layout.md
++++ b/docs/browser-layout.md
+@@ -224,3 +224,22 @@ inspection; their physical native display and optical glyph appearance remain
+ coordinator-owned optimized acceptance, alongside smooth native divider dragging.
+ No tree indentation, results, preview, persisted preferences or divider feedback
+ behavior is implemented by this follow-up.
++
++## Stationary tag-editor toggles — Pulse2709 / PR325
++
++The rail and original browser body share one fixed base-width column. The optional
++editor is a sibling to that whole column, beginning at the rail's top and spanning
++the browser height. It borrows space to the right using the existing editor-width
++and outer-resize law; it neither overlays the base browser nor stretches the rail.
++Top and mini-strip controls both toggle, so a second click at the same coordinates
++closes the editor. Its dedicated close control remains available.
++
++Rendered input regressions reproduce the original rail expanding from480to624px
++and the mini-strip's open-only callback. They verify repeated stationary clicks at
++124px and23px picker widths, all rail/control bounds, results/preview/waveform and
++source geometry, top/right/bottom column alignment and return of the outer edge.
++An actually selected private WAV retains its loaded metadata owner without new
++preparation/audition requests. Existing browser source menus, heading/minimum snap,
++selection, drag/import, audition and history contracts remain separate and intact.
++This is layout/toggle behavior only; persistent tag editing remains Pulse2667.
++Optimized native pointer/GPU/tooltip acceptance remains root-owned and open.
+diff --git a/todo.md b/todo.md
+index 7c5fc5b1..0a76a90a 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5230,3 +5230,10 @@ covers long Place names, zero label space, both settings states and resize back
+ to normal; existing selection/hover/focus/audition regressions remain applicable.
+ Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
+ source handoff is separate from final integration/full CI/merge and delivery.
++
++18 October2026 — Pulse2709/PR325: reproduced rail width480→624px on tag-editor
++open plus mini-strip open-only click. Keep toolbar/body in one fixed base column
++and append editor beside the whole browser; both original controls toggle at a
++stationary pointer. Rendered normal/23px picker and sample-metadata retention
++regressions; focused checks/evidence in Pulse. Tag persistence2667 remains separate;
++sole merger owns prospective fullCI/merge, root optimized native acceptance.

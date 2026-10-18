@@ -1,0 +1,152 @@
+{
+  "ticket": 2709,
+  "canonical_pr": 325,
+  "head": "2e48c9965345a7dac9d05eb20b48fc97d1b13b7d",
+  "tree": "8269dedab69e828c2d53cba46fd6bcf560a24d0e",
+  "expected_before": "9748b54e5c6f103a44d278a1278acf30647ce18b",
+  "expected_before_tree": "9ce25743d16a3cacb74b4ff096c5e5654dbeb91a",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_tag_editor_geometry_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-layout.md",
+    "todo.md"
+  ],
+  "checks": [
+    {
+      "name": "browser",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "editor::browser::",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/325-final-browser.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/325-final-clippy.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/325-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/325-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/325-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/325-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/325-final-diff.log"
+    }
+  ],
+  "original_red": {
+    "source": "9748b54e5c6f103a44d278a1278acf30647ce18b",
+    "snapshot": "325-original-test.rs",
+    "registration": "original-registration.patch",
+    "log": "325-original-red.log",
+    "outcome": "0PASS2FAIL onunchangedproduction: actualtopopen expands toolbar480x30\u2192624x30, originunchanged(0,168); actualmini twoidenticalcoordinateclicks staysopen"
+  },
+  "final_results": {
+    "browser": "88PASS0failed0ignored715filtered26.03s;2newcases+86existingbrowsercases",
+    "strict_clippy": "hex-ui alltargets ui-test-support -Dwarnings PASS28.08s",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "fullCI": "NOTRUN bysourceowner; actualprospective-tree CIsolemerger"
+  },
+  "regressions": "PrivateHome/Music positiveWAV actualclick+loadedmetadata, 16existingrail/search/buttons/sidebar/divider/result/tags/preview/audition/waveform renderedbounds, bothaffordances repeated3open/closecycles at124and23px withsamepointer, tagcolumn top=rail.top left=rail.right bottom=preview.bottom, outeredge adds/returns; samecachedmetadataRc/preparation/playbackgeneration/no queuedimport/audio commands. Existingbrowsercasealso checksdedicatedclose/outerresize/inversewidthlaw/narrowresults, auditionStop/offset/no-doubleclickimport/search/focus/tree/Places retained.",
+  "diagnostics": {
+    "325-initial-test-diagnostic.log": "initialrun2FAIL: miniactualbug reproduced, railcase usedwrong historydebugselector andunwrappedNone, NOTrailmovementproof. Preservedinitialtest snapshot; correctedexisting browser-history-back selector thenreranunchangedproduction foractual2REDlog",
+    "325-first-green.log": "2PASS1.41s withsamecorrectedoriginalregressions afterminimalproductionfix; beforefinalstrongerpositiveWAV/16bounds/metadataidentity assertions. Final88casepacketqualifiesfinalsourcecontent"
+  },
+  "scope": "Production2filesonly: fixedbase toolbar+bodycolumn withwholeheightoutwardeditorsibling, minialways-open\u2192toggle andtruthful tooltips. Existingeditorwidth/outerresize/height/scrollingstyle/picker/source/history/preview/backend/data unchanged; no newtagstorage orgenericlayoutframework.",
+  "limits": [
+    "NativeoptimizedGPU/hover/macOSpointer/AX acceptance open; rootsoleserialMaclane",
+    "Combinedfuture444/446/414/423/427tree isNOTqualified bythis sourcepacket; mergerpreservesdisjointhunks andfullactualprospectivequalification",
+    "No installedapp/buildpackaging/install/launch/quit/restart/permissions/userinput/userfiles operations",
+    "Persistenttags2667 andbroadercollections2672 remainseparate; original400focus diagnosticunresolved",
+    "ExistingunsupportedPCM Arc-layout buildwarningretained ifpresent; no lintwaivers"
+  ],
+  "payloads": {
+    "325-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "325-final-browser.log": "7b03370011312c7b82bd1c97e8a574208e4f42f86cf94f755af1882e9339ae02",
+    "325-final-checks.json": "7fc78dfa75bbf1dc783255c07be26a845dee61406fb3aefeba5a1da51b9aa014",
+    "325-final-clippy.log": "5d43a988e0cef20f76a818a7dbdd27391a58e392c8748199350b5fedd68a52e8",
+    "325-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "325-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "325-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "325-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "325-first-green.log": "514525a24c1a31ff7a353ba411a0ae8db625d8015fe6cebe3d3a04ae3a0f63d4",
+    "325-fix-composition.py": "c33c4ca6c5109137dd6f8b3e1dff1a4cfb112eba62c624bc5642a2cf356cb991",
+    "325-focused-checks.py": "993d86b78fdc0145632dc5da52fe04a5de7e49578ebe591d25db72ba7d506056",
+    "325-initial-test-diagnostic.log": "8fbfb99f83f1a0dde65a0e309cf756f0b07f16c1daa6bcde46eeea8e6187a5b8",
+    "325-initial-test-diagnostic.rs": "f3d2b8497e86657b19e6de560198ce1f0e490c2f3f6c99a4b19425fa09cf5f17",
+    "325-original-red.log": "4345828227dc146b2d2fe23265dea9505886790f00fde8ca0d6c0d29812a8a6e",
+    "325-original-test.rs": "010f57c17220cc178ce3dc24a966dca169f13552d4270b90e6bd6a1c3f385c45",
+    "325-publish-evidence.py": "028942fd31e5daebbfff28961594ab1463d4339dabe0e2cb6dc2498ece46bbda",
+    "before-after-hashes.json": "aeda30ca494b60c8301d68a566d6e099f5806d8783482d1c9819c28d32a2ee6d",
+    "finite-mac-checklist.md": "0584fb1700039d6700999379910d91af38c01c8b5b166278905b30b57dfd9c45",
+    "integration-note.md": "b93e358206b7ae5e12fc38c3ef826987db94c1d9e9acd1084b9e52e686ff3180",
+    "original-registration.patch": "b2fa6d0ef663c0a1e2a52b28eb48363df3d081787e4d985657aaa8a0a0dcc19e",
+    "source.patch": "00879ffc1c37e89ff506192faf24fea040187cc743fe11225aacd67120b2e010"
+  }
+}
