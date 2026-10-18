@@ -368,6 +368,16 @@ fn compile_project_inner<'a>(
         tuning: shared_contexts.tuning(),
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
+    // At most one sidecar per authored audio clip. Quote the full possible
+    // backing before clip preparation; allocate it only when a real transformed
+    // view is needed. This avoids both geometric growth with live PCM children
+    // and a large unused backing for ordinary unprocessed projects.
+    let audio_clip_view_capacity = snapshot.tracks().iter().try_fold(0_usize, |count, track| {
+        count
+            .checked_add(track.clips().len())
+            .filter(|&n| n <= hex_project::MAX_CLIPS)
+            .ok_or(Invalid("compiled audio clip count exceeds project limit"))
+    })?;
     let mut audio_clip_views = Vec::new();
     let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
     let mut tracks = Vec::new();
@@ -497,9 +507,11 @@ fn compile_project_inner<'a>(
                 if let Some(audio) = &compiled.audio
                     && audio.frames._derived.is_some()
                 {
-                    audio_clip_views
-                        .try_reserve(1)
-                        .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
+                    if audio_clip_views.capacity() == 0 {
+                        audio_clip_views
+                            .try_reserve_exact(audio_clip_view_capacity)
+                            .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
+                    }
                     audio_clip_views.push(crate::PreparedAudioClipView {
                         clip: clip.id(),
                         audio: audio.clone(),

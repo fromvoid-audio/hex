@@ -499,6 +499,7 @@ fn accepted_audio_sidecar_survives_tiny_cache_and_preserves_split_crop_identity(
     let prepared = prepare(&editor, &media, &context);
     let views = prepared.arrangement().audio_clip_views();
     assert_eq!(views.len(), 2);
+    assert_eq!(prepared.arrangement().audio_clip_views.capacity(), 2);
     assert!(!views[0].audio.shares_pcm_with(&views[1].audio));
     assert_eq!(context.cached_pcm_bytes().unwrap(), 64_000);
     editor
@@ -507,6 +508,7 @@ fn accepted_audio_sidecar_survives_tiny_cache_and_preserves_split_crop_identity(
     let split = prepare(&editor, &media, &context);
     let views = split.arrangement().audio_clip_views();
     assert_eq!(views.len(), 3);
+    assert_eq!(split.arrangement().audio_clip_views.capacity(), 3);
     assert!(views[0].audio.shares_pcm_with(&views[1].audio));
     assert_eq!(views[1].offset, 3_137);
     assert_eq!(views[1].length, 4_863);
@@ -1632,4 +1634,14 @@ fn retained_transform_long_fade_scan_observes_direct_query_without_lookup_guard(
     assert_eq!(frames[0], [0.0, 0.0]);
     assert!(frames[3072..].iter().all(|frame| *frame == [1.0, 1.0]));
     assert!(worker.is_cancelled());
+}
+
+#[test]
+fn unprocessed_audio_sidecar_bound_does_not_allocate_unused_backing() {
+    let (editor, _, media) = fixture(false);
+    let context = isolated(512_000, 64_000, 1);
+    let prepared = prepare(&editor, &media, &context);
+    assert!(prepared.arrangement().audio_clip_views.is_empty());
+    assert_eq!(prepared.arrangement().audio_clip_views.capacity(), 0);
+    assert_eq!(prepared.arrangement().tracks()[0].clips.len(), 1);
 }

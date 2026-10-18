@@ -777,3 +777,12 @@ sort with no equal keys, preserving canonical processing order. The full
 sixteen-Return oracle checks actual retained capacities and unchanged propagated
 PCM. These explicit backings still need inclusion in the aggregate closed-entry
 reservation; this change does not replace that reservation.
+
+The Arrangement waveform-sidecar backing now has a checked authored-audio-clip
+upper bound before clip preparation. The first real transformed sidecar reserves
+that whole backing once; later sidecars cannot trigger geometric growth while
+PCM children are live. Ordinary unprocessed clips retain zero sidecar capacity.
+The bound is a possible-backing reservation, not the number of live transformed
+children; actual child fields and capacities still determine retained inventory.
+Split/crop/cache identity and unchanged Sampler host PCM are covered. Aggregate
+compiler peak reservation and native publication remain separate obligations.
