@@ -11,9 +11,13 @@ minimum applies to the base browser, with the editor borrowing additional worksp
 space while open. Workspace/drop geometry includes the extra column.
 
 The picker has an independent 4 px drag divider. Its session-only width starts at
-124 px, leaves at least 120 px for results, and snaps to a 36 px icon rail below
-64 px. Drag right to restore labels. In icon mode, collections, sections and folder
-places retain name tooltips; folder save/error status remains available by hover.
+124 px, leaves at least 120 px for results, and resizes continuously to a 23 px
+minimum: the existing 22 px browser-control hit/centering slot plus the sidebar's
+existing 1 px right border. Collection, Library and Place glyphs share that fixed
+leading slot at every width. Labels hide below 64 px without moving the icon column;
+drag right to restore them. Full-row hit targets remain at least 22 px wide/high.
+In icon mode, collections, sections and folder places retain name tooltips; folder
+save/error status remains available by hover.
 Section settings expand the picker when opened. All paint uses the existing semantic
 theme and captions use the bundled typography/lowercase display boundary.
 
@@ -143,3 +147,16 @@ existing bounded persistence; no user files are changed by source selection.
 Inline hierarchy, collections/tag editing and navigation history remain their
 separate owning issues. Native normal/icon picker, focus and offline-source
 acceptance is coordinator-owned and pending.
+
+## picker alignment follow-up — pulse2706 / PR322
+
+Headless GPUI geometry reproduced the old 63-to-36 px snap and a 1 px glyph-center
+offset from adjacent browser controls. The shared slot centers the actual glyph
+layout boxes, retains row heights and removes the width snap. Tests exercise all
+three source-row types at minimum, transition and normal widths, plus full-row
+clicks, hover without selection/audition/preparation, search focus, keyboard Down,
+selected paint and drag lifecycle. Tooltip names/handlers remain unchanged by source
+inspection; their physical native display and optical glyph appearance remain
+coordinator-owned optimized acceptance, alongside smooth native divider dragging.
+No tree indentation, results, preview, persisted preferences or divider feedback
+behavior is implemented by this follow-up.

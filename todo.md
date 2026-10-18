@@ -5085,3 +5085,16 @@ source repair and browser contract checks are recorded separately in Pulse2791.
 Dedicated merger owns final prospective full CI/integration/merge. Optimized native
 availability/query and unchanged audition/drag acceptance remain coordinator-owned;
 no installed app or user files changed during this source work.
+
+## collapsed browser picker geometry — pulse2706 / PR322, 18 october 2026
+
+Collections, Library and Places share a 22 px icon/control column. Picker width
+resizes continuously to 23 px including its existing border; labels still hide
+below 64 px while icons keep their horizontal position. Full-row targets, active
+source paint, keyboard/search focus, hover-name handlers and original Place paths
+remain intact. Rendered glyph-bound red/green regression covers normal, transition
+and minimum widths; the existing source-selection input test now covers row-edge
+clicks, inert hover, focus and resize state across those widths. Targeted results
+and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
+full CI/integration/merge; optimized native drag/hover/optical acceptance remains
+open. No installed app, persisted schema or user files changed.

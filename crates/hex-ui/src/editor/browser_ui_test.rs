@@ -2720,7 +2720,10 @@ fn browser_picker_resizes_to_icons_and_back_without_changing_browser_width(
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let compact = visual.debug_bounds("browser-sidebar").expect("icon rail");
-    assert_eq!(compact.size.width, px(36.0));
+    assert_eq!(
+        compact.size.width,
+        visual.debug_bounds("browser-control-⚙").unwrap().size.width + px(1.0)
+    );
     let compact_row = visual
         .debug_bounds("browser-entry-0")
         .expect("expanded results");
@@ -3313,6 +3316,7 @@ fn browser_new_selection_clears_completed_position_without_auto_audition(cx: &mu
 
 #[gpui::test]
 fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, _| view.browser.auto_audition = false);
@@ -3327,25 +3331,68 @@ fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestA
     ];
     let selected = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Hover)).into();
     let idle = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Surface)).into();
-    for compact in [false, true] {
-        if compact {
-            let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
-            let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
-            let target = point(sidebar.left() + px(20.0), divider.center().y);
-            visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
-            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
-            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-            visual.run_until_parked();
-            assert_eq!(
-                visual.debug_bounds("browser-sidebar").unwrap().size.width,
-                px(36.0)
-            );
-        }
+    let minimum = f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width) + 1.0;
+    let places = editor.read_with(&visual, |view, _| view.browser.places.clone());
+    for width in [124.0, 64.0, 63.0, minimum] {
+        let compact = width < 64.0;
+        let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
+        let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+        let target = divider.center() + point(px(width) - sidebar.size.width, px(0.0));
+        visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            assert!(view.browser.layout.sidebar_drag.is_some())
+        });
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("browser-sidebar").unwrap().size.width,
+            px(width)
+        );
+        editor.read_with(&visual, |view, _| {
+            assert!(view.browser.layout.sidebar_drag.is_none());
+            assert_eq!(view.browser.places, places);
+            assert!(!view.browser.auto_audition);
+        });
         for active in [0, 4, 1, 4, 5, 0, 5, 4, 2, 3] {
             let bounds = visual.debug_bounds(selectors[active]).unwrap();
-            visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
-            visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+            let before_hover = editor.read_with(&visual, |view, _| {
+                (
+                    view.browser.section.clone(),
+                    view.browser.playback_generation,
+                    view.browser.preview_preparations,
+                )
+            });
+            // Exercise the full row hit target, including blank space beyond its icon.
+            let hit = point(bounds.right() - px(1.0), bounds.center().y);
+            visual.simulate_mouse_move(hit, None, Modifiers::default());
             visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    (
+                        view.browser.section.clone(),
+                        view.browser.playback_generation,
+                        view.browser.preview_preparations
+                    ),
+                    before_hover,
+                    "picker hover cannot select, audition or prepare samples"
+                );
+            });
+            visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(hit, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                editor.read_with(cx, |view, cx| {
+                    assert_eq!(view.browser_key_context(window, cx), "hex_browser_search");
+                })
+            });
+            let source = editor.read_with(&visual, |view, _| view.browser.section.clone());
+            visual.simulate_keystrokes("down");
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.browser.section, source);
+                assert!(view.last_enqueued_import_to_track.is_none());
+                assert!(view.last_enqueued_import_to_new_track.is_none());
+            });
             for (index, selector) in selectors.iter().enumerate() {
                 assert_eq!(
                     visual.rendered_background(selector),
@@ -3579,4 +3626,70 @@ fn place_correctness_refresh_retains_identity_only_after_current_success(cx: &mu
         assert_eq!(view.browser.playback_generation, generation + 1);
         cx.notify();
     });
+}
+
+#[gpui::test]
+fn browser_picker_glyph_alignment_and_continuous_minimum_geometry(cx: &mut TestAppContext) {
+    let (handle, _editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let control = visual.debug_bounds("browser-control-⚙").unwrap();
+    // Existing 22px browser controls supply the usable hit size; the sidebar
+    // additionally owns its existing one-pixel right border.
+    let minimum = f32::from(control.size.width) + 1.0;
+    let rows = [
+        ("browser-collection-0", "browser-picker-glyph-collection-0"),
+        ("browser-collection-1", "browser-picker-glyph-collection-1"),
+        ("browser-collection-2", "browser-picker-glyph-collection-2"),
+        ("browser-section-samples", "browser-picker-glyph-section-0"),
+        ("browser-section-devices", "browser-picker-glyph-section-1"),
+        ("browser-section-projects", "browser-picker-glyph-section-2"),
+        ("browser-section-all", "browser-picker-glyph-section-3"),
+        ("browser-place-0", "browser-picker-glyph-place-0"),
+    ];
+    let outer_before = visual.debug_bounds("browser-resize-handle").unwrap();
+    let mut measurements = Vec::new();
+    for requested in [124.0, 80.0, 64.0, 63.0, 60.0, 48.0, 36.0, minimum] {
+        let before = visual.debug_bounds("browser-sidebar").unwrap();
+        let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
+        let target = divider.center() + point(px(requested) - before.size.width, px(0.0));
+        visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+        let control = visual.debug_bounds("browser-control-⚙").unwrap();
+        let glyphs = rows.map(|(row, glyph)| {
+            let row_bounds = visual.debug_bounds(row).unwrap();
+            let glyph_bounds = visual.debug_bounds(glyph).unwrap();
+            println!("picker requested={requested} actual={} {glyph}: row={row_bounds:?} glyph={glyph_bounds:?} control={control:?}", f32::from(sidebar.size.width));
+            (row_bounds, glyph_bounds)
+        });
+        measurements.push((requested, sidebar, control, glyphs));
+        assert_eq!(
+            visual.debug_bounds("browser-resize-handle").unwrap(),
+            outer_before
+        );
+    }
+    for (requested, sidebar, control, glyphs) in measurements {
+        assert_eq!(
+            sidebar.size.width,
+            px(requested),
+            "picker resize must be continuous down to the existing-control-derived minimum"
+        );
+        for (row, glyph) in glyphs {
+            assert_eq!(
+                glyph.center().x,
+                control.center().x,
+                "all picker glyphs must share the control column at width {requested}"
+            );
+            // GPUI rounds text origins to pixels while font line boxes may be fractional.
+            assert!(f32::from(glyph.center().y - row.center().y).abs() <= 0.5);
+            assert!(glyph.size.width <= control.size.width);
+            assert!(row.contains(&glyph.origin));
+            assert!(glyph.right() <= row.right());
+            assert!(row.size.width >= control.size.width);
+            assert!(row.size.height >= control.size.height);
+        }
+    }
 }
