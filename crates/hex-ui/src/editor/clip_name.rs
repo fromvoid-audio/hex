@@ -175,6 +175,25 @@ impl EditorView {
         name: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        self.clip_name_strip(track, clip, name, true, cx)
+    }
+    pub(super) fn clip_name_preview_header(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        self.clip_name_strip(track, clip, name, false, cx)
+    }
+    fn clip_name_strip(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        interactive: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         div()
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
@@ -189,26 +208,27 @@ impl EditorView {
             .line_height(px(14.0))
             .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .cursor_pointer()
-            .on_click(
-                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    if view
-                        .clip_name_edit
-                        .as_ref()
-                        .is_some_and(|edit| edit.clip == clip)
-                    {
+            .when(interactive, |header| {
+                header.cursor_pointer().on_click(cx.listener(
+                    move |view, event: &gpui::ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        return;
-                    }
-                    if view.clip_name_edit.is_some() {
-                        view.finish_clip_name(true, window, cx);
-                    }
-                    view.select_clip_header(track, clip, event.modifiers(), window, cx);
-                    view.focus.focus(window);
-                    cx.notify();
-                }),
-            )
+                        if view
+                            .clip_name_edit
+                            .as_ref()
+                            .is_some_and(|edit| edit.clip == clip)
+                        {
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if view.clip_name_edit.is_some() {
+                            view.finish_clip_name(true, window, cx);
+                        }
+                        view.select_clip_header(track, clip, event.modifiers(), window, cx);
+                        view.focus.focus(window);
+                        cx.notify();
+                    },
+                ))
+            })
             .child(self.clip_name_label(clip, name))
     }
 }

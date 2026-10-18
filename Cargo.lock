@@ -2788,6 +2788,8 @@ dependencies = [
  "hex-session",
  "hex-tuning",
  "hex-widgets",
+ "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]

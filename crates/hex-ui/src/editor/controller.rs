@@ -142,6 +142,7 @@ impl EditorView {
         };
         match self.service.submit(request) {
             Ok(()) => {
+                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
                 self.pending_restart_request = Some((project_generation, request_id));
                 self.status = "preparing audio output".into();
                 true
@@ -621,7 +622,11 @@ impl EditorView {
                     }
                     visible_change = true;
                 }
-                Err(_) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    visible_change |= self.retire_pending_trim();
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
         }
         visible_change |= self.poll_editor_audio_events();
@@ -629,16 +634,23 @@ impl EditorView {
         visible_change |= self.pump_tuning_gesture();
         if !self.tuning.client.has_pending_requests() {
             while let Some(request) = self.pending_requests.pop_front() {
+                let resize_request = self.pending_trim_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
-                            self.worker_requests_pending.saturating_add(1)
+                            self.worker_requests_pending.saturating_add(1);
+                        if resize_request {
+                            self.trim_request_submitted();
+                        }
                     }
                     Err(SubmitError::Full(request)) => {
                         self.pending_requests.push_front(request);
                         break;
                     }
                     Err(SubmitError::Busy(request)) => {
+                        if resize_request {
+                            self.retire_pending_trim();
+                        }
                         if matches!(request, Request::Export(_)) {
                             self.export_pending = false;
                         }
@@ -647,6 +659,9 @@ impl EditorView {
                             replace_error(&mut self.error, "an export is already pending");
                     }
                     Err(SubmitError::Closed(request)) => {
+                        if resize_request {
+                            self.retire_pending_trim();
+                        }
                         if matches!(&request, Request::ImportAudioBatch { .. }) {
                             if let Some(control) = self.audio_batch.take() {
                                 control.request_cancel();
@@ -1246,6 +1261,7 @@ impl EditorView {
     }
 
     fn retire_stale_spectrum_target(&mut self) -> bool {
+        let eq_changed = super::device_panel::reconcile_eq_spectrum(self);
         let target = self
             .audio
             .as_ref()
@@ -1260,7 +1276,7 @@ impl EditorView {
         if target.is_none() && self.device_panel.spectrum_result.take().is_some() {
             return true;
         }
-        false
+        eq_changed
     }
 
     fn processor_audition_target_is_visible_and_current(
@@ -1342,6 +1358,7 @@ impl EditorView {
     }
 
     pub(super) fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+        let retired_trim = self.trim_request_complete(&event);
         if event.project_replaced {
             self.invalidate_prepared_seek();
             if let Some(audio) = self.audio.as_mut() {
@@ -2085,6 +2102,9 @@ impl EditorView {
         {
             self.reveal_session_position(None, self.selected_scene);
         }
+        // Canonical state, generation, gain/loop display extent and selection
+        // have now been installed. Normalize only the locally retired owner.
+        self.normalize_completed_trim_viewport(retired_trim);
         successfully_opened_path
     }
 
@@ -2314,9 +2334,13 @@ impl EditorView {
                 return false;
             }
         }
+        let resize_request = self.pending_trim_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                if resize_request {
+                    self.trim_request_submitted();
+                }
                 true
             }
             Err(SubmitError::Full(request))
