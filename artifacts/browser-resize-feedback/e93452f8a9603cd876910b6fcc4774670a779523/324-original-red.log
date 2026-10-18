@@ -1,0 +1,29 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.13s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 3 tests
+
+thread 'editor::browser::ui_test::resize_feedback::browser_resize_feedback_stays_cyan_outside_moving_hit_bounds' (114881) panicked at crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:61:17:
+assertion `left == right` failed: active browser-sidebar-resize lost cyan after leaving actual moving hit bounds
+  left: Some(Solid(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }))
+ right: Some(Solid(Hsla { h: 0.49305555, s: 0.7228916, l: 0.6745098, a: 1.0 }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::resize_feedback::browser_resize_feedback_stays_cyan_outside_moving_hit_bounds ... FAILED
+
+thread 'editor::browser::ui_test::resize_feedback::browser_resize_feedback_lost_left_button_cancels_without_stale_capture' (114880) panicked at crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:122:9:
+browser-resize-handle retained stale activity after actual Left button was no longer held
+test editor::browser::ui_test::resize_feedback::browser_resize_feedback_lost_left_button_cancels_without_stale_capture ... FAILED
+test editor::browser::ui_test::resize_feedback::browser_resize_feedback_close_cancels_both_existing_gestures ... ok
+
+failures:
+
+failures:
+    editor::browser::ui_test::resize_feedback::browser_resize_feedback_lost_left_button_cancels_without_stale_capture
+    editor::browser::ui_test::resize_feedback::browser_resize_feedback_stays_cyan_outside_moving_hit_bounds
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 802 filtered out; finished in 0.30s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,87 @@
+[
+  {
+    "name": "browser",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-ui",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "--lib",
+      "editor::browser::",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0,
+    "log": "/tmp/324-final-browser.log"
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "hex-ui",
+      "--all-targets",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 0,
+    "log": "/tmp/324-final-clippy.log"
+  },
+  {
+    "name": "architecture",
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit": 0,
+    "log": "/tmp/324-final-architecture.log"
+  },
+  {
+    "name": "gpui",
+    "command": [
+      "python3",
+      "scripts/check-gpui-patch.py"
+    ],
+    "exit": 0,
+    "log": "/tmp/324-final-gpui.log"
+  },
+  {
+    "name": "style",
+    "command": [
+      "python3",
+      "scripts/check-ui-style.py"
+    ],
+    "exit": 0,
+    "log": "/tmp/324-final-style.log"
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit": 0,
+    "log": "/tmp/324-final-fmt.log"
+  },
+  {
+    "name": "diff",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0,
+    "log": "/tmp/324-final-diff.log"
+  }
+]

@@ -1,0 +1,152 @@
+{
+  "ticket": 2708,
+  "canonical_pr": 324,
+  "head": "e93452f8a9603cd876910b6fcc4774670a779523",
+  "tree": "8a60ebd77df17dc81705d5b21708dcf5e1d5a24c",
+  "expected_before": "5c8959af411b399b872cf784722b63f64a9b29c5",
+  "expected_before_tree": "2724e12204f626966f48bc692d859f368ba8ad49",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-layout.md",
+    "todo.md"
+  ],
+  "checks": [
+    {
+      "name": "browser",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "editor::browser::",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/324-final-browser.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/324-final-clippy.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/324-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/324-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/324-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/324-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/324-final-diff.log"
+    }
+  ],
+  "original_red": {
+    "source": "5c8959af411b399b872cf784722b63f64a9b29c5",
+    "snapshot": "324-original-test.rs",
+    "registration": "original-registration.patch",
+    "log": "324-original-red.log",
+    "outcome": "3 actual GPUI cases:1PASS2FAIL. Active picker tuple remains set but cyan becomes Border outside moving hit rectangle. Outer resize remains active after movement with Left no longer held. Existing close/reopen cancellation passed."
+  },
+  "final_results": {
+    "browser": "90PASS0failed0ignored716filtered29.88s;4 new paint/input cases+86existing browser cases",
+    "strict_clippy": "hex-ui alltargets ui-test-support -Dwarnings PASS27.85s",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "fullCI": "NOT RUN by source owner; sole merger actual prospective candidate"
+  },
+  "coverage": "Actual hover, Down, held movement outside/return/clamp crossings, only-active-divider cyan, release inside/outside, no-Left cancellation and no later unrelated-drag resume, existing keyboard browser close/reopen cancellation, normal/23px picker and open/closed tag editor, unchanged4px widths. Existing source/preview/Stop/offset/no-doubleclick-import/search/IME/focus/Places/tree/geometry cases passed. No native temporal-flicker or OS capture equivalence claim.",
+  "diagnostics": {
+    "324-original-compile-diagnostic.log": "Test palette helper initially returned Hsla, but rendered_background returns Background; compile-only failure corrected before actual original RED. No product inference from compile error.",
+    "324-first-green.log": "Original three cases allPASS1.05s after minimal source fix, before fourth compact/open-editor case. Final90-browser run qualifies final source content."
+  },
+  "scope": "Own existing drag-state paint and transition notification; outer no-Left cancellation aligned with existing sidebar contract. No geometry/cursor/snap/model/controller/sharedinput/Engine changes. Thin-divider2707 and broader history/tags remain separate; original400 focus diagnostic not closed.",
+  "limits": [
+    "Native temporal GPU/hover/cursor/OS capture and physical optimized acceptance open; root sole Mac lane",
+    "Future combined444/325/446/414/423/427 tree requires merger qualification; preserve exact declared hunks",
+    "Headless events include positions outside moving bounds, not proof native OS delivers every outside-window event",
+    "Existing capture close and actual no-Left cancellation only; no new Escape/window-deactivation framework claimed",
+    "Source-ready remains Pulse In Progress until actual merge",
+    "No app operations, packaging/install/user input/user files or hosted CI"
+  ],
+  "payloads": {
+    "324-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "324-final-browser.log": "bd9a17c79a6470f8996dadd3dee37ae818397bb7add2d09a973389039b6913c6",
+    "324-final-checks.json": "2e76e133b3d7adefb57b5cb6075b16316dc3792409c5ee707eacd5f997f3e699",
+    "324-final-clippy.log": "034b9bb0a7a34e0a62c3b0ebf3518151be4ee56bf8705ca911a2eba7a5c4892e",
+    "324-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "324-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "324-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "324-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "324-first-green.log": "db553001f0807b9d70d0a738714892044feed41d90ff4ac973ea32d4c71f95b3",
+    "324-fix-feedback.py": "610ac569266887eab0d68b197267f0f9a0bcf15d08525fa473ec3527d185e70d",
+    "324-focused-checks.py": "5f4a394c5ba757ac27c90065655fff0227f282f51308e55b8fe41d40efd59191",
+    "324-original-compile-diagnostic.log": "70ef4bc488a67c0638627216ee77638defff42b2919e02247de440f25af0490c",
+    "324-original-red.log": "7a092b751ada2578515ca528a72e24ec222f1a6ffbb0bfd71103dc2415ed6af3",
+    "324-original-test.rs": "2ee3115e5707916eeff0a67110832174fa91dfe2e209fe15925c1e710f1a67f4",
+    "324-publish-evidence.py": "5cb3d1cc51e74f61ad656c971092e63bc1c782253d8ffe60a4acf999d8a1f568",
+    "before-after-hashes.json": "80c95ff13e2709437a55c2c533142ccfc0c0c60a8b0ac534b57d477dae1c2f18",
+    "finite-mac-checklist.md": "fdc207ef0b419f7de41b2f8ae51fc5d11691c3a1dfa646979cc988e0bf1d7c24",
+    "integration-note.md": "8c2c5313786cb8a01b813c5b6b8d58b712128944be48f0da74bbc09b1f60e533",
+    "original-registration.patch": "cba56efedf712063f9a30cb85dc8a60f781b1ceb347556a08fee9b026d6bce65",
+    "source.patch": "a1fe451e242761ba2f386b31abddcf51c45648caa996236c8bf778ade0bcf7d7"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "crates/hex-ui/src/editor/browser.rs": {
+    "before_git_blob": "b81fc69ea13aa7e0ad5eea919c5d1ec9f37980f5",
+    "before_sha256": "4db032bc681d805578d192ba55dd108eb07f7e04e39ac0bb06fd1dc18db2f520",
+    "after_git_blob": "c394bb62dcba828c6f625c8ef72d320a3ddfcfb3",
+    "after_sha256": "797885fc6f86d97999c64c45b89b77dff74b1d01b43656c8173e1436bdf88169"
+  },
+  "crates/hex-ui/src/editor/browser/layout.rs": {
+    "before_git_blob": "0e2db9f6de211f67aa01ed698eca75eace6a50cc",
+    "before_sha256": "6b95d499b0fd7cab4f9ab1f0e0d66be83a40b5a39b5f74e30ef7fe8503be4060",
+    "after_git_blob": "c8ff2cd149e49ed1393098817da1d451ec716456",
+    "after_sha256": "9a9725176456eda3ea6a367e1a7eea51af9a0ab6556fa7fa6269ceb05cb2904a"
+  },
+  "crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs": {
+    "before_git_blob": null,
+    "before_sha256": null,
+    "after_git_blob": "ccb45686e1c1aef6d3d62b324f53a2e88e01e7e0",
+    "after_sha256": "1bfd768118a5dd1513cfbd2df7e80908d890046c4a9d1a13463bdb537dc1fb57"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_git_blob": "306c6e497cc668f822fc43ef9f4b1d7855e17e42",
+    "before_sha256": "ba0e8a79308a655e548a111d1b8fe353f49281d0c09b7d830935855cce8779f9",
+    "after_git_blob": "d8bce028c7de76ba54c0dfb5f2ef804b65cb58f9",
+    "after_sha256": "5c699ac10a4414dd89ac29917a9a4db7646ab8d2167f0e32c97f7b77e648505c"
+  },
+  "docs/browser-layout.md": {
+    "before_git_blob": "c01a0c74494843c6816edd280cf4b7ac16806807",
+    "before_sha256": "a81b8c538ee8e28a7e0e3a6912955e21f9e0e9344676e71861ad0f2e581baf85",
+    "after_git_blob": "0f3247e58ece76b85c58e804977ed4b7c3c221c6",
+    "after_sha256": "bd07251e22ce36323f34e80b5fb6c31b54d022bdd385113206ff2d6f55b7f646"
+  },
+  "todo.md": {
+    "before_git_blob": "7c5fc5b1d0ba459ac890c987d4ad45c124d3da97",
+    "before_sha256": "ddd015a3ff29a167b48962d3c2b5b6d88ac1f6530f883b5e52f8ae2435d37255",
+    "after_git_blob": "e576160cfea0301e1d81a1f6ed09ad2ce5180fad",
+    "after_sha256": "8206378be17b003a6d626d7e6aff6a2893accb4640475d096a73469d17517a47"
+  }
+}

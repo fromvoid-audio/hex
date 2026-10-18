@@ -1,0 +1,99 @@
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling mts-esp-master-adapter v0.1.0 (/workspace/hex/third_party/mts-esp-master)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-mts v0.1.0 (/workspace/hex/crates/hex-mts)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-library v0.1.0 (/workspace/hex/crates/hex-library)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+error[E0308]: mismatched types
+  --> crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:53:17
+   |
+53 |                 Some(palette(crate::theme::PaletteRole::Secondary)),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Background>`, found `Option<Hsla>`
+   |
+   = note: expected enum `std::option::Option<Background>`
+              found enum `std::option::Option<Hsla>`
+
+error[E0308]: mismatched types
+  --> crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:63:21
+   |
+63 |                     Some(palette(crate::theme::PaletteRole::Secondary)),
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Background>`, found `Option<Hsla>`
+   |
+   = note: expected enum `std::option::Option<Background>`
+              found enum `std::option::Option<Hsla>`
+
+error[E0308]: mismatched types
+  --> crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:73:21
+   |
+73 |                     Some(palette(crate::theme::PaletteRole::Border)),
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Background>`, found `Option<Hsla>`
+   |
+   = note: expected enum `std::option::Option<Background>`
+              found enum `std::option::Option<Hsla>`
+
+error[E0308]: mismatched types
+  --> crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:80:21
+   |
+80 |                     Some(palette(crate::theme::PaletteRole::Secondary))
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Background>`, found `Option<Hsla>`
+   |
+   = note: expected enum `std::option::Option<Background>`
+              found enum `std::option::Option<Hsla>`
+
+error[E0308]: mismatched types
+  --> crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:93:17
+   |
+93 | /                 Some(palette(if release_inside {
+94 | |                     crate::theme::PaletteRole::Secondary
+95 | |                 } else {
+96 | |                     crate::theme::PaletteRole::Border
+97 | |                 })),
+   | |___________________^ expected `Option<Background>`, found `Option<Hsla>`
+   |
+   = note: expected enum `std::option::Option<Background>`
+              found enum `std::option::Option<Hsla>`
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:103:17
+    |
+103 |                 Some(palette(crate::theme::PaletteRole::Border))
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Background>`, found `Option<Hsla>`
+    |
+    = note: expected enum `std::option::Option<Background>`
+               found enum `std::option::Option<Hsla>`
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:128:13
+    |
+128 |             Some(palette(crate::theme::PaletteRole::Border))
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Background>`, found `Option<Hsla>`
+    |
+    = note: expected enum `std::option::Option<Background>`
+               found enum `std::option::Option<Hsla>`
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs:172:13
+    |
+172 |             Some(palette(crate::theme::PaletteRole::Border))
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Background>`, found `Option<Hsla>`
+    |
+    = note: expected enum `std::option::Option<Background>`
+               found enum `std::option::Option<Hsla>`
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `hex-ui` (lib test) due to 8 previous errors
