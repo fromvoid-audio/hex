@@ -1066,3 +1066,29 @@ child selection, aggregate reservation before the first owner, failed-parent
 custody, actual Service binding and the final native publication remain open.
 No resource admission, registration, functional panel or delivered Sampler is
 claimed by this checkpoint.
+
+A private common-compiler selection can now consume the actual already-paired
+Return children held in the existing rows. It preflights all Return source facts
+and original custody before context transfer, skips legacy effect construction
+for those selected Returns, checks runtime budgets against their actual chains,
+and moves each whole bus into the compiler's retained Project. The original
+chain/configuration/meter allocations and declarations stay paired across the
+existing root indices and restoration. No legacy chain is constructed and then
+replaced. The legacy wrapper still selects its existing constructor path.
+
+Control disposal now explicitly refuses a Return whose owner remains in an
+external root, before destroying any child declaration. Focused tests exercise
+memoryless/stateful Utility with bypass, exact pointer/alias conservation,
+selected ledger totals before/after move and restore, independent partitioned
+PCM, first-source refusal, injected post-move error/panic, empty Return DAGs,
+source mismatch before input transfer and refusal to select un-restored rows a
+second time. The selected ledger covers its actual Return rows/children and
+root Vec; it is not the whole Project/compiler ledger or a peak measurement.
+The old Return feed custody and freshly compiled plan are distinct live owners
+and both remain an enclosing aggregate accounting obligation.
+
+This selects existing private paired births for Returns only. Track/instrument
+child selection, fresh complete compiler ingress, aggregate reservation before
+the first owner, failed parent retention and Service/native publication remain
+unfinished. Public native construction guards and Sampler registration remain
+closed; no usable device, panel, build or listening acceptance follows from it.

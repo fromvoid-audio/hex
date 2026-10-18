@@ -381,6 +381,9 @@ impl ReturnAssembly {
             return Ok(());
         }
         let r = &mut self.rows[self.cursor];
+        if r.root_index.is_some() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         if let Some(b) = &r.bus {
             if r.bare.is_some()
                 || r.chain.is_some()
@@ -685,4 +688,49 @@ fn compiler_return_source_matches(
                             && state.output_gain_millidb() == authored.state().output_gain_millidb()
                     })
             })
+}
+
+impl ReturnAssembly {
+    pub(super) fn compiler_chain(
+        &self,
+        index: usize,
+    ) -> Result<&[crate::PreparedEffectInstance], AudioStorageError> {
+        let row = self
+            .rows
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if row.ordinal != index || row.root_index.is_some() || row.disposal != Disposal::Unstarted {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        Ok(&row
+            .bus
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .device_chain)
+    }
+    pub(super) fn compiler_install(
+        &mut self,
+        index: usize,
+        target: &mut Vec<ReturnBus>,
+    ) -> Result<(), AudioStorageError> {
+        // All refusal precedes the original owner move. Existing root indices
+        // retain exactly the same restoration and inspection route afterwards.
+        self.compiler_chain(index)?;
+        if target.len() != index || target.len() == target.capacity() {
+            return Err(AudioStorageError::Capacity);
+        }
+        self.move_root_row(index, target);
+        #[cfg(test)]
+        {
+            assert_ne!(
+                self.panic_after,
+                Some(index),
+                "paired compiler Return move panic"
+            );
+            if self.fail_after == Some(index) {
+                return Err(AudioStorageError::Allocation);
+            }
+        }
+        Ok(())
+    }
 }

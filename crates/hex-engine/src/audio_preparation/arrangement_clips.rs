@@ -732,3 +732,36 @@ impl ArrangementClips {
         Ok(root.context_at(project))
     }
 }
+
+/// Affine borrow of actual private paired Return rows. It carries no owner or
+/// detachable declaration, and cannot select a public compiled output.
+pub(crate) struct CompilerReturnChildren<'a> {
+    rows: &'a mut returns::ReturnAssembly,
+}
+impl ArrangementClips {
+    pub(crate) fn compiler_return_children_on_control<'a>(
+        &'a mut self,
+        project: &hex_project::Project,
+    ) -> Result<CompilerReturnChildren<'a>, AudioStorageError> {
+        self.returns.preflight_root_move()?;
+        self.returns.compiler_preflight(project)?;
+        Ok(CompilerReturnChildren {
+            rows: &mut self.returns,
+        })
+    }
+}
+impl CompilerReturnChildren<'_> {
+    pub(crate) fn chain(
+        &self,
+        index: usize,
+    ) -> Result<&[crate::PreparedEffectInstance], AudioStorageError> {
+        self.rows.compiler_chain(index)
+    }
+    pub(crate) fn install(
+        &mut self,
+        index: usize,
+        target: &mut Vec<crate::ReturnBus>,
+    ) -> Result<(), AudioStorageError> {
+        self.rows.compiler_install(index, target)
+    }
+}

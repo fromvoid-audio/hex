@@ -326,6 +326,37 @@ fn compile_project<'a>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_project_into<'a>(
     snapshot: &'a hex_project::Project,
+    resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
+    previews: Option<&mut Vec<crate::MidiClipPreview>>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+    shared_contexts: &mut Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
+    transforms: &crate::audio_transform::AudioTransformPreparation,
+    destination: &mut Option<Project>,
+    compiler_bindings: Option<(
+        &mut crate::audio_preparation::ArrangementClips,
+        &crate::OwnedAudioInputs,
+    )>,
+) -> Result<(), Invalid> {
+    compile_project_into_with_return_children(
+        snapshot,
+        resolve_source,
+        previews,
+        registry,
+        instrument_registry,
+        shared_contexts,
+        transforms,
+        destination,
+        compiler_bindings,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compile_project_into_with_return_children<'a>(
+    snapshot: &'a hex_project::Project,
     mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
@@ -339,10 +370,20 @@ pub(crate) fn compile_project_into<'a>(
         &mut crate::audio_preparation::ArrangementClips,
         &crate::OwnedAudioInputs,
     )>,
+    paired_returns: Option<&mut crate::audio_preparation::ArrangementClips>,
 ) -> Result<(), Invalid> {
     if destination.is_some() || previews.as_ref().is_some_and(|clips| !clips.is_empty()) {
         return Err(Invalid("compiler destination is not vacant"));
     }
+    // A selected row is an actual existing paired birth, never an arbitrary
+    // compiler output or a declaration applied after construction.
+    if compiler_bindings.is_some() && paired_returns.is_some() {
+        return Err(Invalid("compiler row selections overlap"));
+    }
+    let mut paired_returns = paired_returns
+        .map(|rows| rows.compiler_return_children_on_control(snapshot))
+        .transpose()
+        .map_err(|_| Invalid("compiler paired Return children are unavailable"))?;
     // Private optional correlation only: actual installed rows plus actual bank,
     // never a caller-authored provenance flag or output-adoption permit.
     let mut compiler_bindings = compiler_bindings
@@ -725,14 +766,27 @@ pub(crate) fn compile_project_into<'a>(
         .try_reserve_exact(snapshot.return_tracks().len())
         .map_err(|_| Invalid("could not reserve compiled return tracks"))?;
     for (return_index, return_track) in snapshot.return_tracks().iter().enumerate() {
-        let effect_plan = compile_effect_devices(
-            return_track.devices(),
-            hex_lattice::ProcessorChainOwner::Return(return_track.id().value()),
-            0,
-            &device_context,
-            registry,
-        )?;
-        for device in &effect_plan.device_chain {
+        let effect_plan = if paired_returns.is_none() {
+            Some(compile_effect_devices(
+                return_track.devices(),
+                hex_lattice::ProcessorChainOwner::Return(return_track.id().value()),
+                0,
+                &device_context,
+                registry,
+            )?)
+        } else {
+            None
+        };
+        let chain = if let Some(rows) = &paired_returns {
+            rows.chain(return_index)
+                .map_err(|_| Invalid("compiler paired Return source is missing"))?
+        } else {
+            &effect_plan
+                .as_ref()
+                .ok_or(Invalid("compiler Return plan is missing"))?
+                .device_chain
+        };
+        for device in chain {
             if let Some(definition) = &device.definition {
                 stateful_count = stateful_count
                     .checked_add(1)
@@ -753,14 +807,21 @@ pub(crate) fn compile_project_into<'a>(
                 }
             }
         }
-        let bus = crate::ReturnBus::from_compiled_fields(
-            return_track.id(),
-            return_track.gain(),
-            return_track.muted(),
-            effect_plan.fused,
-            std::sync::Arc::from(effect_plan.device_chain),
-        );
-        project.return_buses.push(bus);
+        if let Some(rows) = &mut paired_returns {
+            rows.install(return_index, &mut project.return_buses)
+                .map_err(|_| Invalid("compiler paired Return destination is unavailable"))?;
+        } else {
+            let effect_plan = effect_plan.ok_or(Invalid("compiler Return plan is missing"))?;
+            project
+                .return_buses
+                .push(crate::ReturnBus::from_compiled_fields(
+                    return_track.id(),
+                    return_track.gain(),
+                    return_track.muted(),
+                    effect_plan.fused,
+                    std::sync::Arc::from(effect_plan.device_chain),
+                ));
+        }
         if let Some(bindings) = &mut compiler_bindings {
             bindings
                 .returned(
