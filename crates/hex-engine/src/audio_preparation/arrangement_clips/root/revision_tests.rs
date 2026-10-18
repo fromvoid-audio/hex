@@ -268,6 +268,65 @@ fn four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity(
     );
 }
 #[test]
+fn tuning_family_exhaustion_refuses_before_revision_children_or_bank_transfer() {
+    if !supported("private_revision_tuning_family_reservation") {
+        return;
+    }
+    for streamed in [false, true] {
+        let (project, bank) = fixture(streamed);
+        let pointer = bank.sources.as_ptr();
+        let capacity = bank.sources.capacity();
+        let reservation = bank.reservation;
+        let asset = project.assets().next().unwrap().id();
+        let source_token = bank.source_token(asset).unwrap();
+        let original_source = bank.checked_source(&source_token).unwrap() as *const _;
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        custody.revision.fail_tuning_family = true;
+        let refusal = match begin(&mut custody, &project, bank) {
+            Err(refusal) => refusal,
+            Ok(_) => panic!("family exhaustion must refuse before consuming the original bank"),
+        };
+        assert_eq!(refusal.reason, AudioStorageError::Overflow);
+        assert_eq!(refusal.inputs.sources.as_ptr(), pointer);
+        assert_eq!(refusal.inputs.sources.capacity(), capacity);
+        assert_eq!(refusal.inputs.reservation, reservation);
+        assert!(std::ptr::eq(
+            refusal.inputs.checked_source(&source_token).unwrap(),
+            original_source
+        ));
+        assert_eq!(custody.phase(), AudioPreparationPhase::Vacant);
+        assert!(custody.bank.is_none());
+        assert_eq!(custody.revision.capacity().unwrap().actual_allocations, 0);
+        assert_eq!(
+            custody
+                .revision
+                .capacity()
+                .unwrap()
+                .reserved_handle_destinations,
+            0
+        );
+        // Clear only this per-fixture injected error, never the process's actual
+        // monotonic counter. The same returned original can then be prepared.
+        custody.revision.fail_tuning_family = false;
+        let token = begin(&mut custody, &project, refusal.inputs).ok().unwrap();
+        assert_eq!(custody.revision.capacity().unwrap().actual_allocations, 4);
+        assert!(custody.cancel(&token));
+        custody.cleanup_on_control();
+        let restored = custody.recover_on_control(&token).unwrap();
+        assert_eq!(restored.sources.as_ptr(), pointer);
+        assert_eq!(restored.sources.capacity(), capacity);
+        let restored_token = restored.source_token(asset).unwrap();
+        assert!(std::ptr::eq(
+            restored.checked_source(&restored_token).unwrap(),
+            original_source
+        ));
+        assert!(custody.recover_on_control(&token).is_none());
+        eprintln!(
+            "SUPPORTED private revision tuning-family preflight streamed={streamed} original bank retained/recovery once"
+        );
+    }
+}
+#[test]
 fn every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody() {
     if !supported("private_prepared_revision_frontiers") {
         return;

@@ -55,6 +55,7 @@ pub(crate) struct RevisionAssembly {
     descriptor_drop_pending: bool,
     handles: [u64; 4],
     reserved_bytes: usize,
+    preallocated_tuning_family: Option<TuningContinuationFamily>,
     reserved: bool,
     extraction_attempted: [bool; 4],
     extracted: usize,
@@ -62,6 +63,8 @@ pub(crate) struct RevisionAssembly {
     pub(crate) fail_after: Option<usize>,
     #[cfg(test)]
     pub(crate) panic_after: Option<usize>,
+    #[cfg(test)]
+    pub(crate) fail_tuning_family: bool,
 }
 pub(crate) struct RevisionStorageView<'a> {
     pub(crate) arrangement: Option<&'a PlaybackProject>,
@@ -128,6 +131,13 @@ impl RevisionAssembly {
         Ok(owner.arc())
     }
 
+    fn fresh_tuning_family(&self) -> Result<TuningContinuationFamily, Error> {
+        #[cfg(test)]
+        if self.fail_tuning_family {
+            return Err(Error::Overflow);
+        }
+        TuningContinuationFamily::fresh().map_err(|_| Error::Overflow)
+    }
     pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()
@@ -141,6 +151,7 @@ impl RevisionAssembly {
             || self.mutable_descriptors.capacity() != 0
             || self.descriptor_drop_pending
             || self.handles != [0; 4]
+            || self.preallocated_tuning_family.is_some()
         {
             return Err(Error::Capacity);
         }
@@ -182,6 +193,9 @@ impl RevisionAssembly {
                 .and_then(|n| n.checked_add(overhead))
                 .ok_or(Error::Overflow)?;
         }
+        // This fallible identity reservation precedes all prepared child
+        // transfers. Exhaustion cannot strand or drop a taken child locally.
+        self.preallocated_tuning_family = Some(self.fresh_tuning_family()?);
         self.reserved = true;
         for index in 0..4 {
             self.handles[index] = crate::audio_only_inputs::handle()?;
@@ -202,6 +216,9 @@ impl RevisionAssembly {
             .as_ref()
             .map(|o| o.as_ref())
             .or(self.revision_value.as_ref());
+        if revision.is_some() && self.preallocated_tuning_family.is_some() {
+            return Err(Error::SourceMismatch);
+        }
         if let Some(PreparedRevision {
             tuning_family: _,
             arrangement,
@@ -326,6 +343,7 @@ impl RevisionAssembly {
         session: &mut SessionAssembly,
     ) -> Result<(), Error> {
         if !self.reserved
+            || self.preallocated_tuning_family.is_none()
             || self.handles.contains(&0)
             || !arrangement.can_transfer_revision()
             || !session.can_transfer_revision()
@@ -370,11 +388,11 @@ impl RevisionAssembly {
             self.arrangement.take(),
             self.session.take(),
             self.preview.take(),
+            self.preallocated_tuning_family.take(),
         ) {
-            (Some(arrangement), Some(session), Some(midi_preview)) => {
+            (Some(arrangement), Some(session), Some(midi_preview), Some(tuning_family)) => {
                 self.revision_value = Some(PreparedRevision {
-                    tuning_family: TuningContinuationFamily::fresh()
-                        .map_err(|_| Error::Overflow)?,
+                    tuning_family,
                     arrangement,
                     session,
                     midi_preview,
@@ -382,10 +400,11 @@ impl RevisionAssembly {
                     gain_recording_track: None,
                 });
             }
-            (arrangement, session, preview) => {
+            (arrangement, session, preview, tuning_family) => {
                 self.arrangement = arrangement;
                 self.session = session;
                 self.preview = preview;
+                self.preallocated_tuning_family = tuning_family;
                 return Err(Error::SourceMismatch);
             }
         }
@@ -466,6 +485,7 @@ impl RevisionAssembly {
             session.restore_revision(&mut self.session_value);
         }
         self.reserved = false;
+        self.preallocated_tuning_family = None;
         self.handles = [0; 4];
         self.reserved_bytes = 0;
         self.extraction_attempted = [false; 4];
@@ -553,6 +573,7 @@ impl RevisionAssembly {
             descriptor_drop_pending: _,
             handles,
             reserved_bytes: _,
+            preallocated_tuning_family,
             reserved: _,
             extraction_attempted: _,
             extracted: _,
@@ -560,7 +581,12 @@ impl RevisionAssembly {
                 fail_after: _,
             #[cfg(test)]
                 panic_after: _,
+            #[cfg(test)]
+                fail_tuning_family: _,
         } = self;
+        // This inline reservation is a scalar identity, never another owner.
+        fn copy_leaf<T: Copy>(_: T) {}
+        copy_leaf(*preallocated_tuning_family);
         super::descriptor_storage::visit(mutable_descriptors, l)?;
         if let Some(owner) = owner {
             l.shared(

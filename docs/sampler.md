@@ -953,3 +953,16 @@ host gains/bypass, and release back to the original count. This alias is a real
 construction owner, not new provenance or a permit; complete compiler custody
 must include its actual field while alive. Existing native-state traversal of
 the final Track is unchanged.
+
+Private revision assembly reserves its fallible monotonic tuning-family ID
+before prepared-child transfer. Previously that request occurred after taking
+three shared children into local bindings, so exhaustion could drop those locals
+instead of retaining them in persistent custody. The scalar reservation now stays
+inline until infallible composition, and normal restore clears it; missing or
+conflicting reservation state refuses before child extraction. No counter reset,
+new shared allocation, owner family or capacity increase is introduced. A
+per-fixture error injection (not process-global counter mutation) reproduces the
+old late refusal, then proves resident/streamed original-bank identity and backing
+are returned before consumption, with normal once-only recovery after clearing
+only that test fault. The same four-root and twelve error/panic checks still pass.
+This closes that local failure frontier, not aggregate compiler admission.
