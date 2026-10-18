@@ -1,3 +1,6 @@
+#[path = "adaptive_grid_menu.rs"]
+mod adaptive_grid_menu;
+
 use super::{EditorView, ViewState, device_panel};
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Div, Pixels, Point, Window};
@@ -21,6 +24,10 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    AdaptiveGrid {
+        generation: u64,
+        density: super::musical_time::AdaptiveGridDensity,
+    },
     InsertTrack(InsertTrackAction),
     UtilityMode(UtilityModeAction),
     TrackColor {
@@ -71,6 +78,7 @@ impl EditorView {
                 }),
             }],
         });
+        self.append_adaptive_grid_choices();
         cx.notify();
     }
 
@@ -106,6 +114,7 @@ impl EditorView {
                     },
                 }));
         }
+        self.append_adaptive_grid_choices();
     }
 
     pub(super) fn open_clip_context_menu(
@@ -161,6 +170,9 @@ impl EditorView {
                 },
             }],
         });
+        if self.mode == super::EditorMode::Arrangement {
+            self.append_adaptive_grid_choices();
+        }
         cx.notify();
     }
 
@@ -226,6 +238,16 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::AdaptiveGrid {
+                generation,
+                density,
+            } => {
+                if generation == self.project_generation {
+                    self.snap_grid = self.snap_grid.with_density(density);
+                    self.status = format!("arranger · {}", density.label());
+                    cx.notify();
+                }
+            }
             EditorContextAction::TrackColor {
                 generation,
                 track,
@@ -333,6 +355,9 @@ impl EditorView {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
                 EditorContextAction::InsertTrack(_) => false,
+                EditorContextAction::AdaptiveGrid { generation, .. } => {
+                    *generation != self.project_generation
+                }
                 EditorContextAction::TrackColor {
                     generation, track, ..
                 } => {
@@ -467,7 +492,7 @@ mod tests {
             visual.run_until_parked();
             editor.read_with(cx, |view, _| {
                 let menu = view.context_menu.as_ref().expect("clip menu");
-                assert_eq!(menu.items.len(), 1);
+                assert_eq!(menu.items.len(), 4);
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
             visual.simulate_keystrokes("enter");
@@ -494,7 +519,7 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 11);
+            assert_eq!(menu.items.len(), 14);
             assert_eq!(
                 menu.items
                     .iter()
@@ -548,8 +573,12 @@ mod tests {
         visual.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
         visual.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
         visual.run_until_parked();
-        let item = visual.debug_bounds("context-menu-item").expect("menu row");
-        let click = point(item.origin.x + px(15.0), item.origin.y + px(12.0));
+        let panel = visual
+            .debug_bounds("context-menu-panel")
+            .expect("menu panel");
+        // Insert remains the FIRST row; the generic row selector is ambiguous
+        // now that the same popup also contains adaptive-density choices.
+        let click = point(panel.origin.x + px(15.0), panel.origin.y + px(14.0));
         visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {

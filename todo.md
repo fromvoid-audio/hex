@@ -5092,6 +5092,17 @@ open.
   are added; exact-source results follow in PR334/Pulse2718. Native optimized
   audio/MIDI/looped painting acceptance remains coordinator-owned and open.
 
+### pulse2694 — adaptive arranger grid context choices
+
+Canonical PR310 adds fine/medium/coarse adaptive density choices using existing
+popup/focus contracts and the shared painting/snap resolver. Medium remains18px;
+selected density survives snap toggle/bypass without project/history/persistence
+changes. Boundary red→green repairs capped-grid hidden snap targets while
+retaining256-line bounds. See [grid menu](docs/adaptive-grid-menu.md) for original
+failed/green evidence, targeted cases, shared-wiring scope and finite native
+checklist. Final prospective-tree fullCI/integration/merge belongs to the
+separate merger; native/app delivery and physical acceptance remain root-owned.
+
 ## Place availability and query correctness — pulse2791 / PR397, 18 october 2026
 
 Focused follow-up to merged2727/340: pending or failed Place validation hides cached
@@ -5135,3 +5146,16 @@ playback-stack example. The note-only fixture now explicitly refuses controller
 events during preflight. Its focused regression passes; the same joint strict
 Clippy command now passes. The negative compiler log is retained. This repairs
 a verification fixture and adds no sampler/controller playback behavior.
+
+## collapsed browser picker geometry — pulse2706 / PR322, 18 october 2026
+
+Collections, Library and Places share a 22 px icon/control column. Picker width
+resizes continuously to 23 px including its existing border; labels still hide
+below 64 px while icons keep their horizontal position. Full-row targets, active
+source paint, keyboard/search focus, hover-name handlers and original Place paths
+remain intact. Rendered glyph-bound red/green regression covers normal, transition
+and minimum widths; the existing source-selection input test now covers row-edge
+clicks, inert hover, focus and resize state across those widths. Targeted results
+and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
+full CI/integration/merge; optimized native drag/hover/optical acceptance remains
+open. No installed app, persisted schema or user files changed.

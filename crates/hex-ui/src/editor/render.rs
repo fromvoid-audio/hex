@@ -33,7 +33,7 @@ impl EditorView {
         let grid = self.snap_grid.with_platform_modifier(platform);
         let state = self.state.as_ref()?;
         let viewport = self.visible_viewport(state.timeline_frames);
-        if grid == super::musical_time::SnapGrid::Off {
+        if grid.is_off() {
             return Some((grid, viewport, 1.0));
         }
         let bounds = self
@@ -55,7 +55,7 @@ impl EditorView {
         let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
             return;
         };
-        if grid == super::musical_time::SnapGrid::Off {
+        if grid.is_off() {
             let step = self.step_frames() as i64;
             self.enqueue(SessionRequest::Edit(Command::NudgeClip {
                 clip,
@@ -875,11 +875,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &super::ToggleSnapGrid, _, cx| {
-                view.snap_grid = if view.snap_grid == super::musical_time::SnapGrid::Off {
-                    super::musical_time::SnapGrid::Adaptive
-                } else {
-                    super::musical_time::SnapGrid::Off
-                };
+                view.toggle_snap_grid();
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopyTimeSelection, window, cx| {
