@@ -1,0 +1,13 @@
+{
+  "source": {
+    "commit": "f46e09e1dc4df1ad9706765b670cde4310d0fbb9",
+    "dirty": false,
+    "dirty_files": [],
+    "content_sha256": "2654d89e1afbe40953e05acb744fb67ec2e0166ed23db20cb7b15b108f55e96b"
+  },
+  "archive": "volume-auto-indication-f46e09e1-v1.tar.gz",
+  "bytes": 7375,
+  "sha256": "6d7c1bc1f12f1805ab3b57eb0bcd3406657ae08f1e13c5a367f3f11c22008d39",
+  "payloads": 15,
+  "evidence_only": true
+}
