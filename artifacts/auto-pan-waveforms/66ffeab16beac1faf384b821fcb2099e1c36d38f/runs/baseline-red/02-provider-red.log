@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/hex_devices-97060e49b4b449d0)
+
+running 1 test
+
+thread 'auto_pan::tests::selectable_square_changes_actual_pcm_at_quarter_cycle' (131504) panicked at crates/hex-devices/src/auto_pan/tests.rs:468:114:
+actual waveform choice: UnknownParameter
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test auto_pan::tests::selectable_square_changes_actual_pcm_at_quarter_cycle ... FAILED
+
+failures:
+
+failures:
+    auto_pan::tests::selectable_square_changes_actual_pcm_at_quarter_cycle
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 329 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p hex-devices --lib`

@@ -1,0 +1,19 @@
+[1/9] panel: running
+[1/9] panel: passed
+[2/9] ui-clippy: running
+[2/9] ui-clippy: passed
+[3/9] storage-clippy: running
+[3/9] storage-clippy: passed
+[4/9] architecture: running
+[4/9] architecture: passed
+[5/9] gpui: running
+[5/9] gpui: passed
+[6/9] style: running
+[6/9] style: passed
+[7/9] layout: running
+[7/9] layout: passed
+[8/9] fmt: running
+[8/9] fmt: passed
+[9/9] diff: running
+[9/9] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/auto-pan-454-qualification/summary.json

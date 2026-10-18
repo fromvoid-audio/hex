@@ -1,0 +1,15 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.04s
+     Running unittests src/lib.rs (target/debug/deps/hex_devices-97060e49b4b449d0)
+
+running 1 test
+ORIGINAL_SINE 8000 0xedd6697d940d64a7
+ORIGINAL_SINE 22050 0x590f0440b4abe9a6
+ORIGINAL_SINE 44100 0xde98d6caef67dc78
+ORIGINAL_SINE 48000 0xd5118d20611337d6
+ORIGINAL_SINE 96000 0xd98e1558236b1ca7
+ORIGINAL_SINE 192000 0x898e485e23dd7ec4
+test auto_pan::tests::original_sine_pcm_fingerprint ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 329 filtered out; finished in 0.00s
+

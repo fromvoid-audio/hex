@@ -1,0 +1,82 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0499]: cannot borrow `visual` as mutable more than once at a time
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:329:13
+    |
+328 |         visual.simulate_click(
+    |         ------ -------------- first borrow later used by call
+    |         |
+    |         first mutable borrow occurs here
+329 |             visual.debug_bounds(selector).unwrap().center(),
+    |             ^^^^^^ second mutable borrow occurs here
+    |
+help: try adding a local storing this argument...
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:329:13
+    |
+329 |             visual.debug_bounds(selector).unwrap().center(),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: ...and then using that local as the argument to this call
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:328:9
+    |
+328 | /         visual.simulate_click(
+329 | |             visual.debug_bounds(selector).unwrap().center(),
+330 | |             Modifiers::default(),
+331 | |         );
+    | |_________^
+
+error[E0499]: cannot borrow `visual` as mutable more than once at a time
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:349:13
+    |
+348 |         visual.simulate_click(
+    |         ------ -------------- first borrow later used by call
+    |         |
+    |         first mutable borrow occurs here
+349 |             visual.debug_bounds(selector).unwrap().center(),
+    |             ^^^^^^ second mutable borrow occurs here
+    |
+help: try adding a local storing this argument...
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:349:13
+    |
+349 |             visual.debug_bounds(selector).unwrap().center(),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: ...and then using that local as the argument to this call
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:348:9
+    |
+348 | /         visual.simulate_click(
+349 | |             visual.debug_bounds(selector).unwrap().center(),
+350 | |             Modifiers::default(),
+351 | |         );
+    | |_________^
+
+error[E0499]: cannot borrow `visual` as mutable more than once at a time
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:354:13
+    |
+353 |         visual.simulate_click(
+    |         ------ -------------- first borrow later used by call
+    |         |
+    |         first mutable borrow occurs here
+354 |             visual.debug_bounds(option).unwrap().center(),
+    |             ^^^^^^ second mutable borrow occurs here
+    |
+help: try adding a local storing this argument...
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:354:13
+    |
+354 |             visual.debug_bounds(option).unwrap().center(),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: ...and then using that local as the argument to this call
+   --> crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:353:9
+    |
+353 | /         visual.simulate_click(
+354 | |             visual.debug_bounds(option).unwrap().center(),
+355 | |             Modifiers::default(),
+356 | |         );
+    | |_________^
+
+For more information about this error, try `rustc --explain E0499`.
+error: could not compile `hex-ui` (lib test) due to 3 previous errors

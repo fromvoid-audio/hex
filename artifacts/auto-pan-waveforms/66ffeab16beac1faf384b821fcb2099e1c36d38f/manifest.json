@@ -1,0 +1,1137 @@
+{
+  "schema": 1,
+  "ticket": 2852,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/454",
+  "source": {
+    "head": "66ffeab16beac1faf384b821fcb2099e1c36d38f",
+    "tree": "b32038487d96e9cc0e037661dcb97b5d2d185876",
+    "parent": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+    "parent_tree": "a05f551dd1a91c224dc30f89ec59bc75d1731ca8",
+    "branch": "pulse/task-2852-g1-d3a2f9d266fb",
+    "files": [
+      "crates/hex-devices/src/auto_pan.rs",
+      "crates/hex-devices/src/auto_pan/tests.rs",
+      "crates/hex-engine/src/lib.rs",
+      "crates/hex-engine/src/native_device_view.rs",
+      "crates/hex-storage/src/files.rs",
+      "crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+      "crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs",
+      "docs/auto-pan.md"
+    ],
+    "diff": "crates/hex-devices/src/auto_pan.rs                 | 151 +++++++++-\n crates/hex-devices/src/auto_pan/tests.rs           | 329 ++++++++++++++++++++-\n crates/hex-engine/src/lib.rs                       |   3 +\n crates/hex-engine/src/native_device_view.rs        |   7 +-\n crates/hex-storage/src/files.rs                    |   8 +-\n .../src/editor/device_panel/auto_pan_panel.rs      | 101 ++++++-\n .../editor/device_panel/tests/auto_pan_ui_tests.rs | 204 ++++++++++++-\n docs/auto-pan.md                                   |  67 ++++-\n 8 files changed, 832 insertions(+), 38 deletions(-)"
+  },
+  "file_hashes": {
+    "crates/hex-devices/src/auto_pan.rs": {
+      "before_blob": "c887c02d8f1a3e0f5050f8bb7a0aacee76b36777",
+      "before_sha256": "838101a6f4d5bbf9cc862c1d5073845924730eef353122b2d612041476ee38d8",
+      "after_sha256": "e0f14643401ec7ff4d106a51bad258b37dd0b332069212fc71f1d0a79612d6f7",
+      "after_blob": "a57afee84140daa5f7984e001947061c4d5e81a4"
+    },
+    "crates/hex-devices/src/auto_pan/tests.rs": {
+      "before_blob": "c7ba7efa9d01e80cdd2d8ac51f3b705580ff6dcf",
+      "before_sha256": "60119cd3f6cff0c7e608e7624fad37916f0a2a9f594d2b80a38f1e7d2bd10dad",
+      "after_sha256": "bf3432d43faddeeaecce73b7107a5d154879104eb947d77a5f006278e1dd9dfe",
+      "after_blob": "caf7db50c82cd0599d23b4085b5784ce6e9c4d60"
+    },
+    "crates/hex-engine/src/lib.rs": {
+      "before_blob": "686bfd24b68d7c294c4261c9de5c53d0f52c6b8d",
+      "before_sha256": "a5b335f41cd339c3a6eb45355341b99bd033bceb27fcc91160909062390684c3",
+      "after_sha256": "fe9f308d7c3fb1c0e3ced842fc883b215b5f187a793bab2af135328ce9bbb19d",
+      "after_blob": "bd86551b77c98605a8e7f3d45e7e541808cc0afb"
+    },
+    "crates/hex-engine/src/native_device_view.rs": {
+      "before_blob": "22811c6133cd7655871dfe43fa6e8b7442077185",
+      "before_sha256": "a94d5f547c73b717a13e0cc054e70334aef6492baee264e547431b86bfe7d6b4",
+      "after_sha256": "5b7b5cb2a72239954e633bec871ee5d1429e3ee0b7f59db6035a9259a54b2ee8",
+      "after_blob": "3f98ee16c59c8597f8132036928ff1c33bb3653d"
+    },
+    "crates/hex-storage/src/files.rs": {
+      "before_blob": "16d2046644994215b006a087c806dbb3da14bc43",
+      "before_sha256": "ab6d46db9b85975b7ab22744a4be366c861b0c880b3799cb80bcf4e3c02492c3",
+      "after_sha256": "e62c7485ce6350f108acbf0ea2ccc1e0e4e17ee6a8c3672f8ff367b4e3a81bbd",
+      "after_blob": "e361d06c20ada5882f051c1b601aec3a78031305"
+    },
+    "crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs": {
+      "before_blob": "f571d50f24e36c476f5dfe18b8214b44fea4af2a",
+      "before_sha256": "e159ac95004c02b9f9193f94507e4891074526a0f97d2468e824d9ad439f594c",
+      "after_sha256": "071b25904be768370ae388dab1bff407bf0a9615adb29cebc50223d48df2c912",
+      "after_blob": "bc722cccf701848f72466ed58ea6e2ab77928f30"
+    },
+    "crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs": {
+      "before_blob": "a437efef21744e3ce4278a317d6c2fb286763bb4",
+      "before_sha256": "1491dd91e9a220729c1bc9a4600333d8991c1f272c18efc9ec06c62ad401edf3",
+      "after_sha256": "088e11e306eab38d3ad1cf5023b74f4e20808ebf6d750ed224a20964820005f8",
+      "after_blob": "41d795afb852b47b25eb8100250214879169e201"
+    },
+    "docs/auto-pan.md": {
+      "before_blob": "462130347f569bfa7184f25e4a9a018d2e4cecfb",
+      "before_sha256": "b8e296a549024147a5f038ec653a80ce3a8503f2fb18f7395fd8ab318a1300b1",
+      "after_sha256": "41bc80f678c465bdbff3175a2ee9f2e298a239a896dce39e4dc281839efd816f",
+      "after_blob": "63236c723301f51665b6364f182b7a586c076fd6"
+    }
+  },
+  "runs": {
+    "baseline-red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 5.507,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "cafa9661e28b57b85b6e5f0437d86e0f4a7c83e94700a6f47a60f2e7b4a51e74",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "original_sine_pcm_fingerprint",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:53:52Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-baseline-red/01-sine-baseline.log",
+          "started_at": "2026-10-18T22:53:47Z",
+          "status": "passed",
+          "step_id": "sine-baseline"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "selectable_square_changes_actual_pcm",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:53:52Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/auto-pan-454-baseline-red/02-provider-red.log",
+          "started_at": "2026-10-18T22:53:52Z",
+          "status": "failed",
+          "step_id": "provider-red"
+        }
+      ]
+    },
+    "final-focused": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 58.766,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "6022b0d7f0f378add37ac7cf47aa5a7ded0f11903deac1978ddb6fe84ef2eea6",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan.rs",
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-engine/src/lib.rs",
+          " M crates/hex-engine/src/native_device_view.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs",
+          " M docs/auto-pan.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "auto_pan::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:02:16Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-final-focused/01-provider.log",
+          "started_at": "2026-10-18T23:02:16Z",
+          "status": "passed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "auto_pan_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:02:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-final-focused/02-panel.log",
+          "started_at": "2026-10-18T23:02:16Z",
+          "status": "passed",
+          "step_id": "panel"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-engine",
+            "--locked",
+            "--lib",
+            "catalog_and_batched_values",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:03:05Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-final-focused/03-catalog.log",
+          "started_at": "2026-10-18T23:02:50Z",
+          "status": "passed",
+          "step_id": "catalog"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--lib",
+            "opaque_auto_pan_state_survives",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:03:11Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-final-focused/04-storage.log",
+          "started_at": "2026-10-18T23:03:05Z",
+          "status": "passed",
+          "step_id": "storage"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--test",
+            "authoring_conformance",
+            "registered_default_states",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:03:13Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-final-focused/05-conformance.log",
+          "started_at": "2026-10-18T23:03:11Z",
+          "status": "passed",
+          "step_id": "conformance"
+        },
+        {
+          "argv": [
+            "cargo",
+            "generate-lockfile",
+            "--offline",
+            "--manifest-path",
+            "/tmp/hex-auto-pan-allocation-454/Cargo.toml"
+          ],
+          "ended_at": "2026-10-18T23:03:13Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-final-focused/06-allocation-lock.log",
+          "started_at": "2026-10-18T23:03:13Z",
+          "status": "passed",
+          "step_id": "allocation-lock"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "--offline",
+            "--locked",
+            "--manifest-path",
+            "/tmp/hex-auto-pan-allocation-454/Cargo.toml",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:03:15Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-final-focused/07-allocation.log",
+          "started_at": "2026-10-18T23:03:13Z",
+          "status": "passed",
+          "step_id": "allocation"
+        }
+      ]
+    },
+    "focused1": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 45.894,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "b259b8491429b694af28a000b0b3fe7530cc1c73c2307b3fb2826b18da75e97f",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan.rs",
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-engine/src/lib.rs",
+          " M crates/hex-engine/src/native_device_view.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "auto_pan::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:57:40Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-focused1/01-provider.log",
+          "started_at": "2026-10-18T22:57:35Z",
+          "status": "passed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "auto_pan_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:58:21Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-focused1/02-panel.log",
+          "started_at": "2026-10-18T22:57:40Z",
+          "status": "passed",
+          "step_id": "panel"
+        }
+      ]
+    },
+    "focused2": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 27.437,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "231c0b6c02232772bdd558ad2b9f3f2fa57ac0599f8c27ab7896cf216c371032",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan.rs",
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-engine/src/lib.rs",
+          " M crates/hex-engine/src/native_device_view.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs",
+          " M docs/auto-pan.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "auto_pan::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:00:01Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-focused2/01-provider.log",
+          "started_at": "2026-10-18T22:59:56Z",
+          "status": "passed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "auto_pan_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:00:23Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/auto-pan-454-focused2/02-panel.log",
+          "started_at": "2026-10-18T23:00:01Z",
+          "status": "failed",
+          "step_id": "panel"
+        }
+      ]
+    },
+    "panel-green": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 34.436,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "a43df928b1597780c3e38d8f1d25b89e53b45b241c815ef47b7986bd8f96518e",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan.rs",
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-engine/src/lib.rs",
+          " M crates/hex-engine/src/native_device_view.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs",
+          " M docs/auto-pan.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "auto_pan_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:01:20Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/auto-pan-454-panel-green/01-panel.log",
+          "started_at": "2026-10-18T23:00:46Z",
+          "status": "failed",
+          "step_id": "panel"
+        }
+      ]
+    },
+    "provider-green1": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 5.011,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "b48b456050a79cab8555270de53bbf41f4b1b4d65a863670e0d4a01da6bf5023",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan.rs",
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-engine/src/lib.rs",
+          " M crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "auto_pan::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:55:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-provider-green1/01-provider.log",
+          "started_at": "2026-10-18T22:55:45Z",
+          "status": "passed",
+          "step_id": "provider"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 65.678,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "d2348b0c44daf1679849077579dc4b438d640a3e0796a3635020671002fe906d",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan.rs",
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-engine/src/lib.rs",
+          " M crates/hex-engine/src/native_device_view.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs",
+          " M docs/auto-pan.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "auto_pan_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:07:42Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/01-panel.log",
+          "started_at": "2026-10-18T23:07:08Z",
+          "status": "passed",
+          "step_id": "panel"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T23:08:03Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/02-ui-clippy.log",
+          "started_at": "2026-10-18T23:07:42Z",
+          "status": "passed",
+          "step_id": "ui-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-storage",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T23:08:08Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/03-storage-clippy.log",
+          "started_at": "2026-10-18T23:08:03Z",
+          "status": "passed",
+          "step_id": "storage-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-18T23:08:08Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/04-architecture.log",
+          "started_at": "2026-10-18T23:08:08Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-18T23:08:08Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/05-gpui.log",
+          "started_at": "2026-10-18T23:08:08Z",
+          "status": "passed",
+          "step_id": "gpui"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-18T23:08:08Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/06-style.log",
+          "started_at": "2026-10-18T23:08:08Z",
+          "status": "passed",
+          "step_id": "style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-18T23:08:08Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/07-layout.log",
+          "started_at": "2026-10-18T23:08:08Z",
+          "status": "passed",
+          "step_id": "layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-18T23:08:14Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/08-fmt.log",
+          "started_at": "2026-10-18T23:08:08Z",
+          "status": "passed",
+          "step_id": "fmt"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-18T23:08:14Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-qualification/09-diff.log",
+          "started_at": "2026-10-18T23:08:14Z",
+          "status": "passed",
+          "step_id": "diff"
+        }
+      ]
+    },
+    "red-ui": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 41.219,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "cafa9661e28b57b85b6e5f0437d86e0f4a7c83e94700a6f47a60f2e7b4a51e74",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "auto_pan_compact_controls_fit",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T22:54:51Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/auto-pan-454-red-ui/01-panel-red.log",
+          "started_at": "2026-10-18T22:54:10Z",
+          "status": "failed",
+          "step_id": "panel-red"
+        }
+      ]
+    },
+    "strict": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 41.983,
+      "start_tree": {
+        "commit": "ca6b764d4896c84c960dd1c68fe0409c2cc4e31d",
+        "content_sha256": "6022b0d7f0f378add37ac7cf47aa5a7ded0f11903deac1978ddb6fe84ef2eea6",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/auto_pan.rs",
+          " M crates/hex-devices/src/auto_pan/tests.rs",
+          " M crates/hex-engine/src/lib.rs",
+          " M crates/hex-engine/src/native_device_view.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs",
+          " M docs/auto-pan.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-devices",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T23:06:08Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-strict/01-devices-clippy.log",
+          "started_at": "2026-10-18T23:06:03Z",
+          "status": "passed",
+          "step_id": "devices-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-engine",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T23:06:18Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/auto-pan-454-strict/02-engine-clippy.log",
+          "started_at": "2026-10-18T23:06:08Z",
+          "status": "passed",
+          "step_id": "engine-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T23:06:45Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/auto-pan-454-strict/03-ui-clippy.log",
+          "started_at": "2026-10-18T23:06:18Z",
+          "status": "failed",
+          "step_id": "ui-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-storage",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "storage-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "gpui"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "fmt"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "diff"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Focused component checks only; final prospective full21/review/merge owned by cloud3.",
+    "Combined genericA/B/physical listening/Live comparison remain open.",
+    "Codec2 explicitly refuses alpha1; no destructive conversion.",
+    "Square/saw intrinsic edges intentional, not bandlimited/aliasfree parity.",
+    "Only approved additive Engine export and declared test fixtures beyond provider-private scope."
+  ],
+  "dataset_sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc",
+  "payloads": {
+    "454-baseline-red.stdout": {
+      "bytes": 208,
+      "sha256": "4157e72a6abf4f3dfbb98c4446b79a7a2464ac0ec1d0ea32f64ac34c7568b7be"
+    },
+    "454-before-after.json": {
+      "bytes": 2330,
+      "sha256": "b6af155b943f8276c8a038299592b674ebd3b1cce54efe47e91a30925d6f26d4"
+    },
+    "454-component.py": {
+      "bytes": 541,
+      "sha256": "1f41c6f614fd0eb6f46f9d79ecfc3e5c5fb67d670b07afeb143522e523af7bab"
+    },
+    "454-final-focused.stdout": {
+      "bytes": 440,
+      "sha256": "77b55f0110c2424ec0524466c0b525258d3d06bffe9b9c0bf9edbfb1ab63ed7d"
+    },
+    "454-focused1.stdout": {
+      "bytes": 180,
+      "sha256": "4ae838ceef4139ba9992a3f051f303eb5469f5c1cdb5e3f7b42330e258535d03"
+    },
+    "454-focused2.stdout": {
+      "bytes": 180,
+      "sha256": "e9e16aed1b8f77499a468254617af3d4d0131633f3ff85aaff2c75904e9ee21a"
+    },
+    "454-original-red.patch": {
+      "bytes": 2325,
+      "sha256": "692194b801d4b23ff15df86132198fea7bb0cd7019c8f9b387085715704efe6e"
+    },
+    "454-panel-green.stdout": {
+      "bytes": 136,
+      "sha256": "db29cb8300479061aa34ec6e64d44f93fcd79edc2ea64945a213b40d36e7eeb7"
+    },
+    "454-provider-green1.stdout": {
+      "bytes": 146,
+      "sha256": "3ff385fcf028020c837616293c191c34d345f255c6034c58d10d265479115035"
+    },
+    "454-publish-evidence.py": {
+      "bytes": 9835,
+      "sha256": "c3c024262bd38f3ee3ec62eb53d0433ef717ffb5ae273ccc6a65ca48e25b5e7e"
+    },
+    "454-qualification.stdout": {
+      "bytes": 500,
+      "sha256": "c1122285dc4e0fbd39649965873949cba62a451648a86de29d344f51c18e7440"
+    },
+    "454-red-ui.stdout": {
+      "bytes": 139,
+      "sha256": "ec8ce5a77e288a7aebd3097bcfdadce2fd5953c2e44e1cc5283ebe610d292bf8"
+    },
+    "454-source.json": {
+      "bytes": 1273,
+      "sha256": "0e4b8e1b6fa4f481341c93e4150b393f0b24b62ca474e009042b5bf151fed063"
+    },
+    "454-strict.stdout": {
+      "bytes": 261,
+      "sha256": "d40e526a0f2f53c1ac6d312d7770ce1e51dac260b0cfff83e2894fe5a1527025"
+    },
+    "allocation-fixture/Cargo.lock": {
+      "bytes": 883,
+      "sha256": "6759e7d76aeeccf88932e75fcc17e429d59e0be379ba51af95630b889ff4c7a7"
+    },
+    "allocation-fixture/Cargo.toml": {
+      "bytes": 368,
+      "sha256": "4e6729e961eaf4aa0f328d64480abe2534110a444076379e24b882c7e6fd86d2"
+    },
+    "allocation-fixture/probe.rs": {
+      "bytes": 2397,
+      "sha256": "591605e6820525e375dd628d8f06b62f8ed11bb93cd5fb23aed27cc252865dc9"
+    },
+    "before-after-hashes.json": {
+      "bytes": 2826,
+      "sha256": "86e896b6bdd324b052fbf29f79a8dcc2519680aca37eb61fe8c56f5f21f1108d"
+    },
+    "finite-native-plan.md": {
+      "bytes": 1228,
+      "sha256": "fb4e2c06148ef11f87b584876a4fe9912c1fe128b144a005ea7f5fcffb811d16"
+    },
+    "integration-note.md": {
+      "bytes": 4247,
+      "sha256": "7b239590a7010626b00f0baa30b12a13b8e27e8abbb726046345ad6e84237146"
+    },
+    "primary-reference.md": {
+      "bytes": 592,
+      "sha256": "7f604cd16ade318cc942e94dc645b27870944aff2bc94c33c3d8a7fdaf2a1994"
+    },
+    "runs/baseline-red/01-sine-baseline.log": {
+      "bytes": 631,
+      "sha256": "1c8f0e010db15ebd2d074d9fc3aa369de6652683fe446fad01981a51010c1237"
+    },
+    "runs/baseline-red/02-provider-red.log": {
+      "bytes": 786,
+      "sha256": "829d1307e1ee85994a105ce25f83a71ea14a8c7aa5432e8a6b99e5b9302143ce"
+    },
+    "runs/baseline-red/summary.json": {
+      "bytes": 10753,
+      "sha256": "aba88696a931a1ec3acc545e1b2da4f5203f280111058d5327858e1d6c6f2d5b"
+    },
+    "runs/final-focused/01-provider.log": {
+      "bytes": 1717,
+      "sha256": "f992c2e0169d7e7659c20c1915fef2bd50876fe6394bad3eaa2f677adf920ce2"
+    },
+    "runs/final-focused/02-panel.log": {
+      "bytes": 1203,
+      "sha256": "b16ad24f4c76bc4d80c9848afff9452c77c762c1731ee1d17b88ffe053120330"
+    },
+    "runs/final-focused/03-catalog.log": {
+      "bytes": 512,
+      "sha256": "679180f978f5f76ef6c9d5f4293c0f2707992fddc58fbd871dcbd65ce815c4b9"
+    },
+    "runs/final-focused/04-storage.log": {
+      "bytes": 416,
+      "sha256": "ded9301f713723abbdb6e1d29b8a1659c8643a01745d35270221fb9facab92ad"
+    },
+    "runs/final-focused/05-conformance.log": {
+      "bytes": 425,
+      "sha256": "4d23cc837fa0d5f3955f98710da7c3833a55a23c6b1ee1548ca55a81926f4025"
+    },
+    "runs/final-focused/06-allocation-lock.log": {
+      "bytes": 66,
+      "sha256": "6f13257613dd29f847af42943544e419290df7edb669dda96145e6e9a30b50f1"
+    },
+    "runs/final-focused/07-allocation.log": {
+      "bytes": 689,
+      "sha256": "85d22fb1b4a948f8883667f760fa1f8c83d0f05c16e199c762f6a42f550c6dec"
+    },
+    "runs/final-focused/summary.json": {
+      "bytes": 15012,
+      "sha256": "67a7475738920c60e858fb3a8a8736437cffae719cc80962c19f65b68ce29256"
+    },
+    "runs/focused1/01-provider.log": {
+      "bytes": 1785,
+      "sha256": "3327df0410903d36c3edb8fef09b62c371194d7d53b0cf688ebfea7152801f92"
+    },
+    "runs/focused1/02-panel.log": {
+      "bytes": 1330,
+      "sha256": "481d11fcc889d82f684cb1025c7385b18a3088ba7204d733444efd5370803133"
+    },
+    "runs/focused1/summary.json": {
+      "bytes": 11712,
+      "sha256": "bda2d8733db2c44c819c1c4f9564d45e1755a3ea8005472e451f07db35db30d6"
+    },
+    "runs/focused2/01-provider.log": {
+      "bytes": 1785,
+      "sha256": "34f9b29e198142fac670b0b1eb4a6833ef8f78682bc86b5bf56a42a2a210e29e"
+    },
+    "runs/focused2/02-panel.log": {
+      "bytes": 3782,
+      "sha256": "711a82652034c95d6ec4510576466002d6be9ba35bae902afab16a6a49f8e46c"
+    },
+    "runs/focused2/summary.json": {
+      "bytes": 11828,
+      "sha256": "7c94c26d0c79e30b976577f101937a44daff22b3864a4343d389981fabdf53fd"
+    },
+    "runs/panel-green/01-panel.log": {
+      "bytes": 12161,
+      "sha256": "73f6c808d7d9bd53ac3f480132905d40b27994f6f4502b4e2b8c474d1f207bc2"
+    },
+    "runs/panel-green/summary.json": {
+      "bytes": 11258,
+      "sha256": "6bc4f73d2d01cf39a56f3872f2c01726998df72ca38b6f8c504f1c67c2c364a7"
+    },
+    "runs/provider-green1/01-provider.log": {
+      "bytes": 1368,
+      "sha256": "a94dd0a3c1ef068bbe8e72de6db1904455b032172f8e4a8db04873f1009cf641"
+    },
+    "runs/provider-green1/summary.json": {
+      "bytes": 10678,
+      "sha256": "057e625129a7e87db6b8540e484201b1ddc3871c9d391c5227b60317796d2a1d"
+    },
+    "runs/qualification/01-panel.log": {
+      "bytes": 859,
+      "sha256": "db30e48f01ae5fadc9cafd0303c06a815ebaa787c304663c0cf543eda22bf924"
+    },
+    "runs/qualification/02-ui-clippy.log": {
+      "bytes": 360,
+      "sha256": "d1e2e42caf375562a495a5260aa60ef912c4f1758bd3fd3198f387e84d199b9c"
+    },
+    "runs/qualification/03-storage-clippy.log": {
+      "bytes": 140,
+      "sha256": "1dc62da50f72ead880f6f75710c1c23f46c849767687bc0fda1cfd6d41d27c21"
+    },
+    "runs/qualification/04-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/05-gpui.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/06-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/07-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/08-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/09-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 14980,
+      "sha256": "40691fb3554119ec21805c45f160b2e4c385e06212170228c71678bca5bbe7f4"
+    },
+    "runs/red-ui/01-panel-red.log": {
+      "bytes": 1513,
+      "sha256": "4bf959d306b13ed8aac18a1ac13657cf4af2c5afdb77151e2c2e2a906a25d5e3"
+    },
+    "runs/red-ui/summary.json": {
+      "bytes": 10151,
+      "sha256": "cb25976252c04e282de7e1f56f4eb6e978de4f3b2133247bb778b75023010744"
+    },
+    "runs/strict/01-devices-clippy.log": {
+      "bytes": 140,
+      "sha256": "cf6f1da1a10e565ea979d1266fe2bd6da09f54311fc1e205a97dd936c334eab2"
+    },
+    "runs/strict/02-engine-clippy.log": {
+      "bytes": 237,
+      "sha256": "d50efb2cb6664207dd3f52a9488f84a0c2fb9fb5ed0487d67ad351b10cf8cc7e"
+    },
+    "runs/strict/03-ui-clippy.log": {
+      "bytes": 1239,
+      "sha256": "1d1014a6f598c50ecabf3842a79c4b25cb08d74916b0256dcbb38b1f0f8be944"
+    },
+    "runs/strict/summary.json": {
+      "bytes": 15057,
+      "sha256": "d913f1e57d0f4831640a82f973970c7c4dbc430e7c3ff0b0a2ff8ae3d37b752c"
+    },
+    "source.patch": {
+      "bytes": 50908,
+      "sha256": "00041cc993749665c6b5475129419e8c281500922ac5c564a0e83b4cf926b361"
+    }
+  }
+}

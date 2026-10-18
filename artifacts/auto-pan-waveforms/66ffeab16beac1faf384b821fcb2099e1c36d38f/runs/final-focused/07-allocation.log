@@ -1,0 +1,16 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-auto-pan-allocation-fixture v0.0.0 (/tmp/hex-auto-pan-allocation-454)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.90s
+     Running unittests probe.rs (target/debug/deps/hex_auto_pan_allocation_fixture-19eb4a627112e370)
+
+running 1 test
+test tests::mix_processing_bypass_reset_history_transfer_allocate_and_free_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests hex_auto_pan_allocation_fixture
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

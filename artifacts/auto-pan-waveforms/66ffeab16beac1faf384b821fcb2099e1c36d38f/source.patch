@@ -1,0 +1,1191 @@
+diff --git a/crates/hex-devices/src/auto_pan.rs b/crates/hex-devices/src/auto_pan.rs
+index c887c02d..a57afee8 100644
+--- a/crates/hex-devices/src/auto_pan.rs
++++ b/crates/hex-devices/src/auto_pan.rs
+@@ -11,8 +11,8 @@ use hex_lattice_contract::{
+ use std::any::Any;
+ 
+ pub const AUTO_PAN_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.auto-pan");
+-pub const AUTO_PAN_STATE_VERSION: u32 = 1;
+-const STATE_BYTES: usize = 12;
++pub const AUTO_PAN_STATE_VERSION: u32 = 2;
++const STATE_BYTES: usize = 16;
+ const MIN_SAMPLE_RATE: u32 = 8_000;
+ const MAX_SAMPLE_RATE: u32 = 192_000;
+ const DEFAULT_RAMP_MS: f64 = 5.0;
+@@ -23,6 +23,7 @@ pub mod parameter {
+     pub const AMOUNT: ParameterId = ParameterId::from_static(1);
+     pub const RATE: ParameterId = ParameterId::from_static(2);
+     pub const RIGHT_PHASE: ParameterId = ParameterId::from_static(3);
++    pub const WAVEFORM: ParameterId = ParameterId::from_static(4);
+ }
+ 
+ const DESCRIPTORS: &[ParameterDescriptor] = &[
+@@ -59,13 +60,64 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
+         default: ParameterValue::Float(180.0),
+         presentation: ParameterPresentation::Linear,
+     },
++    ParameterDescriptor {
++        id: parameter::WAVEFORM,
++        label: "waveform",
++        kind: ParameterKind::Choice {
++            labels: &["sine", "triangle", "saw up", "saw down", "square"],
++        },
++        default: ParameterValue::Choice(0),
++        presentation: ParameterPresentation::Linear,
++    },
+ ];
+ 
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++#[repr(u32)]
++enum Waveform {
++    Sine,
++    Triangle,
++    SawUp,
++    SawDown,
++    Square,
++}
++impl Waveform {
++    const ALL: [Self; 5] = [
++        Self::Sine,
++        Self::Triangle,
++        Self::SawUp,
++        Self::SawDown,
++        Self::Square,
++    ];
++    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
++        Self::ALL
++            .get(value as usize)
++            .copied()
++            .ok_or(DeviceContractError::InvalidParameterValue)
++    }
++    fn lfo(self, phase: f64) -> f64 {
++        match self {
++            Self::Sine => (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5,
++            Self::Triangle => 1.0 - (2.0 * (phase + 0.25).rem_euclid(1.0) - 1.0).abs(),
++            Self::SawUp => phase,
++            Self::SawDown => 1.0 - phase,
++            // Original symmetric square: high on [0,1/2), low on [1/2,1).
++            Self::Square => {
++                if phase < 0.5 {
++                    1.0
++                } else {
++                    0.0
++                }
++            }
++        }
++    }
++}
++
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ struct AutoPanSettings {
+     amount: f32,
+     rate_hz: f32,
+     right_phase_degrees: f32,
++    waveform: Waveform,
+ }
+ 
+ impl Default for AutoPanSettings {
+@@ -74,6 +126,7 @@ impl Default for AutoPanSettings {
+             amount: 0.5,
+             rate_hz: 1.0,
+             right_phase_degrees: 180.0,
++            waveform: Waveform::Sine,
+         }
+     }
+ }
+@@ -101,6 +154,11 @@ fn decode(state: &NativeDeviceState) -> Result<AutoPanSettings, DeviceContractEr
+         amount: read(0),
+         rate_hz: read(4),
+         right_phase_degrees: read(8),
++        waveform: Waveform::from_choice(u32::from_le_bytes(
++            bytes[12..16]
++                .try_into()
++                .map_err(|_| DeviceContractError::MalformedState)?,
++        ))?,
+     };
+     validate(settings)?;
+     Ok(settings)
+@@ -131,6 +189,7 @@ fn encode(settings: AutoPanSettings) -> Result<NativeDeviceState, DeviceContract
+     ] {
+         payload.extend_from_slice(&value.to_le_bytes());
+     }
++    payload.extend_from_slice(&(settings.waveform as u32).to_le_bytes());
+     NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, payload)
+ }
+ 
+@@ -163,6 +222,7 @@ impl NativeDeviceMetadata for AutoPanDefinition {
+         };
+         decode(state)?;
+         let normalization = match id {
++            parameter::WAVEFORM => N::Discrete,
+             parameter::AMOUNT | parameter::RIGHT_PHASE => N::Linear,
+             parameter::RATE => N::PositiveLogarithmic,
+             _ => return Err(DeviceContractError::UnknownParameter),
+@@ -170,7 +230,11 @@ impl NativeDeviceMetadata for AutoPanDefinition {
+         Ok(Some(ParameterSemantics {
+             access: A::ReadWrite,
+             normalization,
+-            stepping: T::Continuous,
++            stepping: if id == parameter::WAVEFORM {
++                T::Choice
++            } else {
++                T::Continuous
++            },
+             automation: E::Unsupported,
+             modulation: M::Unsupported,
+             smoothing: S::DeviceManaged,
+@@ -192,6 +256,9 @@ impl NativeDeviceMetadata for AutoPanDefinition {
+         id: ParameterId,
+     ) -> Result<ParameterValue, DeviceContractError> {
+         let settings = decode(state)?;
++        if id == parameter::WAVEFORM {
++            return Ok(ParameterValue::Choice(settings.waveform as u32));
++        }
+         let value = match id {
+             parameter::AMOUNT => settings.amount,
+             parameter::RATE => settings.rate_hz,
+@@ -212,6 +279,13 @@ impl NativeDeviceMetadata for AutoPanDefinition {
+             .find(|descriptor| descriptor.id == id)
+             .ok_or(DeviceContractError::UnknownParameter)?;
+         descriptor.validate(value)?;
++        if id == parameter::WAVEFORM {
++            let ParameterValue::Choice(choice) = value else {
++                return Err(DeviceContractError::InvalidParameterValue);
++            };
++            settings.waveform = Waveform::from_choice(choice)?;
++            return encode(settings);
++        }
+         let ParameterValue::Float(value) = value else {
+             return Err(DeviceContractError::InvalidParameterValue);
+         };
+@@ -283,6 +357,9 @@ impl PreparedNativeProcessor for PreparedAutoPan {
+             right_phase_degrees: ScalarRamp::steady(normalize_degrees(f64::from(
+                 self.settings.right_phase_degrees,
+             ))),
++            waveform_weights: std::array::from_fn(|i| {
++                ScalarRamp::steady(f64::from(i == self.settings.waveform as usize))
++            }),
+             targets: AutoPanTargets::from(self.settings),
+         })
+     }
+@@ -299,6 +376,7 @@ struct AutoPanTargets {
+     amount: f64,
+     rate_hz: f64,
+     right_phase_degrees: f64,
++    waveform: Waveform,
+ }
+ 
+ impl From<AutoPanSettings> for AutoPanTargets {
+@@ -307,6 +385,7 @@ impl From<AutoPanSettings> for AutoPanTargets {
+             amount: f64::from(settings.amount),
+             rate_hz: f64::from(settings.rate_hz),
+             right_phase_degrees: normalize_degrees(f64::from(settings.right_phase_degrees)),
++            waveform: settings.waveform,
+         }
+     }
+ }
+@@ -363,12 +442,16 @@ struct AutoPanRuntime {
+     amount: ScalarRamp,
+     rate_hz: ScalarRamp,
+     right_phase_degrees: ScalarRamp,
++    waveform_weights: [ScalarRamp; 5],
+     targets: AutoPanTargets,
+ }
+ 
+ impl AutoPanRuntime {
+     fn reset_history(&mut self) {
+         self.phase_cycles = 0.0;
++        self.waveform_weights = std::array::from_fn(|i| {
++            ScalarRamp::steady(f64::from(i == self.targets.waveform as usize))
++        });
+         self.amount = ScalarRamp::steady(self.targets.amount);
+         self.rate_hz = ScalarRamp::steady(self.targets.rate_hz);
+         self.right_phase_degrees = ScalarRamp::steady(self.targets.right_phase_degrees);
+@@ -385,12 +468,15 @@ impl AutoPanRuntime {
+         self.amount.advance();
+         self.rate_hz.advance();
+         self.right_phase_degrees.advance();
++        for weight in &mut self.waveform_weights {
++            weight.advance();
++        }
+         let amount = self.amount.current;
+         if amount != 0.0 {
+-            let left_lfo = (1.0 + (std::f64::consts::TAU * self.phase_cycles).sin()) * 0.5;
++            let left_lfo = self.lfo(self.phase_cycles);
+             let right_phase =
+                 (self.phase_cycles + self.right_phase_degrees.current / 360.0).rem_euclid(1.0);
+-            let right_lfo = (1.0 + (std::f64::consts::TAU * right_phase).sin()) * 0.5;
++            let right_lfo = self.lfo(right_phase);
+             let base_gain = 1.0 - amount;
+             frame[0] = (left * (base_gain + amount * left_lfo)) as f32;
+             frame[1] = (right * (base_gain + amount * right_lfo)) as f32;
+@@ -400,7 +486,34 @@ impl AutoPanRuntime {
+         .rem_euclid(1.0);
+     }
+ 
++    fn lfo(&self, phase: f64) -> f64 {
++        // Preserve the original Sine arithmetic and avoid blending when steady.
++        if let Some(index) = self
++            .waveform_weights
++            .iter()
++            .position(|weight| weight.current == 1.0)
++        {
++            return Waveform::ALL[index].lfo(phase);
++        }
++        self.waveform_weights
++            .iter()
++            .zip(Waveform::ALL)
++            .filter(|(weight, _)| weight.current != 0.0)
++            .map(|(weight, waveform)| weight.current * waveform.lfo(phase))
++            .sum::<f64>()
++            .clamp(0.0, 1.0)
++    }
++
+     fn copy_history_and_retarget(&mut self, previous: &Self) {
++        self.waveform_weights = previous.waveform_weights;
++        if self.targets.waveform != previous.targets.waveform {
++            for (index, weight) in self.waveform_weights.iter_mut().enumerate() {
++                weight.retarget(
++                    f64::from(index == self.targets.waveform as usize),
++                    self.ramp_frames,
++                );
++            }
++        }
+         self.phase_cycles = previous.phase_cycles;
+         self.amount = previous.amount;
+         self.rate_hz = previous.rate_hz;
+@@ -488,5 +601,33 @@ impl NativeProcessorRuntime for AutoPanRuntime {
+     }
+ }
+ 
++/// Bounded, sampled steady-target channel gains over one cycle. Not live phase.
++#[derive(Clone, Debug, PartialEq)]
++pub struct AutoPanWaveformPreview {
++    pub left: [[f32; 2]; 129],
++    pub right: [[f32; 2]; 129],
++}
++
++/// Uses the provider's exact waveform/amount/phase law, never prepares a runtime.
++/// Rate changes the time represented by one cycle, not its normalized geometry.
++pub fn waveform_preview(
++    state: &NativeDeviceState,
++) -> Result<AutoPanWaveformPreview, DeviceContractError> {
++    let settings = decode(state)?;
++    let channel = |offset: f64| {
++        std::array::from_fn(|index| {
++            let x = index as f64 / 128.0;
++            let phase = (x + offset).rem_euclid(1.0);
++            let gain = 1.0 - f64::from(settings.amount)
++                + f64::from(settings.amount) * settings.waveform.lfo(phase);
++            [x as f32, gain as f32]
++        })
++    };
++    Ok(AutoPanWaveformPreview {
++        left: channel(0.0),
++        right: channel(f64::from(settings.right_phase_degrees) / 360.0),
++    })
++}
++
+ #[cfg(test)]
+ mod tests;
+diff --git a/crates/hex-devices/src/auto_pan/tests.rs b/crates/hex-devices/src/auto_pan/tests.rs
+index c7ba7efa..caf7db50 100644
+--- a/crates/hex-devices/src/auto_pan/tests.rs
++++ b/crates/hex-devices/src/auto_pan/tests.rs
+@@ -32,10 +32,10 @@ fn runtime(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn NativeProcess
+ }
+ 
+ #[test]
+-fn defaults_and_generic_codec_roundtrip_three_controls() {
++fn defaults_and_generic_codec_roundtrip_four_controls() {
+     let registry = registry();
+     let state = registry.default_state(AUTO_PAN_TYPE_ID).expect("defaults");
+-    assert_eq!(state.state_version(), 1);
++    assert_eq!(state.state_version(), AUTO_PAN_STATE_VERSION);
+     assert_eq!(state.payload().len(), STATE_BYTES);
+     assert_eq!(registry.migrate_state(&state).expect("migration"), state);
+     for (id, expected) in [
+@@ -81,8 +81,9 @@ fn rejects_malformed_versions_payloads_nonfinite_parameters_and_sample_rates() {
+         );
+     }
+     for length in [STATE_BYTES - 1, STATE_BYTES + 1] {
+-        let malformed = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; length])
+-            .expect("bounded malformed payload");
++        let malformed =
++            NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, vec![0; length])
++                .expect("bounded malformed payload");
+         assert_eq!(
+             AUTO_PAN_DEFINITION.migrate_state(&malformed),
+             Err(DeviceContractError::MalformedState)
+@@ -98,16 +99,20 @@ fn rejects_malformed_versions_payloads_nonfinite_parameters_and_sample_rates() {
+         AUTO_PAN_DEFINITION.migrate_state(&wrong),
+         Err(DeviceContractError::WrongDeviceType)
+     );
+-    let future = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 2, state.payload().to_vec())
+-        .expect("future version");
++    let future = NativeDeviceState::new(
++        AUTO_PAN_TYPE_ID,
++        AUTO_PAN_STATE_VERSION + 1,
++        state.payload().to_vec(),
++    )
++    .expect("future version");
+     assert_eq!(
+         AUTO_PAN_DEFINITION.migrate_state(&future),
+         Err(DeviceContractError::UnsupportedStateVersion)
+     );
+     let mut nonfinite = state.payload().to_vec();
+     nonfinite[4..8].copy_from_slice(&f32::NAN.to_le_bytes());
+-    let nonfinite =
+-        NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, nonfinite).expect("bounded nonfinite state");
++    let nonfinite = NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, nonfinite)
++        .expect("bounded nonfinite state");
+     assert_eq!(
+         AUTO_PAN_DEFINITION.migrate_state(&nonfinite),
+         Err(DeviceContractError::InvalidParameterValue)
+@@ -449,3 +454,311 @@ fn stateful_auto_pan_declares_zero_latency_and_tail_and_is_quiescent() {
+         std::mem::size_of::<AutoPanRuntime>()
+     );
+ }
++
++#[test]
++fn original_sine_pcm_fingerprint() {
++    for (rate, expected) in [
++        (8000, 0xedd6697d940d64a7_u64),
++        (22050, 0x590f0440b4abe9a6_u64),
++        (44100, 0xde98d6caef67dc78_u64),
++        (48000, 0xd5118d20611337d6_u64),
++        (96000, 0xd98e1558236b1ca7_u64),
++        (192000, 0x898e485e23dd7ec4_u64),
++    ] {
++        let state = AUTO_PAN_DEFINITION.default_state().unwrap();
++        let mut frames: Vec<_> = (0..2049)
++            .map(|n| {
++                let x = ((n * 97 % 521) as f32 - 260.0) / 270.0;
++                [x, x * -0.173 + (n % 7) as f32 * 0.013]
++            })
++            .collect();
++        runtime(&state, rate).process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++        let mut hash = 0xcbf29ce484222325_u64;
++        for value in frames.iter().flatten() {
++            for byte in value.to_bits().to_le_bytes() {
++                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
++            }
++        }
++        assert_eq!(hash, expected, "pre-waveform Sine PCM {rate}");
++    }
++}
++
++#[test]
++fn selectable_square_changes_actual_pcm_at_quarter_cycle() {
++    let state = patch(
++        &AUTO_PAN_DEFINITION.default_state().unwrap(),
++        parameter::AMOUNT,
++        1.0,
++    );
++    let square = AUTO_PAN_DEFINITION
++        .patch_parameter(
++            &state,
++            ParameterId::from_static(4),
++            ParameterValue::Choice(4),
++        )
++        .expect("actual waveform choice");
++    let mut signal = [[1.0, -0.25]; 2001];
++    runtime(&square, 8000).process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    assert_eq!(signal[2000], [1.0, -0.0]);
++}
++
++fn choice(state: &NativeDeviceState, shape: u32) -> NativeDeviceState {
++    AUTO_PAN_DEFINITION
++        .patch_parameter(state, parameter::WAVEFORM, ParameterValue::Choice(shape))
++        .unwrap()
++}
++
++#[test]
++fn independent_quarter_cycle_channel_oracles_and_zero_amount_cover_all_shapes() {
++    let levels = [
++        [0.5, 1.0, 0.5, 0.0],
++        [0.5, 1.0, 0.5, 0.0],
++        [0.0, 0.25, 0.5, 0.75],
++        [1.0, 0.75, 0.5, 0.25],
++        [1.0, 1.0, 0.0, 0.0],
++    ];
++    for (shape, expected) in levels.iter().enumerate() {
++        for (degrees, offset) in [(0.0, 0), (180.0, 2), (360.0, 0)] {
++            for amount in [0.0_f32, 0.3, 1.0] {
++                let state = patch(
++                    &patch(
++                        &choice(&AUTO_PAN_DEFINITION.default_state().unwrap(), shape as u32),
++                        parameter::AMOUNT,
++                        amount,
++                    ),
++                    parameter::RIGHT_PHASE,
++                    degrees,
++                );
++                for quarter in 0..4 {
++                    // Seed exact rational phases to test signed step boundaries
++                    // independently of floating point clock accumulation.
++                    let prepared = prepared(&state, 48000);
++                    let boxed = prepared.create_runtime();
++                    let initial = boxed.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
++                    let mut pan = AutoPanRuntime {
++                        phase_cycles: quarter as f64 / 4.0,
++                        ..copy_runtime(initial)
++                    };
++                    let input = [0.8, -0.25];
++                    let mut sample = [input];
++                    pan.process_block(&mut sample, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++                    for (channel, lfo) in [expected[quarter], expected[(quarter + offset) % 4]]
++                        .into_iter()
++                        .enumerate()
++                    {
++                        let gain = 1.0 - f64::from(amount) + f64::from(amount) * lfo;
++                        assert!(
++                            (f64::from(sample[0][channel]) - f64::from(input[channel]) * gain)
++                                .abs()
++                                < 8.0e-8
++                        );
++                        if amount == 0.0 {
++                            assert_eq!(sample[0][channel].to_bits(), input[channel].to_bits());
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
++fn copy_runtime(p: &AutoPanRuntime) -> AutoPanRuntime {
++    AutoPanRuntime {
++        sample_rate: p.sample_rate,
++        ramp_frames: p.ramp_frames,
++        phase_cycles: p.phase_cycles,
++        amount: p.amount,
++        rate_hz: p.rate_hz,
++        right_phase_degrees: p.right_phase_degrees,
++        waveform_weights: p.waveform_weights,
++        targets: p.targets,
++    }
++}
++
++#[test]
++fn shape_changes_crossfade_independent_steady_streams_without_clock_reset_or_block_restart() {
++    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
++        for (from, to) in [(0, 4), (4, 2), (2, 1), (1, 3), (3, 0)] {
++            let base = patch(
++                &AUTO_PAN_DEFINITION.default_state().unwrap(),
++                parameter::RATE,
++                20.0,
++            );
++            let old_state = choice(&base, from);
++            let new_state = choice(&base, to);
++            let source = runtime(&old_state, rate);
++            let mut actual = runtime(&new_state, rate);
++            actual.copy_history_from(source.as_ref());
++            let count = rate.div_ceil(200) as usize;
++            let input = [0.8, -0.21];
++            let mut samples = vec![input; count + 17];
++            let mut a = samples.clone();
++            let mut b = samples.clone();
++            runtime(&old_state, rate).process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            runtime(&new_state, rate).process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            let mut start = 0;
++            for length in [1, 7, 31, 2, 503].into_iter().cycle() {
++                if start == samples.len() {
++                    break;
++                }
++                let end = (start + length).min(samples.len());
++                let mut twin = runtime(&new_state, rate);
++                twin.copy_history_from(actual.as_ref());
++                twin.process_block(
++                    &mut samples[start..end],
++                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
++                );
++                actual = twin;
++                start = end;
++            }
++            for (index, sample) in samples.iter().enumerate() {
++                let t = ((index + 1) as f64 / count as f64).min(1.0);
++                for (channel, value) in sample.iter().enumerate() {
++                    let expected =
++                        (1.0 - t) * f64::from(a[index][channel]) + t * f64::from(b[index][channel]);
++                    assert!(
++                        (f64::from(*value) - expected).abs() < 1.3e-7,
++                        "rate{rate} pair{from}->{to} frame{index}"
++                    );
++                }
++            }
++            let state = actual.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
++            let expected_phase = ((count + 17) as f64 * 20.0 / f64::from(rate)).rem_euclid(1.0);
++            assert!((state.phase_cycles - expected_phase).abs() < 1.0e-12);
++            assert!(state.waveform_weights.iter().all(|w| w.remaining == 0));
++            assert_eq!(
++                source
++                    .as_any()
++                    .downcast_ref::<AutoPanRuntime>()
++                    .unwrap()
++                    .phase_cycles,
++                0.0,
++                "speculative copies never mutate committed source"
++            );
++            let mut bypass = runtime(&new_state, rate);
++            bypass.copy_history_from(source.as_ref());
++            let mut dry = vec![input; count + 17];
++            bypass.process_bypassed_block(&mut dry, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            assert!(dry.iter().all(|x| *x == input));
++            let mut next = [input; 11];
++            let mut other = next;
++            bypass.process_block(&mut next, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            actual.process_block(&mut other, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            assert_eq!(next, other);
++            actual.reset();
++            let mut reset = [input; 11];
++            let mut fresh = reset;
++            actual.process_block(&mut reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            runtime(&new_state, rate)
++                .process_block(&mut fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++            assert_eq!(reset, fresh);
++        }
++    }
++}
++
++#[test]
++fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
++    let base = AUTO_PAN_DEFINITION.default_state().unwrap();
++    let legacy = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; 12]).unwrap();
++    assert_eq!(
++        AUTO_PAN_DEFINITION.migrate_state(&legacy),
++        Err(DeviceContractError::UnsupportedStateVersion)
++    );
++    for value in [
++        ParameterValue::Choice(5),
++        ParameterValue::Choice(u32::MAX),
++        ParameterValue::Float(f32::NAN),
++        ParameterValue::Float(1.0),
++        ParameterValue::Bool(true),
++    ] {
++        assert!(
++            AUTO_PAN_DEFINITION
++                .patch_parameter(&base, parameter::WAVEFORM, value)
++                .is_err()
++        );
++    }
++    let mut corrupt = base.payload().to_vec();
++    corrupt[12..16].copy_from_slice(&5_u32.to_le_bytes());
++    assert!(
++        waveform_preview(
++            &NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, corrupt).unwrap()
++        )
++        .is_err()
++    );
++    for shape in 0..5 {
++        let state = choice(&base, shape);
++        assert_eq!(AUTO_PAN_DEFINITION.migrate_state(&state).unwrap(), state);
++        assert_eq!(
++            AUTO_PAN_DEFINITION
++                .read_parameter(&state, parameter::WAVEFORM)
++                .unwrap(),
++            ParameterValue::Choice(shape)
++        );
++        let semantics = AUTO_PAN_DEFINITION
++            .parameter_semantics_for_state(&state, parameter::WAVEFORM)
++            .unwrap()
++            .unwrap();
++        assert_eq!(
++            semantics.stepping,
++            hex_lattice_contract::ParameterStepping::Choice
++        );
++        let preview = waveform_preview(&state).unwrap();
++        for points in [preview.left, preview.right] {
++            assert!(
++                points
++                    .iter()
++                    .all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
++            );
++        }
++        assert_eq!(
++            waveform_preview(&patch(&state, parameter::RATE, 20.0)).unwrap(),
++            preview,
++            "one normalized cycle is rate-independent"
++        );
++    }
++    let old = runtime(&base, 8000);
++    let square = choice(&base, 4);
++    let triangle = choice(&base, 1);
++    let mut change = runtime(&square, 8000);
++    change.copy_history_from(old.as_ref());
++    change.process_block(&mut [[1.0, 1.0]; 20], &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    let before = change.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
++    let mut rapid = runtime(&triangle, 8000);
++    rapid.copy_history_from(change.as_ref());
++    let after = rapid.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
++    assert_eq!(after.phase_cycles, before.phase_cycles);
++    assert_eq!(
++        after.waveform_weights.map(|w| w.current),
++        before.waveform_weights.map(|w| w.current)
++    );
++    rapid.process_block(&mut [[1.0, 1.0]; 40], &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    let settled = rapid.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
++    assert_eq!(settled.waveform_weights[1].current, 1.0);
++}
++
++#[test]
++fn intrinsic_edges_and_harmonic_content_are_explicit_not_alias_free_claims() {
++    let e = 1.0e-9;
++    assert_eq!(Waveform::Square.lfo(0.5 - e), 1.0);
++    assert_eq!(Waveform::Square.lfo(0.5), 0.0);
++    assert!(Waveform::SawUp.lfo(1.0 - e) > 0.999999);
++    assert_eq!(Waveform::SawUp.lfo(0.0), 0.0);
++    assert!((Waveform::Triangle.lfo(0.25 - e) - Waveform::Triangle.lfo(0.25 + e)).abs() < 1.0e-8);
++    // Independent discrete Fourier measurement: intended square has harmonics;
++    // triangle has substantially less third-harmonic energy, Sine virtually none.
++    let energy = |shape: Waveform, k: f64| {
++        let (mut re, mut im) = (0.0, 0.0);
++        for n in 0..1024 {
++            let phase = n as f64 / 1024.0;
++            let y = shape.lfo(phase) - 0.5;
++            let angle = std::f64::consts::TAU * k * phase;
++            re += y * angle.cos();
++            im += y * angle.sin();
++        }
++        re * re + im * im
++    };
++    let square = energy(Waveform::Square, 3.0) / energy(Waveform::Square, 1.0);
++    let triangle = energy(Waveform::Triangle, 3.0) / energy(Waveform::Triangle, 1.0);
++    assert!((square - 1.0 / 9.0).abs() < 1.0e-4);
++    assert!((triangle - 1.0 / 81.0).abs() < 1.0e-4);
++    assert!(energy(Waveform::Sine, 3.0) / energy(Waveform::Sine, 1.0) < 1.0e-20);
++}
+diff --git a/crates/hex-engine/src/lib.rs b/crates/hex-engine/src/lib.rs
+index 686bfd24..bd86551b 100644
+--- a/crates/hex-engine/src/lib.rs
++++ b/crates/hex-engine/src/lib.rs
+@@ -1,6 +1,9 @@
+ //! Deterministic, sample-rate-locked stereo arrangement rendering.
+ //! This is an original prototype, not a verified Live-compatible engine.
+ pub use hex_devices::SineTable;
++pub use hex_devices::auto_pan::{
++    AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
++};
+ pub use hex_devices::compressor::{
+     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
+ };
+diff --git a/crates/hex-engine/src/native_device_view.rs b/crates/hex-engine/src/native_device_view.rs
+index 22811c61..3f98ee16 100644
+--- a/crates/hex-engine/src/native_device_view.rs
++++ b/crates/hex-engine/src/native_device_view.rs
+@@ -368,7 +368,12 @@ mod tests {
+         let state = crate::default_native_device_state(auto_pan.type_id).unwrap();
+         let view = native_device_view(&state).unwrap();
+         assert_eq!(view.name, "auto pan");
+-        assert_eq!(view.parameters.len(), 3);
++        assert_eq!(view.parameters.len(), 4);
++        assert_eq!(
++            view.parameters[3].descriptor.id,
++            hex_lattice_contract::ParameterId::from_static(4)
++        );
++        assert_eq!(view.parameters[3].value, ParameterValue::Choice(0));
+     }
+ 
+     #[test]
+diff --git a/crates/hex-storage/src/files.rs b/crates/hex-storage/src/files.rs
+index 16d20466..e361d06c 100644
+--- a/crates/hex-storage/src/files.rs
++++ b/crates/hex-storage/src/files.rs
+@@ -404,10 +404,11 @@ mod tests {
+         };
+         let mut snapshot = editor.project().snapshot();
+         let device_id = snapshot.next_id;
+-        let mut payload = Vec::with_capacity(12);
++        let mut payload = Vec::with_capacity(16);
+         for value in [0.75_f32, 3.5, 270.0] {
+             payload.extend_from_slice(&value.to_le_bytes());
+         }
++        payload.extend_from_slice(&3_u32.to_le_bytes());
+         let track_snapshot = snapshot
+             .tracks
+             .iter_mut()
+@@ -416,7 +417,7 @@ mod tests {
+         track_snapshot.devices.push(DeviceSnapshot {
+             id: device_id,
+             bypassed: false,
+-            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.auto-pan"), 1, payload)
++            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.auto-pan"), 2, payload)
+                 .expect("bounded opaque native state"),
+         });
+         snapshot.next_id = device_id + 1;
+@@ -432,7 +433,8 @@ mod tests {
+             .and_then(|candidate| candidate.devices().first())
+             .expect("saved Auto Pan");
+         assert_eq!(device.state().type_id().as_str(), Ok("hex.auto-pan"));
+-        assert_eq!(device.state().state_version(), 1);
++        assert_eq!(device.state().state_version(), 2);
++        assert_eq!(&device.state().payload()[12..16], &3_u32.to_le_bytes());
+         assert_eq!(
+             device.state().payload(),
+             project.tracks()[0].devices()[0].state().payload()
+diff --git a/crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs b/crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs
+index f571d50f..bc722ccc 100644
+--- a/crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs
++++ b/crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs
+@@ -1,37 +1,72 @@
+-//! Compact Auto Pan composition using the shared Lattice controls.
++//! Compact Auto Pan composition using shared controls and provider-owned preview.
+ use super::{
+-    ControlPresentation, ControlText, DeviceControlIdentity, EditorView,
+-    parameter_control_with_presentation,
++    ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
++    effective_parameter_value, parameter_control_with_presentation,
+ };
+-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*};
+-use hex_engine::{NativeDeviceClass, NativeDeviceView};
++use crate::theme;
++use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px};
++use hex_engine::{AutoPanWaveformPreview, NativeDeviceClass, NativeDeviceView};
+ use hex_lattice_contract::ParameterId;
+ use hex_project::DeviceId;
+ 
+ pub(super) const FRAME_WIDTH: f32 = crate::device_composition::AUTO_PAN_FRAME_WIDTH;
+-
+ const PARAMETERS: [(ParameterId, &str); 3] = [
+     (ParameterId::from_static(1), "amount"),
+     (ParameterId::from_static(2), "rate"),
+     (ParameterId::from_static(3), "phase"),
+ ];
+ 
++pub(super) fn preview(
++    view: &mut EditorView,
++    device: DeviceId,
++    device_view: &NativeDeviceView,
++) -> Result<AutoPanWaveformPreview, String> {
++    let mut state = view
++        .state
++        .as_ref()
++        .and_then(|s| s.project.device(device))
++        .ok_or("missing auto pan")?
++        .state()
++        .clone();
++    for parameter in &device_view.parameters {
++        let id = parameter.descriptor.id;
++        let value = effective_parameter_value(
++            view,
++            ParameterKey {
++                device,
++                parameter: id,
++            },
++            parameter.value,
++        );
++        if value != parameter.value {
++            state = hex_engine::patch_native_device_parameter_for_class(
++                NativeDeviceClass::Effect,
++                &state,
++                id,
++                value,
++            )
++            .map_err(|e| e.to_string())?;
++        }
++    }
++    hex_engine::native_auto_pan_waveform_preview(&state).map_err(|e| e.to_string())
++}
++
+ pub(super) fn render_body(
+     view: &mut EditorView,
+     cx: &mut Context<EditorView>,
+     device: DeviceId,
+     device_view: &NativeDeviceView,
+ ) -> Stateful<Div> {
++    let curve = preview(view, device, device_view);
+     let identity = DeviceControlIdentity {
+         class: NativeDeviceClass::Effect,
+         type_id: device_view.type_id,
+     };
+-    let mut controls = crate::device_composition::rail_column();
+-    for (id, label) in PARAMETERS {
+-        let control = device_view
++    let mut control = |id, label, presentation| {
++        device_view
+             .parameters
+             .iter()
+-            .find(|parameter| parameter.descriptor.id == id)
++            .find(|p| p.descriptor.id == id)
+             .map(|parameter| {
+                 parameter_control_with_presentation(
+                     view,
+@@ -39,17 +74,55 @@ pub(super) fn render_body(
+                     device,
+                     identity,
+                     parameter,
+-                    ControlPresentation::CompactDial,
++                    presentation,
+                     ControlText {
+                         label: Some(label),
+                         ..ControlText::default()
+                     },
+                 )
+             })
+-            .unwrap_or_else(|| div().child(crate::theme::text("unsupported")));
+-        controls = controls.child(control);
++            .unwrap_or_else(|| div().child(theme::text("unsupported")))
++    };
++    let mut controls = crate::device_composition::rail_column();
++    for (id, label) in PARAMETERS {
++        controls = controls.child(control(id, label, ControlPresentation::CompactDial));
++    }
++    let chooser = control(
++        ParameterId::from_static(4),
++        "wave",
++        ControlPresentation::CompactSelector,
++    );
++    let mut graph = div()
++        .debug_selector(move || format!("auto-pan-waveform-{device}", device = device.value()))
++        .w_full()
++        .flex_1()
++        .min_h_0()
++        .flex()
++        .flex_col();
++    match curve {
++        Ok(curve) => {
++            for points in [curve.left, curve.right] {
++                if let Some(plot) = hex_widgets::curve_plot(
++                    points,
++                    theme::device_style(theme::DeviceStyleRole::Display),
++                ) {
++                    graph = graph.child(div().flex_1().min_h_0().child(plot));
++                }
++            }
++        }
++        Err(_) => graph = graph.child(theme::text("preview unavailable")),
+     }
+-    crate::device_composition::centered_rails(crate::device_composition::dense_rail(controls))
++    let rail = crate::device_composition::dense_rail(controls)
++        .w(px(64.0))
++        .flex_shrink_0();
++    let main = crate::device_composition::plot_column(
++        div().h(px(14.0)).flex_shrink_0().child(chooser),
++        graph,
++        div().child(theme::text("static l/r")),
++    );
++    crate::device_composition::centered_rails(rail)
++        .gap(px(4.0))
++        .child(main)
+         .id(ElementId::Name(
+             format!("device-body-{}", device.value()).into(),
+         ))
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
+index a437efef..41d795af 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
+@@ -67,7 +67,7 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
+             px(auto_pan_panel::FRAME_WIDTH + gain_meters::WIDTH)
+         );
+         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
+-        for parameter in 1..=3 {
++        for parameter in 1..=4 {
+             let control = visual
+                 .debug_bounds(Box::leak(
+                     format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),
+@@ -282,3 +282,205 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
+             .is_none()
+     );
+ }
++
++#[gpui::test]
++fn auto_pan_waveform_menu_track_return_cancel_commit_preview_history_and_reopen(
++    cx: &mut TestAppContext,
++) {
++    let (service, _, track, return_track, return_device, _) = actor_return_utility_fixture();
++    let original = hex_engine::default_native_device_state(
++        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
++    )
++    .unwrap();
++    service
++        .submit(Request::Edit(Command::ReplaceDeviceState {
++            device: return_device,
++            state: original.clone(),
++        }))
++        .unwrap();
++    assert!(receive_service_event(&service).error.is_none());
++    service
++        .submit(Request::Edit(Command::InsertDevice {
++            track,
++            before: None,
++            state: original.clone(),
++        }))
++        .unwrap();
++    let state = receive_service_event(&service).state;
++    let device = state.project.track(track).unwrap().devices()[0].id();
++    let (handle, editor) = actor_editor_window(cx, service, state, track);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.simulate_resize(size(px(880.0), px(540.0)));
++    for (owner, device) in [(None, device), (Some(return_track), return_device)] {
++        editor.update(cx, |view, cx| {
++            view.focused_return = owner;
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let selector = Box::leak(format!("device-{}-parameter-4", device.value()).into_boxed_str());
++        let graph = visual
++            .debug_bounds(Box::leak(
++                format!("auto-pan-waveform-{}", device.value()).into_boxed_str(),
++            ))
++            .expect("actual provider-backed plot");
++        assert!(graph.size.width > px(30.0) && graph.size.height > px(40.0));
++        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++        let position = visual.debug_bounds(selector).unwrap().center();
++        visual.simulate_click(position, Modifiers::default());
++        visual.run_until_parked();
++        let option =
++            Box::leak(format!("device-{}-parameter-4-option-1", device.value()).into_boxed_str());
++        let option_bounds = visual
++            .debug_bounds(option)
++            .expect("actual waveform options");
++        visual.simulate_mouse_move(option_bounds.center(), None, Modifiers::default());
++        visual.simulate_keystrokes("escape");
++        visual.run_until_parked();
++        assert!(
++            visual.debug_bounds(option).is_none(),
++            "dismiss selector without applying hovered option"
++        );
++        editor.read_with(cx, |view, _| {
++            assert_eq!(view.state.as_ref().unwrap().project, before)
++        });
++        let position = visual.debug_bounds(selector).unwrap().center();
++        visual.simulate_click(position, Modifiers::default());
++        visual.run_until_parked();
++        let position = visual.debug_bounds(option).unwrap().center();
++        visual.simulate_click(position, Modifiers::default());
++        pump_until(&editor, cx, |view| {
++            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++        });
++        let changed = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++        assert_ne!(changed, before);
++        let changed_state = changed.device(device).unwrap().state();
++        assert_eq!(
++            hex_engine::native_device_parameter_for_class(
++                NativeDeviceClass::Effect,
++                changed_state,
++                hex_lattice_contract::ParameterId::from_static(4)
++            )
++            .unwrap(),
++            ParameterValue::Choice(1)
++        );
++        editor.update(cx, |view, _| {
++            let device_view = hex_engine::native_device_view(changed_state).unwrap();
++            let plotted = auto_pan_panel::preview(view, device, &device_view).unwrap();
++            assert_eq!(
++                plotted,
++                hex_engine::native_auto_pan_waveform_preview(changed_state).unwrap()
++            );
++            assert_eq!(
++                plotted.left[16],
++                [0.125, 0.875],
++                "triangle eighth-cycle gain, not sine"
++            );
++        });
++        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |view| {
++            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++        });
++        editor.read_with(cx, |view, _| {
++            assert_eq!(
++                view.state.as_ref().unwrap().project,
++                before,
++                "one Undo covers selected option"
++            )
++        });
++        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
++        pump_until(&editor, cx, |view| {
++            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++        });
++        editor.read_with(cx, |view, _| {
++            assert_eq!(view.state.as_ref().unwrap().project, changed)
++        });
++    }
++    let expected = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++    let path = std::env::temp_dir().join(format!(
++        "hex-auto-pan-shape-{}-{}.hex",
++        std::process::id(),
++        device.value()
++    ));
++    assert!(!path.exists());
++    editor.update(cx, |view, _| {
++        assert!(view.enqueue(Request::SaveNew(path.clone())))
++    });
++    pump_until(&editor, cx, |view| {
++        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++    });
++    editor.read_with(cx, |view, _| assert!(view.error.is_none()));
++    let reload = Service::new(48000, 8, 8_000_000).unwrap();
++    let _ = receive_service_event(&reload);
++    reload.submit(Request::Open(path.clone())).unwrap();
++    let reopened = receive_service_event(&reload);
++    assert!(reopened.error.is_none());
++    for id in [device, return_device] {
++        assert_eq!(
++            reopened.state.project.device(id).unwrap().state(),
++            expected.device(id).unwrap().state()
++        );
++    }
++    std::fs::remove_file(path).unwrap();
++}
++
++#[gpui::test]
++fn auto_pan_preview_uses_effective_pending_choice_without_processing_in_paint(
++    cx: &mut TestAppContext,
++) {
++    let (service, _, track, _, device, _) = actor_return_utility_fixture();
++    let original = hex_engine::default_native_device_state(
++        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
++    )
++    .unwrap();
++    service
++        .submit(Request::Edit(Command::ReplaceDeviceState {
++            device,
++            state: original.clone(),
++        }))
++        .unwrap();
++    let state = receive_service_event(&service).state;
++    let return_id = state.project.return_tracks()[0].id();
++    let (handle, editor) = actor_editor_window(cx, service, state, track);
++    let visual = VisualTestContext::from_window(handle, cx);
++    editor.update(cx, |view, cx| {
++        view.focused_return = Some(return_id);
++        cx.notify();
++    });
++    visual.run_until_parked();
++    editor.update(cx, |view, _| {
++        // Hold a real pending-value lifecycle: idle state intentionally retires
++        // completed drafts through the shared binding adapter.
++        view.worker_requests_pending = 1;
++        view.device_panel.pending_values.insert(
++            ParameterKey {
++                device,
++                parameter: hex_lattice_contract::ParameterId::from_static(4),
++            },
++            ParameterValue::Choice(4),
++        );
++        let device_view = hex_engine::native_device_view(&original).unwrap();
++        let preview = auto_pan_panel::preview(view, device, &device_view).unwrap();
++        let expected = hex_engine::patch_native_device_parameter(
++            &original,
++            hex_lattice_contract::ParameterId::from_static(4),
++            ParameterValue::Choice(4),
++        )
++        .unwrap();
++        assert_eq!(
++            preview,
++            hex_engine::native_auto_pan_waveform_preview(&expected).unwrap()
++        );
++        assert_eq!(
++            view.state
++                .as_ref()
++                .unwrap()
++                .project
++                .device(device)
++                .unwrap()
++                .state(),
++            &original
++        );
++        view.device_panel.pending_values.clear();
++        view.worker_requests_pending = 0;
++    });
++}
+diff --git a/docs/auto-pan.md b/docs/auto-pan.md
+index 46213034..63236c72 100644
+--- a/docs/auto-pan.md
++++ b/docs/auto-pan.md
+@@ -1,9 +1,10 @@
+ # auto pan
+ 
+ `hex.auto-pan` is an original free-running stereo amplitude modulator registered
+-through Lattice. Its version-1 opaque state contains amount (`0..1`, default
++through Lattice. Its version-2 opaque state contains amount (`0..1`, default
+ `0.5`), rate (`0.05..20 hz`, default `1 hz`), and right-channel phase
+-(`0..360 degrees`, default `180`). It uses a sine LFO only. The left LFO is
++(`0..360 degrees`, default `180`), plus the waveform choice described below.
++The default left Sine LFO is
+ `(1 + sin(2π × phase)) / 2`; the right LFO uses the same clock plus its phase
+ offset. Each channel gain is `1 - amount + amount × LFO`. Phase starts at zero,
+ is sampled before each clock advance, and wraps once per cycle.
+@@ -28,12 +29,12 @@ clock history needed for future input.
+ 
+ This is a limited original effect based on public control vocabulary, not a
+ measured recreation of Live's Auto Pan/Tremolo. Beat synchronization, retrigger,
+-waveform choices, spin, envelope/follower behavior, and modern modes are not
++spin, envelope/follower behavior, and modern modes are not
+ implemented. Its compact panel uses the shared rounded device frame and three
+ `CompactDial` controls for amount, free rate and right phase. Track and Return
+ instances use the same 144 × 184 px composition and canonical parameter gesture
+-path, including typed edits and grouped Undo. A curve preview is intentionally
+-omitted; the panel does not imply additional waveform or synchronization modes.
++path, including typed edits and grouped Undo. The periodic waveform selector and sampled static preview are described below;
++the panel does not imply synchronization or other unsupported modern modes.
+ 
+ Headless UI coverage checks all three controls inside the frame at the 880 × 540
+ minimum window size, verifies matching Track/Return geometry, commits a valid
+@@ -48,7 +49,8 @@ acceptance remain open for the user's review build.
+ Source acceptance: the focused rendered headless test passes with one matching
+ case, covering geometry, all three bindings, drag/Undo, typed edits and both
+ retirement paths. Full final-commit local CI is recorded in PR145 and Pulse2322.
+-The optional static modulation preview is deferred; no preview cache is added.
++PR145 originally deferred the optional static modulation preview; the later
++pulse2852 slice below adds a pure sampled preview without a new cache owner.
+ DSP behavior and the 256-processor/memory admission limits are unchanged.
+ 
+ User checklist for the fresh combined build:
+@@ -62,3 +64,56 @@ User checklist for the fresh combined build:
+ 
+ Native pointer, typography, appearance and listening results remain pending.
+ The unrelated Operator stop report (Pulse2305) remains open and unreproduced.
++
++## periodic waveform choice — pulse2852
++
++Current codec version 2 contains the three original floats plus stable Choice
++parameter 4 (`u32`), 16 bytes total. Unsupported alpha version 1 is refused;
++there is no migration or automatic user-file conversion. The default is Sine.
++The original Sine arithmetic, phase clock and amount/rate/right-phase meanings
++are preserved, including exact zero-amount unity and finite-input bypass history.
++
++For normalized phase `p` in `[0,1)`, the original unipolar LFO laws are:
++
++- Sine: `(1 + sin(2πp))/2`, unchanged.
++- Triangle: `1 - abs(2*((p+1/4) mod 1)-1)` (rises from 1/2 at phase zero).
++- Saw Up: `p`; Saw Down: `1-p`.
++- Square: 1 on `[0,1/2)`, 0 on `[1/2,1)`; original symmetric 50% duty.
++
++All feed the existing channel gain `1-amount+amount*LFO`. These are explicit
++original laws, not measured proprietary formulas. The [official Live 12 manual,
++section 29.3](https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#auto-pan-tremolo)
++was checked for waveform vocabulary and phase relationships; it does not specify
++numeric square-duty/default laws. Installed reference metadata is not a new
++native comparison. Random, synchronization, retrigger, spin, shaping, follower
++and modern harmonic/vintage modes remain outside this finite slice.
++
++Choice revisions retain the original phase and scalar ramps, crossfading five
++fixed scalar weights over the existing prepared five-millisecond interval. A
++rapid revision starts from current weights; same-target scratch/history copies
++retain in-flight ramps. Fresh/reset state uses the authored waveform immediately.
++This avoids a sudden choice switch; periodic square/saw edges are intentional
++and remain sharp. A square modulator has odd harmonics and can gate/click on a
++sustained carrier. This is not a band-limited or alias-free quality claim. No new
++clock, queue, PCM cache, allocation or history owner is introduced.
++
++The existing 144px panel retains three dials and adds the shared Selector plus
++sampled static left/right gain plots. A bounded pure provider helper supplies 129
++samples per normalized cycle through the existing Engine export facade. It does
++not instantiate or run a processor in paint. Rate changes cycle duration, not
++normalized geometry. The plot shows authored/effective pending targets, not live
++phase or in-flight crossfade weights; connecting sampled points is a static
++preview, not proof that square/saw edges are smoothed in DSP. Popup hover/dismiss
++is non-editing; selecting an option uses the existing atomic canonical parameter
++command and one Undo step. The original numeric gesture path remains unchanged.
++
++Targeted verification includes independent quarter-cycle stereo amplitude
++oracles, signed boundaries, original Sine PCM fingerprints at six rates,
++steady-stream crossfade oracles, irregular speculative partitions/reset/bypass,
++rapid retarget and exact clock retention, validation/codec and sampled-preview
++checks, and finite Fourier measurements of intended harmonic content. Real
++Track/Return tests cover all control bounds, selector dismissal/commit,
++Undo/Redo, pending preview and disposable current-format save/open. Generic A/B
++payload ownership is retained; actual combined A/B acceptance awaits its generic
++integration. Native appearance, listening and Live comparison remain open under
++the coordinator's single Mac lane; this does not complete Auto Pan or W12.

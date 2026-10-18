@@ -1,0 +1,10 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.66s
+     Running unittests src/lib.rs (target/debug/deps/hex_engine-5ab7741602b2157c)
+
+running 1 test
+test native_device_view::tests::catalog_and_batched_values_use_registered_metadata_and_current_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 538 filtered out; finished in 0.00s
+

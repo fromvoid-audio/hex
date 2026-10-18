@@ -1,0 +1,22 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/hex_devices-97060e49b4b449d0)
+
+running 15 tests
+test auto_pan::tests::defaults_and_generic_codec_roundtrip_four_controls ... ok
+test auto_pan::tests::compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_changed_controls ... ok
+test auto_pan::tests::edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_shortest_arc ... ok
+test auto_pan::tests::intrinsic_edges_and_harmonic_content_are_explicit_not_alias_free_claims ... ok
+test auto_pan::tests::rejects_malformed_versions_payloads_nonfinite_parameters_and_sample_rates ... ok
+test auto_pan::tests::bypass_advances_clock_and_nonfinite_frames_skip_clock_and_ramps ... ok
+test auto_pan::tests::reset_clears_phase_and_ramps_and_360_degrees_matches_zero ... ok
+test auto_pan::tests::selectable_square_changes_actual_pcm_at_quarter_cycle ... ok
+test auto_pan::tests::shape_codec_semantics_preview_and_rapid_retarget_remain_validated ... ok
+test auto_pan::tests::independent_quarter_cycle_channel_oracles_and_zero_amount_cover_all_shapes ... ok
+test auto_pan::tests::stateful_auto_pan_declares_zero_latency_and_tail_and_is_quiescent ... ok
+test auto_pan::tests::sine_pan_has_complementary_channels_and_zero_amount_is_bit_exact_unity ... ok
+test auto_pan::tests::zero_offset_tremolo_reset_and_block_partition_are_deterministic ... ok
+test auto_pan::tests::original_sine_pcm_fingerprint ... ok
+test auto_pan::tests::shape_changes_crossfade_independent_steady_streams_without_clock_reset_or_block_restart ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 319 filtered out; finished in 0.02s
+

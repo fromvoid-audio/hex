@@ -1,0 +1,12 @@
+[package]
+name = "hex-auto-pan-allocation-fixture"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+[dependencies]
+hex-devices = { path = "/workspace/hex/crates/hex-devices" }
+hex-lattice = { path = "/workspace/hex/crates/hex-lattice" }
+hex-lattice-contract = { path = "/workspace/hex/crates/hex-lattice-contract" }
+allocation-counter = "=0.8.1"
+[lib]
+path = "probe.rs"

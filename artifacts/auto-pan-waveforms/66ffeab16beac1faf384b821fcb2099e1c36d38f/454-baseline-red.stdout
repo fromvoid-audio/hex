@@ -1,0 +1,5 @@
+[1/2] sine-baseline: running
+[1/2] sine-baseline: passed
+[2/2] provider-red: running
+[2/2] provider-red: failed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/auto-pan-454-baseline-red/summary.json

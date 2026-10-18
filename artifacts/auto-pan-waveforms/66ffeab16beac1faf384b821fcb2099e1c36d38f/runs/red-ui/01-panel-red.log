@@ -1,0 +1,27 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.58s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+
+thread 'editor::device_panel::tests::auto_pan_ui_tests::auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle' (131779) panicked at crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:75:18:
+shared compact dial
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::auto_pan_ui_tests::auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::auto_pan_ui_tests::auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 864 filtered out; finished in 0.33s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,42 @@
+diff --git a/crates/hex-devices/src/auto_pan/tests.rs b/crates/hex-devices/src/auto_pan/tests.rs
+index c7ba7efa..4f8a270e 100644
+--- a/crates/hex-devices/src/auto_pan/tests.rs
++++ b/crates/hex-devices/src/auto_pan/tests.rs
+@@ -449,3 +449,24 @@ fn stateful_auto_pan_declares_zero_latency_and_tail_and_is_quiescent() {
+         std::mem::size_of::<AutoPanRuntime>()
+     );
+ }
++
++#[test]
++fn original_sine_pcm_fingerprint() {
++    for rate in [8_000,22_050,44_100,48_000,96_000,192_000] {
++        let state=AUTO_PAN_DEFINITION.default_state().unwrap();
++        let mut frames:Vec<_>=(0..2049).map(|n| {let x=((n*97%521) as f32-260.0)/270.0;[x,x*-0.173+(n%7) as f32*0.013]}).collect();
++        runtime(&state,rate).process_block(&mut frames,&hex_lattice::EMPTY_DEVICE_RESOURCES);
++        let mut hash=0xcbf29ce484222325_u64;
++        for value in frames.iter().flatten() {for byte in value.to_bits().to_le_bytes() {hash=(hash^u64::from(byte)).wrapping_mul(0x100000001b3);}}
++        println!("ORIGINAL_SINE {rate} {hash:#x}");
++    }
++}
++
++#[test]
++fn selectable_square_changes_actual_pcm_at_quarter_cycle() {
++    let state=patch(&AUTO_PAN_DEFINITION.default_state().unwrap(),parameter::AMOUNT,1.0);
++    let square=AUTO_PAN_DEFINITION.patch_parameter(&state,ParameterId::from_static(4),ParameterValue::Choice(4)).expect("actual waveform choice");
++    let mut signal=[[1.0,-0.25];2001];
++    runtime(&square,8000).process_block(&mut signal,&hex_lattice::EMPTY_DEVICE_RESOURCES);
++    assert_eq!(signal[2000],[1.0,-0.0]);
++}
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
+index a437efef..713b7597 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
+@@ -67,7 +67,7 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
+             px(auto_pan_panel::FRAME_WIDTH + gain_meters::WIDTH)
+         );
+         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
+-        for parameter in 1..=3 {
++        for parameter in 1..=4 {
+             let control = visual
+                 .debug_bounds(Box::leak(
+                     format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),

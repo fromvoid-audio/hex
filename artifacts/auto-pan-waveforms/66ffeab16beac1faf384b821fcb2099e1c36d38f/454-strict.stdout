@@ -1,0 +1,7 @@
+[1/10] devices-clippy: running
+[1/10] devices-clippy: passed
+[2/10] engine-clippy: running
+[2/10] engine-clippy: passed
+[3/10] ui-clippy: running
+[3/10] ui-clippy: failed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/auto-pan-454-strict/summary.json

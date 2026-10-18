@@ -1,0 +1,5 @@
+[1/2] provider: running
+[1/2] provider: passed
+[2/2] panel: running
+[2/2] panel: failed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/auto-pan-454-focused2/summary.json

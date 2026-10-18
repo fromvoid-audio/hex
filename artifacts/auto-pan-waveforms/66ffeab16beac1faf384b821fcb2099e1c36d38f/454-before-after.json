@@ -1,0 +1,42 @@
+{
+  "crates/hex-devices/src/auto_pan.rs": {
+    "before_blob": "c887c02d8f1a3e0f5050f8bb7a0aacee76b36777",
+    "before_sha256": "838101a6f4d5bbf9cc862c1d5073845924730eef353122b2d612041476ee38d8",
+    "after_sha256": "e0f14643401ec7ff4d106a51bad258b37dd0b332069212fc71f1d0a79612d6f7"
+  },
+  "crates/hex-devices/src/auto_pan/tests.rs": {
+    "before_blob": "c7ba7efa9d01e80cdd2d8ac51f3b705580ff6dcf",
+    "before_sha256": "60119cd3f6cff0c7e608e7624fad37916f0a2a9f594d2b80a38f1e7d2bd10dad",
+    "after_sha256": "bf3432d43faddeeaecce73b7107a5d154879104eb947d77a5f006278e1dd9dfe"
+  },
+  "crates/hex-engine/src/lib.rs": {
+    "before_blob": "686bfd24b68d7c294c4261c9de5c53d0f52c6b8d",
+    "before_sha256": "a5b335f41cd339c3a6eb45355341b99bd033bceb27fcc91160909062390684c3",
+    "after_sha256": "fe9f308d7c3fb1c0e3ced842fc883b215b5f187a793bab2af135328ce9bbb19d"
+  },
+  "crates/hex-engine/src/native_device_view.rs": {
+    "before_blob": "22811c6133cd7655871dfe43fa6e8b7442077185",
+    "before_sha256": "a94d5f547c73b717a13e0cc054e70334aef6492baee264e547431b86bfe7d6b4",
+    "after_sha256": "5b7b5cb2a72239954e633bec871ee5d1429e3ee0b7f59db6035a9259a54b2ee8"
+  },
+  "crates/hex-storage/src/files.rs": {
+    "before_blob": "16d2046644994215b006a087c806dbb3da14bc43",
+    "before_sha256": "ab6d46db9b85975b7ab22744a4be366c861b0c880b3799cb80bcf4e3c02492c3",
+    "after_sha256": "e62c7485ce6350f108acbf0ea2ccc1e0e4e17ee6a8c3672f8ff367b4e3a81bbd"
+  },
+  "crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs": {
+    "before_blob": "f571d50f24e36c476f5dfe18b8214b44fea4af2a",
+    "before_sha256": "e159ac95004c02b9f9193f94507e4891074526a0f97d2468e824d9ad439f594c",
+    "after_sha256": "071b25904be768370ae388dab1bff407bf0a9615adb29cebc50223d48df2c912"
+  },
+  "crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs": {
+    "before_blob": "a437efef21744e3ce4278a317d6c2fb286763bb4",
+    "before_sha256": "1491dd91e9a220729c1bc9a4600333d8991c1f272c18efc9ec06c62ad401edf3",
+    "after_sha256": "088e11e306eab38d3ad1cf5023b74f4e20808ebf6d750ed224a20964820005f8"
+  },
+  "docs/auto-pan.md": {
+    "before_blob": "462130347f569bfa7184f25e4a9a018d2e4cecfb",
+    "before_sha256": "b8e296a549024147a5f038ec653a80ce3a8503f2fb18f7395fd8ab318a1300b1",
+    "after_sha256": "41bc80f678c465bdbff3175a2ee9f2e298a239a896dce39e4dc281839efd816f"
+  }
+}

@@ -1,0 +1,15 @@
+[1/7] provider: running
+[1/7] provider: passed
+[2/7] panel: running
+[2/7] panel: passed
+[3/7] catalog: running
+[3/7] catalog: passed
+[4/7] storage: running
+[4/7] storage: passed
+[5/7] conformance: running
+[5/7] conformance: passed
+[6/7] allocation-lock: running
+[6/7] allocation-lock: passed
+[7/7] allocation: running
+[7/7] allocation: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/auto-pan-454-final-focused/summary.json
