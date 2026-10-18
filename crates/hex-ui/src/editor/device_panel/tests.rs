@@ -11,6 +11,7 @@ mod auto_pan_ui_tests;
 mod bindings_tests;
 mod chain_window_tests;
 mod compressor_ui_tests;
+mod device_comparison_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;

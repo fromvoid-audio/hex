@@ -31,6 +31,7 @@ mod computer_keyboard;
 mod context_menu;
 mod controller;
 mod controller_input;
+mod device_comparison;
 mod device_gesture;
 mod device_panel;
 mod device_preset;

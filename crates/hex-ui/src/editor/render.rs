@@ -353,6 +353,7 @@ impl Render for EditorView {
             .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(window, cx);
+        self.reconcile_device_comparison_menu(window, cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
                 .flex_1()

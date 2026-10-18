@@ -1,0 +1,667 @@
+use super::*;
+use hex_project::DeviceVariant;
+
+struct Directory(std::path::PathBuf);
+impl Directory {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hex-device-ab-ui-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::create_dir(path.join("samples")).unwrap();
+        Self(path)
+    }
+    fn window(
+        &self,
+        cx: &mut TestAppContext,
+        service: Service,
+        state: Arc<ViewState>,
+        track: TrackId,
+        bus: Option<hex_project::ReturnId>,
+    ) -> (gpui::AnyWindowHandle, Entity<EditorView>) {
+        cx.update(crate::editor::bind_editor_keys);
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new_for_test_with_browser_directory(window, cx, service, &self.0)
+                });
+                editor.update(cx, |view, cx| {
+                    assert_eq!(view.browser.directory, self.0.join("samples"));
+                    view.state = Some(state);
+                    view.selected_track = Some(track);
+                    view.focused_return = bus;
+                    view.device_panel_active = true;
+                    view.clip_view_open = true;
+                    view.mode = crate::editor::EditorMode::Session;
+                    cx.notify();
+                });
+                editor
+            })
+            .unwrap();
+        (handle, editor)
+    }
+}
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+fn settled(view: &EditorView) -> bool {
+    view.worker_requests_pending == 0
+        && view.pending_requests.is_empty()
+        && !view.device_gesture_pending()
+}
+fn point_for(
+    visual: &mut VisualTestContext,
+    prefix: &str,
+    device: DeviceId,
+) -> gpui::Point<gpui::Pixels> {
+    visual
+        .debug_bounds(Box::leak(
+            format!("{prefix}-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("visible shared device control")
+        .center()
+}
+fn title(visual: &mut VisualTestContext, device: DeviceId) {
+    let point = point_for(visual, "device-drag-title", device);
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+}
+fn menu(visual: &mut VisualTestContext, device: DeviceId) {
+    let point = point_for(visual, "device-comparison", device);
+    visual.simulate_mouse_down(point, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(point, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+}
+fn labels(editor: &Entity<EditorView>, cx: &TestAppContext, expected: &[&str]) {
+    editor.read_with(cx, |view, _| {
+        let menu = view.context_menu.as_ref().expect("comparison menu");
+        assert_eq!(
+            menu.items.iter().map(|item| item.label).collect::<Vec<_>>(),
+            expected
+        );
+    });
+}
+fn slot(editor: &Entity<EditorView>, cx: &TestAppContext, device: DeviceId) -> DeviceVariant {
+    editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .active_variant()
+    })
+}
+
+#[gpui::test]
+fn device_comparison_click_title_p_menu_copy_and_real_undo_are_one_shared_route(
+    cx: &mut TestAppContext,
+) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let revision = state.revision;
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    title(&mut visual, device);
+    menu(&mut visual, device);
+    labels(&editor, cx, &["switch to b", "copy a to b"]);
+    visual.simulate_keystrokes("down enter");
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().revision,
+            revision,
+            "identical copy must not publish history"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    // Focus comes from the real title click/menu restoration, never a fixture-set card focus.
+    visual.simulate_keystrokes("p");
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::B);
+    let changed = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    menu(&mut visual, device);
+    labels(&editor, cx, &["switch to a", "copy b to a"]);
+    visual.simulate_keystrokes("escape");
+    visual.simulate_keystrokes("cmd-z");
+    pump_until(&editor, cx, settled);
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, changed)
+    });
+}
+
+#[gpui::test]
+fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    title(&mut visual, device);
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window))
+    });
+    visual.simulate_input("p 🎹");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "p 🎹");
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    visual.update(|window, cx| {
+        use gpui::EntityInputHandler;
+        let input = editor.read(cx).browser.search.clone();
+        input.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(None, "候", Some(0..1), window, cx);
+            assert!(input.marked_text_range(window, cx).is_some());
+        });
+    });
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("p").unwrap(),
+        is_held: false,
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+    visual.update(|window, cx| editor.read(cx).focus.focus(window));
+    visual.simulate_keystrokes("m");
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("p").unwrap(),
+        is_held: false,
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.computer_keyboard.held().iter().any(Option::is_some),
+            "musical p must still sound outside device focus"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("p").unwrap(),
+    });
+    title(&mut visual, device);
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("p").unwrap(),
+        is_held: true,
+    });
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
+    visual.update(|window, cx| editor.update(cx, |view, cx| view.open_theme_settings(window, cx)));
+    visual.simulate_keystrokes("p");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+}
+
+fn catalog_fixture(
+    class: NativeDeviceClass,
+    type_id: hex_lattice_contract::DeviceTypeId,
+    on_return: bool,
+) -> (
+    Service,
+    Arc<ViewState>,
+    TrackId,
+    Option<hex_project::ReturnId>,
+    DeviceId,
+) {
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "comparison owner".into(),
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let track = state.project.tracks()[0].id();
+    let native = hex_engine::default_native_device_state_for_class(class, type_id).unwrap();
+    let bus = if on_return {
+        service
+            .submit(Request::Edit(Command::AddReturnTrack {
+                name: "comparison return".into(),
+            }))
+            .unwrap();
+        let bus = receive_service_event(&service)
+            .state
+            .project
+            .return_tracks()[0]
+            .id();
+        service
+            .submit(Request::Edit(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: native,
+            }))
+            .unwrap();
+        Some(bus)
+    } else {
+        let command = if class == NativeDeviceClass::Instrument {
+            match state.project.track(track).unwrap().instrument() {
+                Some(device) => Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state: native,
+                },
+                None => Command::InsertInstrument {
+                    track,
+                    state: native,
+                },
+            }
+        } else {
+            Command::InsertDevice {
+                track,
+                before: None,
+                state: native,
+            }
+        };
+        service.submit(Request::Edit(command)).unwrap();
+        None
+    };
+    let event = receive_service_event(&service);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    let state = event.state;
+    let device = if let Some(bus) = bus {
+        state
+            .project
+            .return_tracks()
+            .iter()
+            .find(|entry| entry.id() == bus)
+            .unwrap()
+            .devices()[0]
+            .id()
+    } else if class == NativeDeviceClass::Instrument {
+        state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id()
+    } else {
+        state.project.track(track).unwrap().devices()[0].id()
+    };
+    (service, state, track, bus, device)
+}
+
+#[gpui::test]
+fn device_comparison_every_available_catalog_header_and_return_uses_actual_p(
+    cx: &mut TestAppContext,
+) {
+    let mut expected = 0;
+    let mut observed = 0;
+    for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
+        let catalog = hex_engine::native_device_catalog_for_class(class).unwrap();
+        assert!(!catalog.is_empty());
+        expected += catalog.len()
+            * if class == NativeDeviceClass::Effect {
+                2
+            } else {
+                1
+            };
+        for entry in catalog {
+            for on_return in if class == NativeDeviceClass::Effect {
+                &[false, true][..]
+            } else {
+                &[false][..]
+            } {
+                let directory = Directory::new();
+                let (service, state, track, bus, device) =
+                    catalog_fixture(class, entry.type_id, *on_return);
+                let original = state.project.clone();
+                let (handle, editor) = directory.window(cx, service, state, track, bus);
+                let mut visual = VisualTestContext::from_window(handle, cx);
+                visual.simulate_resize(size(px(1600.0), px(800.0)));
+                visual.run_until_parked();
+                point_for(&mut visual, "device-comparison", device);
+                title(&mut visual, device);
+                visual.simulate_keystrokes("p");
+                pump_until(&editor, cx, settled);
+                assert_eq!(
+                    slot(&editor, cx, device),
+                    DeviceVariant::B,
+                    "provider {:?}, return={on_return}",
+                    entry.type_id
+                );
+                visual.run_until_parked();
+                menu(&mut visual, device);
+                labels(&editor, cx, &["switch to a", "copy b to a"]);
+                visual.simulate_keystrokes("escape cmd-z");
+                pump_until(&editor, cx, settled);
+                editor.read_with(cx, |view, _| {
+                    assert_eq!(view.state.as_ref().unwrap().project, original)
+                });
+                observed += 1;
+                visual.update(|window, _| window.remove_window());
+            }
+        }
+    }
+    assert_eq!(observed, expected);
+    eprintln!("actual rendered A/B catalog role cases: {observed}");
+}
+
+fn balance(editor: &Entity<EditorView>, cx: &TestAppContext, device: DeviceId) -> f64 {
+    editor.read_with(cx, |view, _| {
+        let device = view.state.as_ref().unwrap().project.device(device).unwrap();
+        let metadata =
+            hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
+                .unwrap();
+        let value = metadata
+            .parameters
+            .iter()
+            .find(|p| p.descriptor.id == hex_lattice_contract::ParameterId::from_static(2))
+            .unwrap()
+            .value;
+        let ParameterValue::Float(value) = value else {
+            panic!("balance float")
+        };
+        f64::from(value)
+    })
+}
+fn enter_balance(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    cx: &mut TestAppContext,
+    device: DeviceId,
+    value: &str,
+) {
+    let field = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-2-value", device.value()).into_boxed_str(),
+        ))
+        .expect("balance value");
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input(value);
+    visual.simulate_keystrokes("enter");
+    pump_until(editor, cx, settled);
+    visual.run_until_parked();
+}
+#[gpui::test]
+fn device_comparison_real_numeric_edits_keep_independent_slots_and_copy_is_one_undo(
+    cx: &mut TestAppContext,
+) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    title(&mut visual, device);
+    for _ in 0..2 {
+        visual.simulate_keystrokes("p");
+        pump_until(&editor, cx, settled);
+        visual.run_until_parked();
+    }
+    enter_balance(&mut visual, &editor, cx, device, "25 r");
+    assert_eq!(balance(&editor, cx, device), 0.25);
+    title(&mut visual, device);
+    visual.simulate_keystrokes("p");
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    assert_eq!(balance(&editor, cx, device), 0.0);
+    enter_balance(&mut visual, &editor, cx, device, "50 l");
+    assert_eq!(balance(&editor, cx, device), -0.5);
+    title(&mut visual, device);
+    visual.simulate_keystrokes("p");
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    assert_eq!(balance(&editor, cx, device), 0.25);
+    let before_copy = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    menu(&mut visual, device);
+    labels(&editor, cx, &["switch to b", "copy a to b"]);
+    visual.simulate_keystrokes("down enter");
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
+    assert_eq!(balance(&editor, cx, device), 0.25);
+    let copied = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .comparison()
+            .unwrap()
+            .inactive()
+            .clone()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            &copied,
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+        )
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before_copy)
+    });
+}
+
+#[gpui::test]
+fn device_comparison_pending_press_does_not_apply_after_worker_completion(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    title(&mut visual, device);
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::RenameTrack {
+                track,
+                name: "pending comparison".into()
+            })))
+        });
+        window.dispatch_input(
+            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("p").unwrap(),
+                is_held: false,
+            }),
+            cx,
+        );
+    });
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("p").unwrap(),
+        is_held: true,
+    });
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("p").unwrap(),
+    });
+    visual.simulate_keystrokes("p");
+    pump_until(&editor, cx, settled);
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::B);
+}
+
+#[gpui::test]
+fn device_comparison_stale_menu_removal_preserves_real_keyboard_undo(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    title(&mut visual, device);
+    menu(&mut visual, device);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device))))
+    });
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+    visual.update(|window, cx| editor.read_with(cx, |view, _| {
+        eprintln!("stale menu trace before undo: root_focus={} any_focus={} can_undo={} worker={} error={:?}", view.focus.is_focused(window), window.focused(cx).is_some(), view.state.as_ref().unwrap().can_undo, view.worker_requests_pending, view.error);
+    }));
+    visual.simulate_keystrokes("cmd-z");
+    visual.update(|window, cx| editor.read_with(cx, |view, _| {
+        eprintln!("stale menu trace after key: root_focus={} any_focus={} worker={} queued={} error={:?}", view.focus.is_focused(window), window.focused(cx).is_some(), view.worker_requests_pending, view.pending_requests.len(), view.error);
+    }));
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project,
+            original,
+            "stale A/B menu must leave actual keyboard Undo reachable"
+        )
+    });
+}
+
+#[gpui::test]
+fn device_comparison_numeric_draft_and_eq_graph_own_p(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    let field = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-2-value", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid p");
+    visual.simulate_keystrokes("p");
+    editor.read_with(cx, |view, cx| {
+        let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(2),
+        }] else {
+            panic!("numeric")
+        };
+        assert!(entity.read(cx).is_editing());
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    visual.simulate_keystrokes("escape");
+    let directory_eq = Directory::new();
+    let (service, state, track, bus, device) =
+        catalog_fixture(NativeDeviceClass::Effect, hex_engine::eq::EQ_TYPE_ID, false);
+    let (handle, editor) = directory_eq.window(cx, service, state, track, bus);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    title(&mut visual, device);
+    let graph = visual
+        .debug_bounds(Box::leak(
+            format!("eq-response-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(graph.center(), Modifiers::default());
+    pump_until(&editor, cx, settled);
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    visual.simulate_keystrokes("p");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before)
+    });
+}
+
+#[gpui::test]
+fn device_comparison_title_click_and_p_in_one_dispatch_frame_targets_clicked_card(
+    cx: &mut TestAppContext,
+) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    let point = point_for(&mut visual, "device-drag-title", device);
+    visual.update(|window, cx| {
+        window.dispatch_input(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: point,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_input(
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: point,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.dispatch_input(
+            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("p").unwrap(),
+                is_held: false,
+            }),
+            cx,
+        );
+        window.dispatch_input(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("p").unwrap(),
+            }),
+            cx,
+        );
+    });
+    pump_until(&editor, cx, settled);
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::B);
+    assert_eq!(slot(&editor, cx, instrument), DeviceVariant::A);
+}
+
+#[gpui::test]
+fn device_comparison_right_click_nonselected_badge_switches_only_its_target(
+    cx: &mut TestAppContext,
+) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    title(&mut visual, instrument);
+    menu(&mut visual, device);
+    labels(&editor, cx, &["switch to b", "copy a to b"]);
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, settled);
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::B);
+    assert_eq!(slot(&editor, cx, instrument), DeviceVariant::A);
+}
