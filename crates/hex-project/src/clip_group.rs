@@ -267,3 +267,7 @@ pub(crate) fn apply(
     Project::from_snapshot(project.snapshot())?;
     Ok(Created::None)
 }
+
+#[cfg(test)]
+#[path = "clip_group_tests.rs"]
+mod tests;
