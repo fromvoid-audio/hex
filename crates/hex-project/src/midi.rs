@@ -355,6 +355,32 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let id = crate::edit::insert_track_before(project, name, None)?;
             Ok(Created::Track(id))
         }
+        Command::PlaceMidiClipWithOverwrite {
+            track,
+            start,
+            length,
+        } => {
+            validate_clip(start, length)?;
+            let end = BeatTime::from_raw(
+                start
+                    .raw()
+                    .checked_add(length.raw())
+                    .ok_or(Invalid("midi clip timeline end overflow"))?,
+            );
+            project
+                .track(track)
+                .ok_or(Invalid("track no longer exists"))?;
+            crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
+            overwrite_midi_interval(project, track, start, end, ClipId(0))?;
+            apply(
+                project,
+                Command::PlaceMidiClip {
+                    track,
+                    start,
+                    length,
+                },
+            )
+        }
         Command::PlaceMidiClip {
             track,
             start,
