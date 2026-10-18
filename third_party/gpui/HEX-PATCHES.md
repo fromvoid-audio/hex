@@ -176,3 +176,12 @@ Combined with existing painted border widths, ancestor mask and real separator
 bounds, this detects an occluding later row separator. It adds no production
 paint/layout/input behavior or native framebuffer claim. Original archive and
 source hashes remain verified; the cumulative patch is regenerated.
+
+18 October opt-in bundled-font test support: `TestAppContext::use_native_text_system`
+selects the existing macOS `MacTextSystem` before any test windows are created.
+Both the App and test-context shaping references receive the same instance.
+Existing no-op test contexts remain unchanged. The method rejects replacement
+beneath live windows; it creates no OS window, registers no system font and adds
+no FFI or unsafe code. EQ tests still require the real embedded Ioskeley family;
+this corrects their otherwise impossible native assertion against NoopTextSystem.
+Native shaping is not evidence of GPU pixels, audio or physical interaction.
