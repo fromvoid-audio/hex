@@ -3580,3 +3580,131 @@ fn place_correctness_refresh_retains_identity_only_after_current_success(cx: &mu
         cx.notify();
     });
 }
+
+#[gpui::test]
+fn browser_mouse_search_keeps_focus_across_worker_ticks(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for mode in [
+        super::super::EditorMode::Arrangement,
+        super::super::EditorMode::Session,
+    ] {
+        for width in [220.0, 480.0] {
+            for fraction in [0.02, 0.5, 0.98] {
+                visual.update(|window, cx| {
+                    editor.update(cx, |view, cx| {
+                        view.mode = mode;
+                        view.browser.width = width;
+                        view.browser.open = true;
+                        view.focus.focus(window);
+                        view.browser.results_focused = true;
+                        view.browser.search.update(cx, |input, cx| input.clear(cx));
+                        cx.notify();
+                    })
+                });
+                let search = visual.debug_bounds("browser-search").expect("search field");
+                let position = point(
+                    search.left() + search.size.width * fraction,
+                    search.center().y,
+                );
+                visual.simulate_event(gpui::MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                });
+                visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+                visual
+                    .executor()
+                    .advance_clock(std::time::Duration::from_millis(32));
+                visual.run_until_parked();
+                visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+                editor.update(visual, |view, cx| {
+                    view.refresh_sample_catalog(cx);
+                    view.request_browser_scan(directory.0.clone(), cx);
+                });
+                visual.run_until_parked();
+                for _ in 0..5 {
+                    visual
+                        .executor()
+                        .advance_clock(std::time::Duration::from_millis(16));
+                    visual.run_until_parked();
+                }
+                visual.update(|window, cx| {
+                    editor.read_with(cx, |view, cx| {
+                        assert!(
+                            view.browser
+                                .search
+                                .read(cx)
+                                .focus_handle()
+                                .is_focused(window),
+                            "click focus lost: width={width}, position={fraction}"
+                        );
+                    })
+                });
+                visual.simulate_input("loop");
+                visual.simulate_keystrokes("space cmd-shift-t");
+                editor.read_with(visual, |view, cx| {
+                    assert_eq!(view.browser.search.read(cx).content, "loop ");
+                    assert!(!view.browser.results_focused);
+                    assert!(view.pending_requests.is_empty());
+                    assert!(view.pending_audio_commands.is_empty());
+                });
+                visual.simulate_keystrokes("cmd-f");
+                visual.simulate_input("utility");
+                editor.read_with(visual, |view, cx| {
+                    assert_eq!(view.browser.search.read(cx).content, "utility");
+                });
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn browser_mouse_search_after_name_and_numeric_focus(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    for previous in ["tempo", "name"] {
+        let (handle, editor, track, _directory, _) = browser_drag_fixture(cx);
+        let visual = &mut VisualTestContext::from_window(handle, cx);
+        if previous == "tempo" {
+            let tempo = visual.debug_bounds("project-tempo-value").expect("tempo");
+            visual.simulate_click(tempo.center(), Modifiers::default());
+            editor.update(visual, |view, cx| assert!(view.project_tempo_editing(cx)));
+        } else {
+            visual.update(|window, cx| {
+                editor.update(cx, |view, cx| {
+                    view.selected_track = Some(track);
+                    view.track_header_focus(track, cx).focus(window);
+                    view.begin_track_name(window, cx);
+                    assert!(view.track_name.is_editing());
+                })
+            });
+        }
+        let search = visual.debug_bounds("browser-search").unwrap();
+        visual.simulate_click(search.center(), Modifiers::default());
+        for _ in 0..5 {
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            visual.run_until_parked();
+        }
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                assert!(
+                    view.browser
+                        .search
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window),
+                    "lost focus after {previous}"
+                );
+            })
+        });
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("loop");
+        editor.read_with(visual, |view, cx| {
+            assert_eq!(view.browser.search.read(cx).content, "loop");
+        });
+    }
+}
