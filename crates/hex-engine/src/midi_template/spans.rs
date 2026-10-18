@@ -103,6 +103,7 @@ fn silent_note_sample(
     _age_frames: u64,
     _gate_frames: u64,
     _release_frames: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> [f32; 2] {
     [0.0; 2]
 }
@@ -1499,6 +1500,7 @@ mod note_bank_lifetime_tests {
         age: u64,
         gate: u64,
         release: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> [f32; 2] {
         if age < gate.saturating_add(release) {
             [

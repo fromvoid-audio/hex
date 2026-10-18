@@ -7,7 +7,7 @@ pub(super) enum Action {
     Pitch(i16),
     Anchor,
     Warp,
-    Mode(i8),
+    SelectMode(u8),
     Grain(i16),
     Fluctuation(i8),
     Seed,
@@ -187,13 +187,13 @@ pub(super) fn command(
         .ok_or(Invalid("enable warp to edit its mode or markers"))?
         .clone();
     match action {
-        Action::Mode(direction) => {
-            let choices = modes();
-            let index = choices
-                .iter()
-                .position(|m| std::mem::discriminant(m) == std::mem::discriminant(&settings.mode))
-                .ok_or(Invalid("warp mode missing"))?;
-            settings.mode = choices[(index as i8 + direction).rem_euclid(6) as usize];
+        Action::SelectMode(index) => {
+            let mode = *modes()
+                .get(usize::from(index))
+                .ok_or(Invalid("warp algorithm missing"))?;
+            if std::mem::discriminant(&mode) != std::mem::discriminant(&settings.mode) {
+                settings.mode = mode;
+            }
         }
         Action::Grain(delta) => match &mut settings.mode {
             WarpMode::Tones { grain_ms } | WarpMode::Texture { grain_ms, .. } => {

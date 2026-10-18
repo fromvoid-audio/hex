@@ -268,6 +268,7 @@ impl ArrangementRootAssembly {
                 .flat_map(|t| &t.clips)
                 .any(Clip::is_streamed);
             self.project = Some(Project {
+                project_track_ids: crate::project_output::ProjectTrackIds::prepare(&self.tracks),
                 audio_clip_views: Vec::new(),
                 signal_graph: None,
                 tempo_map: None,
@@ -301,6 +302,7 @@ impl ArrangementRootAssembly {
         }
         // Validate the whole restoration batch before unpacking any final owner.
         if let Some(Project {
+            project_track_ids: _,
             audio_clip_views: _,
             signal_graph: _,
             tempo_map: _,
@@ -375,6 +377,7 @@ impl ArrangementRootAssembly {
         l.growth(*growth)?;
         if let Some(project) = project.as_ref().or(external) {
             let Project {
+                project_track_ids: _,
                 audio_clip_views,
                 sample_rate: _,
                 tracks,

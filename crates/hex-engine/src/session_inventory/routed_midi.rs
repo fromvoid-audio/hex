@@ -124,6 +124,7 @@ pub(super) fn prepare_clip(
             && old.source_identity == source_identity
             && old.instrument_id == instrument_id
             && old.instrument_state == instrument_state
+            && old.tuning_identity == config.tuning_identity
             && old.instrument_enabled == instrument_enabled
     });
     let source = if let Some(old) = cached {
@@ -180,6 +181,7 @@ pub(super) fn prepare_clip(
         instrument,
         instrument_id,
         instrument_state,
+        tuning_identity: config.tuning_identity,
         instrument_enabled,
         mutable_limits,
         work,

@@ -135,7 +135,7 @@ fn prove_layout() {
     assert_eq!(offset_of!(StoreLayout, free_head), 72);
     assert_eq!(offset_of!(StoreLayout, next_generation), 80);
     assert_eq!(offset_of!(StoreLayout, retained_bytes), 88);
-    assert_eq!(size_of::<CandidateSampler>(), 344);
+    assert_eq!(size_of::<CandidateSampler>(), 352);
     assert_eq!(store_bytes(), Some(2_639_456));
 }
 

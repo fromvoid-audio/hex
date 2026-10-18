@@ -606,6 +606,7 @@ impl SessionPlayback {
                                         self.gain_recording_override,
                                     ),
                                     continuation: None,
+                                    inline_tuning_owned: false,
                                     voice,
                                 },
                             ) {
@@ -711,6 +712,7 @@ impl SessionPlayback {
                                 order: 0,
                                 mix,
                                 continuation: None,
+                                inline_tuning_owned: false,
                                 voice,
                             },
                         )?;

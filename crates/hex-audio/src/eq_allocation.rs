@@ -44,7 +44,14 @@ fn max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_not
             .unwrap();
     }
     let prepared = EQ_DEFINITION
-        .prepare_processor(&settings.encode().unwrap(), 48000)
+        .prepare_processor(
+            &settings.encode().unwrap(),
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .unwrap();
     let mut a = prepared.create_runtime();
@@ -52,9 +59,17 @@ fn max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_not
     let mut frames = [[0.001, -0.001]; 1024];
     let clock = Clock;
     let measurement = allocation_counter::measure(|| {
-        a.process_block_with_clock(&mut frames, Some(&clock));
+        a.process_block_with_clock(
+            &mut frames,
+            Some(&clock),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         b.copy_history_from(a.as_ref());
-        b.process_bypassed_block_with_clock(&mut frames, Some(&clock));
+        b.process_bypassed_block_with_clock(
+            &mut frames,
+            Some(&clock),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         b.reset();
         a.reset();
     });

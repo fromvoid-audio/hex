@@ -26,6 +26,12 @@ nondefault audio feature), strict workspace and feature-specific Clippy, and a l
 desktop build. A failed or unavailable command stops the run. Later steps are
 recorded as `not_run`; their status is never reported as passed.
 
+An interactive terminal animates a short stage spinner while a child check writes
+to its numbered log. The spinner clears and its worker joins before status or
+error output resumes, including interruption. Redirected stdout or stderr uses
+only the existing plain stage lines. Build and test output remains in the same
+logs; the indicator does not change subprocess handling, exit codes or checks.
+
 Each run writes deterministic numbered step logs and `summary.json` under a unique
 `artifacts/local-ci/<run-id>/` directory. The summary records actual argument
 vectors, UTC start/end times, exit codes, the starting and ending Git commit and
@@ -262,3 +268,24 @@ After the shared exact-source local checks and authorized merge, deliver the
 optimized app at the configured stable location using [test-builds.md](test-builds.md).
 Packaging consumes the full runner evidence; it does not introduce another CI
 pipeline or infer user approval from merge/disk activation.
+
+## supersession fixture command readiness — pulse2774 / PR381
+
+The headless desktop fixture observes callback installation and worker command
+readiness separately. Eligible publication commits its queue slot before the
+publisher records `submitted_revision`; callback-applied source status alone
+is not a command-admission acknowledgment. The rapid eight-generation import
+test now waits for the matching applied context and a positive revision observed
+on the actual worker endpoint before its single `Play` call. The existing
+five-second deadline, successful-command assertion, decoded PCM oracle and
+zero allocation/deallocation assertions remain unchanged. No production
+publication, callback, client or native application behavior changes.
+
+Integrated source `5f42b747` twice failed the old direct-Play assumption in the
+complete desktop suite, while the individual test passed. Temporary refusal
+logging did not reproduce the rejection guard and was removed. Those failed
+runs remain evidence; they do not establish a native runtime or resident-PCM
+regression. The source ordering establishes why the fixture must synchronize
+both boundaries. Focused full-bin results and final exact-source CI are retained
+with the PR and Pulse task. This fixture uses the real worker/publication path
+with a headless output factory; no Mac execution or device acceptance is implied.

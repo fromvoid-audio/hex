@@ -409,3 +409,138 @@ project-tempo adaptive grid, ruler/time selection, event waveforms, drag preview
 and focus-scoped clip editing shortcuts. A `source` tab retains source/warp
 inspection. Both use the existing detail height and left control column. See
 [audio events](audio-events.md) for edit semantics, limits and native acceptance.
+
+Arrangement audio and MIDI clips do not show a container hover tooltip over
+their name/grab headers or bodies (Pulse #2752). Selection, header dragging,
+context menus and renaming retain their existing behavior. Distinct controls,
+including fade handles and track names, retain their own descriptive tooltips.
+
+## selected clip borders — #2719 / PR335
+
+Each selected Arrangement audio or MIDI clip uses the theme's primary color for
+its existing one-pixel border around the visible clipped bounds. Every member
+of a multi-selection is highlighted, including retained scenes whose primary
+selection did not change. Deselecting restores the prior base border; selected
+audio hover keeps the highlight and unselected hover retains its text-color
+affordance. Selected audio/MIDI edge-trim previews keep the same border color.
+
+Border widths, clip bounds, fills, text, waveform/note drawing and hit areas are
+unchanged. A completed-scene regression fails with the former black selected
+border and passes after the color change. It covers five mixed audio/MIDI clips,
+both viewport crop boundaries, all four border widths, selected hover,
+membership-only deselection, unchanged fills/bounds, a held audio-edge preview
+and Escape cancellation without a model edit. The GPUI observer is test support
+only, with verified upstream baseline/cumulative patch provenance; it reads
+actual painted scene quads rather than claiming native GPU pixel evidence.
+
+Required exact-source checks are recorded in Pulse/PR. Native acceptance stays
+with the coordinator's serial Mac lane on a future approved optimized candidate:
+select/deselect one and several audio/MIDI clips, hover them, inspect both cropped
+viewport edges and drag/cancel their trim/fade affordances. Confirm text, clip
+colors, waveform/notes and edge hit areas remain usable. Record actual source/
+build and a bounded interaction capture. No current app replacement or save/quit
+is required by this visual check; native acceptance is still open.
+
+## contiguous clip header selection — #2769 / PR377
+
+Clicking a clip header starts a clip-selection anchor. Shift-click selects the
+inclusive chronological interval between that anchor and the clicked clip on
+the same track, including audio and MIDI clips. Reverse clicks work; repeated
+Shift-clicks resize the interval around the original anchor. Equal start times
+use stable clip-ID order. A Shift-click on another track starts a new anchor;
+this change defines no cross-track range. Command-click toggles membership and
+sets the anchor; Command-Shift-click adds the interval to existing membership.
+The existing body time-selection and header drag contracts remain separate.
+
+Every member receives the existing selected fill. A membership epoch invalidates
+retained clip scenes even when the primary clip stays the same. This selection
+is view state and creates no project edit or Undo step. The separate border
+request is Pulse2719/PR335; whole-clip clipboard handling is2770/PR378.
+
+Rendered tests exercise five alternating audio/MIDI clips, forward/reverse and
+repeated ranges, additive toggle/union, another-track clicks and retained-scene
+repainting with an unchanged primary selection. Required full-source evidence is
+recorded on the canonical PR. Native acceptance remains with the coordinator:
+on the approved optimized candidate, click first then Shift-click fifth, reverse
+and shrink the range, toggle/add with Command, click another row, then confirm
+header dragging and body time-selection still work. No app replacement or Mac
+execution is part of these source checks.
+## inline track naming — #2768 / PR376
+
+Clicking an Arrangement track header (its name or empty background) focuses that
+header. Command-R edits its name inline; Enter commits one canonical RenameTrack
+edit and Escape cancels the draft. Names retain case and Unicode in the project.
+Arrow navigation from header focus follows the neighboring header. Track control
+clicks retain their own behavior and do not bubble into header selection.
+
+Clip-header focus keeps the existing clip rename shortcut. Browser search,
+clip-name input and numeric text drafts retain their own focus and keys. A track
+name draft prevents competing clip/time gestures, and project replacement or a
+stale revision cancels it. The label uses the existing header dimensions and
+track-name tooltip; this adds no project rename model or layout policy.
+
+Rendered regressions cover actual header-background/name clicks, Enter, Escape,
+clip focus, arrow navigation and text/numeric protection. The dispatched canonical
+command is checked through Undo/Redo and worker save/reopen. Exact final cloud
+checks are recorded on the canonical PR. Native acceptance remains through the
+coordinator's serial lane: focus a header, rename with Command-R/Enter, Undo/Redo,
+Escape a second draft, verify clip rename and search/numeric protection, then
+save/reopen a disposable project with user consent. No current app replacement
+or required save/quit is implied.
+## track creation shortcut — #2767 / PR375, 17 october 2026
+
+Command-T in editor focus invokes the same canonical `AddTrack` action as the
+existing new-track control. It retains the existing track naming, routing
+and model/history behavior. Browser search, clip-name editing and active numeric
+text drafts keep ownership of their keys; the shortcut requires editor focus
+outside text editing. Rendered key-dispatch tests cover these focus boundaries
+and route the dispatched command through one canonical Undo/Redo. Existing
+project/storage tests retain canonical track persistence coverage. Native
+acceptance remains: focus the Arrangement, press Command-T, verify one new track,
+Undo/Redo, save/reopen; repeat the key while typing in search/name/numeric fields
+and confirm no track is added. Coordinator schedules this with the combined
+optimized app; no running app replacement is implied by source checks.
+
+## arrangement track sizing
+
+The right-hand track-header column resizes from its left edge, including the
+pinned main header in an empty project. The complete existing controls set the
+176 px minimum; the maximum reuses the 480 px browser default and retains the
+existing 560 px workspace budget minus that minimum header (384 px timeline).
+The current arrangement width can therefore reduce the maximum. These are
+implementation layout bounds, not numerical requirements supplied by the user.
+
+An individual regular header's bottom edge changes that header and lane together.
+The existing 44 px row is the minimum, and the visible track viewport at pointer
+capture is the height limit. The main row remains pinned at its existing height.
+The gesture measures displacement from the original pointer, clamps without
+accumulating error, applies the final release position, and restores the prior
+value on Escape, focus/window changes, lost-button input or stale source revision.
+
+Sizing is editor display state, like the viewport; it does not create an audio
+edit, dirty the project, add Undo entries or change the saved project format.
+Header width lasts for the view; per-track heights reset on project replacement
+and disappear for removed IDs. Timeline/ruler/grid/overview/cursor/drop geometry
+shares the same effective width. GPUI's variable-height list retains logical
+scroll anchors; it prepares the bounded row set on structural/viewport-width changes and only
+invalidates the resized row during a height drag. Native smoothness, physical
+pointer capture and minimum-size control acceptance require the finite Mac check.
+
+## project tempo entry
+
+The canonical project toolbar begins with the shared numeric BPM input, replacing
+its tempo plus/minus controls. Range, precision, focus/lifecycle behavior and the
+finite native checklist are recorded in [project tempo input](project-tempo-input.md).
+Native physical acceptance remains open until user verification.
+
+### live editable casing — pulse2810 / PR416
+
+Names use the same lowercase presentation while typing, pasting, composing,
+committed and reopened. Stored names, original paths, identifiers, clipboard text
+and parser inputs retain their exact case; this does not rewrite user content.
+The shared widget presentation token is injected by Hex's theme. Caret, selection,
+composition underline, horizontal scrolling and pointer geometry translate between
+original UTF-8 offsets and shaped lowercase expansions; native input ranges remain
+in original UTF-16 units. File-path error fragments retain the separate source-data
+display contract from Pulse2649. Native optimized pointer/IME/clipboard acceptance
+remains coordinator-owned and is not established by headless scene tests.

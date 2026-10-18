@@ -21,6 +21,10 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    PlaceIcon {
+        path: std::path::PathBuf,
+        id: Option<&'static str>,
+    },
     InsertTrack(InsertTrackAction),
     UtilityMode(UtilityModeAction),
     TrackColor {
@@ -57,6 +61,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             selected: 0,
             focus,
@@ -137,6 +142,7 @@ impl EditorView {
         window.focus(&focus);
         let target = flavor.toggled();
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             selected: 0,
             focus,
@@ -192,6 +198,7 @@ impl EditorView {
             ("switch to mid/side", true)
         };
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             items: vec![MenuItem {
                 label,
@@ -211,7 +218,7 @@ impl EditorView {
         cx.notify();
     }
 
-    fn dismiss_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn dismiss_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(menu) = self.context_menu.take() {
             window.focus(menu.previous_focus.as_ref().unwrap_or(&self.focus));
             cx.notify();
@@ -226,6 +233,9 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::PlaceIcon { path, id } => {
+                self.set_browser_place_icon(path, id, cx)
+            }
             EditorContextAction::TrackColor {
                 generation,
                 track,
@@ -332,6 +342,9 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::PlaceIcon { path, .. } => {
+                    !self.browser_place_icon_assignable(path)
+                }
                 EditorContextAction::InsertTrack(_) => false,
                 EditorContextAction::TrackColor {
                     generation, track, ..

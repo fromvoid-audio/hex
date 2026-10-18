@@ -431,8 +431,8 @@ pub(in crate::editor) fn view(
         .on_mouse_up_out(
             MouseButton::Left,
             cx.listener(|view, _, window, cx| {
-                view.audio_event_focus.focus(window);
                 if view.audio_event_editor.gesture.take().is_some() {
+                    view.audio_event_focus.focus(window);
                     cx.notify();
                 }
             }),

@@ -22,6 +22,7 @@ const STYLE: ControlStyle = ControlStyle {
     dial_rail: 0,
     hover: 0x555555,
     font_size: 9.0,
+    text_case: crate::TextCase::Preserve,
 };
 
 type Masks = Rc<RefCell<Vec<(&'static str, Bounds<Pixels>)>>>;
@@ -60,6 +61,7 @@ impl Render for FrameFixture {
         device_frame(
             "long title that must remain bounded",
             STYLE,
+            div(),
             div()
                 .w(px(120.0))
                 .h(px(60.0))
@@ -187,8 +189,8 @@ fn rendered_shell_and_rounded_sections_clip_oversized_artwork_and_hits(cx: &mut 
 }
 
 fn assert_painted_styles(window: &mut Window, cx: &mut gpui::App) {
-    let mut frame = device_frame("title", STYLE, div(), div());
-    let mut header = device_header("title", STYLE, div());
+    let mut frame = device_frame("title", STYLE, div(), div(), div());
+    let mut header = device_header("title", STYLE, div(), div());
     let mut section = device_display(STYLE);
     let mut row = device_grouped_row(STYLE, false);
     let frame = frame.interactivity().compute_style(None, None, window, cx);
@@ -295,6 +297,7 @@ impl Render for SelectionFixture {
             "device",
             STYLE.with_device_selection(self.selected),
             div(),
+            div(),
             device_body(STYLE)
                 .id("selection-body")
                 .debug_selector(|| "selection-body".into())
@@ -311,7 +314,7 @@ impl Render for SelectionFixture {
         .size_full();
         // Filled paint is checked from the completed scene below. Resolve border
         // style during rendering too; this does not claim GPU pixel readback.
-        let mut idle = device_frame("device", STYLE, div(), div());
+        let mut idle = device_frame("device", STYLE, div(), div(), div());
         let idle = idle.interactivity().compute_style(None, None, window, cx);
         let current = frame.interactivity().compute_style(None, None, window, cx);
         assert_eq!(current.border_color, idle.border_color);
