@@ -4,6 +4,7 @@ use crate::{AudioPreparationCustody, AudioStorageError, OwnedAudioInputs, Stream
 use std::{any::Any, sync::Arc};
 mod canonical_state;
 pub use canonical_state::canonical_native_state_storage_layout_supported;
+mod model_buffers;
 mod models;
 pub use models::canonical_midi_storage_layout_supported;
 mod sources;

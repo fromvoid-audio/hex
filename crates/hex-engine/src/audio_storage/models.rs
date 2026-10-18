@@ -85,7 +85,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| ledger.project_asset_storage(project))
     }
-    fn project_asset_storage(
+    pub(super) fn project_asset_storage(
         &mut self,
         project: &'a hex_project::Project,
     ) -> Result<(), AudioStorageError> {
