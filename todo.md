@@ -5155,3 +5155,12 @@ clicks, inert hover, focus and resize state across those widths. Targeted result
 and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
 full CI/integration/merge; optimized native drag/hover/optical acceptance remains
 open. No installed app, persisted schema or user files changed.
+
+18 October 2026 — Pulse #2710 / canonical PR #326: custom Place icon source work
+uses the existing bundled browser glyphs and editor context menu, with stable
+native-path assignment in bounded browser preferences. Unknown IDs retain a
+folder fallback; icon reuse and default reset are supported. The source candidate
+stacks frozen picker geometry PR #322; dedicated merger owns final prospective
+integration/full checks/merge. Native optimized picker/font/reopen acceptance
+remains open. PR #400 mouse-search diagnostics are frozen separately; this work
+does not claim to resolve the native focus report.
