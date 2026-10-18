@@ -808,3 +808,139 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
         assert_eq!(grown,settled,"actual terminal must retire hidden raw resize pan before later unrelated project growth");
     });
 }
+
+#[gpui::test]
+fn partial_clamped_audio_source_pan_does_not_overshoot_applied_edge(cx: &mut TestAppContext) {
+    check_partial_clamped_pan(cx, false);
+}
+#[gpui::test]
+fn partial_clamped_midi_minimum_pan_does_not_overshoot_applied_edge(cx: &mut TestAppContext) {
+    check_partial_clamped_pan(cx, true);
+}
+fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
+    let viewport = if midi {
+        Viewport {
+            start: 100_000,
+            length: 192_000,
+        }
+    } else {
+        Viewport {
+            start: 0,
+            length: 188_000,
+        }
+    };
+    let (handle, editor, track, clip, _files) = fixture(cx, midi, Some(viewport));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    if !midi {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetClipLooping {
+                clip,
+                looping: false
+            })));
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Right,
+                frame: 186_000
+            })));
+        });
+        pump(&editor, &mut visual);
+    }
+    let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = capture(&mut visual, clip, midi, false);
+    let pointer = editor.read_with(&visual, |v, _| {
+        let lane = v.drag_lanes[&track];
+        point(
+            px(if midi {
+                lane.left + 3.0
+            } else {
+                lane.left + lane.width - 3.0
+            }),
+            down.y,
+        )
+    });
+    visual.simulate_mouse_move(pointer, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let preview_edge = |v: &EditorView| {
+        if midi {
+            let d = v.active_midi_trim_drag.as_ref().unwrap();
+            let p = d.preview.borrow().unwrap();
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .tempo_map()
+                .beat_to_frame(BeatTime::from_raw(p.start().raw() + p.length().raw()))
+                .unwrap()
+        } else {
+            let d = v.active_trim_drag.as_ref().unwrap();
+            let p = d.preview.borrow();
+            let p = &p.as_ref().unwrap().clip;
+            p.start() + p.duration()
+        }
+    };
+    let before_edge = editor.read_with(&visual, |v, _| preview_edge(v));
+    let before_view = editor.read_with(&visual, |v, _| v.viewport.unwrap());
+    let boundary = if midi { 96_000 } else { 192_000 };
+    let remaining = before_edge.abs_diff(boundary);
+    let requested = (before_view.length as f64 * 1.5 * 0.05).round() as u64;
+    assert!(
+        remaining > 0 && remaining < requested,
+        "actual model boundary lies within one held step: midi={midi} edge={before_edge} remaining={remaining} step={requested}"
+    );
+    let selector = if midi {
+        "midi-trim-live-preview"
+    } else {
+        "trim-live-preview"
+    };
+    let before_bounds = visual.debug_bounds(selector).unwrap();
+    let now = Instant::now();
+    held_tick(&editor, &mut visual, now);
+    let after_edge = editor.read_with(&visual, |v, _| preview_edge(v));
+    let after_view = editor.read_with(&visual, |v, _| v.viewport.unwrap());
+    let pan = after_view.start.abs_diff(before_view.start);
+    let applied = after_edge.abs_diff(before_edge);
+    eprintln!(
+        "partial clamped actual midi={midi} before={before_edge} after={after_edge} viewport={before_view:?}->{after_view:?} applied={applied} pan={pan} requested={requested}"
+    );
+    assert!(pan > 0 && applied > 0);
+    assert!(
+        pan.abs_diff(applied) <= 1,
+        "viewport may consume only actual applied edge change (one frame rounding tolerance)"
+    );
+    assert_eq!(after_edge, boundary);
+    let after_bounds = visual.debug_bounds(selector).unwrap();
+    assert!(
+        (f32::from(before_bounds.right()) - f32::from(after_bounds.right())).abs() <= 4.0,
+        "stationary edge stays aligned (existing3px minimum visual width plus1px rounding)"
+    );
+    held_tick(&editor, &mut visual, now + Duration::from_secs(1));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.viewport,
+            Some(after_view),
+            "no drift after legal partial step"
+        );
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original);
+    });
+    visual.simulate_mouse_up(pointer, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let project = &v.state.as_ref().unwrap().project;
+        if midi {
+            assert_eq!(project.midi_clip(clip).unwrap().length().raw(), 1);
+        } else {
+            let clip = project.clip(clip).unwrap();
+            assert_eq!(clip.start() + clip.duration(), boundary);
+        }
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original)
+    });
+}
