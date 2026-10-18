@@ -209,7 +209,7 @@ fn musical_binary_marker_supports_fractional_durations_and_ignores_view_width(
     cx: &mut TestAppContext,
 ) {
     for (raw, expected) in [
-        (2 << 32, true),
+        (2_u64 << 32, true),
         (4 << 32, true),
         (3 << 32, false),
         (1 << 31, true),
