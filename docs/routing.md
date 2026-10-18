@@ -21,6 +21,18 @@ Track/Return removal cleans incident routes atomically; Undo restores identities
 Main exposes no source port, and Returns expose no MIDI port. No device sidechain
 or arbitrary channel capability is inferred from opaque device state.
 
+`Editor::execute_many_prepared` applies ordered commands to one private candidate,
+then checks its asset references and complete playable routing before invoking
+preparation or committing history. The final check uses the same model validator
+as single prepared transitions: combined audio sends/Return feeds/typed inputs
+and the separate MIDI endpoint/instrument/unique-destination DAG. Each command
+retains its local admission checks. A batch can temporarily introduce a send
+cycle and remove that send later, or remove a MIDI destination instrument and
+then clear its incoming route, when the final candidate is valid. A refused
+final graph leaves IDs, Project, Undo/Redo and the caller's last prepared playback
+unchanged; a changed accepted batch prepares once and commits one history step.
+This model boundary is independent of the compiler's own runtime admission.
+
 The control-prepared owner schedule runs each track/Return once in dependency
 order. Contributions use source post-device gain/mute/balance before the target
 chain. Canonical ties and Main summation order are deterministic. No-route,

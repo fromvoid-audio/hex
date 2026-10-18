@@ -81,6 +81,7 @@ impl Editor {
     }
     /// Apply at most MAX_CLIPS ordered commands to one private candidate and
     /// prepare it once. Preparation sees each command's result in input order.
+    /// Validate the final routing graph, not each intermediate batch state.
     /// Any refusal preserves IDs, both history stacks and the current project.
     pub fn execute_many_prepared<T, E: From<Invalid>>(
         &mut self,
@@ -99,6 +100,7 @@ impl Editor {
             results.push(candidate.apply(command)?);
         }
         candidate.validate_device_asset_references()?;
+        candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.
         self.undo
             .try_reserve(1)
