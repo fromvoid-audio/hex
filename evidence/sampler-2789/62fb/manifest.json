@@ -1,0 +1,70 @@
+{
+  "source": "62fb76aad9ada5c71eee25d46c7d7e6ca6195ed2",
+  "tree": "cabbac065fc09bb4da4ea7d8fc53a91576b24cb2",
+  "final_checks": {
+    "hex-sampler-selected-union-constructor.log": {
+      "command": "cargo test -p hex-engine --lib --locked sampler_context_ -- --nocapture",
+      "cargo_exit": 0,
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hex-sampler-selected-union-clippy-final.log": {
+      "command": "cargo clippy -p hex-engine --all-targets --locked -- -D warnings",
+      "cargo_exit": 0
+    }
+  },
+  "development_history": "Other logs are original uncommitted development attempts after 63b0; they are not relabelled as final-source qualification. Preserved E0599 nonexistent Undo role, initial closure UnknownStorage due unvisited snapshot state aliases, diagnostic assertion showing exact error, pre-integration single-test PASS, strict dead-code failure before private constructor integration, and missing comma during private signature adaptation. No ownership checks or assertions weakened. Final runtime filter matched 7 actual tests, not 3. Existing PCM-wrapper Unknown build-script warning remains; no native qualification from cloud Clippy.",
+  "files": [
+    {
+      "path": "hex-sampler-selected-union-check.log",
+      "bytes": 1296,
+      "sha256": "2c4a30abd43ba7c42ae0e8d904642f500c588cf8af18f82b026ecacd0606be9f"
+    },
+    {
+      "path": "hex-sampler-selected-union-clippy-final.log",
+      "bytes": 243,
+      "sha256": "f9b4bb5941538d5060f3d6671247a81b6b33fe9adac3bfedd7161d8d32c6a3df"
+    },
+    {
+      "path": "hex-sampler-selected-union-clippy-unused-failure.log",
+      "bytes": 965,
+      "sha256": "d5d58c173081a28bfe2a1f5190ffbdb6d44c2dbe5b1291824910038b1d1a2472"
+    },
+    {
+      "path": "hex-sampler-selected-union-clippy.log",
+      "bytes": 965,
+      "sha256": "d5d58c173081a28bfe2a1f5190ffbdb6d44c2dbe5b1291824910038b1d1a2472"
+    },
+    {
+      "path": "hex-sampler-selected-union-compile-failure.log",
+      "bytes": 794,
+      "sha256": "2164a03cd16ed44c8865ae93562ae8e10bf8ff70814f7684a70d0decee98448d"
+    },
+    {
+      "path": "hex-sampler-selected-union-constructor.log",
+      "bytes": 1905,
+      "sha256": "44ce476d5054789082f515ffe89f50849bb89042fed52fea5e9007134af77a08"
+    },
+    {
+      "path": "hex-sampler-selected-union-diagnostic.log",
+      "bytes": 1210,
+      "sha256": "1d0da3baeb815762b2143a9ee68fb5543af112b1d0905e660831a52d8deccac8"
+    },
+    {
+      "path": "hex-sampler-selected-union-first-runtime-failure.log",
+      "bytes": 1296,
+      "sha256": "2c4a30abd43ba7c42ae0e8d904642f500c588cf8af18f82b026ecacd0606be9f"
+    },
+    {
+      "path": "hex-sampler-selected-union-fixed.log",
+      "bytes": 593,
+      "sha256": "1cb9eae76db7bdcf60c242dab4db6bce80967be2cfdd655e59a1fb8cd2baabdc"
+    },
+    {
+      "path": "hex-sampler-selected-union-signature-compile-failure.log",
+      "bytes": 625,
+      "sha256": "39efdba5d853970c045984a0f743f4116c1a3e34001df3e784c2b4792f311a1d"
+    }
+  ]
+}
