@@ -632,6 +632,8 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool)
     visual.simulate_mouse_up(edge, MouseButton::Left, modifiers);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
+        eprintln!("inward release midi={midi} left={left} error={:?} submitted={:?} audio_active={} midi_active={}", v.error, v.last_enqueued_edit, v.active_trim_drag.is_some(), v.active_midi_trim_drag.is_some());
+        assert!(v.error.is_none(), "{:?}", v.error);
         let p = &v.state.as_ref().unwrap().project;
         if midi {
             assert!(p.midi_clip(clip).unwrap().length().raw() > 0);
