@@ -166,6 +166,7 @@ pub(super) struct BrowserState {
     samples: samples::SampleBrowser,
     listing: Option<DirectoryListing>,
     loading: bool,
+    pending_selection: Option<BrowserItemKey>,
     scans: ScanCoordinator,
     error: Option<String>,
     resizing: bool,
@@ -240,6 +241,7 @@ impl BrowserState {
             samples: samples::SampleBrowser::default(),
             listing: None,
             loading: false,
+            pending_selection: None,
             scans: ScanCoordinator::default(),
             error: None,
             resizing: false,
@@ -561,6 +563,17 @@ impl EditorView {
         if directory != self.browser.directory {
             self.reset_browser_results();
         }
+        if matches!(self.browser.section, BrowserSection::Place(_)) {
+            // Retain identity privately while unavailable rows are hidden. Query/source
+            // changes clear this snapshot through reset_browser_results.
+            if !self.browser.loading {
+                self.browser.pending_selection = self.browser_selected_item(cx);
+            }
+            if self.browser.playback_path.is_some() || self.browser.playback_pending.is_some() {
+                self.cancel_browser_sample_playback();
+                self.status = "sample preview stopped".into();
+            }
+        }
         let start = self.browser.scans.request(directory.clone());
         self.browser.directory = directory.clone();
         self.browser.error = None;
@@ -571,6 +584,7 @@ impl EditorView {
     }
 
     fn reset_browser_results(&mut self) {
+        self.browser.pending_selection = None;
         if self.browser.playback_output.is_some() {
             self.cancel_browser_sample_playback();
             self.status = "sample preview stopped".into();
@@ -595,6 +609,10 @@ impl EditorView {
     }
 
     fn play_browser_sample_from(&mut self, path: PathBuf, fraction: f64, cx: &mut Context<Self>) {
+        // Previously painted controls can retain a path across source validation.
+        if self.browser_place_unavailable() {
+            return;
+        }
         let fraction = if fraction.is_finite() {
             fraction.clamp(0.0, 1.0)
         } else {
@@ -1155,7 +1173,13 @@ impl EditorView {
         let (is_current, pending) = self.browser.scans.complete(request.generation);
         let mut next = pending;
         if is_current {
-            let selection = self.browser_selected_item(cx);
+            let selection = if self.browser.loading
+                && matches!(self.browser.section, BrowserSection::Place(_))
+            {
+                self.browser.pending_selection.take()
+            } else {
+                self.browser_selected_item(cx)
+            };
             self.browser.samples.invalidate_listing();
             match result {
                 Ok(listing) => {
@@ -1388,7 +1412,15 @@ impl EditorView {
         }
     }
 
+    fn browser_place_unavailable(&self) -> bool {
+        matches!(self.browser.section, BrowserSection::Place(_))
+            && (self.browser.loading || self.browser.error.is_some())
+    }
+
     fn browser_visible_entries(&self, cx: &App) -> Arc<Vec<LibraryEntry>> {
+        if self.browser_place_unavailable() {
+            return Arc::new(Vec::new());
+        }
         let query = self.browser.search.read(cx).content.to_lowercase();
         let listing = self
             .browser
@@ -1397,7 +1429,6 @@ impl EditorView {
             .filter(|listing| listing.directory == self.browser.directory);
         match &self.browser.section {
             BrowserSection::Samples => self.browser.samples.visible(&query),
-            BrowserSection::Place(_) if self.browser.error.is_some() => Arc::new(Vec::new()),
             BrowserSection::Place(root) if !query.is_empty() => self
                 .browser
                 .samples
@@ -1698,11 +1729,12 @@ impl EditorView {
             }
             _ if row_count == 0
                 && self.browser.loading
-                && self
-                    .browser
-                    .listing
-                    .as_ref()
-                    .is_none_or(|listing| listing.directory != path) =>
+                && (matches!(self.browser.section, BrowserSection::Place(_))
+                    || self
+                        .browser
+                        .listing
+                        .as_ref()
+                        .is_none_or(|listing| listing.directory != path)) =>
             {
                 panel = panel.child(
                     div()
@@ -1972,6 +2004,10 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    if view.browser_place_unavailable() {
+                        cx.stop_propagation();
+                        return;
+                    }
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
                     view.browser
@@ -2309,6 +2345,9 @@ impl EditorView {
     }
 
     fn import_browser_audio(&mut self, path: PathBuf) {
+        if self.browser_place_unavailable() {
+            return;
+        }
         if self.mode == EditorMode::Session {
             let target = self.selected_cell.filter(|(track, scene)| {
                 self.state.as_ref().is_some_and(|state| {
@@ -2350,6 +2389,9 @@ impl EditorView {
     }
 
     fn open_browser_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.browser_place_unavailable() {
+            return;
+        }
         self.choose_project(path, hex_session::DocumentAudioMode::Resident);
         cx.notify();
     }

@@ -582,6 +582,12 @@ pub enum Command {
         start: crate::BeatTime,
         length: crate::BeatTime,
     },
+    /// Paint an empty MIDI clip, cutting existing audio/MIDI at its boundaries.
+    PlaceMidiClipWithOverwrite {
+        track: TrackId,
+        start: crate::BeatTime,
+        length: crate::BeatTime,
+    },
     /// Resize a MIDI Arrangement edge without deleting authored source notes.
     TrimMidiClipEdge {
         clip: ClipId,
@@ -1382,6 +1388,7 @@ impl Project {
             } => crate::time_range::copy_range(self, &range, track, frame),
             midi_command @ (Command::AddMidiTrack { .. }
             | Command::PlaceMidiClip { .. }
+            | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
             | Command::TrimMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
