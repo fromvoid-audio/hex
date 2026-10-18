@@ -1,6 +1,5 @@
 //! Sparse EQ editing. Opaque edits use atomic canonical state replacement;
 //! scalar graph drags use the existing paired-parameter gesture protocol.
-use super::eq8_panel::spectrum_toggle;
 use super::*;
 use gpui::{Entity, Subscription};
 use hex_engine::eq::{self, AutomationLane, AutomationPoint, EqState, Node, NodeId, NodeParameter};
@@ -12,6 +11,8 @@ use hex_widgets::{
 
 mod axes;
 mod response;
+mod spectrum;
+pub(super) use spectrum::SpectrumSelection;
 
 const WINDOW_BEATS: u64 = 16;
 // Outer five percent of the inset logarithmic plot; existing node hits win.
@@ -60,7 +61,7 @@ pub(super) struct Panel {
     selected: Option<NodeId>,
     armed: bool,
     show_input: bool,
-    spectrum_default_pending: bool,
+    focus_subscription: Option<Subscription>,
     bank: u8,
     automation: Option<NodeParameter>,
     selected_point: Option<usize>,
@@ -147,7 +148,7 @@ pub(super) fn render_body(
                 selected: state.nodes.first().map(|n| n.id),
                 armed: false,
                 show_input: true,
-                spectrum_default_pending: true,
+                focus_subscription: None,
                 bank: 0,
                 automation: None,
                 selected_point: None,
@@ -224,7 +225,7 @@ pub(super) fn render_body(
     let selected_point = panel.selected_point;
     let page = panel.page.min(MAX_AUTOMATION_PAGE);
     let entity = panel.entity.clone();
-    activate_default_spectrum(view, device, owner);
+    spectrum::sync_selected(view, device, owner);
     let model = if let (Some(id), Some(field)) = (selected, automation) {
         automation_model(&displayed, id, field, page, selected_point)
     } else {
@@ -312,15 +313,7 @@ pub(super) fn render_body(
         );
     }
     toolbar = toolbar.child(theme::text(format!("{} / 64", state.nodes.len())));
-    toolbar = toolbar.child(
-        spectrum_toggle(view, cx, device, owner, eq::EQ_TYPE_ID).on_click(cx.listener(
-            move |view, _, _, _| {
-                if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-                    panel.spectrum_default_pending = false;
-                }
-            },
-        )),
-    );
+    toolbar = toolbar.child(spectrum::toggle(view, cx, device, owner));
     let show_input = view
         .device_panel
         .eq_panels
@@ -550,56 +543,11 @@ pub(super) fn render_body(
         actions,
     )
     .debug_selector(move || format!("eq-sidebar-{}", device.value()));
-    crate::device_composition::eq_graph_body(entity, sidebar).id(ElementId::Name(
-        format!("eq-body-{}", device.value()).into(),
-    ))
-}
-
-// One live analyzer target is supported by the existing audio contract. A newly
-// visible panel opts in once when admitted, never stealing another active target.
-// Any explicit toggle retires default intent for this panel, including an off.
-fn activate_default_spectrum(
-    view: &mut EditorView,
-    device: DeviceId,
-    owner: hex_engine::ProcessorChainOwner,
-) {
-    if !view
-        .device_panel
-        .eq_panels
-        .get(&device)
-        .is_some_and(|p| p.spectrum_default_pending)
-    {
-        return;
-    }
-    let Some(audio) = view.audio.as_mut() else {
-        return;
-    };
-    if audio.control.spectrum_desired().is_some() {
-        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-            panel.spectrum_default_pending = false;
-        }
-        return;
-    }
-    if audio.spectrum_error.is_some() || !(8_000..=192_000).contains(&audio.sample_rate) {
-        return;
-    }
-    let revision = view.state.as_ref().map_or(0, |s| s.revision);
-    let Some(floor) = view
-        .audio_admission
-        .published_audio_revision(view.project_generation, revision)
-    else {
-        return;
-    };
-    let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
-    if audio
-        .control
-        .spectrum_select(identity, view.project_generation, floor, audio.sample_rate)
-        .is_ok()
-    {
-        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-            panel.spectrum_default_pending = false;
-        }
-    }
+    crate::device_composition::eq_graph_body(entity, sidebar)
+        .on_children_prepainted(spectrum::focus_listener(view, cx, device))
+        .id(ElementId::Name(
+            format!("eq-body-{}", device.value()).into(),
+        ))
 }
 
 fn playhead_readout(
@@ -1542,7 +1490,10 @@ fn handle_event(
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) fn spectrum_intent_for_test(view: &EditorView, device: DeviceId) -> (bool, bool) {
     let panel = &view.device_panel.eq_panels[&device];
-    (panel.spectrum_default_pending, panel.show_input)
+    (
+        view.device_panel.eq_spectrum.enabled(device),
+        panel.show_input,
+    )
 }
 
 #[cfg(test)]
