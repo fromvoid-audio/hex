@@ -1200,3 +1200,6 @@ fn lane_contains(x: f32, y: f32, lane: super::drag::LaneBounds) -> bool {
         && y >= lane.top
         && y < lane.top + lane.height - 1.0
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod duplicate_tests;
