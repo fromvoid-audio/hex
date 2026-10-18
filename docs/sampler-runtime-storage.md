@@ -212,3 +212,12 @@ checks independent six-backing totals, omitted-owner refusal, repeated visits,
 exact/minus-one budgets and each normal control retirement. Other products are
 retired with the original bank held. This is selected descriptor inventory and
 cleanup, not the fresh complete compiler entry or aggregate peak proof.
+
+Descriptor construction validates every track/order/source/count before row
+allocation, then reserves all real nested effect/source buffers before cloning
+the first canonical owner. Filling uses the same immutable project and selector;
+there is no extra plan/cache allocation. This changes allocation order, not the
+required aggregate preconstruction allowance or the set of retained aliases.
+A routed-source regression checks two independent descriptor destinations with
+the same actual MIDI source, preserving track IDs and source identity. Complete
+compiler ingress and its old/new/temporary peak reservation remain open.

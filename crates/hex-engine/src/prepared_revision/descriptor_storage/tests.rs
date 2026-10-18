@@ -141,3 +141,75 @@ fn actual_mutable_descriptors_charge_nested_capacities_and_retain_all_canonical_
         assert!(crate::audio_preparation::validate_constructor_project(editor.project()).is_err());
     }
 }
+
+#[test]
+fn descriptor_preallocation_preserves_routed_sources_and_independent_destinations() {
+    let Some((bank, mut editor)) = super::super::resource_tests::source_fixture(false) else {
+        eprintln!("unsupported routed descriptor preallocation");
+        return;
+    };
+    eprintln!("SUPPORTED routed descriptor preallocation");
+    let source = editor.project().tracks()[0].id();
+    super::super::resource_tests::musical_clips(&mut editor, source);
+    let state = editor
+        .project()
+        .track(source)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .state()
+        .clone();
+    let Created::Track(destination) = editor
+        .execute(Command::AddMidiTrack {
+            name: "destination".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = editor
+        .project()
+        .track(destination)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState { device, state })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiSource {
+            destination,
+            source: Some(source),
+        })
+        .unwrap();
+    let prepared = PreparedRevision::prepare_with_audio_transforms_and_device_resources(
+        editor.project(),
+        &BTreeMap::new(),
+        crate::SharedSineTable::new_on_control(),
+        None,
+        &crate::audio_transform::AudioTransformPreparation::default(),
+        crate::native_device_resources::DeviceResourcePreparation {
+            bank: &bank,
+            max_scope_metadata_bytes: 65_536,
+        },
+    )
+    .unwrap();
+    let rows = &prepared.mutable_track_revisions;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].id, source);
+    assert_eq!(rows[1].id, destination);
+    assert!(rows.iter().all(|row| row.instrument.is_some()));
+    assert_eq!(rows[0].arrangement_midi_sources.len(), 1);
+    assert!(rows[0].arrangement_midi_sources == rows[1].arrangement_midi_sources);
+    assert_ne!(
+        rows[0].arrangement_midi_sources.as_ptr(),
+        rows[1].arrangement_midi_sources.as_ptr()
+    );
+    let clip = &editor.project().track(source).unwrap().midi_clips()[0];
+    assert!(
+        rows.iter()
+            .all(|row| row.arrangement_midi_sources[0].source == clip.source_identity())
+    );
+    assert!(crate::audio_preparation::validate_constructor_project(editor.project()).is_err());
+}

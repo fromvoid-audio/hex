@@ -693,10 +693,9 @@ fn prepare_mutable_track_revisions(
         .iter()
         .filter(|track| needs_descriptor(track))
         .count();
-    let mut revisions = Vec::new();
-    revisions
-        .try_reserve_exact(mutable_track_count)
-        .map_err(|_| Invalid("could not reserve mutable revision descriptors"))?;
+    // Validate the whole immutable descriptor input before allocating any rows.
+    // In particular a late track mismatch must not leave earlier canonical
+    // state/source aliases in a partially built helper result.
     let mut arrangement_clip_count = 0usize;
     for (track, compiled) in project.tracks().iter().zip(arrangement.tracks()) {
         arrangement_clip_count = arrangement_clip_count
@@ -710,43 +709,78 @@ fn prepare_mutable_track_revisions(
                 "mutable revision descriptor track ordering is inconsistent",
             ));
         }
+        if needs_descriptor(compiled) {
+            if track.devices().len() > MAX_DEVICES_PER_TRACK {
+                return Err(Invalid("mutable revision effect count exceeds track limit"));
+            }
+            let source = project
+                .track(project.midi_source_track(track.id()))
+                .ok_or(Invalid("mutable midi source root is missing"))?;
+            if source.midi_clips().len() > MAX_CLIPS {
+                return Err(Invalid(
+                    "mutable midi source descriptor count exceeds project limit",
+                ));
+            }
+        }
+    }
+    let mut revisions = Vec::new();
+    revisions
+        .try_reserve_exact(mutable_track_count)
+        .map_err(|_| Invalid("could not reserve mutable revision descriptors"))?;
+    // Reserve every nested destination before cloning the first canonical
+    // owner. These are real output buffers, not an auxiliary plan/cache. Their
+    // actual capacities still require the aggregate preconstruction allowance.
+    for (track, compiled) in project.tracks().iter().zip(arrangement.tracks()) {
         if !needs_descriptor(compiled) {
             continue;
         }
-        if track.devices().len() > MAX_DEVICES_PER_TRACK {
-            return Err(Invalid("mutable revision effect count exceeds track limit"));
-        }
+        let source = project
+            .track(project.midi_source_track(track.id()))
+            .ok_or(Invalid("mutable midi source root is missing"))?;
         let mut effects = Vec::new();
         effects
             .try_reserve_exact(track.devices().len())
             .map_err(|_| Invalid("could not reserve mutable effect descriptors"))?;
-        effects.extend(track.devices().iter().map(PreparedDeviceIdentity::from));
-
-        let source_id = project.midi_source_track(track.id());
-        let source = project
-            .track(source_id)
-            .ok_or(Invalid("mutable midi source root is missing"))?;
         let mut arrangement_midi_sources = Vec::new();
         arrangement_midi_sources
             .try_reserve_exact(source.midi_clips().len())
             .map_err(|_| Invalid("could not reserve mutable midi source descriptors"))?;
-        arrangement_midi_sources.extend(source.midi_clips().iter().map(|clip| {
-            PreparedArrangementMidiSource {
-                id: clip.id(),
-                start: clip.start(),
-                length: clip.length(),
-                source: clip.source_identity(),
-            }
-        }));
-        arrangement_midi_sources.sort_unstable_by_key(|clip| clip.id);
-
         revisions.push(PreparedMutableTrackRevision {
             id: track.id(),
-            instrument: track.instrument().map(PreparedDeviceIdentity::from),
+            instrument: None,
             instrument_position: track.instrument_position(),
             effects,
             arrangement_midi_sources,
         });
+    }
+    for (row, (track, _)) in revisions.iter_mut().zip(
+        project
+            .tracks()
+            .iter()
+            .zip(arrangement.tracks())
+            .filter(|(_, compiled)| needs_descriptor(compiled)),
+    ) {
+        // Same immutable project and selector as the two preflight passes.
+        let source = project
+            .track(project.midi_source_track(track.id()))
+            .ok_or(Invalid("mutable midi source root is missing"))?;
+        row.instrument = track.instrument().map(PreparedDeviceIdentity::from);
+        row.effects
+            .extend(track.devices().iter().map(PreparedDeviceIdentity::from));
+        row.arrangement_midi_sources
+            .extend(
+                source
+                    .midi_clips()
+                    .iter()
+                    .map(|clip| PreparedArrangementMidiSource {
+                        id: clip.id(),
+                        start: clip.start(),
+                        length: clip.length(),
+                        source: clip.source_identity(),
+                    }),
+            );
+        row.arrangement_midi_sources
+            .sort_unstable_by_key(|clip| clip.id);
     }
     revisions.sort_unstable_by_key(|revision| revision.id);
     Ok(revisions)
