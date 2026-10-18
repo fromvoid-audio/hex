@@ -308,9 +308,9 @@ impl PreparedRevision {
             media,
             sine_table,
             previous_session,
-            effects,
-            instruments,
+            (effects, instruments),
             &transforms,
+            None,
         )
     }
 
@@ -330,9 +330,37 @@ impl PreparedRevision {
             media,
             sine_table,
             previous_session,
-            &effects,
-            &instruments,
+            (&effects, &instruments),
             transforms,
+            None,
+        )
+    }
+
+    /// Prepare one complete Arrangement/Session revision with the existing
+    /// qualified immutable device-resource bank. Contexts retain their actual
+    /// original leases; this does not copy PCM or register/install a device.
+    /// The caller still reserves whole current/candidate construction peak and
+    /// validates the complete native graph before publication.
+    pub fn prepare_with_audio_transforms_and_device_resources(
+        project: &Project,
+        media: &dyn crate::compile::MediaLookup<crate::Audio>,
+        sine_table: crate::SharedSineTable,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: crate::native_device_resources::DeviceResourcePreparation<'_>,
+    ) -> Result<Self, Invalid> {
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_registries_and_transforms(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            (&effects, &instruments),
+            transforms,
+            Some(resources),
         )
     }
 
@@ -341,10 +369,14 @@ impl PreparedRevision {
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
         sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
-        effects: &hex_lattice::NativeDeviceRegistry<'_>,
-        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+        registries: (
+            &hex_lattice::NativeDeviceRegistry<'_>,
+            &hex_lattice::NativeInstrumentRegistry<'_>,
+        ),
         transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: Option<crate::native_device_resources::DeviceResourcePreparation<'_>>,
     ) -> Result<Self, Invalid> {
+        let (effects, instruments) = registries;
         transforms.compile_transaction(|| {
             crate::gain_envelope::validate_project(project)?;
             crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
@@ -352,7 +384,7 @@ impl PreparedRevision {
                 project,
                 instruments,
                 previous_session.map(|previous| previous.shared_contexts().as_ref()),
-                None,
+                resources,
             )?;
             if shared_contexts.payload_bytes()
                 > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
@@ -787,3 +819,6 @@ fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevis
             })
         && source.session.tuning_source_facts_match(&target.session)
 }
+
+#[cfg(test)]
+mod resource_tests;

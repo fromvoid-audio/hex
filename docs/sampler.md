@@ -682,3 +682,25 @@ modulation expectations. This is DSP/state evidence only: pitch/filter modulatio
 parameter transitions, actual panel/gestures, registration/admission, Warp, native
 listening and the complete load/play/history/save/reopen/export workflow remain
 open. It does not complete2679/2789 or grant registry admission.
+
+## complete prepared revision resource bridge
+
+The explicit prepare_with_audio_transforms_and_device_resources path now passes
+an existing qualified DeviceResourcePreparation into the same PreparedRevision
+Arrangement/Session pipeline. It retains the actual original leases and shared
+contexts, preserving the existing transform transaction, timing/tuning preparation,
+voice/MIDI/context budgets and previous-session reuse. Existing no-resource entry
+points still pass None and honestly refuse loaded sample state without a bank.
+The explicit bank parameter is not registry registration, native publication or
+a complete old/new/temporary construction-peak receipt; the worker must reserve
+and validate those before using the result in an admitted graph.
+
+The actual loaded Sampler now reaches complete headless Arrangement and Session
+MIDI playback through this revision path, rather than only a detached factory.
+Tests compare the first and reused configuration's PCM address with the actual
+original bank lease, retire the original bank and canonical editor, then render
+independent asymmetric PCM and partitioned playback from retained contexts.
+A real mutable checkpoint captures the playing sample. Metadata-budget refusal
+keeps the prior prepared revision's actual source unchanged. The source API and
+headless tests do not imply a registered/published device, callback construction
+conservation, GUI panel, export acceptance or complete musical workflow.
