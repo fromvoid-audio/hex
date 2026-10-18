@@ -150,6 +150,50 @@ pub struct PreparedSessionMidiClip {
     pub work: SessionWorkEnvelope,
 }
 
+// Actual physical row fields, not identities manufactured from snapshots.
+// The enclosing Session/body and all other roots remain separate obligations.
+fn visit_midi_rows<'a>(
+    rows: &'a Vec<PreparedSessionMidiClip>,
+    ledger: &mut crate::AudioRootStorageLedger<'a>,
+    role: crate::AudioStorageRole,
+) -> Result<(), crate::AudioStorageError> {
+    ledger.vec(rows)?;
+    for PreparedSessionMidiClip {
+        id,
+        track,
+        scene,
+        name,
+        source_identity,
+        source,
+        instrument,
+        instrument_id,
+        instrument_state,
+        tuning_identity,
+        instrument_enabled,
+        mutable_limits,
+        work,
+    } in rows
+    {
+        fn copy_leaf<T: Copy>(_: &T) {}
+        copy_leaf(id);
+        copy_leaf(track);
+        copy_leaf(scene);
+        copy_leaf(instrument_id);
+        copy_leaf(tuning_identity);
+        copy_leaf(instrument_enabled);
+        copy_leaf(mutable_limits);
+        copy_leaf(work);
+        ledger.string(name)?;
+        ledger.model_source_if_unvisited(source_identity)?;
+        if let Some(state) = instrument_state {
+            ledger.borrow_canonical_native_state_on_control(state)?;
+        }
+        crate::midi_template::storage::visit_source(source, ledger, role)?;
+        crate::midi_template::storage::visit_instrument(instrument, ledger, role)?;
+    }
+    Ok(())
+}
+
 /// Prepared frame-anchored Session one-shot retaining resident PCM or a
 /// generation-validated streamed source binding.
 #[derive(Clone)]

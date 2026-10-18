@@ -265,7 +265,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         self.mutate(|this| {
             this.root(custody, role)?;
-            custody.visit_audio_storage(this)
+            custody.visit_audio_storage(this, role)
         })
     }
     pub fn borrow_caller_inputs_on_control(

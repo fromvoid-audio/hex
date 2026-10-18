@@ -836,6 +836,7 @@ impl SessionAssembly {
         &'a self,
         l: &mut crate::AudioRootStorageLedger<'a>,
         external: Option<&'a PreparedSessionInventory>,
+        role: crate::AudioStorageRole,
     ) -> Result<(), AudioStorageError> {
         use crate::audio_storage::{Location, Owner};
         self.capacity_at(false, external)?;
@@ -956,8 +957,11 @@ impl SessionAssembly {
             l.vec(scene_cell_indices)?;
             l.vec(scene_cell_ranges)?;
             l.vec(tracks)?;
-            l.vec(midi_clips)?;
-            l.vec(routed_midi_clips)?;
+            // Complete actual row fields are ready for the closed compiler
+            // path; capacity_at still refuses nonempty construction until
+            // persistent teardown/preconstruction admission is completed.
+            visit_midi_rows(midi_clips, l, role)?;
+            visit_midi_rows(routed_midi_clips, l, role)?;
             l.vec(midi_source_roots)?;
             l.vec(mutable_instruments)?;
             for instrument in mutable_instruments {

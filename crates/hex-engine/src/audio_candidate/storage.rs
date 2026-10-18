@@ -68,7 +68,9 @@ impl AudioCandidateOwner {
         let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
         ledger.mutate(|l| {
             l.root(self, crate::AudioStorageRole::Current)?;
-            self.inner.custody.visit_audio_storage(l)
+            self.inner
+                .custody
+                .visit_audio_storage(l, crate::AudioStorageRole::Current)
         })?;
         let before = ledger.summary()?.data_bytes;
         ledger.mutate(|l| self.inner.visit_fresh_storage(l))?;

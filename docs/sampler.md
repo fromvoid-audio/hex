@@ -802,3 +802,18 @@ constructor ingress. The production constructor still refuses MIDI models until
 the aggregate prequoted closed entry exists. Exact/minus-one storage, actual
 aliases, producer retirement, transfer/restore and disposal are component proof;
 nonempty Session/descriptors, whole construction peak and publication remain open.
+
+The private Session MIDI-row visitor now joins actual direct and routed row
+backings, names, canonical source-identity fields, copied native-state fields,
+and cached source/instrument templates. It uses the existing canonical-family
+observers and paired template visitors, without synthesizing model identities
+or duplicating inline row/header charges. The parent custody's existing role is
+forwarded rather than guessing a publication role for those children.
+
+The new old/current Session regression exercises both direct and routed MIDI,
+cached-template reuse, independent row/name backing totals, omitted-field
+refusal, repeated visits, exact/minus-one budgets and old-inventory retirement.
+This traversal is wired behind the existing assembly capacity refusal: production
+nonempty Session construction/cleanup and the aggregate prequoted compiler entry
+remain unfinished. Selected row-field closure is not complete Session/native
+custody, construction peak, callback conservation or publication proof.
