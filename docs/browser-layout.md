@@ -43,7 +43,7 @@ acceptance is separate from headless layout and deterministic PCM tests.
 No fabricated waveform or sample tags are used. File import, project opening,
 device/sample dragging and current search semantics retain their existing paths.
 
-Tag chips/checkboxes, the mini add field and history arrows are disabled placeholders.
+Tag chips/checkboxes and the mini add field are disabled placeholders.
 Collection names can select their own empty source; membership and editing remain
 explicitly pending. Labels/tooltips identify pending
 functionality. Disclosure, filtering-panel visibility and opening/closing the
@@ -55,7 +55,6 @@ Pulse owns the remaining plans (Hex 0.1):
 - #2665: shared bounded tag taxonomy, item identity and persistent assignments.
 - #2666: top tag filtering and combined query semantics; depends on #2665.
 - #2667: mini/full editors, suggestions, mixed states and atomic writes; depends on #2665.
-- #2669: bounded back/forward navigation history and restoration.
 - #2672: collections, icon picker and sidebar preference persistence; depends on #2665.
 
 The visual implementation is #2678 / PR294. Global Command-F work remains #2659.
@@ -146,8 +145,8 @@ indexed results; it does not silently substitute Home. If a selected Place is
 removed from the place model, fall back explicitly to Samples and prune derived
 catalog records outside the remaining roots before rescan. Added places keep their
 existing bounded persistence; no user files are changed by source selection.
-Inline hierarchy, collections/tag editing and navigation history remain their
-separate owning issues. Native normal/icon picker, focus and offline-source
+Inline hierarchy and navigation history have separate source implementations
+below; collection/tag editing remains its separate owning issue. Native normal/icon picker, focus and offline-source
 acceptance is coordinator-owned and pending.
 
 ## Inline source hierarchy — Pulse2728 / PR341
@@ -224,3 +223,59 @@ inspection; their physical native display and optical glyph appearance remain
 coordinator-owned optimized acceptance, alongside smooth native divider dragging.
 No tree indentation, results, preview, persisted preferences or divider feedback
 behavior is implemented by this follow-up.
+
+
+## Browser navigation history (Pulse2669 / PR286)
+
+The two top arrows now navigate a session-local, browser-owned history, separate
+from project Undo. It retains at most 64 locations: the single selected source
+(including the existing collection index), native directory, and exact query.
+Each retained query/path field is capped at 16 KiB, matching the catalog's path
+bound. Exceeding that bound clears retained history with a visible diagnostic;
+the live query, paths and user files are never truncated or changed. Nothing is
+persisted across app sessions. Tag groups and collection assignments remain
+placeholders; there is no active tag-filter model to snapshot or new tag storage
+in this change. Existing collection source selection is navigable.
+
+Typing, paste and IME updates replace one current query step until a deliberate
+boundary: clicking into the query, choosing a source (including Command-F),
+navigating/selecting/activating results, collapsing a parent folder, Escape, or
+Back/Forward. These existing input events commit the transaction; no timer or
+step per character is used. A changed location clears the forward branch.
+Restoring a query updates its caret/mark state without focusing it or generating
+another history entry; a queued search observer acknowledges that exact value.
+Command-F keeps its existing All/search/select-all and invalid-draft barriers.
+
+Before leaving a location, history captures its highlighted item and top visible
+row by original native path or device class/type ID, not row index or display
+name. Restoration waits for applicable existing bounded scan/tree/catalog work,
+then restores those identities without audition, import or text focus. A missing
+highlight clears deterministically; a missing scroll anchor falls back to the top.
+A still-configured missing/offline Place remains an error location that Back can
+leave. Restoring a removed or hidden source falls back explicitly to All without
+pushing another history entry or re-adding a configured path.
+New selection, query or source navigation cancels deferred restoration; existing
+scan/tree/catalog generations reject stale worker results. Devices/collections
+do not wait for unrelated filesystem workers.
+
+Inline folder disclosure/Left parent navigation retains the current tree and its
+existing expansion state; it does not create a separate folder page or one history
+step per disclosure. Existing refresh and bounded child enumeration are unchanged.
+
+Headless regressions cover toolbar boundary/branch behavior, coalesced real input,
+Command-F, IME restoration, queued observer acknowledgement, collection navigation,
+same-name files with distinct native paths, positive scroll/item restoration,
+missing items/Places, late scan generations and latest navigation intent. Existing
+audition/Stop/offset, no-double-click-import and actual focus cases remain in the
+browser suite. This is source evidence, not native acceptance.
+
+Finite optimized native check, scheduled only by the coordinator: on the exact
+combined source, choose a Place, scroll/select a WAV, type a multi-character query,
+choose another source, and use both arrows. Check each query is one step, arrows
+are disabled at boundaries, and branching removes Forward. Confirm the same WAV
+and top row return without replay or search focus; compare same-name files from
+two directories. Check a safely configured unavailable fixture folder remains
+recoverable, rapid Back/Forward/source changes keep latest intent, and IME,
+Command-F, Left parent navigation and unfinished numeric drafts retain their
+existing ownership. No save/quit/relaunch, listening or app replacement is needed
+for this changed-case checklist; any native execution remains root-owned.

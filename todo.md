@@ -1,3 +1,14 @@
+## Browser history source checkpoint (Pulse2669 / PR286)
+
+Session-local bounded source/directory/query history replaces the disabled arrow
+slots. Query edits coalesce at explicit input/navigation boundaries; restoration
+retains native item/top-row identity without audition/import/text focus, rejects
+stale scan results and leaves missing Places recoverable. Current tag/collection
+storage placeholders remain separate. See docs/browser-layout.md for exact
+coalescing, bounds, fallback and finite native acceptance. Source checks and
+immutable handoff are recorded in live Pulse; prospective-tree fullCI/review/merge
+remain the dedicated merger's work, native optimized acceptance remains open.
+
 ## header volume automation indication — returned pulse2715 / PR331
 
 Restored explicit `auto` readout for authored gain envelopes and recorded touch

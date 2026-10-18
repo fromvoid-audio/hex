@@ -51,6 +51,7 @@ widgets = (
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
+    'self.browser_history_arrow(',
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
     'picker_label(', 'picker_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.

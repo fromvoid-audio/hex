@@ -93,6 +93,15 @@ impl BrowserSearch {
         cx.notify();
     }
 
+    /// Browser-owned location restoration, without focus or a text edit event.
+    pub(super) fn restore_query(&mut self, content: &str, cx: &mut Context<Self>) {
+        // Reuse clear's complete input/gesture invariants (including any shared
+        // selection policy), then publish only the final value at update end.
+        self.clear(cx);
+        self.content.push_str(content);
+        self.selected = self.content.len()..self.content.len();
+    }
+
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn painted_text_for_test(&self) -> Option<&str> {
         self.last_layout.as_ref().map(|line| line.text.as_ref())

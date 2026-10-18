@@ -68,6 +68,10 @@ pub(super) struct Tree {
 }
 
 impl Tree {
+    pub(super) fn history_loading(&self) -> bool {
+        self.in_flight || !self.queue.is_empty() || self.dirty.get()
+    }
+
     pub(super) fn source_changed(&mut self) {
         self.dirty.set(true);
         self.status = None;
@@ -493,6 +497,7 @@ impl EditorView {
         keep_others: bool,
         cx: &mut Context<Self>,
     ) {
+        self.checkpoint_browser_history(cx);
         let selection = self.browser_selected_item(cx);
         if self.browser.tree.expanded.contains(&path) {
             self.browser.tree.close(&path);
@@ -521,6 +526,7 @@ impl EditorView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.checkpoint_browser_history(cx);
         let entries = self.browser_visible_entries(cx);
         let Some(entry) = entries.get(self.browser.selected_index) else {
             return;
