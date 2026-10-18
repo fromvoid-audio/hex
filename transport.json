@@ -1,0 +1,8 @@
+{
+  "archive": "device-backspace-5405-v1.tar.gz",
+  "bytes": 115089,
+  "sha256": "d4c4529c8b3aca65fb2fa6c7038c10f5b9ee318a36cb5fb4030eb42b0dd8f4e3",
+  "source": "5405fff4d89c26ef7a446648ef71f22fafe0281f",
+  "payload_count": 25,
+  "evidence_only": true
+}
