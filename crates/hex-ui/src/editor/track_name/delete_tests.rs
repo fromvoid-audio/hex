@@ -226,3 +226,101 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
         );
     });
 }
+
+#[gpui::test]
+fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    for toggled_out in [true, false] {
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        next(&service);
+        for name in ["first", "focused"] {
+            service
+                .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+                .unwrap();
+            if name == "first" {
+                next(&service);
+            }
+        }
+        let event = next(&service);
+        let first = event.state.project.tracks()[0].id();
+        let focused = event.state.project.tracks()[1].id();
+        let before = event.state.project.snapshot();
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("offline toolbar test".into()))
+                });
+                editor.update(cx, |view, cx| {
+                    view.state = Some(event.state);
+                    cx.notify();
+                });
+                editor
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        header(&mut visual, first, Modifiers::default());
+        let additive = Modifiers {
+            platform: true,
+            ..Default::default()
+        };
+        header(&mut visual, focused, additive);
+        if toggled_out {
+            header(&mut visual, focused, additive);
+            visual.simulate_keystrokes("backspace");
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.selected_track_ids(), vec![first]);
+                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+                assert!(
+                    !view.edit_pending(),
+                    "toggled-out header Backspace stays a no-op"
+                );
+            });
+        }
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| {
+                assert!(view.track_header_focused(window));
+                assert!(view.track_name.focuses[&focused].is_focused(window));
+                assert_eq!(view.selected_track, Some(focused));
+            })
+        });
+        let button = visual
+            .debug_bounds("remove selected track")
+            .expect("actual toolbar remove control");
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.track_name.focuses[&focused].is_focused(window),
+                    "toolbar does not change header focus before the receipt"
+                );
+            })
+        });
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(
+                project.track(focused).is_none(),
+                "toolbar removes focused single track even after toggling it out"
+            );
+            assert!(
+                project.track(first).is_some(),
+                "toolbar does not inherit multi-header deletion"
+            );
+            project.snapshot()
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
