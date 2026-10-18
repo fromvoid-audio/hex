@@ -1,5 +1,6 @@
-//! Finite authored amplitude/pan LFO, sharing original shapes with Operator.
-//! Pitch/filter modulation and interactive parameter transitions remain separate.
+//! Finite authored LFO sharing original shapes with Operator.
+//! Amplitude/pan use its gains; cutoff shares its actual phase and bipolar wave.
+//! Pitch modulation and interactive parameter transitions remain separate.
 use hex_lattice_contract::{
     DeviceContractError as Error, ParameterDescriptor, ParameterId, ParameterKind,
     ParameterPresentation, ParameterValue,
@@ -196,15 +197,17 @@ impl ModulationSettings {
         };
         (delta.is_finite() && (0.0..=f64::from(u32::MAX)).contains(&delta)).then_some(delta)
     }
+    pub(super) fn wave(self, phase: Phase) -> f64 {
+        if !self.active() {
+            return 0.0;
+        }
+        crate::modulation_waveform::waveform(u32::from(self.waveform), phase.fraction, phase.cycle)
+    }
     pub(super) fn gains(self, phase: Phase) -> [f64; 2] {
         if !self.active() {
             return [1.0; 2];
         }
-        let wave = crate::modulation_waveform::waveform(
-            u32::from(self.waveform),
-            phase.fraction,
-            phase.cycle,
-        );
+        let wave = self.wave(phase);
         let depth = f64::from(self.values[1]) / 100.0;
         let amp = 1.0 - depth * (1.0 - wave) * 0.5;
         let pan = wave * f64::from(self.values[2]) / 100.0;

@@ -64,6 +64,28 @@ pub fn sampler_filter_envelope_runtime_for_allocation_probe(
         envelope,
     )
 }
+/// Actual bipolar cutoff LFO; source and graph admission remain separate.
+pub fn sampler_filter_lfo_runtime_for_allocation_probe(
+    view: hex_lattice::DeviceResourceView<'_>,
+    output_rate: u32,
+) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, hex_devices::Invalid> {
+    use hex_devices::sampler::metadata::parameter::*;
+    use hex_lattice_contract::ParameterValue;
+    let refused = |_| hex_devices::Invalid("sampler cutoff LFO allocation fixture refused");
+    let mut modulation = hex_devices::sampler::ModulationSettings::default();
+    for (id, value) in [
+        (LFO_ENABLED, ParameterValue::Bool(true)),
+        (LFO_WAVEFORM, ParameterValue::Choice(3)),
+        (LFO_RATE, ParameterValue::Float(100.0)),
+    ] {
+        modulation.patch_parameter(id, value).map_err(refused)?;
+    }
+    let mut envelope = hex_devices::sampler::FilterEnvelopeSettings::default();
+    envelope
+        .patch_parameter(LFO_FILTER, ParameterValue::Float(12.0))
+        .map_err(refused)?;
+    filtered_sampler_fixture(view, output_rate, modulation, envelope)
+}
 fn filtered_sampler_fixture(
     view: hex_lattice::DeviceResourceView<'_>,
     output_rate: u32,

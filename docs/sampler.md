@@ -618,7 +618,7 @@ musical workflow above remain the deliverable.
 
 ## clean sampler filter
 
-Sampler's current authored format is version5. It retains bounded clean filter
+Sampler's current authored format is version6. It retains bounded clean filter
 settings to version2's controls; historical alpha payloads are explicitly refused
 rather than converted. Current read/patch/save and source replacement preserve
 the filter, source binding and host gains. Empty devices still have no invented
@@ -820,3 +820,27 @@ This traversal is wired behind the existing assembly capacity refusal: productio
 nonempty Session construction/cleanup and the aggregate prequoted compiler entry
 remain unfinished. Selected row-field closure is not complete Session/native
 custody, construction peak, callback conservation or publication proof.
+
+
+## sampler cutoff lfo
+
+The existing LFO now also drives clean-filter cutoff with a bipolar -48..48st
+amount, default0. This uses the same actual per-voice retrigger or free-running
+phase and tempo-sync clock as amplitude/pan; it does not transpose/resample the
+source or create another oscillator. The authored depth is saved in current
+version6, with explicit unsupported-version errors and no alpha migrations.
+
+Control preparation combines the filter ADSR and enabled LFO depth into the
+same257-scalar coefficient lookup. Each frame adds their semitone offsets and
+interpolates the fixed table within the prepared cutoff/rate bounds. No callback
+coefficient design, heap allocation or PCM ownership is introduced. Disabled LFO
+and zero-depth paths retain the prior filter PCM exactly. Maximum combined depth
+uses a wider lookup domain; independent rate/extreme tests bound cutoff error
+to0.2 semitones for the sampled grid, without claiming sonic/reference parity.
+
+Independent bipolar nodal PCM, free-phase/retrigger, partition/rollback/reset,
+current-state/binding/refusal and cutoff-bound tests cover the new destination.
+An enabled-cutoff Mono/Stereo128-query allocation probe checks independent PCM
+and zero total/net allocation/free. This is a DSP/state component; registration,
+functional panel, remaining modulation/Warp and the full musical workflow stay
+open alongside actual resource admission and native listening acceptance.

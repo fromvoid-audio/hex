@@ -9,24 +9,30 @@ use hex_lattice_contract::{
 
 #[test]
 fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
-    sampler_filter_allocation_probe(false, false);
+    sampler_filter_allocation_probe(false, false, false);
 }
 #[test]
 fn sampler_lfo_filter_pair_runtime_queries_allocate_and_free_nothing() {
-    sampler_filter_allocation_probe(true, false);
+    sampler_filter_allocation_probe(true, false, false);
 }
 #[test]
 fn sampler_filter_envelope_pair_runtime_queries_allocate_and_free_nothing() {
-    sampler_filter_allocation_probe(false, true);
+    sampler_filter_allocation_probe(false, true, false);
 }
-fn sampler_filter_allocation_probe(modulated: bool, enveloped: bool) {
+#[test]
+fn sampler_cutoff_lfo_pair_runtime_queries_allocate_and_free_nothing() {
+    sampler_filter_allocation_probe(false, false, true);
+}
+fn sampler_filter_allocation_probe(modulated: bool, enveloped: bool, cutoff_lfo: bool) {
     use hex_lattice::{
         NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
     };
     let mono = [0.5, 1.0, -0.25, 0.75];
     let stereo = mono.map(|value| [value, -value]);
     // Independent bilinear Butterworth recurrence, not the TPT carrier code.
-    let k = (std::f64::consts::PI / 8.0).tan();
+    // Square cutoff LFO starts at +12st (2000Hz); its positive half
+    // covers the eight audible frames. Device tests cover its negative half.
+    let k = (std::f64::consts::PI / if cutoff_lfo { 4.0 } else { 8.0 }).tan();
     let norm = 1.0 / (1.0 + std::f64::consts::SQRT_2 * k + k * k);
     let mut history = [0.0; 4];
     let mut integrators = [0.0; 2];
@@ -80,7 +86,9 @@ fn sampler_filter_allocation_probe(modulated: bool, enveloped: bool) {
             pcm,
         }];
         let resources = BorrowedDeviceResources(&views);
-        let prepared = if enveloped {
+        let prepared = if cutoff_lfo {
+            hex_engine::sampler_filter_lfo_runtime_for_allocation_probe(views[0], 8000)
+        } else if enveloped {
             hex_engine::sampler_filter_envelope_runtime_for_allocation_probe(views[0], 8000)
         } else if modulated {
             hex_engine::sampler_modulated_runtime_for_allocation_probe(views[0], 8000)
@@ -99,7 +107,7 @@ fn sampler_filter_allocation_probe(modulated: bool, enveloped: bool) {
         )
         .unwrap();
         eprintln!(
-            "SUPPORTED actual enabled clean-filter sampler lfo={modulated} filter_envelope={enveloped} Mono/Stereo pair rollback, PCM oracle and128 allocation queries"
+            "SUPPORTED actual enabled clean-filter sampler lfo={modulated} cutoff_lfo={cutoff_lfo} filter_envelope={enveloped} Mono/Stereo pair rollback, PCM oracle and128 allocation queries"
         );
         let sign = if matches!(pcm, DeviceResourcePcm::Mono(_)) {
             1.0

@@ -4,7 +4,7 @@ use super::*;
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sampler");
-pub const STATE_VERSION: u32 = 5;
+pub const STATE_VERSION: u32 = 6;
 pub const SOURCE_SLOT: u32 = 1;
 const PREFIX: usize = 112 + filter::BYTES + modulation::BYTES + filter_envelope::BYTES;
 mod read;
@@ -114,12 +114,12 @@ pub fn prepare_runtime_on_control(
         .map_err(|_| Error::AssetResourcesUnavailable)?
         .prepare_runtime_on_control(usize::from(authored.voices), max_events, context.tuning)
         .map_err(|_| Error::InvalidParameterValue)?
+        .with_modulation_on_control(authored.modulation)?
         .with_filter_envelope_on_control(
             authored.filter,
             authored.filter_envelope,
             context.sample_rate,
-        )?
-        .with_modulation_on_control(authored.modulation)
+        )
 }
 
 #[derive(Clone, Debug, PartialEq)]

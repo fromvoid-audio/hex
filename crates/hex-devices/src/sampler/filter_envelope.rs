@@ -6,7 +6,7 @@ use hex_lattice_contract::{
 };
 
 pub(super) const FIRST: u32 = 38;
-pub(super) const COUNT: usize = 5;
+pub(super) const COUNT: usize = 6;
 pub(super) const BYTES: usize = COUNT * 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -16,7 +16,7 @@ pub struct FilterEnvelopeSettings {
 impl Default for FilterEnvelopeSettings {
     fn default() -> Self {
         Self {
-            values: [0.0, 0.0, 0.0, 1.0, 0.0],
+            values: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         }
     }
 }
@@ -27,6 +27,7 @@ pub(super) const fn descriptors() -> [ParameterDescriptor; COUNT] {
         "filter decay",
         "filter sustain",
         "filter release",
+        "lfo filter",
     ];
     let mut result = [ParameterDescriptor {
         id: ParameterId::from_static(FIRST),
@@ -43,7 +44,7 @@ pub(super) const fn descriptors() -> [ParameterDescriptor; COUNT] {
     while i < COUNT {
         result[i].id = ParameterId::from_static(FIRST + i as u32);
         result[i].label = labels[i];
-        if i != 0 {
+        if i != 0 && i != 5 {
             result[i].kind = ParameterKind::Float {
                 min: 0.0,
                 max: if i == 3 { 1.0 } else { 60.0 },
@@ -109,6 +110,9 @@ impl FilterEnvelopeSettings {
     }
     pub(super) fn depth(self) -> f64 {
         f64::from(self.values[0])
+    }
+    pub(super) fn lfo_depth(self) -> f64 {
+        f64::from(self.values[5])
     }
     pub(super) fn prepare(self, rate: u32) -> Result<PreparedEnvelope, Error> {
         self.validate()?;

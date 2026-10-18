@@ -1,4 +1,4 @@
-//! Prepared scalar amplitude/pan LFO; no PCM ownership or callback allocation.
+//! Prepared scalar amplitude/pan/cutoff LFO; no PCM ownership or callback allocation.
 use super::*;
 impl SamplerRuntime {
     fn modulation_delta(
@@ -77,11 +77,12 @@ impl SamplerRuntime {
                 let Some(mut note) = self.prepared.note(voice.pitch) else {
                     continue;
                 };
-                let gains = law.gains(if law.retrigger() {
+                let voice_phase = if law.retrigger() {
                     voice.modulation_phase
                 } else {
                     phase
-                });
+                };
+                let gains = law.gains(voice_phase);
                 for (channel_gain, modulation_gain) in note.channel_gain.iter_mut().zip(gains) {
                     *channel_gain *= voice.gain * modulation_gain;
                 }
@@ -93,7 +94,8 @@ impl SamplerRuntime {
                     let Some(input) = note.interpolated_source(view.pcm, voice.age) else {
                         continue;
                     };
-                    let coefficients = filter.frame(voice.age, gate);
+                    let coefficients =
+                        filter.modulated_frame(voice.age, gate, law.wave(voice_phase));
                     let filtered = std::array::from_fn(|channel| {
                         voice.filter[channel].process(input[channel], coefficients)
                     });

@@ -88,6 +88,7 @@ pub use mutable_instrument::resource_fixture::sampler_runtime_for_allocation_pro
 pub use mutable_instrument::resource_fixture::{
     sampler_clean_filter_runtime_for_allocation_probe,
     sampler_filter_envelope_runtime_for_allocation_probe,
+    sampler_filter_lfo_runtime_for_allocation_probe,
     sampler_modulated_runtime_for_allocation_probe,
 };
 #[cfg(feature = "instrument-test-support")]

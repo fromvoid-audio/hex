@@ -125,12 +125,23 @@ pub(super) struct PreparedFilter {
     integrators: [f32; ENVELOPE_STEPS + 1],
     integrator_bounds: [f64; 2],
     modulated: bool,
+    modulation_range: [f64; 2],
+    depths: [f64; 2],
 }
 impl PreparedFilter {
+    #[cfg(test)]
     pub(super) fn prepare(
         settings: FilterSettings,
         envelope: FilterEnvelopeSettings,
         rate: u32,
+    ) -> Result<Option<Self>, Error> {
+        Self::prepare_modulated(settings, envelope, rate, false)
+    }
+    pub(super) fn prepare_modulated(
+        settings: FilterSettings,
+        envelope: FilterEnvelopeSettings,
+        rate: u32,
+        lfo_active: bool,
     ) -> Result<Option<Self>, Error> {
         let base = settings.prepare(rate)?;
         let prepared_envelope = envelope.prepare(rate)?;
@@ -140,7 +151,19 @@ impl PreparedFilter {
         let mut integrators = [base.prepared_integrator() as f32; ENVELOPE_STEPS + 1];
         let integrator_bounds = [20.0, 20_000.0_f64.min(0.45 * f64::from(rate))]
             .map(|frequency| (std::f64::consts::PI * frequency / f64::from(rate)).tan());
-        let modulated = envelope.depth() != 0.0;
+        let depths = [
+            envelope.depth(),
+            if lfo_active {
+                envelope.lfo_depth()
+            } else {
+                0.0
+            },
+        ];
+        let modulation_range = [
+            depths[0].min(0.0) - depths[1].abs(),
+            depths[0].max(0.0) + depths[1].abs(),
+        ];
+        let modulated = depths != [0.0; 2];
         if modulated {
             let ParameterValue::Float(frequency) =
                 settings.read_parameter(ParameterId::from_static(FIRST + 4))?
@@ -148,7 +171,12 @@ impl PreparedFilter {
                 return Err(Error::MalformedState);
             };
             for (index, g) in integrators.iter_mut().enumerate() {
-                let semitones = envelope.depth() * index as f64 / ENVELOPE_STEPS as f64;
+                let position = index as f64 / ENVELOPE_STEPS as f64;
+                let semitones = if depths[1] == 0.0 {
+                    depths[0] * position
+                } else {
+                    modulation_range[0] + (modulation_range[1] - modulation_range[0]) * position
+                };
                 let frequency = (f64::from(frequency) * 2.0_f64.powf(semitones / 12.0))
                     .clamp(20.0, 20_000.0)
                     .min(0.45 * f64::from(rate));
@@ -161,13 +189,28 @@ impl PreparedFilter {
             integrators,
             integrator_bounds,
             modulated,
+            modulation_range,
+            depths,
         }))
     }
+    #[cfg(test)]
     pub(super) fn frame(&self, age: u64, gate: u64) -> operator_filter::Frame {
+        self.modulated_frame(age, gate, 0.0)
+    }
+    pub(super) fn modulated_frame(&self, age: u64, gate: u64, wave: f64) -> operator_filter::Frame {
         if !self.modulated {
             return self.base;
         }
-        let position = self.envelope.sample(age, gate).clamp(0.0, 1.0) * ENVELOPE_STEPS as f64;
+        let envelope = self.envelope.sample(age, gate).clamp(0.0, 1.0);
+        let position = if self.depths[1] == 0.0 {
+            envelope
+        } else {
+            let semitones = self.depths[0] * envelope + self.depths[1] * wave.clamp(-1.0, 1.0);
+            (semitones - self.modulation_range[0])
+                / (self.modulation_range[1] - self.modulation_range[0])
+        }
+        .clamp(0.0, 1.0)
+            * ENVELOPE_STEPS as f64;
         let lower = position as usize;
         let upper = (lower + 1).min(ENVELOPE_STEPS);
         let a = f64::from(self.integrators[lower]);
@@ -185,11 +228,13 @@ impl PreparedFilter {
             integrators,
             integrator_bounds,
             modulated,
+            modulation_range,
+            depths,
         } = self;
         base.audit_scalar_storage();
         envelope.audit_scalar_storage();
         let _: (&[f32; ENVELOPE_STEPS + 1], &bool) = (integrators, modulated);
-        let _: &[f64; 2] = integrator_bounds;
+        let _: (&[f64; 2], &[f64; 2], &[f64; 2]) = (integrator_bounds, modulation_range, depths);
     }
 }
 pub(super) const fn descriptors() -> [ParameterDescriptor; 7] {

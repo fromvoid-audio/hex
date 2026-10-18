@@ -58,6 +58,7 @@ pub mod parameter {
     pub const FILTER_DECAY: ParameterId = ParameterId::from_static(40);
     pub const FILTER_SUSTAIN: ParameterId = ParameterId::from_static(41);
     pub const FILTER_RELEASE: ParameterId = ParameterId::from_static(42);
+    pub const LFO_FILTER: ParameterId = ParameterId::from_static(43);
 }
 const fn float(
     id: ParameterId,
@@ -98,7 +99,7 @@ const fn choice(
     }
 }
 use parameter::*;
-static PARAMETERS: [ParameterDescriptor; 42] = [
+static PARAMETERS: [ParameterDescriptor; 43] = [
     choice(MODE, "mode", &["classic", "one-shot", "slice"]),
     boolean(REVERSE, "reverse"),
     float(ROOT, "root", 0.0, 127.0, Some("note"), 60.0),
@@ -174,6 +175,7 @@ static PARAMETERS: [ParameterDescriptor; 42] = [
     super::filter_envelope::descriptors()[2],
     super::filter_envelope::descriptors()[3],
     super::filter_envelope::descriptors()[4],
+    super::filter_envelope::descriptors()[5],
 ];
 fn descriptor(id: ParameterId) -> Result<&'static ParameterDescriptor, Error> {
     PARAMETERS

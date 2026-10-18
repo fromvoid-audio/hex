@@ -107,7 +107,12 @@ impl PreparedSamplerRuntime {
         envelope: FilterEnvelopeSettings,
         rate: u32,
     ) -> Result<Self, hex_lattice_contract::DeviceContractError> {
-        self.filter = super::filter::PreparedFilter::prepare(filter, envelope, rate)?;
+        self.filter = super::filter::PreparedFilter::prepare_modulated(
+            filter,
+            envelope,
+            rate,
+            self.modulation.active(),
+        )?;
         Ok(self)
     }
     pub(super) fn with_modulation_on_control(
@@ -441,6 +446,8 @@ impl MutableInstrumentRuntime for SamplerRuntime {
 
 #[cfg(test)]
 mod filter_envelope_tests;
+#[cfg(test)]
+mod filter_lfo_tests;
 #[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
