@@ -655,3 +655,144 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
         )
     });
 }
+
+#[gpui::test]
+fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, midi) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddScene {
+            name: "loop review".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    let scene = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.scenes()[0].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(
+            v.enqueue(Request::Edit(Command::CopyArrangementMidiToSession {
+                source: midi,
+                scene
+            }))
+        );
+    });
+    pump(&editor, &mut visual);
+    let (session_id, track) = editor.read_with(&visual, |v, _| {
+        let cell = &v.state.as_ref().unwrap().project.session_cells()[0];
+        let hex_project::SessionCellContent::Midi(clip) = cell.content() else {
+            panic!("session midi");
+        };
+        (clip.id(), cell.track())
+    });
+    visual.simulate_click("show session", Modifiers::default());
+    visual.run_until_parked();
+    // The label is in the real Session cell; its normal click selects its owning cell.
+    visual.simulate_click(
+        Box::leak(format!("clip-name-{}", session_id.value()).into_boxed_str()),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_clip, Some(session_id));
+        assert_eq!(v.selected_cell, Some((track, scene)));
+    });
+    visual.simulate_click("show arrangement", Modifiers::default());
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    for key in ["cmd-l", "l"] {
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                v.error.is_none(),
+                "Session ownership is not a deleted Arrangement ID: {:?}",
+                v.error
+            );
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            assert_eq!(v.selected_clip, Some(session_id));
+        });
+    }
+}
+
+#[gpui::test]
+fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag(
+    cx: &mut TestAppContext,
+) {
+    use super::drag::{BrowserAudioDrag, NativeDeviceDrag, NativeDeviceDragSource};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    for native in [false, true] {
+        let (handle, editor, audio, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click(&mut visual, audio, false);
+        editor.update(&mut visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            if native {
+                let entry = hex_engine::native_device_catalog_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                )
+                .unwrap()[0];
+                let payload = NativeDeviceDrag {
+                    project_generation: v.project_generation,
+                    revision: state.revision,
+                    source: NativeDeviceDragSource::Browser {
+                        class: hex_engine::NativeDeviceClass::Effect,
+                        type_id: entry.type_id,
+                    },
+                    destination: Rc::new(Cell::new(None)),
+                    return_destination: Rc::new(Cell::new(None)),
+                };
+                v.begin_native_device_drag(&payload);
+                assert!(v.native_device_drag_is_current(&payload));
+            } else {
+                let viewport = v.visible_viewport(state.timeline_frames);
+                let payload = BrowserAudioDrag {
+                    project_generation: v.project_generation,
+                    revision: state.revision,
+                    browser_generation: v.browser.scan_generation(),
+                    sample_rate: state.project.sample_rate(),
+                    path: state
+                        .project
+                        .asset(state.project.clip(audio).unwrap().asset())
+                        .unwrap()
+                        .path()
+                        .to_owned(),
+                    label: "loop.wav".into(),
+                    viewport_start: viewport.start,
+                    viewport_length: viewport.length,
+                    scroll: Default::default(),
+                    snap_grid: v.snap_grid,
+                    snap_modifier: Rc::new(Cell::new(false)),
+                    copy_modifier: Rc::new(Cell::new(false)),
+                    metadata: Rc::new(RefCell::new(None)),
+                    metadata_error: Rc::new(RefCell::new(None)),
+                    preview: Rc::new(Cell::new(None)),
+                    destination: Rc::new(Cell::new(None)),
+                    insertion_line_y: Rc::new(Cell::new(None)),
+                    lane_hovered: Rc::new(Cell::new(false)),
+                    last_pointer: Rc::new(Cell::new(None)),
+                };
+                v.begin_browser_audio_drag(&payload);
+                assert!(v.browser_audio_drag_is_current(&payload));
+            }
+        });
+        // Controlled retained-focus dispatch through actual platform keys. This is
+        // not a claim that an ordinary browser row click retains editor focus.
+        for key in ["cmd-l", "l"] {
+            visual.simulate_keystrokes(key);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.worker_requests_pending, 0, "{native} / {key}");
+                assert!(v.pending_requests.is_empty());
+                assert_eq!(v.active_native_device_drag.is_some(), native);
+                assert_eq!(v.active_browser_audio_drag.is_some(), !native);
+                assert!(v.state.as_ref().unwrap().project.loop_region().is_none());
+            });
+        }
+    }
+}
