@@ -1,0 +1,26 @@
+{
+  "source": "777e1b653c4c397701bd4a0bbb999f87654c5fdd",
+  "tree": "719ab17798c86ea60840fad9148c5bf5f844f4ad",
+  "filename": "hex-sampler-777e1b65-gain-cost-evidence.tar.gz",
+  "bytes": 42554,
+  "sha256": "f811a20df2a17e7e467846567678fbbf6897522ebe78d87b0f667c00b7ad6f24",
+  "members": 11,
+  "payloads": 10,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/gain_envelope.rs",
+      "before": "d45ed5c353c6a0d1c89cbfa51d868416d2fbdb69808db2737e672e6c8a4585b9",
+      "after": "4e5cbe1682c5e6500fd011fe110328a35c2b95d9e076679b92df6e57ba9236d8"
+    },
+    {
+      "path": "crates/hex-engine/src/gain_envelope/construction_tests.rs",
+      "before": null,
+      "after": "924713d1f8e83aa74fc989e437011ed65770f92b69eb89bb34967100dc1ee3db"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "d2924eb461eb1ec25a304ad208467fb7fa72455e8b166c84a72cabc2842800eb",
+      "after": "8161645c93ab4ade5e79e8ed888134f17aba844b883324764fbbfe04d6a43347"
+    }
+  ]
+}
