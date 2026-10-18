@@ -19,6 +19,8 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod workspace_view_ui_test;
 
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
