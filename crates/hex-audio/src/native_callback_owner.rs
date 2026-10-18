@@ -6,6 +6,7 @@ mod allocations;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod endpoint_tests;
 mod resources;
+mod ring_storage;
 pub(crate) use resources::{ChannelStorage, NativeCandidateBoundary};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 

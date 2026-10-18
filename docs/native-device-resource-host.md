@@ -786,3 +786,25 @@ fields, preview PCM ingress, variable owning-handle destinations or the complete
 retained/peak ledger. Those remain explicit qualification obligations under the
 same ceilings. No live location, strong-count closure or whole-graph admission is
 inferred from the record. Registry processing stays closed.
+
+The next fixed-infrastructure reservation covers rtrb0.3.4 rings. Its sole safe
+constructor creates a fresh sized Arc<RingBuffer<T>> and a
+Vec::with_capacity(capacity) backing; the fixed capacity never grows, and Drop
+reclaims that same backing/capacity. The independent
+`native-fixed-rtrb-0.3.4-requested-v1` gate requires the exact pinned dependency
+and supported compiler/install observation. The checked quote includes Arc
+header/alignment and the entire fixed backing, including vacant slots. It
+replaces the previous body-only ring amount within the existing budget. Empty
+and zero-sized backings add no fictitious allocation. T-owned children and
+owning-handle occurrences still need their actual traversal/conservation; the
+byte reservation never certifies a populated queue's contents.
+
+Source inspection: rtrb0.3.4 src/lib.rs constructor138 and Drop234, SHA256
+`d40fd482f8fd2bd08cb7b30077289e44995b348f6fe31a85b946627660e2f320`;
+[pinned Rust RawVec](https://github.com/rust-lang/rust/blob/4a4ef493e3a1488c6e321570238084b38948f6db/library/alloc/src/raw_vec/mod.rs#L430)
+uses the requested array layout and retains the requested capacity, SHA256
+`0c006d1bedcc8c1aa6d8f37ad5553e1b14c452c732745612cf23c4663c090965`.
+These are requested allocation contracts, not allocator usable-size/RSS claims.
+Independent measured constructor tests cover empty/odd/aligned/ZST storage,
+exact bytes and128 allocation-free transfers. No whole-native-root qualification
+is implied by these fixed backing reservations.

@@ -131,13 +131,34 @@ fn main() {
     let saved = env::var_os("OUT_DIR")
         .map(PathBuf::from)
         .is_some_and(|out| {
-            fs::write(out.join("native-carrier-layout-evidence.txt"), evidence).is_ok()
+            fs::write(out.join("native-carrier-layout-evidence.txt"), &evidence).is_ok()
         });
     println!(
         "cargo:rustc-env=HEX_NATIVE_CARRIER_LAYOUT_KNOWN={}",
         usize::from(decision.is_ok() && saved)
     );
     println!("cargo:rustc-env=HEX_NATIVE_CARRIER_LAYOUT_TARGET={target}");
+    // rtrb 0.3.4's sole safe RingBuffer constructor owns a fresh sized Arc
+    // and Vec::with_capacity(capacity), recovered with the same capacity.
+    // This is a separate constructor family, not inference from a PCM/carrier label.
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    let pinned_ring = fs::read_to_string("Cargo.toml").is_ok_and(|manifest| {
+        manifest
+            .lines()
+            .any(|line| line.trim() == "rtrb = \"=0.3.4\"")
+    });
+    let ring_evidence = format!(
+        "{evidence}\ncontract: native-fixed-rtrb-0.3.4-requested-v1\npinned_dependency: {pinned_ring}\nconstructor: RingBuffer::new -> Arc::new(RingBuffer) + Vec::with_capacity(capacity); immutable capacity, reclaimed with same capacity\nrequested layout only; element children/custody/peak separate\n"
+    );
+    let ring_saved = env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .is_some_and(|out| {
+            fs::write(out.join("native-ring-layout-evidence.txt"), ring_evidence).is_ok()
+        });
+    println!(
+        "cargo:rustc-env=HEX_NATIVE_RING_LAYOUT_KNOWN={}",
+        usize::from(decision.is_ok() && saved && pinned_ring && ring_saved)
+    );
     if decision.is_err() || !saved {
         println!("cargo:warning=native carrier requested layout Unknown: {decision:?}");
     }

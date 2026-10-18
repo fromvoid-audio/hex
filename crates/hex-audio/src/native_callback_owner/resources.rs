@@ -1,10 +1,11 @@
 //! Constructor-bound payload and opaque-resource declaration for these exact
 //! coupled carriers. Fresh carrier Box/cell lineage has separate pinned layout
-//! qualification. Channel/Status headers and other children remain separate;
+//! qualification. Other shared/Status headers and children remain separate;
 //! this is not a full DATA closure or a backend-stop claim.
 use super::*;
 /// Known payloads and bounded shared groups from one exact private channel
-/// factory. Arc control blocks/allocator overhead stay opaque RESOURCE costs.
+/// factory. Fixed rtrb requested Arc/backing bytes are priced separately;
+/// other shared headers and element-owned children remain unqualified.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ChannelStorage {
     pub(crate) data_bytes: usize,
@@ -14,10 +15,7 @@ pub(crate) struct ChannelStorage {
 impl ChannelStorage {
     pub(crate) fn ring<T>(ring: &rtrb::RingBuffer<T>) -> Option<Self> {
         Some(Self {
-            data_bytes: ring
-                .capacity()
-                .checked_mul(std::mem::size_of::<T>())?
-                .checked_add(std::mem::size_of_val(ring))?,
+            data_bytes: super::ring_storage::requested_bytes(ring)?,
             shared_groups: 1,
             shared_handles: 2,
         })
