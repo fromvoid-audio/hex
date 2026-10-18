@@ -94,6 +94,9 @@ mod session_navigation_ui_test;
 mod session_route_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod snap_nudge_ui_test;
+mod tempo_input;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tempo_input_ui_test;
 mod theme_settings;
 mod time_gesture;
 mod time_move_preview;
@@ -534,6 +537,7 @@ pub(super) struct EditorView {
     track_selection: selection::TrackSelection,
     gain_lane: gain_lane::GainLane,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
+    project_tempo_control: Option<tempo_input::Binding>,
     gain_recorder: gain_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
@@ -925,6 +929,7 @@ impl EditorView {
             track_selection: selection::TrackSelection::default(),
             gain_lane: gain_lane::GainLane::default(),
             sample_bpm_control: None,
+            project_tempo_control: None,
             gain_recorder: gain_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
