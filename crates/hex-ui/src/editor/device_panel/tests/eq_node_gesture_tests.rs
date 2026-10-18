@@ -559,3 +559,269 @@ fn eq_option_drag_refused_begin_preserves_the_other_canonical_gesture_key(cx: &m
     pump_until(&editor, cx, settled);
     assert_eq!(editor.read_with(cx, |view, _| read(view, device)), before);
 }
+
+#[gpui::test]
+fn eq_review_option_q_moves_both_ways_at_both_gain_boundaries(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    for gain in [-24.0_f32, 24.0] {
+        let (handle, editor, _root, device) = node_window(cx, 0.5);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let id = editor.read_with(cx, |view, _| read(view, device).nodes[0].id);
+        let gain_parameter = id.parameter(hex_engine::eq::NodeParameter::Gain).unwrap();
+        enter_typed_value(&mut visual, device, gain_parameter, &gain.to_string());
+        visual.simulate_keystrokes("enter");
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device).nodes[0].gain_db == gain
+        });
+        for pixels in [-24.0_f32, 24.0] {
+            visual.run_until_parked();
+            let before = editor.read_with(cx, |view, _| read(view, device));
+            // Hit the visible half of a boundary node inside the plot: the
+            // bottom/right rectangle edge itself is deliberately exclusive.
+            let start = plot(
+                &mut visual,
+                device,
+                0.5,
+                ((gain + 24.0) / 48.0).clamp(0.001, 0.999),
+            );
+            let moved = start + point(px(0.0), px(pixels));
+            let option = Modifiers {
+                alt: true,
+                ..Default::default()
+            };
+            visual.simulate_mouse_down(start, MouseButton::Left, option);
+            visual.simulate_mouse_move(moved, Some(MouseButton::Left), option);
+            visual.simulate_mouse_up(moved, MouseButton::Left, option);
+            visual.run_until_parked();
+            pump_until(&editor, cx, settled);
+            let after = editor.read_with(cx, |view, _| read(view, device));
+            let a = after.nodes[0];
+            let b = before.nodes[0];
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.frequency_hz, b.frequency_hz);
+            assert_eq!(a.gain_db, gain);
+            assert!(
+                if pixels < 0.0 { a.q > b.q } else { a.q < b.q },
+                "gain{gain}, pointerdy{pixels}: Q{} -> {}",
+                b.q,
+                a.q
+            );
+            assert!((0.1..=18.0).contains(&a.q));
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+            pump_until(&editor, cx, |view| {
+                settled(view) && read(view, device) == before
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+            pump_until(&editor, cx, |view| {
+                settled(view) && read(view, device) == after
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+            pump_until(&editor, cx, |view| {
+                settled(view) && read(view, device) == before
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn eq_review_horizontal_cut_wheel_bubbles_while_fractional_vertical_still_coalesces(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(650.0)));
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        let scroll = &view.device_panel.chain_window.scroll;
+        assert!(scroll.max_offset().width > px(0.0));
+        scroll.set_offset(point(-scroll.max_offset().width / 2.0, px(0.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.02, 0.5);
+    let before = editor.read_with(cx, |view, _| read(view, device));
+    let offset = editor.read_with(cx, |view, _| view.device_panel.chain_window.scroll.offset());
+    wheel(
+        &mut visual,
+        position,
+        gpui::ScrollDelta::Pixels(point(px(-24.0), px(0.0))),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    let moved = editor.read_with(cx, |view, _| view.device_panel.chain_window.scroll.offset());
+    assert_ne!(
+        moved, offset,
+        "horizontal-only cut hover must reach the real outer chain"
+    );
+    assert_eq!(editor.read_with(cx, |view, _| read(view, device)), before);
+    assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()));
+    let position = plot(&mut visual, device, 0.02, 0.5);
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position,
+        delta: gpui::ScrollDelta::Pixels(point(px(-24.0), px(0.0))),
+        touch_phase: gpui::TouchPhase::Moved,
+        is_momentum: true,
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let momentum_offset =
+        editor.read_with(cx, |view, _| view.device_panel.chain_window.scroll.offset());
+    assert_ne!(
+        momentum_offset, moved,
+        "horizontal momentum bubbles to outer chain"
+    );
+    assert_eq!(editor.read_with(cx, |view, _| read(view, device)), before);
+    assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()));
+    let moved = momentum_offset;
+    // Re-resolve the actual moved plot. Fractional vertical intent remains owned,
+    // even while no complete slope step has yet been accumulated.
+    let position = plot(&mut visual, device, 0.02, 0.5);
+    for i in 0..6 {
+        wheel(
+            &mut visual,
+            position,
+            gpui::ScrollDelta::Pixels(point(px(0.0), px(4.0))),
+            if i == 0 {
+                gpui::TouchPhase::Started
+            } else {
+                gpui::TouchPhase::Moved
+            },
+            false,
+        );
+        assert_eq!(
+            editor.read_with(cx, |view, _| view.device_panel.chain_window.scroll.offset()),
+            moved
+        );
+        if i < 5 {
+            assert_eq!(editor.read_with(cx, |view, _| read(view, device)), before);
+        }
+    }
+    end_wheel(&mut visual, position);
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes[0].slope == 1
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == before
+    });
+}
+
+#[gpui::test]
+fn eq_review_option_q_reaches_real_bounds_with_captured_outside_plot_drag(cx: &mut TestAppContext) {
+    let (handle, editor, _root, device) = node_window(cx, 0.5);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for (delta, q) in [(-400.0_f32, 18.0_f32), (400.0, 0.1)] {
+        visual.run_until_parked();
+        let before = editor.read_with(cx, |view, _| read(view, device));
+        let start = plot(&mut visual, device, 0.5, 0.5);
+        // A captured pointer may leave the plot/window. Its displacement must
+        // remain independent of the bounded frequency/gain display coordinates.
+        let moved = start + point(px(0.0), px(delta));
+        let option = Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        visual.simulate_mouse_down(start, MouseButton::Left, option);
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), option);
+        visual.simulate_mouse_up(moved, MouseButton::Left, option);
+        visual.run_until_parked();
+        pump_until(&editor, cx, settled);
+        let after = editor.read_with(cx, |view, _| read(view, device));
+        assert_eq!(after.nodes[0].q, q, "captured displacement{delta}");
+        assert_eq!(after.nodes[0].frequency_hz, before.nodes[0].frequency_hz);
+        assert_eq!(after.nodes[0].gain_db, before.nodes[0].gain_db);
+        assert_eq!(after.nodes[0].id, before.nodes[0].id);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == before
+        });
+    }
+}
+
+#[gpui::test]
+fn eq_review_physical_end_then_momentum_never_restarts_slope_history(cx: &mut TestAppContext) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.02, 0.5);
+    let before = editor.read_with(cx, |view, _| read(view, device));
+    for phase in [gpui::TouchPhase::Started, gpui::TouchPhase::Moved] {
+        wheel(
+            &mut visual,
+            position,
+            gpui::ScrollDelta::Pixels(point(px(0.0), px(12.0))),
+            phase,
+            false,
+        );
+    }
+    let physical_key = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap().key);
+    for phase in [gpui::TouchPhase::Moved, gpui::TouchPhase::Ended] {
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Lines(point(0.0, 2.0)),
+            touch_phase: phase,
+            is_momentum: true,
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.device_gesture.snapshot().unwrap().key,
+                physical_key,
+                "a momentum phase cannot terminate/rebind the physical key"
+            );
+        });
+    }
+    end_wheel(&mut visual, position);
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes[0].slope == 1
+    });
+    let after = editor.read_with(cx, |view, _| read(view, device));
+    for phase in [gpui::TouchPhase::Moved, gpui::TouchPhase::Ended] {
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Lines(point(0.0, 2.0)),
+            touch_phase: phase,
+            is_momentum: true,
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(read(view, device), after, "inertia phase={phase:?}");
+            assert!(
+                view.device_gesture.snapshot().is_none(),
+                "inertia cannot allocate a second gesture"
+            );
+        });
+    }
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == before
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == after
+    });
+    // A deliberate mouse wheel has no physical Started phase. It must remain
+    // usable immediately after inertia, without a guessed timeout or phase.
+    wheel(
+        &mut visual,
+        position,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    end_wheel(&mut visual, position);
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes[0].slope == 2
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == after
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == before
+    });
+}

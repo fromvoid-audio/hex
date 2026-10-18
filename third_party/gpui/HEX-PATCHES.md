@@ -169,3 +169,13 @@ beneath live windows; it creates no OS window, registers no system font and adds
 no FFI or unsafe code. EQ tests still require the real embedded Ioskeley family;
 this corrects their otherwise impossible native assertion against NoopTextSystem.
 Native shaping is not evidence of GPU pixels, audio or physical interaction.
+
+18 October EQ wheel momentum metadata: additive `ScrollWheelEvent::is_momentum`
+(default false) retains the platform-reported inertial continuation independently
+of physical touch phases. macOS reads the existing `NSEvent::momentumPhase`
+inside the existing native input boundary; other platform constructors initialize
+false. Raw delta, physical_delta, phase mapping and ordinary content consumers
+remain unchanged. Only owner-opted-in parameter graph scrolling uses this bit to
+refuse inertial parameter steps/new history gestures after physical Ended. No new
+FFI, framework, timer, scroll system or production test-context change. Existing
+published baseline hashes verified; unrelated cumulative patch blocks preserved.

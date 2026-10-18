@@ -63,3 +63,45 @@ retain their keys/focus. Check two EQs/nodes and explicit spectrum Off behavior,
 save/reopen the edited state, and compare the actual supported response/listening
 under the existing audio plan. No new audio capture/MTS load/permission/app
 operation is requested by the source tests. Physical review remains open.
+
+## returned gesture boundary repairs
+
+The original92f55c91 head and its finite native11 remain historical. Review
+returned three concrete input-boundary issues. Controlled rendered regressions
+reproduced gain-edge Q refusal, captured outside-plot Q range truncation,
+horizontal wheel interception, and a second gesture from inertia after physical
+Ended. Original setup errors and authentic red/green receipts remain separate.
+
+Bell IDs now explicitly opt into relative Option-Y pointer displacement, before
+clamping frequency/gain display coordinates. The graph default is empty and
+retains ordinary clamped pointer behavior for all other owners, including
+Operator. Shift precision and capture/cancel/history remain unchanged; output
+coordinates are finite and bounded. The owner still applies the existing Q law
+and supported0.1–18 limits, not a new filter/DSP law. Tests use both actual±24db
+gain boundaries, both directions, full Q bounds with captured outside-plot
+motion, unchanged frequency/gain/identity and canonical Undo/Redo.
+
+Additive GPUI ScrollWheelEvent.is_momentum defaults false; macOS derives it from
+existing NSEvent::momentumPhase inside the existing platform boundary. Other
+platform constructors initialize false. Raw delta, TouchPhase and physical_delta
+remain unchanged. No event serialization or new framework/FFI is introduced.
+Only owner-opted-in cut parameter scrolling uses the bit: inertial events never
+allocate or finish a parameter gesture, add steps or create Undo entries.
+Vertical inertia over an eligible cut is consumed; horizontal-only momentum and
+ordinary horizontal input bubble to the actual outer device chain. Physical
+Ended closes the current gesture. Deliberate unphased mousewheel input remains
+immediately usable; no fabricated phase, suppression timer or changed quiet law.
+Nonzero fractional vertical input still accumulates. Rendered tests exercise the
+physical Started/Moved/Ended sequence, momentum Moved/Ended before and after the
+physical terminal, unchanged key/history and subsequent deliberate wheel input.
+
+After exact source freeze, the coordinator's finite native request is the four
+new eq_ui_tests::node_gesture_tests::eq_review_ cases plus the two new shared
+unit selectors relative_option_y_is_explicit_bounded_and_keeps_shift_precision
+and momentum_metadata_is_neutral_by_default_and_does_not_change_scroll_direction.
+Require positive matches/zero ignored; genuine bundled-font fixture remains on
+macOS. Compilation and synthetic events do not prove actual OS trackpad mapping.
+User-present optimized acceptance must check physical inertial vertical bursts
+produce one Undo, horizontal inertia navigates the chain, immediate deliberate
+wheel input works, and Option-Q at both gain boundaries reaches both Q limits
+with cancel/Shift/capture intact. No repeat unchanged old native11 is requested.

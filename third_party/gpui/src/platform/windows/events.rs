@@ -554,6 +554,7 @@ impl WindowsWindowInner {
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
         let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
             direction_inverted_from_device: false,
+            is_momentum: false,
             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
             delta: ScrollDelta::Lines(match modifiers.shift {
                 true => Point {
@@ -601,6 +602,7 @@ impl WindowsWindowInner {
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
         let event = PlatformInput::ScrollWheel(ScrollWheelEvent {
             direction_inverted_from_device: false,
+            is_momentum: false,
             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
             delta: ScrollDelta::Lines(Point {
                 x: wheel_distance,

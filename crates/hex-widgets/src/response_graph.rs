@@ -133,6 +133,7 @@ pub struct ResponseGraph {
     bounds: Option<Bounds<Pixels>>,
     drag: Option<Drag>,
     press: Option<Press>,
+    relative_option_y_nodes: Vec<u32>,
     editable: bool,
     creation_enabled: bool,
     creation_drag_enabled: bool,
@@ -149,6 +150,7 @@ struct Drag {
     pointer_origin: [f32; 2],
     node_origin: [f32; 2],
     modifiers: Modifiers,
+    relative_option_y: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -157,6 +159,7 @@ struct Press {
     pointer_origin: [f32; 2],
     node_origin: [f32; 2],
     modifiers: Modifiers,
+    relative_option_y: bool,
 }
 
 impl ResponseGraph {
@@ -177,6 +180,7 @@ impl ResponseGraph {
             bounds: None,
             drag: None,
             press: None,
+            relative_option_y_nodes: Vec::new(),
             editable: false,
             creation_enabled: false,
             creation_drag_enabled: false,
@@ -222,6 +226,33 @@ impl ResponseGraph {
     /// Disabled by default so existing click-only owners retain their behavior.
     pub fn set_creation_drag_enabled(&mut self, enabled: bool) {
         self.creation_drag_enabled = enabled;
+    }
+
+    /// Opt existing nodes into relative vertical Option drags, independent of
+    /// their bounded display Y coordinate. Empty by default. Only these pointer
+    /// streams may emit position Y outside [0, 1], bounded to [-8, 8]. Owners
+    /// subtract the Begin node origin and apply their existing parameter codec.
+    pub fn set_relative_option_y_nodes(
+        &mut self,
+        mut nodes: Vec<u32>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if nodes.len() > MAX_NODES || nodes.contains(&0) {
+            return Err("invalid relative drag nodes");
+        }
+        nodes.sort_unstable();
+        nodes.dedup();
+        if self
+            .drag
+            .is_some_and(|drag| drag.relative_option_y && !nodes.contains(&drag.node_id))
+            || self
+                .press
+                .is_some_and(|press| press.relative_option_y && !nodes.contains(&press.node_id))
+        {
+            self.cancel(cx);
+        }
+        self.relative_option_y_nodes = nodes;
+        Ok(())
     }
 
     /// Capture Backspace only while this graph owns focus. Owners decide how
@@ -340,13 +371,18 @@ impl ResponseGraph {
     }
 
     fn normalized_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
+        self.unclamped_position(position)
+            .map(|position| position.map(|value| value.clamp(0.0, 1.0)))
+    }
+
+    fn unclamped_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
         let bounds = self.plot_bounds()?;
         if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
             return None;
         }
         Some([
-            ((position.x - bounds.left()) / bounds.size.width).clamp(0.0, 1.0),
-            (1.0 - (position.y - bounds.top()) / bounds.size.height).clamp(0.0, 1.0),
+            (position.x - bounds.left()) / bounds.size.width,
+            1.0 - (position.y - bounds.top()) / bounds.size.height,
         ])
     }
 
@@ -389,6 +425,7 @@ impl ResponseGraph {
                         pointer_origin: position,
                         node_origin: position,
                         modifiers: event.modifiers,
+                        relative_option_y: false,
                     });
                     self.focus.focus(window);
                 }
@@ -409,11 +446,20 @@ impl ResponseGraph {
             .iter()
             .find(|node| node.id == node_id)
             .map_or(position, |node| node.position);
+        let relative_option_y = event.modifiers.alt
+            && !event.modifiers.platform
+            && !event.modifiers.control
+            && self.relative_option_y_nodes.contains(&node_id);
         self.press = Some(Press {
             node_id,
-            pointer_origin: position,
+            pointer_origin: if relative_option_y {
+                self.unclamped_position(event.position).unwrap_or(position)
+            } else {
+                position
+            },
             node_origin,
             modifiers: event.modifiers,
+            relative_option_y,
         });
         self.focus.focus(window);
         cx.emit(ResponseGraphEvent {
@@ -454,7 +500,16 @@ impl ResponseGraph {
         if self.cancel_unfocused_creation(window, cx) {
             return true;
         }
-        let Some(position) = self.normalized_position(event.position) else {
+        let relative_option_y = self.drag.map_or_else(
+            || self.press.is_some_and(|press| press.relative_option_y),
+            |drag| drag.relative_option_y,
+        );
+        let position = if relative_option_y {
+            self.unclamped_position(event.position)
+        } else {
+            self.normalized_position(event.position)
+        };
+        let Some(position) = position else {
             return false;
         };
         if event.pressed_button != Some(MouseButton::Left) {
@@ -488,6 +543,7 @@ impl ResponseGraph {
                 pointer_origin: press.pointer_origin,
                 node_origin: press.node_origin,
                 modifiers: press.modifiers,
+                relative_option_y: press.relative_option_y,
             });
             cx.emit(ResponseGraphEvent {
                 phase: ResponseGraphPhase::Begin,
@@ -536,7 +592,11 @@ impl ResponseGraph {
             cx.notify();
             return true;
         };
-        let normalized = self.normalized_position(event.position);
+        let normalized = if drag.relative_option_y {
+            self.unclamped_position(event.position)
+        } else {
+            self.normalized_position(event.position)
+        };
         let inside = point_inside_graph(self.bounds, event.position);
         if let Some(position) = normalized {
             let (first, second) = pointer_end_phases(true, inside);
@@ -742,7 +802,14 @@ fn drag_position(pointer: [f32; 2], drag: Drag, editable: bool) -> [f32; 2] {
     };
     [
         (drag.node_origin[0] + (pointer[0] - drag.pointer_origin[0]) * precision).clamp(0.0, 1.0),
-        (drag.node_origin[1] + (pointer[1] - drag.pointer_origin[1]) * precision).clamp(0.0, 1.0),
+        {
+            let y = drag.node_origin[1] + (pointer[1] - drag.pointer_origin[1]) * precision;
+            if drag.relative_option_y {
+                y.clamp(-8.0, 8.0)
+            } else {
+                y.clamp(0.0, 1.0)
+            }
+        },
     ]
 }
 
@@ -1123,6 +1190,7 @@ mod tests {
             pointer_origin: [0.5, 0.5],
             node_origin: [0.45, 0.55],
             modifiers: Modifiers::default(),
+            relative_option_y: false,
         };
         let normal = drag_position([0.7, 0.4], drag, true);
         assert!((normal[0] - 0.65).abs() < 0.00001);
@@ -1141,6 +1209,38 @@ mod tests {
         assert!((unmodified[0] - 0.65).abs() < 0.00001);
         assert!((unmodified[1] - 0.45).abs() < 0.00001);
         assert_eq!(drag_position([5.0, -2.0], drag, true), [1.0, 0.0]);
+    }
+
+    #[test]
+    fn relative_option_y_is_explicit_bounded_and_keeps_shift_precision() {
+        let ordinary = Drag {
+            node_id: 3,
+            pointer_origin: [0.5, 0.5],
+            node_origin: [0.5, 0.0],
+            modifiers: Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            relative_option_y: false,
+        };
+        assert_eq!(drag_position([0.5, -0.5], ordinary, true), [0.5, 0.0]);
+        let relative = Drag {
+            relative_option_y: true,
+            ..ordinary
+        };
+        assert_eq!(drag_position([0.5, -0.5], relative, true), [0.5, -1.0]);
+        assert_eq!(drag_position([20.0, -100.0], relative, true), [1.0, -8.0]);
+        assert_eq!(drag_position([-20.0, 100.0], relative, true), [0.0, 8.0]);
+        let fine = Drag {
+            modifiers: Modifiers {
+                alt: true,
+                shift: true,
+                ..Default::default()
+            },
+            ..relative
+        };
+        let position = drag_position([0.5, -0.5], fine, true);
+        assert!((position[1] + 0.1).abs() < 0.00001);
     }
 
     #[test]

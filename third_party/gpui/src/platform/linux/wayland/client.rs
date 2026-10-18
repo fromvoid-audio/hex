@@ -1789,6 +1789,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                         if let Some(window) = state.mouse_focused_window.clone() {
                             let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
                                 direction_inverted_from_device: false,
+                                is_momentum: false,
                                 position: state.mouse_location.unwrap(),
                                 delta: ScrollDelta::Pixels(continuous),
                                 modifiers: state.modifiers,
@@ -1802,6 +1803,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                     {
                         let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
                             direction_inverted_from_device: false,
+                            is_momentum: false,
                             position: state.mouse_location.unwrap(),
                             delta: ScrollDelta::Lines(discrete),
                             modifiers: state.modifiers,

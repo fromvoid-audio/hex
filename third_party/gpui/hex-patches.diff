@@ -461,12 +461,16 @@
 +pub use accessibility::*;
 --- a/src/interactive.rs
 +++ b/src/interactive.rs
-@@ -363,0 +364,4 @@
+@@ -363,0 +364,8 @@
 +    /// True when the platform inverted device scroll direction for user preferences.
 +    /// Raw `delta` remains suitable for ordinary content scrolling.
 +    pub direction_inverted_from_device: bool,
 +
-@@ -374,0 +379,14 @@
++    /// True for platform-reported inertial continuation after physical input.
++    /// Neutral by default. Ordinary content scrolling keeps using raw `delta`.
++    pub is_momentum: bool,
++
+@@ -374,0 +383,14 @@
 +}
 +
 +impl ScrollWheelEvent {
@@ -823,14 +827,17 @@
 +            CursorStyle::ResizeRightBracket => Shape::EResize,
 --- a/src/platform/linux/wayland/client.rs
 +++ b/src/platform/linux/wayland/client.rs
-@@ -1790,0 +1791 @@
+@@ -1790,0 +1791,2 @@
 +                                direction_inverted_from_device: false,
-@@ -1802,0 +1804 @@
++                                is_momentum: false,
+@@ -1802,0 +1805,2 @@
 +                            direction_inverted_from_device: false,
++                            is_momentum: false,
 --- a/src/platform/linux/x11/client.rs
 +++ b/src/platform/linux/x11/client.rs
-@@ -2217,0 +2218 @@
+@@ -2217,0 +2218,2 @@
 +        direction_inverted_from_device: false,
++        is_momentum: false,
 --- /dev/null
 +++ b/src/platform/mac/accessibility.rs
 @@ -0,0 +1,1000 @@
@@ -1839,8 +1846,9 @@
 @@ -235,0 +236,2 @@
 +                    let direction_inverted: cocoa::base::BOOL =
 +                        msg_send![native_event, isDirectionInvertedFromDevice];
-@@ -236,0 +239 @@
+@@ -236,0 +239,2 @@
 +                        direction_inverted_from_device: direction_inverted == YES,
++                        is_momentum: native_event.momentumPhase() != NSEventPhase::NSEventPhaseNone,
 --- a/src/platform/mac/platform.rs
 +++ b/src/platform/mac/platform.rs
 @@ -22 +22 @@
@@ -2119,10 +2127,12 @@
 +
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
-@@ -555,0 +556 @@
+@@ -555,0 +556,2 @@
 +            direction_inverted_from_device: false,
-@@ -601,0 +603 @@
++            is_momentum: false,
+@@ -601,0 +604,2 @@
 +            direction_inverted_from_device: false,
++            is_momentum: false,
 --- a/src/platform/windows/util.rs
 +++ b/src/platform/windows/util.rs
 @@ -126,0 +127,2 @@

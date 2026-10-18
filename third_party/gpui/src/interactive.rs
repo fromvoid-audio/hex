@@ -365,6 +365,10 @@ pub struct ScrollWheelEvent {
     /// Raw `delta` remains suitable for ordinary content scrolling.
     pub direction_inverted_from_device: bool,
 
+    /// True for platform-reported inertial continuation after physical input.
+    /// Neutral by default. Ordinary content scrolling keeps using raw `delta`.
+    pub is_momentum: bool,
+
     /// The position of the mouse on the window.
     pub position: Point<Pixels>,
 

@@ -104,7 +104,10 @@ impl ResponseGraph {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if matches!(event.touch_phase, TouchPhase::Ended) && self.scroll.active() {
+        if !event.is_momentum
+            && matches!(event.touch_phase, TouchPhase::Ended)
+            && self.scroll.active()
+        {
             self.finish_scroll(false, cx);
             cx.stop_propagation();
             return;
@@ -147,7 +150,16 @@ impl ResponseGraph {
         // This is a parameter wheel, not content scrolling. Undo the platform's
         // preference inversion exactly once so physical up means increasing.
         let units = f32::from(event.physical_delta().pixel_delta(px(24.0)).y) / 24.0;
-        if !units.is_finite() {
+        if !units.is_finite() || units == 0.0 {
+            // A horizontal-only wheel belongs to the outer content scroller.
+            // Keep nonzero fractional vertical intent for deliberate coalescing.
+            return;
+        }
+        if event.is_momentum {
+            // Only physical input owns parameter steps/history. Consume vertical
+            // inertia over an opted-in node without allocating or ending a
+            // gesture; horizontal-only input has already bubbled above.
+            cx.stop_propagation();
             return;
         }
         if self
@@ -230,6 +242,42 @@ impl EventEmitter<ResponseGraphScrollEvent> for ResponseGraph {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn momentum_metadata_is_neutral_by_default_and_does_not_change_scroll_direction() {
+        let ordinary = ScrollWheelEvent {
+            delta: gpui::ScrollDelta::Pixels(point(px(7.0), px(-12.0))),
+            touch_phase: TouchPhase::Moved,
+            ..Default::default()
+        };
+        assert!(!ordinary.is_momentum);
+        let inertial = ScrollWheelEvent {
+            is_momentum: true,
+            ..ordinary.clone()
+        };
+        assert_eq!(
+            inertial.delta.pixel_delta(px(24.0)),
+            ordinary.delta.pixel_delta(px(24.0))
+        );
+        assert_eq!(
+            inertial.physical_delta().pixel_delta(px(24.0)),
+            ordinary.physical_delta().pixel_delta(px(24.0))
+        );
+        assert!(matches!(inertial.touch_phase, TouchPhase::Moved));
+        let inverted = ScrollWheelEvent {
+            direction_inverted_from_device: true,
+            ..inertial
+        };
+        assert_eq!(
+            inverted.delta.pixel_delta(px(24.0)),
+            ordinary.delta.pixel_delta(px(24.0)),
+            "ordinary content delta stays raw"
+        );
+        assert_eq!(
+            inverted.physical_delta().pixel_delta(px(24.0)),
+            point(px(-7.0), px(12.0))
+        );
+    }
+
     #[test]
     fn fractional_scroll_accumulates_without_event_local_undo_steps() {
         let mut remainder = 0.0;

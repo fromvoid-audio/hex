@@ -253,6 +253,16 @@ pub(super) fn render_body(
         )
     };
     let scroll_nodes = gestures::scroll_nodes(view, device, &displayed, cx);
+    let relative_option_y_nodes = if automation.is_none() {
+        displayed
+            .nodes
+            .iter()
+            .filter(|node| node.kind == eq::NodeKind::Bell)
+            .map(|node| node.id.value())
+            .collect()
+    } else {
+        Vec::new()
+    };
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(automation.is_none());
@@ -266,6 +276,7 @@ pub(super) fn render_body(
             );
             let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
             let _ = graph.set_scroll_nodes(scroll_nodes, cx);
+            let _ = graph.set_relative_option_y_nodes(relative_option_y_nodes, cx);
             let _ = graph.set_model(
                 model,
                 theme::device_style(theme::DeviceStyleRole::Display),

@@ -2216,6 +2216,7 @@ fn make_scroll_wheel_event(
     };
     crate::ScrollWheelEvent {
         direction_inverted_from_device: false,
+        is_momentum: false,
         position,
         delta: ScrollDelta::Lines(delta),
         modifiers,
