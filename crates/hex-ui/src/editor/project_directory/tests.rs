@@ -165,10 +165,24 @@ fn saved(
             && view.state.as_ref().unwrap().document_path.as_deref() == Some(path)
     });
 }
+fn service_state(service: &Service) -> Arc<hex_session::service::ViewState> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Ok(event) = service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            return event.state;
+        }
+        assert!(std::time::Instant::now() < until, "fixture service stalled");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
 fn saved_target(owned: &Directory, folder: &str) -> PathBuf {
     let directory = owned.folder(folder);
     let path = directory.join("Target Case.hex");
-    hex_storage::save_new(&path, &hex_project::Project::new(48_000).unwrap()).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    service_state(&service);
+    service.submit(Request::SaveNew(path.clone())).unwrap();
+    service_state(&service);
     path
 }
 fn close(mut visual: VisualTestContext, editor: gpui::Entity<EditorView>) {
@@ -515,4 +529,67 @@ fn project_directory_macos_url_roundtrip_preserves_raw_bytes_and_refuses_nul(
     }
     let nul = PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/bad\0path".to_vec()));
     assert!(cx.picker_directory_url_roundtrip(&nul).is_err());
+}
+
+#[gpui::test]
+fn project_directory_named_save_uses_actual_document_path_without_a_chooser(
+    cx: &mut TestAppContext,
+) {
+    let owned = Directory::new();
+    let current = owned.folder("Actual Document").join("Named Take.hex");
+    let remembered = owned.folder("Different Remembered Folder");
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    service_state(&service);
+    service.submit(Request::SaveNew(current.clone())).unwrap();
+    let initial = service_state(&service);
+    let original = std::fs::read(&current).unwrap();
+    hex_preferences::save_project_directory(&owned.preferences(), &remembered).unwrap();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_project_preferences(
+                    window,
+                    cx,
+                    service,
+                    &owned.0,
+                    owned.preferences(),
+                )
+            });
+            // The initial ViewState is the actual already-loaded actor's saved receipt.
+            editor.update(cx, |view, cx| {
+                view.state = Some(initial);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    pump(&editor, &mut visual, |view| {
+        settled(view) && !view.project_directory.loading
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(hex_project::Command::AddTrack {
+            name: "named save content".into()
+        })))
+    });
+    pump(&editor, &mut visual, |view| {
+        settled(view) && view.state.as_ref().unwrap().unsaved
+    });
+    editor.update_in(&mut visual, |view, window, _| view.focus.focus(window));
+    visual.run_until_parked();
+    visual.dispatch_action(SaveProject);
+    saved(&mut visual, &editor, &current);
+    pump(&editor, &mut visual, |view| {
+        settled(view) && !view.saving_project && !view.state.as_ref().unwrap().unsaved
+    });
+    flush(&editor, &mut visual);
+    assert!(cx.pending_save_options().is_none());
+    assert_ne!(std::fs::read(&current).unwrap(), original);
+    assert!(!remembered.join("Named Take.hex").exists());
+    assert!(!remembered.join("untitled.hex").exists());
+    assert_eq!(
+        hex_preferences::load_project_directory(&owned.preferences()).unwrap(),
+        Some(current.parent().unwrap().to_owned())
+    );
 }

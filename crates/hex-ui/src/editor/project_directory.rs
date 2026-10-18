@@ -265,6 +265,7 @@ impl SaveGate {
         })
         .await;
     }
+    #[cfg(feature = "ui-test-support")]
     fn release(&self) {
         self.released
             .store(true, std::sync::atomic::Ordering::Release);
