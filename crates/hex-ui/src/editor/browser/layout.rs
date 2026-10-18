@@ -159,6 +159,7 @@ impl EditorView {
             .child(
                 browser_pending("‹")
                     .id("browser-history-back")
+                    .debug_selector(|| "browser-history-back".to_owned())
                     .tooltip(|_, cx| {
                         cx.new(|_| super::super::transport::MiniTooltip {
                             description: theme::text("back · history pending"),
@@ -180,19 +181,12 @@ impl EditorView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            if view.browser.results_focused {
-                                view.browser.search.update(cx, |input, cx| {
-                                    input.select_all_on_mouse_entry(window, cx)
-                                });
-                            }
+                    .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                        if event.button == MouseButton::Left {
                             view.browser.results_focused = false;
-                            window.prevent_default();
                             cx.notify();
-                        }),
-                    )
+                        }
+                    }))
                     .child(self.browser.search.clone()),
             )
             .child(self.browser_icon(
@@ -283,9 +277,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             view.select_browser_source(BrowserSection::Collection(index), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
+                            view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
                         }),
@@ -337,9 +329,7 @@ impl EditorView {
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
                                 view.select_browser_source(section.clone(), cx);
-                                view.browser
-                                    .search
-                                    .update(cx, |input, _| input.focus(window));
+                                view.browser.results_focus.focus(window);
                                 window.prevent_default();
                                 cx.notify();
                             }),
@@ -474,9 +464,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             view.select_browser_source(BrowserSection::Place(path.clone()), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
+                            view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
                         }),

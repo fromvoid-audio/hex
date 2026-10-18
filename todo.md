@@ -5194,6 +5194,18 @@ actual typing/paste/cut/copy and marked Unicode/caret/scroll regressions cover t
 boundary. Source-path casing2649 stays intact. Dedicated merger owns final
 integration/full CI/merge; native app/IME/clipboard acceptance remains open.
 
+## explicit browser query focus — pulse2820 / PR426, 18 october 2026
+
+Actual category click left the search handle focused and typed qxj into its query.
+Navigation now owns a separate non-text focus handle; source/row/disclosure/blank/
+control/resize clicks leave query editing. Preview handlers explicitly transfer
+focus before their existing stopped bubble. Only field/CmdF entry edits text;
+Up/Down move into navigation and Escape keeps the current owner. Local browser
+events preserve held drag, query selection and backend/sample behavior. Private
+startup-root rendered matrix checks both layouts, typing isolation, workers/ticks,
+explicit return and close; prior focus assertions now reflect this new contract
+while retaining their audition/generation/device/drag assertions. Native acceptance
+and final prospective full CI/integration remain with root/sole merger.
 ## browser picker label clipping — pulse2809 / PR415, 18 october 2026
 
 Rendered geometry reproduced a 19.5 px Collection-row shift at 80 px because
