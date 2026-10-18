@@ -1,5 +1,7 @@
 //! Track-header focus and view-only name drafts over canonical RenameTrack.
-use super::{CancelTrackName, CommitTrackName, EditorView, RenameTrack, browser_input::*};
+use super::{
+    CancelTrackName, CommitTrackName, EditorView, RemoveTrack, RenameTrack, browser_input::*,
+};
 use crate::theme;
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, KeyBinding, Subscription, Window, div,
@@ -35,6 +37,11 @@ pub(super) fn bind_keys(cx: &mut App) {
             RenameTrack,
             Some("hex_track_header && !hex_text_editing"),
         ),
+        KeyBinding::new(
+            "backspace",
+            RemoveTrack,
+            Some("hex_track_header && !hex_text_editing"),
+        ),
         KeyBinding::new("enter", CommitTrackName, Some("hex_track_name")),
         KeyBinding::new("escape", CancelTrackName, Some("hex_track_name")),
         KeyBinding::new("backspace", BrowserBackspace, Some("hex_track_name")),
@@ -54,6 +61,32 @@ pub(super) fn bind_keys(cx: &mut App) {
     ]);
 }
 impl EditorView {
+    /// Only a selected ordinary-track header may own keyboard track deletion.
+    pub(super) fn remove_header_tracks(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        if !self.track_header_focused(window) {
+            return false;
+        }
+        let focused = self
+            .track_name
+            .focuses
+            .iter()
+            .find_map(|(id, focus)| focus.is_focused(window).then_some(*id));
+        let tracks = self.selected_track_ids();
+        if tracks.is_empty() || !focused.is_some_and(|id| tracks.contains(&id)) {
+            return true;
+        }
+        if self.edit_pending() || self.track_name.is_editing() || self.clip_name_edit.is_some() {
+            self.error = Some("finish the current edit before removing tracks".into());
+            return true;
+        }
+        if super::device_panel::finalize_controls(self, cx)
+            && self.enqueue_device_barrier(Request::Edit(Command::RemoveTracks(tracks)))
+        {
+            self.duplicate_intent.cancel_chain();
+        }
+        true
+    }
+
     pub(super) fn track_header_focused(&self, window: &Window) -> bool {
         self.mode == super::EditorMode::Arrangement
             && self
