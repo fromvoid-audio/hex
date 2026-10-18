@@ -588,7 +588,7 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool) {
         );
         if midi {
             let d = v.active_midi_trim_drag.as_ref().unwrap();
-            assert!(d.preview.get().unwrap().length().raw() > 0);
+            assert!(d.preview.borrow().as_ref().unwrap().length().raw() > 0);
         } else {
             let d = v.active_trim_drag.as_ref().unwrap();
             assert_eq!(
