@@ -226,3 +226,9 @@ consumes focused Backspace before editor actions and emits Remove for an idle
 selected node. Its scoped Escape action cancels a held pointer before ancestor
 application actions; idle Escape propagates. Owners retain canonical identity
 and removal/history semantics.
+
+Editable text presentation is caller-selected through `ControlStyle::text_case`.
+`TextCase` maps original UTF-8 offsets to shaped case expansions and back, while
+input handlers, IME UTF-16 ranges, clipboard and numeric parsers retain original
+source text. Hex injects lowercase; neutral widget fixtures can preserve case.
+This is display styling, not content normalization or a project edit.

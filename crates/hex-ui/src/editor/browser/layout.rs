@@ -12,7 +12,6 @@ const SECTIONS: [(BrowserSection, &str); 4] = [
 const PICKER_CONTROL_SIZE: f32 = 22.0;
 const PICKER_BORDER_WIDTH: f32 = 1.0;
 const PICKER_MIN_WIDTH: f32 = PICKER_CONTROL_SIZE + PICKER_BORDER_WIDTH;
-const PICKER_LABEL_THRESHOLD: f32 = 64.0;
 
 const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
@@ -112,6 +111,24 @@ fn browser_divider() -> Div {
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
 }
 
+// Keep the same line box at every picker width: labels clip rather than
+// wrapping, ellipsizing or removing rows when the icon-only width is reached.
+fn picker_label(value: impl AsRef<str>) -> Div {
+    browser_caption(value)
+        .flex_1()
+        .min_w_0()
+        .whitespace_nowrap()
+        .overflow_hidden()
+}
+
+fn picker_heading(value: &str) -> Div {
+    browser_heading(value)
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+}
+
 fn browser_heading(value: &str) -> Div {
     browser_caption(value)
         .overflow_hidden()
@@ -142,6 +159,7 @@ impl EditorView {
             .child(
                 browser_pending("‹")
                     .id("browser-history-back")
+                    .debug_selector(|| "browser-history-back".to_owned())
                     .tooltip(|_, cx| {
                         cx.new(|_| super::super::transport::MiniTooltip {
                             description: theme::text("back · history pending"),
@@ -163,19 +181,12 @@ impl EditorView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            if view.browser.results_focused {
-                                view.browser.search.update(cx, |input, cx| {
-                                    input.select_all_on_mouse_entry(window, cx)
-                                });
-                            }
+                    .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                        if event.button == MouseButton::Left {
                             view.browser.results_focused = false;
-                            window.prevent_default();
                             cx.notify();
-                        }),
-                    )
+                        }
+                    }))
                     .child(self.browser.search.clone()),
             )
             .child(self.browser_icon(
@@ -212,7 +223,6 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let width = self.browser.layout.sidebar_width(width);
-        let compact = width < PICKER_LABEL_THRESHOLD;
         let mut sidebar = div()
             .id("browser-sidebar")
             .w(px(width))
@@ -224,7 +234,7 @@ impl EditorView {
             .border_r_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .debug_selector(|| "browser-sidebar".to_owned())
-            .children((!compact).then(|| browser_heading("collections")));
+            .child(picker_heading("collections"));
         for (index, name) in ["favorites", "inspiration", "recent finds"]
             .into_iter()
             .enumerate()
@@ -267,28 +277,20 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             view.select_browser_source(BrowserSection::Collection(index), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
+                            view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
                         }),
                     )
                     .child(icon)
-                    .children((!compact).then(|| {
-                        browser_caption(name)
-                            .flex_1()
-                            .min_w_0()
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis()
+                    .child(picker_label(name).debug_selector(move || {
+                        format!("browser-picker-label-collection-{index}")
                     })),
             );
         }
-        if !compact {
-            sidebar = sidebar.child(browser_heading("collections pending"));
-        }
-        sidebar = sidebar.children((!compact).then(|| browser_heading("library")));
+        sidebar = sidebar
+            .child(picker_heading("collections pending"))
+            .child(picker_heading("library"));
         for (index, (section, name)) in SECTIONS.into_iter().enumerate() {
             if !self.browser.layout.visible[index] {
                 continue;
@@ -298,58 +300,51 @@ impl EditorView {
                 browser_caption(ICONS[self.browser.layout.icons[index]])
                     .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
             );
-            sidebar = sidebar.child(
-                div()
-                    .id(("browser-section", index))
-                    .debug_selector(move || format!("browser-section-{name}"))
-                    .tooltip(move |_, cx| browser_label_tooltip(name, cx))
-                    .h(px(25.0))
-                    .w_full()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .bg(rgb(theme::color(if active {
-                        theme::PaletteRole::Hover
-                    } else {
-                        theme::PaletteRole::Surface
-                    })))
-                    .text_color(rgb(theme::color(if active {
-                        theme::PaletteRole::Secondary
-                    } else {
-                        theme::PaletteRole::Text
-                    })))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            view.select_browser_source(section.clone(), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
-                            window.prevent_default();
-                            cx.notify();
-                        }),
-                    )
-                    .child(icon)
-                    .children((!compact).then(|| {
-                        browser_caption(name)
-                            .flex_1()
-                            .min_w_0()
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                    })),
-            );
+            sidebar =
+                sidebar.child(
+                    div()
+                        .id(("browser-section", index))
+                        .debug_selector(move || format!("browser-section-{name}"))
+                        .tooltip(move |_, cx| browser_label_tooltip(name, cx))
+                        .h(px(25.0))
+                        .w_full()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .cursor_pointer()
+                        .bg(rgb(theme::color(if active {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Surface
+                        })))
+                        .text_color(rgb(theme::color(if active {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Text
+                        })))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                view.select_browser_source(section.clone(), cx);
+                                view.browser.results_focus.focus(window);
+                                window.prevent_default();
+                                cx.notify();
+                            }),
+                        )
+                        .child(icon)
+                        .child(picker_label(name).debug_selector(move || {
+                            format!("browser-picker-label-section-{index}")
+                        })),
+                );
         }
         sidebar = sidebar.child(self.browser_icon(
             "⚙",
             "configure sections · session only",
             move |view, _, cx| {
-                view.browser.layout.settings_visible =
-                    compact || !view.browser.layout.settings_visible;
+                view.browser.layout.settings_visible = !view.browser.layout.settings_visible;
                 if view.browser.layout.settings_visible {
                     view.browser.layout.sidebar_width =
                         view.browser.layout.sidebar_width.max(124.0);
@@ -358,18 +353,25 @@ impl EditorView {
             },
             cx,
         ));
-        if self.browser.layout.settings_visible && !compact {
-            sidebar = sidebar.child(browser_heading("sections · session"));
+        if self.browser.layout.settings_visible {
+            sidebar = sidebar.child(picker_heading("sections · session"));
             for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
                 let visible = self.browser.layout.visible[index];
                 sidebar = sidebar.child(
                     div()
+                        .h(px(PICKER_CONTROL_SIZE))
+                        .flex_shrink_0()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex()
                         .items_center()
                         .gap_1()
                         .child(
                             div()
                                 .id(("browser-section-visibility", index))
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -394,15 +396,16 @@ impl EditorView {
                                         cx.notify();
                                     }),
                                 )
-                                .child(browser_caption(format!(
-                                    "{} {}",
+                                .child(picker_label(format!(
+                                    "{} {name}",
                                     if visible { "☑" } else { "□" },
-                                    if compact { "" } else { name }
                                 ))),
                         )
                         .child(
                             div()
                                 .id(("browser-section-icon", index))
+                                .w(px(PICKER_CONTROL_SIZE))
+                                .flex_shrink_0()
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -417,7 +420,7 @@ impl EditorView {
                 );
             }
         }
-        sidebar = sidebar.children((!compact).then(|| browser_heading("places")));
+        sidebar = sidebar.child(picker_heading("places"));
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
             let path = place.clone();
             let icon_path = place.clone();
@@ -464,9 +467,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             view.select_browser_source(BrowserSection::Place(path.clone()), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
+                            view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
                         }),
@@ -495,14 +496,10 @@ impl EditorView {
                         .inset_0(),
                     )
                     .child(icon)
-                    .children((!compact).then(|| {
-                        browser_caption(name)
-                            .flex_1()
-                            .min_w_0()
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                    })),
+                    .child(
+                        picker_label(name)
+                            .debug_selector(move || format!("browser-picker-label-place-{index}")),
+                    ),
             );
         }
         if self.browser.places.len() < PLACE_CAPACITY {
@@ -516,7 +513,7 @@ impl EditorView {
         if let Some(status) = &self.browser.places_status {
             let tooltip = status.clone();
             sidebar = sidebar.child(
-                browser_heading(if compact { "!" } else { status })
+                picker_heading(status)
                     .id("browser-places-status")
                     .debug_selector(|| "browser-places-status".into())
                     .whitespace_nowrap()

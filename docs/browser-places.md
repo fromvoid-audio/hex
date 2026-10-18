@@ -64,8 +64,9 @@ case-insensitively; indexed samples use the sample library's multi-term path mat
 All ignores the Samples source-folder filter and deduplicates original WAV paths
 across the catalog and folder, retaining folder WAVs outside indexed roots. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
-Escape clears it and restores text mode even if the query was already empty.
-Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
+Escape clears the query while retaining its current text or navigation owner;
+it never re-enters text editing from results. Category clicks retain the query
+and move actual focus to browser navigation, including in Session. Active IME composition is unmarked before selecting the whole
 query. Moving the caret or text selection leaves the result viewport unchanged;
 only a changed query resets it. Clicking the search field from another control selects the entire query so the
 next typed text replaces it. Once already focused, clicks place the caret and
@@ -83,7 +84,7 @@ numeric drafts pass through the existing finalization barrier: valid values comm
 before focus moves; invalid values preserve their draft and focus for repair.
 Device rows retain drag-to-track/rail behavior; Enter on an
 all-view device displays that instruction rather than importing a file. Clicking a
-device keeps browser keyboard focus in Session too. The first arrow key selects
+device keeps browser navigation focus in Session too. The first arrow key selects
 the first match; subsequent arrows move through results. Query/category changes
 reveal the first row. Accepted background scans preserve the selected file path
 or device identity when new files change row offsets.
@@ -191,3 +192,16 @@ are invented. Source input tests cover two same-named paths, reset, expanded/com
 rows, anchor geometry, actual mouse and keyboard choices, focus/dismissal and
 actual preference-save/editor-reopen. Physical native appearance, accessibility
 announcement and app close/reopen acceptance remain coordinator-owned and open.
+
+## explicit search entry — pulse2820 / PR426
+
+Only the search field itself and Command-F enter query editing. Sources, Places,
+folders, disclosures, sample/device rows, blank browser space, toolbar, preview
+controls and resize handles use a distinct non-text navigation focus owner.
+Down/Up from query results transfer to that owner; returning to the field selects
+the query on entry and retains ordinary focused caret/drag selection thereafter.
+Selection/highlight state is independent of the actual input handle. Pointer
+handlers run in their local browser scope; painting/workers never restore focus.
+Close returns focus to the editor. This is separate from the unresolved native
+field-click focus-loss report2794 and the future double-click refinement2817.
+Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
