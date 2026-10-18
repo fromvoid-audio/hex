@@ -39,9 +39,18 @@ fn fixture(
     cx: &mut TestAppContext,
     midi: bool,
     viewport: Option<Viewport>,
-) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId, ClipId) {
+) -> (
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    TrackId,
+    ClipId,
+    super::super::external_audio_drop_ui_test::BatchFiles,
+) {
     cx.update(super::super::bind_editor_keys);
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
+    let browser_marker = files.wav("bounded-browser.wav", 48_000, 48);
+    let directory = browser_marker.parent().unwrap();
+    std::fs::create_dir(directory.join("samples")).unwrap();
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     let (event, track, clip) = if midi {
@@ -102,9 +111,11 @@ fn fixture(
     let editor = cx
         .update_window(handle, |_, window, cx| {
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new(window, cx, service, Err("offline resize test".into()))
+                EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
             });
             editor.update(cx, |v, cx| {
+                assert_eq!(v.browser.directory, directory.join("samples"));
+                assert_eq!(v.browser.places, vec![directory.join("samples")]);
                 v.state = Some(event.state);
                 v.viewport = viewport;
                 v.snap_grid = SnapGrid::default().with_platform_modifier(true);
@@ -114,7 +125,7 @@ fn fixture(
             editor
         })
         .unwrap();
-    (handle, editor, track, clip)
+    (handle, editor, track, clip, files)
 }
 fn capture(
     visual: &mut VisualTestContext,
@@ -161,7 +172,7 @@ fn held_resize_edges_pan_both_directions_stop_and_commit_one_history_edit(cx: &m
                 start: 72_000,
                 length: 192_000,
             };
-            let (handle, editor, track, clip) = fixture(cx, midi, Some(viewport));
+            let (handle, editor, track, clip, _files) = fixture(cx, midi, Some(viewport));
             let mut visual = VisualTestContext::from_window(handle, cx);
             let before =
                 editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
@@ -232,7 +243,7 @@ fn held_resize_edges_pan_both_directions_stop_and_commit_one_history_edit(cx: &m
 #[gpui::test]
 fn held_resize_can_pan_right_beyond_original_fitted_display_extent(cx: &mut TestAppContext) {
     for midi in [false, true] {
-        let (handle, editor, track, clip) = fixture(cx, midi, None);
+        let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let horizon = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().timeline_frames);
@@ -260,7 +271,7 @@ fn held_resize_can_pan_right_beyond_original_fitted_display_extent(cx: &mut Test
 fn resize_edge_cancel_and_stale_owners_cannot_scroll_or_commit(cx: &mut TestAppContext) {
     for midi in [false, true] {
         for stale in [false, true] {
-            let (handle, editor, track, clip) = fixture(
+            let (handle, editor, track, clip, _files) = fixture(
                 cx,
                 midi,
                 Some(Viewport {
@@ -322,7 +333,7 @@ fn resize_edge_cancel_and_stale_owners_cannot_scroll_or_commit(cx: &mut TestAppC
 fn resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan(
     cx: &mut TestAppContext,
 ) {
-    let (handle, editor, track, clip) = fixture(
+    let (handle, editor, track, clip, _files) = fixture(
         cx,
         false,
         Some(Viewport {
@@ -384,7 +395,7 @@ fn resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan(
 #[gpui::test]
 fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &mut TestAppContext) {
     for stretch in [false, true] {
-        let (handle, editor, track, clip) = fixture(cx, false, None);
+        let (handle, editor, track, clip, _files) = fixture(cx, false, None);
         let mut visual = VisualTestContext::from_window(handle, cx);
         editor.update(&mut visual, |v, cx| {
             v.snap_grid = SnapGrid::default();
