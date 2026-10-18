@@ -5230,3 +5230,10 @@ covers long Place names, zero label space, both settings states and resize back
 to normal; existing selection/hover/focus/audition regressions remain applicable.
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
+
+18 October2026 — Pulse2709/PR325: reproduced rail width480→624px on tag-editor
+open plus mini-strip open-only click. Keep toolbar/body in one fixed base column
+and append editor beside the whole browser; both original controls toggle at a
+stationary pointer. Rendered normal/23px picker and sample-metadata retention
+regressions; focused checks/evidence in Pulse. Tag persistence2667 remains separate;
+sole merger owns prospective fullCI/merge, root optimized native acceptance.

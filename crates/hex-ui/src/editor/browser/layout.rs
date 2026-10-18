@@ -200,7 +200,7 @@ impl EditorView {
             ))
             .child(self.browser_icon(
                 "⋮",
-                "open tag editor",
+                "show or hide tag editor",
                 |view, _, cx| {
                     view.browser.layout.editor_visible = !view.browser.layout.editor_visible;
                     cx.notify();
@@ -742,9 +742,10 @@ impl EditorView {
                     .child(div().flex_1().min_w_0())
                     .child(self.browser_icon(
                         "⋯",
-                        "open full tag editor",
+                        "show or hide tag editor",
                         |view, _, cx| {
-                            view.browser.layout.editor_visible = true;
+                            view.browser.layout.editor_visible =
+                                !view.browser.layout.editor_visible;
                             cx.notify();
                         },
                         cx,

@@ -4894,3 +4894,6 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
         assert!(view.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "browser_tag_editor_geometry_ui_test.rs"]
+mod tag_editor_geometry;
