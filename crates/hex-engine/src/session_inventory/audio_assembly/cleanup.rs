@@ -8,6 +8,9 @@ impl SessionAssembly {
         if self.inventory.is_none() {
             return Ok(());
         }
+        if let Some(inventory) = &self.inventory {
+            inventory.refuse_opaque_control_drop()?;
+        }
         // Every actual owner destination is empty BEFORE taking the aggregate.
         if self.scenes.capacity() != 0
             || self.tracks.capacity() != 0

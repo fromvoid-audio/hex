@@ -11,6 +11,8 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(test)]
+mod cleanup_tests;
 #[cfg(feature = "instrument-test-support")]
 pub(crate) mod inline_fixture;
 pub(crate) mod resource_storage;
@@ -494,6 +496,16 @@ pub(crate) struct SharedAnalyticContextTable {
 }
 
 impl SharedAnalyticContextTable {
+    /// Reject provider-defined destructors before dismantling a persistent
+    /// Session aggregate. This is only a destructor-surface check: it does not
+    /// qualify storage, establish resource custody, or authorize final drops.
+    pub(crate) fn refuse_opaque_control_drop(&self) -> Result<(), crate::AudioStorageError> {
+        if self.owners.iter().any(|owner| owner.context.is_some()) {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        Ok(())
+    }
+
     /// Exhaustive audited empty-table payload check for the opt-in compiler.
     /// Vec headers belong to this outer payload; nonzero spare capacities or
     /// nested handles are unsupported rather than assumed free/complete.

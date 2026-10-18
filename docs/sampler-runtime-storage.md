@@ -146,6 +146,26 @@ queries, voice limits and the exact maximum edge count.
 Track sends, compensation feed rows and MIDI-route metadata also reserve one
 backing from their actual canonical counts before filling. Existing ordering,
 gain resolution, missing-target refusal and signal-graph preparation stay in
-place. These changes bound specific compiler helpers; snapshot-based routing
-revalidation and other complete-compiler owners still need the private-entry
-allowance and audit.
+place. Private canonical routing validation now uses the separately checked
+borrowed scalar graph helper; public untrusted snapshot validation is unchanged.
+These helper bounds still do not provide the aggregate private-entry allowance.
+
+Session MIDI row traversal now visits actual direct and routed row backings,
+name capacities, canonical MIDI identities, copied native state fields and
+paired source/instrument templates. Supplied custody roles reach both row sets;
+the candidate seal keeps its explicit Current role. Nonempty construction and
+complete-root qualification remain refused until teardown and the other owners
+are covered.
+
+Before moving an aggregate into teardown fields, Session assembly now refuses
+opaque context, mutable-factory and history-retarget destructors. It checks
+each retained instrument template's own context table as well as the current
+table: an older cached template can still own an older provider. This check
+does not clone, release or replace any owner. Tests preserve the actual opaque
+factory, an independently retained opaque context and a paired Sampler context;
+the old-template negative still refuses with an empty current table. This is
+only an opaque-destructor preflight, not certification of concrete child
+destructors, original-source final-drop custody or the whole construction peak.
+Persistent nonempty retirement destinations/cursors, matching storage and
+restore, aggregate preconstruction reservation and the private compiler entry
+remain required before enabling the usable Sampler host.

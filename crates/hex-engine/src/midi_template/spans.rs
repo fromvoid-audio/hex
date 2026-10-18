@@ -612,6 +612,11 @@ impl MidiSpanBuffer {
 }
 
 impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn refuse_opaque_control_drop(&self) -> Result<(), crate::AudioStorageError> {
+        // Reused templates may retain an older table than the current Session.
+        self.shared_contexts.refuse_opaque_control_drop()
+    }
+
     pub(crate) fn visit_storage_contents_on_control<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,

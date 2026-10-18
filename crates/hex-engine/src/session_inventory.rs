@@ -1,5 +1,6 @@
 //! Immutable control-side inventory of every canonical Session cell.
 pub(crate) mod audio_assembly;
+mod cleanup_preflight;
 #[cfg(test)]
 mod midi_storage_tests;
 mod mutable_factory;
