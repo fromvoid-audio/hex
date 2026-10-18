@@ -540,11 +540,46 @@ mod tests {
         else {
             panic!("track")
         };
-        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
-            cx,
-            model.project().clone(),
-            Arc::default(),
-        );
+        struct BrowserDirectory(std::path::PathBuf);
+        impl Drop for BrowserDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory =
+            std::env::temp_dir().join(format!("hex-header-volume-record-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let browser = BrowserDirectory(directory);
+        std::fs::create_dir(browser.0.join("samples")).unwrap();
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let service = hex_session::service::Service::new(48_000, 32, 8_000_000).unwrap();
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new_for_test_with_browser_directory(window, cx, service, &browser.0)
+                });
+                editor.update(cx, |view, cx| {
+                    assert_eq!(view.browser.directory, browser.0.join("samples"));
+                    assert_eq!(view.browser.places, vec![browser.0.join("samples")]);
+                    view.state = Some(Arc::new(hex_session::service::ViewState {
+                        canonical_audio_source: None,
+                        project: Arc::new(model.project().clone()),
+                        waveforms: Default::default(),
+                        audio_clip_waveforms: Default::default(),
+                        midi_preview: Arc::default(),
+                        gain_preview: Ok(Arc::default()),
+                        timeline_frames: 384_000,
+                        can_undo: false,
+                        can_redo: false,
+                        revision: 1,
+                        unsaved: false,
+                        document_path: None,
+                    }));
+                    cx.notify();
+                });
+                editor
+            })
+            .unwrap();
         let mut visual = gpui::VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let rail = visual

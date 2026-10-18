@@ -574,3 +574,95 @@ fn track_gain_worker_profile_covers_populated_projects_and_retains_one_history_s
         );
     }
 }
+
+#[test]
+fn verified_streaming_refuses_track_gain_begin_without_preview_or_history_change() {
+    use hex_session::{DocumentAudioMode, SourcePlanReservation};
+    let service = Service::new(48_000, 16, 0).unwrap();
+    wait(&service);
+    let fresh = request(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(SourcePlanReservation {
+                reader: hex_media::VerifiedWavReaderLimits::new(
+                    hex_media::WavReaderLimits::new(64 * 1024 * 1024, 8_000_000, 32, 4096),
+                    1024 * 1024,
+                ),
+                max_retained_sources: 1,
+                max_path_bytes: 1024 * 1024,
+                max_manifest_bytes: 1024 * 1024,
+            }),
+        },
+    );
+    assert!(fresh.error.is_none());
+    assert!(fresh.project_replaced);
+    let before = edit(
+        &service,
+        Command::AddTrack {
+            name: "streamed volume".into(),
+        },
+    );
+    let track = before.state.project.tracks()[0].id();
+    let source = before.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(source.audio_mode(), DocumentAudioMode::VerifiedStreaming);
+    let key = GestureKey {
+        generation: source.context().project_generation,
+        token: 1,
+    };
+    let refused = request(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackGain { track },
+        }),
+    );
+    assert!(
+        !refused.gesture_ack.as_ref().unwrap().accepted,
+        "unsupported mode must refuse before acknowledging a held preview"
+    );
+    assert!(
+        refused
+            .gesture_ack
+            .as_ref()
+            .unwrap()
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("resident"))
+    );
+    assert!(refused.device_preview.is_none());
+    assert!(refused.active_device_gesture.is_none());
+    assert!(refused.playback.is_none());
+    assert_eq!(refused.state.revision, before.state.revision);
+    assert_eq!(refused.state.unsaved, before.state.unsaved);
+    assert_eq!(refused.state.can_undo, before.state.can_undo);
+    assert_eq!(refused.state.can_redo, before.state.can_redo);
+    assert!(Arc::ptr_eq(&refused.state.project, &before.state.project));
+    for request_value in [
+        GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(0.5),
+        },
+        GestureRequest::Commit {
+            key,
+            sequence: 2,
+            value: ParameterValue::Float(0.5),
+        },
+    ] {
+        let refused = request(&service, Request::DeviceGesture(request_value));
+        assert!(!refused.gesture_ack.as_ref().unwrap().accepted);
+        assert!(refused.device_preview.is_none());
+        assert!(refused.active_device_gesture.is_none());
+        assert!(refused.playback.is_none());
+        assert_eq!(refused.state.revision, before.state.revision);
+        assert_eq!(refused.state.project, before.state.project);
+    }
+    // The existing explicit +/- path remains a normal undoable canonical edit.
+    let changed = edit(&service, Command::Gain { track, gain: 0.5 });
+    assert_eq!(changed.state.project.track(track).unwrap().gain(), 0.5);
+    assert!(changed.playback.is_none());
+    let restored = request(&service, Request::Undo);
+    assert!(restored.error.is_none());
+    assert_eq!(restored.state.project, before.state.project);
+}

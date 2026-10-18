@@ -19,6 +19,14 @@ VerifiedStreaming retains its functional explicit +/- controls. Audible held-dra
 support for that production mode remains open under Pulse2792 / PR398; there is
 no inaudible commit-on-release fallback or new resource-admission permission.
 
+The public actor also refuses TrackGain Begin in VerifiedStreaming before an
+active overlay or success acknowledgment. Refused Change/Commit leave canonical
+state/history untouched; ordinary explicit Gain commands and Undo still work.
+Own four header UI fixtures and the recording-race fixture use the existing
+bounded test constructor with retained, owned browser/preferences/theme paths
+installed before browser worker startup. Earlier ambient-constructor UI evidence
+remains withdrawn for native use; replacement results require their own source.
+
 Headless checks cover rendered minimum/expanded geometry, target isolation,
 drag/cancel and editable values, automation and recording fences, actor PCM and
 history, post-fader return/balance/mute, persistence, bounded coalescing, and actual
