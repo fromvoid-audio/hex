@@ -581,6 +581,11 @@ impl Render for EditorView {
                     view.browser_preview_selected(window, cx);
                 }),
             )
+            .on_action(
+                cx.listener(|view, _: &super::BrowserCollapseFolder, window, cx| {
+                    view.browser_collapse_folder(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::BrowserActivate, window, cx| {
                 view.browser_activate(window, cx);
             }))
