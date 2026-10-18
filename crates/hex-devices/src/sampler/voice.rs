@@ -37,6 +37,7 @@ impl VoiceCoefficients {
         let _: (&bool, &u64, &[f64; 2], &GateMode) = (reverse, step, channel_gain, gate);
         let Region { start, end } = region;
         let _: (&usize, &usize) = (start, end);
+        let _: &envelope::PreparedEnvelope = envelope;
         envelope.audit_scalar_storage();
     }
     /// Zero fixed buffering/lookahead; source resampling and envelope timing

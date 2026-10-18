@@ -190,12 +190,16 @@ pub(crate) fn visit_owner_contents<'a>(
             && identity.device_type != hex_devices::sampler::state::TYPE_ID => {}
         _ => return Err(AudioStorageError::UnknownStorage),
     }
-    let storage = state_storage
-        .as_ref()
-        .ok_or(AudioStorageError::UnknownStorage)?;
-    let resources = resources
-        .as_ref()
-        .ok_or(AudioStorageError::UnknownStorage)?;
+    let empty_sampler = sampler_factory.is_some()
+        && resources.is_none()
+        && state_storage.is_none()
+        && matches!(
+            hex_devices::sampler::state::DeviceState::from_native(state),
+            Ok(hex_devices::sampler::state::DeviceState::Empty)
+        );
+    if !empty_sampler && (state_storage.is_none() || resources.is_none()) {
+        return Err(AudioStorageError::UnknownStorage);
+    }
     let visited = ledger.contains_shared_storage(owner.arc());
     ledger.shared(
         owner.arc(),
@@ -205,8 +209,23 @@ pub(crate) fn visit_owner_contents<'a>(
         None,
     )?;
     if !visited {
-        visit_state(state, storage, ledger)?;
-        resources.visit_storage(ledger)?;
+        if empty_sampler {
+            // Actual cloned canonical empty-state field, not a fresh receipt,
+            // fabricated byte claim, or invented empty resource configuration.
+            ledger.borrow_canonical_native_state_on_control(state)?;
+        } else {
+            visit_state(
+                state,
+                state_storage
+                    .as_ref()
+                    .ok_or(AudioStorageError::UnknownStorage)?,
+                ledger,
+            )?;
+            resources
+                .as_ref()
+                .ok_or(AudioStorageError::UnknownStorage)?
+                .visit_storage(ledger)?;
+        }
         if let Some((factory, handle)) = sampler_factory {
             ledger.shared(
                 factory.arc(),

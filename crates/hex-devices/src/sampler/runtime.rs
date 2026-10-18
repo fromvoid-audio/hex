@@ -48,6 +48,8 @@ impl PreparedSamplerRuntime {
             max_events,
         } = self;
         let _: &[PreparedKey; 128] = notes;
+        let _: &Option<VoiceCoefficients> = common;
+        let _: &Option<binding::SourceKey> = source;
         let _: (&usize, &u64, &f64, &usize) = (voices, tail, velocity_amount, max_events);
         if let Some(source) = source {
             source.audit_scalar_storage();
@@ -154,6 +156,7 @@ struct SamplerRuntime {
 impl SamplerRuntime {
     fn audit_fixed_storage(&self) {
         let Self { prepared, active } = self;
+        let _: &PreparedSamplerRuntime = prepared;
         let _ = prepared.control_storage_declaration();
         let _: &Active = active;
         // The exhaustive leaf audit is compiled even for an empty voice bank.

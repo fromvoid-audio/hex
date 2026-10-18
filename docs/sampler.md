@@ -363,3 +363,13 @@ The optional fields participate in the exhaustive fixed-leaf audit; actual body
 layout remains computed from the concrete runtime type. The device is still
 unregistered, and this runtime milestone does not establish whole-host admission
 or a complete native empty/load workflow.
+
+Empty authored states also enter the existing retained context table without a
+bank or fabricated resource configuration. The same concrete factory family is
+kept beside its actual canonical state alias. Selected storage traverses that
+alias through the separately gated canonical-state family, not a detached
+fresh-state receipt. Factory/owner construction has a component quote checked
+before allocation under the existing context caps; this is not whole-graph
+construction-peak authority. Arrangement and Session can prepare this silent
+state using the same retained factory route. Registration, full graph publication
+and the musician-facing create/load workflow remain open.

@@ -30,6 +30,7 @@ impl SourceKey {
             derivation_version,
             derivation,
         );
+        let _: &SampleShape = shape;
         shape.audit_scalar_storage();
     }
     pub(super) fn matches(self, view: DeviceResourceView<'_>) -> bool {

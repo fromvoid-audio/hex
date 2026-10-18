@@ -205,6 +205,63 @@ impl SharedContextOwner {
             sampler_factory: None,
         })
     }
+    fn from_empty_sampler_on_control(
+        id: SharedContextId,
+        identity: SharedContextIdentity,
+        tuning: &hex_lattice::TuningTable,
+        max_metadata_bytes: usize,
+        remaining_payload_bytes: usize,
+    ) -> Result<Self, Invalid> {
+        use crate::owned_shared::OwnedShared;
+        use hex_devices::sampler::{PreparedSamplerRuntime, state::DeviceState};
+        let refused = || Invalid("empty sampler factory preparation refused");
+        if identity.device_type != hex_devices::sampler::state::TYPE_ID
+            || !matches!(
+                DeviceState::from_native(&identity.state),
+                Ok(DeviceState::Empty)
+            )
+            || identity.resource_scope != 0
+        {
+            return Err(refused());
+        }
+        let (body, header) =
+            OwnedShared::<PreparedSamplerRuntime>::declared_parts().ok_or_else(refused)?;
+        let (owner_body, owner_header) =
+            OwnedShared::<Self>::declared_parts().ok_or_else(refused)?;
+        let quote = body
+            .checked_add(header)
+            .and_then(|bytes| bytes.checked_add(owner_body))
+            .and_then(|bytes| bytes.checked_add(owner_header))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<SharedContextLease>()))
+            .ok_or_else(refused)?;
+        if body > MAX_SHARED_ANALYTIC_CONTEXT_BYTES
+            || body > remaining_payload_bytes
+            || quote > max_metadata_bytes
+        {
+            return Err(refused());
+        }
+        let prepared = hex_devices::sampler::state::prepare_runtime_on_control(
+            &identity.state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: identity.sample_rate,
+                tuning,
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+            crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY,
+        )
+        .map_err(|_| refused())?;
+        let handle = crate::audio_only_inputs::handle().map_err(|_| refused())?;
+        Ok(Self {
+            id,
+            identity,
+            declared_bytes: body,
+            context: None,
+            resources: None,
+            state_storage: None,
+            sampler_factory: Some((OwnedShared::new_owned(prepared), handle)),
+        })
+    }
+
     fn from_sampler_resources_on_control(
         id: SharedContextId,
         identity: SharedContextIdentity,
@@ -276,7 +333,7 @@ impl SharedContextOwner {
             .ok_or(Invalid("shared analytic provider context is unavailable"))
     }
     pub(crate) fn is_inline_resource_scope(&self) -> bool {
-        self.context.is_none() && self.resources.is_some()
+        self.context.is_none() && (self.resources.is_some() || self.sampler_factory.is_some())
     }
 
     pub(crate) fn resource_configuration(
@@ -502,9 +559,9 @@ impl SharedAnalyticContextTable {
             };
             if device.state().type_id() == hex_devices::sampler::state::TYPE_ID {
                 // This closed preparation branch is not registry/publication
-                // admission. Validate the loaded codec before resource work.
-                hex_devices::sampler::state::SamplerState::from_native(device.state())
-                    .map_err(|_| Invalid("sampler state is not a loaded current configuration"))?;
+                // admission. Validate the current codec before resource work.
+                hex_devices::sampler::state::DeviceState::from_native(device.state())
+                    .map_err(|_| Invalid("sampler state is not a current configuration"))?;
             }
             let resources = match resource_preparation {
                 Some(preparation) => preparation
@@ -514,11 +571,11 @@ impl SharedAnalyticContextTable {
                 None => return Err(Invalid("instrument resource source plan is unavailable")),
             };
             if device.state().type_id() == hex_devices::sampler::state::TYPE_ID {
-                let resources =
-                    resources.ok_or(Invalid("sampler resource scope is unavailable"))?;
                 let identity = SharedContextIdentity {
                     tuning: tuning_identity,
-                    resource_scope: resources.source_scope_identity(),
+                    resource_scope: resources
+                        .as_ref()
+                        .map_or(0, |resources| resources.source_scope_identity()),
                     track: track.id(),
                     device: device.id(),
                     device_type: device.state().type_id(),
@@ -537,20 +594,31 @@ impl SharedAnalyticContextTable {
                         .clone_owner(index)
                         .ok_or(Invalid("sampler previous owner is unavailable"))?
                 } else {
-                    crate::owned_shared::OwnedShared::new_owned(
-                        SharedContextOwner::from_sampler_resources_on_control(
+                    let remaining = MAX_SHARED_CONTEXT_BYTES_PER_REVISION
+                        .checked_sub(payload_bytes)
+                        .ok_or(Invalid("sampler context budget overflow"))?;
+                    let metadata_limit = resource_preparation
+                        .map_or(MAX_SHARED_ANALYTIC_CONTEXT_BYTES, |preparation| {
+                            preparation.max_scope_metadata_bytes
+                        });
+                    let owner = match resources {
+                        Some(resources) => SharedContextOwner::from_sampler_resources_on_control(
                             SharedContextId::fresh()?,
                             identity,
                             resources,
                             &tuning,
-                            resource_preparation
-                                .ok_or(Invalid("sampler preparation budget is unavailable"))?
-                                .max_scope_metadata_bytes,
-                            MAX_SHARED_CONTEXT_BYTES_PER_REVISION
-                                .checked_sub(payload_bytes)
-                                .ok_or(Invalid("sampler context budget overflow"))?,
+                            metadata_limit,
+                            remaining,
                         )?,
-                    )
+                        None => SharedContextOwner::from_empty_sampler_on_control(
+                            SharedContextId::fresh()?,
+                            identity,
+                            &tuning,
+                            metadata_limit,
+                            remaining,
+                        )?,
+                    };
+                    crate::owned_shared::OwnedShared::new_owned(owner)
                 };
                 payload_bytes = payload_bytes
                     .checked_add(owner.declared_bytes)

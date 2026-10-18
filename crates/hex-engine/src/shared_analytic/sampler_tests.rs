@@ -566,3 +566,134 @@ fn actual_arrangement_and_session_sampler_preparation_retains_factory_and_refuse
         .is_err()
     );
 }
+
+#[test]
+fn actual_empty_sampler_context_has_no_resource_owner_and_prepares_silent_clip_hosts() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut editor = hex_project::Editor::new(Project::new(44_100).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "empty sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    editor
+        .execute(hex_project::Command::ReplaceDeviceState {
+            device,
+            state: hex_devices::sampler::metadata::METADATA
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    let hex_project::Created::Clip(clip) = editor
+        .execute(hex_project::Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::from_quarters(1).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(hex_project::Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::from_quarters(1).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let registry = hex_devices::native_instrument_registry().unwrap();
+    if !crate::pcm_arc::native_layout_known() {
+        assert!(
+            SharedAnalyticContextTable::prepare(editor.project(), &registry, None, None).is_err()
+        );
+        return;
+    }
+    let contexts =
+        SharedAnalyticContextTable::prepare(editor.project(), &registry, None, None).unwrap();
+    assert_eq!(contexts.owners.len(), 1);
+    let owner = &contexts.owners[0];
+    assert!(owner.resources.is_none());
+    assert!(owner.state_storage.is_none());
+    assert_eq!(owner.identity.resource_scope, 0);
+    assert!(owner.resources().is_empty());
+    assert!(owner.is_inline_resource_scope());
+    let factory = owner.sampler_factory.as_ref().unwrap().0.as_ref();
+    assert_eq!(
+        hex_lattice::PreparedMutableInstrumentRuntime::max_release_tail_frames(factory),
+        0
+    );
+    if crate::canonical_native_state_storage_layout_supported() {
+        eprintln!(
+            "executing supported empty Sampler actual canonical-state/context field traversal"
+        );
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+        ledger
+            .borrow_editor_native_states_on_control(&editor)
+            .unwrap();
+        resource_storage::visit_table(&contexts, &mut ledger, AudioStorageRole::Current).unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert!(ledger.summary().unwrap().require_complete().is_err());
+    }
+    let compiled =
+        crate::compile::project(editor.project(), &std::collections::BTreeMap::new()).unwrap();
+    assert!(compiled.tracks()[0].mutable_instrument);
+    assert!(compiled.tracks()[0].instrument.as_ref().unwrap().mutable);
+    let session = crate::PreparedSessionInventory::prepare_with_media_and_shared_contexts(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &registry,
+        contexts.clone_on_control(),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.mutable_instrument_factory_owner(track),
+        Some(crate::session_inventory::PreparedTrackRuntimeFactory::Sampler(_))
+    ));
+    let mut pair = NativeInstrumentRuntimePair::new(
+        factory,
+        NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: 259,
+            max_active_occurrences: 32,
+            max_tail_frames: 44_100 * 600,
+        },
+    )
+    .unwrap();
+    let mut output = [[0.125, -0.25]; 128];
+    pair.begin_block();
+    pair.process_block(
+        &[NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 127,
+        }],
+        &mut output,
+        owner.resources(),
+    )
+    .unwrap();
+    pair.commit_block();
+    assert_eq!(output, [[0.125, -0.25]; 128]);
+    assert!(
+        registry
+            .definition(hex_devices::sampler::state::TYPE_ID)
+            .is_none()
+    );
+}
