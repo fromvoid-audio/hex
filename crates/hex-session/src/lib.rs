@@ -20,6 +20,7 @@ use std::{
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
+mod resident_pcm;
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
@@ -30,6 +31,7 @@ mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
 pub mod service;
+pub mod tuning_gesture;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
 
 #[derive(Debug)]
@@ -87,6 +89,7 @@ pub struct PreparedImport {
     source_sample_rate: u32,
     source_frames: u64,
     conversion_version: u32,
+    source_audio: Audio,
     audio: Audio,
     waveform: Waveform,
 }
@@ -127,6 +130,7 @@ impl PreparedImport {
             } else {
                 hex_project::SINC_CONVERSION_V1
             },
+            source_audio: decoded.into_audio(),
             audio,
             waveform,
         })
@@ -138,6 +142,7 @@ impl PreparedImport {
 }
 
 struct ResidentAsset {
+    source_audio: Audio,
     audio: Audio,
     waveform: Arc<Waveform>,
     frames: u64,
@@ -205,7 +210,7 @@ impl Session {
         max_resident_frames: u64,
         decoded_assets: Vec<(AssetId, DecodedAudio)>,
     ) -> Result<Self, SessionError> {
-        let mut prepared_assets = Vec::new();
+        let mut prepared_assets: Vec<(AssetId, PreparedImport)> = Vec::new();
         prepared_assets
             .try_reserve_exact(decoded_assets.len())
             .map_err(|_| SessionError::Allocation)?;
@@ -221,18 +226,36 @@ impl Session {
                     "source media differs from project metadata",
                 ));
             }
+            // Identity conversion only clones this exact PCM owner. An alias
+            // needs no new buffer reservation even when remaining capacity is zero.
+            let shared_identity = decoded.sample_rate() == project.sample_rate()
+                && prepared_assets.iter().any(|(_, p)| {
+                    decoded.audio().shares_pcm_with(&p.source_audio)
+                        || decoded.audio().shares_pcm_with(&p.audio)
+                });
+            let output_limit = if shared_identity {
+                decoded.frames()
+            } else {
+                usize::try_from(remaining).map_err(|_| {
+                    SessionError::Invalid("resident frame limit exceeds addressable range")
+                })?
+            };
             let prepared = PreparedImport::at_rate(
                 decoded,
                 project.sample_rate(),
                 ResampleLimits {
                     max_source_frames: 8_000_000,
-                    max_output_frames: usize::try_from(remaining).map_err(|_| {
-                        SessionError::Invalid("resident frame limit exceeds addressable range")
-                    })?,
+                    max_output_frames: output_limit,
                 },
             )?;
             remaining = remaining
-                .checked_sub(metadata.playback_frames())
+                .checked_sub(
+                    prepared.additional_pcm_frames(
+                        prepared_assets
+                            .iter()
+                            .flat_map(|(_, p)| [&p.source_audio, &p.audio]),
+                    )?,
+                )
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             prepared_assets.push((id, prepared));
         }
@@ -277,7 +300,7 @@ impl Session {
                 "prepared media does not match project assets",
             ));
         }
-        let mut media = HashMap::new();
+        let mut media: HashMap<AssetId, ResidentAsset> = HashMap::new();
         media
             .try_reserve(asset_count)
             .map_err(|_| SessionError::Allocation)?;
@@ -293,6 +316,9 @@ impl Session {
                 .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
             if prepared.audio.sample_rate() != editor.project().sample_rate()
                 || frames != metadata.playback_frames()
+                || prepared.source_audio.sample_rate() != prepared.source_sample_rate
+                || u64::try_from(prepared.source_audio.frames().len()).ok()
+                    != Some(prepared.source_frames)
                 || prepared.source_sample_rate != metadata.source_sample_rate()
                 || prepared.source_frames != metadata.source_frames()
                 || prepared.conversion_version != metadata.conversion_version()
@@ -302,7 +328,9 @@ impl Session {
                 ));
             }
             resident_frames = resident_frames
-                .checked_add(frames)
+                .checked_add(prepared.additional_pcm_frames(
+                    media.values().flat_map(|m| [&m.source_audio, &m.audio]),
+                )?)
                 .filter(|total| *total <= max_resident_frames)
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             let audio = prepared.audio;
@@ -321,6 +349,7 @@ impl Session {
                 .insert(
                     asset_id,
                     ResidentAsset {
+                        source_audio: prepared.source_audio,
                         audio,
                         waveform: Arc::new(waveform),
                         frames,
@@ -406,6 +435,7 @@ impl Session {
         Arc::clone(&self.sine_table)
     }
 
+    /// Unique retained PCM buffer capacity, including original-rate sources.
     pub const fn resident_frames(&self) -> u64 {
         self.resident_frames
     }
@@ -437,6 +467,7 @@ impl Session {
         &mut self,
         id: AssetId,
         audio: Audio,
+        source_audio: Audio,
         waveform: Waveform,
         frames: u64,
         accounting: ResidentImportAccounting,
@@ -444,6 +475,7 @@ impl Session {
         self.media.insert(
             id,
             ResidentAsset {
+                source_audio,
                 audio,
                 waveform: Arc::new(waveform),
                 frames,
@@ -539,6 +571,20 @@ impl Session {
         command: Command,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.command_prepared_revision_with(command, previous, |_, _, _| Ok(()))
+            .map(|(created, (prepared, ()))| (created, prepared))
+    }
+    /// Finish a worker artifact inside the same canonical/history transaction.
+    pub fn command_prepared_revision_with<T>(
+        &mut self,
+        command: Command,
+        previous: Option<&hex_engine::PreparedRevision>,
+        finish: impl FnOnce(
+            &Project,
+            &Project,
+            &Arc<hex_engine::PreparedRevision>,
+        ) -> Result<T, SessionError>,
+    ) -> Result<(Created, (Arc<hex_engine::PreparedRevision>, T)), SessionError> {
         if matches!(
             &command,
             Command::AddAsset { .. }
@@ -554,18 +600,55 @@ impl Session {
         }
         let media = self.media_bank();
         let sine_table = self.sine_table();
-        self.editor.execute_prepared(command, |candidate| {
-            prepare_with_waveforms(
-                candidate,
-                &media,
-                Arc::clone(&sine_table),
-                previous.map(|artifact| artifact.session().as_ref()),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-            )
-            .map(Arc::new)
-            .map_err(SessionError::from)
-        })
+        self.editor
+            .execute_prepared_transition(command, |source, candidate| {
+                let prepared = prepare_with_waveforms(
+                    candidate,
+                    &media,
+                    Arc::clone(&sine_table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                )
+                .and_then(|prepared| {
+                    tuning_prepared_transition(prepared, source, candidate, previous)
+                })
+                .map(Arc::new)
+                .map_err(SessionError::from)?;
+                let completed = finish(source, candidate, &prepared)?;
+                Ok((prepared, completed))
+            })
+    }
+
+    /// Prepare a project-tuning overlay without changing canonical project
+    /// metadata, dirty state or history.
+    pub fn preview_tuning(
+        &self,
+        tuning: hex_tuning::ProjectTuning,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let media = self.media_bank();
+        let table = self.sine_table();
+        let (_, prepared) = preview.execute_prepared_transition(
+            Command::SetTuning(tuning),
+            |source, candidate| {
+                prepare_with_waveforms(
+                    candidate,
+                    &media,
+                    Arc::clone(&table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                )
+                .and_then(|prepared| {
+                    tuning_prepared_transition(prepared, source, candidate, previous)
+                })
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            },
+        )?;
+        Ok((Arc::new(preview.project().clone()), prepared))
     }
 
     /// Prepare a typed native parameter overlay without changing canonical
@@ -724,6 +807,44 @@ impl Session {
             .map(|(_, prepared)| prepared)
     }
 
+    /// Prepare a static track-gain overlay through the existing resident preview
+    /// path. Only accepted coalesced changes prepare; canonical history is untouched.
+    pub fn preview_track_gain(
+        &self,
+        track: hex_project::TrackId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let media = self.media_bank();
+        let sine_table = self.sine_table();
+        let (_, prepared) =
+            preview.execute_prepared(Command::Gain { track, gain }, |candidate| {
+                prepare_with_waveforms(
+                    candidate,
+                    &media,
+                    Arc::clone(&sine_table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                )
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            })?;
+        Ok((Arc::new(preview.project().clone()), prepared))
+    }
+
+    /// Publish the final absolute value as one ordinary canonical gain command.
+    pub fn commit_track_gain(
+        &mut self,
+        track: hex_project::TrackId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        self.command_prepared_revision(Command::Gain { track, gain }, previous)
+            .map(|(_, prepared)| prepared)
+    }
+
     /// Prepare a sparse return-send overlay without changing canonical project
     /// state, dirty metadata or history.
     pub fn preview_return_send(
@@ -845,7 +966,13 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(frames)
+            .checked_add(
+                prepared.additional_pcm_frames(
+                    self.media
+                        .values()
+                        .flat_map(|m| [&m.source_audio, &m.audio]),
+                )?,
+            )
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         if self.media.try_reserve(1).is_err() {
@@ -906,6 +1033,7 @@ impl Session {
             },
         )?;
         let resident = ResidentAsset {
+            source_audio: prepared.source_audio,
             audio: staged_audio,
             waveform: Arc::new(prepared.waveform),
             frames,
@@ -962,7 +1090,13 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(frames)
+            .checked_add(
+                prepared.additional_pcm_frames(
+                    self.media
+                        .values()
+                        .flat_map(|m| [&m.source_audio, &m.audio]),
+                )?,
+            )
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
@@ -1032,6 +1166,7 @@ impl Session {
         self.media.insert(
             asset_id,
             ResidentAsset {
+                source_audio: prepared.source_audio,
                 audio: staged_audio,
                 waveform: Arc::new(prepared.waveform),
                 frames,
@@ -1065,7 +1200,13 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(frames)
+            .checked_add(
+                prepared.additional_pcm_frames(
+                    self.media
+                        .values()
+                        .flat_map(|m| [&m.source_audio, &m.audio]),
+                )?,
+            )
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
@@ -1126,6 +1267,7 @@ impl Session {
         self.commit_resident_import(
             asset_id,
             staged_audio,
+            prepared.source_audio,
             prepared.waveform,
             frames,
             ResidentImportAccounting {
@@ -1162,10 +1304,23 @@ impl Session {
         &mut self,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Option<Arc<hex_engine::PreparedRevision>>, SessionError> {
+        self.undo_prepared_revision_with(previous, |_, _, _| Ok(()))
+            .map(|result| result.map(|(prepared, ())| prepared))
+    }
+    /// Prepare worker publication before accepting a history transition.
+    pub fn undo_prepared_revision_with<T>(
+        &mut self,
+        previous: Option<&hex_engine::PreparedRevision>,
+        finish: impl FnOnce(
+            &Project,
+            &Project,
+            &Arc<hex_engine::PreparedRevision>,
+        ) -> Result<T, SessionError>,
+    ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
         let media = self.media_bank();
         let sine_table = self.sine_table();
-        self.editor.undo_prepared(|candidate| {
-            prepare_with_waveforms(
+        self.editor.undo_prepared_transition(|source, candidate| {
+            let prepared = prepare_with_waveforms(
                 candidate,
                 &media,
                 Arc::clone(&sine_table),
@@ -1173,8 +1328,11 @@ impl Session {
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
             )
+            .and_then(|prepared| tuning_prepared_transition(prepared, source, candidate, previous))
             .map(Arc::new)
-            .map_err(SessionError::from)
+            .map_err(SessionError::from)?;
+            let completed = finish(source, candidate, &prepared)?;
+            Ok((prepared, completed))
         })
     }
 
@@ -1202,10 +1360,23 @@ impl Session {
         &mut self,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Option<Arc<hex_engine::PreparedRevision>>, SessionError> {
+        self.redo_prepared_revision_with(previous, |_, _, _| Ok(()))
+            .map(|result| result.map(|(prepared, ())| prepared))
+    }
+    /// Prepare worker publication before accepting a history transition.
+    pub fn redo_prepared_revision_with<T>(
+        &mut self,
+        previous: Option<&hex_engine::PreparedRevision>,
+        finish: impl FnOnce(
+            &Project,
+            &Project,
+            &Arc<hex_engine::PreparedRevision>,
+        ) -> Result<T, SessionError>,
+    ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
         let media = self.media_bank();
         let sine_table = self.sine_table();
-        self.editor.redo_prepared(|candidate| {
-            prepare_with_waveforms(
+        self.editor.redo_prepared_transition(|source, candidate| {
+            let prepared = prepare_with_waveforms(
                 candidate,
                 &media,
                 Arc::clone(&sine_table),
@@ -1213,13 +1384,23 @@ impl Session {
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
             )
+            .and_then(|prepared| tuning_prepared_transition(prepared, source, candidate, previous))
             .map(Arc::new)
-            .map_err(SessionError::from)
+            .map_err(SessionError::from)?;
+            let completed = finish(source, candidate, &prepared)?;
+            Ok((prepared, completed))
         })
     }
 
     pub fn audio(&self, asset: AssetId) -> Option<&Audio> {
         self.media.get(&asset).map(|resident| &resident.audio)
+    }
+
+    /// Original decoded source, borrowed on control; not a callback resource lease.
+    pub fn source_audio(&self, asset: AssetId) -> Option<&Audio> {
+        self.media
+            .get(&asset)
+            .map(|resident| &resident.source_audio)
     }
 
     pub fn waveform(&self, asset: AssetId) -> Option<Arc<Waveform>> {
@@ -1394,3 +1575,19 @@ fn prepare_with_waveforms(
 
 #[cfg(test)]
 mod audio_edit_tests;
+
+fn tuning_prepared_transition(
+    prepared: hex_engine::PreparedRevision,
+    source: &Project,
+    candidate: &Project,
+    previous: Option<&hex_engine::PreparedRevision>,
+) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    if source.tuning() != candidate.tuning()
+        && source.same_except_tuning(candidate)
+        && let Some(previous) = previous
+    {
+        prepared.with_tuning_continuation_from(candidate, source, previous)
+    } else {
+        Ok(prepared)
+    }
+}

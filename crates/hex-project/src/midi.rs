@@ -355,6 +355,44 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let id = crate::edit::insert_track_before(project, name, None)?;
             Ok(Created::Track(id))
         }
+        Command::PlaceMidiClipWithOverwrite {
+            track,
+            start,
+            length,
+        } => {
+            validate_clip(start, length)?;
+            let end = BeatTime::from_raw(
+                start
+                    .raw()
+                    .checked_add(length.raw())
+                    .ok_or(Invalid("midi clip timeline end overflow"))?,
+            );
+            project
+                .track(track)
+                .ok_or(Invalid("track no longer exists"))?;
+            // Fully covered MIDI victims only free capacity. Retire them on
+            // this private paint candidate before audio splitting so each
+            // existing helper's admission is bounded by the final hybrid count.
+            // Editor still rolls back the complete candidate on any refusal.
+            project.track_mut(track)?.content.midi_clips.retain(|clip| {
+                !(clip.start >= start
+                    && clip
+                        .start
+                        .raw()
+                        .checked_add(clip.length.raw())
+                        .is_some_and(|clip_end| clip_end <= end.raw()))
+            });
+            crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
+            overwrite_midi_interval(project, track, start, end, ClipId(0))?;
+            apply(
+                project,
+                Command::PlaceMidiClip {
+                    track,
+                    start,
+                    length,
+                },
+            )
+        }
         Command::PlaceMidiClip {
             track,
             start,

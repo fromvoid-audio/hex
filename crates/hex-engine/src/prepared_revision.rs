@@ -71,10 +71,24 @@ impl PreparedMutableTrackRevision {
     }
 }
 
+static NEXT_TUNING_FAMILY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TuningContinuationFamily(u64);
+impl TuningContinuationFamily {
+    pub(crate) fn fresh() -> Result<Self, Invalid> {
+        use std::sync::atomic::Ordering;
+        NEXT_TUNING_FAMILY
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map(Self)
+            .map_err(|_| Invalid("tuning continuation family exhausted"))
+    }
+}
+
 /// Immutable compiled outputs prepared before a canonical revision is committed.
 /// Arrangement playback and Session inventory share a stable instrument table;
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
+    tuning_family: TuningContinuationFamily,
     arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
     session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
     midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
@@ -107,6 +121,86 @@ impl PreparedRevision {
             previous_session,
             &instruments,
         )
+    }
+
+    /// Prepare a tuning-only publication in the authoritative Session's existing
+    /// project generation. The caller must pair `previous_project` with its actual
+    /// accepted `previous_revision`; this API does not authenticate arbitrary caller
+    /// metadata. It independently checks the exact supplied canonical delta and the
+    /// prior compiled keyboard-relevant instrument/source/chain/timing/tuning facts.
+    /// Opens and ordinary edits must use ordinary preparation, which starts a fresh
+    /// family. Skipped tuning candidates can then continue the actual installed
+    /// family member without retaining source graphs or replaying intermediate edits.
+    pub fn prepare_tuning_from(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_project: &Project,
+        previous_revision: &Self,
+    ) -> Result<Self, Invalid> {
+        Self::prepare(
+            project,
+            media,
+            sine_table,
+            Some(previous_revision.session()),
+        )?
+        .with_tuning_continuation_from(project, previous_project, previous_revision)
+    }
+    /// Consume an unpublished prepared candidate and verify the same tuning-only
+    /// proof without repeating PCM/waveform preparation. No raw family setter exists.
+    pub fn with_tuning_continuation_from(
+        mut self,
+        project: &Project,
+        previous_project: &Project,
+        previous_revision: &Self,
+    ) -> Result<Self, Invalid> {
+        if !previous_project.same_except_tuning(project)
+            || self.arrangement.shared_contexts().tuning()
+                != &project.tuning().table().map_err(|e| Invalid(e.0))?
+            || previous_revision.arrangement.sample_rate() != previous_project.sample_rate()
+            || previous_revision.arrangement.shared_contexts().tuning()
+                != &previous_project
+                    .tuning()
+                    .table()
+                    .map_err(|e| Invalid(e.0))?
+            || !previous_revision
+                .session
+                .timing()
+                .matches_canonical(previous_project.tempo_map())
+            || previous_revision.session.meter_map() != previous_project.meter_map()
+            || prepare_mutable_track_revisions(previous_project, &previous_revision.arrangement)?
+                != previous_revision.mutable_track_revisions
+            || previous_project
+                .tracks()
+                .iter()
+                .zip(previous_revision.arrangement.tracks())
+                .any(|(authored, compiled)| {
+                    compiled.canonical_track_id() != Some(authored.id())
+                        || compiled.instrument_id != authored.instrument().map(Device::id)
+                        || compiled.instrument_state
+                            != authored
+                                .instrument()
+                                .map(|device| device.state().clone().without_host_gains())
+                        || compiled.instrument_bypassed
+                            != authored.instrument().is_some_and(Device::bypassed)
+                        || compiled.instrument_position
+                            != authored.instrument_position().unwrap_or(0)
+                })
+        {
+            return Err(Invalid(
+                "keyboard tuning publication must preserve the exact project source",
+            ));
+        }
+        if !keyboard_source_facts_match(previous_revision, &self) {
+            return Err(Invalid(
+                "keyboard tuning publication changed a prepared source or chain",
+            ));
+        }
+        self.tuning_family = previous_revision.tuning_family;
+        Ok(self)
+    }
+    pub(crate) fn tuning_family(&self) -> TuningContinuationFamily {
+        self.tuning_family
     }
 
     /// Arm one transient raw-fader target without editing canonical metadata or history.
@@ -294,6 +388,7 @@ impl PreparedRevision {
                 midi_bank_references,
             )?;
             Ok(Self {
+                tuning_family: TuningContinuationFamily::fresh()?,
                 arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
                 session: crate::owned_shared::OwnedShared::new_owned(session),
                 midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
@@ -401,6 +496,7 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
+            tuning_family: TuningContinuationFamily::fresh()?,
             arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
             session: crate::owned_shared::OwnedShared::new_owned(session),
             midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
@@ -460,7 +556,9 @@ impl PreparedRevision {
         let Some(new) = other.mutable_track_revision(track) else {
             return false;
         };
-        old.topology_matches(new)
+        self.arrangement.shared_contexts().tuning_identity()
+            == other.arrangement.shared_contexts().tuning_identity()
+            && old.topology_matches(new)
     }
 
     pub(crate) fn mutable_track_retarget_topology_matches(
@@ -484,7 +582,10 @@ impl PreparedRevision {
         let Some(new) = other.mutable_track_revision(track) else {
             return false;
         };
-        old.topology_matches(new) && old.arrangement_sources_match(new)
+        self.arrangement.shared_contexts().tuning_identity()
+            == other.arrangement.shared_contexts().tuning_identity()
+            && old.topology_matches(new)
+            && old.arrangement_sources_match(new)
     }
 
     pub(crate) fn mutable_arrangement_retarget_matches(
@@ -594,4 +695,73 @@ fn prepare_mutable_track_revisions(
     }
     revisions.sort_unstable_by_key(|revision| revision.id);
     Ok(revisions)
+}
+
+fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevision) -> bool {
+    source.arrangement.tracks().len() == target.arrangement.tracks().len()
+        && source
+            .arrangement
+            .tracks()
+            .iter()
+            .zip(target.arrangement.tracks())
+            .all(|(a, b)| {
+                a.track_id == b.track_id
+                    && a.instrument_id == b.instrument_id
+                    && a.instrument_state == b.instrument_state
+                    && a.instrument_bypassed == b.instrument_bypassed
+                    && a.instrument_position == b.instrument_position
+                    && a.instrument_input_gain == b.instrument_input_gain
+                    && a.instrument_output_gain == b.instrument_output_gain
+                    && a.midi_source_index == b.midi_source_index
+                    && a.device_chain.len() == b.device_chain.len()
+                    && a.device_chain
+                        .iter()
+                        .zip(b.device_chain.iter())
+                        .all(|(a, b)| {
+                            a.owner == b.owner
+                                && a.device_id == b.device_id
+                                && a.device_type == b.device_type
+                                && a.bypassed == b.bypassed
+                                && a.sample_rate == b.sample_rate
+                                && a.matrix == b.matrix
+                                && match (&a.configuration, &b.configuration) {
+                                    (Some(a), Some(b)) => a.processing_eq(b),
+                                    (None, None) => true,
+                                    _ => false,
+                                }
+                        })
+                    && match (&a.instrument, &b.instrument) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => {
+                            a.spans.len() == b.spans.len()
+                                && a.spans.iter().zip(&b.spans).all(|(a, b)| {
+                                    (
+                                        a.start,
+                                        a.gate_end,
+                                        a.onset_beat,
+                                        a.gate_end_beat,
+                                        a.pitch,
+                                        a.channel,
+                                        a.velocity,
+                                        a.clip,
+                                        a.note,
+                                        a.iteration,
+                                    ) == (
+                                        b.start,
+                                        b.gate_end,
+                                        b.onset_beat,
+                                        b.gate_end_beat,
+                                        b.pitch,
+                                        b.channel,
+                                        b.velocity,
+                                        b.clip,
+                                        b.note,
+                                        b.iteration,
+                                    )
+                                })
+                        }
+                        _ => false,
+                    }
+            })
+        && source.session.tuning_source_facts_match(&target.session)
 }
