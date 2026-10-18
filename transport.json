@@ -1,0 +1,15 @@
+{
+  "input_transport_commit": "9b9aecc474cd16c69937f1d6a851a36deb40521b",
+  "declared_base": "cdba26a815a2286ed43c2a6ed5089f5c9b88613f",
+  "declared_end": "cb8befc4f2dd19d0af1fd02932cb52941653b479",
+  "capability": "existing configured Mac Codex CLI, one invocation, not cloud unattended/full410 acceptance",
+  "archive": "changelog-mac-cb8befc4-generated-v1.tar.gz",
+  "bytes": 140674,
+  "sha256": "69b22ce21a6256b4554890e52a7ca96dcff6c819cd2b47373650f0ad56a028f2",
+  "safe_regular_members": 27,
+  "verified_payloads": 26,
+  "raw_result_sha256": "80ff2b23e017a75bc553ecbe7696e79cd57a4fac4738bba932d5f58b642eced2",
+  "compact_sha256": "a9d440616ae10bcbc82a4402372c16e91c93fd1d9dae0c404825555952884e03",
+  "report_sha256": "1069d1663faa4e276575307ffa7fbb9a8c45f7908462aad1bcebd7eea60a5f17",
+  "raw_logs_not_exported": true
+}
