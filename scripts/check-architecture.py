@@ -81,8 +81,11 @@ for name, package in packages.items():
         target = dep['name']
         if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan'}:
             errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
-        if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream', 'hex-desktop'} or dep['kind'] != 'dev'):
-            errors.append(f'{name}: allocation-counter is allowed only for audio/stream/desktop dev probes')
+        if target == 'allocation-counter':
+            engine_probe = name == 'hex-engine' and dep['kind'] == 'dev' and dep['req'] == '=0.8.1'
+            existing_probe = name in {'hex-audio', 'hex-stream', 'hex-desktop'} and dep['kind'] == 'dev'
+            if not (engine_probe or existing_probe):
+                errors.append(f'{name}: allocation-counter requires an allowed dev probe (engine pinned to =0.8.1)')
         allowed = ALLOWED[name]
         if dep['kind'] == 'dev':
             allowed = allowed | DEV_ALLOWED.get(name, set())

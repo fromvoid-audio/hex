@@ -25,6 +25,10 @@ retained original PCM bank. File verification remains in media; hashing is
 never performed by callback resource queries or DSP. A digest is not a lease
 or an ownership/admission proof.
 
+The pinned allocation-counter 0.8.1 is a dev-only exception for private
+bootstrap allocation and observation-ID probes. It is absent from production
+dependencies and supplies no inventory, ownership or admission authority.
+
 ## Does not own
 
 GPUI, device streams, file dialogs, packaging, UI state, or control networking.

@@ -1293,7 +1293,9 @@ These are partial ledger primitives. The closed aggregate compiler operation,
 all constructor costs in one retained/peak check, refusal before normal backing
 allocation and both selector preparations, complete failure/cancel restoration,
 Service incarnation/publication and usable registered Sampler remain open.
-The test-only pinned allocator probe currently needs a narrow Engine exception
-to the architecture allowlist; that policy proposal is recorded in Pulse2789,
-not silently applied. The existing guard's negative result is retained and this
-checkpoint is not source-ready, full-CI-qualified or native accepted.
+The test-only allocator policy exception was subsequently approved for Engine
+dev probes pinned exactly to 0.8.1. Production/build dependencies, other versions
+and disallowed crates remain refused; unrelated dependency guards still apply.
+The original8073 guard failure is retained. This exception does not qualify the
+unfinished aggregate operation or make this checkpoint source-ready,
+full-CI-qualified or native accepted.
