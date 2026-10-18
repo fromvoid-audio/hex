@@ -371,3 +371,197 @@ fn actual_project_sampler_context_preparation_retains_concrete_owner_and_reuses_
     assert!(registry.prepare_instrument(state, &context).is_err()); // no registry gate bypass
     assert!(SharedAnalyticContextTable::prepare(editor.project(), &registry, None, None).is_err());
 }
+
+#[test]
+fn actual_arrangement_and_session_sampler_preparation_retains_factory_and_refuses_stale_state() {
+    let Some((source, identity, mut editor)) = canonical_fixture() else {
+        return;
+    };
+    let track = identity.track;
+    let device = identity.device;
+    drop(identity);
+    let hex_project::Created::Clip(clip) = editor
+        .execute(hex_project::Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::from_quarters(1).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(hex_project::Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::from_quarters(1).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let hex_project::Created::Scene(scene) = editor
+        .execute(hex_project::Command::AddScene {
+            name: "sampler scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let hex_project::Created::SessionClip(cell) = editor
+        .execute(hex_project::Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "sampler cell".into(),
+            source_length: hex_project::BeatTime::from_quarters(1).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("cell")
+    };
+    editor
+        .execute(hex_project::Command::AddMidiNote {
+            clip: cell,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::from_quarters(1).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let registry = hex_devices::native_instrument_registry().unwrap();
+    let contexts = SharedAnalyticContextTable::prepare(
+        editor.project(),
+        &registry,
+        None,
+        Some(crate::native_device_resources::DeviceResourcePreparation {
+            bank: &source,
+            max_scope_metadata_bytes: 65_536,
+        }),
+    )
+    .unwrap();
+    let prepared =
+        crate::compile::project_with_prepared_audio_sources_and_midi_preview_and_contexts(
+            editor.project(),
+            &std::collections::BTreeMap::new(),
+            1,
+            None,
+            Some(contexts.clone_on_control()),
+            None,
+        )
+        .unwrap()
+        .0;
+    let compiled = &prepared.tracks()[0];
+    assert!(compiled.mutable_instrument);
+    assert_eq!(compiled.instrument_runtime_latency, Some(0));
+    let index = contexts.index_for_device(device).unwrap();
+    let owner = contexts.owner(index).unwrap();
+    assert!(
+        compiled
+            .instrument
+            .as_ref()
+            .unwrap()
+            .bank
+            .context_matches(Some((index, owner)))
+    );
+    assert!(Arc::ptr_eq(prepared.shared_contexts.arc(), contexts.arc()));
+    let session = crate::PreparedSessionInventory::prepare_with_media_and_shared_contexts(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &registry,
+        contexts.clone_on_control(),
+    )
+    .unwrap();
+    assert_eq!(session.midi_clips().len(), 1);
+    assert!(session.midi_clip(cell).is_some());
+    let crate::session_inventory::PreparedTrackRuntimeFactory::Sampler(session_factory) =
+        session.mutable_instrument_factory_owner(track).unwrap()
+    else {
+        panic!("actual retained concrete Session route")
+    };
+    assert!(Arc::ptr_eq(
+        session_factory.arc(),
+        owner.sampler_factory.as_ref().unwrap().0.arc()
+    ));
+    // Exercise PCM from the factory actually retained by the Session producer;
+    // this is not a claim of renderer publication or complete graph admission.
+    let mut pair = NativeInstrumentRuntimePair::new(
+        session_factory.as_ref(),
+        NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: 259,
+            max_active_occurrences: 32,
+            max_tail_frames: 44_100 * 600,
+        },
+    )
+    .unwrap();
+    let mut output = [[0.0; 2]; 6];
+    pair.begin_block();
+    pair.process_block(
+        &[NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 127,
+        }],
+        &mut output,
+        owner.resources(),
+    )
+    .unwrap();
+    pair.commit_block();
+    assert_eq!(&output[..4], &fixtures::PCM);
+    assert_eq!(&output[4..], &[[0.0; 2]; 2]);
+    // Ordinary unbound compilation still refuses: this route is preparation,
+    // not a registry permit or complete root publication proof.
+    assert!(crate::compile::project(editor.project(), &std::collections::BTreeMap::new()).is_err());
+    let mut changed = hex_devices::sampler::state::SamplerState::from_native(
+        editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .state(),
+    )
+    .unwrap();
+    changed.region.start = 1;
+    let previous = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .state();
+    let state = changed
+        .to_native()
+        .unwrap()
+        .with_host_metadata_from(previous)
+        .unwrap();
+    editor
+        .execute(hex_project::Command::ReplaceDeviceState { device, state })
+        .unwrap();
+    assert!(
+        crate::compile::project_with_prepared_audio_sources_and_midi_preview_and_contexts(
+            editor.project(),
+            &std::collections::BTreeMap::new(),
+            1,
+            None,
+            Some(contexts.clone_on_control()),
+            None,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::PreparedSessionInventory::prepare_with_media_and_shared_contexts(
+            editor.project(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+            &registry,
+            contexts,
+        )
+        .is_err()
+    );
+}

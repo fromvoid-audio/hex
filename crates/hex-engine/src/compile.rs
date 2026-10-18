@@ -382,8 +382,28 @@ fn compile_project_inner<'a>(
         let midi_source = &snapshot.tracks()[source_index];
         // Validate a present slot even when it is bypassed or has no current
         // MIDI clips; unknown/future definitions must refuse graph publication.
-        let instrument_config = track
+        // Borrow the retained concrete sampler preparation rather than asking
+        // the asset-free registry or creating an opaque replacement factory.
+        // The enclosing context table remains an actual owner in the note bank.
+        let sampler_config = track
             .instrument()
+            .map(|slot| {
+                shared_contexts
+                    .owner_for_device(slot.id())
+                    .map_or(Ok(None), |owner| {
+                        owner.sampler_prepared_on_control(
+                            track.id(),
+                            slot.id(),
+                            slot.state(),
+                            snapshot.sample_rate(),
+                        )
+                    })
+            })
+            .transpose()?
+            .flatten();
+        let owned_instrument_config = track
+            .instrument()
+            .filter(|_| sampler_config.is_none())
             .map(|slot| {
                 instrument_registry
                     .prepare_instrument(slot.state(), &hex_lattice::DevicePreparationContext {
@@ -397,10 +417,13 @@ fn compile_project_inner<'a>(
                     .map_err(|_| Invalid("track instrument state is unsupported"))
             })
             .transpose()?;
+        let instrument_config: Option<&dyn hex_lattice::PreparedNativeInstrument> = sampler_config
+            .map(|factory| factory as &dyn hex_lattice::PreparedNativeInstrument)
+            .or(owned_instrument_config.as_deref());
         let instrument_latency = track
             .instrument()
             .filter(|device| !device.bypassed())
-            .and(instrument_config.as_deref())
+            .and(instrument_config)
             .map_or(Some(0), |instrument| {
                 instrument.algorithmic_latency_frames()
             });
@@ -408,26 +431,36 @@ fn compile_project_inner<'a>(
         let mutable_limits = if let Some(instrument) = track
             .instrument()
             .filter(|device| !device.bypassed())
-            .and(instrument_config.as_ref())
+            .and(instrument_config)
         {
-            (if track.instrument().is_some_and(|device| {
-                shared_contexts.requires_mutable_continuation(track.id(), device.id())
-            }) {
-                instrument.prepare_mutable_continuation_runtime()
+            if let Some(factory) = sampler_config {
+                instrument_runtime_latency =
+                    hex_lattice::PreparedMutableInstrumentRuntime::algorithmic_latency_frames(
+                        factory,
+                    );
+                Some(crate::midi_compile::MutableInstrumentLimits::from_factory(
+                    factory,
+                )?)
             } else {
-                instrument.prepare_mutable_runtime()
-            })
-            .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
-            .map(|factory| {
-                instrument_runtime_latency = factory.algorithmic_latency_frames();
-                crate::midi_compile::MutableInstrumentLimits::from_factory(factory.as_ref())
-            })
-            .transpose()?
+                (if track.instrument().is_some_and(|device| {
+                    shared_contexts.requires_mutable_continuation(track.id(), device.id())
+                }) {
+                    instrument.prepare_mutable_continuation_runtime()
+                } else {
+                    instrument.prepare_mutable_runtime()
+                })
+                .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
+                .map(|factory| {
+                    instrument_runtime_latency = factory.algorithmic_latency_frames();
+                    crate::midi_compile::MutableInstrumentLimits::from_factory(factory.as_ref())
+                })
+                .transpose()?
+            }
         } else {
             None
         };
         if mutable_limits.is_some()
-            && let Some(instrument) = instrument_config.as_deref()
+            && let Some(instrument) = instrument_config
         {
             for clip in midi_source.midi_clips() {
                 for note in clip.source().notes() {
@@ -491,7 +524,7 @@ fn compile_project_inner<'a>(
             let prepared_instrument = track
                 .instrument()
                 .filter(|device| !device.bypassed())
-                .and_then(|_| instrument_config.as_ref().map(Box::as_ref));
+                .and(instrument_config);
             Some(
                 crate::midi_compile::compile_instrument_track(
                     snapshot,

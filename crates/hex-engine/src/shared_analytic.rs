@@ -296,6 +296,30 @@ impl SharedContextOwner {
             .map(|(factory, _)| factory.clone_on_control())
     }
 
+    /// Borrow the actual retained concrete factory during control compilation.
+    /// This creates neither a replacement factory nor a constructor declaration.
+    pub(crate) fn sampler_prepared_on_control(
+        &self,
+        track: TrackId,
+        device: hex_project::DeviceId,
+        state: &hex_lattice_contract::NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<Option<&hex_devices::sampler::PreparedSamplerRuntime>, Invalid> {
+        let Some((factory, _)) = &self.sampler_factory else {
+            return Ok(None);
+        };
+        if self.identity.track != track
+            || self.identity.device != device
+            || self.identity.sample_rate != sample_rate
+            || self.identity.state != state.clone().without_host_gains()
+        {
+            return Err(Invalid(
+                "sampler context does not match the actual track state",
+            ));
+        }
+        Ok(Some(factory.as_ref()))
+    }
+
     pub(crate) fn resources(&self) -> &dyn hex_lattice::DeviceResources {
         match &self.resources {
             Some(lease) => lease,

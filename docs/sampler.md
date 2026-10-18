@@ -333,3 +333,20 @@ installed-build/hash check or reference experiment was possible. The existing
 documented reference is Live12.4.6; recheck its build/hash before taking captures.
 Record source settings, original fixture hashes, exact actions, numerical
 tolerances and per-feature results using the repository research template.
+
+### Retained Arrangement and Session preparation
+
+The private Arrangement compiler borrows the concrete Sampler factory from its
+actual retained context owner and reads its mutable limits directly. It does not
+create an opaque replacement factory or ask the asset-free registry to accept a
+referenced state. Arrangement and Session both compare the context against the
+actual track, device, authored state and sample rate before using that factory;
+a stale state refuses preparation. Session retains the same constructor-paired
+factory body beside its existing context/resource owners.
+
+The targeted host oracle constructs real Arrangement and Session MIDI clips,
+checks the compiled mutable note bank and actual Session factory field, and
+compares playback against an independent original PCM fixture. This is a private
+preparation milestone, not full retained-root admission, renderer publication,
+registration, keyboard/export qualification, or a usable native panel. Its runtime
+result must be recorded separately from successful compilation.

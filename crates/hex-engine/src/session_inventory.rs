@@ -525,13 +525,23 @@ impl PreparedSessionInventory {
         let mut instrument_track_indices = BTreeMap::new();
         for track in project.tracks() {
             let slot = track.instrument();
-            let sampler_factory = slot.filter(|device| !device.bypassed()).and_then(|device| {
-                shared_contexts.owner_for_device(device.id()).and_then(
-                    crate::shared_analytic::SharedContextOwner::sampler_factory_on_control,
-                )
-            });
+            let sampler_owner =
+                slot.and_then(|device| shared_contexts.owner_for_device(device.id()));
+            let sampler_prepared = match (slot, sampler_owner) {
+                (Some(device), Some(owner)) => owner.sampler_prepared_on_control(
+                    track.id(),
+                    device.id(),
+                    device.state(),
+                    project.sample_rate(),
+                )?,
+                _ => None,
+            };
+            let sampler_factory = slot
+                .filter(|device| !device.bypassed())
+                .and(sampler_owner)
+                .and_then(crate::shared_analytic::SharedContextOwner::sampler_factory_on_control);
             let config = slot
-                .filter(|_| sampler_factory.is_none())
+                .filter(|_| sampler_prepared.is_none())
                 .map(|device| {
                     let resources = shared_contexts.owner_for_device(device.id()).and_then(
                         crate::shared_analytic::SharedContextOwner::resource_configuration,
