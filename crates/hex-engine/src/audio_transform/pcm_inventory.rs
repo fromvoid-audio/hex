@@ -61,11 +61,12 @@ impl AudioTransformPcmInventory<'_> {
             source_limit,
             entry_limit,
             hits,
+            failed,
             #[cfg(test)]
             cancel_after_polls,
         } = self.owner;
-        let _: (&usize, &usize, &usize, &Cell<u64>) =
-            (cache_limit, source_limit, entry_limit, hits);
+        let _: (&usize, &usize, &usize, &Cell<u64>, &Cell<bool>) =
+            (cache_limit, source_limit, entry_limit, hits, failed);
         #[cfg(test)]
         let _: &Cell<Option<usize>> = cancel_after_polls;
         let Cache {
@@ -73,7 +74,8 @@ impl AudioTransformPcmInventory<'_> {
             bytes,
             source_bytes,
         } = &*self.cache;
-        if !entries.is_empty()
+        if failed.get()
+            || !entries.is_empty()
             || *bytes != 0
             || *source_bytes != 0
             || self

@@ -345,6 +345,74 @@ fn failed_preparation_transaction_does_not_cache_candidate_and_gain_reuses_pcm()
 }
 
 #[test]
+fn unwound_transform_transaction_retains_pending_charge_and_refuses_compiler_reentry() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    for has_pcm in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        let context = isolated(256_000, 256_000, 2);
+        let budget = context.budget.clone();
+        let asset = editor
+            .project()
+            .asset(editor.project().clip(clip).unwrap().asset())
+            .unwrap();
+        let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            let _: Result<(), Invalid> = context.transaction(|| {
+                if has_pcm {
+                    let _candidate = context.prepare_audio(
+                        editor.project(),
+                        edit,
+                        asset,
+                        &media[&asset.id()],
+                    )?;
+                }
+                panic!("injected closed compiler preparation failure");
+            });
+        }));
+        assert!(failure.is_err());
+        assert!(context.failed_incomplete_on_control());
+        let expected_bytes = if has_pcm { 64_000 } else { 0 };
+        assert_eq!(context.retained_pcm_bytes(), expected_bytes);
+        assert_eq!(context.cached_pcm_bytes().unwrap(), 0);
+        assert_eq!(
+            context.pending.borrow().as_ref().unwrap().len(),
+            usize::from(has_pcm)
+        );
+        let calls = Cell::new(0);
+        for _ in 0..2 {
+            assert!(
+                context
+                    .compile_transaction(|| {
+                        calls.set(calls.get() + 1);
+                        Ok(())
+                    })
+                    .is_err()
+            );
+            assert!(
+                context
+                    .transaction(|| {
+                        calls.set(calls.get() + 1);
+                        Ok(())
+                    })
+                    .is_err()
+            );
+        }
+        assert_eq!(calls.get(), 0);
+        assert_eq!(budget.used(), expected_bytes);
+        // Explicit control teardown only. A surrounding failed native custody
+        // must retain this owner/charge until its actual retirement contract.
+        drop(context);
+        assert_eq!(budget.used(), 0);
+        eprintln!(
+            "actual failed transform custody has_pcm={has_pcm}, retained={expected_bytes}, repeated compiler closures uninvoked until explicit control teardown"
+        );
+    }
+}
+
+#[test]
 fn accepted_audio_sidecar_survives_tiny_cache_and_preserves_split_crop_identity() {
     let (mut editor, clip, media) = fixture(false);
     editor

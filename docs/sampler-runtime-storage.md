@@ -87,3 +87,13 @@ track insertion tests preserve per-clip instrument identity and actual unchanged
 source/template reuse when track order differs from key order. Other compiler
 scratch, transform failure custody, root installation, inspection and cleanup
 still need the closed-entry reservation/audit.
+
+Transform transaction unwinding now latches failure without cleanup, allocation
+or a nested catch in Drop. Actual pending entries and their budget tokens stay
+in that preparation; subsequent direct or compiler transaction entry refuses
+without invoking the new closure. Even an abandoned empty pending transaction
+cannot qualify the original-only storage view. Ordinary returned errors still
+settle their pending entries and permit the existing healthy retry behavior.
+Tests cover empty and real 64,000-byte pending derived PCM, retained charge,
+repeated non-entry and explicit control teardown. This is failure-state handling,
+not a whole compiler peak bound or permission for automatic input recovery.

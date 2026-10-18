@@ -85,6 +85,27 @@ fn original_only_transform_inventory_charges_reserved_empty_cache_and_pending_ba
             })
             .unwrap();
     }
+    // Even an EMPTY abandoned transaction is failed custody, not an admitted
+    // empty-cache graph. Use the actual supported signal/production budget so
+    // another unsupported child cannot accidentally explain this refusal.
+    let failed = AudioTransformPreparation::with_retained_cancellation_on_control(worker.clone());
+    let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _: Result<(), Invalid> = failed.transaction(|| {
+            panic!("injected empty transform transaction failure");
+        });
+    }));
+    assert!(fault.is_err());
+    assert!(failed.failed_incomplete_on_control());
+    failed
+        .with_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(limits())?;
+            assert_eq!(
+                inventory.visit_original_only_control_storage_on_control(&mut ledger),
+                Err(AudioStorageError::UnknownStorage)
+            );
+            Ok(())
+        })
+        .unwrap();
     // A real retained tempo owner is not qualified by the empty-cache proof.
     context
         .shared_tempo(hex_project::Project::new(48_000).unwrap().tempo_map())
