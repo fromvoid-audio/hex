@@ -522,7 +522,14 @@ impl PreparedSessionInventory {
         instrument_configs
             .try_reserve_exact(project.tracks().len())
             .map_err(|_| crate::Invalid("could not reserve Session instrument configuration"))?;
-        let mut instrument_track_indices = BTreeMap::new();
+        // One reserved scalar backing can be quoted before the closed compiler
+        // runs. A tree node allocator has no observable bounded backing here.
+        // Canonical track order may differ from ID order, so bulk-sort once
+        // after all configurations are constructed, preserving their indices.
+        let mut instrument_track_indices = Vec::new();
+        instrument_track_indices
+            .try_reserve_exact(project.tracks().len())
+            .map_err(|_| crate::Invalid("could not reserve Session instrument lookup"))?;
         for track in project.tracks() {
             let slot = track.instrument();
             let sampler_owner =
@@ -610,8 +617,13 @@ impl PreparedSessionInventory {
                 history_retarget_target,
                 history_retarget_requires_quiescence,
             });
-            instrument_track_indices.insert(track.id(), instrument_configs.len() - 1);
+            instrument_track_indices.push((track.id(), instrument_configs.len() - 1));
         }
+        let instrument_track_indices = hex_project::SortedEntries::try_from_unsorted_on_control(
+            instrument_track_indices,
+            hex_project::MAX_TRACKS,
+        )
+        .map_err(|_| crate::Invalid("Session instrument lookup is invalid"))?;
         let can_reuse = previous.is_some_and(|old| {
             old.sine_table.shares_owner_with(&sine_table)
                 && old.timing.matches_canonical(project.tempo_map())
@@ -1486,6 +1498,58 @@ mod tests {
                 velocity: 100,
             })
             .expect("add MIDI note");
+    }
+
+    #[test]
+    fn reserved_track_lookup_preserves_reordered_instrument_identity_and_source_reuse() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let a = add_track(&mut editor, "first");
+        let b = add_track(&mut editor, "second");
+        let scene = add_scene(&mut editor, "source");
+        let clips = [
+            add_cell(&mut editor, a, scene, "a"),
+            add_cell(&mut editor, b, scene, "b"),
+        ];
+        add_note(&mut editor, clips[0], 60);
+        add_note(&mut editor, clips[1], 72);
+        let table = crate::SharedSineTable::new_on_control();
+        let first =
+            PreparedSessionInventory::prepare(editor.project(), table.clone(), None).unwrap();
+        // Insert canonically: rebuilding from serialized snapshots creates NEW
+        // MIDI allocations and cannot prove unchanged-source reuse.
+        let Created::Track(inserted) = editor
+            .execute(Command::InsertTrack {
+                name: "new first track".into(),
+                before_track: Some(a),
+            })
+            .unwrap()
+        else {
+            panic!("inserted track")
+        };
+        let reordered = editor.project();
+        let next = PreparedSessionInventory::prepare(reordered, table, Some(&first)).unwrap();
+        assert_eq!(
+            next.tracks()
+                .iter()
+                .map(|track| track.id)
+                .collect::<Vec<_>>(),
+            [inserted, a, b]
+        );
+        for (track, clip) in [(a, clips[0]), (b, clips[1])] {
+            let old = first.midi_clip(clip).unwrap();
+            let current = next.midi_clip(clip).unwrap();
+            assert_eq!(current.track, track);
+            assert_eq!(
+                current.instrument_id,
+                Some(reordered.track(track).unwrap().instrument().unwrap().id())
+            );
+            assert!(Arc::ptr_eq(current.source.arc(), old.source.arc()));
+            assert!(Arc::ptr_eq(current.instrument.arc(), old.instrument.arc()));
+            assert_eq!(
+                next.cell(track, scene),
+                Some(PreparedSessionCellContent::Midi(clip))
+            );
+        }
     }
 
     #[test]

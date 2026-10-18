@@ -73,3 +73,17 @@ Surrounding graph/model/history/pending/unreclaimed owners, root custody,
 old/new/preparation construction peak, stale/cancel atomic publication and
 actual saturated control/reaper final-drop remain mandatory and unfinished.
 Selected closure or successful runtime construction opens no registry gate.
+
+## Closed compiler ingress preparation
+
+Primary decision22890 permits a private closed reuse of the complete compiler
+into existing revision custody, with a conservative construction allowance
+reserved before any new owner. This ingress is not implemented or qualified yet.
+The Session instrument-track lookup now uses one exactly requested Vec followed
+by a single allocation-free unstable key sort in the existing `SortedEntries`
+container, replacing its temporary tree map. Its actual backing is capacity
+visible; no node-size estimate or whole compiler peak is inferred. Canonical
+track insertion tests preserve per-clip instrument identity and actual unchanged
+source/template reuse when track order differs from key order. Other compiler
+scratch, transform failure custody, root installation, inspection and cleanup
+still need the closed-entry reservation/audit.
