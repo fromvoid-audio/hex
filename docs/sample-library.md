@@ -6,16 +6,18 @@ Home remains a project-navigation shortcut and is not scanned implicitly. No new
 audio codec support is implied: audio decoding/import keeps its existing WAV
 validation. Discovery indexes filenames/paths, not decoded audio metadata or tags.
 
-The Samples section combines all discovered samples by default. Compact source
-filters narrow that catalog to a folder subtree; whitespace-separated search terms
-all match case-insensitively against the full path. Rows show filename and parent
-path to distinguish duplicate names. Click/right-arrow playback, Enter/double-click
-import and existing waveform-aware Arrangement/Session drag paths remain shared.
+The Samples section combines all discovered samples by default. Folder chips select
+that Place as the single active source; its nonempty query narrows indexed matches
+to the root subtree. Whitespace-separated search terms all match case-insensitively
+against the full path. Rows show filename and parent path to distinguish duplicate
+names. Selection auto-audition, manual Play/Stop, waveform-position and right-arrow
+playback, explicit Enter import (sample double-click does not import) and existing
+waveform-aware Arrangement/Session drag paths remain shared.
 Projects retains its folder browser. Adding a folder persists the existing browser
 place and triggers a catalog scan without navigating away from Samples.
 
 Global Command-F/All search composes this catalog with the current bounded folder
-snapshot and registered devices. It ignores the Samples source filter, deduplicates
+snapshot and registered devices. It replaces the previous source selection, deduplicates
 original paths, and retains current-folder WAVs outside indexed roots. File rows
 share one ordered snapshot for rendering, keyboard counts, preview and device row
 offsets. Catalog/folder publications remap the selected file path or device identity

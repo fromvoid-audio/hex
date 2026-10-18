@@ -37,8 +37,9 @@ acceptance is separate from headless layout and deterministic PCM tests.
 No fabricated waveform or sample tags are used. File import, project opening,
 device/sample dragging and current search semantics retain their existing paths.
 
-This is a visual shell: tag chips/checkboxes, mini add field, collection entries
-and history arrows are disabled placeholders. Labels/tooltips identify pending
+Tag chips/checkboxes, the mini add field and history arrows are disabled placeholders.
+Collection names can select their own empty source; membership and editing remain
+explicitly pending. Labels/tooltips identify pending
 functionality. Disclosure, filtering-panel visibility and opening/closing the
 full editor are interactive; tag assignment and persistence are not implemented.
 
@@ -112,3 +113,33 @@ automatic audition preference and consumes its second-click bubble. It cannot
 import into a track/Session cell or create history. Enter and deliberate drag/drop
 remain explicit import routes; device, project and directory double-click retain
 their own handlers. Manual waveform/Play/Stop controls are independent.
+
+## Single active source — Pulse2727 / PR340
+
+One session source value selects a Library category, an original-path Place root,
+or one of the existing collection placeholders. Library, Collection and Place
+highlights and result dispatch read that same value; keyboard result focus and
+hover do not create additional selected sources. Choosing a source retains the
+text query, resets its result viewport/selection, invalidates older folder requests
+and cancels obsolete audition. No tag assignment, collection storage/history or
+shared-library connection is added; collection results explicitly say assignments
+pending instead of showing another source's contents.
+
+A Place owns its root even while navigating a child folder; only that Place is
+highlighted. Without a query it shows its bounded supported folder contents.
+With a query it combines indexed WAV matches within that root and supported
+current-folder matches, with original-path deduplication. Samples remains the
+all-roots indexed catalog; its folder chips select the corresponding Place rather
+than retaining an independent filter. Command-F chooses All and preserves indexed
+global sample/device/folder search. Adding a root from Samples still indexes it
+without changing the active source. Plain folder snapshots are cached and invalidated
+on accepted publication, so unchanged pointer/repaint activity does not rebuild rows.
+
+A selected unavailable Place stays selected with an explicit error and no stale
+indexed results; it does not silently substitute Home. If a selected Place is
+removed from the place model, fall back explicitly to Samples and prune derived
+catalog records outside the remaining roots before rescan. Added places keep their
+existing bounded persistence; no user files are changed by source selection.
+Inline hierarchy, collections/tag editing and navigation history remain their
+separate owning issues. Native normal/icon picker, focus and offline-source
+acceptance is coordinator-owned and pending.

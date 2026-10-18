@@ -216,6 +216,7 @@ impl EditorView {
             sidebar = sidebar.child(
                 div()
                     .id(("browser-collection", index))
+                    .debug_selector(move || format!("browser-collection-{index}"))
                     .tooltip(move |_, cx| {
                         browser_label_tooltip(format!("{name} · collections pending"), cx)
                     })
@@ -224,7 +225,26 @@ impl EditorView {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .cursor_pointer()
+                    .bg(rgb(theme::color(
+                        if self.browser.section == BrowserSection::Collection(index) {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Surface
+                        },
+                    )))
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            view.select_browser_source(BrowserSection::Collection(index), cx);
+                            view.browser
+                                .search
+                                .update(cx, |input, _| input.focus(window));
+                            window.prevent_default();
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         browser_caption("■").text_color(rgb(theme::element_colors(color).accent)),
                     )
@@ -267,11 +287,7 @@ impl EditorView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
-                            view.browser.section = section;
-                            if section == BrowserSection::Samples {
-                                view.browser.samples.source = None;
-                            }
-                            view.reset_browser_results();
+                            view.select_browser_source(section.clone(), cx);
                             view.browser
                                 .search
                                 .update(cx, |input, _| input.focus(window));
@@ -327,8 +343,10 @@ impl EditorView {
                                             && let Some(next) =
                                                 layout.visible.iter().position(|v| *v)
                                         {
-                                            view.browser.section = SECTIONS[next].0;
-                                            view.reset_browser_results();
+                                            view.select_browser_source(
+                                                SECTIONS[next].0.clone(),
+                                                cx,
+                                            );
                                         }
                                         cx.notify();
                                     }),
@@ -373,6 +391,7 @@ impl EditorView {
             sidebar = sidebar.child(
                 div()
                     .id(("browser-place", index))
+                    .debug_selector(move || format!("browser-place-{index}"))
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
                     .h(px(23.0))
                     .px_2()
@@ -381,31 +400,22 @@ impl EditorView {
                     .gap_1()
                     .cursor_pointer()
                     .overflow_hidden()
-                    .bg(rgb(theme::color(if self.browser.directory == *place {
-                        theme::PaletteRole::Hover
-                    } else {
-                        theme::PaletteRole::Surface
-                    })))
+                    .bg(rgb(theme::color(
+                        if self.browser.section == BrowserSection::Place(place.clone()) {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Surface
+                        },
+                    )))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
-                            if view.browser.section == BrowserSection::Instruments {
-                                view.browser.section = BrowserSection::Samples;
-                            }
-                            if view.browser.section == BrowserSection::Samples
-                                && path != view.browser.home
-                            {
-                                view.browser.samples.source = Some(path.clone());
-                                view.reset_browser_results();
-                                cx.notify();
-                            } else {
-                                if path == view.browser.home
-                                    && view.browser.section == BrowserSection::Samples
-                                {
-                                    view.browser.section = BrowserSection::Projects;
-                                }
-                                view.request_browser_scan(path.clone(), cx);
-                            }
+                        cx.listener(move |view, _, window, cx| {
+                            view.select_browser_source(BrowserSection::Place(path.clone()), cx);
+                            view.browser
+                                .search
+                                .update(cx, |input, _| input.focus(window));
+                            window.prevent_default();
+                            cx.notify();
                         }),
                     )
                     .child(browser_caption("□"))
