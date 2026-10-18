@@ -178,6 +178,8 @@ impl EditorView {
                         let name = self.workspace_view_name();
                         move || name.to_owned()
                     })
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
                     .text_xs()
                     .child(theme::text(self.workspace_view_name())),
             )

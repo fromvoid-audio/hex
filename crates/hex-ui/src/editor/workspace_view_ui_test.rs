@@ -31,6 +31,12 @@ fn fixture(
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(path.clone())).unwrap();
+    next(&service);
+    service
+        .submit(Request::Edit(hex_project::Command::AddScene {
+            name: "test scene".into(),
+        }))
+        .unwrap();
     let event = next(&service);
     let handle = *cx.add_window(|_, _| gpui::Empty);
     let editor = cx
@@ -44,6 +50,9 @@ fn fixture(
                 let track = &event.state.project.tracks()[0];
                 let track_id = track.id();
                 let clip = track.clips()[0].id();
+                let scene = event.state.project.scenes()[0].id();
+                v.selected_scene = Some(scene);
+                v.selected_cell = Some((track_id, scene));
                 v.selected_track = Some(track_id);
                 v.selected_clip = Some(clip);
                 v.clip_selection.only(track_id, clip);
@@ -70,6 +79,7 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
     let selection = editor.read_with(&visual, |v, _| (v.selected_clip_ids(), v.time_selection));
+    let console_selection = editor.read_with(&visual, |v, _| (v.selected_scene, v.selected_cell));
     editor.update(&mut visual, |v, cx| {
         v.viewport = Some(super::viewport::Viewport {
             start: 1000,
@@ -99,6 +109,7 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
         assert_eq!(v.session_track_start, 2);
         assert!(!v.clip_view_open);
         assert_eq!((v.selected_clip_ids(), v.time_selection), selection);
+        assert_eq!((v.selected_scene, v.selected_cell), console_selection);
         assert_eq!(v.state.as_ref().unwrap().project, before.project);
         assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
         assert_eq!(v.worker_requests_pending, 0);
