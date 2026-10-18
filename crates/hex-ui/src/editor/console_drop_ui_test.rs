@@ -41,7 +41,7 @@ fn fixture(
     PathBuf,
 ) {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    cx.update(super::bind_editor_keys);
+    cx.update(super::super::bind_editor_keys);
     let handle = *cx.add_window(|_, _| Empty);
     let editor = cx
         .update_window(handle, |_, window, cx| {
