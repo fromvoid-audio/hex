@@ -1771,6 +1771,30 @@ fn selected_track_children_missing_or_stale_sampler_context_refuses_before_child
     }
 }
 
+fn compiler_joint_child_fixture(filtered: bool) -> hex_project::Project {
+    let project = compiler_track_child_fixture(filtered, false, true);
+    let mut snapshot = project.snapshot();
+    let second = snapshot.next_id;
+    snapshot.next_id += 1;
+    let mut bus = snapshot.return_tracks[0].clone();
+    bus.id = second;
+    bus.name = "second".into();
+    bus.devices.push(snapshot.tracks[0].devices[0].clone());
+    bus.devices[0].id = snapshot.next_id;
+    snapshot.next_id += 1;
+    snapshot.return_tracks.push(bus);
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let snapshot = project
+        .snapshot()
+        .with_return_feed(
+            project.return_tracks()[0].id(),
+            project.return_tracks()[1].id(),
+            0.5,
+        )
+        .unwrap();
+    hex_project::Project::from_snapshot(snapshot).unwrap()
+}
+
 #[test]
 fn selected_joint_children_keep_both_feed_plans_in_actual_root_and_retire_fresh_metadata() {
     if !supported("selected_joint_children_root") {
@@ -1778,27 +1802,7 @@ fn selected_joint_children_keep_both_feed_plans_in_actual_root_and_retire_fresh_
     }
     for filtered in [false, true] {
         eprintln!("SUPPORTED selected_joint_children_root filtered={filtered}");
-        let project = compiler_track_child_fixture(filtered, false, true);
-        let mut snapshot = project.snapshot();
-        let second = snapshot.next_id;
-        snapshot.next_id += 1;
-        let mut bus = snapshot.return_tracks[0].clone();
-        bus.id = second;
-        bus.name = "second".into();
-        bus.devices.push(snapshot.tracks[0].devices[0].clone());
-        bus.devices[0].id = snapshot.next_id;
-        snapshot.next_id += 1;
-        snapshot.return_tracks.push(bus);
-        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
-        let snapshot = project
-            .snapshot()
-            .with_return_feed(
-                project.return_tracks()[0].id(),
-                project.return_tracks()[1].id(),
-                0.5,
-            )
-            .unwrap();
-        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+        let project = compiler_joint_child_fixture(filtered);
         let original = project.snapshot();
         let mut rows = ArrangementClips::default();
         rows.returns.reserve(&project).unwrap();
@@ -1919,5 +1923,139 @@ fn selected_joint_children_keep_both_feed_plans_in_actual_root_and_retire_fresh_
             0
         );
         assert_eq!(project.snapshot(), original);
+    }
+}
+
+#[test]
+fn selected_joint_children_partial_track_or_return_failure_restores_same_persistent_family() {
+    if !supported("selected_joint_children_partial_root") {
+        return;
+    }
+    for return_frontier in [false, true] {
+        for panic in [false, true] {
+            eprintln!(
+                "SUPPORTED selected_joint_children_partial_root return={return_frontier} panic={panic}"
+            );
+            let project = compiler_joint_child_fixture(true);
+            let original = project.snapshot();
+            let mut rows = ArrangementClips::default();
+            rows.returns.reserve(&project).unwrap();
+            rows.returns.construct().unwrap();
+            if return_frontier {
+                rows.returns.fail_after = (!panic).then_some(0);
+                rows.returns.panic_after = panic.then_some(0);
+            } else {
+                rows.tracks.fail_after = (!panic).then_some(0);
+                rows.tracks.panic_after = panic.then_some(0);
+            }
+            let mut shared =
+                crate::session_shared_preparation::SessionSharedConstruction::default();
+            shared.reserve(0, 3).unwrap();
+            shared.construct().unwrap();
+            let mut contexts = None;
+            shared.commit_arrangement_transfer(&mut contexts);
+            let effects = hex_devices::native_registry().unwrap();
+            let instruments = hex_devices::native_instrument_registry().unwrap();
+            let transforms = crate::audio_transform::AudioTransformPreparation::default();
+            let returns =
+                super::super::CompilerReturnChildren::from_rows(&mut rows.returns, &project)
+                    .unwrap();
+            let tracks = CompilerTrackChildren::prepare(
+                &mut rows.tracks,
+                &project,
+                contexts.as_ref().map(|v| v.as_ref()),
+            )
+            .unwrap();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                transforms.compile_transaction(|| {
+                    crate::compile::compile_project_into_selected_children(
+                        &project,
+                        |_, _| panic!("no source resolver call"),
+                        None,
+                        &effects,
+                        &instruments,
+                        &mut contexts,
+                        &transforms,
+                        rows.root.compiler_destination_on_control(),
+                        None,
+                        Some(returns),
+                        Some(tracks),
+                    )
+                })
+            }));
+            if panic {
+                assert!(result.is_err());
+                assert!(transforms.failed_incomplete_on_control());
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    Err(crate::Invalid(if return_frontier {
+                        "compiler paired Return destination is unavailable"
+                    } else {
+                        "compiler paired Track destination is unavailable"
+                    }))
+                );
+            }
+            assert!(contexts.is_none());
+            let actual = rows.root.project().unwrap();
+            assert_eq!(actual.tracks.len(), if return_frontier { 2 } else { 1 });
+            assert_eq!(actual.return_buses.len(), usize::from(return_frontier));
+            let first_meter = Arc::as_ptr(&actual.tracks[0].instrument_meter);
+            let first_chain = Arc::as_ptr(&actual.tracks[0].device_chain);
+            let capacity = rows.capacity_at(false, None, None).unwrap();
+            assert!(capacity.root.fresh_feed_backing_bytes > 0);
+            assert!(capacity.returns.feed.bytes().unwrap() > 0);
+            // Both halves are inspected while some children are in the root
+            // and the rest are still in their original preparation rows.
+            let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+                crate::AudioStorageLedgerReservation {
+                    data_rows: 1024,
+                    handle_rows: 1024,
+                    root_rows: 64,
+                    max_retained_bytes: 2 * 1024 * 1024,
+                    max_construction_peak_bytes: 2 * 1024 * 1024,
+                },
+            )
+            .unwrap();
+            ledger
+                .root(&rows, crate::AudioStorageRole::Current)
+                .unwrap();
+            ledger
+                .root(&shared, crate::AudioStorageRole::Current)
+                .unwrap();
+            let context = rows.visit_audio_storage(&mut ledger, None, None).unwrap();
+            shared
+                .visit_audio_storage(
+                    &mut ledger,
+                    context,
+                    crate::session_shared_preparation::InventorySharedView {
+                        sine: None,
+                        contexts: None,
+                    },
+                )
+                .unwrap();
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap();
+            let report = ledger.summary().unwrap();
+            report.require_known_storage().unwrap();
+            assert!(report.require_complete().is_err());
+            drop(ledger);
+            rows.root
+                .restore(&mut rows.tracks, &mut rows.returns, &mut shared)
+                .unwrap();
+            let first = rows.tracks.rows[0].track.as_ref().unwrap();
+            assert_eq!(Arc::as_ptr(&first.instrument_meter), first_meter);
+            assert_eq!(Arc::as_ptr(&first.device_chain), first_chain);
+            while rows.tracks.has_next() {
+                rows.tracks.dispose_next(&mut rows.rows).unwrap();
+            }
+            while rows.returns.has_next() {
+                rows.returns.dispose_next().unwrap();
+            }
+            rows.root.dispose_metadata_on_control().unwrap();
+            assert!(!rows.root.has_metadata_disposal());
+            assert_eq!(project.snapshot(), original);
+        }
     }
 }
