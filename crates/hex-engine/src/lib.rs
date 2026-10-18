@@ -282,6 +282,13 @@ pub struct SamplerSampleAssignment {
     pub slot: hex_lattice_contract::DeviceAssetSlot,
 }
 
+/// Restricted borrowed authored queries for sealed snapshot/device panels.
+/// These carry no model, native state, PCM owner or runtime admission authority.
+pub use hex_devices::sampler::GateMode as SamplerGateMode;
+pub use hex_devices::sampler::state::{
+    DeviceStateRead as SamplerDeviceStateRead, SamplerReadMode, SamplerStateRead,
+};
+
 /// Validate current authored Sampler metadata before starting bounded worker
 /// I/O. This does not admit a source, resource graph or registry processing.
 pub fn validate_sampler_state_on_control(

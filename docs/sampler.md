@@ -373,3 +373,19 @@ before allocation under the existing context caps; this is not whole-graph
 construction-peak authority. Arrangement and Session can prepare this silent
 state using the same retained factory route. Registration, full graph publication
 and the musician-facing create/load workflow remain open.
+
+### Borrowed panel queries
+
+Current authored decoding has one validated borrowed path,
+`SamplerStateRead` / `DeviceStateRead`. Bounds, mode, loop, pitch, gain, amplitude
+envelope, voices and slice markers are read from the immutable current payload.
+Validation uses the existing finite plan laws and at most 128 stack markers;
+queries do not clone the native state or allocate a Slice Vec. Control edits
+still explicitly materialize an owned authored state before canonical patching.
+Metadata value/enabled queries use the same borrowed path.
+
+The sealed `SnapshotRead::sampler_state` surface exposes these lifetime-bound
+queries for the exact retained model, including an honest Empty state. It exposes
+no Project, NativeDeviceState, source lease or owning waveform. This does not
+register the instrument, establish resource readiness, or finish the functional
+native panel, filters/modulation/warp, graph admission or musical-use acceptance.

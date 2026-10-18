@@ -374,3 +374,154 @@ fn authored_preparation_requires_exact_asset_and_complete_host_inventory() {
         .unwrap();
     assert!(prepare_runtime_on_control(&unbound, &context, 259).is_err());
 }
+
+#[test]
+fn borrowed_panel_reads_all_modes_and_exact_source_markers_without_owning_state() {
+    for mode in [
+        AuthoredMode::Classic { loop_region: None },
+        AuthoredMode::Classic {
+            loop_region: Some(Region { start: 4, end: 11 }),
+        },
+        AuthoredMode::OneShot {
+            gate: GateMode::Gate,
+        },
+        AuthoredMode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        AuthoredMode::Slice {
+            starts: vec![2, 4, 11],
+            base_note: 48,
+            gate: GateMode::Gate,
+        },
+    ] {
+        let mut authored = SamplerState::for_source_frames(16).unwrap();
+        authored.region.start = 2;
+        authored.mode = mode;
+        authored.reverse = true;
+        authored.root_note = 57;
+        authored.transpose_semitones = 3.5;
+        authored.detune_cents = -25.0;
+        authored.gain = 0.375;
+        authored.pan = -0.5;
+        authored.velocity_amount = 0.25;
+        authored.envelope = Envelope {
+            attack_seconds: 0.125,
+            decay_seconds: 0.25,
+            sustain: 0.5,
+            release_seconds: 0.75,
+        };
+        authored.voices = 8;
+        let native = authored.to_native().unwrap();
+        let DeviceStateRead::Sample(read) = DeviceStateRead::from_native(&native).unwrap() else {
+            panic!("loaded read")
+        };
+        assert_eq!(read.region(), Region { start: 2, end: 16 });
+        assert!(read.reverse());
+        assert_eq!(read.root_note(), 57);
+        assert_eq!(read.voices(), 8);
+        assert_eq!(read.transpose_semitones(), 3.5);
+        assert_eq!(read.detune_cents(), -25.0);
+        assert_eq!(read.gain(), 0.375);
+        assert_eq!(read.pan(), -0.5);
+        assert_eq!(read.velocity_amount(), 0.25);
+        assert_eq!(read.envelope(), authored.envelope);
+        match &authored.mode {
+            AuthoredMode::Classic { loop_region } => {
+                assert_eq!(
+                    read.mode(),
+                    SamplerReadMode::Classic {
+                        loop_region: *loop_region
+                    }
+                );
+                assert_eq!(read.slice_starts().len(), 0);
+            }
+            AuthoredMode::OneShot { gate } => {
+                assert_eq!(read.mode(), SamplerReadMode::OneShot { gate: *gate });
+                assert_eq!(read.slice_starts().len(), 0);
+            }
+            AuthoredMode::Slice {
+                base_note, gate, ..
+            } => {
+                assert_eq!(
+                    read.mode(),
+                    SamplerReadMode::Slice {
+                        base_note: *base_note,
+                        gate: *gate
+                    }
+                );
+                let mut starts = read.slice_starts();
+                assert_eq!(starts.len(), 3);
+                assert_eq!(starts.next(), Some(2));
+                assert_eq!(starts.next_back(), Some(11));
+                assert_eq!(starts.next(), Some(4));
+                assert_eq!(starts.next(), None);
+            }
+        }
+        assert_eq!(SamplerState::from_native(&native).unwrap(), authored);
+    }
+    let empty = DeviceState::Empty.to_native().unwrap();
+    assert!(matches!(
+        DeviceStateRead::from_native(&empty).unwrap(),
+        DeviceStateRead::Empty
+    ));
+    assert!(SamplerStateRead::from_native(&empty).is_err());
+}
+
+#[test]
+fn borrowed_panel_read_refuses_nonfinite_bounds_headers_and_unsorted_slice_payloads() {
+    let original = SamplerState::for_source_frames(16)
+        .unwrap()
+        .to_native()
+        .unwrap();
+    let rejects = |bytes: Vec<u8>| {
+        let native = NativeDeviceState::new(TYPE_ID, STATE_VERSION, bytes).unwrap();
+        assert!(SamplerStateRead::from_native(&native).is_err());
+    };
+    for (index, invalid) in [
+        (0, 4),
+        (1, 2),
+        (2, 2),
+        (3, 128),
+        (4, 0),
+        (4, 33),
+        (5, 1),
+        (6, 1),
+    ] {
+        let mut bytes = original.payload().to_vec();
+        bytes[index] = invalid;
+        rejects(bytes);
+    }
+    for field in 0..9 {
+        let mut bytes = original.payload().to_vec();
+        bytes[24 + field * 8..32 + field * 8].copy_from_slice(&f64::NAN.to_le_bytes());
+        rejects(bytes);
+    }
+    for (offset, value) in [
+        (8, 16_u32),
+        (12, 0),
+        (12, MAX_SAMPLE_FRAMES as u32 + 1),
+        (16, 1),
+    ] {
+        let mut bytes = original.payload().to_vec();
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        rejects(bytes);
+    }
+    let mut slice = SamplerState::for_source_frames(16).unwrap();
+    slice.mode = AuthoredMode::Slice {
+        starts: vec![0, 4, 11],
+        base_note: 60,
+        gate: GateMode::Trigger,
+    };
+    let slice = slice.to_native().unwrap();
+    for markers in [[0_u32, 0, 11], [1, 4, 11], [0, 4, 16], [0, 11, 4]] {
+        let mut bytes = slice.payload().to_vec();
+        for (index, marker) in markers.into_iter().enumerate() {
+            bytes[PREFIX + index * 4..PREFIX + index * 4 + 4]
+                .copy_from_slice(&marker.to_le_bytes());
+        }
+        rejects(bytes);
+    }
+    let mut bytes = slice.payload().to_vec();
+    bytes[5] = 127; // three slices cannot be addressed above the last MIDI key
+    rejects(bytes);
+}

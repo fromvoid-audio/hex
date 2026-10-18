@@ -99,6 +99,29 @@ impl<'a> SnapshotRead<'a> {
             .get(&asset)
             .map(crate::read_shared_waveform)
     }
+    /// Validated authored scalar/marker queries on this exact retained model.
+    /// No NativeDeviceState/Project/owning child can be extracted. Empty state
+    /// stays empty; missing devices and unsupported state are explicit errors.
+    /// ```compile_fail
+    /// fn escape(records: &hex_session::snapshot_exports::SnapshotExportRecords,
+    ///     stamp: &hex_session::snapshot_exports::SnapshotReadStamp,
+    ///     device: hex_project::DeviceId) {
+    ///     let _escaped = records.read_with(stamp, |snapshot| snapshot.sampler_state(device));
+    /// }
+    /// ```
+    pub fn sampler_state(
+        self,
+        device: hex_project::DeviceId,
+    ) -> Result<hex_engine::SamplerDeviceStateRead<'a>, hex_lattice_contract::DeviceContractError>
+    {
+        let state = self
+            .snapshot
+            .project
+            .device(device)
+            .ok_or(hex_lattice_contract::DeviceContractError::WrongDeviceType)?
+            .state();
+        hex_engine::SamplerDeviceStateRead::from_native(state)
+    }
 }
 impl SnapshotExportRecords {
     /// Requested record-table component quote before allocating either backing.

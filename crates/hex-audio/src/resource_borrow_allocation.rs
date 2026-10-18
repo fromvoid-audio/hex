@@ -1101,3 +1101,51 @@ fn retained_control_job_actual_inspection_allocates_clones_and_frees_nothing() {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn sampler_borrowed_authored_panel_queries_allocate_and_free_nothing() {
+    let empty = hex_engine::empty_sampler_state_on_control().unwrap();
+    let assignment = hex_engine::sampler_replacement_state_on_control(&empty, 64).unwrap();
+    let mut bytes = assignment.state.payload().to_vec();
+    bytes[0] = 3; // current Slice law, explicit three source markers
+    bytes[1] = 1; // trigger
+    bytes[5] = 60;
+    bytes[6..8].copy_from_slice(&3_u16.to_le_bytes());
+    for marker in [0_u32, 4, 33] {
+        bytes.extend_from_slice(&marker.to_le_bytes());
+    }
+    let native = NativeDeviceState::new(
+        assignment.state.type_id(),
+        assignment.state.state_version(),
+        bytes,
+    )
+    .unwrap();
+    let mut checksum = 0;
+    let measured = allocation_counter::measure(|| {
+        for _ in 0..128 {
+            let hex_engine::SamplerDeviceStateRead::Sample(read) =
+                hex_engine::SamplerDeviceStateRead::from_native(&native).unwrap()
+            else {
+                panic!("loaded read")
+            };
+            assert_eq!(
+                read.mode(),
+                hex_engine::SamplerReadMode::Slice {
+                    base_note: 60,
+                    gate: hex_engine::SamplerGateMode::Trigger,
+                }
+            );
+            checksum += read.slice_starts().sum::<usize>()
+                + read.region().end
+                + usize::from(read.root_note())
+                + usize::from(read.voices());
+            assert_eq!(read.envelope().sustain, 1.0);
+            assert_eq!(read.gain(), 1.0);
+        }
+    });
+    assert_eq!(checksum, 22_656);
+    assert_eq!(measured.count_total, 0);
+    assert_eq!(measured.bytes_total, 0);
+    assert_eq!(measured.count_current, 0);
+    assert_eq!(measured.bytes_current, 0);
+}

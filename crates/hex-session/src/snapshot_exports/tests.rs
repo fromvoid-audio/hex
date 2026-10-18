@@ -142,3 +142,104 @@ fn record_reservation_checks_empty_overflow_and_actual_backing_budget() {
     exact.read_records = 0;
     assert!(SnapshotExportRecords::reservation_quote(exact).is_err());
 }
+
+#[test]
+fn sampler_panel_read_keeps_exact_old_empty_and_loaded_authored_snapshot_without_owner_escape() {
+    use hex_project::{Command, Created};
+    let mut session = crate::Session::new(48_000, 8, 1024).unwrap();
+    let Created::Track(track) = session
+        .editor
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = session
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    session
+        .editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: hex_engine::empty_sampler_state_on_control().unwrap(),
+        })
+        .unwrap();
+    let mut old = Some(crate::service::view_state_owned(
+        &session,
+        Default::default(),
+        7,
+        1,
+        false,
+        None,
+    ));
+    let mut records = SnapshotExportRecords::try_new_on_control(limits()).unwrap();
+    let old_stamp = records.insert_on_control(&mut old).unwrap();
+    let old_read = records.reserve_read(old_stamp).unwrap();
+    let loaded = hex_engine::sampler_replacement_state_on_control(
+        session.project().device(device).unwrap().state(),
+        37,
+    )
+    .unwrap();
+    session
+        .editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: loaded.state,
+        })
+        .unwrap();
+    let mut next = Some(crate::service::view_state_owned(
+        &session,
+        Default::default(),
+        8,
+        1,
+        false,
+        None,
+    ));
+    let next_stamp = records.insert_on_control(&mut next).unwrap();
+    let next_read = records.reserve_read(next_stamp).unwrap();
+    records.retire_on_control(old_stamp).unwrap();
+    drop(session);
+    assert_eq!(
+        records
+            .read_with(&old_read, |snapshot| {
+                assert!(matches!(
+                    snapshot.sampler_state(device).unwrap(),
+                    hex_engine::SamplerDeviceStateRead::Empty
+                ));
+                snapshot.revision()
+            })
+            .unwrap(),
+        7
+    );
+    assert_eq!(
+        records
+            .read_with(&next_read, |snapshot| {
+                let hex_engine::SamplerDeviceStateRead::Sample(read) =
+                    snapshot.sampler_state(device).unwrap()
+                else {
+                    panic!("loaded authored sample")
+                };
+                assert_eq!(read.region().start, 0);
+                assert_eq!(read.region().end, 37);
+                assert_eq!(
+                    read.mode(),
+                    hex_engine::SamplerReadMode::Classic { loop_region: None }
+                );
+                assert_eq!(read.slice_starts().len(), 0);
+                assert_eq!(read.root_note(), 60);
+                assert_eq!(read.gain(), 1.0);
+                snapshot.revision()
+            })
+            .unwrap(),
+        8
+    );
+    records.release_read(old_read).unwrap();
+    records.release_read(next_read).unwrap();
+    assert_eq!(records.collect_releases_on_control().unwrap(), 2);
+}

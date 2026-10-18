@@ -2,7 +2,10 @@
 //! is not registered until complete host/resource admission is established.
 use super::{
     GateMode,
-    state::{AuthoredMode, DeviceState, STATE_VERSION, SamplerState, TYPE_ID},
+    state::{
+        AuthoredMode, DeviceState, DeviceStateRead, STATE_VERSION, SamplerReadMode, SamplerState,
+        TYPE_ID,
+    },
 };
 use hex_lattice_contract::{
     DeviceContractError as Error, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -134,19 +137,31 @@ fn descriptor(id: ParameterId) -> Result<&'static ParameterDescriptor, Error> {
         .find(|descriptor| descriptor.id == id)
         .ok_or(Error::UnknownParameter)
 }
-fn enabled(state: &SamplerState, id: ParameterId) -> bool {
+fn enabled_mode(mode: SamplerReadMode, id: ParameterId) -> bool {
     match id {
-        LOOP => matches!(state.mode, AuthoredMode::Classic { .. }),
+        LOOP => matches!(mode, SamplerReadMode::Classic { .. }),
         LOOP_START | LOOP_END => matches!(
-            state.mode,
-            AuthoredMode::Classic {
+            mode,
+            SamplerReadMode::Classic {
                 loop_region: Some(_)
             }
         ),
-        GATE => !matches!(state.mode, AuthoredMode::Classic { .. }),
-        SLICE_BASE => matches!(state.mode, AuthoredMode::Slice { .. }),
+        GATE => !matches!(mode, SamplerReadMode::Classic { .. }),
+        SLICE_BASE => matches!(mode, SamplerReadMode::Slice { .. }),
         _ => true,
     }
+}
+fn enabled(state: &SamplerState, id: ParameterId) -> bool {
+    enabled_mode(
+        match state.mode {
+            AuthoredMode::Classic { loop_region } => SamplerReadMode::Classic { loop_region },
+            AuthoredMode::OneShot { gate } => SamplerReadMode::OneShot { gate },
+            AuthoredMode::Slice {
+                base_note, gate, ..
+            } => SamplerReadMode::Slice { base_note, gate },
+        },
+        id,
+    )
 }
 impl NativeDeviceMetadata for SamplerMetadata {
     fn type_id(&self) -> DeviceTypeId {
@@ -177,9 +192,9 @@ impl NativeDeviceMetadata for SamplerMetadata {
     }
     fn parameter_enabled(&self, state: &NativeDeviceState, id: ParameterId) -> Result<bool, Error> {
         descriptor(id)?;
-        Ok(match DeviceState::from_native(state)? {
-            DeviceState::Empty => false,
-            DeviceState::Sample(state) => enabled(&state, id),
+        Ok(match DeviceStateRead::from_native(state)? {
+            DeviceStateRead::Empty => false,
+            DeviceStateRead::Sample(state) => enabled_mode(state.mode(), id),
         })
     }
     fn read_parameter(
@@ -188,53 +203,53 @@ impl NativeDeviceMetadata for SamplerMetadata {
         id: ParameterId,
     ) -> Result<ParameterValue, Error> {
         let descriptor = descriptor(id)?;
-        let DeviceState::Sample(state) = DeviceState::from_native(native)? else {
+        let DeviceStateRead::Sample(state) = DeviceStateRead::from_native(native)? else {
             return Ok(descriptor.default);
         };
         Ok(match id {
-            MODE => ParameterValue::Choice(match state.mode {
-                AuthoredMode::Classic { .. } => 0,
-                AuthoredMode::OneShot { .. } => 1,
-                AuthoredMode::Slice { .. } => 2,
+            MODE => ParameterValue::Choice(match state.mode() {
+                SamplerReadMode::Classic { .. } => 0,
+                SamplerReadMode::OneShot { .. } => 1,
+                SamplerReadMode::Slice { .. } => 2,
             }),
-            REVERSE => ParameterValue::Bool(state.reverse),
-            ROOT => ParameterValue::Float(f32::from(state.root_note)),
-            TRANSPOSE => ParameterValue::Float(state.transpose_semitones as f32),
-            DETUNE => ParameterValue::Float(state.detune_cents as f32),
-            GAIN => ParameterValue::Float(state.gain as f32),
-            PAN => ParameterValue::Float(state.pan as f32),
-            VELOCITY => ParameterValue::Float(state.velocity_amount as f32),
-            ATTACK => ParameterValue::Float(state.envelope.attack_seconds as f32),
-            DECAY => ParameterValue::Float(state.envelope.decay_seconds as f32),
-            SUSTAIN => ParameterValue::Float(state.envelope.sustain as f32),
-            RELEASE => ParameterValue::Float(state.envelope.release_seconds as f32),
-            VOICES => ParameterValue::Float(f32::from(state.voices)),
+            REVERSE => ParameterValue::Bool(state.reverse()),
+            ROOT => ParameterValue::Float(f32::from(state.root_note())),
+            TRANSPOSE => ParameterValue::Float(state.transpose_semitones() as f32),
+            DETUNE => ParameterValue::Float(state.detune_cents() as f32),
+            GAIN => ParameterValue::Float(state.gain() as f32),
+            PAN => ParameterValue::Float(state.pan() as f32),
+            VELOCITY => ParameterValue::Float(state.velocity_amount() as f32),
+            ATTACK => ParameterValue::Float(state.envelope().attack_seconds as f32),
+            DECAY => ParameterValue::Float(state.envelope().decay_seconds as f32),
+            SUSTAIN => ParameterValue::Float(state.envelope().sustain as f32),
+            RELEASE => ParameterValue::Float(state.envelope().release_seconds as f32),
+            VOICES => ParameterValue::Float(f32::from(state.voices())),
             LOOP => ParameterValue::Bool(matches!(
-                state.mode,
-                AuthoredMode::Classic {
+                state.mode(),
+                SamplerReadMode::Classic {
                     loop_region: Some(_)
                 }
             )),
-            GATE => ParameterValue::Choice(match state.mode {
-                AuthoredMode::OneShot { gate } | AuthoredMode::Slice { gate, .. }
+            GATE => ParameterValue::Choice(match state.mode() {
+                SamplerReadMode::OneShot { gate } | SamplerReadMode::Slice { gate, .. }
                     if gate == GateMode::Gate =>
                 {
                     1
                 }
                 _ => 0,
             }),
-            SLICE_BASE => ParameterValue::Float(match state.mode {
-                AuthoredMode::Slice { base_note, .. } => f32::from(base_note),
+            SLICE_BASE => ParameterValue::Float(match state.mode() {
+                SamplerReadMode::Slice { base_note, .. } => f32::from(base_note),
                 _ => 60.0,
             }),
-            START => ParameterValue::Float(state.region.start as f32),
-            END => ParameterValue::Float(state.region.end as f32),
+            START => ParameterValue::Float(state.region().start as f32),
+            END => ParameterValue::Float(state.region().end as f32),
             LOOP_START | LOOP_END => {
-                let region = match state.mode {
-                    AuthoredMode::Classic {
+                let region = match state.mode() {
+                    SamplerReadMode::Classic {
                         loop_region: Some(region),
                     } => region,
-                    _ => state.region,
+                    _ => state.region(),
                 };
                 ParameterValue::Float(if id == LOOP_START {
                     region.start

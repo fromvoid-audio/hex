@@ -7,6 +7,8 @@ pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.samp
 pub const STATE_VERSION: u32 = 1;
 pub const SOURCE_SLOT: u32 = 1;
 const PREFIX: usize = 96;
+mod read;
+pub use read::{DeviceStateRead, SamplerReadMode, SamplerStateRead};
 
 /// Current device envelope. Empty is a real unbound instrument state, with no
 /// invented source length/peaks or resource reference. Loaded settings keep the
@@ -18,20 +20,10 @@ pub enum DeviceState {
 }
 impl DeviceState {
     pub fn from_native(state: &NativeDeviceState) -> Result<Self, Error> {
-        if state.type_id() != TYPE_ID {
-            return Err(Error::WrongDeviceType);
+        match DeviceStateRead::from_native(state)? {
+            DeviceStateRead::Empty => Ok(Self::Empty),
+            DeviceStateRead::Sample(read) => read.to_authored_on_control().map(Self::Sample),
         }
-        if state.state_version() != STATE_VERSION {
-            return Err(Error::UnsupportedStateVersion);
-        }
-        if state.payload().is_empty() {
-            return if state.asset_references().is_empty() {
-                Ok(Self::Empty)
-            } else {
-                Err(Error::MalformedState)
-            };
-        }
-        SamplerState::from_native(state).map(Self::Sample)
     }
     pub fn to_native(&self) -> Result<NativeDeviceState, Error> {
         match self {
@@ -281,103 +273,6 @@ impl SamplerState {
         self.to_native()?.with_host_metadata_from(original)
     }
     pub fn from_native(state: &NativeDeviceState) -> Result<Self, Error> {
-        if state.type_id() != TYPE_ID {
-            return Err(Error::WrongDeviceType);
-        }
-        if state.state_version() != STATE_VERSION {
-            return Err(Error::InvalidStateVersion);
-        }
-        if state.asset_references().len() > 1
-            || state
-                .asset_references()
-                .first()
-                .is_some_and(|reference| reference.slot.value() != SOURCE_SLOT)
-        {
-            return Err(Error::MalformedState);
-        }
-        let bytes = state.payload();
-        if bytes.len() < PREFIX || bytes.len() > PREFIX + MAX_SLICES * 4 {
-            return Err(Error::MalformedState);
-        }
-        let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-        if bytes.len() != PREFIX + count * 4 || bytes[0] > 3 || bytes[1] > 1 || bytes[2] > 1 {
-            return Err(Error::MalformedState);
-        }
-        let read_u32 = |offset| {
-            u32::from_le_bytes([
-                bytes[offset],
-                bytes[offset + 1],
-                bytes[offset + 2],
-                bytes[offset + 3],
-            ]) as usize
-        };
-        let region = Region {
-            start: read_u32(8),
-            end: read_u32(12),
-        };
-        let loop_region = Region {
-            start: read_u32(16),
-            end: read_u32(20),
-        };
-        let gate = if bytes[1] == 0 {
-            GateMode::Gate
-        } else {
-            GateMode::Trigger
-        };
-        if (bytes[0] != 3 && (count != 0 || bytes[5] != 0))
-            || (bytes[0] != 1 && loop_region != (Region { start: 0, end: 0 }))
-            || (bytes[0] <= 1 && gate != GateMode::Gate)
-        {
-            return Err(Error::MalformedState);
-        }
-        let mode = match bytes[0] {
-            0 => AuthoredMode::Classic { loop_region: None },
-            1 => AuthoredMode::Classic {
-                loop_region: Some(loop_region),
-            },
-            2 => AuthoredMode::OneShot { gate },
-            _ => {
-                let mut starts = Vec::new();
-                starts
-                    .try_reserve_exact(count)
-                    .map_err(|_| Error::StateTooLarge)?;
-                for index in 0..count {
-                    starts.push(read_u32(PREFIX + index * 4));
-                }
-                AuthoredMode::Slice {
-                    starts,
-                    base_note: bytes[5],
-                    gate,
-                }
-            }
-        };
-        let mut values = [0.0; 9];
-        for (index, value) in values.iter_mut().enumerate() {
-            let offset = 24 + index * 8;
-            let array: [u8; 8] = bytes[offset..offset + 8]
-                .try_into()
-                .map_err(|_| Error::MalformedState)?;
-            *value = f64::from_le_bytes(array);
-        }
-        let result = Self {
-            region,
-            mode,
-            reverse: bytes[2] == 1,
-            root_note: bytes[3],
-            voices: bytes[4],
-            transpose_semitones: values[0],
-            detune_cents: values[1],
-            gain: values[2],
-            pan: values[3],
-            velocity_amount: values[4],
-            envelope: Envelope {
-                attack_seconds: values[5],
-                decay_seconds: values[6],
-                sustain: values[7],
-                release_seconds: values[8],
-            },
-        };
-        result.validate()?;
-        Ok(result)
+        SamplerStateRead::from_native(state)?.to_authored_on_control()
     }
 }
