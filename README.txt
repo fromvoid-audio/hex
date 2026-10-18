@@ -1,0 +1,5 @@
+Evidence only for canonical PR406 head24c62cd3a97a95b0d0ffe68be497d09258c84b0a/tree58d7f20efcbc640944b2389816c69e2ca398533c.
+Never build or merge this evidence ref.
+Archive564621B SHA256521a11916d03e531aa4ff8c30d26cd9ce4ae8a84e3bee452429a8d4118dbbddd;229 safe members/228 hashed payloads/36 original summaries+all logs, source checkpoints and original9f56 archive bytes.
+Final source focused8 PASS/18 UI cases/0ignored, six guards + strictUIfeature/alltargetClippy. Run20261018T173849Z-a7bc1aa0/77.19s/clean unchanged stale=false. SummarySHA8324b30d00719a138ffe1af43c2f84dfa737c80234884aa49fe8088bb9f48925.
+Original status RED2 and unsupported viewport red retained. Native9f56 failure referenced by hash only; original Mac bytes NOT INCLUDED. New cfg-macOS font seam needs actual Mac compilation and embedded family/shaping; Linux does not qualify native font/pixels. User visual rejection is open. Dedicated merger final candidate full20/integration/merge; coordinator serial native and optimized delivery. No app/backend/OSdevice/TCC/MTS/systemfont action.
