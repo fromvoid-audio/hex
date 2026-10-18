@@ -378,7 +378,17 @@ impl Render for EditorView {
             .flex_1()
             .min_h_0()
             .flex()
-            .child(self.browser_view(window, cx))
+            .child(
+                self.browser_view(window, cx)
+                    .debug_selector(|| "resize-browser-hit-region".to_owned())
+                    .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                        if view.finish_trim_pointer_release(event, true, window, cx) {
+                            cx.stop_active_drag(window);
+                            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                            cx.stop_propagation();
+                        }
+                    })),
+            )
             .child(workspace_content.flex_1().min_w_0());
         let modifier_entity = cx.entity();
         div()
@@ -423,20 +433,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
-                if event.button == MouseButton::Left
-                    && let Some(drag) = view.active_trim_drag.clone()
-                {
-                    drag.snap_modifier.set(event.modifiers.platform);
-                    drag.stretch_modifier.set(event.modifiers.shift);
-                    drag.last_pointer_x.set(Some(f32::from(event.position.x)));
-                    view.update_trim_preview(&drag, f32::from(event.position.x), cx);
-                }
-                if event.button == MouseButton::Left
-                    && let Some(drag) = view.active_midi_trim_drag.clone()
-                {
-                    drag.snap_modifier.set(event.modifiers.platform);
-                    drag.last_pointer_x.set(Some(f32::from(event.position.x)));
-                    view.update_midi_trim_preview(&drag, f32::from(event.position.x), cx);
+                if view.finish_trim_pointer_release(event, false, window, cx) {
+                    cx.stop_active_drag(window);
+                    cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                    cx.stop_propagation();
                 }
             }))
             .on_modifiers_changed(move |event, window, cx| {
