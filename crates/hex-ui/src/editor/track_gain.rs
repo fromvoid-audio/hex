@@ -89,6 +89,18 @@ impl EditorView {
     pub(super) fn track_volume(&mut self, track: &Track, cx: &mut Context<Self>) -> Div {
         retire_stale(self, cx);
         let id = track.id();
+        if automated(track) {
+            return div()
+                .flex_1()
+                .min_w(px(86.0))
+                .h(px(21.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .debug_selector(move || format!("track-volume-auto-{}", id.value()))
+                .child(theme::text("auto"));
+        }
         let target = GestureTarget::TrackGain { track: id };
         let generation = self.project_generation;
         if let std::collections::btree_map::Entry::Vacant(entry) =

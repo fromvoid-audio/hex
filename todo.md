@@ -1,3 +1,11 @@
+## header volume automation indication — returned pulse2715 / PR331
+
+Restored explicit `auto` readout for authored gain envelopes and recorded touch
+lanes, rather than a disabled static-gain slider. Existing admission policy stays
+unchanged. Two bounded rendered regressions reproduce missing indication before
+repair and verify pointer attempts preserve canonical gain/history. No widget,
+actor, Audio or Engine changes; final integrated CI/native acceptance separate.
+
 ## resident track-header volume — pulse2715 / PR331, 18 october2026
 
 Compact shared rail/dB controls use canonical gain and typed coalesced resident

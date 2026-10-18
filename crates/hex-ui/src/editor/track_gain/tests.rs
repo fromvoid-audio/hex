@@ -288,7 +288,7 @@ fn header_volume_text_commit_uses_canonical_gain_and_automation_refuses_drag(
     visual.run_until_parked();
     let rail = visual
         .debug_bounds(Box::leak(
-            format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+            format!("track-volume-auto-{}", track.value()).into_boxed_str(),
         ))
         .unwrap();
     drag(
@@ -440,4 +440,92 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
             });
         }
     }
+}
+
+fn automation_readout_owns_gain(cx: &mut TestAppContext, recorded: bool) {
+    use hex_project::{
+        BeatTime, GainInterpolation, GainPoint, GainTouchContext, GainTouchSpan, GainTouchStep,
+    };
+    let (_browser, mut visual, editor, [track, _]) = actor_fixture(cx);
+    let command = if recorded {
+        Command::SpliceGainTouch {
+            track,
+            expected_epoch: 0,
+            span: GainTouchSpan {
+                start: BeatTime::ZERO,
+                end: BeatTime::ONE,
+                context: GainTouchContext {
+                    recording_epoch: 1,
+                    project_generation: 0,
+                    canonical_revision: 1,
+                    audio_revision: 1,
+                    transport_epoch: 1,
+                    gesture_epoch: 1,
+                    gesture_serial: 1,
+                    sample_rate: 48_000,
+                    loop_pass: 0,
+                },
+                steps: vec![GainTouchStep {
+                    beat: BeatTime::ZERO,
+                    gain: 0.8,
+                    origin_beat: BeatTime::ZERO,
+                    source_sequence: 1,
+                }],
+            },
+        }
+    } else {
+        Command::ReplaceTrackGainEnvelope {
+            track,
+            points: vec![GainPoint {
+                beat: BeatTime::ZERO,
+                gain: 0.8,
+                outgoing: GainInterpolation::Step,
+            }],
+        }
+    };
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(command)))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.state.as_ref().is_some_and(|s| {
+                let owner = s.project.track(track).unwrap();
+                if recorded {
+                    !owner.gain_lane().spans().is_empty()
+                } else {
+                    !owner.gain_envelope().is_empty()
+                }
+            })
+    });
+    visual.run_until_parked();
+    let indication = bounds(&mut visual, "track-volume-auto", track);
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    drag(
+        &mut visual,
+        indication.center(),
+        point(indication.right(), indication.center().y),
+    );
+    editor.read_with(cx, |view, _| {
+        let after = view.state.as_ref().unwrap();
+        assert_eq!(after.project, before.project);
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(
+            (after.can_undo, after.can_redo),
+            (before.can_undo, before.can_redo)
+        );
+        assert!(view.device_gesture.snapshot().is_none());
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+    });
+}
+
+#[gpui::test]
+fn header_volume_automation_envelope_shows_auto_without_edit(cx: &mut TestAppContext) {
+    automation_readout_owns_gain(cx, false);
+}
+
+#[gpui::test]
+fn header_volume_recorded_touch_lane_shows_auto_without_edit(cx: &mut TestAppContext) {
+    automation_readout_owns_gain(cx, true);
 }

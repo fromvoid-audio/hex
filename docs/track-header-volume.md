@@ -47,3 +47,8 @@ selection, text focus and both resize handles. VerifiedStreaming must retain +/-
 live fader acceptance there awaits2792. Capture optimized input-to-applied-audio,
 terminal/backlog and device timing separately; headless checks do not prove these.
 Root coordinates all native work and app delivery; this source change installs nothing.
+
+Automation-owned headers show `auto` instead of the unrelated static gain/dB
+value. Both authored envelopes and recorded touch spans retain their existing
+edit refusal; the readout has no gain drag binding. Bounded rendered Service
+fixtures verify both indications and unchanged Project/history after pointer drag.
