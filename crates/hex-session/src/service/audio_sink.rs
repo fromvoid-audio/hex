@@ -40,7 +40,10 @@ pub(super) struct WorkerEvents {
     sender: SyncSender<Event>,
     shutdown: SessionCancellation,
     audio: Option<Box<dyn WorkerAudioSink>>,
-    last_context: Option<hex_engine::AudioSourceContext>,
+    last_source: Option<(
+        hex_engine::AudioSourceContext,
+        hex_engine::SharedMetadataCacheIdentity,
+    )>,
     startup_error: Option<String>,
 }
 impl WorkerEvents {
@@ -59,7 +62,7 @@ impl WorkerEvents {
             sender,
             shutdown,
             audio,
-            last_context: None,
+            last_source: None,
             startup_error: None,
         }
     }
@@ -106,11 +109,16 @@ impl WorkerEvents {
     }
     pub(super) fn send(&mut self, mut event: Event, state: &WorkerDispatchState<'_>) -> bool {
         if let Some(source) = &event.state.canonical_audio_source {
-            if self.last_context != Some(source.context()) {
+            // SaveNew/SaveCurrent replace the immutable source allocation at
+            // unchanged musical counters. A nonowning immutable version only
+            // suppresses redundant notification; it grants no storage/custody.
+            // Unavailable/exhausted versions conservatively notify every Event.
+            let identity = source.cache_identity().map(|id| (source.context(), id));
+            if identity.is_none() || self.last_source != identity {
                 if let Some(audio) = self.audio.as_mut() {
                     audio.canonical_changed(source.clone());
                 }
-                self.last_context = Some(source.context());
+                self.last_source = identity;
             }
         }
         let mut dispatch = WorkerRootDispatch::ChangedEvent;
@@ -354,6 +362,7 @@ mod root_dispatch_tests {
         event_revision: Option<u64>,
         old_source_refused: bool,
         pending_export: bool,
+        source_version: Option<hex_engine::SharedMetadataCacheIdentity>,
     }
     #[derive(Default)]
     struct Observed {
@@ -422,6 +431,7 @@ mod root_dispatch_tests {
                 event_revision: roots.pending_event_revision(),
                 old_source_refused,
                 pending_export: roots.has_pending_export(),
+                source_version: latest.cache_identity(),
             });
         }
         fn close(&mut self) {
@@ -555,6 +565,74 @@ mod root_dispatch_tests {
         });
         // Close is independent of UI collection and no inspection guard is
         // carried through the receive/sleep loop or destructor.
+        drop(service);
+        wait(|| observed.closed.load(Ordering::Acquire));
+    }
+    #[test]
+    fn successful_saves_refresh_actual_worker_source_at_unchanged_counters_and_idle() {
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = Directory(std::env::temp_dir().join(format!(
+            "hex-root-save-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        )));
+        std::fs::create_dir(&directory.0).unwrap();
+        let path = directory.0.join("saved.hex");
+        let observed = Arc::new(Observed::default());
+        let service = Service::with_audio_sink(
+            16,
+            0,
+            None,
+            Box::new(RootSink {
+                observed: observed.clone(),
+                latest: None,
+                first: None,
+                independent: None,
+            }),
+        )
+        .unwrap();
+        let _initial = service.events.recv_timeout(Duration::from_secs(3)).unwrap();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "keep".into(),
+            }))
+            .unwrap();
+        let edited = service.events.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(edited.state.unsaved);
+        let mut previous = edited
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .clone();
+        for request in [Request::SaveNew(path.clone()), Request::SaveCurrent] {
+            service.submit(request).unwrap();
+            let saved = service.events.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert!(saved.save_complete);
+            assert!(saved.error.is_none(), "{:?}", saved.error);
+            assert!(!saved.state.unsaved);
+            assert_eq!(saved.state.revision, edited.state.revision);
+            let source = saved.state.canonical_audio_source.as_ref().unwrap();
+            assert_eq!(source.context(), previous.context());
+            assert_eq!(source.sample_rate(), previous.sample_rate());
+            assert!(!source.shares_owner_with(&previous));
+            assert_ne!(source.cache_identity(), previous.cache_identity());
+            // RootSink checks EXACT current allocation on every poll. Ensure
+            // later idle polls also observe this save, not an earlier revision.
+            wait(|| {
+                observed.reads.lock().unwrap().iter().any(|read| {
+                    read.dispatch == WorkerRootDispatch::Idle
+                        && read.context == source.context()
+                        && read.source_version == source.cache_identity()
+                })
+            });
+            previous = source.clone();
+        }
+        assert!(std::fs::metadata(&path).unwrap().len() > 0);
         drop(service);
         wait(|| observed.closed.load(Ordering::Acquire));
     }

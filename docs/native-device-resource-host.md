@@ -721,3 +721,12 @@ adapters retain their default polling behavior. Referenced registry processing,
 production registered startup, atomic sample replacement and the full functional
 Sampler panel/workflow remain open. No source identity or selected byte total is
 cached as publication authority.
+
+Successful SaveNew/SaveCurrent reconstruct the canonical source at unchanged
+musical generation/revision. Notification therefore also compares the existing
+nonowning immutable consumer version; absent/exhausted versions always notify.
+This key suppresses redundant notifications only: actual current source matching
+still requires the real paired allocation, rate and counters. It is neither a
+source lease nor a storage/custody proof. The new successful save→Event→idle
+regression fails with historical counter-only notification and passes with this
+repair, without manufacturing a revision or retaining another owning source.

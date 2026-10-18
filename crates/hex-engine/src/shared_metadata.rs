@@ -9,8 +9,9 @@ use std::{
 
 static NEXT_CACHE_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
-/// Nonowning immutable cache version. Equality permits geometry reuse only;
-/// this retains no allocation and proves no storage provenance or lifetime.
+/// Nonowning immutable invalidation version. Equality permits reuse of an
+/// immutable consumer view (such as geometry or a notified source) only. This
+/// retains no allocation and proves no storage provenance, binding or lifetime.
 /// Values cannot be fabricated, adopted from an address, or reused after wrap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 ///
