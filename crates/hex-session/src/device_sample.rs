@@ -33,6 +33,41 @@ pub struct DeviceSampleWaveformLimits {
     pub scan_frames: usize,
     pub source_metadata_bytes: usize,
 }
+impl Session {
+    /// Resolve the actual captured instrument on the existing control worker
+    /// before touching the file. A service caller must also check its document
+    /// generation/revision stamps. This immutable Session borrow freezes this
+    /// target during decode; the returned staging still needs full prepared
+    /// admission before one atomic model/media/audio publication.
+    pub fn prepare_device_sample_on_worker(
+        &self,
+        device: DeviceId,
+        expected_state: &NativeDeviceState,
+        path: impl AsRef<Path>,
+        limits: hex_media::Limits,
+        cancel: &AtomicBool,
+    ) -> Result<PreparedDeviceSample, SessionError> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(hex_media::ImportError::Cancelled.into());
+        }
+        let target = self
+            .project()
+            .device(device)
+            .filter(|target| {
+                target.state() == expected_state
+                    && self.project().tracks().iter().any(|track| {
+                        track
+                            .instrument()
+                            .is_some_and(|instrument| instrument.id() == device)
+                    })
+            })
+            .ok_or(SessionError::Invalid(
+                "sample loading canceled · target instrument changed",
+            ))?;
+        hex_engine::validate_sampler_state_on_control(target.state())?;
+        PreparedDeviceSample::decode_on_worker(device, target.state(), path, limits, cancel)
+    }
+}
 impl PreparedDeviceSample {
     /// Prepare real peaks and deep-zoom backing from this candidate's same
     /// original resource root. No PCM derivative, fabricated peaks or UI/audio

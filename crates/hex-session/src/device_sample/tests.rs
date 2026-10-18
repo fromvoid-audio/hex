@@ -174,7 +174,7 @@ fn actual_worker_source_binds_candidate_without_publishing_and_survives_staging_
 
 #[test]
 fn bounded_file_worker_preserves_original_rate_and_reports_cancellation_and_missing_source() {
-    let (_, device) = fixture();
+    let (session, device) = fixture();
     let state = hex_engine::empty_sampler_state_on_control().unwrap();
     let path = std::env::temp_dir().join(format!("hex-sampler-worker-{}.wav", std::process::id()));
     let mut wav = Vec::new();
@@ -196,8 +196,9 @@ fn bounded_file_worker_preserves_original_rate_and_reports_cancellation_and_miss
     std::fs::write(&path, wav).unwrap();
     let cancel = AtomicBool::new(false);
     let limits = hex_media::Limits::new(1024, 8);
-    let prepared =
-        PreparedDeviceSample::decode_on_worker(device, &state, &path, limits, &cancel).unwrap();
+    let prepared = session
+        .prepare_device_sample_on_worker(device, &state, &path, limits, &cancel)
+        .unwrap();
     assert_eq!(prepared.path(), path);
     assert_eq!(
         (prepared.source_sample_rate(), prepared.source_frames()),
@@ -229,6 +230,62 @@ fn bounded_file_worker_preserves_original_rate_and_reports_cancellation_and_miss
     assert!(
         PreparedDeviceSample::decode_on_worker(device, &state, &path, limits, &cancel).is_err()
     );
+}
+
+#[test]
+fn bounded_file_worker_target_is_checked_before_missing_file_io_and_never_edits_history() {
+    let (mut session, device) = fixture();
+    let captured = session.project().device(device).unwrap().state().clone();
+    let original = session.project().clone();
+    let missing =
+        std::env::temp_dir().join(format!("hex-sampler-absent-{}.wav", std::process::id()));
+    let cancel = AtomicBool::new(false);
+    let limits = hex_media::Limits::new(1024, 8);
+    // A genuine target reaches I/O and reports missing media, not stale target.
+    assert!(matches!(
+        session.prepare_device_sample_on_worker(device, &captured, &missing, limits, &cancel),
+        Err(SessionError::Media(_))
+    ));
+    assert_eq!(*session.project(), original);
+    let replaced = NativeDeviceState::new(
+        hex_lattice_contract::DeviceTypeId::from_static("test.other.instrument"),
+        1,
+        vec![],
+    )
+    .unwrap();
+    session
+        .editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: replaced.clone(),
+        })
+        .unwrap();
+    let before = session.project().clone();
+    let undo = session.editor.can_undo();
+    let redo = session.editor.can_redo();
+    assert!(matches!(
+        session.prepare_device_sample_on_worker(device, &captured, &missing, limits, &cancel),
+        Err(SessionError::Invalid(
+            "sample loading canceled · target instrument changed"
+        ))
+    ));
+    // Matching identity with the wrong actual instrument type also refuses
+    // before file access; an arbitrary state is never treated as a Sampler.
+    assert!(matches!(
+        session.prepare_device_sample_on_worker(device, &replaced, &missing, limits, &cancel),
+        Err(SessionError::Engine(_))
+    ));
+    cancel.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        session.prepare_device_sample_on_worker(device, &captured, &missing, limits, &cancel),
+        Err(SessionError::Media(hex_media::ImportError::Cancelled))
+    ));
+    assert_eq!(*session.project(), before);
+    assert_eq!(
+        (session.editor.can_undo(), session.editor.can_redo()),
+        (undo, redo)
+    );
+    assert_eq!(session.resident_frames(), 0);
 }
 
 #[test]

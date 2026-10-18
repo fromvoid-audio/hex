@@ -274,6 +274,16 @@ pub struct SamplerSampleAssignment {
     pub slot: hex_lattice_contract::DeviceAssetSlot,
 }
 
+/// Validate current authored Sampler metadata before starting bounded worker
+/// I/O. This does not admit a source, resource graph or registry processing.
+pub fn validate_sampler_state_on_control(
+    state: &hex_lattice_contract::NativeDeviceState,
+) -> Result<(), Invalid> {
+    hex_devices::sampler::state::DeviceState::from_native(state)
+        .map(|_| ())
+        .map_err(|_| Invalid("sampler state is invalid"))
+}
+
 /// Current unbound Sampler metadata, not a registered/selectable device.
 pub fn empty_sampler_state_on_control() -> Result<hex_lattice_contract::NativeDeviceState, Invalid>
 {
