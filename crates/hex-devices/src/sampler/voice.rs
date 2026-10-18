@@ -17,6 +17,7 @@ pub struct VoiceCoefficients {
     pub(super) channel_gain: [f64; 2],
     pub(super) gate: GateMode,
     pub(super) envelope: envelope::PreparedEnvelope,
+    pub(super) one_shot_fade_frames: [u64; 2],
 }
 
 impl VoiceCoefficients {
@@ -31,6 +32,7 @@ impl VoiceCoefficients {
             channel_gain,
             gate,
             envelope,
+            one_shot_fade_frames,
         } = self;
         let _: (&usize, &SampleChannels, &Region, &Option<(usize, usize)>) =
             (expected_frames, channels, region, loop_offsets);
@@ -39,6 +41,7 @@ impl VoiceCoefficients {
         let _: (&usize, &usize) = (start, end);
         let _: &envelope::PreparedEnvelope = envelope;
         envelope.audit_scalar_storage();
+        let _: &[u64; 2] = one_shot_fade_frames;
     }
     /// Zero fixed buffering/lookahead; source resampling and envelope timing
     /// do not introduce a block of host latency.
@@ -95,12 +98,22 @@ impl VoiceCoefficients {
         if pcm.frames() != self.expected_frames || channels != self.channels {
             return [0.0; 2];
         }
-        let envelope = match self.gate {
+        let mut envelope = match self.gate {
             GateMode::Gate => self.envelope.sample(age_frames, gate_frames),
             GateMode::Trigger => self.envelope.held(age_frames),
         };
         if envelope == 0.0 {
             return [0.0; 2];
+        }
+        let [fade_in, fade_out] = self.one_shot_fade_frames;
+        if fade_in != 0 {
+            envelope *= (age_frames as f64 / fade_in as f64).min(1.0);
+        }
+        if fade_out != 0 {
+            let Some(last_age) = self.natural_frames().and_then(|end| end.checked_sub(1)) else {
+                return [0.0; 2];
+            };
+            envelope *= (last_age.saturating_sub(age_frames) as f64 / fade_out as f64).min(1.0);
         }
         // u64 * u64 fits u128 exactly, even at u64::MAX age. Integer modulo
         // preserves loop phase where conversion of age to f64 would lose it.

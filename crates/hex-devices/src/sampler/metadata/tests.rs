@@ -18,6 +18,73 @@ fn loaded() -> NativeDeviceState {
 }
 
 #[test]
+fn one_shot_fades_bind_saved_scalars_to_pcm_and_preserve_host_metadata() {
+    let original = loaded();
+    assert!(!METADATA.parameter_enabled(&original, FADE_IN).unwrap());
+    assert!(
+        METADATA
+            .patch_parameter(&original, FADE_IN, ParameterValue::Float(0.1))
+            .is_err()
+    );
+    let mode = METADATA
+        .patch_parameter(&original, MODE, ParameterValue::Choice(1))
+        .unwrap();
+    let fade = METADATA
+        .patch_parameter(&mode, FADE_IN, ParameterValue::Float(2.0 / 8_000.0))
+        .unwrap();
+    let fade = METADATA
+        .patch_parameter(&fade, FADE_OUT, ParameterValue::Float(2.0 / 8_000.0))
+        .unwrap();
+    assert_eq!(fade.asset_references(), original.asset_references());
+    assert!(fade.shares_asset_reference_storage_with(&original));
+    assert_eq!(fade.output_gain_millidb(), -600);
+    let authored = SamplerState::from_native(&fade).unwrap();
+    let restored = authored.replace_in(&fade).unwrap();
+    let read = super::super::state::SamplerStateRead::from_native(&restored).unwrap();
+    assert_eq!(
+        read.one_shot_fades_seconds(),
+        authored.one_shot_fades_seconds
+    );
+    assert_eq!(
+        METADATA.read_parameter(&restored, FADE_IN).unwrap(),
+        ParameterValue::Float(2.0 / 8_000.0)
+    );
+    let plan = PreparedSamplerPlan::new(
+        SampleShape::new(4, 8_000, SampleChannels::Stereo).unwrap(),
+        8_000,
+        authored.settings(),
+    )
+    .unwrap();
+    let coefficients = plan.prepare_voice_coefficients(60, 127).unwrap().unwrap();
+    let pcm = [[1.0, -2.0]; 4];
+    let mut output = [[99.0; 2]; 4];
+    coefficients.render(DeviceResourcePcm::Stereo(&pcm), 0, 0, &mut output);
+    assert_eq!(output, [[0.0; 2], [0.5, -1.0], [0.5, -1.0], [0.0; 2]]);
+    let classic = METADATA
+        .patch_parameter(&restored, MODE, ParameterValue::Choice(0))
+        .unwrap();
+    let one_shot = METADATA
+        .patch_parameter(&classic, MODE, ParameterValue::Choice(1))
+        .unwrap();
+    assert_eq!(
+        SamplerState::from_native(&one_shot)
+            .unwrap()
+            .one_shot_fades_seconds,
+        authored.one_shot_fades_seconds
+    );
+    for bad in [f32::NAN, f32::INFINITY, -0.1, 60.1] {
+        assert!(
+            METADATA
+                .patch_parameter(&restored, FADE_IN, ParameterValue::Float(bad))
+                .is_err()
+        );
+    }
+    let old =
+        NativeDeviceState::new(TYPE_ID, STATE_VERSION - 1, restored.payload().to_vec()).unwrap();
+    assert!(METADATA.migrate_state(&old).is_err()); // Explicit alpha refusal, no compatibility reader.
+}
+
+#[test]
 fn source_and_loop_flags_change_audible_frames_without_discarding_markers_or_binding() {
     let original = loaded();
     let region = METADATA

@@ -4,9 +4,9 @@ use super::*;
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sampler");
-pub const STATE_VERSION: u32 = 1;
+pub const STATE_VERSION: u32 = 2;
 pub const SOURCE_SLOT: u32 = 1;
-const PREFIX: usize = 96;
+const PREFIX: usize = 112;
 mod read;
 mod slice_edit;
 pub use read::{DeviceStateRead, SamplerReadMode, SamplerStateRead};
@@ -145,6 +145,7 @@ pub struct SamplerState {
     pub pan: f64,
     pub velocity_amount: f64,
     pub envelope: Envelope,
+    pub one_shot_fades_seconds: [f64; 2],
     pub voices: u8,
 }
 impl SamplerState {
@@ -165,6 +166,7 @@ impl SamplerState {
             pan: 0.0,
             velocity_amount: 1.0,
             envelope: Envelope::default(),
+            one_shot_fades_seconds: [0.0; 2],
             voices: 16,
         };
         state.validate()?;
@@ -196,6 +198,7 @@ impl SamplerState {
             pan: self.pan,
             velocity_amount: self.velocity_amount,
             envelope: self.envelope,
+            one_shot_fades_seconds: self.one_shot_fades_seconds,
         }
     }
     fn validate(&self) -> Result<(), Error> {
@@ -260,6 +263,8 @@ impl SamplerState {
             self.envelope.decay_seconds,
             self.envelope.sustain,
             self.envelope.release_seconds,
+            self.one_shot_fades_seconds[0],
+            self.one_shot_fades_seconds[1],
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }

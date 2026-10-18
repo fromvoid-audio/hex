@@ -188,6 +188,9 @@ impl<'a> SamplerStateRead<'a> {
             release_seconds: self.value(8),
         }
     }
+    pub fn one_shot_fades_seconds(self) -> [f64; 2] {
+        [self.value(9), self.value(10)]
+    }
     fn settings(self, starts: &[usize]) -> Settings<'_> {
         Settings {
             region: self.region(),
@@ -208,6 +211,7 @@ impl<'a> SamplerStateRead<'a> {
             pan: self.pan(),
             velocity_amount: self.velocity_amount(),
             envelope: self.envelope(),
+            one_shot_fades_seconds: self.one_shot_fades_seconds(),
         }
     }
     pub(super) fn to_authored_on_control(self) -> Result<SamplerState, Error> {
@@ -239,6 +243,7 @@ impl<'a> SamplerStateRead<'a> {
             pan: self.pan(),
             velocity_amount: self.velocity_amount(),
             envelope: self.envelope(),
+            one_shot_fades_seconds: self.one_shot_fades_seconds(),
         })
     }
 }

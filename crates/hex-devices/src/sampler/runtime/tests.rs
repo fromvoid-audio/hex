@@ -35,6 +35,7 @@ fn compact_key_table_preserves_every_full_coefficient_and_stays_under_context_ca
             settings.pan = -0.25;
             settings.gain = 0.375;
             settings.envelope.release_seconds = 0.125;
+            settings.one_shot_fades_seconds = [0.01, 0.02];
             let plan = PreparedSamplerPlan::new(
                 SampleShape::new(12, 8_000, SampleChannels::Mono).unwrap(),
                 44_100,
@@ -131,6 +132,46 @@ fn process(
     pair.begin_block();
     pair.process_block(events, output, resources).unwrap();
     pair.commit_block();
+}
+
+#[test]
+fn one_shot_fades_actual_mutable_pair_matches_pcm_oracle_across_partitions_and_rollback() {
+    let pcm = [1.0_f32; 8];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region { start: 0, end: 8 });
+    settings.mode = Mode::OneShot {
+        gate: GateMode::Trigger,
+    };
+    settings.one_shot_fades_seconds = [2.0 / 8_000.0; 2];
+    let prepared = PreparedSamplerPlan::new(
+        SampleShape::new(8, 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(views[0])
+    .unwrap()
+    .prepare_runtime_on_control(4, 259, &hex_lattice::TuningTable::default())
+    .unwrap();
+    let expected = [0.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.5, 0.0].map(|v| [v; 2]);
+    let mut runtime = pair(&prepared);
+    let mut output = [[99.0; 2]; 8];
+    runtime.begin_block();
+    runtime
+        .process_block(&[on(0, 1, 60)], &mut output, &resources)
+        .unwrap();
+    assert_eq!(
+        output,
+        expected.map(|frame| frame.map(|value| 99.0 + value))
+    );
+    runtime.rollback_block();
+    // Instrument processing ADDS into the caller's mix buffer. Replay starts
+    // from an independent silent bus, not the speculative mixed output.
+    output.fill([0.0; 2]);
+    process(&mut runtime, &[on(0, 1, 60)], &mut output[..3], &resources);
+    process(&mut runtime, &[], &mut output[3..], &resources);
+    assert_eq!(output, expected);
 }
 
 #[test]

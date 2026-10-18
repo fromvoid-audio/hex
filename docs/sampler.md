@@ -208,7 +208,9 @@ independent PCM sums; they do not establish whole-root native admission.
 
 The current sampler state codec now retains mode, source-frame bounds, loop and
 slice markers, reverse, pitch/root, gain/pan/velocity, amplitude envelope and voice
-count in a bounded payload (96-byte prefix plus at most 128 four-byte markers).
+count and One-Shot fade times in a bounded current-v2 payload (112-byte prefix
+plus at most 128 four-byte markers). Old alpha state versions refuse explicitly;
+there is no compatibility reader or automatic conversion.
 Settings edits preserve the actual host gains and asset-reference allocation.
 The unregistered control metadata exposes exact source-frame start/end and
 enabled Classic loop start/end bindings. Finite values round to integer frames;
@@ -530,3 +532,32 @@ native execution. The default production backend still uses its existing legacy
 constructor. Actual production pre-escape registration, complete worker/native
 owner union and construction peak, atomic sample publication and the functional
 Sampler panel/DSP/workflow remain open. This checkpoint does not open admission.
+
+### One-Shot fade controls
+
+One-Shot fade in/out are authored seconds in the finite 0..60 range, rounded to
+output frames during control preparation. Zero leaves that boundary unchanged.
+Fade in starts at zero on age zero and reaches unity at its configured age;
+fade out reaches zero on the final output frame of the pitched/trimmed region.
+Overlapping fades multiply rather than extending the sample or moving markers.
+The same gain applies to both channels. Reverse changes source order, not fade
+direction. Trigger ignores note-off; Gate retains its existing ADSR note-off law.
+These are independently implemented linear laws, not measured Live parity.
+
+Classic and Slice retain authored values across mode switches but do not apply
+them or enable their controls. Metadata patching and borrowed reads use the same
+current codec; host gains and actual asset binding remain attached. Preparation
+and voices add only fixed scalar storage, covered by the exhaustive leaf audit.
+No new PCM owner, processing history or lookahead is introduced. Tests compare
+independent PCM ramps for trim/reverse/pitch/rate conversion, query/partition
+order, short/overlapping fades, trigger/gate behavior, malformed input, current
+state round trips and actual mutable-pair rollback. These bindings still require
+the admitted host and functional panel before musical-use delivery.
+
+All 46 cloud Sampler regressions pass with these changes. The first run had one
+new fixture failure: it expected an instrument to overwrite a nonzero mix bus.
+The corrected oracle verifies the actual additive mix, then clears a separate
+bus before speculative rollback replay; production mixing is unchanged. Both
+run logs are retained. Devices/Engine/Session all-target strict Clippy also
+passes. The new fixed fields change actual runtime Box size, so native paired
+layout/allocation-probe qualification remains separate from these cloud results.

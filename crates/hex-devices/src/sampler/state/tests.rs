@@ -62,6 +62,7 @@ fn replacement_preserves_sound_and_host_controls_but_resets_old_source_coordinat
         original.velocity_amount = 0.25;
         original.envelope.attack_seconds = 0.125;
         original.envelope.release_seconds = 0.5;
+        original.one_shot_fades_seconds = [0.02, 0.04];
         original.voices = 8;
         let current = original
             .to_native()
@@ -187,7 +188,7 @@ fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
             .is_err()
         );
     }
-    for index in 0..9 {
+    for index in 0..11 {
         let mut bytes = valid.payload().to_vec();
         bytes[24 + index * 8..32 + index * 8].copy_from_slice(&f64::NAN.to_le_bytes());
         assert!(
@@ -411,6 +412,7 @@ fn borrowed_panel_reads_all_modes_and_exact_source_markers_without_owning_state(
             release_seconds: 0.75,
         };
         authored.voices = 8;
+        authored.one_shot_fades_seconds = [0.125, 0.25];
         let native = authored.to_native().unwrap();
         let DeviceStateRead::Sample(read) = DeviceStateRead::from_native(&native).unwrap() else {
             panic!("loaded read")
@@ -425,6 +427,10 @@ fn borrowed_panel_reads_all_modes_and_exact_source_markers_without_owning_state(
         assert_eq!(read.pan(), -0.5);
         assert_eq!(read.velocity_amount(), 0.25);
         assert_eq!(read.envelope(), authored.envelope);
+        assert_eq!(
+            read.one_shot_fades_seconds(),
+            authored.one_shot_fades_seconds
+        );
         match &authored.mode {
             AuthoredMode::Classic { loop_region } => {
                 assert_eq!(
@@ -491,7 +497,7 @@ fn borrowed_panel_read_refuses_nonfinite_bounds_headers_and_unsorted_slice_paylo
         bytes[index] = invalid;
         rejects(bytes);
     }
-    for field in 0..9 {
+    for field in 0..11 {
         let mut bytes = original.payload().to_vec();
         bytes[24 + field * 8..32 + field * 8].copy_from_slice(&f64::NAN.to_le_bytes());
         rejects(bytes);

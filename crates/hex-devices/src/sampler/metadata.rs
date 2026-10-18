@@ -36,6 +36,8 @@ pub mod parameter {
     pub const END: ParameterId = ParameterId::from_static(18);
     pub const LOOP_START: ParameterId = ParameterId::from_static(19);
     pub const LOOP_END: ParameterId = ParameterId::from_static(20);
+    pub const FADE_IN: ParameterId = ParameterId::from_static(21);
+    pub const FADE_OUT: ParameterId = ParameterId::from_static(22);
 }
 const fn float(
     id: ParameterId,
@@ -76,7 +78,7 @@ const fn choice(
     }
 }
 use parameter::*;
-static PARAMETERS: [ParameterDescriptor; 20] = [
+static PARAMETERS: [ParameterDescriptor; 22] = [
     choice(MODE, "mode", &["classic", "one-shot", "slice"]),
     boolean(REVERSE, "reverse"),
     float(ROOT, "root", 0.0, 127.0, Some("note"), 60.0),
@@ -92,6 +94,8 @@ static PARAMETERS: [ParameterDescriptor; 20] = [
     float(DECAY, "decay", 0.0, 60.0, Some("s"), 0.0),
     float(SUSTAIN, "sustain", 0.0, 1.0, None, 1.0),
     float(RELEASE, "release", 0.0, 60.0, Some("s"), 0.0),
+    float(FADE_IN, "fade in", 0.0, 60.0, Some("s"), 0.0),
+    float(FADE_OUT, "fade out", 0.0, 60.0, Some("s"), 0.0),
     float(VOICES, "voices", 1.0, 32.0, None, 16.0),
     boolean(LOOP, "loop"),
     choice(GATE, "playback", &["trigger", "gate"]),
@@ -148,6 +152,7 @@ fn enabled_mode(mode: SamplerReadMode, id: ParameterId) -> bool {
         ),
         GATE => !matches!(mode, SamplerReadMode::Classic { .. }),
         SLICE_BASE => matches!(mode, SamplerReadMode::Slice { .. }),
+        FADE_IN | FADE_OUT => matches!(mode, SamplerReadMode::OneShot { .. }),
         _ => true,
     }
 }
@@ -223,6 +228,8 @@ impl NativeDeviceMetadata for SamplerMetadata {
             DECAY => ParameterValue::Float(state.envelope().decay_seconds as f32),
             SUSTAIN => ParameterValue::Float(state.envelope().sustain as f32),
             RELEASE => ParameterValue::Float(state.envelope().release_seconds as f32),
+            FADE_IN => ParameterValue::Float(state.one_shot_fades_seconds()[0] as f32),
+            FADE_OUT => ParameterValue::Float(state.one_shot_fades_seconds()[1] as f32),
             VOICES => ParameterValue::Float(f32::from(state.voices())),
             LOOP => ParameterValue::Bool(matches!(
                 state.mode(),
@@ -316,6 +323,9 @@ impl NativeDeviceMetadata for SamplerMetadata {
                 state.envelope.release_seconds = f64::from(value)
             }
             (VOICES, ParameterValue::Float(value)) => state.voices = value.round() as u8,
+            (FADE_IN | FADE_OUT, ParameterValue::Float(value)) => {
+                state.one_shot_fades_seconds[usize::from(id == FADE_OUT)] = f64::from(value);
+            }
             (LOOP, ParameterValue::Bool(value)) => {
                 let AuthoredMode::Classic { loop_region } = &mut state.mode else {
                     return Err(Error::InvalidParameterValue);

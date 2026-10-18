@@ -119,6 +119,9 @@ pub struct Settings<'a> {
     /// 0 ignores velocity; 1 scales gain by velocity/127.
     pub velocity_amount: f64,
     pub envelope: Envelope,
+    /// One-Shot fades in output seconds; inactive in Classic and Slice. Zero
+    /// preserves the original source boundary. Overlapping fades multiply.
+    pub one_shot_fades_seconds: [f64; 2],
 }
 
 impl Settings<'_> {
@@ -134,6 +137,7 @@ impl Settings<'_> {
             pan: 0.0,
             velocity_amount: 1.0,
             envelope: Envelope::default(),
+            one_shot_fades_seconds: [0.0; 2],
         }
     }
 }

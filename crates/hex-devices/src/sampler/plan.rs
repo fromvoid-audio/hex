@@ -72,6 +72,10 @@ impl<'a> PreparedSamplerPlan<'a> {
             || !finite_range(settings.gain, 0.0, 4.0)
             || !finite_range(settings.pan, -1.0, 1.0)
             || !finite_range(settings.velocity_amount, 0.0, 1.0)
+            || settings
+                .one_shot_fades_seconds
+                .iter()
+                .any(|value| !finite_range(*value, 0.0, 60.0))
         {
             return Err(Invalid("sampler settings are outside their finite domain"));
         }
@@ -222,6 +226,13 @@ impl<'a> PreparedSamplerPlan<'a> {
             channel_gain,
             gate,
             envelope: self.envelope,
+            one_shot_fade_frames: if matches!(settings.mode, Mode::OneShot { .. }) {
+                settings
+                    .one_shot_fades_seconds
+                    .map(|seconds| (seconds * f64::from(self.output_rate)).round() as u64)
+            } else {
+                [0; 2]
+            },
         }))
     }
 }
