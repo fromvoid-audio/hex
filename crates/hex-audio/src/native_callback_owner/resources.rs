@@ -46,6 +46,7 @@ pub(crate) struct NativeCandidateBoundary {
     anchored: bool,
     channels: ChannelStorage,
     spectrum: Option<crate::spectrum_worker::NativeSpectrumReceipt>,
+    status: crate::prepared::NativeStatusAllocation,
     spectrum_reader_bound: bool,
     spectrum_reaper_bound: bool,
 }
@@ -70,6 +71,10 @@ impl NativeCandidateBoundary {
         {
             return None;
         }
+        let status = data.callback.constructor_status_storage()?;
+        if !status.matches(data.status.as_ref()) || !status.matches(errors.status.as_ref()) {
+            return None;
+        }
         let spectrum = data.callback.native_spectrum_receipt()?;
         let channels = data.callback.constructor_channel_storage()?;
         let channels = if let Some(receipt) = spectrum {
@@ -86,7 +91,7 @@ impl NativeCandidateBoundary {
             .checked_add(std::mem::size_of::<NativeRetirement>())?
             .checked_add(std::mem::size_of::<Guard<NativeCallbackOwner>>())?
             .checked_add(std::mem::size_of::<Guard<ErrorCallbackOwner>>())?
-            .checked_add(data.status.candidate_boundary_data_bytes()?)?
+            .checked_add(status.requested_bytes()?)?
             .checked_add(channels.data_bytes)?;
         Some(Self {
             root: root.root_id(),
@@ -96,6 +101,7 @@ impl NativeCandidateBoundary {
             anchored: false,
             channels,
             spectrum,
+            status,
             spectrum_reader_bound: spectrum.is_none(),
             spectrum_reaper_bound: spectrum.is_none(),
         })
@@ -110,7 +116,8 @@ impl NativeCandidateBoundary {
             super::allocations::CarrierAllocation::capture(publication.guard())?,
         ];
         let control = publication.owner_ref()?;
-        if control.native_candidate_root().root_id() != self.root
+        if !self.status.matches(&control.status)
+            || control.native_candidate_root().root_id() != self.root
             || !client.owner_ref()?.matches(&control.status)
         {
             return None;

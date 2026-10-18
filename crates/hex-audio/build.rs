@@ -159,6 +159,22 @@ fn main() {
         "cargo:rustc-env=HEX_NATIVE_RING_LAYOUT_KNOWN={}",
         usize::from(decision.is_ok() && saved && pinned_ring && ring_saved)
     );
+    let status_evidence = format!(
+        "{evidence}\ncontract: native-callback-status-arc-route-box-v1\nconstructor: actual private Callback status initialized by fresh Arc::new(Status::try_new()); route Vec try_reserve_exact/into_boxed_slice; fixed scalar leaf audit\nrequested layout only; handles/custody/construction peak separate\n"
+    );
+    let status_saved = env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .is_some_and(|out| {
+            fs::write(
+                out.join("native-status-layout-evidence.txt"),
+                status_evidence,
+            )
+            .is_ok()
+        });
+    println!(
+        "cargo:rustc-env=HEX_NATIVE_STATUS_LAYOUT_KNOWN={}",
+        usize::from(decision.is_ok() && saved && status_saved)
+    );
     if decision.is_err() || !saved {
         println!("cargo:warning=native carrier requested layout Unknown: {decision:?}");
     }

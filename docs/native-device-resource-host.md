@@ -808,3 +808,25 @@ These are requested allocation contracts, not allocator usable-size/RSS claims.
 Independent measured constructor tests cover empty/odd/aligned/ZST storage,
 exact bytes and128 allocation-free transfers. No whole-native-root qualification
 is implied by these fixed backing reservations.
+
+The actual private Callback Status field now supplies a separate sealed
+`native-callback-status-arc-route-box-v1` constructor record. Production Callback
+construction initializes that field with fresh Arc::new(Status::try_new());
+matching data/error/client/publication fields are correlations with that actual
+origin, never raw Arc adoption. Public legacy Status construction is not an
+alternate receipt constructor. The native worker UI client exposes only a
+borrowed Status; generic raw legacy handle escape is not certified by this record.
+
+The record covers the requested full Status Arc allocation and actual fixed
+route Box backing. Compile-exhaustive concrete leaf checks cover every Status,
+route-slot, selection-mailbox, applied-source, admission and render-fault field;
+adding or changing an owned field requires revisiting that audit. The former
+body/backing amount is replaced once, not duplicated. Actual independent
+constructor requests and allocation-free128 telemetry mutations/queries are
+checked, along with unequal independent bodies and the real native factory's
+terminal recovery. Aliases/retirement destinations and whole construction peak
+still require the enclosing guarded union proof. No registry admission follows.
+
+The fixed-ring fixtures above cover native RingBuffer body/header alignment,
+capacities0/1/7/128 and zero-sized elements at17. They do not contain a separate
+over-aligned element fixture; native evidence must preserve that coverage limit.

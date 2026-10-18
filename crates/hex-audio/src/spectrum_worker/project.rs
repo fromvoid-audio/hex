@@ -830,6 +830,27 @@ fn channel_with_return_capacity(
     ))
 }
 
+impl ProjectSelectionMailbox {
+    pub(crate) fn audit_scalar_storage(&self) {
+        let Self {
+            version,
+            generation,
+            floor,
+            rate,
+            count,
+            tracks,
+            active,
+        } = self;
+        let _: &AtomicU64 = version;
+        let _: &AtomicU64 = generation;
+        let _: &AtomicU64 = floor;
+        let _: &AtomicU32 = rate;
+        let _: &AtomicUsize = count;
+        let _: &[AtomicU64; MAX_PROJECT_TRACKS] = tracks;
+        let _: &AtomicBool = active;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

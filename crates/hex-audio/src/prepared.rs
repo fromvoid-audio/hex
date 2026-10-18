@@ -347,6 +347,9 @@ impl FreshRuntimeFence {
     }
 }
 
+mod status_storage;
+pub(crate) use status_storage::NativeStatusAllocation;
+
 pub struct Status {
     project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
@@ -467,12 +470,6 @@ impl Status {
     }
     pub(crate) fn gain_end(&self) {
         self.publication_pending.gain_finished();
-    }
-    pub(crate) fn candidate_boundary_data_bytes(&self) -> Option<usize> {
-        self.route_slots
-            .len()
-            .checked_mul(std::mem::size_of::<AtomicRouteSlot>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(self)))
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
