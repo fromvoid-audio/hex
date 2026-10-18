@@ -2178,6 +2178,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             last_pointer: Rc::new(Cell::new(None)),
         };
         let clip_drag = ClipDrag {
+            group: Default::default(),
             project_generation: view.project_generation,
             revision: current.revision.saturating_add(1),
             source_track: track,

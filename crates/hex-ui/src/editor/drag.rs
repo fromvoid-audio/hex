@@ -4,8 +4,14 @@ use gpui::{Context, Window};
 use hex_project::Command;
 use hex_project::{BeatTime, ClipId, Project, TrackId, TrimEdge};
 use hex_session::service::{AudioPreview, Request};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+#[derive(Default, Debug)]
+pub(super) struct ClipDragGroup {
+    pub(super) ids: Vec<ClipId>,
+    pub(super) previews: Vec<hex_project::ClipGroupPreview>,
+}
 
 /// Bounded, metadata-only payload for one native pointer drag.
 #[derive(Clone, Debug)]
@@ -14,6 +20,7 @@ pub(super) struct ClipDrag {
     pub(super) revision: u64,
     pub(super) source_track: TrackId,
     pub(super) clip: ClipId,
+    pub(super) group: Rc<RefCell<ClipDragGroup>>,
     pub(super) position: ClipPosition,
     pub(super) grab_offset: Rc<Cell<Option<u64>>>,
     pub(super) origin_pointer_x: Rc<Cell<Option<f32>>>,
@@ -445,6 +452,13 @@ pub(super) fn is_noop(drag: &ClipDrag, state: &DropState<'_>) -> bool {
     drag.source_track == state.target_track && drag.position == state.position
 }
 
+fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
+    match position {
+        ClipPosition::Audio { start, .. } => hex_project::ClipGroupPosition::Audio(start),
+        ClipPosition::Midi { start, .. } => hex_project::ClipGroupPosition::Midi(start),
+    }
+}
+
 fn move_command(clip: ClipId, target_track: TrackId, position: ClipPosition) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::MoveClipWithOverwrite {
@@ -597,6 +611,21 @@ impl super::EditorView {
         let state = self.state.as_ref()?;
         let position =
             candidate_position(&state.project, drag, Some(target_track), pointer_x, lane)?;
+        if drag.group.borrow().ids.len() > 1 {
+            let group = state.project.preview_clip_group_move(
+                &drag.group.borrow().ids,
+                drag.clip,
+                target_track,
+                group_position(position),
+            );
+            match group {
+                Ok(previews) => drag.group.borrow_mut().previews = previews,
+                Err(_) => {
+                    drag.group.borrow_mut().previews.clear();
+                    return None;
+                }
+            }
+        }
         preview_for(&state.project, target_track, position)
     }
 
@@ -619,6 +648,12 @@ impl super::EditorView {
         if let Some((before_track, timeline, line_y)) =
             self.painted_track_insertion_target(pointer_x, pointer_y)
         {
+            if drag.group.borrow().ids.len() > 1 {
+                drag.group.borrow_mut().previews.clear();
+                drag.destination.set(None);
+                drag.insertion_line_y.set(None);
+                return (None, true);
+            }
             let position = candidate_position(&state.project, drag, None, pointer_x, timeline);
             let Some(position) = position else {
                 drag.destination.set(None);
@@ -667,6 +702,7 @@ impl super::EditorView {
             .cloned();
         if let Some(drag) = active {
             drag.preview.set(None);
+            drag.group.borrow_mut().previews.clear();
             drag.destination.set(None);
             drag.insertion_line_y.set(None);
             drag.lane_hovered.set(false);
@@ -675,6 +711,13 @@ impl super::EditorView {
     }
 
     pub(super) fn begin_clip_drag(&mut self, drag: &ClipDrag) {
+        if drag.group.borrow().ids.is_empty() {
+            drag.group.borrow_mut().ids = if self.clip_is_selected(drag.clip) {
+                self.selected_clip_ids()
+            } else {
+                vec![drag.clip]
+            };
+        }
         self.active_native_device_drag = None;
         self.active_clip_drag = Some(drag.clone());
         self.active_browser_audio_drag = None;
@@ -686,6 +729,13 @@ impl super::EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if drag.group.borrow().ids.len() > 1 {
+            self.error =
+                Some("clip group move canceled · choose existing destination tracks".into());
+            self.clear_clip_drag(drag.project_generation, drag.clip);
+            cx.notify();
+            return;
+        }
         drag.snap_modifier.set(window.modifiers().platform);
         drag.copy_modifier.set(window.modifiers().alt);
         let owns_gesture = self.active_clip_drag.as_ref().is_some_and(|active| {
@@ -1110,6 +1160,14 @@ impl super::EditorView {
     ) {
         drag.snap_modifier.set(window.modifiers().platform);
         drag.copy_modifier.set(window.modifiers().alt);
+        if drag.group.borrow().ids.len() > 1
+            && !self
+                .active_clip_drag
+                .as_ref()
+                .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
+        {
+            return;
+        }
         let clear = |view: &mut Self| view.clear_clip_drag(drag.project_generation, drag.clip);
         if self.opening_project || self.close_prompt_open {
             clear(self);
@@ -1185,7 +1243,15 @@ impl super::EditorView {
             clear(self);
             return;
         }
-        let command = if drag.copy_modifier.get() {
+        let command = if drag.group.borrow().ids.len() > 1 {
+            Command::MoveClipsWithOverwrite {
+                clips: drag.group.borrow().ids.clone(),
+                anchor: drag.clip,
+                track: target_track,
+                position: group_position(preview.position),
+                copy: drag.copy_modifier.get(),
+            }
+        } else if drag.copy_modifier.get() {
             copy_command(drag.clip, target_track, preview.position)
         } else {
             move_command(drag.clip, target_track, preview.position)
@@ -1353,6 +1419,7 @@ mod tests {
 
     fn drag(source: TrackId, clip: hex_project::ClipId) -> ClipDrag {
         ClipDrag {
+            group: Default::default(),
             project_generation: 3,
             revision: 9,
             source_track: source,
@@ -1381,6 +1448,7 @@ mod tests {
 
     fn midi_drag(source: TrackId, clip: hex_project::ClipId) -> ClipDrag {
         ClipDrag {
+            group: Default::default(),
             project_generation: 3,
             revision: 9,
             source_track: source,

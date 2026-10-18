@@ -388,6 +388,14 @@ pub enum Command {
         track: TrackId,
         start: u64,
     },
+    /// Move/copy one selected Arrangement group with a single prepared history edit.
+    MoveClipsWithOverwrite {
+        clips: Vec<ClipId>,
+        anchor: ClipId,
+        track: TrackId,
+        position: crate::ClipGroupPosition,
+        copy: bool,
+    },
     /// Atomically insert a hybrid track before a stable anchor/end and move an
     /// existing audio clip there, preserving its ID and source metadata.
     MoveClipToNewTrack {
@@ -2060,6 +2068,13 @@ impl Project {
                 self.audio_clips_mut(track)?.push(moved);
                 Ok(Created::None)
             }
+            Command::MoveClipsWithOverwrite {
+                clips,
+                anchor,
+                track,
+                position,
+                copy,
+            } => crate::clip_group::apply(self, clips, anchor, track, position, copy),
             Command::MoveClipWithOverwrite { clip, track, start } => {
                 let mut incoming = self
                     .clip(clip)

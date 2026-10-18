@@ -1278,6 +1278,7 @@ impl EditorView {
             .map(|lane| {
                 (
                     ClipDrag {
+                        group: Default::default(),
                         project_generation: self.project_generation,
                         revision: state.revision,
                         source_track: track,
@@ -1674,6 +1675,7 @@ impl EditorView {
         let _ = start.raw().checked_add(length.raw())?;
         (start_frame < end_frame).then_some((
             ClipDrag {
+                group: Default::default(),
                 project_generation: self.project_generation,
                 revision: state.revision,
                 source_track: track,
