@@ -293,6 +293,41 @@ impl<'a> AudioRootStorageLedger<'a> {
         }
         Ok(())
     }
+    /// Check the concrete new Sampler context allowance against this still
+    /// borrowed selected union BEFORE its constructor runs. This is a local
+    /// reservation check, not closure of unvisited compiler/application roots,
+    /// an observed construction peak, or publication authority.
+    pub(crate) fn preflight_sampler_context_construction_on_control(
+        &self,
+        project: &hex_project::Project,
+        resources: Option<crate::native_device_resources::DeviceResourcePreparation<'_>>,
+    ) -> Result<crate::shared_analytic::SamplerContextConstructionLimits, AudioStorageError> {
+        let current = self.summary()?;
+        current
+            .require_known_storage()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
+        self.validate_selected_shared_handles_on_control()?;
+        let new =
+            crate::shared_analytic::SharedAnalyticContextTable::sampler_construction_allowance(
+                project, resources,
+            )
+            .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+        let retained = current
+            .retained_bytes
+            .checked_add(new.retained_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        let peak = current
+            .construction_peak_bytes
+            .checked_add(new.construction_peak_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        if retained > self.reservation.max_retained_bytes
+            || peak > self.reservation.max_construction_peak_bytes
+        {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+        Ok(new)
+    }
+
     /// Known requested DATA plus explicit uncertainty. A partial invalidated
     /// inventory has no usable totals. This is neither allocator/RSS nor a
     /// lifetime proof, and excludes unselected external application objects.

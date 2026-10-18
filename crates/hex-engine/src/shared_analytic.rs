@@ -559,6 +559,7 @@ impl SharedAnalyticContextTable {
             previous,
             resource_preparation,
             None,
+            None,
         )
     }
 
@@ -577,7 +578,16 @@ impl SharedAnalyticContextTable {
         previous: Option<&Self>,
         resource_preparation: Option<crate::native_device_resources::DeviceResourcePreparation<'_>>,
         limits: Option<SamplerContextConstructionLimits>,
+        selected_union: Option<&crate::AudioRootStorageLedger<'_>>,
     ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
+        if let Some(union) = selected_union {
+            if limits.is_none() {
+                return Err(Invalid("sampler context construction limits are missing"));
+            }
+            union
+                .preflight_sampler_context_construction_on_control(project, resource_preparation)
+                .map_err(|_| Invalid("sampler context selected union reservation was refused"))?;
+        }
         if let Some(limits) = limits {
             let required = Self::sampler_construction_allowance(project, resource_preparation)?;
             if required.retained_bytes > limits.retained_bytes

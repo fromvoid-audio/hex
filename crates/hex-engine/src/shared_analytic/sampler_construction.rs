@@ -128,6 +128,7 @@ mod tests {
                     None,
                     resources,
                     Some(limits),
+                    None,
                 ),
                 Err(Invalid("sampler context construction allowance exceeded"))
             ));
@@ -175,6 +176,7 @@ mod tests {
                     retained_bytes: quote.retained_bytes,
                     construction_peak_bytes: quote.construction_peak_bytes,
                 }),
+                None,
             )
             .unwrap(),
         );
@@ -199,6 +201,7 @@ mod tests {
                 retained_bytes: quote.retained_bytes,
                 construction_peak_bytes: quote.construction_peak_bytes,
             }),
+            None,
         )
         .unwrap();
         assert!(Arc::ptr_eq(table.owners[0].arc(), reused.owners[0].arc()));
@@ -208,6 +211,149 @@ mod tests {
             reused.owners[0].sampler_factory.as_ref().unwrap().0.parts()
         );
     }
+    #[test]
+    fn sampler_context_selected_union_reservation_keeps_old_aliases_and_refuses_before_birth() {
+        let Some((bank, identity, editor)) = super::super::sampler_tests::canonical_fixture()
+        else {
+            eprintln!("unsupported sampler context selected union");
+            return;
+        };
+        drop(identity);
+        eprintln!(
+            "SUPPORTED sampler context selected union old table aliases and prebirth refusal"
+        );
+        let registry = hex_devices::native_instrument_registry().unwrap();
+        let resources = Some(crate::native_device_resources::DeviceResourcePreparation {
+            bank: &bank,
+            max_scope_metadata_bytes: 65_536,
+        });
+        let old = SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
+            editor.project(),
+            &registry,
+            None,
+            resources,
+            Some(quote(editor.project(), resources).unwrap().limits()),
+            None,
+        )
+        .unwrap();
+        let retained_alias = old.clone_on_control();
+        let reservation = AudioStorageLedgerReservation {
+            data_rows: 1024,
+            handle_rows: 1024,
+            root_rows: 128,
+            max_retained_bytes: 4 * 1024 * 1024,
+            max_construction_peak_bytes: 4 * 1024 * 1024,
+        };
+        let snapshot = editor.project().snapshot();
+        let collect = |reservation, include_alias| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+            ledger
+                .borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Caller)
+                .unwrap();
+            ledger
+                .borrow_editor_native_states_on_control(&editor)
+                .unwrap();
+            // This independent equality oracle also owns real state aliases;
+            // visit those fields rather than weakening closure to ignore them.
+            for device in snapshot
+                .tracks
+                .iter()
+                .flat_map(|track| track.devices.iter().chain(track.instrument.iter()))
+                .chain(
+                    snapshot
+                        .return_tracks
+                        .iter()
+                        .flat_map(|track| &track.devices),
+                )
+            {
+                ledger
+                    .borrow_canonical_native_state_on_control(&device.state)
+                    .unwrap();
+            }
+            super::super::resource_storage::visit_table(
+                &old,
+                &mut ledger,
+                AudioStorageRole::Current,
+            )
+            .unwrap();
+            if include_alias {
+                super::super::resource_storage::visit_table(
+                    &retained_alias,
+                    &mut ledger,
+                    AudioStorageRole::Archive,
+                )
+                .unwrap();
+            }
+            ledger
+        };
+        let before = collect(reservation, true).summary().unwrap();
+        let required = quote(editor.project(), resources).unwrap().limits();
+        let mut exact = reservation;
+        exact.max_retained_bytes = before.retained_bytes + required.retained_bytes;
+        exact.max_construction_peak_bytes =
+            before.construction_peak_bytes + required.construction_peak_bytes;
+        for peak in [false, true] {
+            let mut short = exact;
+            if peak {
+                short.max_construction_peak_bytes -= 1;
+            } else {
+                short.max_retained_bytes -= 1;
+            }
+            let ledger = collect(short, true);
+            crate::owned_shared::reset_birth_count();
+            crate::owned_shared::reset_clone_count();
+            assert_eq!(
+                ledger
+                    .preflight_sampler_context_construction_on_control(editor.project(), resources)
+                    .unwrap_err(),
+                crate::AudioStorageError::ReservationExceeded
+            );
+            assert!(matches!(
+                SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
+                    editor.project(),
+                    &registry,
+                    Some(&old),
+                    resources,
+                    Some(required),
+                    Some(&ledger),
+                ),
+                Err(Invalid(
+                    "sampler context selected union reservation was refused"
+                ))
+            ));
+            assert_eq!(crate::owned_shared::birth_count(), 0);
+            assert_eq!(crate::owned_shared::clone_count(), 0);
+            assert_eq!(ledger.summary().unwrap(), before);
+        }
+        let omitted = collect(exact, false);
+        assert!(
+            omitted
+                .preflight_sampler_context_construction_on_control(editor.project(), resources)
+                .is_err()
+        );
+        let ledger = collect(exact, true);
+        let limits = ledger
+            .preflight_sampler_context_construction_on_control(editor.project(), resources)
+            .unwrap();
+        let candidate = SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
+            editor.project(),
+            &registry,
+            Some(&old),
+            resources,
+            Some(limits),
+            Some(&ledger),
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(old.arc(), candidate.arc()));
+        assert!(Arc::ptr_eq(old.owners[0].arc(), candidate.owners[0].arc()));
+        // The selected old/input ledger remains borrowed during construction;
+        // it is not relabelled as the now enlarged candidate union.
+        assert_eq!(ledger.summary().unwrap(), before);
+        assert_eq!(editor.project().snapshot(), snapshot);
+        assert!(Arc::ptr_eq(old.arc(), retained_alias.arc()));
+        assert!(before.require_complete().is_err());
+    }
+
     #[test]
     fn sampler_context_preconstruction_empty_class_and_overflow_preserve_originals() {
         let Some((bank, identity, mut editor)) = super::super::sampler_tests::canonical_fixture()
@@ -250,6 +396,7 @@ mod tests {
                 retained_bytes: empty_quote.retained_bytes,
                 construction_peak_bytes: empty_quote.construction_peak_bytes,
             }),
+            None,
         )
         .unwrap();
         assert_eq!(crate::owned_shared::birth_count(), 3); // factory, owner, table
@@ -273,7 +420,8 @@ mod tests {
                 Some(SamplerContextConstructionLimits {
                     retained_bytes: usize::MAX,
                     construction_peak_bytes: usize::MAX,
-                })
+                }),
+                None,
             ),
             Err(Invalid("sampler context construction class is unsupported"))
         ));

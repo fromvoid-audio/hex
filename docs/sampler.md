@@ -1164,3 +1164,24 @@ guarded retirement completes. A regression first demonstrated that reservation
 incorrectly succeeded while the fresh plan was still retained; the preflight now
 refuses without touching that plan. Successful retirement permits reservation
 again; a caught retirement panic retains the plan and refuses retry.
+
+The existing storage ledger now checks the concrete context allowance against
+its still-borrowed selected old/input union, including its own actual backing
+and prior growth, under the unchanged retained/construction limits. It refuses
+unknown storage, missing selected shared aliases, checked-add overflow or either
+insufficient byte limit before returning the constructor's local cost limits.
+This does not invent declarations for old owners or certify unvisited roots.
+The same private constructor can retain that immutable ledger borrow through
+construction and rechecks it before acquiring any owner. It still independently
+recomputes its new-context allowance. The legacy route selects neither optional
+check; no existing public preparation or admission gate is opened.
+
+One new test retains actual original resources, editor state/history, an old
+context table and its independent retained alias while preparing a fresh outer
+table that reuses the original context body. Both minus-one limits refuse before
+paired births/clones; omitting the retained alias refuses closure. The independent
+Project equality snapshot also holds real state aliases: an initial fixture
+failure correctly returned UnknownStorage until those actual snapshot fields
+were visited. The closure check was preserved. The exact selected reservation
+then succeeds with original owners unchanged. These are selected context costs,
+not a complete compiler prequote, candidate-union observation or native permit.

@@ -1571,6 +1571,7 @@ fn selected_track_children_loaded_sampler_uses_actual_context_and_survives_resto
                 None,
                 resources,
                 Some(allowance),
+                None,
             )
             .unwrap(),
         );
