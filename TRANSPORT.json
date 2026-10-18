@@ -1,0 +1,21 @@
+{
+  "source": "0bbbb7bd509acecabf0c05134449eca7d61ebf29",
+  "tree": "8ff9526d033a43742c39609fe063f103fd8726ba",
+  "filename": "hex-sampler-0bbbb7bd-midi-cost-evidence.tar.gz",
+  "bytes": 12049,
+  "sha256": "feb6189189af906d4c19a55b66ee5f25477c38907e3a5dc3d6c64bf0daa085e6",
+  "members": 10,
+  "payloads": 9,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/midi_compile.rs",
+      "before": "2d22cb71bdf8dd1b0c1c75ef4b1994db76bb8b1c553f4d7a35264572976ca500",
+      "after": "59ee34cf777851001dda47b7cc31c3c1caffbd41d96d1a02d61d79e9ade089ef"
+    },
+    {
+      "path": "crates/hex-engine/src/midi_compile/construction.rs",
+      "before": null,
+      "after": "abcf44b1da17eff3a72c4867c6a4be0a0fd8e088ef6cf1d59c847c1c6dca3c54"
+    }
+  ]
+}
