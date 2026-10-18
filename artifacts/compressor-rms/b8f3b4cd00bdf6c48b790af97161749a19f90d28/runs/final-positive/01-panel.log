@@ -1,0 +1,15 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.82s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 5 tests
+test editor::device_panel::tests::compressor_ui_tests::compressor_preview_uses_unacknowledged_draft_and_retires_on_owner_change ... ok
+test editor::device_panel::tests::compressor_ui_tests::compressor_shared_panel_fits_and_drag_commits_one_undoable_edit ... ok
+test editor::device_panel::tests::compressor_ui_tests::removing_return_compressor_retires_preview_without_changing_owner ... ok
+test editor::device_panel::tests::compressor_ui_tests::compressor_mode_menu_track_return_cancel_commit_preview_history_and_reopen ... ok
+test editor::device_panel::tests::compressor_ui_tests::compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 865 filtered out; finished in 3.19s
+

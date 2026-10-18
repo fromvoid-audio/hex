@@ -1,0 +1,11 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.33s
+     Running unittests src/lib.rs (target/debug/deps/hex_engine-5ab7741602b2157c)
+
+running 2 tests
+test session_playback::tests::compressor_tests::compressor_parameter_revisions_keep_detector_and_gain_history_live ... ok
+test session_playback::tests::compressor_tests::compressor_renders_on_track_and_return_in_send_order_and_bypass_is_transparent ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 537 filtered out; finished in 0.01s
+

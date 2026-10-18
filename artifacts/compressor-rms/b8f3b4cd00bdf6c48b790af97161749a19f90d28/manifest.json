@@ -1,0 +1,945 @@
+{
+  "schema": 1,
+  "ticket": 2853,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/455",
+  "source": {
+    "head": "b8f3b4cd00bdf6c48b790af97161749a19f90d28",
+    "tree": "0144e9edefac75bbf4ff1f6ece73a554cc0fb8d7",
+    "parent": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+    "parent_tree": "9d982156fc0ecf5dd7d5d2ff8a64d2c084b89ef9",
+    "dependency_head": "1ce92988bcef49f606ab8e54f47772733bd7a6b0",
+    "dependency_tree": "2bf02b3cb6121f8b11cb5c6deca86e138e4e520c",
+    "intake_head": "196e3a68458c43c750eace59f3789232c5e4655a",
+    "branch": "pulse/task-2853-g1-5e6e97b7c57a",
+    "files": [
+      "crates/hex-devices/src/compressor.rs",
+      "crates/hex-devices/src/compressor/tests.rs",
+      "crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+      "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+      "docs/compressor.md",
+      "crates/hex-storage/src/files.rs"
+    ],
+    "own_diff": "crates/hex-devices/src/compressor.rs               |  99 ++++-\n crates/hex-devices/src/compressor/tests.rs         | 431 ++++++++++++++++++++-\n crates/hex-storage/src/files.rs                    |   8 +-\n .../src/editor/device_panel/compressor_panel.rs    |  39 +-\n .../device_panel/tests/compressor_ui_tests.rs      | 161 +++++++-\n docs/compressor.md                                 |  52 ++-\n 6 files changed, 774 insertions(+), 16 deletions(-)"
+  },
+  "file_hashes": {
+    "crates/hex-devices/src/compressor.rs": {
+      "before_blob": "b7508adf39f853772a228c136ae3a3ddc77bb3f2",
+      "before_sha256": "ead6c0e6788f4acce75314b443bd8379ebd2c5c2b27dfc65f59c927555dfc786",
+      "after_sha256": "effb9e916a1fb5ec1e8d2e48a277649b4aead1b474b008942a65b7754d329456",
+      "after_blob": "2a55763d933829c887655fe7881e6a53e825b6f7"
+    },
+    "crates/hex-devices/src/compressor/tests.rs": {
+      "before_blob": "f6ed9fbc1584a9fa1001c5205addc997244b28ea",
+      "before_sha256": "d308d2f5cfc9bd137561a2ff18fd874d654b3c9ccf3f4e2b1e1c83735ca14486",
+      "after_sha256": "d2e4dd7b637bf032f94281e2c5fe44dd32f137548462def9c96ad4b3a242ab67",
+      "after_blob": "37f93de904340da5bea8aec7af93d25e76e2631f"
+    },
+    "crates/hex-ui/src/editor/device_panel/compressor_panel.rs": {
+      "before_blob": "843307762a2bef369d8ea7a86183aae5b44b3e8c",
+      "before_sha256": "847efe9339d9dc7a3e0b47e347ae5b82136c84d240dc476288ea8a2af3f0a31f",
+      "after_sha256": "36b85e762d0fe276c1ec21bf972f626b8f25ae314ce3cf5b9990fae9c08a96a7",
+      "after_blob": "0708422ccd6dbb4f7fa0e899b89066b31347395a"
+    },
+    "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs": {
+      "before_blob": "2c515cadb4af9b0035eebdcdc354dc85e320be3d",
+      "before_sha256": "d77c67b213f81aed3a21f5e9fbdfb07fc3306c69a8da0018cf55c4830cc3a175",
+      "after_sha256": "7cd8095234a56200b1d9ec9e81e2bcc8e8a1059de440e0cfa9f25d9da1e9b34e",
+      "after_blob": "08570bfd176785d7f0279cf7efded10c723f7b4d"
+    },
+    "docs/compressor.md": {
+      "before_blob": "671eadd8831ed22084704b3379a38fd7474929f9",
+      "before_sha256": "7749d424842eaf90d6c34e51eda54b885fd3d5a1253d20da97462db71b90cff9",
+      "after_sha256": "1d178d54cdd7dc66c74ad2ccf6ef7632bbe19de47d5de3f4c40106d3ecf34582",
+      "after_blob": "13b5e4327afb14e51b1b88f453b3ba6f76011f34"
+    },
+    "crates/hex-storage/src/files.rs": {
+      "before_blob": "7ec1ae60ab939cff1645d98c72dd344b6697ccba",
+      "before_sha256": "36ef60dc6fe66d22b8b27424b6ffec4976a6b91073bf7beaef4a8d9e054a8c05",
+      "after_sha256": "7081aa6277603395f7139ef59cc09f2b9643395596d8449c1e19d0beab02e443",
+      "after_blob": "ddea760442821b8c5805a6bf95517000c5892616"
+    }
+  },
+  "runs": {
+    "final-focused": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 22.791,
+      "start_tree": {
+        "commit": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+        "content_sha256": "27972cf62371500758f0eb7d41938eb9eec8143f7719867460279c569c8144f7",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+          " M docs/compressor.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "compressor::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:38:44Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-focused/01-provider.log",
+          "started_at": "2026-10-18T23:38:38Z",
+          "status": "passed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:39:01Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/compressor-rms-455-final-focused/02-panel.log",
+          "started_at": "2026-10-18T23:38:44Z",
+          "status": "failed",
+          "step_id": "panel"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-engine",
+            "--locked",
+            "--lib",
+            "compressor",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "catalog"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--lib",
+            "opaque_compressor_state_survives",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "storage"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--test",
+            "authoring_conformance",
+            "registered_default_states",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "conformance"
+        },
+        {
+          "argv": [
+            "cargo",
+            "generate-lockfile",
+            "--offline",
+            "--manifest-path",
+            "/tmp/hex-compressor-rms-allocation-455/Cargo.toml"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "allocation-lock"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "--offline",
+            "--locked",
+            "--manifest-path",
+            "/tmp/hex-compressor-rms-allocation-455/Cargo.toml",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": null,
+          "error": "pipeline stopped before this step",
+          "exit_code": null,
+          "log": null,
+          "started_at": null,
+          "status": "not_run",
+          "step_id": "allocation"
+        }
+      ]
+    },
+    "final-positive": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 106.917,
+      "start_tree": {
+        "commit": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+        "content_sha256": "3b7e97eae9ee35f84d53e87622fd40221a4531fe1ef5cb03a46bd559c1b7d59a",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+          " M docs/compressor.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:42:16Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/01-panel.log",
+          "started_at": "2026-10-18T23:41:38Z",
+          "status": "passed",
+          "step_id": "panel"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-engine",
+            "--locked",
+            "--lib",
+            "compressor",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:42:31Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/02-catalog.log",
+          "started_at": "2026-10-18T23:42:16Z",
+          "status": "passed",
+          "step_id": "catalog"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--lib",
+            "opaque_compressor_state_survives",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:42:38Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/03-storage.log",
+          "started_at": "2026-10-18T23:42:31Z",
+          "status": "passed",
+          "step_id": "storage"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--test",
+            "authoring_conformance",
+            "registered_default_states",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:42:39Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/04-conformance.log",
+          "started_at": "2026-10-18T23:42:38Z",
+          "status": "passed",
+          "step_id": "conformance"
+        },
+        {
+          "argv": [
+            "cargo",
+            "generate-lockfile",
+            "--offline",
+            "--manifest-path",
+            "/tmp/hex-compressor-rms-allocation-455/Cargo.toml"
+          ],
+          "ended_at": "2026-10-18T23:42:39Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/05-allocation-lock.log",
+          "started_at": "2026-10-18T23:42:39Z",
+          "status": "passed",
+          "step_id": "allocation-lock"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "--offline",
+            "--locked",
+            "--manifest-path",
+            "/tmp/hex-compressor-rms-allocation-455/Cargo.toml",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:42:41Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/06-allocation.log",
+          "started_at": "2026-10-18T23:42:39Z",
+          "status": "passed",
+          "step_id": "allocation"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-devices",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T23:42:46Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/07-devices-clippy.log",
+          "started_at": "2026-10-18T23:42:41Z",
+          "status": "passed",
+          "step_id": "devices-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T23:43:13Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/08-ui-clippy.log",
+          "started_at": "2026-10-18T23:42:46Z",
+          "status": "passed",
+          "step_id": "ui-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-storage",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-18T23:43:18Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/09-storage-clippy.log",
+          "started_at": "2026-10-18T23:43:13Z",
+          "status": "passed",
+          "step_id": "storage-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-18T23:43:18Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/10-architecture.log",
+          "started_at": "2026-10-18T23:43:18Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-18T23:43:18Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/11-gpui.log",
+          "started_at": "2026-10-18T23:43:18Z",
+          "status": "passed",
+          "step_id": "gpui"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-18T23:43:18Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/12-style.log",
+          "started_at": "2026-10-18T23:43:18Z",
+          "status": "passed",
+          "step_id": "style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-18T23:43:19Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/13-layout.log",
+          "started_at": "2026-10-18T23:43:18Z",
+          "status": "passed",
+          "step_id": "layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-18T23:43:24Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/14-fmt.log",
+          "started_at": "2026-10-18T23:43:19Z",
+          "status": "passed",
+          "step_id": "fmt"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-18T23:43:24Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-final-positive/15-diff.log",
+          "started_at": "2026-10-18T23:43:24Z",
+          "status": "passed",
+          "step_id": "diff"
+        }
+      ]
+    },
+    "focused1": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 51.949,
+      "start_tree": {
+        "commit": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+        "content_sha256": "ecb3930f0aca417f74550d624aa39bd0a9f0c2382ce4588a1dd33d3ace3bdfe8",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "compressor::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:29:14Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-focused1/01-provider.log",
+          "started_at": "2026-10-18T23:29:09Z",
+          "status": "passed",
+          "step_id": "provider"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:30:00Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-focused1/02-panel.log",
+          "started_at": "2026-10-18T23:29:14Z",
+          "status": "passed",
+          "step_id": "panel"
+        }
+      ]
+    },
+    "panel-mode": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 36.785,
+      "start_tree": {
+        "commit": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+        "content_sha256": "ca60ac35c89434819228fb1a6c1ac383594c3aaca3fb602245e20d094c915959",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+          " M docs/compressor.md"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:34:08Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-panel-mode/01-panel.log",
+          "started_at": "2026-10-18T23:33:31Z",
+          "status": "passed",
+          "step_id": "panel"
+        }
+      ]
+    },
+    "provider-green1": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 5.169,
+      "start_tree": {
+        "commit": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+        "content_sha256": "1955325c0061d478b84a2aaaef112f90b5bfeb6128d2f113ac1893323322ff68",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor.rs",
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-storage/src/files.rs",
+          " M crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "compressor::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:26:31Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/compressor-rms-455-provider-green1/01-provider.log",
+          "started_at": "2026-10-18T23:26:26Z",
+          "status": "passed",
+          "step_id": "provider"
+        }
+      ]
+    },
+    "red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 5.869,
+      "start_tree": {
+        "commit": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+        "content_sha256": "94d9b6993106a8a0cc9b0ec8657dc3efc7537deb04282c4ce1b0791a4289e7fa",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-devices",
+            "--locked",
+            "--lib",
+            "rms_choice_reduces_actual",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:24:05Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/compressor-rms-455-red/01-provider-red.log",
+          "started_at": "2026-10-18T23:24:00Z",
+          "status": "failed",
+          "step_id": "provider-red"
+        }
+      ]
+    },
+    "red-ui": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 42.243,
+      "start_tree": {
+        "commit": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+        "content_sha256": "94d9b6993106a8a0cc9b0ec8657dc3efc7537deb04282c4ce1b0791a4289e7fa",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-devices/src/compressor/tests.rs",
+          " M crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "compressor_shared_panel_fits",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-18T23:25:02Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/compressor-rms-455-red-ui/01-panel-red.log",
+          "started_at": "2026-10-18T23:24:20Z",
+          "status": "failed",
+          "step_id": "panel-red"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Depends explicitly on453/1ce; no edits to453 or454.",
+    "Original10msRMS/max-after-channelaveraging/5msmodeinput law; no numericalLiveparity.",
+    "Focusedcomponent evidence only; finalfull21/review/merge owned by solemerger.",
+    "A/Bcombined/native/listening/physicaldelivery acceptance remainsOPEN.",
+    "Codec3refusesalpha1/2,no fileconversion."
+  ],
+  "dataset_sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc",
+  "payloads": {
+    "455-before.json": {
+      "bytes": 1765,
+      "sha256": "5c4cd34e497e07875fcccb2308fc25928ef180ec23edc38a7dcefd9fadac2cac"
+    },
+    "455-component.py": {
+      "bytes": 547,
+      "sha256": "2fd1a7aed0e02f622b7df5157859502dad7fcca8e6a900733b57de6e7f015fe0"
+    },
+    "455-doc-extra.md": {
+      "bytes": 2804,
+      "sha256": "fef616a9bc55fea9b1558c2a3e5dfa00e011e4e88345fcd2c7f2fa907e6e6a73"
+    },
+    "455-extra-tests.rs": {
+      "bytes": 9249,
+      "sha256": "b6c49d8bce7b8608d169868eb4a7e09206ffe0396de8164e3c10d6c5ef1f3edd"
+    },
+    "455-final-focused.stdout": {
+      "bytes": 191,
+      "sha256": "1753a5f7e83e654b034f735788cb480f0e364603ea1349d3dcc7ec36b4dfaecd"
+    },
+    "455-final-positive.stdout": {
+      "bytes": 863,
+      "sha256": "06322b7ed3d68c442961d6a4a847a3b64560dfe8f7f8e2889519a59fb7e71351"
+    },
+    "455-focused1.stdout": {
+      "bytes": 186,
+      "sha256": "deaba46d4bcf26ffac863ce55518f3e0f39a92acf30f7f75802dd4b2aef59f63"
+    },
+    "455-implement.py": {
+      "bytes": 5949,
+      "sha256": "953564fb5e1af1b2903c39c1908ce1c3422870e2dcb334d12446155585819e89"
+    },
+    "455-original-red.patch": {
+      "bytes": 1924,
+      "sha256": "cfd260ed47dc626469ad32e4a42a46e201f70c74af0c09fd5b12860fc0e11a42"
+    },
+    "455-panel-mode.stdout": {
+      "bytes": 141,
+      "sha256": "fe5f7dea09315a75972cef3edb65e37d62e5d9c520d33e58a481a393a65ee79a"
+    },
+    "455-pcm-extra.rs": {
+      "bytes": 3011,
+      "sha256": "44fa3a314c41fb04672c9b3343a1bd2b146606f2b8618ac9e13337bfb59c8e2d"
+    },
+    "455-provider-green1.stdout": {
+      "bytes": 152,
+      "sha256": "93c97a3911ec9699f4beab2a4ce2b76bb823bff61f97273dc2f57cf86223d372"
+    },
+    "455-publish-evidence.py": {
+      "bytes": 9764,
+      "sha256": "4948897ab3934cafac04c7704c14cda4aff4f42492938b83583f66c94e9db65c"
+    },
+    "455-red-ui.stdout": {
+      "bytes": 145,
+      "sha256": "0dcd3a06b64a8ebc3091445be53ccdacb372e069c5ca0932fda42df59c6200de"
+    },
+    "455-red.stdout": {
+      "bytes": 148,
+      "sha256": "bd0abe31e556cf3ea7e7de6a605ee0a3c3d6623c173978dbe47d7cdf5c140fb1"
+    },
+    "455-source.json": {
+      "bytes": 1251,
+      "sha256": "c3f875bebe743d367604bd13be6141bb280e43ffcc6f75bd205f100dd46736a1"
+    },
+    "455-ui-add.py": {
+      "bytes": 2125,
+      "sha256": "9e512f5266ce4262e76a9f70371af3c2cffd464cf6934eeb59922cd1e0ccf506"
+    },
+    "allocation-fixture/Cargo.lock": {
+      "bytes": 889,
+      "sha256": "ba1c04b054acf37810b1b054c3bb99ef905d73fb5097a1334d205ffc8327af8f"
+    },
+    "allocation-fixture/Cargo.toml": {
+      "bytes": 374,
+      "sha256": "ed0bd6152204680a58e2eab32a6ccecc6be134cab06122f0f244441814947fbb"
+    },
+    "allocation-fixture/probe.rs": {
+      "bytes": 2616,
+      "sha256": "9dc1ed70b62c8328c33dc9fb1e6a7b53192cc793fecc0677719209c125d6f017"
+    },
+    "before-after-hashes.json": {
+      "bytes": 2137,
+      "sha256": "80f17f2bcf749ec6397e33d6f5e052ae3ec927ff64a6ae8843f6159ca2fba309"
+    },
+    "finite-native-plan.md": {
+      "bytes": 1085,
+      "sha256": "cda482b78d509f31ac6198a0cded4872af1142f8f45fad4ac4a352cc3fa1ff8e"
+    },
+    "integration-note.md": {
+      "bytes": 4893,
+      "sha256": "c8ddc29cb54f59f757ca0ee2a87a265b7793493955cbe5b25cb15897c2e32ef6"
+    },
+    "runs/final-focused/01-provider.log": {
+      "bytes": 2701,
+      "sha256": "562bd2ba67ec14db24b84614e03c6524117ce8b071ebf215bc97412a0750a371"
+    },
+    "runs/final-focused/02-panel.log": {
+      "bytes": 705,
+      "sha256": "885dd709a083a561c20aa204a0b07f0b392e31a4b03c322ff0513aa77023b09d"
+    },
+    "runs/final-focused/summary.json": {
+      "bytes": 14390,
+      "sha256": "f2fa8ca728bd9a2113a6f7be68da053b7684967080748ee917b52cbffd6b13f2"
+    },
+    "runs/final-positive/01-panel.log": {
+      "bytes": 1117,
+      "sha256": "0b11effe5d4d18e15663511093c33a1f23a8992852a6e0872f7718b596554d8d"
+    },
+    "runs/final-positive/02-catalog.log": {
+      "bytes": 661,
+      "sha256": "95ff65395c495fe5777e701ba864a54d0eb621bff3937f9c4ba3577cbbbd733c"
+    },
+    "runs/final-positive/03-storage.log": {
+      "bytes": 418,
+      "sha256": "89b70e8d7ebbdd93792001b0fea4e70dc2ed34872d1d49b20667f453b7544d4a"
+    },
+    "runs/final-positive/04-conformance.log": {
+      "bytes": 425,
+      "sha256": "c2bc5870138e156f73c89b3bf3fbcd44caa9295601c1eaaee98363a45567fbca"
+    },
+    "runs/final-positive/05-allocation-lock.log": {
+      "bytes": 66,
+      "sha256": "6f13257613dd29f847af42943544e419290df7edb669dda96145e6e9a30b50f1"
+    },
+    "runs/final-positive/06-allocation.log": {
+      "bytes": 721,
+      "sha256": "0c7f5872e24b087ddeee1fb7d2360e073ab220dddb965830086588ef24ceec3e"
+    },
+    "runs/final-positive/07-devices-clippy.log": {
+      "bytes": 140,
+      "sha256": "6d581ae5be910fe53ff74064ddc1dffbb56de5c607598d1a4b41de64f30d95d4"
+    },
+    "runs/final-positive/08-ui-clippy.log": {
+      "bytes": 760,
+      "sha256": "213cdd7a8d2a407b5d9ebc335e8fd27c2de69ca86f3a889da183a826f59f028a"
+    },
+    "runs/final-positive/09-storage-clippy.log": {
+      "bytes": 140,
+      "sha256": "cb31a6befa2195cc02a17fc4e9c98c96cbf581731cf5f61b920ee0abe61d9530"
+    },
+    "runs/final-positive/10-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/final-positive/11-gpui.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/final-positive/12-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/final-positive/13-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/final-positive/14-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/final-positive/15-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/final-positive/summary.json": {
+      "bytes": 18522,
+      "sha256": "c54d6a57b0ffeb39a849cf21e094d6a76f167d87e26d322a6719be01cd6f6368"
+    },
+    "runs/focused1/01-provider.log": {
+      "bytes": 2460,
+      "sha256": "1d0dcf7ca4249911e89c1bec979c717d1e2f0d8b732ececfe5ee6bf60b9b4559"
+    },
+    "runs/focused1/02-panel.log": {
+      "bytes": 1380,
+      "sha256": "402dc535396d8351b9da44dc090c26cfc4bac43f91355c0f86f0b474d2b829c7"
+    },
+    "runs/focused1/summary.json": {
+      "bytes": 11389,
+      "sha256": "e043f339c23fd6c5447c0426f5a2856248165915e68b718731f261f02f22a92c"
+    },
+    "runs/panel-mode/01-panel.log": {
+      "bytes": 1117,
+      "sha256": "a983dcbb13b319663c52af0f86bc2036f74e81105fdc950a9a017d4812aa45d9"
+    },
+    "runs/panel-mode/summary.json": {
+      "bytes": 10927,
+      "sha256": "b2cdb08176a8e117aa7ebe3168ebcaa278ce50c17ebfc3c7db44dbc54ee4b245"
+    },
+    "runs/provider-green1/01-provider.log": {
+      "bytes": 1944,
+      "sha256": "6ed31a4c1980c9823a67da76261e575f12932c7f3e5851e1a316ca8bcb3f4466"
+    },
+    "runs/provider-green1/summary.json": {
+      "bytes": 10740,
+      "sha256": "73ad05fe234824dfc0309ecd197423324e559f107118bd0ab891a05c20c7c85d"
+    },
+    "runs/red/01-provider-red.log": {
+      "bytes": 845,
+      "sha256": "ede49684bcbfb2fb6178300bfffdd44a0f071a9657585b8b2e062e1dcf259dda"
+    },
+    "runs/red/summary.json": {
+      "bytes": 10098,
+      "sha256": "459eb96f15cad02c136e93e564ad71fe3fce8232623807fbce4cd8f2d707d59f"
+    },
+    "runs/red-ui/01-panel-red.log": {
+      "bytes": 1492,
+      "sha256": "8a0125a6d957d5a1e1976c7b22780d9aeaa9015f74127e12dc75692f980170cf"
+    },
+    "runs/red-ui/summary.json": {
+      "bytes": 10179,
+      "sha256": "036312e0a03a5f4ac0a4607dbfc7188039a5ab2b388b431c1e70dc39e50c5c66"
+    },
+    "source.patch": {
+      "bytes": 45273,
+      "sha256": "9e6c44d65370d1be7a3b9f30d11649f7cbddf1e8abe0848456a48d55c7716474"
+    }
+  }
+}

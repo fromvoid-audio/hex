@@ -1,0 +1,27 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.57s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+
+thread 'editor::device_panel::tests::compressor_ui_tests::compressor_shared_panel_fits_and_drag_commits_one_undoable_edit' (134666) panicked at crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs:73:14:
+shared control
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::compressor_ui_tests::compressor_shared_panel_fits_and_drag_commits_one_undoable_edit ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::compressor_ui_tests::compressor_shared_panel_fits_and_drag_commits_one_undoable_edit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 868 filtered out; finished in 0.34s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

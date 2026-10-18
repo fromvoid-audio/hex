@@ -1,0 +1,32 @@
+diff --git a/crates/hex-devices/src/compressor/tests.rs b/crates/hex-devices/src/compressor/tests.rs
+index f6ed9fbc..c9968b36 100644
+--- a/crates/hex-devices/src/compressor/tests.rs
++++ b/crates/hex-devices/src/compressor/tests.rs
+@@ -624,3 +624,14 @@ fn fully_dry_and_bypassed_mix_edits_still_advance_detector_and_smoothing() {
+     assert_eq!(next, other);
+     assert_eq!(next, [[-0.3, 0.07]; 23]);
+ }
++
++#[test]
++fn rms_choice_reduces_actual_short_burst_compression() {
++    let base = patch(&patch(&patch(&COMPRESSOR_DEFINITION.default_state().unwrap(), parameter::ATTACK, 0.1), parameter::THRESHOLD, -30.0), parameter::KNEE, 0.0);
++    let rms = COMPRESSOR_DEFINITION.patch_parameter(&base, ParameterId::from_static(8), ParameterValue::Choice(1)).expect("select actual RMS");
++    let mut peak_signal = [[1.0, -0.25]; 48];
++    let mut rms_signal = peak_signal;
++    runtime(&base, 48000).process_block(&mut peak_signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    runtime(&rms, 48000).process_block(&mut rms_signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
++    assert!(rms_signal[47][0] > peak_signal[47][0] + 0.01, "RMS really changes transient gain");
++}
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs
+index 2c515cad..89520aa1 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs
+@@ -65,7 +65,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
+     );
+     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
+     assert!(graph.size.height >= px(50.0));
+-    for parameter in 1..=7 {
++    for parameter in 1..=8 {
+         let control = visual
+             .debug_bounds(Box::leak(
+                 format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),

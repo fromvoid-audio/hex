@@ -1,0 +1,9 @@
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.67s
+     Running unittests src/lib.rs (target/debug/deps/hex_storage-457c375e3b9af02a)
+
+running 1 test
+test files::tests::opaque_compressor_state_survives_project_save_and_load ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+

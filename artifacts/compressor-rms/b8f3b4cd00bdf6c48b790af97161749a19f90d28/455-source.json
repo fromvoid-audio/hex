@@ -1,0 +1,19 @@
+{
+  "head": "b8f3b4cd00bdf6c48b790af97161749a19f90d28",
+  "tree": "0144e9edefac75bbf4ff1f6ece73a554cc0fb8d7",
+  "parent": "2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86",
+  "parent_tree": "9d982156fc0ecf5dd7d5d2ff8a64d2c084b89ef9",
+  "dependency_head": "1ce92988bcef49f606ab8e54f47772733bd7a6b0",
+  "dependency_tree": "2bf02b3cb6121f8b11cb5c6deca86e138e4e520c",
+  "intake_head": "196e3a68458c43c750eace59f3789232c5e4655a",
+  "branch": "pulse/task-2853-g1-5e6e97b7c57a",
+  "files": [
+    "crates/hex-devices/src/compressor.rs",
+    "crates/hex-devices/src/compressor/tests.rs",
+    "crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+    "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+    "docs/compressor.md",
+    "crates/hex-storage/src/files.rs"
+  ],
+  "own_diff": "crates/hex-devices/src/compressor.rs               |  99 ++++-\n crates/hex-devices/src/compressor/tests.rs         | 431 ++++++++++++++++++++-\n crates/hex-storage/src/files.rs                    |   8 +-\n .../src/editor/device_panel/compressor_panel.rs    |  39 +-\n .../device_panel/tests/compressor_ui_tests.rs      | 161 +++++++-\n docs/compressor.md                                 |  52 ++-\n 6 files changed, 774 insertions(+), 16 deletions(-)"
+}

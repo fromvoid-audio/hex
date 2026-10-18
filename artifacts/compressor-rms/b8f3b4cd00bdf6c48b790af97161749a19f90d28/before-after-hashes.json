@@ -1,0 +1,38 @@
+{
+  "crates/hex-devices/src/compressor.rs": {
+    "before_blob": "b7508adf39f853772a228c136ae3a3ddc77bb3f2",
+    "before_sha256": "ead6c0e6788f4acce75314b443bd8379ebd2c5c2b27dfc65f59c927555dfc786",
+    "after_sha256": "effb9e916a1fb5ec1e8d2e48a277649b4aead1b474b008942a65b7754d329456",
+    "after_blob": "2a55763d933829c887655fe7881e6a53e825b6f7"
+  },
+  "crates/hex-devices/src/compressor/tests.rs": {
+    "before_blob": "f6ed9fbc1584a9fa1001c5205addc997244b28ea",
+    "before_sha256": "d308d2f5cfc9bd137561a2ff18fd874d654b3c9ccf3f4e2b1e1c83735ca14486",
+    "after_sha256": "d2e4dd7b637bf032f94281e2c5fe44dd32f137548462def9c96ad4b3a242ab67",
+    "after_blob": "37f93de904340da5bea8aec7af93d25e76e2631f"
+  },
+  "crates/hex-ui/src/editor/device_panel/compressor_panel.rs": {
+    "before_blob": "843307762a2bef369d8ea7a86183aae5b44b3e8c",
+    "before_sha256": "847efe9339d9dc7a3e0b47e347ae5b82136c84d240dc476288ea8a2af3f0a31f",
+    "after_sha256": "36b85e762d0fe276c1ec21bf972f626b8f25ae314ce3cf5b9990fae9c08a96a7",
+    "after_blob": "0708422ccd6dbb4f7fa0e899b89066b31347395a"
+  },
+  "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs": {
+    "before_blob": "2c515cadb4af9b0035eebdcdc354dc85e320be3d",
+    "before_sha256": "d77c67b213f81aed3a21f5e9fbdfb07fc3306c69a8da0018cf55c4830cc3a175",
+    "after_sha256": "7cd8095234a56200b1d9ec9e81e2bcc8e8a1059de440e0cfa9f25d9da1e9b34e",
+    "after_blob": "08570bfd176785d7f0279cf7efded10c723f7b4d"
+  },
+  "docs/compressor.md": {
+    "before_blob": "671eadd8831ed22084704b3379a38fd7474929f9",
+    "before_sha256": "7749d424842eaf90d6c34e51eda54b885fd3d5a1253d20da97462db71b90cff9",
+    "after_sha256": "1d178d54cdd7dc66c74ad2ccf6ef7632bbe19de47d5de3f4c40106d3ecf34582",
+    "after_blob": "13b5e4327afb14e51b1b88f453b3ba6f76011f34"
+  },
+  "crates/hex-storage/src/files.rs": {
+    "before_blob": "7ec1ae60ab939cff1645d98c72dd344b6697ccba",
+    "before_sha256": "36ef60dc6fe66d22b8b27424b6ffec4976a6b91073bf7beaef4a8d9e054a8c05",
+    "after_sha256": "7081aa6277603395f7139ef59cc09f2b9643395596d8449c1e19d0beab02e443",
+    "after_blob": "ddea760442821b8c5805a6bf95517000c5892616"
+  }
+}

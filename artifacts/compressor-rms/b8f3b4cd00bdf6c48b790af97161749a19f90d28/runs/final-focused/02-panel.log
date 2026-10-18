@@ -1,0 +1,16 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0596]: cannot borrow `visual` as mutable, as it is not declared as mutable
+   --> crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs:224:9
+    |
+224 |         visual
+    |         ^^^^^^ cannot borrow as mutable
+    |
+help: consider changing this to be mutable
+    |
+195 |     let mut visual = VisualTestContext::from_window(handle, cx);
+    |         +++
+
+For more information about this error, try `rustc --explain E0596`.
+error: could not compile `hex-ui` (lib test) due to 1 previous error
