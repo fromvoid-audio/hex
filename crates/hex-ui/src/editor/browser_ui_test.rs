@@ -4568,3 +4568,6 @@ fn browser_place_icons_preference_fixture_bounds_startup_before_workers(cx: &mut
         "missing explicit preferences must not be manufactured"
     );
 }
+
+#[path = "browser_search_selection_ui_test.rs"]
+mod search_selection;
