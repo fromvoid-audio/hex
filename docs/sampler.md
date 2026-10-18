@@ -425,3 +425,18 @@ budgets, and leaves project assets/source binding unchanged. It awaits native
 runtime qualification. The staging struct/slot and all other roots still belong
 to their actual parent; final capacities cannot recover decode input/temporary
 or old/new construction peak, and this visitor is not a loading commit permit.
+
+### Scoped selected-device waveform lookup
+
+SnapshotRead resolves a selected Sampler's authored asset in that exact retained
+Project and returns only the existing borrowed WaveformRead. It checks original
+source-frame extent rather than project-rate playback length. Empty devices and
+not-yet-prepared summaries return None; missing authored media or inconsistent
+source extent refuses. It never substitutes another snapshot's waveform or
+creates peaks. This is display correlation, not actual PCM/resource admission.
+
+The new supported-build oracle prepares an actual original-rate mono waveform,
+retains it through a prospective device snapshot, retires decoder/bank/model
+producers, and compares exact deep-zoom original samples. A newer snapshot with
+no prepared summary stays empty while the old read remains exact. Runtime
+qualification is pending; the borrowed read cannot escape its snapshot scope.

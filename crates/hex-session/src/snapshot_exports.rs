@@ -105,6 +105,53 @@ impl<'a> SnapshotRead<'a> {
             .get(&asset)
             .map(crate::read_shared_waveform)
     }
+    /// Resolve the selected Sampler's authored asset to this EXACT snapshot's
+    /// existing cached waveform. Display correlation only, never resource/native
+    /// admission or PCM identity proof. No waveform owner escapes the read scope.
+    /// Empty/missing cached summary is explicit None; missing authored media or
+    /// out-of-source bounds is an error, never invented peaks.
+    /// ```compile_fail
+    /// fn escape(records: &hex_session::snapshot_exports::SnapshotExportRecords,
+    ///     stamp: &hex_session::snapshot_exports::SnapshotReadStamp,
+    ///     device: hex_project::DeviceId) {
+    ///     let _escaped = records.read_with(stamp, |snapshot| snapshot.sampler_waveform(device));
+    /// }
+    /// ```
+    pub fn sampler_waveform(
+        self,
+        device: hex_project::DeviceId,
+    ) -> Result<Option<crate::WaveformRead<'a>>, hex_lattice_contract::DeviceContractError> {
+        use hex_lattice_contract::DeviceContractError as Error;
+        let authored = match self.sampler_state(device)? {
+            hex_engine::SamplerDeviceStateRead::Empty => return Ok(None),
+            hex_engine::SamplerDeviceStateRead::Sample(authored) => authored,
+        };
+        let state = self
+            .snapshot
+            .project
+            .device(device)
+            .ok_or(Error::WrongDeviceType)?
+            .state();
+        let reference = state
+            .asset_references()
+            .first()
+            .ok_or(Error::AssetResourcesUnavailable)?;
+        let asset = self
+            .snapshot
+            .project
+            .assets()
+            .find(|asset| asset.id().value() == reference.asset.value())
+            .ok_or(Error::AssetResourcesUnavailable)?;
+        let Some(waveform) = self.waveform(asset.id()) else {
+            return Ok(None);
+        };
+        if waveform.source_frames() as u64 != asset.source_frames()
+            || authored.region().end > waveform.source_frames()
+        {
+            return Err(Error::AssetResourcesUnavailable);
+        }
+        Ok(Some(waveform))
+    }
     /// Validated authored scalar/marker queries on this exact retained model.
     /// No NativeDeviceState/Project/owning child can be extracted. Empty state
     /// stays empty; missing devices and unsupported state are explicit errors.

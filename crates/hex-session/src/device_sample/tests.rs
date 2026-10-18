@@ -535,3 +535,118 @@ fn pending_device_sample_inventory_joins_actual_history_command_states_path_and_
         );
     }
 }
+
+#[test]
+fn sampler_snapshot_waveform_reads_actual_bound_original_and_retains_exact_old_display() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported original waveform constructors; no positive proof");
+        return;
+    }
+    eprintln!("SUPPORTED exact Sampler snapshot read over actual decoded original waveform");
+    let (session, device) = fixture();
+    let source = OwnedAudioSource::try_resident_mono(24_000, vec![0.25, -0.5, 0.75, -1.0])
+        .ok()
+        .unwrap();
+    let prepared = PreparedDeviceSample::from_native_on_control(
+        device,
+        session.project().device(device).unwrap().state(),
+        "sample.wav".into(),
+        source,
+    )
+    .unwrap();
+    let mut candidate = Editor::new(session.project().clone(), 8).unwrap();
+    let Created::Asset(asset) = candidate
+        .execute(prepared.assignment_command_on_control())
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let (bank, waveform) = prepared
+        .prepare_resources_and_waveform_on_worker(
+            &session,
+            candidate.project(),
+            &[asset],
+            limits(),
+            DeviceSampleWaveformLimits {
+                bins: 1,
+                scan_frames: 4,
+                source_metadata_bytes: 4096,
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let mut view = crate::service::view_state_owned(
+        &session,
+        hex_engine::empty_midi_preview_on_control(),
+        7,
+        1,
+        false,
+        None,
+    );
+    // A prospective device preview, not a fabricated canonical source snapshot.
+    view.canonical_audio_source = None;
+    view.project = crate::SharedProject::new_on_control(candidate.project().clone());
+    view.waveforms
+        .try_insert_on_control(asset, crate::SharedWaveform::new_on_control(waveform), 4096)
+        .unwrap();
+    let mut next = crate::service::view_state_owned(
+        &session,
+        hex_engine::empty_midi_preview_on_control(),
+        8,
+        1,
+        false,
+        None,
+    );
+    next.canonical_audio_source = None;
+    next.project = crate::SharedProject::new_on_control(candidate.project().clone());
+    // A real pending summary has no display yet, not peaks borrowed from old UI.
+    assert!(next.waveforms.is_empty());
+    let mut records = crate::snapshot_exports::SnapshotExportRecords::try_new_on_control(
+        crate::snapshot_exports::SnapshotExportReservation {
+            snapshot_records: 2,
+            read_records: 2,
+            max_bookkeeping_bytes: 16_384,
+        },
+    )
+    .unwrap();
+    let old = records.insert_on_control(&mut Some(view)).unwrap();
+    let old_read = records.reserve_read(old).unwrap();
+    let new = records.insert_on_control(&mut Some(next)).unwrap();
+    let new_read = records.reserve_read(new).unwrap();
+    records.retire_on_control(old).unwrap();
+    drop(bank);
+    drop(prepared);
+    drop(candidate);
+    drop(session);
+    assert_eq!(
+        records
+            .read_with(&old_read, |snapshot| {
+                let read = snapshot.sampler_waveform(device).unwrap().unwrap();
+                (
+                    snapshot.revision(),
+                    read.source_frames(),
+                    read.peaks_for_frames(1, 2).unwrap(),
+                )
+            })
+            .unwrap(),
+        (
+            7,
+            4,
+            [crate::CachedPeak {
+                min: -0.5,
+                max: -0.5
+            }; 2]
+        )
+    );
+    assert_eq!(
+        records
+            .read_with(&new_read, |snapshot| (
+                snapshot.revision(),
+                snapshot.sampler_waveform(device).unwrap().is_none()
+            ))
+            .unwrap(),
+        (8, true)
+    );
+    records.release_read(old_read).unwrap();
+    records.release_read(new_read).unwrap();
+}
