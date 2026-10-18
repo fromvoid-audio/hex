@@ -197,10 +197,13 @@ fn geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map() {
             columns: 200,
             grid: None,
         };
-        let geometry = cached_waveform_geometry(&cache, &source, &request).unwrap();
+        let geometry =
+            cached_waveform_geometry(&cache, hex_session::read_shared_waveform(&source), &request)
+                .unwrap();
         assert!(Arc::ptr_eq(
             &geometry,
-            &cached_waveform_geometry(&cache, &source, &request).unwrap()
+            &cached_waveform_geometry(&cache, hex_session::read_shared_waveform(&source), &request)
+                .unwrap()
         ));
         if let Some(old) = previous {
             assert!(!Arc::ptr_eq(&geometry, &old));
