@@ -94,7 +94,7 @@ fn console_actual_resident_and_verified_empty_replace_history_and_typed_assets()
         if mode == DocumentAudioMode::Resident {
             assert!(audio.resident_audio().unwrap().frames()[1][0] > 0.0);
             let mut playback =
-                crate::service::Playback::try_from_prepared_with_session(prepared).unwrap();
+                hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
             playback
                 .try_apply_action(hex_engine::PlaybackAction::LaunchAndPlay(
                     hex_engine::SessionPlaybackCommand::LaunchScene {
@@ -104,7 +104,7 @@ fn console_actual_resident_and_verified_empty_replace_history_and_typed_assets()
                 ))
                 .unwrap();
             let mut block = [[0.0; 2]; 128];
-            playback.render(&mut block);
+            playback.render(&mut block).unwrap();
             assert!(
                 block.iter().any(|f| f[0] > 0.0),
                 "actual launch renders imported PCM"

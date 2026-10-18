@@ -96,7 +96,11 @@ pub(crate) fn normalize(
     cell: Option<ResolvedCell>,
     count: usize,
 ) -> Result<Vec<Created>, SessionError> {
-    let created = if let Some(cell) = cell {
+    let mut created = Vec::new();
+    created
+        .try_reserve_exact(count)
+        .map_err(|_| SessionError::Allocation)?;
+    if let Some(cell) = cell {
         let Some(SessionCellContent::Audio(audio)) = project.session_cell(cell.track, cell.scene)
         else {
             return Err(SessionError::Invalid(
@@ -115,18 +119,22 @@ pub(crate) fn normalize(
                 "console import result differs from exact cell",
             ));
         }
-        vec![Created::Imported {
+        created.push(Created::Imported {
             track: cell.track,
             asset: audio.asset(),
             clip: audio.id(),
-        }]
+        });
     } else {
-        results
+        for result in results
             .iter()
             .filter(|result| matches!(result, Created::Imported { .. }))
-            .cloned()
-            .collect()
-    };
+        {
+            if created.len() == count {
+                return Err(SessionError::Invalid("audio import has extra results"));
+            }
+            created.push(result.clone());
+        }
+    }
     if created.len() != count {
         return Err(SessionError::Invalid("audio import result count differs"));
     }

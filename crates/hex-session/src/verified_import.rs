@@ -172,16 +172,13 @@ impl Session {
                     .into_iter()
                     .next()
                     .ok_or(SessionError::Invalid("verified import result missing"))?;
-                    let mut added = candidate
-                        .assets()
-                        .filter(|asset| !bank.contains_key(&asset.id()));
-                    let id = added
-                        .next()
-                        .map(|a| a.id())
-                        .ok_or(SessionError::Invalid("import candidate has no new source"))?;
-                    if added.next().is_some() {
+                    let Created::Imported { asset: id, .. } = &created else {
+                        return Err(SessionError::Invalid("verified import has no typed asset"));
+                    };
+                    let id = *id;
+                    if bank.contains_key(&id) || candidate.asset(id).is_none() {
                         return Err(SessionError::Invalid(
-                            "import candidate has multiple new sources",
+                            "verified import asset differs from candidate",
                         ));
                     }
                     bank.verified.insert(id, source.clone());
