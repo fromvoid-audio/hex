@@ -272,12 +272,26 @@ fn remap_preserves_actual_owner_pcm_and_independent_enable_clock() {
     for age in 1..512 {
         let f = pa.parameters_at(a.key.id(), &t, 160 + age).unwrap();
         assert_eq!(
-            pa.sample_with_parameters(a.key.id(), &f, &note, age, u64::MAX)
-                .unwrap()
-                .map(f32::to_bits),
-            pb.sample_with_parameters(b.key.id(), &f, &note, age, u64::MAX)
-                .unwrap()
-                .map(f32::to_bits)
+            pa.sample_with_parameters(
+                a.key.id(),
+                &f,
+                &note,
+                age,
+                u64::MAX,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            )
+            .unwrap()
+            .map(f32::to_bits),
+            pb.sample_with_parameters(
+                b.key.id(),
+                &f,
+                &note,
+                age,
+                u64::MAX,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            )
+            .unwrap()
+            .map(f32::to_bits)
         );
     }
 }

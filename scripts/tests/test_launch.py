@@ -37,6 +37,7 @@ class LaunchTests(unittest.TestCase):
         self.head_reads = 0
         self.ci_result = 0
         self.ci_status = "passed"
+        self.raw_processes = ""
 
         class FakeCiRunner:
             def __init__(inner, root, mode):
@@ -89,20 +90,22 @@ class LaunchTests(unittest.TestCase):
         if argv[:2] == ["open", "-a"]:
             return self.process(argv)
         if argv[:3] == ["ps", "-ww", "-axo"]:
-            return self.process(argv)
+            return self.process(argv, stdout=self.raw_processes)
         self.fail(f"unexpected command: {argv}")
 
-    def run_success(self):
+    def run_success(self, *, tested=False):
         with patch.object(launch.sys, "platform", "darwin"), \
                 patch.object(launch, "command", side_effect=self.command), \
-                patch.object(launch.ci, "LocalCiRunner", self.fake_ci), \
+                patch.object(launch.ci, "LocalCiRunner", side_effect=self.fake_ci if tested else AssertionError("CI on default launch")), \
                 patch.object(launch.delivery, "assert_inactive"), \
                 patch.object(launch.delivery, "verify", return_value={
                     "source": self.source, "candidate": self.source, "profile": "release",
                 }):
-            return launch.run_launch(self.root)
+            return launch.run_launch(self.root, argv=["--test"] if tested else [])
 
     def test_success_fetches_verifies_packages_then_opens_exact_configured_app(self):
+        # An installed app must not turn normal launch into installed-only startup.
+        (self.root / "artifacts/hex.app").mkdir(parents=True)
         app = self.run_success()
         self.assertEqual(app, self.root.resolve() / "artifacts/hex.app")
         steps = [call[0] if call[0] == "ci" else call[:2] for call in self.calls]
@@ -110,13 +113,29 @@ class LaunchTests(unittest.TestCase):
             ("git", "rev-parse"), ("git", "branch"), ("git", "status"),
             ("git", "rev-parse"), ("git", "fetch"), ("git", "rev-parse"), ("git", "merge-base"),
             ("git", "merge"), ("git", "rev-parse"), ("git", "status"),
-            ("gh", "api"), "ci",
+            ("gh", "api"), ("ps", "-ww"),
             ("sh", "scripts/bundle-macos.sh"), ("open", "-a"),
         ])
         self.assertEqual(self.calls[-1], ("open", "-a", str(app)))
-        included = json.loads((self.root / "artifacts/local-ci/run-id/included-test-revisions.json").read_text())
+        package = next(call for call in self.calls if call[0] == "sh")
+        self.assertIn("--build-only", package)
+        self.assertNotIn("--ci-report", package)
+        self.assertFalse((self.root / "artifacts/local-ci").exists())
+        included = json.loads(Path(package[package.index("--included") + 1]).read_text())
         self.assertEqual(included, [{"pr": "https://github.com/PORTALSURFER/hex/pull/316", "head": self.pull_head}])
-        self.assertIn(self.source, (self.root / "artifacts/local-ci/run-id/USER-TEST.md").read_text())
+        checklist = Path(package[package.index("--checklist") + 1]).read_text()
+        self.assertIn(self.source, checklist)
+        self.assertIn("tests not run", checklist)
+        self.assertNotIn("full local CI passed", checklist)
+
+    def test_test_mode_runs_full_ci_before_packaging_with_its_report(self):
+        self.run_success(tested=True)
+        self.assertLess(self.calls.index(("ci",)), next(i for i, call in enumerate(self.calls) if call[0] == "sh"))
+        package = next(call for call in self.calls if call[0] == "sh")
+        self.assertNotIn("--build-only", package)
+        report = Path(package[package.index("--ci-report") + 1])
+        self.assertEqual(report, self.root / "artifacts/local-ci/run-id/summary.json")
+        self.assertIn("full local CI passed", (report.parent / "USER-TEST.md").read_text())
 
     def test_refuses_dirty_checkout(self):
         def dirty(argv, **kwargs):
@@ -177,7 +196,7 @@ class LaunchTests(unittest.TestCase):
                 patch.object(launch.ci, "LocalCiRunner", self.fake_ci), \
                 patch.object(launch.delivery, "assert_inactive"):
             with self.assertRaisesRegex(launch.LaunchError, "full local CI failed"):
-                launch.run_launch(self.root)
+                launch.run_launch(self.root, argv=["--test"])
         self.assertFalse(any(call[0] == "open" for call in self.calls))
         self.assertFalse(any(call[0] == "sh" for call in self.calls))
 
@@ -194,6 +213,37 @@ class LaunchTests(unittest.TestCase):
             with self.assertRaisesRegex(launch.LaunchError, "command failed"):
                 launch.run_launch(self.root)
         self.assertFalse(any(call[0] == "open" for call in self.calls))
+
+    def test_raw_desktop_process_refuses_before_ci_or_replacement(self):
+        for executable in ("/tmp/hex/target/release/hex-desktop",
+                           "/tmp/hex checkout/target/debug/hex-desktop", "hex-desktop"):
+            with self.subTest(executable=executable), patch.object(launch.sys, "platform", "darwin"), \
+                    patch.object(launch, "command", side_effect=self.command), \
+                    patch.object(launch.ci, "LocalCiRunner", self.fake_ci), \
+                    patch.object(launch.delivery, "assert_inactive"):
+                self.calls.clear()
+                self.raw_processes = f" 40060 {executable}\n"
+                with self.assertRaisesRegex(launch.LaunchError, r"raw hex-desktop is running \(pid 40060\)"):
+                    launch.run_launch(self.root)
+                self.assertNotIn(("ci",), self.calls)
+                self.assertFalse(any(call[:2] == ("sh", "scripts/bundle-macos.sh") for call in self.calls))
+                self.assertFalse(any(call[:2] == ("open", "-a") for call in self.calls))
+
+    def test_process_inspection_failure_refuses_before_ci_or_replacement(self):
+        def failed_ps(argv, **kwargs):
+            if argv[:3] == ["ps", "-ww", "-axo"]:
+                self.calls.append(tuple(argv))
+                return self.process(argv, returncode=1, stderr="process inspection unavailable")
+            return self.command(argv, **kwargs)
+
+        with patch.object(launch.sys, "platform", "darwin"), \
+                patch.object(launch, "command", side_effect=failed_ps), \
+                patch.object(launch.ci, "LocalCiRunner", self.fake_ci), \
+                patch.object(launch.delivery, "assert_inactive"):
+            with self.assertRaisesRegex(launch.LaunchError, "process inspection unavailable"):
+                launch.run_launch(self.root)
+        self.assertNotIn(("ci",), self.calls)
+        self.assertFalse(any(call[0] in ("sh", "open") for call in self.calls))
 
     def test_mismatched_installed_receipt_never_opens_app(self):
         with patch.object(launch.sys, "platform", "darwin"), \
@@ -219,10 +269,20 @@ class LaunchTests(unittest.TestCase):
         self.assertNotIn(("ci",), self.calls)
         self.assertFalse(any(call[0] == "gh" for call in self.calls))
 
+    def test_default_update_reexecs_updated_entrypoint_without_changing_mode(self):
+        self.initial_head = "c" * 40
+        with patch.object(launch.sys, "platform", "darwin"), \
+                patch.object(launch, "command", side_effect=self.command), \
+                patch.object(launch.os, "execv") as execv, \
+                patch.object(launch.ci, "LocalCiRunner", self.fake_ci):
+            with self.assertRaisesRegex(launch.LaunchError, "could not restart"):
+                launch.run_launch(self.root, argv=[])
+        execv.assert_called_once_with(sys.executable, [sys.executable, str(self.root / "launch")])
+        self.assertNotIn(("ci",), self.calls)
 
-    def test_default_opens_verified_app_without_git_cargo_ci_or_source_checks(self):
+    def test_installed_only_opens_verified_app_without_git_cargo_ci_or_source_checks(self):
         app = self.root.resolve() / "artifacts/hex.app"
-        # Normal startup does not require the caller's source to match the app.
+        # Installed-only startup does not require the caller's source to match the app.
         with patch.object(launch.sys, "platform", "darwin"), \
                 patch.object(launch, "command", side_effect=self.command), \
                 patch.object(launch, "require_clean_main", side_effect=AssertionError("source check on startup")), \
@@ -248,31 +308,35 @@ class LaunchTests(unittest.TestCase):
             with self.subTest(failure=str(failure)), patch.object(launch.sys, "platform", "darwin"), \
                     patch.object(launch.delivery, "verify", side_effect=failure), \
                     patch.object(launch.ci, "LocalCiRunner", side_effect=AssertionError("CI on startup")):
-                with self.assertRaisesRegex(launch.LaunchError, "run ./launch --test"):
+                with self.assertRaisesRegex(launch.LaunchError, "run ./launch to verify and build it"):
                     launch.launch_installed(self.root)
         for receipt in ({"source": self.source, "profile": "debug"}, {"source": "unknown", "profile": "release"}):
             with self.subTest(receipt=receipt), patch.object(launch.sys, "platform", "darwin"), \
                     patch.object(launch.delivery, "verify", return_value=receipt):
-                with self.assertRaisesRegex(launch.LaunchError, "run ./launch --test"):
+                with self.assertRaisesRegex(launch.LaunchError, "run ./launch to verify and build it"):
                     launch.launch_installed(self.root)
         self.assertEqual(self.calls, [])
 
-    def test_cli_default_test_help_and_unknown_option_dispatch(self):
+    def test_cli_default_test_open_help_and_unknown_option_dispatch(self):
         with patch.object(launch, "launch_installed") as startup, patch.object(launch, "run_launch") as test_run:
             self.assertEqual(launch.main([]), 0)
-            startup.assert_called_once_with()
-            test_run.assert_not_called()
+            startup.assert_not_called()
+            test_run.assert_called_once_with(argv=[])
         with patch.object(launch, "launch_installed") as startup, patch.object(launch, "run_launch") as test_run:
             self.assertEqual(launch.main(["--test"]), 0)
             startup.assert_not_called()
             test_run.assert_called_once_with(argv=["--test"])
+        with patch.object(launch, "launch_installed") as startup, patch.object(launch, "run_launch") as test_run:
+            self.assertEqual(launch.main(["--open"]), 0)
+            startup.assert_called_once_with()
+            test_run.assert_not_called()
         with patch.object(launch, "launch_installed") as startup, \
                 patch.object(launch, "run_launch", side_effect=launch.LaunchError("full local CI failed")), \
                 redirect_stderr(io.StringIO()) as error:
             self.assertEqual(launch.main(["--test"]), 1)
             self.assertIn("full local CI failed", error.getvalue())
             startup.assert_not_called()
-        for args, exit_code in ((["--help"], 0), (["--unknown"], 2)):
+        for args, exit_code in ((["--help"], 0), (["--unknown"], 2), (["--open", "--test"], 2)):
             with self.subTest(args=args), patch.object(launch, "launch_installed") as startup, \
                     patch.object(launch, "run_launch") as test_run, redirect_stdout(io.StringIO()) as output, \
                     redirect_stderr(io.StringIO()):
@@ -282,9 +346,11 @@ class LaunchTests(unittest.TestCase):
                 startup.assert_not_called()
                 test_run.assert_not_called()
                 if args == ["--help"]:
+                    self.assertIn("update clean main", output.getvalue())
+                    self.assertIn("--open", output.getvalue())
                     self.assertIn("--test", output.getvalue())
 
-    def test_requested_test_mode_survives_updated_launcher_reexec(self):
+    def test_opt_in_tests_survive_updated_launcher_reexec(self):
         previous = "d" * 40
         with patch.object(launch.sys, "platform", "darwin"), \
                 patch.object(launch, "require_clean_main"), \

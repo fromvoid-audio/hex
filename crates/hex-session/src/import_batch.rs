@@ -74,7 +74,7 @@ impl Session {
             }
         }
         let mut commands = Vec::new();
-        let mut residents = Vec::new();
+        let mut residents: Vec<ResidentAsset> = Vec::new();
         commands
             .try_reserve_exact(count)
             .map_err(|_| SessionError::Allocation)?;
@@ -100,7 +100,14 @@ impl Session {
             let frames = u64::try_from(member.waveform.source_frames)
                 .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
             total_frames = total_frames
-                .checked_add(frames)
+                .checked_add(
+                    member.additional_pcm_frames(
+                        self.media
+                            .values()
+                            .chain(residents.iter())
+                            .flat_map(|m| [&m.source_audio, &m.audio]),
+                    )?,
+                )
                 .filter(|n| *n <= self.max_resident_frames)
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             let bins = member.waveform.cached_bin_count();
@@ -145,6 +152,7 @@ impl Session {
                 cursor = end;
             }
             residents.push(ResidentAsset {
+                source_audio: member.source_audio,
                 audio: member.audio,
                 waveform: Arc::new(member.waveform),
                 frames,

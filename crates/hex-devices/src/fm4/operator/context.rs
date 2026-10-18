@@ -197,19 +197,30 @@ impl PreparedOperatorConfiguration {
             amplitude_velocity_active: note.amplitude_velocity_active,
         })
     }
-    fn modified_steps(&self, pitch: u8, velocity: u8) -> Result<[u64; 4], Invalid> {
+    fn modified_steps(
+        &self,
+        pitch: u8,
+        velocity: u8,
+        table: Option<&hex_lattice::TuningTable>,
+    ) -> Result<[u64; 4], Invalid> {
         if self.oscillator_velocity == [0.0; 4] {
-            return super::tuning::prepared_steps(
+            return super::tuning::prepared_steps_with_table(
                 self.sample_rate,
                 pitch,
                 &self.ratios,
                 &self.tuning,
+                table,
             );
         }
         if pitch > 127 {
             return Err(Invalid("invalid operator pitch"));
         }
-        let note_hz = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
+        let note_hz = match table {
+            Some(table) => table
+                .frequency(pitch)
+                .map_err(|_| Invalid("invalid operator pitch"))?,
+            None => 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0),
+        };
         let mut steps = [0; 4];
         for (i, step) in steps.iter_mut().enumerate() {
             let amount = f64::from(self.oscillator_velocity[i]);
@@ -238,17 +249,26 @@ impl PreparedOperatorConfiguration {
                     "velocity-modulated operator frequency must be below nyquist",
                 ));
             }
-            *step = (frequency / f64::from(self.sample_rate) * crate::PHASE_SCALE).round() as u64;
+            *step = crate::quantized_phase_step(self.sample_rate, frequency)?;
         }
         Ok(steps)
     }
 
     /// Validate every oscillator's Nyquist limit and compute pitch on control.
     pub fn prepare_note(&self, pitch: u8, velocity: u8) -> Result<PreparedOperatorNote, Invalid> {
+        self.prepare_note_with_tuning(pitch, velocity, None)
+    }
+
+    pub(crate) fn prepare_note_with_tuning(
+        &self,
+        pitch: u8,
+        velocity: u8,
+        table: Option<&hex_lattice::TuningTable>,
+    ) -> Result<PreparedOperatorNote, Invalid> {
         if !(1..=127).contains(&velocity) {
             return Err(Invalid("invalid operator note-on velocity"));
         }
-        let steps = self.modified_steps(pitch, velocity)?;
+        let steps = self.modified_steps(pitch, velocity, table)?;
         let mut caps = [0_u8; OPERATORS];
         for index in 0..OPERATORS {
             if self.waveforms[index] != OperatorWaveform::Sine {
@@ -326,7 +346,16 @@ impl PreparedOperatorConfiguration {
         pitch: u8,
         velocity: u8,
     ) -> Result<PreparedOperatorNote, Invalid> {
-        let mut note = self.prepare_note(pitch, velocity)?;
+        self.prepare_lfo_note_with_tuning(pitch, velocity, None)
+    }
+
+    pub(crate) fn prepare_lfo_note_with_tuning(
+        &self,
+        pitch: u8,
+        velocity: u8,
+        table: Option<&hex_lattice::TuningTable>,
+    ) -> Result<PreparedOperatorNote, Invalid> {
+        let mut note = self.prepare_note_with_tuning(pitch, velocity, table)?;
         if note.steps.iter().any(|step| *step >= (1_u64 << 62)) {
             return Err(Invalid("LFO excursion must remain below nyquist"));
         }

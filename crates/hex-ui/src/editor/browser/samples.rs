@@ -9,20 +9,27 @@ struct VisibleCache {
     entries: Arc<Vec<LibraryEntry>>,
 }
 
+struct FolderCache {
+    query: String,
+    directory: Option<PathBuf>,
+    projects_only: bool,
+    entries: Arc<Vec<LibraryEntry>>,
+}
+
 #[derive(Default)]
 pub(super) struct SampleBrowser {
     pub(super) catalog: SampleCatalog,
-    pub(super) source: Option<PathBuf>,
     in_flight: bool,
     pending: bool,
     loaded: bool,
     pub(super) status: Option<String>,
     visible: RefCell<Option<VisibleCache>>,
+    folder_visible: RefCell<Option<FolderCache>>,
 }
 
 impl SampleBrowser {
     pub(super) fn visible(&self, query: &str) -> Arc<Vec<LibraryEntry>> {
-        self.visible_with_listing(query, self.source.as_deref(), None)
+        self.visible_with_listing(query, None, None)
     }
 
     /// Global search passes no source filter and the current bounded listing.
@@ -43,7 +50,7 @@ impl SampleBrowser {
             return previous.entries.clone();
         }
         let entries = Arc::new(if listing.is_some() {
-            self.catalog.search_with_listing(query, listing)
+            self.catalog.search_with_listing_in(query, source, listing)
         } else {
             self.catalog.filtered(query, source)
         });
@@ -56,8 +63,42 @@ impl SampleBrowser {
         entries
     }
 
+    pub(super) fn folder(
+        &self,
+        query: &str,
+        listing: Option<&DirectoryListing>,
+        projects_only: bool,
+    ) -> Arc<Vec<LibraryEntry>> {
+        let directory = listing.map(|listing| &listing.directory);
+        let mut cache = self.folder_visible.borrow_mut();
+        if let Some(previous) = cache.as_ref()
+            && previous.query == query
+            && previous.directory.as_ref() == directory
+            && previous.projects_only == projects_only
+        {
+            return previous.entries.clone();
+        }
+        let entries = Arc::new(
+            listing
+                .into_iter()
+                .flat_map(|listing| listing.entries.iter())
+                .filter(|entry| !projects_only || entry.kind != EntryKind::WaveAudio)
+                .filter(|entry| query.is_empty() || entry.name.to_lowercase().contains(query))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        *cache = Some(FolderCache {
+            query: query.into(),
+            directory: directory.cloned(),
+            projects_only,
+            entries: entries.clone(),
+        });
+        entries
+    }
+
     /// Folder contents can change without changing the path or query.
     pub(super) fn invalidate_listing(&self) {
+        *self.folder_visible.borrow_mut() = None;
         let has_listing = self
             .visible
             .borrow()
@@ -81,7 +122,7 @@ impl SampleBrowser {
 }
 
 impl EditorView {
-    fn sample_roots(&self) -> Vec<PathBuf> {
+    pub(super) fn sample_roots(&self) -> Vec<PathBuf> {
         // Home remains a navigation shortcut; never recursively scan a user's
         // entire home merely because that shortcut exists by default.
         self.browser
@@ -206,7 +247,7 @@ impl EditorView {
     pub(super) fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
         let remap = matches!(
             self.browser.section,
-            BrowserSection::All | BrowserSection::Samples
+            BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
         );
         let selection = remap.then(|| self.browser_selected_item(cx)).flatten();
         if self.browser.samples.replace(catalog) && remap {
@@ -255,7 +296,10 @@ impl EditorView {
             .chain(self.sample_roots().into_iter().map(Some))
             .enumerate()
         {
-            let active = self.browser.samples.source == source;
+            let selected = source.as_ref().map_or(BrowserSection::Samples, |path| {
+                BrowserSection::Place(path.clone())
+            });
+            let active = self.browser.section == selected;
             let label = source.as_ref().map_or_else(
                 || "all folders".to_owned(),
                 |path| {
@@ -284,8 +328,7 @@ impl EditorView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
-                            view.browser.samples.source = source.clone();
-                            view.browser.reset_results();
+                            view.select_browser_source(selected.clone(), cx);
                             cx.notify();
                         }),
                     )
@@ -323,10 +366,7 @@ mod cache_tests {
             enumerated_entries: 1,
             truncated: false,
         };
-        let browser = SampleBrowser {
-            source: Some(PathBuf::from("/another-source")),
-            ..SampleBrowser::default()
-        };
+        let browser = SampleBrowser::default();
         let first = browser.visible_with_listing("utility", None, Some(&listing));
         assert_eq!(first.len(), 1);
         assert!(Arc::ptr_eq(

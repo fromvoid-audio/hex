@@ -6,6 +6,12 @@ arrow for `load device preset (.hex-device-preset.json)`. These files contain th
 complete device state, distinct from built-in Operator routing choices and project
 documents. External plugin hosting is outside this workflow.
 
+Project-scoped device asset references require a portable manifest and remapping
+before they can be saved as presets. The W10 reference slice explicitly refuses
+such preset encoding before file publication; it never saves unusable project
+asset IDs or silently strips bindings. Project schema30 can preserve them in
+place. See [device assets](device-assets.md) for the current boundary.
+
 Saving suggests `untitled.hex-device-preset.json`; choosing another name appends
 the suffix when absent. Save creates a new complete file and refuses any existing
 destination, including a publication race. Choose another filename on collision.

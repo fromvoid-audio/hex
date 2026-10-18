@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 mod accessibility_tests;
 mod auto_pan_ui_tests;
+mod bindings_tests;
 mod chain_window_tests;
 mod compressor_ui_tests;
 mod device_preset_ui_tests;
@@ -15,6 +16,7 @@ mod device_reorder_tests;
 mod device_theme_tests;
 mod eq_ui_tests;
 mod gate_ui_tests;
+mod header_actions_tests;
 mod header_style_tests;
 mod navigation_ui_tests;
 mod operator_algorithm_ui_tests;
@@ -2755,7 +2757,12 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
         ))
         .expect("headphone audition control");
     assert_eq!(audition.size.width, px(14.0));
-    for suffix in ["device-bypass", "device-up", "device-down", "device-remove"] {
+    for suffix in [
+        "device-bypass",
+        "device-preset-load",
+        "device-preset-save",
+        "device-remove",
+    ] {
         let selector = Box::leak(format!("{suffix}-{}", device.value()).into_boxed_str());
         let action = visual.debug_bounds(selector).expect("header action");
         assert!(action.origin.x >= frame.origin.x);
@@ -4600,7 +4607,7 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_ne!(
-            view.track_scroll.0.borrow().base_handle.offset().y,
+            view.track_scroll.offset().y,
             px(0.0),
             "the source row must actually be outside the current viewport"
         );

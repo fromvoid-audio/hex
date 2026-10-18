@@ -70,9 +70,12 @@ release or cancellation. MIDI clips and Session sources do not expose audio fade
 
 Each side has an upper length handle, a lower silent endpoint handle and, when
 its fade contains at least three samples, a middle curve handle. Upper handles
-move horizontally. Lower handles move horizontally while preserving the upper
-endpoint. The middle handle moves vertically, bending from convex through linear
-to concave. Geometry stays bounded to visible clips and viewport coordinates;
+move horizontally. Lower handles resize the corresponding clip edge while
+preserving the upper endpoint's timeline sample as far as source/domain and
+positive-length constraints allow. For inherited/musical fades this means the
+upper position of the existing explicitly reanchored local edit controls, rather
+than an earlier retained-domain projection. The middle handle moves vertically,
+bending from convex through linear to concave. Geometry stays bounded to visible clips and viewport coordinates;
 short curves receive their own interior samples even on long clips. The curve and
 handles occupy the waveform body below the shared upper-third name/grab strip.
 Rendered handle hit regions take precedence over body selection and time-range
@@ -93,7 +96,8 @@ Linux cloud executor.
 
 A drag retains one clip snapshot and a bounded metadata preview; it never
 compiles audio or queues project work on pointer motion. Release submits one
-`SetClipFadeEnvelope` command and therefore one undo step. The preview is visual;
+`SetClipFadeEnvelope` command for upper/curve controls or `TrimClipFadeEdge`
+for lower controls, and therefore one undo step. The preview is visual;
 audio applies after the normal prepared revision is accepted. A click without movement creates no edit. Escape, focus/window loss, resize,
 project-generation/revision changes, pending work and changed lane/viewport
 geometry cancel the gesture rather than committing a stale edit. Editing an
@@ -113,9 +117,45 @@ Native user checklist (pending; source tests do not establish native acceptance)
 
 1. Hold/release `f` over default audio clips; drag both top handles; release `f`.
    Edited curves and their handles should remain visible on unselected clips.
-2. Move both lower handles inward, then bend each middle handle up/down. Verify
-   the endpoint stays fixed and playback/export follows the displayed envelope.
-3. Drag outside the clip, cancel with Escape, and switch focus/windows while held.
-   Verify no clip move/trim or stuck handle mode, and one Undo per completed drag.
+2. Move both lower handles inward/outward with snapping on/off and Command held
+   or released while stationary and at mouse-up. Verify the clip and waveform
+   boundary follows the lower handle, the upper sample stays fixed within
+   constraints, and the opposite edge stays fixed. Repeat on a neutral clip
+   revealed with `f`.
+3. Drag outside the source bounds, cancel with Escape, and switch focus/windows
+   while held. Verify clamping, no cancelled edit or stuck mode, and one Undo/Redo
+   per completed edge-and-fade edit.
 4. Split a shaped/musical clip, change tempo, save/reopen and compare playback;
    verify Reset clears the envelope. Compare interaction and listening with Live.
+
+## Lower handles resize clips — 17 October 2026 / Pulse2751 / PR361
+
+A meaningful lower-handle drag places the actual clip edge at that silent
+endpoint. Existing authored inward endpoint offsets are absorbed into the resized
+edge; a click or return to the original pointer position leaves them untouched.
+The right edge is exclusive, one frame after its lower knot. Zero-length ramps
+remain zero and allow ordinary resizing in either direction. Authored ramps keep
+their upper timeline sample and clamp before crossing it. The other edge, curve
+bends and opposite fade settings remain, subject to fitting the positive new span.
+
+`Clip::preview_fade_edge_trim` owns both metadata preview and canonical command
+behavior. Plain clips use the existing trim source-window limits and offsets;
+loops retain their source region and advance the left-edge source phase modulo
+that region. Transformed/warped/beat-anchored clips crop the retained processing
+root, clamping to its projected extent, while preserving warp, pitch, source gain,
+loop phase and embedded audio events. Their explicit fade edit is reanchored in
+the new crop with the current tempo projection, matching the existing handle edit
+policy. This is a trim, with no source stretch or audio-callback change.
+
+Pointer motion uses bounded clip metadata and cached peaks, draws the actual
+resized clip/header/waveform crop and fade, and queues no project work. Lower
+handles resize freely by default, independently of the ordinary Arrangement snap
+setting. Holding Command opts into the configured grid; when that setting is off,
+Command enables the existing adaptive grid. Releasing Command restores free
+movement. Both stationary modifier changes and mouse-up recompute at the current
+pointer position. Ordinary clip trim/body snapping and upper/curve controls keep
+their existing behavior. Cancellation and freshness checks remain in force.
+Automated coverage includes canonical source/loop limits, musical warped/event
+root preservation, preview/command equality, one-step history, strict saved
+roundtrip, saved export PCM, playback seek/block partitions and rendered gestures.
+Native interaction/listening and exact optimized delivery remain separate checks.

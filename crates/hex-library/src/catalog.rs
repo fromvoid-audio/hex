@@ -49,7 +49,17 @@ impl SampleCatalog {
         query: &str,
         listing: Option<&DirectoryListing>,
     ) -> Vec<LibraryEntry> {
-        let mut entries = self.filtered(query, None);
+        self.search_with_listing_in(query, None, listing)
+    }
+
+    /// The same indexed/current-folder composition scoped to one active Place.
+    pub fn search_with_listing_in(
+        &self,
+        query: &str,
+        source: Option<&Path>,
+        listing: Option<&DirectoryListing>,
+    ) -> Vec<LibraryEntry> {
+        let mut entries = self.filtered(query, source);
         if let Some(listing) = listing {
             let query = query.to_lowercase();
             let extra = {
@@ -61,6 +71,7 @@ impl SampleCatalog {
                     .entries
                     .iter()
                     .take(MAX_RETAINED_ENTRIES)
+                    .filter(|entry| source.is_none_or(|root| entry.path.starts_with(root)))
                     .filter(|entry| entry.name.to_lowercase().contains(&query))
                     .filter(|entry| seen.insert(entry.path.as_path()))
                     .cloned()

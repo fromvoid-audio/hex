@@ -32,6 +32,8 @@ pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
 mod applied_source;
+#[cfg(test)]
+mod project_spectrum_tests;
 mod runtime_view;
 pub use applied_source::AppliedAudioSource;
 mod streaming;
@@ -346,6 +348,7 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
     admitted_ticket: AtomicU64,
     closing: AtomicBool,
@@ -473,6 +476,7 @@ impl Status {
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
+            project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
             admitted_ticket: AtomicU64::new(0),
             closing: AtomicBool::new(false),
@@ -972,7 +976,9 @@ pub fn channel_with_spectrum(
 
 struct SpectrumStage {
     frames: [[f32; 2]; 256],
+    input_frames: [[f32; 2]; 256],
     seen: [u64; 4],
+    input_seen: [u64; 4],
     expected: usize,
     observed: bool,
     valid: bool,
@@ -984,7 +990,9 @@ impl Default for SpectrumStage {
     fn default() -> Self {
         Self {
             frames: [[0.0; 2]; 256],
+            input_frames: [[0.0; 2]; 256],
             seen: [0; 4],
+            input_seen: [0; 4],
             expected: 0,
             observed: false,
             valid: false,
@@ -997,7 +1005,9 @@ impl Default for SpectrumStage {
 impl SpectrumStage {
     fn begin(&mut self, target: spectrum_target::SpectrumTarget, epoch: u64, expected: usize) {
         self.frames.fill([0.0; 2]);
+        self.input_frames.fill([0.0; 2]);
         self.seen.fill(0);
+        self.input_seen.fill(0);
         self.expected = expected;
         self.observed = false;
         self.valid = expected <= self.frames.len();
@@ -1005,7 +1015,13 @@ impl SpectrumStage {
         self.epoch = epoch;
     }
 
-    fn observe(&mut self, identity: PostNodeIdentity, offset: usize, frames: &[[f32; 2]]) {
+    fn observe_signal(
+        &mut self,
+        identity: PostNodeIdentity,
+        phase: hex_engine::NodeSignalPhase,
+        offset: usize,
+        frames: &[[f32; 2]],
+    ) {
         let Some(target) = self.target else {
             return;
         };
@@ -1021,11 +1037,15 @@ impl SpectrumStage {
             self.valid = false;
             return;
         }
+        let (samples, seen) = match phase {
+            hex_engine::NodeSignalPhase::Input => (&mut self.input_frames, &mut self.input_seen),
+            hex_engine::NodeSignalPhase::Output => (&mut self.frames, &mut self.seen),
+        };
         for (relative, frame) in frames.iter().enumerate() {
             let index = offset + relative;
             let word = index / 64;
             let mask = 1_u64 << (index % 64);
-            let Some(bits) = self.seen.get_mut(word) else {
+            let Some(bits) = seen.get_mut(word) else {
                 self.valid = false;
                 return;
             };
@@ -1034,7 +1054,7 @@ impl SpectrumStage {
                 return;
             }
             *bits |= mask;
-            self.frames[index] = *frame;
+            samples[index] = *frame;
         }
     }
 
@@ -1042,7 +1062,10 @@ impl SpectrumStage {
         self.valid
             && self.observed
             && self.target.is_some()
-            && (0..self.expected).all(|index| self.seen[index / 64] & (1_u64 << (index % 64)) != 0)
+            && (0..self.expected).all(|index| {
+                let mask = 1_u64 << (index % 64);
+                self.seen[index / 64] & mask != 0 && self.input_seen[index / 64] & mask != 0
+            })
     }
 
     fn clear(&mut self) {
@@ -1051,6 +1074,7 @@ impl SpectrumStage {
         self.observed = false;
         self.valid = false;
         self.seen.fill(0);
+        self.input_seen.fill(0);
     }
 }
 
@@ -1915,6 +1939,7 @@ impl Callback {
                         self.active.as_mut().and_then(ActivePublication::legacy_mut)
                     {
                         previous.playback.cancel_computer_keyboard();
+                        previous.playback.cancel_tuning_audition();
                     }
                     let revision = next.revision;
                     // A held EQ8 selector normally follows the current pair
@@ -2258,46 +2283,75 @@ impl Callback {
             self.prepare_gain_recording_quantum();
         }
         self.reconcile_processor_audition();
-        let Some(target) = self
+        self.begin_project_spectrum(output.len());
+        self.spectrum_stage.clear();
+        if let Some(target) = self
             .spectrum_capture
             .as_ref()
             .and(self.spectrum_target.current())
-        else {
-            self.spectrum_stage.clear();
-            return self.render_unobserved(output);
-        };
-        let epoch = self.spectrum_target.current_epoch();
-        let active_matches_target = self
-            .active
-            .as_ref()
-            .and_then(ActivePublication::current)
-            .is_some_and(|active| {
-                active.control_context_generation == target.project_generation
-                    && active.revision >= target.activation_floor
-                    && active.playback.sample_rate() == target.sample_rate_hz
-            });
-        if target.sample_rate_hz != self.rate || !active_matches_target {
+        {
+            let epoch = self.spectrum_target.current_epoch();
+            let matches = self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .is_some_and(|active| {
+                    active.control_context_generation == target.project_generation
+                        && active.revision >= target.activation_floor
+                        && active.playback.sample_rate() == target.sample_rate_hz
+                        && target.sample_rate_hz == self.rate
+                });
             self.spectrum_stage.begin(target, epoch, output.len());
-            self.spectrum_stage.valid = false;
+            self.spectrum_stage.valid &= matches;
+        }
+        let node_observed = self.spectrum_stage.target.is_some() && self.spectrum_stage.valid;
+        let project_observed = self
+            .spectrum_capture
+            .as_ref()
+            .and_then(|c| c.project.as_ref())
+            .is_some_and(|p| p.observing());
+        if !node_observed && !project_observed {
             return self.render_unobserved(output);
         }
-        self.spectrum_stage.begin(target, epoch, output.len());
         if self.status.closing.load(Acquire) {
             output.fill([0.0; 2]);
             return Ok(());
         }
         let stage = &mut self.spectrum_stage;
-        let mut observe =
-            |identity, offset, frames: &[Frame]| stage.observe(identity, offset, frames);
+        let mut observe = |identity, phase, offset, frames: &[Frame]| {
+            stage.observe_signal(identity, phase, offset, frames)
+        };
+        let mut project_capture = self
+            .spectrum_capture
+            .as_mut()
+            .and_then(|c| c.project.as_mut());
+        let selection = project_capture.as_ref().and_then(|p| p.selection());
+        let mut observe_project = |signal, offset, frames: &[Frame]| {
+            if let Some(project) = project_capture.as_mut() {
+                project.observe(signal, offset, frames);
+            }
+        };
+        let mut project = selection
+            .as_ref()
+            .filter(|_| project_observed)
+            .and_then(|selection| {
+                hex_engine::ProjectOutputTap::new(selection.tracks(), &mut observe_project)
+            });
+        let node: Option<&mut hex_engine::NodeSignalObserver<'_>> = if node_observed {
+            Some(&mut observe)
+        } else {
+            None
+        };
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed(
+            let outcome = active.render_streamed_with_project(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
-                Some(&mut observe),
+                node,
+                project.as_mut(),
             );
             streaming::record_outcome(
                 &self.status,
@@ -2313,7 +2367,7 @@ impl Callback {
         {
             active
                 .playback
-                .render_with_post_node_observer(output, Some(&mut observe))?;
+                .render_with_signal_observers(output, node, project.as_mut())?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -2387,10 +2441,89 @@ impl Callback {
         Ok(())
     }
 
+    fn begin_project_spectrum(&mut self, frames: usize) {
+        let selection = self.status.project_spectrum.read().filter(|s| s.active);
+        let active = self.active.as_ref().and_then(ActivePublication::current);
+        let Some(project) = self
+            .spectrum_capture
+            .as_mut()
+            .and_then(|c| c.project.as_mut())
+        else {
+            return;
+        };
+        let valid = match (selection, active) {
+            (Some(selection), Some(active))
+                if selection.sample_rate_hz == self.rate
+                    && active.playback.sample_rate() == self.rate
+                    && active.control_context_generation == selection.generation
+                    && active.revision >= selection.activation_floor =>
+            {
+                if project.needs_source_validation(selection, active.revision) {
+                    if active.playback.project_output_supported(selection.tracks()) {
+                        project.source_validated(selection, active.revision);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        };
+        project.begin(selection, frames, valid);
+    }
+    fn finish_project_spectrum(
+        &mut self,
+        captured_at: Instant,
+        output_valid: bool,
+    ) -> Option<crate::spectrum_worker::CaptureOutcome> {
+        let selection = self
+            .spectrum_capture
+            .as_ref()
+            .and_then(|c| c.project.as_ref())
+            .and_then(|p| p.selection())?;
+        let active = self.active.as_ref().and_then(ActivePublication::current);
+        let revision = active.as_ref().map_or(0, |active| active.revision);
+        let valid = output_valid
+            && !self.status.closing.load(Acquire)
+            && self.status.project_spectrum.token() == selection.token
+            && selection.sample_rate_hz == self.rate
+            && active.is_some_and(|active| {
+                active.control_context_generation == selection.generation
+                    && active.playback.sample_rate() == self.rate
+                    && active.revision >= selection.activation_floor
+            });
+        self.spectrum_capture
+            .as_mut()?
+            .project
+            .as_mut()?
+            .finish(captured_at, revision, valid)
+    }
+    fn finish_analysis_block(
+        &mut self,
+        captured_start: Instant,
+        output_valid: bool,
+    ) -> (
+        Option<crate::spectrum_worker::CaptureOutcome>,
+        Option<crate::spectrum_worker::CaptureOutcome>,
+    ) {
+        let project = self.finish_project_spectrum(captured_start, output_valid);
+        let node = self.finish_eq_spectrum(captured_start, output_valid);
+        (node, project)
+    }
+
     /// Accept or reject the staged post-node signal after the caller has
     /// validated the complete final output block. A skipped attempt consumes a
     /// capture sequence so the next accepted window cannot bridge the gap.
     pub fn finish_spectrum_block(
+        &mut self,
+        captured_start: Instant,
+        output_valid: bool,
+    ) -> Option<crate::spectrum_worker::CaptureOutcome> {
+        self.finish_analysis_block(captured_start, output_valid).0
+    }
+    fn finish_eq_spectrum(
         &mut self,
         captured_start: Instant,
         output_valid: bool,
@@ -2425,8 +2558,9 @@ impl Callback {
                         .and_then(ActivePublication::current)
                         .map_or(0, |active| active.revision),
                 };
-                Some(capture.submit_at(
+                Some(capture.submit_pair_at(
                     stamp,
+                    &self.spectrum_stage.input_frames[..self.spectrum_stage.expected],
                     &self.spectrum_stage.frames[..self.spectrum_stage.expected],
                     captured_start,
                 ))
@@ -2640,7 +2774,7 @@ mod tests {
         spectrum_eq8_graph_with_params(playing, mode, 0.0, 1.0)
     }
 
-    fn spectrum_eq8_graph_with_params(
+    pub(super) fn spectrum_eq8_graph_with_params(
         playing: bool,
         mode: u32,
         gain_db: f32,
@@ -2753,6 +2887,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_snapshot(Snapshot {
+            tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
             return_feeds: Vec::new(),
@@ -2885,6 +3020,7 @@ mod tests {
             .expect("saturator curve")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
             return_feeds: Vec::new(),
@@ -3005,6 +3141,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
             return_feeds: Vec::new(),
@@ -3137,6 +3274,7 @@ mod tests {
             .expect("gate floor")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
             return_feeds: Vec::new(),
@@ -4576,30 +4714,92 @@ mod tests {
     }
 
     #[test]
-    fn spectrum_stage_accumulates_exact_offsets_and_rejects_overlap_or_wrong_owner() {
+    fn spectrum_stage_requires_independent_exact_phase_coverage() {
+        use hex_engine::NodeSignalPhase::{Input, Output};
         let target = spectrum_test_target(hex_engine::ProcessorChainOwner::Track(3), 0, 1, 48_000);
-        let mut stage = SpectrumStage::default();
-        stage.begin(target, 1, 4);
-        stage.observe(target.identity, 0, &[[0.1, 0.2], [0.3, 0.4]]);
         let wrong_owner =
             spectrum_test_target(hex_engine::ProcessorChainOwner::Return(3), 0, 1, 48_000);
-        stage.observe(wrong_owner.identity, 2, &[[0.8, 0.9]]);
-        assert!(!stage.complete());
-        stage.observe(target.identity, 2, &[[0.5, 0.6], [0.7, 0.8]]);
-        assert!(stage.complete());
-        assert_eq!(
-            stage.frames[..4],
-            [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]]
+        let input = [[0.1, -0.2], [0.3, -0.4], [0.5, -0.6], [0.7, -0.8]];
+        let output = [[0.2, -0.4], [0.6, -0.8], [1.0, -1.2], [1.4, -1.6]];
+        let mut stage = SpectrumStage::default();
+        stage.begin(target, 1, 4);
+        stage.observe_signal(target.identity, Input, 0, &input);
+        assert!(!stage.complete(), "input alone cannot publish");
+        stage.observe_signal(target.identity, Output, 2, &output[2..]);
+        stage.observe_signal(wrong_owner.identity, Output, 0, &output[..2]);
+        assert!(
+            !stage.complete(),
+            "the other owner's samples cannot complete a pair"
         );
-
-        stage.begin(target, 2, 4);
-        stage.observe(target.identity, 0, &[[0.1, 0.2], [0.3, 0.4]]);
-        stage.observe(target.identity, 1, &[[0.5, 0.6]]);
+        stage.observe_signal(target.identity, Output, 0, &output[..2]);
+        assert!(stage.complete());
+        assert_eq!(stage.input_frames[..4], input);
+        assert_eq!(stage.frames[..4], output);
+        stage.clear();
         assert!(!stage.complete());
 
-        stage.begin(target, 3, 4);
-        stage.observe(target.identity, usize::MAX, &[[0.1, 0.2]]);
+        for phase in [Input, Output] {
+            for (offset, count) in [(1, 1), (4, 1), (usize::MAX, 1)] {
+                stage.begin(target, 2, 4);
+                stage.observe_signal(target.identity, Input, 0, &input);
+                stage.observe_signal(target.identity, Output, 0, &output);
+                assert!(stage.complete());
+                stage.observe_signal(target.identity, phase, offset, &input[..count]);
+                assert!(
+                    !stage.complete(),
+                    "overlap or out-of-bounds in either phase invalidates the pair"
+                );
+            }
+        }
+        stage.begin(target, 3, 257);
         assert!(!stage.complete());
+    }
+
+    #[test]
+    fn prepared_eq_captures_actual_input_and_processed_output_without_changing_pcm() {
+        let (mut control, mut callback, mut reader, reaper) = spectrum_test_channel();
+        let (playback, identity) = spectrum_eq8_graph_with_params(true, 0, 12.0, 1.0);
+        let (mut oracle, _) = spectrum_eq8_graph_with_params(true, 0, 12.0, 1.0);
+        let revision = control.publish(playback).unwrap();
+        control
+            .spectrum_target
+            .select(identity, 0, revision, 48_000)
+            .unwrap();
+        let mut actual = [[0.0; 2]; 256];
+        let mut expected = actual;
+        oracle.render(&mut expected).unwrap();
+        let mut render = || {
+            callback.begin_block();
+            callback.render(&mut actual).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+        assert_eq!(actual, expected);
+        assert!(callback.spectrum_stage.complete());
+        assert_eq!(callback.spectrum_stage.input_frames, [[0.25, -0.4]; 256]);
+        assert_eq!(callback.spectrum_stage.frames, actual);
+        assert!(actual.iter().any(|frame| (frame[0] - 0.25).abs() > 0.001));
+        // Even a fully covered pair must be discarded if final caller validation fails.
+        assert_eq!(
+            callback.finish_spectrum_block(Instant::now(), false),
+            Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 0 })
+        );
+        assert!(!callback.spectrum_stage.complete());
+        assert!(reader.try_latest_pair().is_none());
+        shutdown_spectrum_test_channel(control, callback, reaper);
     }
 
     #[test]
@@ -5893,6 +6093,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
             return_feeds: Vec::new(),
@@ -6355,6 +6556,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
             return_feeds: Vec::new(),

@@ -443,6 +443,51 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         "the compact Utility panel keeps its final control visible in the fixed body viewport"
     );
 
+    // Reordering is title-drag-only after removing the header arrow buttons.
+    // Perform this before the recorder fixture queues other canonical edits;
+    // production drag refusal while a prior edit is pending remains enforced.
+    let second_title = visual
+        .debug_bounds(Box::leak(
+            format!("device-drag-title-{}", second_device_id.value()).into_boxed_str(),
+        ))
+        .expect("second draggable device title");
+    let first_target = visual
+        .debug_bounds(Box::leak(
+            format!("device-drop-card-{}", device_id.value()).into_boxed_str(),
+        ))
+        .expect("first device insertion target");
+    visual.simulate_mouse_down(
+        second_title.center(),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(
+        point(second_title.center().x + px(12.0), second_title.center().y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let landing = point(first_target.left() + px(8.0), first_target.center().y);
+    visual.simulate_mouse_move(landing, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let request = view
+            .last_enqueued_native_device_drop
+            .expect("title reorders the second device left");
+        assert_eq!(request.project_generation, view.project_generation);
+        assert_eq!(request.revision, view.state.as_ref().unwrap().revision);
+        assert_eq!(request.track, track);
+        assert_eq!(request.before, Some(device_id));
+        assert_eq!(request.replace, None);
+        assert!(
+            matches!(request.source, hex_session::service::NativeDeviceDropSource::Existing {
+            device, class: hex_engine::NativeDeviceClass::Effect, type_id,
+        } if device == second_device_id && type_id == entry.type_id)
+        );
+        assert!(view.active_native_device_drag.is_none());
+    });
+
     let panel_before_menu = visual.debug_bounds("device-panel").expect("device panel");
     let chain_before_menu = visual
         .debug_bounds("device-chain-scroll")
@@ -542,26 +587,6 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
                 device,
                 bypassed: true
             }) if device == device_id
-        ));
-    });
-
-    let second_up_selector =
-        Box::leak(format!("device-up-{}", second_device_id.value()).into_boxed_str());
-    let second_up = visual
-        .debug_bounds(second_up_selector)
-        .expect("move second device left");
-    let click_point = point(second_up.center().x, second_up.center().y);
-    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit,
-            Some(Command::MoveDevice {
-                device,
-                track: moved_track,
-                before: Some(before),
-            }) if device == second_device_id && moved_track == track && before == device_id
         ));
     });
 

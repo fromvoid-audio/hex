@@ -243,7 +243,14 @@ fn explicit_definition_prepares_analytic_notes_matching_the_standalone_kernel() 
 
     for sample_rate in [8_000, 44_100, 96_000, 192_000] {
         let prepared = registry
-            .prepare_instrument(&state, sample_rate)
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .expect("control-side FM4 preparation");
         for pitch in [48, 60, 72] {
             for velocity in [1, 64, 127] {
@@ -266,7 +273,10 @@ fn explicit_definition_prepares_analytic_notes_matching_the_standalone_kernel() 
                     gate + note.release_frames(),
                 ] {
                     let sample = expected.sample(&table, age, gate);
-                    assert_eq!(note.sample(age, gate), [sample, sample]);
+                    assert_eq!(
+                        note.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                        [sample, sample]
+                    );
                 }
             }
         }

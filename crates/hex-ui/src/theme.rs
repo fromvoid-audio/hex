@@ -6,8 +6,9 @@ mod device;
 // Native review examples include this module and use only a subset of its API.
 #[allow(unused_imports)]
 pub(crate) use device::{
-    DeviceActionRole, DeviceStyleRole, device_frame_style, device_header_action_style,
-    device_identity_style, device_segment_style, device_style, oscillator_identity_color,
+    DeviceActionRole, DeviceStyleRole, device_analyzer_style, device_frame_style,
+    device_header_action_style, device_identity_style, device_segment_style, device_style,
+    oscillator_identity_color,
 };
 use std::borrow::Cow;
 use std::cell::Cell;

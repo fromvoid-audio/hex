@@ -108,6 +108,7 @@ pub(super) fn render(
     ] {
         let parameter = NativeDeviceParameterView {
             descriptor,
+            semantics: None,
             value: ParameterValue::Float(value),
             enabled: true,
         };
