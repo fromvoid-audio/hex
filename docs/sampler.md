@@ -943,3 +943,13 @@ constructs its unqualified shared children. This change does not select paired
 births, establish complete compiler failure custody or open native admission.
 Independent gain automation/tempo/partition/hybrid/send/tail tests and the actual
 Mono/Stereo Sampler revision host regression cover the changed compiler order.
+
+Track preflight also captures the actual canonical instrument-state alias and
+host gain/bypass metadata before final assembly. The assembler moves that alias
+into its existing Track field rather than cloning after the shared children
+arrive. Tests check one extra actual payload alias during preflight/assembly,
+its original pointer, no additional alias at assembly, preserved independent
+host gains/bypass, and release back to the original count. This alias is a real
+construction owner, not new provenance or a permit; complete compiler custody
+must include its actual field while alive. Existing native-state traversal of
+the final Track is unchanged.

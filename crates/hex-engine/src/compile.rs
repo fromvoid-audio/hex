@@ -632,7 +632,8 @@ fn compile_project_inner<'a>(
             snapshot.tempo_map(),
             track.balance(),
             track.gain(),
-        )?;
+        )?
+        .prepare_instrument_metadata(track.instrument());
         tracks.push(
             track_plan
                 .assemble(
@@ -643,7 +644,6 @@ fn compile_project_inner<'a>(
                 )
                 .with_track_id(track.id())
                 .with_midi_source_index((source_index != track_index).then_some(source_index))
-                .with_instrument_config(track.instrument())
                 .with_tuning_identity(shared_contexts.tuning_identity())
                 .with_instrument_latency(instrument_latency, instrument_runtime_latency)
                 .with_mutable_instrument(mutable_instrument, mutable_looping_source)

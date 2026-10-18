@@ -1061,28 +1061,6 @@ impl Track {
         })
     }
 
-    pub(crate) fn with_instrument_config(
-        mut self,
-        instrument: Option<&hex_project::Device>,
-    ) -> Self {
-        self.instrument_id = instrument.map(hex_project::Device::id);
-        self.instrument_state =
-            instrument.map(|device| device.state().clone().without_host_gains());
-        self.instrument_bypassed = instrument.is_some_and(hex_project::Device::bypassed);
-        self.instrument_input_gain =
-            instrument.map_or(1.0, |device| device.state().input_gain_linear());
-        self.instrument_output_gain =
-            instrument.map_or(1.0, |device| device.state().output_gain_linear());
-        if self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0 {
-            self.source_mix = PreparedTrackMix {
-                channel_gain: [1.0; 2],
-                effects: None,
-                muted: false,
-            };
-        }
-        self
-    }
-
     pub(crate) fn with_instrument_latency(
         mut self,
         source: Option<u32>,
