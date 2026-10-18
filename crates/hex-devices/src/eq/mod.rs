@@ -53,6 +53,57 @@ impl NativeDeviceMetadata for EqDefinition {
         }
         Ok(result)
     }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        use hex_lattice_contract::{
+            ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
+            ParameterModulation as M, ParameterNormalization as N, ParameterSemantics,
+            ParameterSmoothing as S, ParameterStepping as T,
+        };
+        let settings = EqState::decode(state)?;
+        let (normalization, stepping, automation, smoothing) = if id == MODE {
+            (N::Discrete, T::Choice, E::Unsupported, S::None)
+        } else if id == OUTPUT_GAIN {
+            (N::Linear, T::Continuous, E::Unsupported, S::DeviceManaged)
+        } else {
+            let (node, field) = NodeId::from_parameter(id)?;
+            let node = settings.node(node)?;
+            let automation = if node.legacy_shelf
+                && matches!(
+                    field,
+                    NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
+                ) {
+                E::Unsupported
+            } else {
+                E::DeviceArrangementEnvelope
+            };
+            let (normalization, stepping) = match field {
+                NodeParameter::Frequency | NodeParameter::Q => {
+                    (N::PositiveLogarithmic, T::Continuous)
+                }
+                NodeParameter::Gain => (N::Linear, T::Continuous),
+                NodeParameter::Enabled => (N::Discrete, T::Boolean),
+                _ => (N::Discrete, T::Choice),
+            };
+            (normalization, stepping, automation, S::DeviceManaged)
+        };
+        Ok(Some(ParameterSemantics {
+            access: A::ReadWrite,
+            normalization,
+            stepping,
+            automation,
+            modulation: M::Unsupported,
+            smoothing,
+            change_impact: if id == MODE {
+                I::Structural
+            } else {
+                I::ValueOnly
+            },
+        }))
+    }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         EqState::default().encode()
     }
@@ -138,8 +189,9 @@ impl NativeDeviceDefinition for EqDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         Ok(Some(Box::new(runtime::PreparedEq::new(
             EqState::decode(state)?,
             sample_rate,

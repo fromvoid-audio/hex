@@ -130,6 +130,15 @@ pub type MainOutputObserver<'observer> = dyn for<'frames> FnMut(&'frames [Frame]
 /// Borrowed post-node samples delivered during one render call.
 pub type PostNodeObserver<'observer> =
     dyn for<'frames> FnMut(PostNodeIdentity, usize, &'frames [Frame]) + 'observer;
+pub use hex_lattice::NodeSignalPhase;
+
+/// Synchronous input/output signals around one native entry, before host input
+/// trim and after the entire effect/output trim. Both borrows are speculative
+/// until the full render and caller's final output validation succeed.
+/// Real-time observers must not allocate, block or retain either sample borrow.
+pub type NodeSignalObserver<'observer> =
+    dyn for<'frames> FnMut(PostNodeIdentity, NodeSignalPhase, usize, &'frames [Frame]) + 'observer;
+
 /// Maximum stable track routes exposed to native callback telemetry.
 pub const MAX_SESSION_ROUTE_TRACKS: usize = hex_project::MAX_TRACKS;
 
@@ -350,6 +359,7 @@ fn map_device_contract_error(error: hex_lattice_contract::DeviceContractError) -
         Error::RuntimeBudgetExceeded => "native device runtime exceeds its bounded budget",
         Error::RuntimeAllocation => "native device runtime allocation failed",
         Error::UnsupportedProcessingClass => "native device processing class is not admitted",
+        Error::AssetResourcesUnavailable => "native device asset resources are unavailable",
     })
 }
 
@@ -417,6 +427,11 @@ impl Audio {
     /// Shared immutable stereo PCM, available for import validation and analysis.
     pub fn frames(&self) -> &[Frame] {
         &self.frames
+    }
+    /// Control-side capacity of the retained PCM buffer, in stereo frames.
+    /// This excludes owner/graph metadata and is not a resource-admission proof.
+    pub fn pcm_capacity_frames(&self) -> usize {
+        self.frames.values.capacity()
     }
     /// True when two audio handles retain the same immutable PCM allocation.
     /// Exact retained PCM identity for control-side cache/summary reuse.
@@ -702,6 +717,7 @@ pub struct Track {
     sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
+    tuning_identity: shared_analytic::TuningIdentity,
     instrument_bypassed: bool,
     instrument_input_gain: f32,
     instrument_output_gain: f32,
@@ -846,6 +862,7 @@ impl Track {
             sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
+            tuning_identity: Default::default(),
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
             instrument_output_gain: 1.0,
@@ -896,6 +913,7 @@ impl Track {
             sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
+            tuning_identity: Default::default(),
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
             instrument_output_gain: 1.0,
@@ -939,8 +957,13 @@ impl Track {
         self.instrument_runtime_latency = runtime;
         self
     }
+    pub(crate) fn with_tuning_identity(mut self, tuning: shared_analytic::TuningIdentity) -> Self {
+        self.tuning_identity = tuning;
+        self
+    }
     pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
-        self.instrument_id == other.instrument_id
+        self.tuning_identity == other.tuning_identity
+            && self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
             && self.instrument_bypassed == other.instrument_bypassed
     }
@@ -1804,6 +1827,7 @@ pub struct PreparedAudioClipView {
 
 #[derive(Debug, Clone)]
 pub struct Project {
+    project_track_ids: project_output::ProjectTrackIds,
     audio_clip_views: Vec<PreparedAudioClipView>,
     sample_rate: u32,
     tracks: Vec<Track>,
@@ -1897,6 +1921,7 @@ impl Project {
             ));
         }
         Ok(Self {
+            project_track_ids: project_output::ProjectTrackIds::prepare(&tracks),
             audio_clip_views: Vec::new(),
             audible_end_frame: tracks
                 .iter()
@@ -3050,6 +3075,7 @@ mod tests {
 pub mod computer_keyboard;
 pub mod live;
 pub mod live_expression;
+mod midi_activity;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
@@ -3060,10 +3086,12 @@ mod prepared_tempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;
+pub mod tuning_audition;
 
 pub mod compile;
 
 pub mod playback;
+mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
 };
@@ -3090,6 +3118,7 @@ pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
     OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedStreamAction,
-    SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand,
-    SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
+    ProjectOutputTap, ProjectSignal, ProjectSignalObserver, SessionHandoffReport,
+    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
+    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };

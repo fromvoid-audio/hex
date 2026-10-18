@@ -324,3 +324,127 @@ fn invalid_snapshot_phases_and_commands_are_rejected_without_history_changes() {
     assert_eq!(editor.project(), &removed);
     assert_eq!(editor.can_undo(), history);
 }
+
+#[test]
+fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_history() {
+    use hex_project::ClipFade;
+    for looping in [false, true] {
+        let (mut editor, clip) = editor_with_clip(looping, 10, 20, 5, 20, 40);
+        let fade = ClipFade::new(20, 0, 8, 7)
+            .unwrap()
+            .with_shape(2, 3, 700, -600)
+            .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        let original = editor.project().clone();
+        for (edge, requested, expected_start, expected_duration, expected_in, expected_out) in [
+            (TrimEdge::Left, 14, 14, 16, 6, 7),
+            (TrimEdge::Right, 25, 10, 15, 8, 5),
+            (
+                TrimEdge::Left,
+                0,
+                if looping { 0 } else { 5 },
+                if looping { 30 } else { 25 },
+                if looping { 20 } else { 15 },
+                7,
+            ),
+            (
+                TrimEdge::Right,
+                u64::MAX,
+                10,
+                if looping { u64::MAX - 10 } else { 35 },
+                8,
+                if looping { u64::MAX - 20 } else { 25 },
+            ),
+            (TrimEdge::Left, 100, 19, 11, 1, 7),
+            (TrimEdge::Right, 0, 10, 11, 8, 1),
+        ] {
+            let before = editor.project().clip(clip).unwrap();
+            let preview = before
+                .preview_fade_edge_trim(edge, requested, 40, editor.project().tempo_map())
+                .unwrap();
+            editor
+                .execute(Command::TrimClipFadeEdge {
+                    clip,
+                    edge,
+                    frame: requested,
+                })
+                .unwrap();
+            let changed = editor.project().clip(clip).unwrap();
+            assert_eq!(&preview, changed);
+            assert_eq!(
+                (changed.start(), changed.duration()),
+                (expected_start, expected_duration)
+            );
+            assert_eq!(
+                (changed.fade().fade_in(), changed.fade().fade_out()),
+                (expected_in, expected_out)
+            );
+            assert_eq!(
+                (changed.fade().in_curve(), changed.fade().out_curve()),
+                (700, -600)
+            );
+            match edge {
+                TrimEdge::Left => {
+                    assert_eq!(changed.fade().in_start(), 0);
+                    assert_eq!(
+                        changed.fade().out_end_offset(),
+                        3.min(changed.duration() - 1)
+                    );
+                    if looping {
+                        assert_eq!((changed.source_offset(), changed.source_length()), (5, 20));
+                        assert_eq!(
+                            changed.source_phase(),
+                            ((i128::from(changed.start()) - 10).rem_euclid(20)) as u64
+                        );
+                    } else {
+                        assert_eq!(changed.source_offset(), changed.start() - 5);
+                        assert_eq!(changed.source_length(), 30 - changed.start());
+                    }
+                }
+                TrimEdge::Right => {
+                    assert_eq!(changed.fade().out_end_offset(), 0);
+                    assert_eq!(changed.fade().in_start(), 2);
+                }
+            }
+            let result = editor.project().clone();
+            assert!(editor.undo());
+            assert_eq!(editor.project(), &original);
+            assert!(editor.redo());
+            assert_eq!(editor.project(), &result);
+            assert!(editor.undo());
+        }
+    }
+}
+
+#[test]
+fn neutral_lower_resize_and_unchanged_or_source_clamped_edges_preserve_noop_history() {
+    let (mut editor, clip) = editor_with_clip(false, 0, 10, 0, 10, 10);
+    editor
+        .execute(Command::TrimClipFadeEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 4,
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            editor.project().clip(clip).unwrap().start(),
+            editor.project().clip(clip).unwrap().duration()
+        ),
+        (4, 6)
+    );
+    assert!(editor.project().clip(clip).unwrap().fade().is_neutral());
+    assert!(editor.undo());
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        editor
+            .execute(Command::TrimClipFadeEdge {
+                clip,
+                edge,
+                frame: if edge == TrimEdge::Left { 0 } else { u64::MAX },
+            })
+            .unwrap();
+    }
+    assert!(editor.redo(), "no-op preserves the redo branch");
+}

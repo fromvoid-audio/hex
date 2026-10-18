@@ -332,3 +332,87 @@ fn transformed_musical_shaped_fades_keep_pcm_through_splits_and_tempo_changes() 
     assert!(actual[0..100].iter().all(|frame| *frame == [0.0; 2]));
     assert!(actual[2000][0] > 0.1);
 }
+
+#[test]
+fn resized_lower_handles_render_trimmed_source_and_fade_in_playback_across_blocks() {
+    use hex_project::TrimEdge;
+    for musical_loop in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "resize".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 14,
+            })
+            .unwrap()
+        else {
+            panic!("import");
+        };
+        editor
+            .execute(Command::TrimClip {
+                clip,
+                start: 0,
+                duration: 12,
+                source_offset: 1,
+                source_length: if musical_loop { 3 } else { 12 },
+            })
+            .unwrap();
+        if musical_loop {
+            editor
+                .execute(Command::SetClipLooping {
+                    clip,
+                    looping: true,
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true,
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 6,
+                fade_out: 5,
+            })
+            .unwrap();
+        for (edge, frame) in [(TrimEdge::Left, 2), (TrimEdge::Right, 10)] {
+            editor
+                .execute(Command::TrimClipFadeEdge { clip, edge, frame })
+                .unwrap();
+        }
+        let media = BTreeMap::from([(
+            asset,
+            Audio::new(48_000, (0..14).map(|n| [n as f32 / 16.0; 2]).collect()).unwrap(),
+        )]);
+        let compiled = compile::project(editor.project(), &media).unwrap();
+        let mut expected = [[0.0; 2]; 12];
+        for (index, gain) in [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 0.5, 0.0]
+            .into_iter()
+            .enumerate()
+        {
+            let timeline = index + 2;
+            let source = 1 + if musical_loop { timeline % 3 } else { timeline };
+            expected[timeline] = [source as f32 / 16.0 * gain; 2];
+        }
+        for block in [1, 5, 12] {
+            let mut playback = Playback::new(compiled.clone());
+            playback.apply(PlaybackCommand::Play);
+            let mut actual = [[0.0; 2]; 12];
+            for chunk in actual.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(
+                actual, expected,
+                "musical loop={musical_loop}, block={block}"
+            );
+            playback.apply(PlaybackCommand::Seek(3));
+            let mut sought = [[0.0; 2]; 5];
+            playback.render(&mut sought).unwrap();
+            assert_eq!(sought, expected[3..8]);
+        }
+    }
+}

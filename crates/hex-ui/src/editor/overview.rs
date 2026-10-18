@@ -115,6 +115,7 @@ fn mark_interval(cells: &mut [u8], row: usize, horizon: u64, start: u64, end: u6
 pub(super) fn widget(
     cache: Rc<OverviewCache>,
     viewport: Viewport,
+    header_width: f32,
     entity: gpui::Entity<EditorView>,
 ) -> Div {
     let horizon = cache.horizon();
@@ -132,7 +133,7 @@ pub(super) fn widget(
                 .top_0()
                 .bottom_0()
                 .left_0()
-                .right(px(super::tracks::TRACK_HEADER_WIDTH))
+                .right(px(header_width))
                 .children([canvas(
                     |_, _, _| (),
                     move |bounds, _, window, _| {
