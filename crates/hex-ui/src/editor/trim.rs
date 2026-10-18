@@ -1092,7 +1092,11 @@ impl EditorView {
             generation: drag.project_generation,
             revision: drag.revision,
             track: drag.source_track,
-            command: ResizeCommand::from_request(&request).expect("resize command"),
+            command: ResizeCommand::Midi {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                beat,
+            },
             remaining: None,
             scroll_viewport: drag.scroll.get().viewport,
             display: PendingTrimDisplay::Midi {
@@ -1267,7 +1271,8 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        let request = Request::Edit(if drag.stretch_modifier.get() {
+        let stretch = drag.stretch_modifier.get();
+        let request = Request::Edit(if stretch {
             Command::StretchAudioClipEdge {
                 clip: drag.clip.id(),
                 edge: drag.edge,
@@ -1284,7 +1289,12 @@ impl EditorView {
             generation: drag.project_generation,
             revision: drag.revision,
             track: drag.source_track,
-            command: ResizeCommand::from_request(&request).expect("resize command"),
+            command: ResizeCommand::Audio {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                frame,
+                stretch,
+            },
             remaining: None,
             scroll_viewport: drag.scroll.get().viewport,
             display: PendingTrimDisplay::Audio {
