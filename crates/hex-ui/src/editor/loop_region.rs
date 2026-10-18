@@ -1,5 +1,6 @@
 //! Loop controls dispatch canonical edits; DSP and validation belong to the engine/model.
-use super::EditorView;
+use super::{EditorMode, EditorView};
+use gpui::Window;
 use hex_project::Command;
 use hex_session::service::Request;
 
@@ -22,6 +23,112 @@ impl EditorView {
             end,
             enabled: true,
         }));
+    }
+
+    /// Plain L belongs to the focused Arrangement, except while it is a musical note.
+    /// Other views retain their existing toggle command; Command-L is unchanged.
+    pub(super) fn loop_selection_key(&mut self, window: &Window) {
+        if !self.focus.is_focused(window)
+            || self.computer_keyboard.enabled
+            || self.track_name.is_editing()
+            || self.clip_name_edit.is_some()
+            || self.context_menu.is_some()
+            || self.theme_settings.open
+            || self.tuning.open
+            || self.save_dialog_open
+            || self.export_dialog_open
+        {
+            return;
+        }
+        if self.mode != EditorMode::Arrangement {
+            self.toggle_loop();
+            return;
+        }
+        if self.edit_pending()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.active_clip_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+            || self.track_resize_active()
+            || self.loop_rail_gesture.is_some()
+        {
+            self.error = Some("finish the current edit before setting the loop".into());
+            return;
+        }
+        match self.selection_loop_bounds() {
+            Ok(Some((start, end))) => {
+                self.enqueue(Request::Edit(Command::SetLoopRegion {
+                    start,
+                    end,
+                    enabled: true,
+                }));
+            }
+            Ok(None) => {}
+            Err(error) => self.error = Some(error.into()),
+        }
+    }
+
+    fn selection_loop_bounds(&self) -> Result<Option<(u64, u64)>, &'static str> {
+        // Match range-copy precedence. A stale non-empty rectangle must refuse,
+        // rather than silently looping a different whole-clip selection.
+        if self
+            .time_selection
+            .is_some_and(|s| s.anchor_frame != s.end_frame)
+        {
+            return self
+                .normalized_time_selection()
+                .map(|range| Some((range.start(), range.end())))
+                .ok_or("time selection no longer belongs to current tracks");
+        }
+        let Some(state) = &self.state else {
+            return Ok(None);
+        };
+        let ids = self.selected_clip_ids();
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        let mut start = u64::MAX;
+        let mut end = 0;
+        for id in ids {
+            let bounds = state
+                .project
+                .tracks()
+                .iter()
+                .find_map(|track| {
+                    if let Some(clip) = track.clips().iter().find(|clip| clip.id() == id) {
+                        return Some(
+                            clip.start()
+                                .checked_add(clip.duration())
+                                .map(|end| (clip.start(), end)),
+                        );
+                    }
+                    track
+                        .midi_clips()
+                        .iter()
+                        .find(|clip| clip.id() == id)
+                        .map(|clip| {
+                            let end = clip.start().raw().checked_add(clip.length().raw())?;
+                            Some((
+                                state.project.tempo_map().beat_to_frame(clip.start()).ok()?,
+                                state
+                                    .project
+                                    .tempo_map()
+                                    .beat_to_frame(hex_project::BeatTime::from_raw(end))
+                                    .ok()?,
+                            ))
+                        })
+                })
+                .flatten()
+                .ok_or("selected clip no longer has valid timeline bounds")?;
+            if bounds.0 >= bounds.1 {
+                return Err("selected clip has an empty loop range");
+            }
+            start = start.min(bounds.0);
+            end = end.max(bounds.1);
+        }
+        Ok(Some((start, end)))
     }
 
     pub(super) fn toggle_loop(&mut self) {

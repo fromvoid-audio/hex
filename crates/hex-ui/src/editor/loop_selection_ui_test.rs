@@ -195,3 +195,129 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
         assert!(v.error.is_some());
     });
 }
+
+#[gpui::test]
+fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppContext) {
+    let (handle, editor, audio, midi) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    // No selection must not create a loop or toggle an existing one.
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.state.as_ref().unwrap().project.loop_region().is_none())
+    });
+    click(&mut visual, audio, false);
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    // Browser results and search share a focused input but distinct key contexts.
+    for results in [false, true] {
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                v.browser.results_focused = results;
+                v.browser.search.read(cx).focus(window);
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("l");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().revision, revision)
+        });
+    }
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    // Actual numeric widget owns typing; Escape cancels its draft.
+    let value = visual.debug_bounds("project-tempo-value").unwrap();
+    visual.simulate_mouse_down(value.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(value.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    visual.simulate_keystrokes("escape");
+    // Header rename is the canonical inline input, not a synthetic root-focus flag.
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("track-header-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_mouse_down(header.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(header.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-r");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    visual.simulate_keystrokes("escape");
+    click(&mut visual, midi, false);
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            v.focus.focus(window);
+            v.computer_keyboard.enabled = true;
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "L remains a note"
+        )
+    });
+    editor.update(&mut visual, |v, _| {
+        v.computer_keyboard.enabled = false;
+        v.worker_requests_pending = 1;
+    });
+    visual.simulate_keystrokes("l");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    editor.update(&mut visual, |v, _| {
+        v.worker_requests_pending = 0;
+        v.selected_clip = None;
+        v.time_selection = None;
+    });
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    // Session retains the existing global loop-toggle action.
+    editor.update(&mut visual, |v, cx| {
+        v.mode = EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            !v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .loop_region()
+                .unwrap()
+                .enabled()
+        )
+    });
+}

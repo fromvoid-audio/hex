@@ -1014,6 +1014,10 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
+                view.loop_selection_key(window);
+                cx.notify();
+            }))
             .on_action(cx.listener(|view, _: &SetLoopFromClip, _, cx| {
                 view.set_loop_from_clip();
                 cx.notify();
