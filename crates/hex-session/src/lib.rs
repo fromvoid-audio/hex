@@ -21,7 +21,7 @@ pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
 mod device_sample;
-pub use device_sample::PreparedDeviceSample;
+pub use device_sample::{DeviceSampleWaveformLimits, PreparedDeviceSample};
 mod original_audio;
 mod resource_plan;
 pub use resource_plan::{ResidentPcmInventory, ResidentResourcePlanReservation};

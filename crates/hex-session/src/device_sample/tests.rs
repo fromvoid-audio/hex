@@ -285,3 +285,85 @@ fn stale_target_and_wrong_candidate_are_refused_before_publication() {
     );
     assert_eq!(session.project().assets().count(), 0);
 }
+
+#[test]
+fn real_worker_waveform_reuses_original_root_and_keeps_deep_zoom_after_control_retirement() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    for stereo in [false, true] {
+        let (session, device) = fixture();
+        let source = if stereo {
+            OwnedAudioSource::try_resident(
+                48_000,
+                vec![[0.25, -0.75], [-0.5, 1.0], [0.75, -0.25], [-1.0, 0.5]],
+            )
+            .ok()
+            .unwrap()
+        } else {
+            OwnedAudioSource::try_resident_mono(48_000, vec![0.25, -0.5, 0.75, -1.0])
+                .ok()
+                .unwrap()
+        };
+        let prepared = PreparedDeviceSample::from_native_on_control(
+            device,
+            session.project().device(device).unwrap().state(),
+            "sample.wav".into(),
+            source,
+        )
+        .unwrap();
+        let mut candidate = Editor::new(session.project().clone(), 8).unwrap();
+        let Created::Asset(asset) = candidate
+            .execute(prepared.assignment_command_on_control())
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let cancel = AtomicBool::new(false);
+        let waveform_limits = DeviceSampleWaveformLimits {
+            bins: 1,
+            scan_frames: 4,
+            source_metadata_bytes: 4096,
+        };
+        assert!(
+            prepared
+                .prepare_resources_and_waveform_on_worker(
+                    &session,
+                    candidate.project(),
+                    &[asset],
+                    limits(),
+                    DeviceSampleWaveformLimits {
+                        scan_frames: 3,
+                        ..waveform_limits
+                    },
+                    &cancel
+                )
+                .is_err()
+        );
+        let (bank, waveform) = prepared
+            .prepare_resources_and_waveform_on_worker(
+                &session,
+                candidate.project(),
+                &[asset],
+                limits(),
+                waveform_limits,
+                &cancel,
+            )
+            .unwrap();
+        let lease = bank.borrow_original_source_on_control(asset, 4096).unwrap();
+        assert!(waveform.shares_original_with(&lease));
+        assert!(waveform.audio_source().is_none());
+        assert_eq!(waveform.source_frames, 4);
+        // One cached bin cannot explain this one-frame extrema; it must use
+        // the actual retained original source, not fabricated/stretched peaks.
+        drop(lease);
+        drop(bank);
+        drop(prepared);
+        drop(candidate);
+        drop(session);
+        let peaks = waveform.peaks_for_frames(1, 2).unwrap();
+        assert_eq!((peaks[0].min, peaks[0].max), (-0.5, -0.5));
+        let right = if stereo { 1.0 } else { -0.5 };
+        assert_eq!((peaks[1].min, peaks[1].max), (right, right));
+    }
+}

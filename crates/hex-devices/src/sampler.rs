@@ -6,6 +6,7 @@
 //! See `docs/sampler.md` for host asset and reference acceptance still required.
 mod binding;
 mod envelope;
+pub mod metadata;
 mod plan;
 mod runtime;
 pub mod state;

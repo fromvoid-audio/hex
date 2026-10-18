@@ -25,7 +25,57 @@ pub struct PreparedDeviceSample {
     source: OriginalAudio,
     source_frames: u64,
 }
+/// Explicit bounds for worker-only summary scanning and its retained source
+/// handle. Whole graph metadata/peak accounting is still required by the host.
+#[derive(Clone, Copy, Debug)]
+pub struct DeviceSampleWaveformLimits {
+    pub bins: usize,
+    pub scan_frames: usize,
+    pub source_metadata_bytes: usize,
+}
 impl PreparedDeviceSample {
+    /// Prepare real peaks and deep-zoom backing from this candidate's same
+    /// original resource root. No PCM derivative, fabricated peaks or UI/audio
+    /// scanning. The still-live decoder, returned bank and waveform each have
+    /// actual owner fields which must join the full pending/current union.
+    pub fn prepare_resources_and_waveform_on_worker(
+        &self,
+        session: &Session,
+        candidate: &Project,
+        assets: &[AssetId],
+        reservation: ResidentResourcePlanReservation,
+        limits: DeviceSampleWaveformLimits,
+        cancel: &AtomicBool,
+    ) -> Result<
+        (DeviceResourceBank, hex_media::waveform::Waveform),
+        hex_media::DeviceSourceImportError,
+    > {
+        let bank = self.prepare_resource_bank_for_candidate_on_control(
+            session,
+            candidate,
+            assets,
+            reservation,
+            cancel,
+        )?;
+        let reference = candidate
+            .device(self.device)
+            .and_then(|device| device.state().asset_references().first())
+            .ok_or(ResourcePreparationError::InvalidSource)?;
+        let asset = candidate
+            .assets()
+            .find(|asset| asset.id().value() == reference.asset.value())
+            .ok_or(ResourcePreparationError::InvalidSource)?
+            .id();
+        let source = bank.borrow_original_source_on_control(asset, limits.source_metadata_bytes)?;
+        let waveform = hex_media::waveform::summarize_original(
+            &source,
+            limits.bins,
+            limits.scan_frames,
+            limits.source_metadata_bytes,
+            cancel,
+        )?;
+        Ok((bank, waveform))
+    }
     pub fn decode_on_worker(
         device: DeviceId,
         current: &NativeDeviceState,
