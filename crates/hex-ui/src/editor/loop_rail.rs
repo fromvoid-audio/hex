@@ -549,3 +549,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "loop_bar_ui_tests.rs"]
+mod loop_bar_ui_tests;
