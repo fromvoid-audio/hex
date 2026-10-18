@@ -1,0 +1,26 @@
+{
+  "source": "481476d0e1423ad153d69a7f367cc761d8407672",
+  "tree": "9839e5901b8ab478471316fb2e3663099a261a12",
+  "filename": "hex-sampler-481476d0-selector-cost-evidence.tar.gz",
+  "bytes": 45288,
+  "sha256": "07f80f43065cc5398277a57d7303e5bed1e9b45dd65c7115db723eb179f44e67",
+  "members": 11,
+  "payloads": 10,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks.rs",
+      "before": "5c5e7d1575f1ce134367678816a40b6f85d5d42898aaef4fde3f9fc15fb12943",
+      "after": "a993dd4c412b999253a8baef7a97056f234624a25b19246ec0b1a3e7bb72056e"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/selector_cost.rs",
+      "before": null,
+      "after": "9add5890806f33ce4b93d6c444636480acccdca8f1543db7b54bfc8467720dd0"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "76cc2274cffac6a2f4371da8a3ced06738a33c521feb948e8a2cb90a91ecc188",
+      "after": "dec9949fe6d3e46e32462eca33f425ae0990eeb2f98bbaf43d0f434d32788eac"
+    }
+  ]
+}
