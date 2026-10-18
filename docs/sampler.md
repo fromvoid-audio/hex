@@ -1024,3 +1024,15 @@ through the preflighted native publication move. The first usable milestone
 remains atomic sample load/replace into a registered playable host, followed by
 the functional waveform panel and the full musical workflow above; this local
 compiler step does not deliver it.
+
+
+The common compiler and existing paired Return custody constructor now share
+one fixed-field Return assembler. It consumes the actual supplied chain once;
+there is no constructor call, allocation, owning clone, receipt creation or
+replacement in that assembler. The paired row retains its original declaration;
+legacy output remains unqualified. This removes a duplicated final layout while
+preserving gain/mute/matrix/order semantics. It does not yet select paired
+constructors for the entire common compiler or certify its partial locals.
+The empty qualified-chain identity/alias test and the affected nonempty Utility
+Return custody/PCM regressions distinguish those limits. Sampler registration,
+Service loading, aggregate preconstruction and the functional panel remain open.

@@ -716,13 +716,15 @@ pub(crate) fn compile_project_into<'a>(
                 }
             }
         }
-        project.return_buses.push(crate::ReturnBus {
-            id: return_track.id(),
-            gain: return_track.gain(),
-            muted: return_track.muted(),
-            matrix: effect_plan.fused,
-            device_chain: std::sync::Arc::from(effect_plan.device_chain),
-        });
+        project
+            .return_buses
+            .push(crate::ReturnBus::from_compiled_fields(
+                return_track.id(),
+                return_track.gain(),
+                return_track.muted(),
+                effect_plan.fused,
+                std::sync::Arc::from(effect_plan.device_chain),
+            ));
     }
     project.finalize_compiled_tracks_on_control()?;
     let mut feeds = Vec::new();

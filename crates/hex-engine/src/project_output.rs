@@ -49,6 +49,27 @@ impl CompiledProjectScalars {
     }
 }
 
+/// Fixed moves of a previously prepared Return chain. Both the legacy common
+/// compiler and the paired custody constructor use this same musical layout.
+/// This does not construct/adopt shared children or establish their provenance.
+impl crate::ReturnBus {
+    pub(crate) fn from_compiled_fields(
+        id: hex_project::ReturnId,
+        gain: f32,
+        muted: bool,
+        matrix: Option<hex_lattice::StereoMatrix>,
+        device_chain: std::sync::Arc<[crate::PreparedEffectInstance]>,
+    ) -> Self {
+        Self {
+            id,
+            gain,
+            muted,
+            matrix,
+            device_chain,
+        }
+    }
+}
+
 /// Immutable, inline owner index prepared before callback publication. The
 /// callback merges a sorted selection with this table in at most256 comparisons.
 /// No callback sorting, project scan, allocation or independent heap ownership.
@@ -247,5 +268,45 @@ mod project_owner_index_tests {
         assert!(!replaced.contains(&[1], || {}));
         assert!(replaced.contains(&[257], || {}));
         assert!(!ProjectTrackIds::from_ids(1..=257).contains(&[], || {}));
+    }
+}
+
+#[cfg(test)]
+mod return_field_assembly_tests {
+    #[test]
+    fn compiled_return_field_assembly_moves_original_paired_chain_without_extra_alias() {
+        use hex_project::{Command, Created, Editor};
+        let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let Created::ReturnTrack(id) = editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        for gain in [0.0, 0.375, 2.0] {
+            for muted in [false, true] {
+                for matrix in [None, Some(hex_lattice::StereoMatrix::identity())] {
+                    let chain = crate::owned_shared::OwnedShared::<[crate::PreparedEffectInstance]>::new_owned_empty_slice();
+                    let expected_parts = chain.parts().unwrap();
+                    let pointer = std::sync::Arc::as_ptr(chain.arc());
+                    let (chain, declaration) = chain.into_paired_parts_on_control();
+                    assert_eq!(std::sync::Arc::strong_count(&chain), 1);
+                    let bus =
+                        crate::ReturnBus::from_compiled_fields(id, gain, muted, matrix, chain);
+                    assert_eq!(
+                        (bus.id, bus.gain, bus.muted, bus.matrix),
+                        (id, gain, muted, matrix)
+                    );
+                    assert!(std::ptr::eq(
+                        std::sync::Arc::as_ptr(&bus.device_chain),
+                        pointer
+                    ));
+                    assert_eq!(std::sync::Arc::strong_count(&bus.device_chain), 1);
+                    assert_eq!(declaration.parts(&bus.device_chain), Some(expected_parts));
+                }
+            }
+        }
     }
 }

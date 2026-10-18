@@ -333,13 +333,13 @@ impl ReturnAssembly {
                 r.bare = Some(arc);
             }
             if let (Some(id), Some(device_chain)) = (r.id, r.bare.take()) {
-                r.bus = Some(ReturnBus {
+                r.bus = Some(ReturnBus::from_compiled_fields(
                     id,
-                    gain: r.gain,
-                    muted: r.muted,
-                    matrix: None,
+                    r.gain,
+                    r.muted,
+                    None,
                     device_chain,
-                });
+                ));
             }
             #[cfg(test)]
             {
