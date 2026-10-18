@@ -35,6 +35,33 @@ bounded contracts; they do not establish physical input, listening, other displa
 scales/platforms, rich accessibility or reference parity. Native testing remains
 separate from repository-owned verification, merge and installation.
 
+## Device header actions — Pulse2732 / PR345
+
+The shared `device_frame(title, style, leading_control, header_actions, body)`
+and `device_header(title, style, leading_control, header_actions)` place a
+caller-owned control before the flexible title. There is no extra decorative
+status dot. All production Track/Return, specialized, descriptor and unsupported
+panels pass the existing canonical bypass action in this slot. Future native
+panels consume the same shell; the widget owns geometry and theme only, never
+DSP, canonical commands or device registration.
+
+The right-hand strip retains instrument replacement where applicable, then
+preset Load **↓**, Save **↑**, and finally remove **×** at the right inset.
+Only the old left/right movement buttons are removed. The title still owns
+stable-ID drag reordering and its existing destination/history/cancellation
+protocol. No device model, preset dialog/file behavior or action ownership is
+changed. Buttons retain their shared12px hit targets and14px header; the title
+absorbs width changes without squeezing controls. Existing selection capture,
+focus/draft finalization and refusal semantics are preserved.
+
+Rendered regressions cover name/action order at880px and1280px windows, Utility,
+Sine, Operator and Return headers, bypass/removal command ownership and Undo.
+Existing preset save/worker-load, invalid draft/focus and title-drag tests remain
+required. The GPUI test platform does not implement the native open-file prompt:
+worker Load is covered separately, and actual Load dialog/arrow glyph, physical
+input and native display acceptance need the coordinator's finite Mac session.
+Source/scene checks are not physical acceptance or app delivery.
+
 ## Boundary
 
 `hex-widgets` owns knobs, horizontal/vertical sliders, editable numeric values,

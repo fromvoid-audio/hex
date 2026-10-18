@@ -679,7 +679,6 @@ fn render_track(
     let Some(track) = state.project.track(track_id) else {
         return empty_panel("selected track is no longer available");
     };
-    let devices = track.devices().to_vec();
     let instrument = track.instrument().cloned();
     let identities: HashMap<_, _> = track
         .ordered_device_chain()
@@ -938,7 +937,6 @@ fn render_track(
         .collect();
     view.device_panel.chain_window.prepare(&geometry);
     let first_device = device_ids.first().copied();
-    let mut effect_index: usize = 0;
     for (index, node) in nodes.into_iter().enumerate() {
         let (device, class) = match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
@@ -954,19 +952,11 @@ fn render_track(
             )
             .mr(px(DEVICE_CHAIN_PADDING));
             chain = chain.child(card);
-            if class == NativeDeviceClass::Effect {
-                effect_index = effect_index.saturating_add(1);
-            }
             continue;
         }
         let rendered = match class {
             NativeDeviceClass::Instrument => render_instrument(view, window, cx, track_id, device),
-            NativeDeviceClass::Effect => {
-                let rendered =
-                    render_effect(view, window, cx, track_id, &devices, effect_index, device);
-                effect_index = effect_index.saturating_add(1);
-                rendered
-            }
+            NativeDeviceClass::Effect => render_effect(view, window, cx, track_id, device),
         };
         let focus = view.device_panel.chain_window.focus(device.id(), cx);
         chain = chain.child(
@@ -1414,8 +1404,6 @@ fn render_effect(
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
     track: TrackId,
-    effects: &[hex_project::Device],
-    index: usize,
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let device_id = device.id();
@@ -1432,15 +1420,8 @@ fn render_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let mut header_actions = device_actions(track, effects, index, selected, cx);
-    if device_view.is_ok() {
-        header_actions = header_actions.child(super::device_preset::actions(
-            device_id,
-            NativeDeviceClass::Effect,
-            selected,
-            cx,
-        ));
-    }
+    let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
+    let header_actions = device_actions(device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -1503,6 +1484,7 @@ fn render_effect(
                     theme::text(device_view.name.clone()),
                 ),
                 theme::device_frame_style(selected),
+                leading,
                 header_actions,
                 body,
             )
@@ -1525,6 +1507,7 @@ fn render_effect(
             device_frame(
                 device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
                 theme::device_frame_style(selected),
+                leading,
                 header_actions,
                 body,
             )
@@ -1945,15 +1928,8 @@ fn render_instrument(
             .map_err(|error| error.to_string().to_lowercase())
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
-    let mut header_actions = instrument_actions(track, device, selected, cx);
-    if device_view.is_ok() {
-        header_actions = header_actions.child(super::device_preset::actions(
-            device_id,
-            NativeDeviceClass::Instrument,
-            selected,
-            cx,
-        ));
-    }
+    let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
+    let header_actions = instrument_actions(track, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         Ok(device_view) => {
             if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
@@ -1967,6 +1943,7 @@ fn render_instrument(
                         theme::text(device_view.name.clone()),
                     ),
                     theme::device_frame_style(selected),
+                    leading,
                     header_actions,
                     body,
                 )
@@ -1992,6 +1969,7 @@ fn render_instrument(
                         theme::text(device_view.name.clone()),
                     ),
                     theme::device_frame_style(selected),
+                    leading,
                     header_actions,
                     body,
                 )
@@ -2020,6 +1998,7 @@ fn render_instrument(
                     ),
                 ),
                 theme::device_frame_style(selected),
+                leading,
                 header_actions,
                 body,
             )
@@ -2061,34 +2040,12 @@ fn instrument_actions(
     track: TrackId,
     device: &hex_project::Device,
     selected: bool,
+    presets_available: bool,
     cx: &mut Context<EditorView>,
 ) -> Div {
     let id = device.id();
-    let bypassed = device.bypassed();
-    let mut actions = div().flex().items_center().gap(px(2.0));
-    actions = actions.child(
-        action_button(
-            format!("device-bypass-{}", id.value()),
-            if bypassed { "⊘" } else { "●" },
-            "toggle instrument bypass",
-            if bypassed {
-                theme::DeviceActionRole::Muted
-            } else {
-                theme::DeviceActionRole::Normal
-            },
-            selected,
-        )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
-                    device: id,
-                    bypassed: !bypassed,
-                }));
-            }
-            cx.notify();
-        })),
-    );
-    actions = actions.child(
+    let actions = div().flex().items_center().gap(px(2.0));
+    let actions = actions.child(
         action_button(
             format!("instrument-replace-{}", id.value()),
             "↻",
@@ -2101,6 +2058,16 @@ fn instrument_actions(
             cx.notify();
         })),
     );
+    let actions = if presets_available {
+        actions.child(super::device_preset::actions(
+            id,
+            NativeDeviceClass::Instrument,
+            selected,
+            cx,
+        ))
+    } else {
+        actions
+    };
     actions.child(
         action_button(
             format!("instrument-remove-{}", id.value()),
@@ -2209,82 +2176,56 @@ fn render_add_menu(
     menu
 }
 
-fn device_actions(
-    track: TrackId,
-    devices: &[hex_project::Device],
-    index: usize,
+fn bypass_action(
+    device: &hex_project::Device,
+    class: NativeDeviceClass,
     selected: bool,
     cx: &mut Context<EditorView>,
-) -> Div {
-    let device = &devices[index];
+) -> Stateful<Div> {
     let id = device.id();
     let bypassed = device.bypassed();
-    let before_up = index.checked_sub(1).map(|previous| devices[previous].id());
-    let after_down = devices.get(index + 2).map(|device| device.id());
-    let has_down = index + 1 < devices.len();
+    action_button(
+        format!("device-bypass-{}", id.value()),
+        if bypassed { "⊘" } else { "●" },
+        if class == NativeDeviceClass::Instrument {
+            "toggle instrument bypass"
+        } else {
+            "toggle device bypass"
+        },
+        if bypassed {
+            theme::DeviceActionRole::Muted
+        } else {
+            theme::DeviceActionRole::Normal
+        },
+        selected,
+    )
+    .on_click(cx.listener(move |view, _, _, cx| {
+        if finalize_controls(view, cx) {
+            view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
+                device: id,
+                bypassed: !bypassed,
+            }));
+        }
+        cx.notify();
+    }))
+}
+
+fn device_actions(
+    device: &hex_project::Device,
+    selected: bool,
+    presets_available: bool,
+    cx: &mut Context<EditorView>,
+) -> Div {
+    let id = device.id();
     let mut actions = div().flex().items_center().gap(px(2.0));
-    actions = actions.child(
-        action_button(
-            format!("device-bypass-{}", id.value()),
-            if bypassed { "⊘" } else { "●" },
-            "toggle device bypass",
-            if bypassed {
-                theme::DeviceActionRole::Muted
-            } else {
-                theme::DeviceActionRole::Normal
-            },
+    if presets_available {
+        actions = actions.child(super::device_preset::actions(
+            id,
+            NativeDeviceClass::Effect,
             selected,
-        )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
-                    device: id,
-                    bypassed: !bypassed,
-                }));
-            }
-            cx.notify();
-        })),
-    );
-    actions = actions.child(
-        action_button(
-            format!("device-up-{}", id.value()),
-            "‹",
-            "move device left",
-            theme::DeviceActionRole::Normal,
-            selected,
-        )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if let Some(before) = before_up
-                && finalize_controls(view, cx)
-            {
-                view.enqueue_device_barrier(Request::Edit(Command::MoveDevice {
-                    device: id,
-                    track,
-                    before: Some(before),
-                }));
-            }
-            cx.notify();
-        })),
-    );
-    actions = actions.child(
-        action_button(
-            format!("device-down-{}", id.value()),
-            "›",
-            "move device right",
-            theme::DeviceActionRole::Normal,
-            selected,
-        )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if has_down && finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::MoveDevice {
-                    device: id,
-                    track,
-                    before: after_down,
-                }));
-            }
-            cx.notify();
-        })),
-    );
+            cx,
+        ));
+    }
     actions.child(
         action_button(
             format!("device-remove-{}", id.value()),

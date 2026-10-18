@@ -4998,3 +4998,11 @@ handlers unchanged. Native double-click behavior remains coordinator-serial.
   rebinds in place at the exact terminal, keeping FIFO and earlier-dialog stale
   refusal; focused three-case real-worker regression passes d6babcc0. New
   dialogs defer and failed writes retire. Fresh final full CI remains pending.
+
+
+18 October 2026 — Pulse2732 / PR345: shared device header source places canonical
+bypass before name, removes movement buttons while retaining title drag reorder,
+orders Load↓/Save↑ before the far-right remove×, and uses the same leading-control
+frame API for Track/Return and specialized/descriptor panels. Rendered/header
+command/history regressions and exact-source full local CI are being run; native
+Load dialog, glyph/input/compact layout acceptance remains coordinator-owned.
