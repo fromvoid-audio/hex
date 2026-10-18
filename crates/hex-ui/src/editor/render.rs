@@ -404,6 +404,8 @@ impl Render for EditorView {
                 "hex_controller_input"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
+            } else if self.project_tempo_editing(cx) {
+                "hex_project_tempo_editor hex_text_editing"
             } else if self.gain_numeric_editing(cx) || self.sample_bpm_editing(cx) {
                 "hex_gain_numeric_editor"
             } else {
