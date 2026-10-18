@@ -1,9 +1,10 @@
 # auto pan
 
 `hex.auto-pan` is an original free-running stereo amplitude modulator registered
-through Lattice. Its version-1 opaque state contains amount (`0..1`, default
+through Lattice. Its version-2 opaque state contains amount (`0..1`, default
 `0.5`), rate (`0.05..20 hz`, default `1 hz`), and right-channel phase
-(`0..360 degrees`, default `180`). It uses a sine LFO only. The left LFO is
+(`0..360 degrees`, default `180`), plus the waveform choice described below.
+The default left Sine LFO is
 `(1 + sin(2π × phase)) / 2`; the right LFO uses the same clock plus its phase
 offset. Each channel gain is `1 - amount + amount × LFO`. Phase starts at zero,
 is sampled before each clock advance, and wraps once per cycle.
@@ -28,12 +29,12 @@ clock history needed for future input.
 
 This is a limited original effect based on public control vocabulary, not a
 measured recreation of Live's Auto Pan/Tremolo. Beat synchronization, retrigger,
-waveform choices, spin, envelope/follower behavior, and modern modes are not
+spin, envelope/follower behavior, and modern modes are not
 implemented. Its compact panel uses the shared rounded device frame and three
 `CompactDial` controls for amount, free rate and right phase. Track and Return
 instances use the same 144 × 184 px composition and canonical parameter gesture
-path, including typed edits and grouped Undo. A curve preview is intentionally
-omitted; the panel does not imply additional waveform or synchronization modes.
+path, including typed edits and grouped Undo. The periodic waveform selector and sampled static preview are described below;
+the panel does not imply synchronization or other unsupported modern modes.
 
 Headless UI coverage checks all three controls inside the frame at the 880 × 540
 minimum window size, verifies matching Track/Return geometry, commits a valid
@@ -48,7 +49,8 @@ acceptance remain open for the user's review build.
 Source acceptance: the focused rendered headless test passes with one matching
 case, covering geometry, all three bindings, drag/Undo, typed edits and both
 retirement paths. Full final-commit local CI is recorded in PR145 and Pulse2322.
-The optional static modulation preview is deferred; no preview cache is added.
+PR145 originally deferred the optional static modulation preview; the later
+pulse2852 slice below adds a pure sampled preview without a new cache owner.
 DSP behavior and the 256-processor/memory admission limits are unchanged.
 
 User checklist for the fresh combined build:
@@ -62,3 +64,56 @@ User checklist for the fresh combined build:
 
 Native pointer, typography, appearance and listening results remain pending.
 The unrelated Operator stop report (Pulse2305) remains open and unreproduced.
+
+## periodic waveform choice — pulse2852
+
+Current codec version 2 contains the three original floats plus stable Choice
+parameter 4 (`u32`), 16 bytes total. Unsupported alpha version 1 is refused;
+there is no migration or automatic user-file conversion. The default is Sine.
+The original Sine arithmetic, phase clock and amount/rate/right-phase meanings
+are preserved, including exact zero-amount unity and finite-input bypass history.
+
+For normalized phase `p` in `[0,1)`, the original unipolar LFO laws are:
+
+- Sine: `(1 + sin(2πp))/2`, unchanged.
+- Triangle: `1 - abs(2*((p+1/4) mod 1)-1)` (rises from 1/2 at phase zero).
+- Saw Up: `p`; Saw Down: `1-p`.
+- Square: 1 on `[0,1/2)`, 0 on `[1/2,1)`; original symmetric 50% duty.
+
+All feed the existing channel gain `1-amount+amount*LFO`. These are explicit
+original laws, not measured proprietary formulas. The [official Live 12 manual,
+section 29.3](https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#auto-pan-tremolo)
+was checked for waveform vocabulary and phase relationships; it does not specify
+numeric square-duty/default laws. Installed reference metadata is not a new
+native comparison. Random, synchronization, retrigger, spin, shaping, follower
+and modern harmonic/vintage modes remain outside this finite slice.
+
+Choice revisions retain the original phase and scalar ramps, crossfading five
+fixed scalar weights over the existing prepared five-millisecond interval. A
+rapid revision starts from current weights; same-target scratch/history copies
+retain in-flight ramps. Fresh/reset state uses the authored waveform immediately.
+This avoids a sudden choice switch; periodic square/saw edges are intentional
+and remain sharp. A square modulator has odd harmonics and can gate/click on a
+sustained carrier. This is not a band-limited or alias-free quality claim. No new
+clock, queue, PCM cache, allocation or history owner is introduced.
+
+The existing 144px panel retains three dials and adds the shared Selector plus
+sampled static left/right gain plots. A bounded pure provider helper supplies 129
+samples per normalized cycle through the existing Engine export facade. It does
+not instantiate or run a processor in paint. Rate changes cycle duration, not
+normalized geometry. The plot shows authored/effective pending targets, not live
+phase or in-flight crossfade weights; connecting sampled points is a static
+preview, not proof that square/saw edges are smoothed in DSP. Popup hover/dismiss
+is non-editing; selecting an option uses the existing atomic canonical parameter
+command and one Undo step. The original numeric gesture path remains unchanged.
+
+Targeted verification includes independent quarter-cycle stereo amplitude
+oracles, signed boundaries, original Sine PCM fingerprints at six rates,
+steady-stream crossfade oracles, irregular speculative partitions/reset/bypass,
+rapid retarget and exact clock retention, validation/codec and sampled-preview
+checks, and finite Fourier measurements of intended harmonic content. Real
+Track/Return tests cover all control bounds, selector dismissal/commit,
+Undo/Redo, pending preview and disposable current-format save/open. Generic A/B
+payload ownership is retained; actual combined A/B acceptance awaits its generic
+integration. Native appearance, listening and Live comparison remain open under
+the coordinator's single Mac lane; this does not complete Auto Pan or W12.
