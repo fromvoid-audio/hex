@@ -1,8 +1,77 @@
-use super::super::super::clip_drag_ui_test::{audio_project, editor_window};
+use super::super::super::clip_drag_ui_test::audio_project;
 use super::super::super::musical_time::{SnapGrid, grid_lines};
 use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, px};
 use std::sync::Arc;
+
+// Depends only on PR363's frozen test constructor; never duplicates that seam.
+struct GridTestDirectory(std::path::PathBuf);
+
+impl GridTestDirectory {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hex-grid-menu-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::create_dir(path.join("samples")).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for GridTestDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn editor_window(
+    cx: &mut TestAppContext,
+    project: hex_project::Project,
+    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+) -> (
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+    GridTestDirectory,
+) {
+    use gpui::AppContext;
+    let directory = GridTestDirectory::new();
+    let bootstrap = cx.add_window(|_, _| gpui::Empty);
+    let handle = *bootstrap;
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let service = hex_session::service::Service::new(48_000, 32, 8_000_000).unwrap();
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_browser_directory(window, cx, service, &directory.0)
+            });
+            super::super::super::install_close_guard(window, cx, editor.downgrade());
+            editor.update(cx, |view, cx| {
+                assert_eq!(view.browser.directory, directory.0.join("samples"));
+                assert_eq!(view.browser.places, vec![directory.0.join("samples")]);
+                view.state = Some(Arc::new(hex_session::service::ViewState {
+                    canonical_audio_source: None,
+                    project: Arc::new(project),
+                    waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
+                    midi_preview,
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    timeline_frames: 384_000,
+                    can_undo: false,
+                    can_redo: false,
+                    revision: 1,
+                    unsaved: false,
+                    document_path: None,
+                }));
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    (handle, editor, directory)
+}
 
 #[gpui::test]
 fn adaptive_grid_menu_right_click_keyboard_choice_and_cancel_preserve_project_and_focus(
@@ -11,7 +80,7 @@ fn adaptive_grid_menu_right_click_keyboard_choice_and_cancel_preserve_project_an
     cx.update(super::super::super::bind_editor_keys);
     let (project, track, _, _) = audio_project();
     let original = project.clone();
-    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let (handle, editor, _directory) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let lane = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
@@ -100,7 +169,7 @@ fn adaptive_grid_menu_disabled_choice_and_stale_project_refusal_are_ui_only(
     cx: &mut TestAppContext,
 ) {
     let (project, _, _, _) = audio_project();
-    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let (handle, editor, _directory) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     visual.update(|window, cx| {
@@ -142,7 +211,7 @@ fn adaptive_grid_menu_choice_renders_the_same_landmark_used_by_keyboard_edit(
     cx.update(super::super::super::bind_editor_keys);
     for density in AdaptiveGridDensity::ALL {
         let (project, track, _, clip) = audio_project();
-        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let (handle, editor, _directory) = editor_window(cx, project, Arc::default());
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         visual.update(|window, cx| {
@@ -193,7 +262,7 @@ fn adaptive_grid_menu_empty_arranger_choice_survives_keyboard_snap_toggle(cx: &m
     cx.update(super::super::super::bind_editor_keys);
     let project = hex_project::Project::new(48_000).unwrap();
     let original = project.clone();
-    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let (handle, editor, _directory) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let body = visual.debug_bounds("arrangement-content").unwrap();

@@ -64,6 +64,18 @@ also retained. None of these original reports is relabeled for later heads.
 Final canonical-head results and all original logs/hashes belong in PR/Pulse.
 These focused checks do not replace the merger's actual final-tree full local CI.
 
+## bounded fixture correction
+
+The original c7 focused receipts remain historical. Source review then found
+that the new rendered cases inherited an ambient browser constructor through
+`clip_drag_ui_test::editor_window`; those tests were not safe native candidates.
+After PR363 actually merged at `9900da4e`, this branch integrated that exact
+related base once and replaced only the private grid-menu window factory. Each
+case now retains its own disposable browser/preferences/cache directory and
+uses the merged pre-discovery test constructor. No constructor, production
+browser or shared action wiring was duplicated or changed. The earlier evidence
+archive's native checklist is superseded by this bounded-fixture requirement.
+
 ## finite coordinator-owned native checks
 
 On the coordinator-selected immutable optimized source, the headless selectors
