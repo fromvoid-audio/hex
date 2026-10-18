@@ -491,3 +491,5 @@ fn cancel_request_is_observed_after_decode_and_conversion_boundaries() {
         assert_eq!(control.progress().phase, AudioBatchPhase::Canceled);
     }
 }
+
+mod console;

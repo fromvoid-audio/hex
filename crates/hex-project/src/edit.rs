@@ -500,6 +500,11 @@ pub enum Command {
     AddScene {
         name: String,
     },
+    /// Insert before an existing stable scene, or explicitly append with None.
+    InsertScene {
+        name: String,
+        before: Option<crate::SceneId>,
+    },
     /// Copy a scene immediately after it with fresh IDs for copied MIDI content.
     DuplicateScene(crate::SceneId),
     /// Reorder one scene before a stable target, or append it when `before` is `None`.
@@ -1416,6 +1421,7 @@ impl Project {
                 Ok(Created::Track(track))
             }
             session_command @ (Command::AddScene { .. }
+            | Command::InsertScene { .. }
             | Command::DuplicateScene(_)
             | Command::MoveScene { .. }
             | Command::RenameScene { .. }
