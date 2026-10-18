@@ -102,7 +102,7 @@ pub(super) struct PendingTrim {
 enum PendingTrimDisplay {
     Audio {
         original: Clip,
-        prospective: Clip,
+        prospective: Box<Clip>,
         asset_frames: u64,
     },
     Midi {
@@ -244,7 +244,7 @@ impl EditorView {
             return None;
         }
         self.pending_trim_current()?;
-        Some((original.clone(), prospective.clone()))
+        Some((original.clone(), prospective.as_ref().clone()))
     }
 
     pub(super) fn midi_trim_display(
@@ -1289,7 +1289,7 @@ impl EditorView {
             scroll_viewport: drag.scroll.get().viewport,
             display: PendingTrimDisplay::Audio {
                 original: drag.clip.clone(),
-                prospective: preview,
+                prospective: Box::new(preview),
                 asset_frames: drag.asset_playback_frames,
             },
         });

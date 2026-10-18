@@ -47,6 +47,7 @@ fn fixture(
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
     let wav = files.wav("resize-release.wav", 48_000, 96_000);
     let directory = wav.parent().unwrap();
+    std::fs::create_dir(directory.join("samples")).unwrap();
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
@@ -68,6 +69,8 @@ fn fixture(
                 EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
             });
             editor.update(cx, |v, cx| {
+                assert_eq!(v.browser.directory, directory.join("samples"));
+                assert_eq!(v.browser.places, vec![directory.join("samples")]);
                 v.state = Some(event.state);
                 v.snap_grid = SnapGrid::default().with_platform_modifier(true);
                 v.focus.focus(window);
@@ -413,7 +416,7 @@ fn install_pending_audio(v: &mut EditorView, clip: ClipId) -> Request {
         scroll_viewport: None,
         display: super::PendingTrimDisplay::Audio {
             original,
-            prospective,
+            prospective: Box::new(prospective),
             asset_frames,
         },
     });
