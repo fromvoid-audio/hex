@@ -172,6 +172,21 @@ impl EditorView {
                     }))
                     .child(self.browser.search.clone()),
             )
+            .child(
+                self.browser_icon(
+                    "⌗",
+                    "quantized sample input · nearest arrangement grid line · enter",
+                    |view, _, cx| {
+                        view.browser.insert_quantized = !view.browser.insert_quantized;
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .debug_selector(|| "browser-insert-grid".to_owned())
+                .when(self.browser.insert_quantized, |button| {
+                    button.text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                }),
+            )
             .child(self.browser_icon(
                 "≡",
                 "show or hide tag filters",

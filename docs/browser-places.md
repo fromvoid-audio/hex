@@ -202,3 +202,30 @@ value edit. Knob reset and nonediting numeric adjustment remain separate gesture
 Rendered tests exercise actual down/up click counts, partial/drag/release,
 filesystem worker/tick/resize updates, Unicode composition and empty text. Native
 physical mouse/IME/accessibility acceptance remains coordinator-owned and open.
+
+## selected-track sample input — pulse2821 / PR427
+
+Enter on a selected sample in browser navigation inserts into the selected regular
+Arrangement TrackId at the current edit/playback cursor. It refuses visibly when
+no valid track is selected, the Arrangement is busy, or Session is active; it never
+falls back to a hovered, default or new track. Enter while editing the query,
+including IME composition, does not insert a sample. Explicit drag/drop remains
+independent, and result double-click still does not import.
+
+The compact grid icon in the browser toolbar toggles quantized sample input. It
+starts off for each editor and survives browser close/reopen and source changes.
+When enabled, input snaps to the **nearest** active Arrangement grid line using
+the same tempo, meter and adaptive zoom resolver as Arrangement snapping. A disabled
+grid or stale/unavailable timeline geometry causes a visible refusal. With input
+quantization off, the original frame position is retained.
+
+Invocation captures the native sample path, selected TrackId, resolved frame,
+document generation and revision before worker preparation. Selection/cursor/grid
+changes cannot retarget that request. The existing bounded audio batch controller
+handles cancellation, stale contexts, errors and one canonical overwrite/history
+commit; decode and graph preparation stay off the UI/audio callback. Same-track
+source fragments remain intact outside the inserted interval, and one Undo restores
+the preceding clip content (ID allocation remains monotonic). This Enter route
+reuses the canonical overwrite entrypoint; global no-overlap coverage across other
+entrypoints remains issue2822/PR428. Optimized native input/audio acceptance remains
+separate from headless input and real-worker checks.

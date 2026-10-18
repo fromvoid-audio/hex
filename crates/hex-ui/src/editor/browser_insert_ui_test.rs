@@ -1,0 +1,409 @@
+//! Real Enter routing into the canonical worker, using bounded private startup roots.
+use super::*;
+use hex_session::service::Request;
+
+fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, initial: bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let done = editor.update(cx, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+            if initial {
+                view.state.is_some()
+            } else {
+                view.worker_requests_pending == 0
+                    && view.pending_requests.is_empty()
+                    && view.audio_batch.is_none()
+            }
+        });
+        if done {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "sample insertion worker timed out"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn fixture(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+    PreferencesTestDirectory,
+    std::path::PathBuf,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let directory = PreferencesTestDirectory::new();
+    let samples = directory.0.join("samples");
+    std::fs::create_dir_all(&samples).unwrap();
+    let path = samples.join("Loop.WAV");
+    std::fs::write(&path, mono_pcm_wav(24)).unwrap();
+    let handle = *cx.add_window(|_, _| Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_browser_directory(
+                    window,
+                    cx,
+                    Service::new(48_000, 32, 8_000_000).unwrap(),
+                    &directory.0,
+                )
+            })
+        })
+        .unwrap();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.browser.directory, samples);
+        assert_eq!(view.browser.places, vec![samples.clone()]);
+        assert_eq!(view.sample_roots(), vec![samples.clone()]);
+    });
+    receive_worker(&editor, cx, true);
+    for name in ["selected", "other"] {
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddTrack { name: name.into() })))
+        });
+        receive_worker(&editor, cx, false);
+    }
+    editor.update(cx, |view, cx| {
+        view.browser.auto_audition = false;
+        view.select_browser_source(BrowserSection::Place(samples), cx);
+    });
+    (handle, editor, directory, path)
+}
+
+#[gpui::test]
+fn browser_insert_no_selected_track_refuses_without_new_track(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let row = visual.debug_bounds("browser-entry-0").unwrap();
+    visual.simulate_click(row.center(), Modifiers::default());
+    let before = editor.update(visual, |view, cx| {
+        assert_eq!(view.browser_visible_entries(cx)[0].path, path);
+        view.selected_track = None;
+        view.state.as_ref().unwrap().clone()
+    });
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let after = view.state.as_ref().unwrap();
+        assert_eq!(
+            after.project.tracks().len(),
+            before.project.tracks().len(),
+            "Enter without selected track must not create a fallback track"
+        );
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.project, before.project);
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|error| error.contains("select"))
+        );
+        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+    });
+}
+
+fn select_sample(
+    editor: &gpui::Entity<EditorView>,
+    visual: &mut VisualTestContext,
+) -> hex_project::TrackId {
+    visual.run_until_parked();
+    let row = visual.debug_bounds("browser-entry-0").unwrap();
+    visual.simulate_click(row.center(), Modifiers::default());
+    editor.update(visual, |view, _| {
+        let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+        view.selected_track = Some(track);
+        track
+    })
+}
+
+#[gpui::test]
+fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let track = select_sample(&editor, visual);
+    editor.update(visual, |view, _| view.offline_cursor = 100);
+    visual.simulate_keystrokes("enter");
+    // No worker response/tick has been consumed. Changing UI selection/cursor must
+    // not retarget the captured metadata even if the service has already decoded.
+    editor.update(visual, |view, _| {
+        assert_eq!(
+            view.last_enqueued_import_to_track,
+            Some((path.clone(), track, 100, true))
+        );
+        view.selected_track = Some(view.state.as_ref().unwrap().project.tracks()[1].id());
+        view.offline_cursor = 999;
+    });
+    receive_worker(&editor, cx, false);
+    let before = editor.update(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project.track(track).unwrap().clips()[0].start(), 100);
+        assert!(state.project.tracks()[1].clips().is_empty());
+        let clip = &state.project.track(track).unwrap().clips()[0];
+        assert_eq!(
+            state
+                .project
+                .assets()
+                .find(|asset| asset.id() == clip.asset())
+                .unwrap()
+                .path(),
+            path
+        );
+        view.selected_track = Some(track);
+        view.offline_cursor = 108;
+        state.project.clone()
+    });
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    let after = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let clips = state.project.track(track).unwrap().clips();
+        assert_eq!(clips.len(), 2);
+        assert_eq!((clips[0].start(), clips[0].duration()), (100, 8));
+        assert_eq!((clips[1].start(), clips[1].duration()), (108, 24));
+        assert_eq!(clips[0].id(), before.track(track).unwrap().clips()[0].id());
+        assert_eq!(state.project.tracks()[1], before.tracks()[1]);
+        state.project.clone()
+    });
+    // One Undo restores the complete original source clip; Redo needs no file IO.
+    std::fs::remove_file(&path).unwrap();
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let restored = &view.state.as_ref().unwrap().project;
+        // Canonical Undo deliberately keeps ID allocation monotonic.
+        assert_eq!(restored.tracks(), before.tracks());
+        assert_eq!(
+            restored.assets().collect::<Vec<_>>(),
+            before.assets().collect::<Vec<_>>()
+        );
+        assert_eq!(restored.tempo_map(), before.tempo_map());
+        assert_eq!(restored.meter_map(), before.meter_map());
+        assert!(view.state.as_ref().unwrap().can_redo);
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, after)
+    });
+}
+
+#[gpui::test]
+fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mode(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::musical_time::SnapGrid;
+    for (quantized, candidate, expected) in [
+        (false, 25_000, 25_000),
+        (true, 25_000, 24_000),
+        (true, 37_000, 48_000),
+    ] {
+        let (handle, editor, _directory, _path) = fixture(cx);
+        let visual = &mut VisualTestContext::from_window(handle, cx);
+        let track = select_sample(&editor, visual);
+        if quantized {
+            let toggle = visual.debug_bounds("browser-insert-grid").unwrap();
+            assert_eq!(f32::from(toggle.size.width), 22.0);
+            visual.simulate_click(toggle.center(), Modifiers::default());
+            select_sample(&editor, visual);
+        }
+        editor.update(visual, |view, _| {
+            assert_eq!(view.browser.insert_quantized, quantized);
+            view.snap_grid = SnapGrid::Quarter;
+            view.offline_cursor = candidate;
+        });
+        visual.simulate_keystrokes("enter");
+        editor.update(visual, |view, _| {
+            assert_eq!(
+                view.last_enqueued_import_to_track.as_ref().unwrap().2,
+                expected
+            );
+            view.snap_grid = SnapGrid::Off;
+            view.browser.insert_quantized = !quantized;
+            view.offline_cursor = 123_456;
+        });
+        receive_worker(&editor, cx, false);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .clips()[0]
+                    .start(),
+                expected
+            )
+        });
+    }
+}
+
+#[gpui::test]
+fn browser_insert_adaptive_grid_uses_tempo_meter_and_current_viewport(cx: &mut TestAppContext) {
+    use crate::editor::musical_time::SnapGrid;
+    for zoom in [48_000, 1_500_000] {
+        let (handle, editor, _directory, _path) = fixture(cx);
+        for command in [
+            Command::SetTempoPoint {
+                beat: hex_project::BeatTime::ZERO,
+                tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+            },
+            Command::SetMeterPoint {
+                beat: hex_project::BeatTime::ZERO,
+                meter: hex_project::Meter::new(3, 4).unwrap(),
+            },
+        ] {
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Edit(command))));
+            receive_worker(&editor, cx, false);
+        }
+        let visual = &mut VisualTestContext::from_window(handle, cx);
+        let track = select_sample(&editor, visual);
+        let expected = editor.update(visual, |view, _| {
+            view.browser.insert_quantized = true;
+            view.snap_grid = SnapGrid::Adaptive;
+            view.viewport = Some(crate::editor::Viewport {
+                start: 0,
+                length: zoom,
+            });
+            view.offline_cursor = 49_000;
+            let state = view.state.as_ref().unwrap();
+            let lane = view.main_track_lane_bounds.unwrap();
+            view.snap_grid
+                .snap_frame(
+                    &state.project,
+                    49_000,
+                    view.visible_viewport(state.timeline_frames),
+                    lane.width,
+                )
+                .unwrap()
+        });
+        assert_ne!(expected, 49_000);
+        visual.simulate_keystrokes("enter");
+        receive_worker(&editor, cx, false);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .clips()[0]
+                    .start(),
+                expected
+            )
+        });
+    }
+}
+
+#[gpui::test]
+fn browser_insert_refuses_stale_target_busy_session_grid_and_missing_file_atomically(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::musical_time::SnapGrid;
+    for refusal in 0..8 {
+        let (handle, editor, _directory, path) = fixture(cx);
+        let visual = &mut VisualTestContext::from_window(handle, cx);
+        let track = select_sample(&editor, visual);
+        if refusal == 0 {
+            editor.update(visual, |view, _| {
+                assert!(view.enqueue(Request::Edit(Command::RemoveTrack(track))))
+            });
+            receive_worker(&editor, cx, false);
+        }
+        let before = editor.update(visual, |view, _| {
+            let before = view.state.as_ref().unwrap().clone();
+            match refusal {
+                0 => view.selected_track = Some(track),
+                1 => view.selected_track = None,
+                2 => view.opening_project = true,
+                3 => view.mode = crate::editor::EditorMode::Session,
+                4 => {
+                    view.browser.insert_quantized = true;
+                    view.snap_grid = SnapGrid::Off;
+                }
+                5 => {
+                    view.browser.insert_quantized = true;
+                    view.drag_layout_generation = view.drag_layout_generation.wrapping_add(1);
+                }
+                6 => std::fs::remove_file(&path).unwrap(),
+                7 => view.project_generation = view.project_generation.wrapping_add(1),
+                _ => unreachable!(),
+            }
+            before
+        });
+        visual.simulate_keystrokes("enter");
+        receive_worker(&editor, cx, false);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state.as_ref().unwrap().project,
+                before.project,
+                "refusal {refusal}"
+            );
+            assert_eq!(
+                view.state.as_ref().unwrap().revision,
+                before.revision,
+                "refusal {refusal}"
+            );
+            assert!(view.error.is_some(), "refusal {refusal}");
+        });
+    }
+}
+
+#[gpui::test]
+fn browser_insert_enter_in_query_cannot_enqueue_sample_or_commit_ime(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, _path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    select_sample(&editor, visual);
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("Loop");
+    visual.run_until_parked();
+    let before = editor.read_with(visual, |view, cx| {
+        assert!(
+            view.browser_visible_entries(cx)
+                .iter()
+                .any(|entry| entry.kind == hex_library::EntryKind::WaveAudio)
+        );
+        view.state.as_ref().unwrap().clone()
+    });
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        assert!(view.last_enqueued_import_to_track.is_none())
+    });
+    use gpui::EntityInputHandler;
+    visual.update(|window, cx| {
+        let input = editor.read(cx).browser.search.clone();
+        input.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(Some(0..4), "Loop", Some(1..1), window, cx);
+            assert_eq!(input.marked_text_range(window, cx), Some(0..4));
+        });
+    });
+    visual.run_until_parked();
+    editor.read_with(visual, |view, cx| {
+        assert!(
+            view.browser_visible_entries(cx)
+                .iter()
+                .any(|entry| entry.kind == hex_library::EntryKind::WaveAudio)
+        )
+    });
+    visual.simulate_keystrokes("enter");
+    visual.update(|window, cx| {
+        let input = editor.read(cx).browser.search.clone();
+        input.update(cx, |input, cx| {
+            assert_eq!(input.marked_text_range(window, cx), Some(0..4))
+        });
+    });
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before.project);
+        assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
+        assert!(view.last_enqueued_import_to_track.is_none());
+    });
+}

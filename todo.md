@@ -5202,3 +5202,12 @@ Focused source tests cover real click pairs, rapid pairs, partial drag/release,
 workers/window resize, composition and empty text. Frozen426+returned7c4d is a
 material input dependency, not new main integration. Sole merger owns final
 prospective full CI/integration; native physical mouse/IME acceptance stays open.
+
+- 18 October 2026 — Pulse2821 / PR427: browser sample Enter captures a valid selected
+  Arrangement TrackId/native path/cursor/document context and uses existing atomic
+  batch overwrite; no new-track fallback. Compact session-local quantized-input
+  toggle resolves nearest active Arrangement grid, preserving ordinary unquantized
+  input; text/IME sample Enter is isolated. Original real-worker no-target regression
+  reproduced two tracks becoming three; targeted input/worker/refusal/nearest-grid/
+  overwrite/Undo tests added. Source6 owns broader2822 global occupancy planner;
+  final integration/full local CI belongs to sole merger and native acceptance is open.

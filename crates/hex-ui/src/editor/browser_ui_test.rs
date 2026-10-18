@@ -4025,7 +4025,7 @@ fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
             view.browser.playback_generation, generation,
             "old waveform callback admitted stale preview"
         );
-        view.import_browser_audio(path.clone());
+        view.insert_browser_audio(path.clone(), cx);
         assert!(
             view.last_enqueued_import_to_track.is_none(),
             "old result callback admitted stale import"
@@ -4622,3 +4622,6 @@ mod search_selection;
 
 #[path = "browser_focus_ui_test.rs"]
 mod explicit_focus;
+
+#[path = "browser_insert_ui_test.rs"]
+mod insertion;
