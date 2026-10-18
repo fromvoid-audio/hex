@@ -32,6 +32,7 @@ impl WaveformRead<'_> {
     pub fn source_frames(self) -> usize {
         self.waveform.source_frames
     }
+    /// Total retained bins across the leaf and every pyramid resolution.
     pub fn cached_bin_count(self) -> usize {
         self.waveform.cached_bin_count()
     }
@@ -108,7 +109,14 @@ mod tests {
         let equal = SharedWaveform::new_on_control(Waveform::from_peaks(17, peaks).unwrap());
         let read = read_shared(&owner);
         assert_eq!(read.source_frames(), 17);
-        assert_eq!(read.cached_bin_count(), 3);
+        // Existing accounting counts every resolution, not just leaf bins:
+        // three leaves produce a two-bin level and a one-bin root.
+        assert_eq!(owner.bins.len(), 3);
+        assert_eq!(
+            owner.levels.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert_eq!(read.cached_bin_count(), 3 + 2 + 1);
         assert_eq!(read.cache_identity(), read_shared(&alias).cache_identity());
         assert_ne!(read.cache_identity(), read_shared(&equal).cache_identity());
         for start in 0..=18 {
