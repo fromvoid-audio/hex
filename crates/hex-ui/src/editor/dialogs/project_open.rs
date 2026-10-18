@@ -45,6 +45,15 @@ impl State {
 }
 
 impl EditorView {
+    fn next_open_serial(&mut self) -> Option<u64> {
+        let serial = self.project_open.next();
+        if serial.is_none() {
+            self.cancel_open_after_save();
+            self.error = Some("open request identity limit reached".into());
+        }
+        serial
+    }
+
     pub(in crate::editor) fn start_open_picker(&mut self) -> Option<(u64, u64)> {
         if self.opening_project
             || self.close_prompt_open
@@ -58,7 +67,7 @@ impl EditorView {
                 Some("finish the current project action before opening another project".into());
             return None;
         }
-        let serial = self.project_open.next()?;
+        let serial = self.next_open_serial()?;
         let generation = self.project_generation;
         self.project_open.phase = Phase::Picker { generation, serial };
         Some((generation, serial))
@@ -94,20 +103,24 @@ impl EditorView {
         {
             return;
         }
-        let Some(state) = self.state.as_ref() else {
+        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
             return;
         };
-        let Some(serial) = self.project_open.next() else {
+        let Some(path) = self.pending_open_path.take() else {
+            return;
+        };
+        let Some(serial) = self.next_open_serial() else {
+            cx.notify();
             return;
         };
         let intent = Intent {
-            path: self.pending_open_path.take().expect("selected path"),
+            path,
             mode: self
                 .pending_open_mode
                 .take()
                 .unwrap_or(DocumentAudioMode::Resident),
             generation: self.project_generation,
-            revision: state.revision,
+            revision,
             serial,
         };
         self.project_open.phase = Phase::Confirming(intent.clone());
