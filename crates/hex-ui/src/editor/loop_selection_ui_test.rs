@@ -122,7 +122,15 @@ fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_his
             expected.loop_region = p.loop_region();
             assert_eq!(p.snapshot(), expected, "contents and IDs unchanged");
             assert_eq!(v.selected_clip_ids(), selection);
-            p.snapshot()
+            let snapshot = p.snapshot();
+            assert_eq!(
+                hex_project::Project::from_snapshot(snapshot.clone())
+                    .unwrap()
+                    .snapshot(),
+                snapshot,
+                "current-format round trip"
+            );
+            snapshot
         });
         visual.simulate_keystrokes("l");
         pump(&editor, &mut visual);
@@ -298,6 +306,21 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
     });
+    editor.update(&mut visual, |v, _| {
+        let mut history =
+            hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 4)
+                .unwrap();
+        let Created::Clip(stale) = history.execute(Command::DuplicateClip(audio)).unwrap() else {
+            panic!("clip")
+        };
+        v.selected_clip = Some(stale);
+    });
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        assert!(v.error.is_some());
+    });
     // Session retains the existing global loop-toggle action.
     editor.update(&mut visual, |v, cx| {
         v.mode = EditorMode::Session;
@@ -316,5 +339,35 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
                 .unwrap()
                 .enabled()
         )
+    });
+}
+
+#[gpui::test]
+fn l_midi_end_uses_absolute_beat_endpoint_across_tempo_change(cx: &mut TestAppContext) {
+    let (handle, editor, _, midi) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
+            beat: BeatTime::from_raw(4 << 32),
+            tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    click(&mut visual, midi, false);
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        let region = p.loop_region().unwrap();
+        assert_eq!(
+            (region.start(), region.end(), region.enabled()),
+            (72_000, 144_000, true)
+        );
+        assert!(p.tracks().iter().any(|t| {
+            t.midi_clips()
+                .iter()
+                .any(|c| c.id() == midi && c.length() == BeatTime::from_raw(2 << 32))
+        }));
     });
 }
