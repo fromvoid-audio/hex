@@ -2666,10 +2666,15 @@ fn samples_catalog_combines_roots_and_active_place_indexed_search(cx: &mut TestA
             input.content = "DRUMS loop".into();
             cx.notify();
         });
+        assert!(view.browser_visible_entries(cx).is_empty());
+        assert!(view.browser.loading);
+        assert_eq!(view.browser.directory, second.0);
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
         let filtered = view.browser_visible_entries(cx);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].path, other);
-        assert_eq!(view.browser.directory, second.0);
     });
     std::fs::remove_file(&other).unwrap();
     editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
@@ -3543,6 +3548,12 @@ fn place_correctness_refresh_retains_identity_only_after_current_success(cx: &mu
         let old = view.browser.scans.request(directory.0.clone()).unwrap();
         view.request_browser_scan(directory.0.clone(), cx);
         assert!(view.browser_visible_entries(cx).is_empty());
+        // A concurrent catalog refresh must not discard the privately saved identity.
+        std::fs::write(directory.0.join("another.wav"), mono_pcm_wav(16)).unwrap();
+        view.apply_sample_catalog(
+            hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
+            cx,
+        );
         // The superseded worker must not reauthorize rows.
         let (current, fresh) = view.browser.scans.complete(old.generation);
         assert!(!current);
