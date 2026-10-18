@@ -21,6 +21,10 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    PlaceIcon {
+        path: std::path::PathBuf,
+        id: Option<&'static str>,
+    },
     InsertTrack(InsertTrackAction),
     UtilityMode(UtilityModeAction),
     TrackColor {
@@ -226,6 +230,9 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::PlaceIcon { path, id } => {
+                self.set_browser_place_icon(path, id, cx)
+            }
             EditorContextAction::TrackColor {
                 generation,
                 track,
@@ -332,6 +339,9 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::PlaceIcon { path, .. } => {
+                    !self.browser_place_icon_assignable(path)
+                }
                 EditorContextAction::InsertTrack(_) => false,
                 EditorContextAction::TrackColor {
                     generation, track, ..
