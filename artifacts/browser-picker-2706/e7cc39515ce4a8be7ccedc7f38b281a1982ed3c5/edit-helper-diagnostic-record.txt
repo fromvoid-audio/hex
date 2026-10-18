@@ -1,0 +1,1 @@
+Non-raw diagnostic record: an inline Python edit helper had an unterminated triple-quoted string at line40 before any mutation. The tool transcript retains the SyntaxError. No source/compiler failure resulted. Corrected helper is preserved as2706-component-boundary.py. Original style guard failures remain raw in2706-style.log and2706-style-v2.log.

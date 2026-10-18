@@ -1,0 +1,129 @@
+diff --git a/crates/hex-ui/src/editor/browser/layout.rs b/crates/hex-ui/src/editor/browser/layout.rs
+index 5e9544cb..41ac738e 100644
+--- a/crates/hex-ui/src/editor/browser/layout.rs
++++ b/crates/hex-ui/src/editor/browser/layout.rs
+@@ -246,7 +246,11 @@ impl EditorView {
+                         }),
+                     )
+                     .child(
+-                        browser_caption("■").text_color(rgb(theme::element_colors(color).accent)),
++                        browser_caption("■")
++                            .text_color(rgb(theme::element_colors(color).accent))
++                            .debug_selector(move || {
++                                format!("browser-picker-glyph-collection-{index}")
++                            }),
+                     )
+                     .children(
+                         (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
+@@ -295,7 +299,11 @@ impl EditorView {
+                             cx.notify();
+                         }),
+                     )
+-                    .child(browser_caption(ICONS[self.browser.layout.icons[index]]))
++                    .child(
++                        browser_caption(ICONS[self.browser.layout.icons[index]]).debug_selector(
++                            move || format!("browser-picker-glyph-section-{index}"),
++                        ),
++                    )
+                     .children(
+                         (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
+                     ),
+@@ -369,7 +377,12 @@ impl EditorView {
+                                         cx.notify();
+                                     }),
+                                 )
+-                                .child(browser_caption(ICONS[self.browser.layout.icons[index]])),
++                                .child(
++                                    browser_caption(ICONS[self.browser.layout.icons[index]])
++                                        .debug_selector(move || {
++                                            format!("browser-picker-glyph-section-{index}")
++                                        }),
++                                ),
+                         ),
+                 );
+             }
+@@ -418,7 +431,10 @@ impl EditorView {
+                             cx.notify();
+                         }),
+                     )
+-                    .child(browser_caption("□"))
++                    .child(
++                        browser_caption("□")
++                            .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
++                    )
+                     .children(
+                         (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
+                     ),
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 6cab3404..dddc758b 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -3468,3 +3468,68 @@ fn browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_sco
+         assert_eq!(view.browser.search.read(cx).content, "loop");
+     });
+ }
++
++#[gpui::test]
++fn browser_picker_glyph_alignment_and_continuous_minimum_geometry(cx: &mut TestAppContext) {
++    let (handle, _editor, _, _directory, _) = browser_drag_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let control = visual.debug_bounds("browser-control-⚙").unwrap();
++    // Existing 22px browser controls supply the usable hit size; the sidebar
++    // additionally owns its existing one-pixel right border.
++    let minimum = f32::from(control.size.width) + 1.0;
++    let rows = [
++        ("browser-collection-0", "browser-picker-glyph-collection-0"),
++        ("browser-collection-1", "browser-picker-glyph-collection-1"),
++        ("browser-collection-2", "browser-picker-glyph-collection-2"),
++        ("browser-section-samples", "browser-picker-glyph-section-0"),
++        ("browser-section-devices", "browser-picker-glyph-section-1"),
++        ("browser-section-projects", "browser-picker-glyph-section-2"),
++        ("browser-section-all", "browser-picker-glyph-section-3"),
++        ("browser-place-0", "browser-picker-glyph-place-0"),
++    ];
++    let outer_before = visual.debug_bounds("browser-resize-handle").unwrap();
++    let mut measurements = Vec::new();
++    for requested in [124.0, 80.0, 64.0, 63.0, 60.0, 48.0, 36.0, minimum] {
++        let before = visual.debug_bounds("browser-sidebar").unwrap();
++        let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
++        let target = divider.center() + point(px(requested) - before.size.width, px(0.0));
++        visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++        visual.run_until_parked();
++        let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
++        let control = visual.debug_bounds("browser-control-⚙").unwrap();
++        let glyphs = rows.map(|(row, glyph)| {
++            let row_bounds = visual.debug_bounds(row).unwrap();
++            let glyph_bounds = visual.debug_bounds(glyph).unwrap();
++            println!("picker requested={requested} actual={} {glyph}: row={row_bounds:?} glyph={glyph_bounds:?} control={control:?}", f32::from(sidebar.size.width));
++            (row_bounds, glyph_bounds)
++        });
++        measurements.push((requested, sidebar, control, glyphs));
++        assert_eq!(
++            visual.debug_bounds("browser-resize-handle").unwrap(),
++            outer_before
++        );
++    }
++    for (requested, sidebar, control, glyphs) in measurements {
++        assert_eq!(
++            sidebar.size.width,
++            px(requested),
++            "picker resize must be continuous down to the existing-control-derived minimum"
++        );
++        for (row, glyph) in glyphs {
++            assert_eq!(
++                glyph.center().x,
++                control.center().x,
++                "all picker glyphs must share the control column at width {requested}"
++            );
++            assert_eq!(glyph.center().y, row.center().y);
++            assert!(glyph.size.width <= control.size.width);
++            assert!(row.contains(&glyph.origin));
++            assert!(glyph.right() <= row.right());
++            assert!(row.size.width >= control.size.width);
++            assert!(row.size.height >= control.size.height);
++        }
++    }
++}

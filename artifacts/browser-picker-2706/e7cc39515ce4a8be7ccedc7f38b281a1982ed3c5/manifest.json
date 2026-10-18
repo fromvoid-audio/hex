@@ -1,0 +1,53 @@
+{
+  "canonical_pr": 322,
+  "pulse": 2706,
+  "source": "e7cc39515ce4a8be7ccedc7f38b281a1982ed3c5",
+  "tree": "be55dea7345a602b6d2bcfe97236960e0d143ab6",
+  "expected_before": "e9e8ecfcaf1f4e7cdada533e7af0daad3504e74c",
+  "initial_current_main": "04e6e4f2095cb93e2b206c8b564c0da03b9907ce",
+  "original_pr_plan_head": "d97f8004a7f0a2aee82afb431522a0eac81949da",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-layout.md",
+    "todo.md"
+  ],
+  "findings": {
+    "old_rendered": "all measured default glyph layout boxes8px wide,19/19.5px high; x-center12 vs adjacent22px control center11; requested63 rendered36; requested23 rendered36",
+    "fix": "shared22px typed icon slot; existing1px sidebar border ->23px minimum; continuous widths; stable leading center across64 label threshold; no row-height/divider/semantic-color change",
+    "limitations": "GPUI headless layout evidence, not physical glyph ink/optical/native tooltip display. Vertical text origin rounding permits at most0.5 logicalpx."
+  },
+  "checks": {
+    "final_frozen_head": "65 browser-filtered tests passed,0failed/0ignored; UI feature alltarget clippy-Dwarnings; architecture/GPUI/UI-style/fmt all exit0",
+    "before": "one rendered geometry behavioral red retained; first fullsource style guard failed on new component expression while65browser/clippy passed; fixed with explicit typedDiv bindings, no guard edits/waivers",
+    "fullCI": "not run by source owner; merger owns final actual prospective integration/full required CI/merge",
+    "native": "not performed; finite coordinator checklist included"
+  },
+  "files": {
+    "2706-architecture-v2.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "2706-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "2706-browser-all-v2.log": "f5181b9fa998f49c1f6fec5437304e34e1ec6e50399049baf936a9ad67ca3d30",
+    "2706-browser-all.log": "a8df810247ed3d9d4643f5b9a95bfb3b5899bdb1d06db5724638f625ba181be4",
+    "2706-clippy-v2.log": "5be2440c7b9b9af8c5a438b080b5bcd182b762e5fd4c382b14f870dc6e8500df",
+    "2706-clippy.log": "084f8262ef059a353e96643647f9c2edaa311ecfc73ed21c47f2fac5a23094b1",
+    "2706-component-boundary.py": "cbcdd4cc39296f67454aebbc82e2a19a50b92c0c6af202c664fc7a2801f72120",
+    "2706-fix.py": "91d1f5d027b3a77fa3c865fee7925d0ceeca8ac5e1b01b6c851a1e328d84696d",
+    "2706-fmt-v2.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "2706-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "2706-geometry-green-v1.log": "5ed4355552eed71db53ea176b93115f8145d7e02346f0488a1b365bf1b38eb37",
+    "2706-geometry-red.log": "dfdfe42747917d8832ec92e181c0362b5559f5216ab998945c489071b5c61733",
+    "2706-geometry-regression.rs": "140d56576b3f18203cefcbcda428ad230047a4e73aa52474b7992077eaba4925",
+    "2706-gpui-v2.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "2706-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "2706-input-green-v1.log": "6b258f1dd63a224ab39f2c6a34ba7700f8f30df53ab2c7de25d74f1f769b8481",
+    "2706-red-instrumentation.patch": "c65bcd0763c57a67d1ecc4b15a75d3359c607cfcddf7911ee5290d5e0c0d7e15",
+    "2706-style-final.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "2706-style-v2.log": "bb9b360253e40c88eba8db6ec32fb709d6d5856319e2a52364a572b828b02647",
+    "2706-style-v3.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "2706-style.log": "bb9b360253e40c88eba8db6ec32fb709d6d5856319e2a52364a572b828b02647",
+    "before-and-after-hashes.json": "2245373c30a7154da4ee376bf50cfbd690fde8ad180d0c36814407b500a7be50",
+    "canonical.patch": "e4b120a2e36cd10cddcac9858bfa2c0fbb33e8f95f4938a658cc8cd6658bc357",
+    "edit-helper-diagnostic-record.txt": "8d594f65d55e66a7d250d2eaa663e3b4bc88ce231c4c611069d35d0152503459",
+    "native-checklist.md": "b8dbff21788c7e8eda2c95d9aad8b33022b3a5d6864898459232d0cce84139d3"
+  }
+}

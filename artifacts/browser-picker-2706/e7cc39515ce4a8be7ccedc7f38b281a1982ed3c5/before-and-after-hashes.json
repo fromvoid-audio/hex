@@ -1,0 +1,26 @@
+{
+  "d97f8004a7f0a2aee82afb431522a0eac81949da": {
+    "crates/hex-ui/src/editor/browser/layout.rs": "3a03cb80d2e91af837811737c506a7ff4e1fef0ec497d0ec6375300e81e04594",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "94ed29c8fba446f60528d2afce3bef54b51122f40c93657e81500a70f58ab6ae",
+    "docs/browser-layout.md": "5844e02ddaddb3819a6d5448ec6ff19e3b45108580272af2cea58f867618a95d",
+    "todo.md": "130d02a7aeb92427169d8422a1042fbf3d4f1c20e547306dfb59b9a95311153b"
+  },
+  "e9e8ecfcaf1f4e7cdada533e7af0daad3504e74c": {
+    "crates/hex-ui/src/editor/browser/layout.rs": "35d55f1e3fd35b2ff47f49b32765371c37feb2e8aa2eeee1e4ff50cd0edc6975",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "42e8df0bd178240f2350f65c26ed6de0be3096c03d0f46f4deea670f1824f1ee",
+    "docs/browser-layout.md": "d863a26d74444df0d585f8759d8c8e782a49d230be2762b05df2deb1302cb84e",
+    "todo.md": "10fb98ae608f53b86e37600111131fae1d27cfeee01dfb262fd850b1d6eceb7c"
+  },
+  "04e6e4f2095cb93e2b206c8b564c0da03b9907ce": {
+    "crates/hex-ui/src/editor/browser/layout.rs": "35d55f1e3fd35b2ff47f49b32765371c37feb2e8aa2eeee1e4ff50cd0edc6975",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "42e8df0bd178240f2350f65c26ed6de0be3096c03d0f46f4deea670f1824f1ee",
+    "docs/browser-layout.md": "d863a26d74444df0d585f8759d8c8e782a49d230be2762b05df2deb1302cb84e",
+    "todo.md": "10fb98ae608f53b86e37600111131fae1d27cfeee01dfb262fd850b1d6eceb7c"
+  },
+  "e7cc39515ce4a8be7ccedc7f38b281a1982ed3c5": {
+    "crates/hex-ui/src/editor/browser/layout.rs": "dfb4d74843b5b6c29a0a7e6c697d668477b5f44e6c7e1f645b33af34fe94ed05",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "4bfef4c812b797b216a4e744b7ae378aa46e5668bc786a0c7c53243c9aa1269a",
+    "docs/browser-layout.md": "0346e5fa2e9f338358deee7cb3adc37c34c6701443ebd55d7a3d48dcc3bc9cf1",
+    "todo.md": "83ce73dba7db4033f6ec2f86066f24f06d181b7a9ed9af6a84ec8a04bd09413a"
+  }
+}
