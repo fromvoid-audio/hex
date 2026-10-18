@@ -180,3 +180,99 @@ fn adaptive_density_over_budget_meter_markers_share_bounded_visible_targets() {
         }
     }
 }
+
+#[test]
+fn adaptive_review_panning_preserves_subdivision_at_fixed_zoom() {
+    let project = Project::new(48_000).unwrap();
+    for density in AdaptiveGridDensity::ALL {
+        let grid = SnapGrid::Adaptive.with_density(density);
+        let mut intervals = Vec::new();
+        for start in [0, 1, 749, 1_499, 1_500] {
+            let viewport = Viewport {
+                start,
+                length: 382_501,
+            };
+            let lines = grid_lines(&project, viewport, 100_000.0, grid);
+            assert!(lines.len() > 2 && lines.len() <= MAX_GRID_LINES);
+            intervals.push(lines[1].frame - lines[0].frame);
+            for pair in lines.windows(2) {
+                let snapped = grid
+                    .snap_frame(&project, pair[0].frame + 1, viewport, 100_000.0)
+                    .unwrap();
+                assert!(lines.iter().any(|line| line.frame == snapped));
+            }
+        }
+        assert!(
+            intervals.iter().all(|step| *step == intervals[0]),
+            "fixed zoom {density:?} must not change density with pan phase: {intervals:?}"
+        );
+    }
+}
+
+fn review_dense_meter_project() -> Editor {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    for index in 1..=260 {
+        editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_quarters(index).unwrap(),
+                meter: Meter::new(if index % 2 == 0 { 4 } else { 3 }, 4).unwrap(),
+            })
+            .unwrap();
+    }
+    editor
+}
+
+#[test]
+fn adaptive_review_dense_visible_markers_use_available_bounded_budget() {
+    let editor = review_dense_meter_project();
+    let viewport = Viewport::fit(6_500_000);
+    for density in AdaptiveGridDensity::ALL {
+        let grid = SnapGrid::Adaptive.with_density(density);
+        let lines = grid_lines(editor.project(), viewport, 8192.0, grid);
+        assert_eq!(
+            lines.len(),
+            MAX_GRID_LINES,
+            "enough real candidates exist; do not discard half the paint budget"
+        );
+        assert!(lines.windows(2).all(|pair| pair[0].frame < pair[1].frame));
+        for pair in lines.windows(2).step_by(17) {
+            let snapped = grid
+                .snap_frame(editor.project(), pair[0].frame + 1, viewport, 8192.0)
+                .unwrap();
+            assert!(lines.iter().any(|line| line.frame == snapped));
+        }
+    }
+}
+
+#[test]
+fn adaptive_review_offscreen_meter_history_does_not_allocate_paint_lists_for_snap() {
+    let editor = review_dense_meter_project();
+    let project = editor.project();
+    let viewport = Viewport {
+        start: 7_200_000,
+        length: 288_000,
+    };
+    for density in AdaptiveGridDensity::ALL {
+        let grid = SnapGrid::Adaptive.with_density(density);
+        let before = GRID_LINE_BUILDS.with(std::cell::Cell::get);
+        let snapped = grid
+            .snap_frame(project, viewport.start + 12_345, viewport, 640.0)
+            .unwrap();
+        assert_eq!(
+            GRID_LINE_BUILDS.with(std::cell::Cell::get),
+            before,
+            "offscreen history must not reconstruct an allocating painted landmark list on each snap"
+        );
+        let next = grid
+            .adjacent_frame(project, snapped, viewport, 640.0, true)
+            .unwrap();
+        assert_eq!(
+            GRID_LINE_BUILDS.with(std::cell::Cell::get),
+            before,
+            "offscreen history must not reconstruct paint lists for directional edits either"
+        );
+        let lines = grid_lines(project, viewport, 640.0, grid);
+        assert!(lines.iter().any(|line| line.frame == snapped));
+        assert!(lines.iter().any(|line| line.frame == next));
+    }
+}

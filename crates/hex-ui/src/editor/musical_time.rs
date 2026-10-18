@@ -159,12 +159,21 @@ fn bounded_band_indices(first: u64, last: u64, budget: usize) -> impl Iterator<I
     (first..=last).take(budget)
 }
 
+#[cfg(test)]
+thread_local! {
+    // Per-test-thread observation of actual paint-list construction, not a
+    // process-wide setting or replacement resolver.
+    static GRID_LINE_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn grid_lines(
     project: &Project,
     viewport: Viewport,
     pixel_width: f32,
     grid: SnapGrid,
 ) -> Vec<GridLine> {
+    #[cfg(test)]
+    GRID_LINE_BUILDS.with(|count| count.set(count.get() + 1));
     if grid.is_off() {
         return Vec::new();
     }
@@ -206,11 +215,18 @@ pub(super) fn grid_lines(
             false
         }
     });
-    let stride = candidates.len().div_ceil(MAX_GRID_LINES).max(1);
-    candidates
-        .into_iter()
-        .step_by(stride)
-        .take(MAX_GRID_LINES)
+    // Fill the available quota across the complete visible candidate set.
+    // Ceil-striding 257 candidates by two would unnecessarily paint only129.
+    let count = candidates.len().min(MAX_GRID_LINES);
+    (0..count)
+        .map(|sample| {
+            let index = if count <= 1 {
+                0
+            } else {
+                sample * (candidates.len() - 1) / (count - 1)
+            };
+            &candidates[index]
+        })
         .map(|tick| GridLine {
             beat: tick.beat,
             frame: tick.frame,
@@ -482,6 +498,26 @@ fn ruler_candidates(
     }
 }
 
+// Only visible sections can overflow the painted landmark quota. Historical
+// meter points outside the viewport do not justify allocating a paint list on
+// each snap/nudge. Binary searches preserve the current map/tempo semantics.
+fn visible_meter_sections(project: &Project, viewport: Viewport) -> Option<usize> {
+    if viewport.length == 0 {
+        return None;
+    }
+    let tempo = project.tempo_map();
+    let first = tempo.frame_to_beat(viewport.start).ok()?;
+    let last = tempo
+        .frame_to_beat(viewport.end()?.checked_sub(1)?)
+        .unwrap_or_else(|_| BeatTime::from_raw(u64::MAX));
+    let points = project.meter_map().points();
+    let start = points
+        .partition_point(|point| point.beat() <= first)
+        .saturating_sub(1);
+    let end = points.partition_point(|point| point.beat() <= last);
+    Some(end.saturating_sub(start).max(1))
+}
+
 fn adaptive_grid_step(
     project: &Project,
     viewport: Viewport,
@@ -552,13 +588,10 @@ fn adaptive_grid_step(
             .min(last.raw());
         if start <= end {
             loop {
-                let first_index = start.saturating_sub(beat.raw()).div_ceil(step.max(1));
-                let last_index = end.saturating_sub(beat.raw()) / step.max(1);
-                let count = if first_index > last_index {
-                    0
-                } else {
-                    u128::from(last_index - first_index) + 1
-                };
+                // Bound the maximum number across ANY alignment of this same
+                // visible span. Counting the current phase makes a one-frame
+                // pan flip between255 and256 points and halve the subdivision.
+                let count = u128::from(end - start) / u128::from(step.max(1)) + 1;
                 if count <= u128::from(quota) || step == u64::MAX {
                     break;
                 }
@@ -704,7 +737,9 @@ fn adjacent_landmark(
         }
     }
     let candidate = best.map(|(_, beat)| beat)?;
-    if grid.is_adaptive() && project.meter_map().points().len() > MAX_GRID_LINES / 2 {
+    if grid.is_adaptive()
+        && visible_meter_sections(project, viewport).is_some_and(|count| count > MAX_GRID_LINES / 2)
+    {
         let candidate_frame = project.tempo_map().beat_to_frame(candidate).ok()?;
         if viewport
             .end()
@@ -883,7 +918,10 @@ impl SnapGrid {
             return Some(beat);
         }
         let candidate = snap_to_meter_landmark(project, beat, viewport, pixel_width, self)?;
-        if self.is_adaptive() && project.meter_map().points().len() > MAX_GRID_LINES / 2 {
+        if self.is_adaptive()
+            && visible_meter_sections(project, viewport)
+                .is_some_and(|count| count > MAX_GRID_LINES / 2)
+        {
             let frame = project.tempo_map().beat_to_frame(candidate).ok()?;
             if viewport
                 .end()
