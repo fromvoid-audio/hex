@@ -224,3 +224,21 @@ inspection; their physical native display and optical glyph appearance remain
 coordinator-owned optimized acceptance, alongside smooth native divider dragging.
 No tree indentation, results, preview, persisted preferences or divider feedback
 behavior is implemented by this follow-up.
+
+## Active resize feedback — Pulse2708 / PR324
+
+Picker and outer browser dividers keep the theme's secondary/cyan color for the
+whole active gesture, independently of hover over their moving rectangles. Only
+the active divider latches that color; idle hover still uses the same highlight.
+Down, release and lost-Left-button transitions publish their current state, so
+release outside returns to idle and release over the handle retains normal hover.
+A movement without Left held ends either gesture at its latest width; a later
+unrelated drag cannot resume it. Existing close-browser cancellation is unchanged.
+Widths, cursor affordances, capture callbacks and resize/snap laws are retained.
+The separate thin-line/hit-area request remains Pulse2707.
+
+Actual GPUI input/paint regressions reproduce hover-only color loss and the
+outer divider's stale lost-button latch, then verify outside/return crossings,
+release inside/outside, cancellation, ordinary/23px picker and open/closed editor.
+These checks establish deterministic rendered feedback, not temporal native GPU
+or physical macOS capture/hover acceptance; that remains in the root's serial lane.

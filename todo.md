@@ -5230,3 +5230,10 @@ covers long Place names, zero label space, both settings states and resize back
 to normal; existing selection/hover/focus/audition regressions remain applicable.
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
+
+18 October2026 — Pulse2708/PR324: actual active picker drag lost cyan beyond its
+moving hit bounds; outer resize activity survived lost-Left movement. Bind paint
+to each existing gesture and notify on state transitions; clear stale outer latch
+on no-Left movement. Keep resize widths/cursors/laws and existing close cancellation.
+Focused paint/input regressions and evidence in Pulse;2707 thin dividers separate.
+Sole merger owns prospective fullCI/merge; root owns optimized native acceptance.
