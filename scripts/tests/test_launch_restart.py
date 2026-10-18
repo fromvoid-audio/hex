@@ -187,9 +187,14 @@ class OwnershipTests(ReleaseFixture):
         self.assertTrue(alias.is_symlink());self.assertEqual(artifact.read_bytes(),b'fixture')
 
     def test_owner_cas_inside_actual_mutation_lock_refuses_changed_bytes_before_cleanup(self):
-        raw=self.owner.read_bytes();expected=hashlib.sha256(raw).hexdigest();self.owner.write_bytes(raw+b'\n')
-        with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'changed since'):
-            with self.runner.guarded_release(adopt=True,expected_owner_sha256=expected):self.fail('entered mutation')
+        raw=self.owner.read_bytes();expected=hashlib.sha256(raw).hexdigest()
+        acquire=fixtures.local_ci.CargoTargetLock.acquire
+        def acquire_then_replace(lock):
+            acquire(lock)
+            self.owner.write_bytes(raw+b'\n')
+        with patch.object(fixtures.local_ci.CargoTargetLock,'acquire',acquire_then_replace):
+            with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'changed since'):
+                with self.runner.guarded_release(adopt=True,expected_owner_sha256=expected):self.fail('entered mutation')
         self.assertEqual(self.owner.read_bytes(),raw+b'\n');self.assertIsNone(self.runner.target_lock)
         self.assertFalse(self.runner.summary.get('release_target_cache'))
         self.assertNotIn('cargo clean',self.f.call_log.read_text())
