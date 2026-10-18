@@ -75,7 +75,15 @@ impl EditorView {
         if tracks.is_empty() || !focused.is_some_and(|id| tracks.contains(&id)) {
             return true;
         }
-        if self.edit_pending() || self.track_name.is_editing() || self.clip_name_edit.is_some() {
+        if self.edit_pending()
+            || self.track_name.is_editing()
+            || self.clip_name_edit.is_some()
+            || self.track_resize_active()
+            || self.active_clip_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+        {
             self.error = Some("finish the current edit before removing tracks".into());
             return true;
         }

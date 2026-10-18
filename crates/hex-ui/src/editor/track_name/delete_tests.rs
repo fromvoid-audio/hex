@@ -161,6 +161,14 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    // With root focus and no object selection Backspace leaves regular tracks
+    // and the protected Main strip intact.
+    visual.simulate_keystrokes("backspace");
+    assert!(visual.debug_bounds("main-track-header").is_some());
+    editor.read_with(&visual, |view, _| {
+        assert!(view.state.as_ref().unwrap().project.track(track).is_some());
+        assert!(view.last_enqueued_edit.is_none());
+    });
     // Platform-toggle off the only selected header: focus alone cannot delete.
     header(&mut visual, track, Modifiers::default());
     header(
