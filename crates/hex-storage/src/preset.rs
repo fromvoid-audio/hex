@@ -317,6 +317,26 @@ mod tests {
     }
 
     #[test]
+    fn preset_pair_refuses_mismatched_global_trims_before_file_publication() {
+        for input in [true, false] {
+            let mut preset = fixture();
+            let inactive = if input {
+                preset.state.clone().with_input_gain_millidb(-1200).unwrap()
+            } else {
+                preset.state.clone().with_output_gain_millidb(2300).unwrap()
+            };
+            preset.comparison = Some(hex_project::DeviceComparison::new(
+                hex_project::DeviceVariant::A,
+                inactive,
+            ));
+            assert!(
+                encode(&preset).is_err(),
+                "mismatched global trims must refuse"
+            );
+        }
+    }
+
+    #[test]
     fn malformed_unknown_newer_and_unbounded_envelopes_refuse() {
         let bytes = encode(&fixture()).unwrap();
         let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

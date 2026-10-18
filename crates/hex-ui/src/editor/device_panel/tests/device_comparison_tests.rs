@@ -665,3 +665,334 @@ fn device_comparison_right_click_nonselected_badge_switches_only_its_target(
     assert_eq!(slot(&editor, cx, device), DeviceVariant::B);
     assert_eq!(slot(&editor, cx, instrument), DeviceVariant::A);
 }
+
+#[gpui::test]
+fn device_comparison_review_dismiss_nonselected_menu_keeps_p_on_target(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    title(&mut visual, instrument);
+    menu(&mut visual, device);
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("p");
+    pump_until(&editor, cx, settled);
+    assert_eq!(
+        slot(&editor, cx, device),
+        DeviceVariant::B,
+        "dismiss must not restore a different card's P owner"
+    );
+    assert_eq!(slot(&editor, cx, instrument), DeviceVariant::A);
+}
+
+#[gpui::test]
+fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::arrangement_seek::{PendingSeek, SeekIntent, SeekStage};
+    use hex_audio::prepared::PublicationPolicy;
+    use std::sync::atomic::Ordering::Acquire;
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &state.project,
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (mut output, mut backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && std::time::Instant::now() < until =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("private headless control: {error}"),
+        }
+    };
+    let client = output.take_client().unwrap();
+    let playback = || {
+        hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&prepared))
+            .unwrap()
+    };
+    let active = output
+        .publication
+        .control()
+        .unwrap()
+        .publish(playback())
+        .unwrap();
+    let mut block = [[0.0; 2]; 128];
+    backend.render(&mut block).unwrap();
+    let fence = client.capture_fresh_runtime_fence().unwrap();
+    let published = output
+        .publication
+        .control()
+        .unwrap()
+        .publish_with_policy(
+            playback(),
+            PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+        )
+        .unwrap();
+    let mut pending = PendingSeek::from_intent(
+        91,
+        &SeekIntent {
+            destination_frame: 128,
+            start_playing: true,
+            project_generation: 0,
+            project_revision: state.revision,
+            prepared_revision: prepared,
+        },
+        fence,
+    );
+    pending.stage = SeekStage::Published {
+        audio_revision: published,
+    };
+    let target = hex_session::service::preset::Owner {
+        project_generation: 0,
+        revision: state.revision,
+        device,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: state.project.device(device).unwrap().state().type_id(),
+    };
+    let (_handle, editor) = directory.window(cx, service, state, track, None);
+    editor.update(cx, |view, _| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "private control".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.prepared_seek = Some(pending);
+        view.enqueue(Request::CompareDevice {
+            owner: target,
+            expected: DeviceVariant::A,
+            action: hex_project::DeviceComparisonAction::Switch,
+        });
+        assert!(
+            view.edit_pending(),
+            "Preparing publication is already guarded by pending edits"
+        );
+    });
+    // Run the actual callback before any worker event/render reconciliation.
+    backend.render(&mut block).unwrap();
+    assert_eq!(
+        backend.status().unwrap().applied_revision.load(Acquire),
+        active,
+        "a queued comparison must cancel the already-published old seek"
+    );
+    assert_eq!(
+        backend.status().unwrap().rejected_revision(),
+        Some((
+            published,
+            hex_engine::playback::PlaybackHandoffRejection::FreshRuntimeCancelled
+        ))
+    );
+    editor.update(cx, |view, _| {
+        assert!(view.prepared_seek.as_ref().unwrap().cancelled);
+        view.audio = None;
+    });
+    backend.close();
+    drop(output);
+}
+
+#[test]
+fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc() {
+    use hex_audio::prepared::PublicationPolicy;
+    use hex_engine::playback::{Playback, PlaybackCommand};
+    use hex_project::{BeatTime, DeviceComparisonAction as Action};
+    use std::sync::atomic::Ordering::Acquire;
+    let service = Service::new(48_000, 32, 0).unwrap();
+    receive_service_event(&service);
+    let send = |request| {
+        service.submit(request).unwrap();
+        receive_service_event(&service)
+    };
+    let e = send(Request::Edit(Command::AddMidiTrack {
+        name: "held".into(),
+    }));
+    let track = e.state.project.tracks()[0].id();
+    let e = send(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(16).unwrap(),
+    }));
+    let Created::Clip(clip) = e.created.unwrap() else {
+        panic!("clip")
+    };
+    send(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(16).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let mut initial = send(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state,
+    }));
+    let device = initial.state.project.track(track).unwrap().devices()[0].id();
+    let original = initial
+        .playback
+        .as_ref()
+        .unwrap()
+        .prepared_revision()
+        .unwrap()
+        .clone();
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap();
+    oracle.apply(PlaybackCommand::Play);
+    let (mut control, mut callback) = hex_audio::prepared::channel(48_000).unwrap();
+    let initial_audio = control.publish(initial.playback.take().unwrap()).unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 128];
+    let mut expected = actual;
+    callback.begin_block();
+    callback.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|x| x.abs() > 1e-5));
+    let owner = |event: &Event| hex_session::service::preset::Owner {
+        project_generation: 0,
+        revision: event.state.revision,
+        device,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: event
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .type_id(),
+    };
+    let mut switched = send(Request::CompareDevice {
+        owner: owner(&initial),
+        expected: DeviceVariant::A,
+        action: Action::Switch,
+    });
+    assert!(switched.error.is_none());
+    if let Some(playback) = switched.playback.take() {
+        control
+            .publish_with_policy(playback, PublicationPolicy::InheritRuntime)
+            .unwrap();
+    }
+    callback.begin_block();
+    callback.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        initial_audio,
+        "identical first switch must not publish a replacement graph"
+    );
+    assert_eq!(switched.state.revision, initial.state.revision + 1);
+    assert_eq!(
+        switched
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .active_variant(),
+        DeviceVariant::B
+    );
+    let restored = send(Request::RestorePlayback { generation: 91 });
+    assert!(Arc::ptr_eq(
+        restored
+            .playback
+            .as_ref()
+            .unwrap()
+            .prepared_revision()
+            .unwrap(),
+        &original
+    ));
+    let changed = send(Request::SetDeviceParameter {
+        device,
+        parameter: hex_lattice_contract::ParameterId::from_static(1),
+        value: hex_lattice_contract::ParameterValue::Float(0.25),
+    });
+    assert!(changed.error.is_none());
+    let changed_arc = changed
+        .playback
+        .as_ref()
+        .unwrap()
+        .prepared_revision()
+        .unwrap()
+        .clone();
+    assert!(
+        !Arc::ptr_eq(&changed_arc, &original),
+        "audible edits still prepare a graph"
+    );
+    let applied = control
+        .publish_with_policy(changed.playback.unwrap(), PublicationPolicy::InheritRuntime)
+        .unwrap();
+    callback.begin_block();
+    callback.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
+        assert!((a - e * 0.25).abs() < 1e-6);
+    }
+    let before_copy = changed.state.project.clone();
+    let copied = send(Request::CompareDevice {
+        owner: owner(&changed),
+        expected: DeviceVariant::B,
+        action: Action::CopyToInactive,
+    });
+    assert!(copied.error.is_none());
+    assert!(
+        copied.playback.is_none(),
+        "copy changes authored metadata only"
+    );
+    assert_eq!(copied.state.revision, changed.state.revision + 1);
+    assert_ne!(copied.state.project, before_copy);
+    let restored = send(Request::RestorePlayback { generation: 92 });
+    assert!(Arc::ptr_eq(
+        restored
+            .playback
+            .as_ref()
+            .unwrap()
+            .prepared_revision()
+            .unwrap(),
+        &changed_arc
+    ));
+    callback.begin_block();
+    callback.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(control.status.applied_revision.load(Acquire), applied);
+    assert_eq!(control.status.position.load(Acquire), 512);
+    for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
+        assert!((a - e * 0.25).abs() < 1e-6);
+    }
+    let noop = send(Request::CompareDevice {
+        owner: owner(&copied),
+        expected: DeviceVariant::B,
+        action: Action::CopyToInactive,
+    });
+    assert_eq!(noop.state.revision, copied.state.revision);
+    assert!(noop.playback.is_none());
+    let undone = send(Request::Undo);
+    assert_eq!(undone.state.project, before_copy);
+    let redone = send(Request::Redo);
+    assert_eq!(redone.state.project, copied.state.project);
+}

@@ -522,6 +522,46 @@ mod tests {
     }
 
     #[test]
+    fn opaque_identity_reservation_slot_switch_refuses_before_prepare() {
+        let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "track");
+        let device = device_id(&mut editor, track);
+        let command = Command::ReplaceDeviceStateWithIdentityReservation {
+            device,
+            expected_state: editor.project().device(device).unwrap().state().clone(),
+            state: state(vec![9]),
+            expected_next_id: editor.project().next_identity(),
+            reserved_ids: 1,
+        };
+        editor
+            .execute(Command::CompareDevice {
+                device,
+                expected: crate::DeviceVariant::A,
+                action: crate::DeviceComparisonAction::Switch,
+            })
+            .unwrap();
+        let before = editor.project().snapshot();
+        let calls = std::cell::Cell::new(0);
+        let result = editor.execute_prepared(command, |_| {
+            calls.set(calls.get() + 1);
+            Ok::<(), Invalid>(())
+        });
+        assert!(
+            result.is_err(),
+            "an A-origin edit must not retarget identical B"
+        );
+        assert_eq!(calls.get(), 0, "refuse before preparation");
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().device(device).unwrap().active_variant(),
+            crate::DeviceVariant::A
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), before);
+    }
+
+    #[test]
     fn opaque_identity_reservation_rejects_stale_edits_and_undo_never_reuses_ids() {
         let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
         let track = track_id(&mut editor, "track");

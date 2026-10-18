@@ -378,3 +378,57 @@ fn stale_comparison_does_not_finalize_an_unrelated_live_draft() {
     assert_eq!(cancelled.state.project, initial.state.project);
     assert_eq!(cancelled.state.revision, initial.state.revision);
 }
+
+#[test]
+fn review_2845_public_reserved_edit_cannot_retarget_an_identical_slot_switch() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "reserved".into(),
+        }))
+        .unwrap();
+    let initial = event(&service);
+    let track = initial.state.project.tracks()[0].id();
+    let utility = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: utility,
+        }))
+        .unwrap();
+    let initial = event(&service);
+    let device = initial.state.project.track(track).unwrap().devices()[0].id();
+    let entry = initial.state.project.device(device).unwrap();
+    let command = Command::ReplaceDeviceStateWithIdentityReservation {
+        device,
+        expected_state: entry.state().clone(),
+        state: changed_state(NativeDeviceClass::Effect, entry.state()).unwrap(),
+        expected_next_id: initial.state.project.next_identity(),
+        reserved_ids: 0,
+    };
+    service
+        .submit(Request::CompareDevice {
+            owner: owner(&initial, device, NativeDeviceClass::Effect),
+            expected: Slot::A,
+            action: Action::Switch,
+        })
+        .unwrap();
+    let switched = event(&service);
+    assert!(switched.error.is_none());
+    service.submit(Request::Edit(command)).unwrap();
+    let refused = event(&service);
+    assert!(refused.error.is_some(), "deferred A edit must refuse on B");
+    assert_eq!(refused.state.project, switched.state.project);
+    assert_eq!(refused.state.revision, switched.state.revision);
+    assert!(refused.playback.is_none());
+    service.submit(Request::Undo).unwrap();
+    assert_eq!(event(&service).state.project, initial.state.project);
+    service.submit(Request::Redo).unwrap();
+    assert_eq!(event(&service).state.project, switched.state.project);
+}
