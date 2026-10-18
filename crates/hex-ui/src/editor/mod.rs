@@ -31,6 +31,8 @@ mod clip_view;
 mod clip_view_ui_test;
 mod close;
 mod computer_keyboard;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod console_drop_ui_test;
 mod context_menu;
 mod controller;
 mod controller_input;
