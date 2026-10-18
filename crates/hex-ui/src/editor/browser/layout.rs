@@ -12,7 +12,6 @@ const SECTIONS: [(BrowserSection, &str); 4] = [
 const PICKER_CONTROL_SIZE: f32 = 22.0;
 const PICKER_BORDER_WIDTH: f32 = 1.0;
 const PICKER_MIN_WIDTH: f32 = PICKER_CONTROL_SIZE + PICKER_BORDER_WIDTH;
-const PICKER_LABEL_THRESHOLD: f32 = 64.0;
 
 const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
@@ -230,7 +229,6 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let width = self.browser.layout.sidebar_width(width);
-        let compact = width < PICKER_LABEL_THRESHOLD;
         let mut sidebar = div()
             .id("browser-sidebar")
             .w(px(width))
@@ -356,8 +354,7 @@ impl EditorView {
             "⚙",
             "configure sections · session only",
             move |view, _, cx| {
-                view.browser.layout.settings_visible =
-                    compact || !view.browser.layout.settings_visible;
+                view.browser.layout.settings_visible = !view.browser.layout.settings_visible;
                 if view.browser.layout.settings_visible {
                     view.browser.layout.sidebar_width =
                         view.browser.layout.sidebar_width.max(124.0);
