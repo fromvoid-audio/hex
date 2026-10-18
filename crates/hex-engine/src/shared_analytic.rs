@@ -476,6 +476,12 @@ impl SharedAnalyticContextTable {
             let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
                 continue;
             };
+            if device.state().type_id() == hex_devices::sampler::state::TYPE_ID {
+                // This closed preparation branch is not registry/publication
+                // admission. Validate the loaded codec before resource work.
+                hex_devices::sampler::state::SamplerState::from_native(device.state())
+                    .map_err(|_| Invalid("sampler state is not a loaded current configuration"))?;
+            }
             let resources = match resource_preparation {
                 Some(preparation) => preparation
                     .configuration_on_control(device.state())
@@ -483,6 +489,55 @@ impl SharedAnalyticContextTable {
                 None if device.state().asset_references().is_empty() => None,
                 None => return Err(Invalid("instrument resource source plan is unavailable")),
             };
+            if device.state().type_id() == hex_devices::sampler::state::TYPE_ID {
+                let resources =
+                    resources.ok_or(Invalid("sampler resource scope is unavailable"))?;
+                let identity = SharedContextIdentity {
+                    tuning: tuning_identity,
+                    resource_scope: resources.source_scope_identity(),
+                    track: track.id(),
+                    device: device.id(),
+                    device_type: device.state().type_id(),
+                    state: device.state().clone().without_host_gains(),
+                    sample_rate: project.sample_rate(),
+                };
+                let previous_owner = previous.and_then(|table| table.owner_for_device(device.id()));
+                let owner = if previous_owner.is_some_and(|owner| {
+                    owner.compatible_identity(&identity) && owner.sampler_factory.is_some()
+                }) {
+                    let table = previous.ok_or(Invalid("sampler previous table is unavailable"))?;
+                    let index = table
+                        .index_for_device(device.id())
+                        .ok_or(Invalid("sampler previous owner index is unavailable"))?;
+                    table
+                        .clone_owner(index)
+                        .ok_or(Invalid("sampler previous owner is unavailable"))?
+                } else {
+                    crate::owned_shared::OwnedShared::new_owned(
+                        SharedContextOwner::from_sampler_resources_on_control(
+                            SharedContextId::fresh()?,
+                            identity,
+                            resources,
+                            &tuning,
+                            resource_preparation
+                                .ok_or(Invalid("sampler preparation budget is unavailable"))?
+                                .max_scope_metadata_bytes,
+                            MAX_SHARED_CONTEXT_BYTES_PER_REVISION
+                                .checked_sub(payload_bytes)
+                                .ok_or(Invalid("sampler context budget overflow"))?,
+                        )?,
+                    )
+                };
+                payload_bytes = payload_bytes
+                    .checked_add(owner.declared_bytes)
+                    .filter(|bytes| *bytes <= MAX_SHARED_CONTEXT_BYTES_PER_REVISION)
+                    .ok_or(Invalid("sampler context revision budget exceeded"))?;
+                owners.push(owner);
+                // Public instrument processing still refuses referenced states;
+                // this merely retains the actual concrete factory/configuration
+                // for the sealed host constructor's subsequent graph proof.
+                continue;
+            }
             let prepared = registry
                 .prepare_instrument(
                     device.state(),

@@ -316,3 +316,58 @@ fn actual_sampler_prepared_and_canonical_state_visitors_share_one_physical_charg
     };
     assert_eq!(collect(false), collect(true));
 }
+
+#[test]
+fn actual_project_sampler_context_preparation_retains_concrete_owner_and_reuses_exact_configuration()
+ {
+    let Some((source, identity, editor)) = canonical_fixture() else {
+        return;
+    };
+    drop(identity);
+    let registry = hex_devices::native_instrument_registry().unwrap();
+    let preparation = crate::native_device_resources::DeviceResourcePreparation {
+        bank: &source,
+        max_scope_metadata_bytes: 65_536,
+    };
+    let first =
+        SharedAnalyticContextTable::prepare(editor.project(), &registry, None, Some(preparation))
+            .unwrap();
+    let second = SharedAnalyticContextTable::prepare(
+        editor.project(),
+        &registry,
+        Some(&first),
+        Some(preparation),
+    )
+    .unwrap();
+    assert_eq!(first.owners.len(), 1);
+    assert_eq!(second.owners.len(), 1);
+    assert_eq!(first.owners[0].id(), second.owners[0].id());
+    assert!(Arc::ptr_eq(first.owners[0].arc(), second.owners[0].arc()));
+    assert!(first.owners[0].sampler_factory.is_some());
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+    ledger
+        .borrow_device_resource_bank_on_control(&source, AudioStorageRole::Caller)
+        .unwrap();
+    ledger
+        .borrow_editor_native_states_on_control(&editor)
+        .unwrap();
+    resource_storage::visit_table(&first, &mut ledger, AudioStorageRole::Current).unwrap();
+    assert!(
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .is_err()
+    ); // actual second table's owner field
+    resource_storage::visit_table(&second, &mut ledger, AudioStorageRole::Caller).unwrap();
+    ledger
+        .validate_selected_shared_handles_on_control()
+        .unwrap();
+    assert!(ledger.summary().unwrap().require_complete().is_err());
+    let state = editor.project().tracks()[0].instrument().unwrap().state();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 44_100,
+        tuning: first.tuning(),
+        resources: first.owners[0].resources.as_ref().unwrap(),
+    };
+    assert!(registry.prepare_instrument(state, &context).is_err()); // no registry gate bypass
+    assert!(SharedAnalyticContextTable::prepare(editor.project(), &registry, None, None).is_err());
+}

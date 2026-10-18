@@ -119,6 +119,15 @@ source/model retirement. Removing the entire factory visitor fails the negative
 oracle; byte-restored source passes. This constructor is not whole-graph peak,
 custody, publication or saturated-reaper proof and does not open registry access.
 
+The existing shared-context-table preparer now has a closed loaded-Sampler
+branch over actual Project states and a borrowed existing resource bank. It
+constructs the actual concrete factory/configuration owner, quotes its component
+metadata and payload before construction, and reuses an exact existing owner for
+an unchanged configuration. This avoids routing private preparation through the
+public registry that deliberately refuses referenced processing. It neither
+registers Sampler nor permits the ordinary compiler or audio host to publish it;
+whole supported-root construction/admission still has to be completed.
+
 Actual Session source configuration and `PreparedMutableTrackInstrument` fields
 retain that concrete factory receipt through a private sampler/opaque enum.
 Borrowing the runtime trait does not create a different owner. The source-row
