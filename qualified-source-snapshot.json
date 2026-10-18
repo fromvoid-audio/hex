@@ -1,0 +1,72 @@
+{
+  "actual_qualified_main": "62e7fbfea221088affde77ab64c785e7a8f743ba",
+  "tree": "27e87d4691a7b54a01136af556cd53e8ac1a2b15",
+  "previous_installed_source": "2be24f7ca0d05559de5ccc4dde235e78ac1d3083",
+  "previous_installed_build": "736251772",
+  "installed_source_unchanged": true,
+  "newly_included": [
+    {
+      "ticket": 2846,
+      "pr": 448,
+      "qualified_head": "a9b410b624ec26fac363704c10a5aafa47e9bcfd"
+    },
+    {
+      "ticket": 2849,
+      "pr": 451,
+      "qualified_head": "7cf3f48ced7ffff0d59a24c344482d4468fe0450"
+    },
+    {
+      "ticket": 2796,
+      "pr": 402,
+      "qualified_head": "892eb993267912854f16122454f24cb445c2abd8"
+    },
+    {
+      "ticket": 2848,
+      "pr": 450,
+      "qualified_head": "f95eb2da7ea61c62b63a63b97ef26d3288875a6e"
+    },
+    {
+      "ticket": 2815,
+      "pr": 421,
+      "qualified_head": "b5b536053d7d8ceaa94bdcc51b4530677a624811"
+    }
+  ],
+  "excluded_unmerged": [
+    447,
+    449,
+    395,
+    453,
+    454,
+    424,
+    413
+  ],
+  "source_ci_head": "b5b536053d7d8ceaa94bdcc51b4530677a624811",
+  "source_ci_summary_sha256": "918f20e3c98d404c78c6b682fad299479eff61dd97c691f29fe04f53efff7e78",
+  "source_ci_status": "all21passed759.533s cleanunchanged/stalefalse",
+  "binding": "Actualmergedtree equals testedb5tree; originalsourceCI notrelabeledmerge-head orMac. Rootchoosesimmutablecheckout/fullnativeCI/optimizeddelivery; no globalhold onlatermerges.",
+  "changelog": "Original7entries unchangedSHA1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc/declaredcoveragecb8befc4; no regeneratednotes/newfeatureinclusionclaim.",
+  "finite_user_checklist": [
+    "Openonefile once whileclean/dirty; Save/DontSave/Cancel andsavefailure preserveintendeddoc; typedtrack/clipnames included withoutsecondOpen.",
+    "Changelogcoloredcategoryheadings andindividualrowhover; EscClose restoreseditorfocus; no neighboringrow/reflow.",
+    "ResizeAudio/MIDI thenreleaseoverbrowsercommitslastpreview once; neutraloutside/othertrackcancel; UndoRedo.",
+    "FocuseddeviceBackspace andpointerX removeintendedcard; heldrepeatdoesnotdeleteadjacent; Ctrltexttyping andUndoRedoSpace remainowned.",
+    "Ordinary/selected/liveShift/audioGhost waveform staysbelowtitle; outerselectionborder/cliptiming intact."
+  ],
+  "open_acceptance": "Native/physicalOSchooser/font/pixels/keyboard/listening/optimizedinstallation not establishedbycloudsourceCI. RootownsserialMac/appdelivery.",
+  "version": "0.1.0",
+  "build_inputs": {
+    "source": "62e7fbfea221088affde77ab64c785e7a8f743ba",
+    "expected_header_identity": "0.1.0 \u00b7 62e7fbfe",
+    "expected_bundle_version": "1659370494",
+    "profile": "fresh optimized/release through supported repository tooling after exact nativeFULL21",
+    "locked_git_files_sha256": {
+      "Cargo.lock": "18f8428da3e4c344a332ad68fc7061294b952353027fd7171e0858d040282304",
+      "rust-toolchain.toml": "d3c8887dfc80164497209239779196b11a208a9c2a6394f2fa5a5f4c60980096",
+      "changelog/generated.json": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc",
+      "scripts/hex-test-build.py": "a84a040613d70384a43cab4c836a9e3b6df1037faed07dd0e926df0fa1515b90",
+      "scripts/local-ci.py": "8317c9b31cee17e46a705e873e9cafa686d559f1951bd94b8b54301680a2796a",
+      "third_party/gpui/hex-provenance.json": "f203159d8919f08ff8a124a3d37777df74ddb771ab9625ffc07cab7e7968c95b"
+    }
+  },
+  "existing_native_build_critical_gap": "No known unresolved build-critical failure on this source. New integrated nativeFULL21 and fresh optimized/sign/install still unrun on62e7; previous2be successful delivery is separate. Physical OS chooser and name-draft continuation remain acceptance gaps; 424/413 native failures are excluded unmerged source, not62e7 blockers. Generic414 sandbox and452 corrected nativeheader oracle retained. Original seven-note dataset coverage remainscb8; newly merged features are not represented as new generated release notes."
+}
