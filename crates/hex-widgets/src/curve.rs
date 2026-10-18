@@ -111,6 +111,7 @@ mod tests {
         dial_rail: 0x000000,
         hover: 0x404040,
         font_size: 8.0,
+        text_case: crate::TextCase::Preserve,
     };
 
     struct CurveFixture(std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>);

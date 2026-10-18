@@ -259,7 +259,7 @@
 +        self.test_platform.cursor_style()
 +    }
 +
-@@ -677,0 +690,65 @@
+@@ -677,0 +690,89 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -301,6 +301,30 @@
 +                .rev()
 +                .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
 +                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
++        })
++    }
++
++    /// Completed quad fragments for a debug element, including cache replay
++    /// masks. The caller can check coverage and ordering across all fragments.
++    /// This is scene evidence, not native framebuffer/pixel readback.
++    pub fn rendered_quad_paint_layers(
++        &mut self,
++        selector: &'static str,
++        border: bool,
++    ) -> Vec<((u32, usize), Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let scaled = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.quads.iter().enumerate()
++                .filter(|(_, quad)| quad.bounds == scaled && if border {
++                    quad.border_widths != crate::Edges::default()
++                } else {
++                    !quad.background.is_transparent()
++                })
++                .map(|(index, quad)| ((quad.order, index), quad.content_mask.bounds))
++                .collect()
 +        })
 +    }
 +
