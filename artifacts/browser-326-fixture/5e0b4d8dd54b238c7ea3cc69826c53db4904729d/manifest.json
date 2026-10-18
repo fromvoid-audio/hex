@@ -1,0 +1,43 @@
+{
+  "canonical_pr": 326,
+  "ticket": 2710,
+  "head": "5e0b4d8dd54b238c7ea3cc69826c53db4904729d",
+  "tree": "89e9fca79723d38f9c2932a7eebeab46747beed1",
+  "expected_before": "40b59028ca065626c4a0b8dbe87b430d3bc6bd71",
+  "expected_before_tree": "37fb07c483eff8b9d6df919e2dafb3c78d114693",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "crates/hex-ui/src/editor/mod.rs"
+  ],
+  "original_red": "40b+new test:0pass1fail, ambient /home/agent root escapes private fixture BEFORE parking workers;326-fixture-original-red.log+original-test-only.patch",
+  "targeted_results": "5Place-icon tests PASS0failed0ignored733filtered incl original input/persistence/identity/fallback/errors/geometry/outsideclick; strictUIfeaturealltargetClippy + architecture/GPUI/style/fmt/diff all0",
+  "retained_diagnostics": [
+    "new regression accessed SampleBrowser private in_flight; removed inaccessible internal assertion, actual WAV+catalog/cache positive assertions retained",
+    "initial proposed parentmod root assignment failed private BrowserState home/music; kept ownership by forwarding testHome to BrowserState constructor instead of exposing fields"
+  ],
+  "limits": [
+    "No full20; dedicated merger owns final actual integration",
+    "No native/app operations; fixture-only no changed feature native request",
+    "RAII caller lives through actual drained scans; this does not implement future414 shared delayed-worker lifetime custody"
+  ],
+  "files": {
+    "326-fixture-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "326-fixture-final-checks.json": "58553d9266c129d5c5cada0ca1d74c883d2508336038ea697a6ad3f91f476b39",
+    "326-fixture-final-clippy.log": "47560dbaf3dd84d5c3b16471541112992d0c1d36728d4264baa0dd8613da6afd",
+    "326-fixture-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "326-fixture-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "326-fixture-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "326-fixture-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "326-fixture-green-v2.log": "7af0a2eb00a7733b4869008af98832cb3787f184160392eccb04ffcd47acd4b8",
+    "326-fixture-green.log": "80943e24ad6995fa10612173c13e1be04dd6b9671c95c4bb03f5718cb4fdb283",
+    "326-fixture-original-red.log": "892feb1b9f3fb7d2212576ec3e41e7f67436e16bd17a36ef0d4327e1a002c2a1",
+    "326-fixture-original-test.rs": "1c26afb086803ee2ee8f8ca8763cd80b9e5d7d55aaf9c28b05e54b447d188195",
+    "326-fixture-parent-private-field-diagnostic.log": "80943e24ad6995fa10612173c13e1be04dd6b9671c95c4bb03f5718cb4fdb283",
+    "326-fixture-test-private-field-diagnostic.log": "bffa92aabf1ef28406e5433570e8b5fc9fb80aa1025fbea77c49e90e7be68e49",
+    "before-after-hashes.json": "757c07d27edb8c6cda70bc35f7b9b5a42c25f46b67fb366666361f6cb28c1ae6",
+    "integration-note.md": "c55ddd07c8a64ce3f99ffc16646f5f07707177e93695f0a7d0b235d603d59320",
+    "original-test-only.patch": "b9c9f1d6e2043e6d3364f5a8e1513631cb13fec3b0d18e79569251cb48df34ea",
+    "source.patch": "341d28bebfed643cb332ea8c9dbe7ea8ad6fee0b335b2db5d1cbb78f914c54a4"
+  }
+}

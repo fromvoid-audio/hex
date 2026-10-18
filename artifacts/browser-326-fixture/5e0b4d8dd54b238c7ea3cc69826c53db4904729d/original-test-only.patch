@@ -1,0 +1,33 @@
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4069,3 +4069,30 @@
+         }
+     }
+ }
++
++#[gpui::test]
++fn browser_place_icons_preference_fixture_bounds_startup_before_workers(cx: &mut TestAppContext) {
++    let directory = PreferencesTestDirectory::new();
++    let config = directory.0.join("missing-browser.json");
++    let recent = directory.0.join("recent.json");
++    let (handle, editor) = place_icon_preferences_window(cx, &config, &recent);
++    // Check before parking/running any newly scheduled filesystem work.
++    editor.read_with(cx, |view, _| {
++        for path in [&view.browser.home, &view.browser.music, &view.browser.directory] {
++            assert!(path.starts_with(&directory.0), "startup browser root escaped private fixture: {path:?}");
++        }
++        assert_eq!(view.browser.places, vec![view.browser.music.clone(), view.browser.home.clone()]);
++        assert_eq!(view.browser.preferences_path, config);
++    });
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    editor.read_with(visual, |view, _| {
++        assert!(!view.browser.loading);
++        assert!(!view.browser.preferences_loading);
++        assert!(view.sample_roots().iter().all(|path| path.starts_with(&directory.0)));
++        assert_eq!(view.browser.listing.as_ref().unwrap().entries.len(), 1);
++        assert_eq!(view.browser.listing.as_ref().unwrap().entries[0].path, view.browser.music.join("fixture.wav"));
++    });
++    assert!(config.with_extension("samples-v1.db").is_file());
++    assert!(!config.exists(), "missing explicit preferences must not be manufactured");
++}

@@ -1,0 +1,17 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0616]: field `home` of struct `BrowserState` is private
+   --> crates/hex-ui/src/editor/mod.rs:944:25
+    |
+944 |                 browser.home = home.clone();
+    |                         ^^^^ private field
+
+error[E0616]: field `music` of struct `BrowserState` is private
+   --> crates/hex-ui/src/editor/mod.rs:945:25
+    |
+945 |                 browser.music = music.clone();
+    |                         ^^^^^ private field
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `hex-ui` (lib test) due to 2 previous errors

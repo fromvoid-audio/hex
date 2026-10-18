@@ -1,0 +1,20 @@
+{
+  "crates/hex-ui/src/editor/browser.rs": {
+    "before_git_blob": "0e38452f7dd58dfe6cdec54cf73dfe28d232504a",
+    "after_git_blob": "9c160226f5236d8131708401b4eb2333168be020",
+    "before_sha256": "198c9bb1a20bac8180ac1d69552baa8350b6c3b19541bf4e74fc9ce7dc98134b",
+    "after_sha256": "1c786b606b8f0e76d1e729931dea20084d70708993b03a05bc5e6ad48c1d0d6d"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_git_blob": "9d7f428207f0addf2130510a717e6a738324f01d",
+    "after_git_blob": "ddbbae55fd8161163687b0f9db468ce99a7a8e91",
+    "before_sha256": "b7310deac63764fcc3645d78f897a50bacdf536c465bb3528a6d9e132c29c1db",
+    "after_sha256": "7306030bb293d3d454729d74f0e25c18523262819798febab9c366050a5bcc94"
+  },
+  "crates/hex-ui/src/editor/mod.rs": {
+    "before_git_blob": "7cd919696dcf837ddffec47a535313fbcda6be49",
+    "after_git_blob": "f0cce06e69ef21b5014f2944ea9324581327bf39",
+    "before_sha256": "c5435674fdbf574fc4b4dc0b01e9d4211ad690e21c861ee524b084d54da50c8e",
+    "after_sha256": "9c868771667a9cf3e5c78ab21d484bb933694b14a9c0a0dcaced3ade216981f7"
+  }
+}
