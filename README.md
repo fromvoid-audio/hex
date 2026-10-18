@@ -171,7 +171,9 @@ Up/Down selects tracks; S toggles exclusive solo and Shift-S additive solo.
 Compact zoom buttons change the viewport; Alt-Left/Right pans and Command-0 fits.
 Command-Plus zooms in and Command-Minus zooms out (also bound to Command-Equal
 where the keyboard layout delivers it). Command-L sets/enables the loop from the
-selected clip; L toggles it. Native loop playback honors this region; CLI export
+selected audio clip; in Arrangement, L sets and enables the explicit time selection
+or outer bounds of selected audio/MIDI clips. Repeated L reasserts the range; the
+loop toolbar toggles it. Session L retains toggle behavior. Native loop playback honors this region; CLI export
 renders the linear arrangement.
 Command-Shift-E exports the current linear Arrangement to a new stereo PCM16 WAV
 in the background. It captures the latest compiled revision, writes from frame

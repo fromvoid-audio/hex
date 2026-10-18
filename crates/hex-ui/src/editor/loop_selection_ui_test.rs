@@ -170,6 +170,14 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
                 end_frame: 12_000,
             });
             v.time_selection_project_scope = project_scope;
+            // The real body gesture owns a matching generation-scoped edit cursor.
+            v.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track,
+                frame: 36_000,
+                generation: v.project_generation,
+                pulse_color: 0,
+                pulse_started: Instant::now(),
+            });
         });
         visual.simulate_keystrokes("l");
         pump(&editor, &mut visual);
