@@ -806,6 +806,7 @@ impl EditorView {
                 directory.join("theme.json"),
             ),
             Some(directory.join("samples")),
+            None,
         )
     }
 
@@ -830,6 +831,8 @@ impl EditorView {
             ),
             #[cfg(all(test, feature = "ui-test-support"))]
             None,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            None,
         )
     }
 
@@ -840,6 +843,9 @@ impl EditorView {
         output: Result<crate::EditorAudio, String>,
         paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
         #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
+            std::path::PathBuf,
+        >,
+        #[cfg(all(test, feature = "ui-test-support"))] test_browser_home: Option<
             std::path::PathBuf,
         >,
     ) -> Self {
@@ -958,7 +964,12 @@ impl EditorView {
             }
         });
         focus.focus(window);
-        let browser = browser::BrowserState::new(cx, preferences_path);
+        let browser = browser::BrowserState::new(
+            cx,
+            preferences_path,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            test_browser_home,
+        );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
