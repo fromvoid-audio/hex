@@ -62,6 +62,109 @@ impl ProjectTrackIds {
 mod project_owner_index_tests {
     use super::*;
     #[test]
+    fn compiled_project_moves_original_context_without_discarded_default_birth() {
+        use crate::{
+            Audio, Clip, Project, owned_shared::OwnedShared,
+            shared_analytic::SharedAnalyticContextTable,
+        };
+        let contexts = OwnedShared::new_owned(SharedAnalyticContextTable::default());
+        let pointer = std::sync::Arc::as_ptr(contexts.arc());
+        let mut tracks = Vec::with_capacity(5);
+        tracks.push(
+            Track::new(
+                vec![
+                    Clip::new(
+                        Audio::new(48_000, vec![[0.25, -0.5]; 4]).unwrap(),
+                        0,
+                        4,
+                        false,
+                    )
+                    .unwrap(),
+                ],
+                0.5,
+                false,
+            )
+            .unwrap(),
+        );
+        let track_pointer = tracks.as_ptr();
+        let track_capacity = tracks.capacity();
+        let returns = Vec::with_capacity(7);
+        let return_pointer = returns.as_ptr();
+        let return_capacity = returns.capacity();
+        crate::owned_shared::reset_birth_count();
+        crate::owned_shared::reset_clone_count();
+        let project =
+            Project::with_compiled_tracks(48_000, tracks, returns, None, 0.5, contexts).unwrap();
+        assert_eq!(
+            crate::owned_shared::birth_count(),
+            0,
+            "field assembly must not construct then discard a default owner"
+        );
+        assert_eq!(crate::owned_shared::clone_count(), 0);
+        assert_eq!(
+            std::sync::Arc::as_ptr(project.shared_contexts.arc()),
+            pointer
+        );
+        assert_eq!(
+            std::sync::Arc::strong_count(project.shared_contexts.arc()),
+            1
+        );
+        assert_eq!(project.tracks.as_ptr(), track_pointer);
+        assert_eq!(project.tracks.capacity(), track_capacity);
+        assert_eq!(project.return_buses.as_ptr(), return_pointer);
+        assert_eq!(project.return_buses.capacity(), return_capacity);
+        let mut renderer = crate::Renderer::new(&project);
+        renderer.play();
+        let mut pcm = [[0.0; 2]; 6];
+        renderer.render(&mut pcm).unwrap();
+        assert_eq!(
+            pcm,
+            [
+                [0.0625, -0.125],
+                [0.0625, -0.125],
+                [0.0625, -0.125],
+                [0.0625, -0.125],
+                [0.0; 2],
+                [0.0; 2]
+            ]
+        );
+    }
+    #[test]
+    fn compiled_project_assembly_preserves_validation_and_unknown_context_origin() {
+        use crate::{
+            Audio, Clip, Project, owned_shared::OwnedShared,
+            shared_analytic::SharedAnalyticContextTable,
+        };
+        crate::owned_shared::reset_birth_count();
+        assert!(Project::with_master_gain(0, vec![], None, 1.0).is_err());
+        assert!(Project::with_master_gain(48_000, vec![], None, f32::NAN).is_err());
+        let track = Track::new(
+            vec![Clip::new(Audio::new(44_100, vec![[0.25; 2]; 4]).unwrap(), 0, 4, false).unwrap()],
+            1.0,
+            false,
+        )
+        .unwrap();
+        assert!(Project::with_master_gain(48_000, vec![track], None, 1.0).is_err());
+        assert_eq!(crate::owned_shared::birth_count(), 0);
+        let unknown =
+            OwnedShared::untracked(std::sync::Arc::new(SharedAnalyticContextTable::default()));
+        let pointer = std::sync::Arc::as_ptr(unknown.arc());
+        let project =
+            Project::with_compiled_tracks(48_000, vec![], vec![], None, 1.0, unknown).unwrap();
+        assert_eq!(
+            std::sync::Arc::as_ptr(project.shared_contexts.arc()),
+            pointer
+        );
+        assert!(project.shared_contexts.parts().is_none());
+        assert_eq!(crate::owned_shared::birth_count(), 0);
+        let legacy = Project::with_master_gain(48_000, vec![], None, 1.0).unwrap();
+        assert_eq!(crate::owned_shared::birth_count(), 1);
+        assert_eq!(
+            std::sync::Arc::strong_count(legacy.shared_contexts.arc()),
+            1
+        );
+    }
+    #[test]
     fn project_owner_validation_is_linear_at_maximum_and_refuses_stale_or_unsorted_ids() {
         let index = ProjectTrackIds::from_ids((1..=256).rev());
         for ids in [vec![], vec![1], vec![256], (1..=256).collect()] {

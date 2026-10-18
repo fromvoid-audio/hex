@@ -57,6 +57,8 @@ impl<T> OwnedShared<T> {
         Ok(())
     }
     pub(crate) fn new_owned(value: T) -> Self {
+        #[cfg(test)]
+        BIRTHS.with(|count| count.set(count.get() + 1));
         let receipt = declared(Layout::new::<T>()).unwrap_or(1);
         Self {
             arc: Arc::new(value),
@@ -193,6 +195,17 @@ impl<T: ?Sized + Eq> Eq for OwnedShared<T> {}
 
 #[cfg(test)]
 thread_local! { static CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+// `new_owned` constructor-route calls only, not allocator/RSS or all Arc births.
+thread_local! { static BIRTHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(crate) fn reset_birth_count() {
+    BIRTHS.with(|count| count.set(0));
+}
+#[cfg(test)]
+pub(crate) fn birth_count() -> usize {
+    BIRTHS.with(std::cell::Cell::get)
+}
 #[cfg(test)]
 pub(crate) fn reset_clone_count() {
     CLONES.with(|count| count.set(0));

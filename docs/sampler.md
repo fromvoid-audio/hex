@@ -907,3 +907,14 @@ summary survives pending, bank and model destruction. These are local custody
 and binding proofs. No actual Service load request, registered failed-parent
 retirement, complete aggregate reservation, compiler admission or final native
 publication has been established by them.
+
+Complete compiled Project assembly now receives its already prepared shared
+context owner directly. The previous compiler constructor called the public
+legacy constructor, allocated an empty default context owner, then replaced it.
+Both paths now share the same validation/field assembly; only the public legacy
+path constructs its own default context. The compiler moves original context and
+Track/Return Vec backings without another `new_owned` birth or owning clone.
+A red/green constructor-route counter (not a general allocator/peak measurement),
+address/capacity checks, independent PCM and validation/Unknown-origin negatives
+cover this removal. Aggregate compiler reservation and selected child births
+remain separate open obligations.

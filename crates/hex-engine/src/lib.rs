@@ -2052,6 +2052,29 @@ impl Project {
         loop_region: Option<hex_project::LoopRegion>,
         master_gain: f32,
     ) -> Result<Self, Invalid> {
+        Self::assemble_with_children(
+            sample_rate,
+            tracks,
+            Vec::new(),
+            loop_region,
+            master_gain,
+            None,
+        )
+    }
+    /// Same validated field assembly for public legacy and complete compiler
+    /// paths. A supplied actual context moves directly into its destination;
+    /// no default owner is constructed and replaced. This does not qualify any
+    /// previously unknown child or certify aggregate construction/custody.
+    fn assemble_with_children(
+        sample_rate: u32,
+        tracks: Vec<Track>,
+        return_buses: Vec<ReturnBus>,
+        loop_region: Option<hex_project::LoopRegion>,
+        master_gain: f32,
+        shared_contexts: Option<
+            owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
+        >,
+    ) -> Result<Self, Invalid> {
         if sample_rate == 0 {
             return Err(Invalid("sample rate must be positive"));
         }
@@ -2086,7 +2109,7 @@ impl Project {
                 .max(),
             sample_rate,
             tracks,
-            return_buses: Vec::new(),
+            return_buses,
             return_feed_plan: return_feed_plan::ReturnFeedPlan::default(),
             signal_graph: None,
             tempo_map: None,
@@ -2094,9 +2117,11 @@ impl Project {
             loop_region,
             master_gain,
             has_streamed_sources,
-            shared_contexts: owned_shared::OwnedShared::new_owned(
-                shared_analytic::SharedAnalyticContextTable::default(),
-            ),
+            shared_contexts: shared_contexts.unwrap_or_else(|| {
+                owned_shared::OwnedShared::new_owned(
+                    shared_analytic::SharedAnalyticContextTable::default(),
+                )
+            }),
         })
     }
 
@@ -2108,9 +2133,14 @@ impl Project {
         master_gain: f32,
         shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
     ) -> Result<Self, Invalid> {
-        let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
-        project.return_buses = return_buses;
-        project.shared_contexts = shared_contexts;
+        let mut project = Self::assemble_with_children(
+            sample_rate,
+            tracks,
+            return_buses,
+            loop_region,
+            master_gain,
+            Some(shared_contexts),
+        )?;
         project.audible_end_frame = project
             .tracks
             .iter()
