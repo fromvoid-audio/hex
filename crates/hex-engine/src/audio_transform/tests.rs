@@ -1315,3 +1315,117 @@ fn sample_bpm_and_edge_stretch_keep_pcm_pitch_and_partition_seek_consistency() {
         }
     }
 }
+
+#[test]
+fn beats_actual_preparation_joins_cache_parameters_version_and_undo_match_rendered_playback() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    media.insert(
+        asset,
+        Audio::new(16_000, vec![[0.5, -0.25]; 8_000]).unwrap(),
+    );
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let length = editor.project().clip(clip).unwrap().duration() as usize;
+    assert_eq!(length, 16_000);
+    let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+    let first = prepare(&editor, &media, &context);
+    let pcm = render(&first, 0, length, 127);
+    for at in [4_000, 8_000, 12_000] {
+        assert_eq!(pcm[at], [0.5, -0.25]);
+        assert_eq!(pcm[at - 1], pcm[at], "actual prepared neighbor join");
+    }
+    for block in [1, 31, 257, 513] {
+        assert_eq!(render(&first, 0, length, block), pcm);
+        assert_eq!(render(&first, 3_987, 511, block), pcm[3_987..4_498]);
+    }
+    let hits = context.cache_hits();
+    let repeated = prepare(&editor, &media, &context);
+    assert!(context.cache_hits() > hits);
+    assert_eq!(render(&repeated, 0, length, 63), pcm);
+    let mut off = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap()
+        .clone();
+    off.mode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+        tail: BeatsTail::Off,
+        decay: 100,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(off),
+        })
+        .unwrap();
+    let hits = context.cache_hits();
+    let stopped = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        hits,
+        "tail edit must not reuse Forward PCM"
+    );
+    let off_pcm = render(&stopped, 0, length, 127);
+    assert!(off_pcm[2_000..4_000].iter().all(|s| *s == [0.0; 2]));
+    assert_eq!(
+        off_pcm[4_000], [0.0; 2],
+        "Off restart removes background, not source attacks"
+    );
+    assert_ne!(off_pcm, pcm);
+    assert!(editor.undo());
+    let restored = prepare(&editor, &media, &context);
+    assert!(context.cache_hits() > hits);
+    assert_eq!(render(&restored, 0, length, 257), pcm);
+    assert!(editor.redo());
+    let hits = context.cache_hits();
+    for entry in &mut context.cache.borrow_mut().entries {
+        entry.algorithm_version = hex_warp::ALGORITHM_VERSION - 1;
+    }
+    let rebuilt = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        hits,
+        "old algorithm PCM must not survive cache lookup"
+    );
+    assert_eq!(render(&rebuilt, 0, length, 513), off_pcm);
+    assert_eq!(
+        render(&first, 0, length, 127),
+        pcm,
+        "retained old revision remains immutable"
+    );
+    eprintln!("executed actual Beats canonical/preparation/cache/version/Undo/partition/seek path");
+}
