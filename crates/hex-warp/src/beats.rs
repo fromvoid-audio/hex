@@ -3,6 +3,7 @@
 mod analysis;
 mod envelope;
 mod onsets;
+mod plan;
 mod synthesis;
 use super::*;
 use resample::{BANK_BYTES, Bandlimited};
@@ -31,7 +32,7 @@ pub(super) fn render(
         return Err(Error::Invalid("beat divisions exceed bounded source plan"));
     }
     let Mode::Beats { decay, .. } = request.mode else {
-        return Err(Error::Invalid("Beats mode mismatch"));
+        return Err(Error::Invalid("beats mode mismatch"));
     };
     let unity = pitch == 1.0
         && request.map.segments().iter().all(|s| {
@@ -47,16 +48,17 @@ pub(super) fn render(
     let ring = max_grain * 2 + 4;
     let plan_bytes = MAX_POINTS * std::mem::size_of::<u64>()
         + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>()
-        + envelope::scratch(decay);
+        + plan::scratch(request);
     // Work::scratch is a maximum recorder, not an adder. Quote the complete
     // concurrently live plan/search/filter/ring family before its first Vec.
     work.scratch(
         plan_bytes + onsets::scratch(request.input.sample_rate) + BANK_BYTES + ring * 24 + 4096,
     )?;
     let anchors = analysis::prepare(request, pitch, work)?;
+    let schedule = plan::Schedule::prepare(request, &anchors, work)?;
     if unity {
         let mut pcm = copy(request, work)?;
-        envelope::apply(request, &anchors, &mut pcm, decay, work)?;
+        envelope::apply(&schedule, &mut pcm, decay, work)?;
         return Ok(pcm);
     }
     let bank = Bandlimited::new(pitch, work)?;
@@ -76,7 +78,7 @@ pub(super) fn render(
             &bank,
             work,
             &mut acc,
-            synthesis::Span {
+            plan::Span {
                 start: output,
                 end: start,
                 source_start: source,
@@ -84,6 +86,7 @@ pub(super) fn render(
                 locked_end: anchor.attack,
             },
             pitch,
+            &schedule,
         )?;
         for frame in start..end {
             if frame % 256 == 0 {
@@ -113,7 +116,7 @@ pub(super) fn render(
         &bank,
         work,
         &mut acc,
-        synthesis::Span {
+        plan::Span {
             start: output,
             end: request.output_frames,
             source_start: source,
@@ -121,9 +124,10 @@ pub(super) fn render(
             locked_end: false,
         },
         pitch,
+        &schedule,
     )?;
     let mut pcm = acc.finish()?;
-    envelope::apply(request, &anchors, &mut pcm, decay, work)?;
+    envelope::apply(&schedule, &mut pcm, decay, work)?;
     Ok(pcm)
 }
 fn copy(request: &Request<'_>, work: &mut Work<'_>) -> Result<Vec<Frame>, Error> {

@@ -92,17 +92,24 @@ fn beats_off_nonzero_segment_end_reaches_silence_without_a_full_scale_step() {
 }
 
 #[test]
-fn beats_back_and_forth_reflects_sample_centers_without_endpoint_duplication() {
+fn beats_back_and_forth_protects_native_body_and_overlaps_reflected_turns() {
     let source: Vec<_> = (0..64)
         .map(|i| [i as f32 / 100.0, -i as f32 / 200.0])
         .collect();
     let pcm = render_tail(&source, Tail::Alternating, 8_000);
-    assert_eq!(&pcm[..64], &source);
-    // First reversal walks 62,61,... after the original sample63. It must
-    // neither replay63 nor jump back to the attack or beyond this segment.
-    for i in 0..16 {
-        assert_eq!(pcm[64 + i], source[62 - i]);
-    }
+    // A normalized overlap smooths the turn; it does not promise the old
+    // sample-by-sample reflected copier outside the protected native body.
+    // The scalar-plan unit separately checks 63,62,... without duplicate63.
+    assert_eq!(&pcm[..48], &source[..48]);
+    assert!(pcm.windows(2).all(|w| (w[1][0] - w[0][0]).abs() < 0.03));
+    assert!(
+        pcm.iter()
+            .all(|x| (0.0..=0.63).contains(&x[0]) && (x[1] + x[0] * 0.5).abs() < 1e-6)
+    );
+    assert!(
+        pcm[64..96].windows(2).any(|w| w[1][0] < w[0][0]),
+        "tail must actually traverse backwards"
+    );
 }
 
 #[test]

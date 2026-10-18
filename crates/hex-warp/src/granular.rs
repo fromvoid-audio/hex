@@ -90,7 +90,7 @@ pub(super) fn beats(
     if matches!(
         request.mode,
         Mode::Beats {
-            tail: Tail::Forward,
+            tail: Tail::Forward | Tail::Alternating,
             ..
         }
     ) {

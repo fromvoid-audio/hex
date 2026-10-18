@@ -1,4 +1,5 @@
 use super::*;
+use plan::{Schedule, Span};
 #[derive(Clone, Copy)]
 struct Match {
     position: f64,
@@ -18,7 +19,7 @@ struct Search<'r, 'a> {
     request: &'r Request<'a>,
     acc: &'r Accumulator,
     out: i128,
-    pitch: f64,
+    step: f64,
     overlap: usize,
     range: f64,
     lower: i128,
@@ -30,7 +31,7 @@ impl Search<'_, '_> {
             request,
             acc,
             out,
-            pitch,
+            step,
             overlap,
             range,
             lower,
@@ -47,7 +48,7 @@ impl Search<'_, '_> {
         for i in 0..points {
             let at = i * overlap / points;
             if let Some(x) = acc.preview(out + at as i128) {
-                let y = linear(request.input, position + at as f64 * pitch, lower, upper);
+                let y = linear(request.input, position + at as f64 * step, lower, upper);
                 count += 1.0;
                 for c in 0..2 {
                     sx[c] += x[c];
@@ -94,14 +95,6 @@ impl Search<'_, '_> {
         })
     }
 }
-#[derive(Clone, Copy)]
-pub(super) struct Span {
-    pub(super) start: usize,
-    pub(super) end: usize,
-    pub(super) source_start: f64,
-    pub(super) source_end: f64,
-    pub(super) locked_end: bool,
-}
 pub(super) fn bed(
     request: &Request<'_>,
     bank: &Bandlimited,
@@ -109,6 +102,7 @@ pub(super) fn bed(
     acc: &mut Accumulator,
     span: Span,
     pitch: f64,
+    schedule: &Schedule<'_>,
 ) -> Result<(), Error> {
     let Span {
         start,
@@ -125,6 +119,9 @@ pub(super) fn bed(
     let available = ((source_end - source_start) / pitch).floor().max(0.0) as usize;
     let grain = (request.input.sample_rate as usize / 25)
         .min(available)
+        // A short safe body must not disappear inside one huge turn overlap.
+        // Keep its shoulders small relative to that actual available material.
+        .min((available / 4).max(4))
         .min((end - start) * 2);
     if grain < 4 {
         work.check((end - start) as u64 * 64)?;
@@ -147,7 +144,7 @@ pub(super) fn bed(
     let last_map = request.map.position(end as i128)?;
     let mut out = start as i128 - hop as i128;
     while out < end as i128 {
-        work.check(1)?;
+        work.check(16)?;
         let center = out + hop as i128;
         let fraction = ((center - start as i128) as f64 / (end - start) as f64).clamp(0.0, 1.0);
         let mapped = request.map.position(center)?;
@@ -155,17 +152,40 @@ pub(super) fn bed(
             + (source_start - first_map) * (1.0 - fraction)
             + (source_end - last_map) * fraction
             - hop as f64 * pitch;
+        let mut step = pitch;
+        if matches!(
+            request.mode,
+            Mode::Beats {
+                tail: Tail::Alternating,
+                ..
+            }
+        ) && let Some((position, direction)) = schedule.reflected(span, center, pitch)
+        {
+            step = pitch * direction;
+            nominal = position - hop as f64 * step;
+        }
         let mut forced = false;
         if out <= start as i128 {
+            step = pitch;
             nominal = source_start + (out - start as i128) as f64 * pitch;
             forced = true;
         }
         if locked_end && out >= end as i128 - grain as i128 {
+            step = pitch;
             nominal = source_end - (end as i128 - out) as f64 * pitch;
             forced = true;
         }
-        let minimum = source_start;
-        let maximum = (source_end - grain as f64 * pitch).max(minimum);
+        let (minimum, maximum) = if step > 0.0 {
+            (
+                source_start,
+                (source_end - grain as f64 * pitch).max(source_start),
+            )
+        } else {
+            (
+                (source_start + (grain - 1) as f64 * pitch).min(source_end - 1.0),
+                source_end - 1.0,
+            )
+        };
         if !forced {
             nominal = nominal.clamp(minimum, maximum);
         }
@@ -176,7 +196,7 @@ pub(super) fn bed(
             request,
             acc,
             out,
-            pitch,
+            step,
             overlap: hop,
             range,
             lower,
@@ -232,7 +252,7 @@ pub(super) fn bed(
             let weight = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / grain as f64).cos();
             let sample = bank.sample_segment(
                 request.input,
-                selected.position + i as f64 * pitch,
+                selected.position + i as f64 * step,
                 lower,
                 upper,
             );

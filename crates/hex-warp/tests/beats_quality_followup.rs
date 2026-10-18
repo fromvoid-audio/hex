@@ -71,7 +71,7 @@ fn beats_continuous_division_joins_do_not_manufacture_zero_to_dc_edges() {
 }
 
 #[test]
-fn beats_neighbor_join_preserves_original_tone_edge_in_both_channels() {
+fn beats_neighbor_joins_add_no_edges_above_natural_tone_slope() {
     for rate in [16_000, 44_100, 48_000] {
         let length = rate as usize / 2;
         let source: Vec<Frame> = (0..length)
@@ -93,33 +93,22 @@ fn beats_neighbor_join_preserves_original_tone_edge_in_both_channels() {
                         .output_for_source((src as i128) << 32)
                         .unwrap() as usize;
                     for channel in 0..2 {
-                        let original = source[src][channel] - source[src - 1][channel];
-                        let actual = pcm[at][channel] - pcm[at - 1][channel];
-                        if tail == Tail::Forward {
-                            // A grid point is not a physical attack. WSOLA may
-                            // choose a different coherent phase there; the
-                            // source sample at that grid index is not a valid
-                            // phase reference. Bound EVERY nearby edge by the
-                            // actual source's maximum natural slope instead.
-                            let limit = source
-                                .windows(2)
-                                .map(|w| (w[1][channel] - w[0][channel]).abs())
-                                .fold(0.0_f32, f32::max)
-                                * 1.2
-                                + 1e-6;
-                            for pair in
-                                pcm[at.saturating_sub(64)..(at + 65).min(pcm.len())].windows(2)
-                            {
-                                assert!(
-                                    (pair[1][channel] - pair[0][channel]).abs() <= limit,
-                                    "generated WSOLA grid edge {rate}/{ratio}/{channel}: {:?} limit={limit}",
-                                    pair
-                                );
-                            }
-                        } else {
+                        // Neither Forward nor normalized reflected OLA promises
+                        // the old source phase at an arbitrary grid point.
+                        // Bound every local edge against the actual natural
+                        // source slope, including the grid neighborhood.
+                        let limit = source
+                            .windows(2)
+                            .map(|w| (w[1][channel] - w[0][channel]).abs())
+                            .fold(0.0_f32, f32::max)
+                            * 1.2
+                            + 1e-6;
+                        for pair in pcm[at.saturating_sub(64)..(at + 65).min(pcm.len())].windows(2)
+                        {
                             assert!(
-                                (actual - original).abs() < 0.015,
-                                "generated tone edge {rate}/{ratio}/{tail:?}/{channel}: {actual} vs original {original}"
+                                (pair[1][channel] - pair[0][channel]).abs() <= limit,
+                                "generated OLA grid edge {rate}/{ratio}/{tail:?}/{channel}: {:?} limit={limit}",
+                                pair
                             );
                         }
                     }
