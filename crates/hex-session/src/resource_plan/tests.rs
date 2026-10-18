@@ -75,6 +75,135 @@ fn fixture() -> Option<(Session, Vec<AssetId>)> {
 }
 
 #[test]
+fn actual_worker_history_media_and_exported_aliases_join_one_scoped_ledger() {
+    if !hex_engine::audio_storage_constructor_layout_supported()
+        || !hex_engine::canonical_native_state_storage_layout_supported()
+    {
+        eprintln!("unsupported worker model/media constructors; no positive union proof");
+        return;
+    }
+    eprintln!("SUPPORTED actual worker current Undo Redo and Mono/Stereo media/export union");
+    for stereo in [false, true] {
+        let mut session = Session::new(48_000, 8, 1024).unwrap();
+        let hex_project::Created::Track(track) = session
+            .editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "sampler".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let device = session
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        session
+            .editor
+            .execute(hex_project::Command::ReplaceDeviceState {
+                device,
+                state: hex_engine::empty_sampler_state_on_control().unwrap(),
+            })
+            .unwrap();
+        let source = if stereo {
+            OwnedAudioSource::try_resident(48_000, vec![[0.25, -0.5]; 4])
+                .ok()
+                .unwrap()
+        } else {
+            OwnedAudioSource::try_resident_mono(48_000, vec![0.25; 4])
+                .ok()
+                .unwrap()
+        };
+        let prepared = PreparedImport::from_native_source(
+            "worker-original.wav".into(),
+            source,
+            48_000,
+            hex_media::ResampleLimits {
+                max_source_frames: 4,
+                max_output_frames: 4,
+            },
+        )
+        .unwrap();
+        let hex_project::Created::Asset(asset) = session
+            .editor
+            .execute(hex_project::Command::AddAsset {
+                path: "worker-original.wav".into(),
+                sample_rate: 48_000,
+                frames: 4,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        session
+            .media
+            .try_insert_on_control(
+                asset,
+                crate::ResidentAsset {
+                    source_audio: prepared.source_audio,
+                    audio: Some(prepared.audio),
+                    waveform: crate::SharedWaveform::new_on_control(prepared.waveform),
+                    frames: 4,
+                },
+                hex_project::MAX_ASSETS,
+            )
+            .unwrap();
+        // Undo removes the asset only from current. Actual Redo and retained
+        // media still own real storage; neither can disappear from the union.
+        assert!(session.editor.undo());
+        assert!(session.project().asset(asset).is_none());
+        assert!(session.editor.can_undo() && session.editor.can_redo());
+        let waveforms = session.waveforms();
+        let captured = crate::SharedProject::new_on_control(session.project().clone());
+        let run = |budget| {
+            session.with_resident_pcm_inventory_on_control(|inventory| {
+                let mut ledger = AudioRootStorageLedger::try_new_on_control(budget)?;
+                inventory.visit_worker_model_media_storage_on_control(&mut ledger)?;
+                let selected = ledger.summary()?;
+                assert!(
+                    ledger
+                        .validate_selected_shared_handles_on_control()
+                        .is_err(),
+                    "real exported model/waveform fields cannot be omitted"
+                );
+                crate::visit_shared_project_selected_storage_on_control(&captured, &mut ledger)?;
+                ledger.borrow_metadata_entries_backing_on_control(&waveforms)?;
+                for waveform in waveforms.values() {
+                    hex_media::waveform::borrow_shared_storage_on_control(waveform, &mut ledger)?;
+                }
+                ledger.validate_selected_shared_handles_on_control()?;
+                let joined = ledger.summary()?;
+                assert!(
+                    joined.data_bytes > selected.data_bytes,
+                    "independent exported model/container backing is real, not content-deduped"
+                );
+                inventory.visit_worker_model_media_storage_on_control(&mut ledger)?;
+                assert_eq!(ledger.summary()?, joined, "same actual fields deduplicate");
+                assert!(
+                    joined.require_complete().is_err(),
+                    "enclosing/native/other worker roots remain open"
+                );
+                Ok(joined)
+            })
+        };
+        let mut budget = ledger_limits();
+        budget.data_rows = 512;
+        budget.handle_rows = 512;
+        let summary = run(budget).unwrap();
+        budget.max_retained_bytes = summary.retained_bytes;
+        budget.max_construction_peak_bytes = summary.construction_peak_bytes;
+        assert_eq!(run(budget).unwrap(), summary);
+        budget.max_retained_bytes -= 1;
+        assert!(run(budget).is_err());
+        assert_eq!(session.project(), captured.as_ref());
+        assert!(session.editor.can_undo() && session.editor.can_redo());
+    }
+}
+
+#[test]
 fn actual_session_bank_and_exported_maps_keep_independent_backings_and_shared_children() {
     let Some((session, ids)) = fixture() else {
         return;

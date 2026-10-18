@@ -97,6 +97,17 @@ wiring, a new owner system or admission. Actual caller construction reservation,
 worker/native joining and replacement of the legacy owning Event/UI fields
 remain mandatory before this route enables registration.
 
+The scoped worker model/media visitor now joins actual current, Undo and Redo
+project buffers, canonical state/MIDI fields, retained resident originals and
+optional derivatives, and resident/clip waveform owners. It borrows actual
+history entries, never synthetic snapshots. Embedded transform PCM uses the
+existing same-physical-field dedup path; processed/unknown buffers still refuse.
+The new Mono/Stereo oracle leaves an asset in Redo after Undo and separately
+joins real exported Project/waveform fields. This does not qualify the enclosing
+Session, its cached sine/control-signal owners, transform metadata, other worker
+locals or construction/publication. Those remaining fields stay explicit rather
+than disappearing from the required root union.
+
 The official interaction reference is Live12 manual section31.11/31.11.1,
 [Simpler](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#simpler),
 as verified by the coordinating lane. This cloud's direct request returned403;

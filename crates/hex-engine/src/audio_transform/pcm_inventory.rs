@@ -35,6 +35,25 @@ impl AudioTransformPreparation {
     }
 }
 impl AudioTransformPcmInventory<'_> {
+    /// Actual embedded fields when composing with other root/model visitors.
+    /// Repeated visits of the SAME field deduplicate; another physical handle
+    /// must still join closure. Derived/unknown PCM remains refused. Cache
+    /// metadata, construction peak and publication are separate obligations.
+    pub fn visit_embedded_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        for entry in self.cache.entries.iter().chain(
+            self.pending
+                .as_ref()
+                .iter()
+                .flat_map(|entries| entries.iter()),
+        ) {
+            ledger.borrow_embedded_native_audio_on_control(&entry.source)?;
+            ledger.borrow_embedded_native_audio_on_control(&entry.prepared)?;
+        }
+        Ok(())
+    }
     /// PCM fields only: source and prepared buffers in every actual pending and
     /// committed entry. Cache/domain/tempo metadata and publication remain separate.
     pub fn visit_on_control<'a>(

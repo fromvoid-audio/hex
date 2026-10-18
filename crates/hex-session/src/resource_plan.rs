@@ -34,6 +34,46 @@ pub struct ResidentPcmInventory<'a> {
     transforms: &'a hex_engine::audio_transform::AudioTransformPcmInventory<'a>,
 }
 impl ResidentPcmInventory<'_> {
+    /// Join the ACTUAL worker's current/Undo/Redo model fields and resident
+    /// source/derivative/waveform fields under this same scoped Session/cache
+    /// borrow. No snapshots or synthetic identities are constructed. Every
+    /// retained history model remains visited, even if absent from current.
+    ///
+    /// This is selected model/media storage, NOT the whole Session: its inline
+    /// enclosing body, sine/shutdown owners, transform metadata, verified-file
+    /// facts, other worker locals, construction peak and native/root custody
+    /// still require their own actual proof. Unknown model/source children
+    /// refuse. The existing ledger can join this traversal with all guarded
+    /// export families and real native current/candidate/retirement roots.
+    pub fn visit_worker_model_media_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        if !self.session.verified_sources.is_empty() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        ledger.borrow_editor_history_buffers_on_control(&self.session.editor)?;
+        for project in self.session.editor.retained_projects_on_control() {
+            crate::shared_project::visit_project_selected_storage_on_control(project, ledger)?;
+        }
+        self.visit_waveform_storage_on_control(ledger)?;
+        for resident in self.session.media.values() {
+            match &resident.source_audio {
+                OriginalAudio::Stereo(audio) => {
+                    ledger.borrow_embedded_native_audio_on_control(audio)?;
+                }
+                OriginalAudio::Mono(source) => {
+                    ledger.borrow_embedded_native_source_on_control(source)?;
+                }
+            }
+            if let Some(audio) = &resident.audio {
+                ledger.borrow_embedded_native_audio_on_control(audio)?;
+            }
+        }
+        // Committed/pending transformed PCM still uses its existing validated
+        // source/root visitor; processed/unknown storage cannot be relabeled.
+        self.transforms.visit_embedded_on_control(ledger)
+    }
     /// Actual resident and retained-clip waveform map backing, paired summary
     /// handles, pyramids and embedded PCM. Other resident-source fields,
     /// transform/model metadata and enclosing Session storage remain separate.

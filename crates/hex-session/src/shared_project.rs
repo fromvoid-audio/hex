@@ -24,17 +24,26 @@ pub fn visit_shared_project_selected_storage_on_control<'a>(
     ledger: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
     ledger.borrow_shared_metadata_body_on_control(owner)?;
-    if owner.import_provenance().is_some()
-        || owner
+    visit_project_selected_storage_on_control(owner, ledger)
+}
+
+/// Actual inline current/history/candidate model, without inventing a paired
+/// outer owner. Its body belongs to the real enclosing Session/history slot.
+pub(crate) fn visit_project_selected_storage_on_control<'a>(
+    project: &'a hex_project::Project,
+    ledger: &mut AudioRootStorageLedger<'a>,
+) -> Result<(), AudioStorageError> {
+    if project.import_provenance().is_some()
+        || project
             .tracks()
             .iter()
             .any(|track| track.clips().iter().any(|clip| clip.audio_edit().is_some()))
     {
         return Err(AudioStorageError::UnknownStorage);
     }
-    ledger.borrow_project_exclusive_buffers_on_control(owner)?;
-    ledger.borrow_project_midi_sources_on_control(owner)?;
-    ledger.borrow_project_native_states_on_control(owner)
+    ledger.borrow_project_exclusive_buffers_on_control(project)?;
+    ledger.borrow_project_midi_sources_on_control(project)?;
+    ledger.borrow_project_native_states_on_control(project)
 }
 
 #[cfg(test)]
