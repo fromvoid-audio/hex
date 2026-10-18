@@ -5237,3 +5237,9 @@ to each existing gesture and notify on state transitions; clear stale outer latc
 on no-Left movement. Keep resize widths/cursors/laws and existing close cancellation.
 Focused paint/input regressions and evidence in Pulse;2707 thin dividers separate.
 Sole merger owns prospective fullCI/merge; root owns optimized native acceptance.
+
+18 October2026 — Pulse2707/PR323: original scene painted all4px of each resize
+capture gutter. Paint a separate1px themed leading line while retaining all4px
+of capture/geometry/cursor. Actual line+transparent-edge drags and normal/compact,
+editor open/closed paint checks; preserve PR324 gesture color/cancellation.
+Targeted evidence in Pulse; sole merger fullCI/merge, root native acceptance.

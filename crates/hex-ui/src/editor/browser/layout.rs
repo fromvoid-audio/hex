@@ -105,6 +105,30 @@ fn picker_icon(icon: Div) -> Div {
         .child(icon)
 }
 
+// Keep the full capture gutter independent of its visible separator. The leading
+// line adjoins the existing 1px panel border without consuming layout width.
+pub(super) fn resize_divider_line(
+    group: &'static str,
+    selector: &'static str,
+    active: bool,
+) -> Div {
+    div()
+        .absolute()
+        .left(px(0.0))
+        .top(px(0.0))
+        .w(px(1.0))
+        .h_full()
+        .bg(rgb(theme::color(if active {
+            theme::PaletteRole::Secondary
+        } else {
+            theme::PaletteRole::Border
+        })))
+        .group_hover(group, |style| {
+            style.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+        })
+        .debug_selector(move || selector.to_owned())
+}
+
 fn browser_divider() -> Div {
     div()
         .border_b_1()
@@ -538,14 +562,13 @@ impl EditorView {
             .h_full()
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(theme::color(
-                if self.browser.layout.sidebar_drag.is_some() {
-                    theme::PaletteRole::Secondary
-                } else {
-                    theme::PaletteRole::Border
-                },
-            )))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
+            .relative()
+            .group("browser-sidebar-resize")
+            .child(resize_divider_line(
+                "browser-sidebar-resize",
+                "browser-sidebar-resize-line",
+                self.browser.layout.sidebar_drag.is_some(),
+            ))
             .child(
                 canvas(
                     |_, _, _| (),

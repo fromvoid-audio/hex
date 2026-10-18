@@ -64,6 +64,7 @@ widgets = (
 
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
+    'layout::resize_divider_line(', 'resize_divider_line(',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
     'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
     # Beats controls compose themed buttons/labels, not direct text children.
