@@ -70,6 +70,7 @@ pub(super) struct TrimDrag {
 /// through one `Rc`; pointer updates and previews never clone the note list.
 #[derive(Clone, Debug)]
 pub(super) struct MidiTrimDrag {
+    loop_kind: Option<MidiLoopKind>,
     canceled: Rc<Cell<bool>>,
     pub(super) project_generation: u64,
     pub(super) revision: u64,
@@ -85,6 +86,120 @@ pub(super) struct MidiTrimDrag {
     pub(super) last_pointer_x: Rc<Cell<Option<f32>>>,
     grab_delta: Rc<RefCell<Option<i128>>>,
     pub(super) preview: Rc<RefCell<Option<MidiClipTrim>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MidiLoopKind {
+    Outer,
+    FirstBoundary,
+}
+
+#[derive(Clone, Copy)]
+struct MidiLoopControl {
+    kind: MidiLoopKind,
+    left: f32,
+    top: f32,
+    height: f32,
+}
+struct MidiLoopControls {
+    clip_left: f32,
+    clip_width: f32,
+    handles: [Option<MidiLoopControl>; 2],
+}
+
+/// The rendered hit rectangles and the Arrangement capture reservation share
+/// one projection. Later MIDI clips win, just as in normal clip painting.
+fn midi_loop_controls(
+    clip: &MidiClip,
+    project: &Project,
+    lane: LaneBounds,
+    viewport: Viewport,
+) -> Option<MidiLoopControls> {
+    let end = clip.start().raw().checked_add(clip.length().raw())?;
+    let start = project.tempo_map().beat_to_frame(clip.start()).ok()?;
+    let end = project
+        .tempo_map()
+        .beat_to_frame(BeatTime::from_raw(end))
+        .ok()?;
+    let visible_start = start.max(viewport.start);
+    let visible_end = end.min(viewport.end()?);
+    if visible_start >= visible_end || viewport.length == 0 {
+        return None;
+    }
+    let clip_left =
+        lane.width * ((visible_start - viewport.start) as f64 / viewport.length as f64) as f32;
+    let width = rendered_clip_width(
+        lane.width,
+        (visible_end - visible_start) as f64 / viewport.length as f64,
+        4.0,
+    );
+    let mut handles = [None, None];
+    // The clip's border_1 offsets absolute children by one pixel. Geometry
+    // below is in outer clip coordinates, shared with capture hit testing.
+    let body_top = super::clip_name::CLIP_NAME_HEIGHT + 1.0;
+    if lane.height - body_top >= 8.0 && width >= 24.0 {
+        if visible_end == end {
+            handles[0] = Some(MidiLoopControl {
+                kind: MidiLoopKind::Outer,
+                left: width - 17.0,
+                top: lane.height - 9.0,
+                height: 8.0,
+            });
+        }
+        if lane.height - body_top > 9.0
+            && clip.looping()
+            && let Some(boundary) = clip
+                .loop_end()
+                .raw()
+                .checked_sub(clip.source_start().raw())
+                .and_then(|remaining| clip.start().raw().checked_add(remaining))
+            && let Ok(frame) = project
+                .tempo_map()
+                .beat_to_frame(BeatTime::from_raw(boundary))
+            && frame > visible_start
+            && frame < visible_end
+        {
+            let left =
+                lane.width * ((frame - visible_start) as f64 / viewport.length as f64) as f32 - 4.0;
+            handles[1] = Some(MidiLoopControl {
+                kind: MidiLoopKind::FirstBoundary,
+                left,
+                top: body_top,
+                height: lane.height - body_top - 9.0,
+            });
+        }
+    }
+    Some(MidiLoopControls {
+        clip_left,
+        clip_width: width,
+        handles,
+    })
+}
+
+fn midi_resize_preview(drag: &MidiTrimDrag, beat: BeatTime) -> Option<MidiClipTrim> {
+    match drag.loop_kind {
+        None => drag.clip.preview_edge_trim(drag.edge, beat),
+        Some(MidiLoopKind::Outer) => drag.clip.preview_loop_outer_resize(beat),
+        Some(MidiLoopKind::FirstBoundary) => drag.clip.preview_loop_cycle_resize(beat),
+    }
+    .ok()
+}
+
+fn midi_grab_beat(drag: &MidiTrimDrag) -> Option<BeatTime> {
+    match drag.loop_kind {
+        Some(MidiLoopKind::FirstBoundary) => drag
+            .clip
+            .start()
+            .raw()
+            .checked_add(
+                drag.clip
+                    .loop_end()
+                    .raw()
+                    .checked_sub(drag.clip.source_start().raw())?,
+            )
+            .map(BeatTime::from_raw),
+        _ => midi_edge_beat(&drag.clip, drag.edge),
+    }
 }
 
 enum PendingTrimDisplay {
@@ -226,6 +341,15 @@ pub(super) struct RetiredTrimViewport {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResizeCommand {
+    MidiLoop {
+        clip: hex_project::ClipId,
+        source_length: BeatTime,
+        source_start: BeatTime,
+        loop_start: BeatTime,
+        loop_end: BeatTime,
+        looping: bool,
+        length: BeatTime,
+    },
     Audio {
         clip: hex_project::ClipId,
         edge: TrimEdge,
@@ -242,6 +366,23 @@ enum ResizeCommand {
 impl ResizeCommand {
     fn from_request(request: &Request) -> Option<Self> {
         match request {
+            Request::Edit(Command::SetMidiClipSourceWithOverwrite {
+                clip,
+                source_length,
+                source_start,
+                loop_start,
+                loop_end,
+                looping,
+                length,
+            }) => Some(Self::MidiLoop {
+                clip: *clip,
+                source_length: *source_length,
+                source_start: *source_start,
+                loop_start: *loop_start,
+                loop_end: *loop_end,
+                looping: *looping,
+                length: *length,
+            }),
             Request::Edit(Command::StretchAudioClipEdge { clip, edge, frame }) => {
                 Some(Self::Audio {
                     clip: *clip,
@@ -594,12 +735,10 @@ fn midi_preview_for_pointer(
     lane: LaneBounds,
     viewport: Viewport,
 ) -> Option<MidiClipTrim> {
-    drag.clip
-        .preview_edge_trim(
-            drag.edge,
-            snapped_midi_edge_beat(drag, project, pointer_x, lane, viewport)?,
-        )
-        .ok()
+    midi_resize_preview(
+        drag,
+        snapped_midi_edge_beat(drag, project, pointer_x, lane, viewport)?,
+    )
 }
 
 impl EditorView {
@@ -656,6 +795,39 @@ impl EditorView {
         handles
     }
 
+    pub(super) fn pointer_hits_midi_loop_control(&self, x: f32, y: f32) -> bool {
+        if !drag_admitted(self) {
+            return false;
+        }
+        let Some((track, lane)) = self.visible_lane_at(x, y) else {
+            return false;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(track) = state.project.track(track) else {
+            return false;
+        };
+        let viewport = self.visible_viewport(state.timeline_frames);
+        track
+            .midi_clips()
+            .iter()
+            .rev()
+            .find_map(|clip| {
+                let controls = midi_loop_controls(clip, &state.project, lane, viewport)?;
+                let clip_left = lane.left + controls.clip_left;
+                if x < clip_left || x >= clip_left + controls.clip_width {
+                    return None;
+                }
+                Some(controls.handles.into_iter().flatten().any(|control| {
+                    let left = clip_left + control.left;
+                    let top = lane.top + control.top;
+                    x >= left && x < left + 8.0 && y >= top && y < top + control.height
+                }))
+            })
+            .unwrap_or(false)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn midi_trim_handles(
         &self,
@@ -677,6 +849,7 @@ impl EditorView {
             return Vec::new();
         };
         let drag = MidiTrimDrag {
+            loop_kind: None,
             canceled: Rc::new(Cell::new(false)),
             project_generation: self.project_generation,
             revision: state.revision,
@@ -693,7 +866,7 @@ impl EditorView {
             grab_delta: Rc::new(RefCell::new(None)),
             preview: Rc::new(RefCell::new(None)),
         };
-        let mut handles = Vec::with_capacity(2);
+        let mut handles = Vec::with_capacity(4);
         if visible_start == clip_start_frame {
             handles.push(self.midi_trim_handle(
                 state,
@@ -706,7 +879,7 @@ impl EditorView {
             ));
         }
         if visible_end == clip_end_frame {
-            let mut drag = drag;
+            let mut drag = drag.clone();
             drag.edge = TrimEdge::Right;
             handles.push(self.midi_trim_handle(
                 state,
@@ -717,6 +890,27 @@ impl EditorView {
                 viewport,
                 cx,
             ));
+        }
+        if let Some(controls) = midi_loop_controls(clip, &state.project, lane, viewport) {
+            for control in controls.handles.into_iter().flatten() {
+                let mut loop_drag = drag.clone();
+                loop_drag.edge = TrimEdge::Right;
+                loop_drag.loop_kind = Some(control.kind);
+                handles.push(
+                    self.midi_trim_handle(
+                        state,
+                        loop_drag,
+                        TrimEdge::Right,
+                        clip_width,
+                        lane,
+                        viewport,
+                        cx,
+                    )
+                    .left(px(control.left - 1.0))
+                    .top(px(control.top - 1.0))
+                    .h(px(control.height)),
+                );
+            }
         }
         handles
     }
@@ -732,7 +926,22 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let loop_kind = payload.loop_kind;
         let clip_id = payload.clip.id();
+        let control_color = state
+            .project
+            .track(payload.source_track)
+            .map(|track| {
+                crate::theme::readable_text(
+                    crate::theme::clip_fill(
+                        track.color(),
+                        payload.clip.flavor(),
+                        self.clip_is_selected(clip_id),
+                    ),
+                    crate::theme::color(crate::theme::PaletteRole::Text),
+                )
+            })
+            .unwrap_or(crate::theme::color(crate::theme::PaletteRole::Text));
         let clip_generation = payload.project_generation;
         let drag_entity = cx.entity();
         let preview_owner_entity = drag_entity.clone();
@@ -740,36 +949,61 @@ impl EditorView {
         let drag_start_entity = drag_entity.clone();
         let pointer_payload = payload.clone();
         let clear_entity = drag_entity.clone();
-        let project = Rc::clone(&payload.clip);
-        let project_tempo = state.project.clone();
+        let grab_payload = payload.clone();
+        let project_tempo = state.project.tempo_map().clone();
         div()
             .id((
-                match edge {
-                    TrimEdge::Left => "midi-trim-left",
-                    TrimEdge::Right => "midi-trim-right",
+                match loop_kind {
+                    Some(MidiLoopKind::Outer) => "midi-loop-outer",
+                    Some(MidiLoopKind::FirstBoundary) => "midi-loop-boundary",
+                    None => match edge {
+                        TrimEdge::Left => "midi-trim-left",
+                        TrimEdge::Right => "midi-trim-right",
+                    },
                 },
                 clip_id.value(),
             ))
             .debug_selector(|| {
                 format!(
-                    "midi-clip-trim-{}-{}",
-                    match edge {
-                        TrimEdge::Left => "left",
-                        TrimEdge::Right => "right",
+                    "midi-clip-{}-{}",
+                    match loop_kind {
+                        Some(MidiLoopKind::Outer) => "loop-outer",
+                        Some(MidiLoopKind::FirstBoundary) => "loop-boundary",
+                        None => match edge {
+                            TrimEdge::Left => "trim-left",
+                            TrimEdge::Right => "trim-right",
+                        },
                     },
                     clip_id.value()
                 )
             })
             .absolute()
-            .top(px(-1.0))
-            .bottom(px(-1.0))
-            .w(px(handle_width(clip_width)))
-            .when(edge == TrimEdge::Left, |this| this.left(px(-1.0)))
-            .when(edge == TrimEdge::Right, |this| this.right(px(-1.0)))
+            .when(loop_kind.is_none(), |this| {
+                this.top(px(-1.0))
+                    .bottom(px(-1.0))
+                    .w(px(handle_width(clip_width)))
+                    .when(edge == TrimEdge::Left, |this| this.left(px(-1.0)))
+                    .when(edge == TrimEdge::Right, |this| this.right(px(-1.0)))
+            })
+            .when(loop_kind == Some(MidiLoopKind::Outer), |this| {
+                this.w(px(8.0)).bg(gpui::rgb(control_color))
+            })
+            .when(loop_kind == Some(MidiLoopKind::FirstBoundary), |this| {
+                this.w(px(8.0)).child(
+                    div()
+                        .absolute()
+                        .left(px(3.5))
+                        .top_0()
+                        .bottom_0()
+                        .w(px(1.0))
+                        .bg(gpui::rgb(control_color)),
+                )
+            })
             .cursor(bracket_cursor(edge))
-            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.midi_trim_drag_current(&pointer_payload) {
+                        view.focus.focus(window);
                         view.remember_pointer_down(
                             clip_generation,
                             clip_id,
@@ -796,10 +1030,11 @@ impl EditorView {
                     }
                 });
                 let pointer_beat = original_down_x
-                    .and_then(|x| midi_pointer_beat(&project_tempo, x, lane, viewport));
+                    .and_then(|x| frame_at_x(x, lane, viewport))
+                    .and_then(|frame| project_tempo.frame_to_beat(frame).ok());
                 let delta =
                     pointer_beat
-                        .zip(midi_edge_beat(&project, edge))
+                        .zip(midi_grab_beat(&grab_payload))
                         .map(|(pointer, edge_beat)| {
                             i128::from(pointer.raw()) - i128::from(edge_beat.raw())
                         });
@@ -1200,30 +1435,49 @@ impl EditorView {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         };
-        let Ok(preview) = drag.clip.preview_edge_trim(drag.edge, beat) else {
+        let Some(preview) = midi_resize_preview(drag, beat) else {
             return;
         };
         if preview.start() == drag.clip.start()
             && preview.length() == drag.clip.length()
             && preview.source_start() == drag.clip.source_start()
+            && preview.source_length() == drag.clip.source_length()
+            && preview.loop_start() == drag.clip.loop_start()
+            && preview.loop_end() == drag.clip.loop_end()
+            && preview.looping() == drag.clip.looping()
+            && preview.one_shot_boundary() == drag.clip.source().one_shot_boundary()
         {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        let request = Request::Edit(Command::TrimMidiClipEdge {
-            clip: drag.clip.id(),
-            edge: drag.edge,
-            beat,
-        });
-        self.pending_trim = Some(PendingTrim {
-            generation: drag.project_generation,
-            revision: drag.revision,
-            track: drag.source_track,
-            command: ResizeCommand::Midi {
+        let command = match drag.loop_kind {
+            None => Command::TrimMidiClipEdge {
                 clip: drag.clip.id(),
                 edge: drag.edge,
                 beat,
             },
+            Some(MidiLoopKind::Outer) => {
+                let Ok(command) = drag.clip.loop_outer_resize_command(beat) else {
+                    return;
+                };
+                command
+            }
+            Some(MidiLoopKind::FirstBoundary) => {
+                let Ok(command) = drag.clip.loop_cycle_resize_command(beat) else {
+                    return;
+                };
+                command
+            }
+        };
+        let request = Request::Edit(command);
+        let Some(command) = ResizeCommand::from_request(&request) else {
+            return;
+        };
+        self.pending_trim = Some(PendingTrim {
+            generation: drag.project_generation,
+            revision: drag.revision,
+            track: drag.source_track,
+            command,
             remaining: None,
             scroll_viewport: drag.scroll.get().viewport,
             display: PendingTrimDisplay::Midi {
@@ -1266,6 +1520,9 @@ impl EditorView {
         x: f32,
         next: Viewport,
     ) -> Option<Viewport> {
+        if drag.loop_kind == Some(MidiLoopKind::FirstBoundary) {
+            return None;
+        }
         let state = self.state.as_ref()?;
         let lane = self.drag_lanes.get(&drag.source_track).copied()?;
         let delta = (*drag.grab_delta.borrow())?;
@@ -1273,7 +1530,7 @@ impl EditorView {
             let beat = midi_pointer_beat(&state.project, x, lane, viewport)?;
             let requested = i128::from(beat.raw()) - delta;
             let beat = BeatTime::from_raw(requested.clamp(0, i128::from(u64::MAX)) as u64);
-            let clip = drag.clip.preview_edge_trim(drag.edge, beat).ok()?;
+            let clip = midi_resize_preview(drag, beat)?;
             let edge = match drag.edge {
                 TrimEdge::Left => clip.start().raw(),
                 TrimEdge::Right => clip.start().raw().checked_add(clip.length().raw())?,

@@ -418,7 +418,9 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
-                            if view.pointer_hits_fade_control(x, y) {
+                            if view.pointer_hits_fade_control(x, y)
+                                || view.pointer_hits_midi_loop_control(x, y)
+                            {
                                 return (false, false);
                             }
                             if event.click_count == 2

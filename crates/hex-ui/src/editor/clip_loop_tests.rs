@@ -3,6 +3,8 @@
 use super::midi_source_controls::SourceValues;
 use hex_project::{BeatTime, ClipId, Command, Created, Editor, Invalid, MidiClip, Project};
 
+mod pointer;
+
 const Q: u64 = 1 << 32;
 fn beat(value: u64) -> BeatTime {
     BeatTime::from_raw(value)

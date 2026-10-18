@@ -129,8 +129,9 @@ Source1's separately frozen A/B wrapper makes format32 current and refuses31;
 the disjoint codec patches must preserve that one combined current-format law.
 Own codec results before integration do not qualify the future combined32 tree.
 
-Source4 owns Engine preparation/output-range/resource quotes, exact pitch/Warp
-root projection and mutable export. No repeated PCM flattening, callback DSP,
+Engine preparation/output-range/resource quotes and mutable export remain
+unfinished and require precise compiler/resource hunk coordination. Exact
+pitch/Warp laws remain unchanged. No repeated PCM flattening, callback DSP,
 new source owner or silent processed-stream fallback is allowed. Model queries
 and current-format persistence are not proof that Engine consumes these fields.
 
@@ -152,8 +153,8 @@ at the selected end. `has_initial_pass()` and `initial_remaining()` expose zero
 remaining source beats for an exhausted cursor without subtraction underflow.
 The ordinary constructor retains its prior behavior. `effective_end()` exposes the same
 source-owned law without a compiler-owned mirror. Arrangement's existing clip
-query delegates to this constructor. Source4 still must adapt the separate
-Session template path and audit both actual compiler paths; model/codec tests
+query delegates to this constructor. The separate Session template path still
+needs this mapping and verification of both actual compiler paths; model/codec tests
 are not proof of that unfinished runtime integration. No notes or controls are
 removed.
 
@@ -178,7 +179,18 @@ The existing linear export path explicitly refuses mutable Arrangement MIDI
 source loops; prepared preview success does not clear that limitation. Full445
 playback/export acceptance must resolve that bounded dependency honestly.
 
-Frontend pending preview/marker/corner gestures, audio loop preparation,
+The MIDI bottom-right body handle now captures the visible crop and resizes
+its repeating outer region through the existing trim capture and PendingTrim
+FIFO. The first-repeat marker changes the cycle end while outer duration stays
+fixed. Both use the same checked scalar preview and canonical overwrite command;
+held pointer motion does not edit the project. Arrangement capture reserves
+these exact shared hit rectangles before starting body time selection. The
+corner stays inside the clip border, is absent from header-only rows, and does
+not replace ordinary edge trim. Real bounded GPUI/worker tests cover activation,
+first-marker editing, one Undo/Redo, stationary snap modifier refresh and Escape.
+This is MIDI source/component evidence, not Audio or optimized native acceptance.
+
+Audio pending preview/marker/corner gestures, audio loop preparation,
 complete Once runtime integration, rendered rounded styling, all-mode PCM/export and optimized
 native acceptance remain open. PR445 stays draft/In Progress; the sole merger
 owns final prospective-tree full CI/review/integration/merge, and root owns the
