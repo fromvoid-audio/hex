@@ -173,32 +173,91 @@ pub(super) fn beats(
         work.check((search as u64 * 2 + 1).saturating_mul(2))?;
         let tail_begin = (tail_start - event.source).max(0) as f64;
         let tail_length = (length - tail_begin).max(1.0);
+        // Equal-gain overlap preserves DC and stereo balance. The two reads
+        // stay in the middle/tail; the attack is never a sustain-loop source.
+        // Limit overlap for short segments, and quote both reconstruction reads.
+        let overlap =
+            (f64::from(request.input.sample_rate) * 0.002 * pitch).min(tail_length * 0.25);
+        let duration = stop - event.output;
+        let native_duration = length / pitch;
+        let changed_duration = (duration as f64 - native_duration).abs() > 1e-6;
+        let sounding_end = if tail == Tail::Off {
+            duration.min(native_duration.ceil() as u64)
+        } else {
+            duration
+        };
+        // A short safety ramp at an actual cut/stop is distinct from the
+        // authored shortening envelope. Do not alter exact unity playback.
+        let release = if changed_duration {
+            (u64::from(request.input.sample_rate) / 1_000).min(sounding_end / 4)
+        } else {
+            0
+        };
+        let sample_at = |position: f64| {
+            bank.sample_segment(
+                request.input,
+                event.source as f64 + position,
+                event.source,
+                event.source + length as i128 - 1,
+            )
+        };
         for frame in event.output..stop {
             if frame % 1_024 == 0 {
                 work.check(1_024 * 64)?;
             }
             let age = (frame - event.output) as f64;
             let mut position = age * pitch;
-            if position >= length {
-                position = match tail {
-                    Tail::Off => continue,
-                    Tail::Forward => tail_begin + (position - length).rem_euclid(tail_length),
-                    Tail::Alternating => {
-                        let x = (position - length).rem_euclid(2.0 * tail_length);
-                        if x < tail_length {
-                            length - 1.0 - x
-                        } else {
-                            tail_begin + x - tail_length
-                        }
-                    }
-                };
+            if tail == Tail::Off && position >= length {
+                continue;
             }
-            let mut sample = bank.sample_float(request.input, event.source as f64 + position);
+            let mut sample = if tail == Tail::Forward
+                && duration as f64 > native_duration
+                && position >= length - overlap
+            {
+                let phase = (position - (length - overlap)).rem_euclid(tail_length - overlap);
+                if phase < overlap {
+                    // The regular block charge covers one reconstruction.
+                    // Charge the second only where an overlap really reads it;
+                    // Off and single-read spans retain their existing budget.
+                    work.check(64)?;
+                    let outgoing = sample_at(length - overlap + phase);
+                    let incoming = sample_at(tail_begin + phase);
+                    let x = phase / overlap;
+                    let weight = x * x * (3.0 - 2.0 * x);
+                    std::array::from_fn(|channel| {
+                        outgoing[channel] * (1.0 - weight) + incoming[channel] * weight
+                    })
+                } else {
+                    sample_at(tail_begin + phase)
+                }
+            } else {
+                if tail == Tail::Alternating && position > length - 1.0 {
+                    let span = (length - 1.0 - tail_begin).max(0.0);
+                    position = if span > 0.0 {
+                        let phase = (position - (length - 1.0)).rem_euclid(2.0 * span);
+                        if phase < span {
+                            length - 1.0 - phase
+                        } else {
+                            tail_begin + phase - span
+                        }
+                    } else {
+                        length - 1.0
+                    };
+                }
+                sample_at(position)
+            };
             let envelope = (-12.0 * (100 - decay) as f64 / 100.0 * age
                 / (stop - event.output).max(1) as f64)
                 .exp();
+            let remaining = sounding_end.saturating_sub(frame - event.output + 1);
+            let safety = if release > 0 && remaining < release {
+                let x = remaining as f64 / release as f64;
+                x * x * (3.0 - 2.0 * x)
+            } else {
+                1.0
+            };
             for channel in &mut sample {
-                *channel *= envelope;
+                *channel *= envelope * safety;
             }
             if let Some(destination) = output.get_mut(frame as usize) {
                 *destination = finite(sample)?;
