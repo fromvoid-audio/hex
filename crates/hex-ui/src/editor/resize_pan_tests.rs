@@ -459,6 +459,357 @@ fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &m
 }
 
 #[gpui::test]
+fn canceled_fitted_resize_does_not_resurrect_hidden_pan_after_project_growth(
+    cx: &mut TestAppContext,
+) {
+    check_retired_pan_then_growth(cx, false);
+}
+#[gpui::test]
+fn stale_fitted_resize_does_not_resurrect_hidden_pan_after_project_growth(cx: &mut TestAppContext) {
+    check_retired_pan_then_growth(cx, true);
+}
+fn check_retired_pan_then_growth(cx: &mut TestAppContext, stale: bool) {
+    for midi in [false, true] {
+        let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let (original_view, original_audio, original_midi) = editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            assert!(v.viewport.is_none(), "genuine fitted view");
+            (
+                v.visible_viewport(state.timeline_frames),
+                state.project.clip(clip).cloned(),
+                state.project.midi_clip(clip).cloned(),
+            )
+        });
+        let down = capture(&mut visual, clip, midi, false);
+        let edge = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            point(px(lane.left + lane.width - 3.0), down.y)
+        });
+        visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let now = Instant::now();
+        held_tick(&editor, &mut visual, now);
+        let owned_pan = editor.read_with(&visual, |v, _| {
+            let pan = v.viewport.expect("actual edge-pan stored viewport");
+            assert!(
+                pan.start > 0 && pan.end().unwrap() > v.state.as_ref().unwrap().timeline_frames
+            );
+            pan
+        });
+        if stale {
+            // A real independent edit changes the canonical revision while the
+            // pointer gesture is still held. Its subsequent tick must retire it.
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::Gain { track, gain: 0.75 })));
+            });
+            pump(&editor, &mut visual);
+            held_tick(&editor, &mut visual, now + Duration::from_millis(100));
+        } else {
+            visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+        }
+        visual.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let stored_after_cancel = editor.read_with(&visual, |v, _| {
+            assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+            assert!(v.trim_display_end().is_none());
+            assert_eq!(
+                v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+                original_view,
+                "the immediate fitted clamp can conceal a stale stored offset"
+            );
+            v.viewport
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(48).unwrap(),
+                length: BeatTime::from_quarters(4).unwrap(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            assert!(state.timeline_frames > owned_pan.end().unwrap());
+            let visible = v.visible_viewport(state.timeline_frames);
+            eprintln!("retired pan midi={midi} stale={stale} original={original_view:?} held={owned_pan:?} stored_after_cancel={stored_after_cancel:?} grown_visible={visible:?}");
+            assert_eq!(state.project.clip(clip), original_audio.as_ref());
+            assert_eq!(state.project.midi_clip(clip), original_midi.as_ref());
+            assert_eq!(visible, original_view, "a canceled/stale resize must not reappear when unrelated content grows");
+        });
+    }
+}
+
+#[gpui::test]
+fn inward_shift_resize_consumes_last_valid_stationary_pan_step(cx: &mut TestAppContext) {
+    check_inward_last_valid_step(cx, false, false, false);
+}
+#[gpui::test]
+fn inward_midi_resize_keeps_positive_extent_at_stationary_pan_limit(cx: &mut TestAppContext) {
+    check_inward_last_valid_step(cx, true, false, false);
+}
+#[gpui::test]
+fn inward_left_shift_resize_consumes_last_valid_stationary_pan_step(cx: &mut TestAppContext) {
+    check_inward_last_valid_step(cx, false, true, false);
+}
+#[gpui::test]
+fn inward_pan_then_supported_stretch_release_commits_once_and_undoes(cx: &mut TestAppContext) {
+    for left in [false, true] {
+        check_inward_last_valid_step(cx, false, left, true);
+    }
+}
+fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool, supported: bool) {
+    let viewport = if left {
+        Viewport {
+            start: 0,
+            length: 188_000,
+        }
+    } else {
+        Viewport {
+            start: 100_000,
+            length: 192_000,
+        }
+    };
+    let (handle, editor, track, clip, _files) = fixture(cx, midi, Some(viewport));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let before_project =
+        editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = capture(&mut visual, clip, midi, left);
+    let edge = editor.read_with(&visual, |v, _| {
+        let lane = v.drag_lanes[&track];
+        point(
+            px(if left {
+                lane.left + lane.width - 3.0
+            } else {
+                lane.left + 3.0
+            }),
+            down.y,
+        )
+    });
+    let modifiers = Modifiers {
+        shift: !midi,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_move(edge, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| {
+        if !midi {
+            let d = v.active_trim_drag.as_ref().unwrap();
+            assert!(d.stretch_modifier.get());
+            assert!(d.preview.borrow().as_ref().unwrap().clip.duration() > 1);
+        }
+        v.viewport.unwrap()
+    });
+    let now = Instant::now();
+    held_tick(&editor, &mut visual, now);
+    let at_limit = editor.read_with(&visual, |v, _| {
+        let after = v.viewport.unwrap();
+        eprintln!("inward held midi={midi} before={before:?} after={after:?}");
+        assert!(
+            if left {
+                after.start > before.start
+            } else {
+                after.start < before.start
+            },
+            "consume valid final partial step rather than reject overshooting full tick"
+        );
+        if midi {
+            let d = v.active_midi_trim_drag.as_ref().unwrap();
+            assert!(d.preview.borrow().as_ref().unwrap().length().raw() > 0);
+        } else {
+            let d = v.active_trim_drag.as_ref().unwrap();
+            assert_eq!(
+                d.preview.borrow().as_ref().unwrap().clip.duration(),
+                1,
+                "last legal positive stretch interval"
+            );
+        }
+        after
+    });
+    held_tick(&editor, &mut visual, now + Duration::from_secs(1));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.viewport,
+            Some(at_limit),
+            "no timer drift past legal resize bound"
+        )
+    });
+    let release = if supported {
+        let target = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            let frame = if left { 168_000_u64 } else { 120_000 };
+            point(
+                px(lane.left
+                    + ((frame - at_limit.start) as f64 / at_limit.length as f64
+                        * f64::from(lane.width)) as f32),
+                down.y,
+            )
+        });
+        visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        target
+    } else {
+        edge
+    };
+    let desired = editor.read_with(&visual, |v, _| {
+        v.active_trim_drag
+            .as_ref()
+            .and_then(|d| d.preview.borrow().as_ref().map(|p| p.clip.clone()))
+    });
+    visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        eprintln!("inward release midi={midi} left={left} supported={supported} error={:?} submitted={:?}", v.error, v.last_enqueued_edit);
+        let p = &v.state.as_ref().unwrap().project;
+        assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+        if midi {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert!(p.midi_clip(clip).unwrap().length().raw() > 0);
+        } else if supported {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert_eq!(p.clip(clip), desired.as_ref());
+            assert!((12_000..=96_000).contains(&p.clip(clip).unwrap().duration()));
+        } else {
+            // Model-positive is not a waiver of the separate prepared warp
+            // capability. A 96000:1 transform must refuse atomically, visibly.
+            assert!(v.error.as_ref().is_some_and(|e| e.contains("warp stretch including pitch compensation must be within 1/8..8")));
+            assert_eq!(p.snapshot(), before_project);
+        }
+    });
+    if supported {
+        let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before_project)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
+
+#[gpui::test]
+fn asynchronous_refused_resize_normalizes_its_hidden_pan_before_later_growth(
+    cx: &mut TestAppContext,
+) {
+    check_actual_terminal_then_growth(cx, false, true);
+}
+#[gpui::test]
+fn accepted_edge_short_of_view_end_does_not_reveal_raw_pan_on_later_growth(
+    cx: &mut TestAppContext,
+) {
+    for midi in [false, true] {
+        check_actual_terminal_then_growth(cx, midi, false);
+    }
+}
+fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse: bool) {
+    let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = capture(&mut visual, clip, midi, false);
+    let edge = editor.read_with(&visual, |v, _| {
+        let lane = v.drag_lanes[&track];
+        point(px(lane.left + lane.width - 3.0), down.y)
+    });
+    let modifiers = Modifiers {
+        shift: refuse,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_move(edge, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    let now = Instant::now();
+    for step in 0..=if refuse { 18 } else { 1 } {
+        editor.update(&mut visual, |v, cx| {
+            v.tick_clip_gesture_autoscroll(now + Duration::from_millis(step * 50), cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+    }
+    let owned = editor.read_with(&visual, |v, _| {
+        let viewport = v.viewport.unwrap();
+        assert!(
+            viewport.start > 0
+                && viewport.end().unwrap() > v.state.as_ref().unwrap().timeline_frames
+        );
+        if refuse {
+            assert!(
+                v.active_trim_drag
+                    .as_ref()
+                    .unwrap()
+                    .preview
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .clip
+                    .duration()
+                    > 96_000 * 8
+            );
+        }
+        viewport
+    });
+    let release = if refuse {
+        edge
+    } else {
+        // Return inside after a real pan, then make an accepted small extension.
+        // Its real display horizon remains the eight-second minimum, shorter
+        // than the stored transient pan. Endpoint alone is not the oracle.
+        let inside = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            point(
+                px(lane.left
+                    + ((200_000 - owned.start) as f64 / owned.length as f64 * f64::from(lane.width))
+                        as f32),
+                down.y,
+            )
+        });
+        visual.simulate_mouse_move(inside, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        inside
+    };
+    visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.last_enqueued_edit.is_some(),
+            "actual accepted enqueue, not immediate admission refusal"
+        )
+    });
+    pump(&editor, &mut visual);
+    let settled = editor.read_with(&visual, |v,_| {
+        let state=v.state.as_ref().unwrap();
+        if refuse { assert!(v.error.is_some(), "real worker must refuse unsupported transform");assert_eq!(state.project.snapshot(),before); }
+        else { assert!(v.error.is_none(),"{:?}",v.error);assert_ne!(state.project.snapshot(),before); }
+        assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+        let visible=v.visible_viewport(state.timeline_frames);
+        eprintln!("terminal pan midi={midi} refuse={refuse} held={owned:?} raw={:?} horizon={} settled={visible:?} error={:?}",v.viewport,state.timeline_frames,v.error);
+        assert!(state.timeline_frames<owned.end().unwrap(), "endpoint intentionally short of transient display end");
+        visible
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::from_quarters(512).unwrap(),
+            length: BeatTime::from_quarters(4).unwrap()
+        })));
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v,_| {
+        let state=v.state.as_ref().unwrap();
+        assert!(state.timeline_frames>owned.end().unwrap());
+        let grown=v.visible_viewport(state.timeline_frames);
+        eprintln!("terminal later growth midi={midi} refuse={refuse} settled={settled:?} grown={grown:?}");
+        assert_eq!(grown,settled,"actual terminal must retire hidden raw resize pan before later unrelated project growth");
+    });
+}
+
+#[gpui::test]
 fn fitted_resize_release_keeps_accepted_pan_horizon_until_exact_worker_terminal(
     cx: &mut TestAppContext,
 ) {

@@ -622,7 +622,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    visible_change |= self.pending_trim.take().is_some();
+                    visible_change |= self.retire_pending_trim();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -648,7 +648,7 @@ impl EditorView {
                     }
                     Err(SubmitError::Busy(request)) => {
                         if resize_request {
-                            self.pending_trim = None;
+                            self.retire_pending_trim();
                         }
                         if matches!(request, Request::Export(_)) {
                             self.export_pending = false;
@@ -659,7 +659,7 @@ impl EditorView {
                     }
                     Err(SubmitError::Closed(request)) => {
                         if resize_request {
-                            self.pending_trim = None;
+                            self.retire_pending_trim();
                         }
                         if matches!(&request, Request::ImportAudioBatch { .. }) {
                             if let Some(control) = self.audio_batch.take() {
@@ -1356,7 +1356,7 @@ impl EditorView {
     }
 
     pub(super) fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
-        self.trim_request_complete(&event);
+        let retired_trim = self.trim_request_complete(&event);
         if event.project_replaced {
             self.invalidate_prepared_seek();
             if let Some(audio) = self.audio.as_mut() {
@@ -2100,6 +2100,9 @@ impl EditorView {
         {
             self.reveal_session_position(None, self.selected_scene);
         }
+        // Canonical state, generation, gain/loop display extent and selection
+        // have now been installed. Normalize only the locally retired owner.
+        self.normalize_completed_trim_viewport(retired_trim);
         successfully_opened_path
     }
 

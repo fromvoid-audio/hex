@@ -58,3 +58,29 @@ correct waveform, final canonical extent/Warp/BPM, one Undo/Redo and save/reopen
 Confirm no pending flicker or final rollback with affected user media. GPU,
 physical input/audio/listening and app delivery remain coordinator-owned. Cloud
 work does not install, launch, quit or replace the user's app.
+
+## Shared terminal-core composition
+
+This source deliberately depends on the frozen PR333 terminal core
+`3e63e3f5ade4d81c7980a5eb9c7b60608c7a1cd9`. It extends that same `PendingTrim`
+record with revision, track, original/prospective clip and asset-window metadata;
+there is one typed key, FIFO remaining count and owned viewport. Controller and
+root-view hooks remain byte-identical to the frozen core. Actual submission also
+stamps preview revision, while pending display still requires the existing
+stable clip/asset validation. Success retirement never requires original-clip
+equality: the exact terminal takes its local viewport token, installs incoming
+canonical/display state, then normalizes only its still-owned viewport.
+
+Accepted release retires pointer/timer capture without cancel-normalization;
+immediate refusal uses canceled retirement. The prospective display/horizon
+survives accepted enqueue and is dropped at the exact worker terminal. Canonical
+refusal, replacement and changed source owners expose the last valid state;
+independent accepted edits remain intact. No second pending owner, callback/DSP
+change, blanket reconciliation or synthetic commit is introduced.
+
+The terminal-core test fixture only gains actual original/prospective/asset
+metadata; every existing assertion is retained. Both independent appended pan
+and pending-release regression sets remain. Old36c native6 and old917 native6
+are exact historical evidence, not qualification of this composed source.
+Dedicated merger owns final actual candidate checks/review/merge; coordinator
+owns any changed native selectors and physical/optimized acceptance.

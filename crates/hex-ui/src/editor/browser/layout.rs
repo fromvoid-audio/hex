@@ -7,6 +7,13 @@ const SECTIONS: [(BrowserSection, &str); 4] = [
     (BrowserSection::Projects, "projects"),
     (BrowserSection::All, "all"),
 ];
+// Match existing browser buttons: a 22px hit/centering slot plus the
+// sidebar's existing 1px right border. Glyph padding lives inside the slot.
+const PICKER_CONTROL_SIZE: f32 = 22.0;
+const PICKER_BORDER_WIDTH: f32 = 1.0;
+const PICKER_MIN_WIDTH: f32 = PICKER_CONTROL_SIZE + PICKER_BORDER_WIDTH;
+const PICKER_LABEL_THRESHOLD: f32 = 64.0;
+
 const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
     ("content", &["audio clip", "midi clip", "preset", "sample"]),
@@ -72,10 +79,8 @@ impl BrowserLayout {
     }
 
     fn sidebar_width(&self, base_width: f32) -> f32 {
-        let width = self
-            .sidebar_width
-            .clamp(36.0, (base_width - 124.0).max(36.0));
-        if width < 64.0 { 36.0 } else { width }
+        self.sidebar_width
+            .clamp(PICKER_MIN_WIDTH, (base_width - 124.0).max(PICKER_MIN_WIDTH))
     }
 }
 
@@ -88,6 +93,17 @@ pub(super) fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpu
 
 fn browser_caption(value: impl AsRef<str>) -> Div {
     div().text_xs().child(theme::text(value))
+}
+
+fn picker_icon(icon: Div) -> Div {
+    let icon = icon.whitespace_nowrap();
+    div()
+        .size(px(PICKER_CONTROL_SIZE))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon)
 }
 
 fn browser_divider() -> Div {
@@ -191,7 +207,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let width = self.browser.layout.sidebar_width(width);
-        let compact = width < 64.0;
+        let compact = width < PICKER_LABEL_THRESHOLD;
         let mut sidebar = div()
             .id("browser-sidebar")
             .w(px(width))
@@ -213,6 +229,11 @@ impl EditorView {
                 hex_project::ElementColor::Cyan,
                 hex_project::ElementColor::Gray,
             ][index];
+            let icon = picker_icon(
+                browser_caption("■")
+                    .text_color(rgb(theme::element_colors(color).accent))
+                    .debug_selector(move || format!("browser-picker-glyph-collection-{index}")),
+            );
             sidebar = sidebar.child(
                 div()
                     .id(("browser-collection", index))
@@ -221,7 +242,10 @@ impl EditorView {
                         browser_label_tooltip(format!("{name} · collections pending"), cx)
                     })
                     .h(px(22.0))
-                    .px_2()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_1()
@@ -245,12 +269,15 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
-                    .child(
-                        browser_caption("■").text_color(rgb(theme::element_colors(color).accent)),
-                    )
-                    .children(
-                        (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
-                    ),
+                    .child(icon)
+                    .children((!compact).then(|| {
+                        browser_caption(name)
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                    })),
             );
         }
         if !compact {
@@ -262,14 +289,20 @@ impl EditorView {
                 continue;
             }
             let active = self.browser.section == section;
+            let icon = picker_icon(
+                browser_caption(ICONS[self.browser.layout.icons[index]])
+                    .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
+            );
             sidebar = sidebar.child(
                 div()
                     .id(("browser-section", index))
                     .debug_selector(move || format!("browser-section-{name}"))
                     .tooltip(move |_, cx| browser_label_tooltip(name, cx))
-                    .overflow_hidden()
                     .h(px(25.0))
-                    .px_2()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_1()
@@ -295,10 +328,15 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
-                    .child(browser_caption(ICONS[self.browser.layout.icons[index]]))
-                    .children(
-                        (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
-                    ),
+                    .child(icon)
+                    .children((!compact).then(|| {
+                        browser_caption(name)
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                    })),
             );
         }
         sidebar = sidebar.child(self.browser_icon(
@@ -388,18 +426,24 @@ impl EditorView {
                     .unwrap_or("folder")
             };
             let tooltip = name.to_owned();
+            let icon = picker_icon(
+                browser_caption("□")
+                    .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
+            );
             sidebar = sidebar.child(
                 div()
                     .id(("browser-place", index))
                     .debug_selector(move || format!("browser-place-{index}"))
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
                     .h(px(23.0))
-                    .px_2()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_1()
                     .cursor_pointer()
-                    .overflow_hidden()
                     .bg(rgb(theme::color(
                         if self.browser.section == BrowserSection::Place(place.clone()) {
                             theme::PaletteRole::Hover
@@ -418,10 +462,15 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
-                    .child(browser_caption("□"))
-                    .children(
-                        (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
-                    ),
+                    .child(icon)
+                    .children((!compact).then(|| {
+                        browser_caption(name)
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                    })),
             );
         }
         if self.browser.places.len() < PLACE_CAPACITY {
@@ -487,8 +536,10 @@ impl EditorView {
                                     view.browser.layout.sidebar_drag
                                 {
                                     view.browser.layout.sidebar_width =
-                                        (initial + f32::from(event.position.x) - start)
-                                            .clamp(36.0, (width - 124.0).max(36.0));
+                                        (initial + f32::from(event.position.x) - start).clamp(
+                                            PICKER_MIN_WIDTH,
+                                            (width - 124.0).max(PICKER_MIN_WIDTH),
+                                        );
                                     cx.notify();
                                 }
                             });
