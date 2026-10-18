@@ -693,3 +693,99 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
         });
     }
 }
+
+#[gpui::test]
+fn asynchronous_refused_resize_normalizes_its_hidden_pan_before_later_growth(
+    cx: &mut TestAppContext,
+) {
+    check_actual_terminal_then_growth(cx, false, true);
+}
+#[gpui::test]
+fn accepted_edge_short_of_view_end_does_not_reveal_raw_pan_on_later_growth(
+    cx: &mut TestAppContext,
+) {
+    for midi in [false, true] {
+        check_actual_terminal_then_growth(cx, midi, false);
+    }
+}
+fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse: bool) {
+    let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = capture(&mut visual, clip, midi, false);
+    let edge = editor.read_with(&visual, |v, _| {
+        let lane = v.drag_lanes[&track];
+        point(px(lane.left + lane.width - 3.0), down.y)
+    });
+    let modifiers = Modifiers {
+        shift: refuse,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_move(edge, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    let now = Instant::now();
+    for step in 0..=if refuse { 18 } else { 1 } {
+        editor.update(&mut visual, |v, cx| {
+            v.tick_clip_gesture_autoscroll(now + Duration::from_millis(step * 50), cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+    }
+    let owned = editor.read_with(&visual, |v, _| {
+        let viewport = v.viewport.unwrap();
+        assert!(
+            viewport.start > 0
+                && viewport.end().unwrap() > v.state.as_ref().unwrap().timeline_frames
+        );
+        if refuse {
+            assert!(
+                v.active_trim_drag
+                    .as_ref()
+                    .unwrap()
+                    .preview
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .clip
+                    .duration()
+                    > 96_000 * 8
+            );
+        }
+        viewport
+    });
+    visual.simulate_mouse_up(edge, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.last_enqueued_edit.is_some(),
+            "actual accepted enqueue, not immediate admission refusal"
+        )
+    });
+    pump(&editor, &mut visual);
+    let settled = editor.read_with(&visual, |v,_| {
+        let state=v.state.as_ref().unwrap();
+        if refuse { assert!(v.error.is_some(), "real worker must refuse unsupported transform");assert_eq!(state.project.snapshot(),before); }
+        else { assert!(v.error.is_none(),"{:?}",v.error);assert_ne!(state.project.snapshot(),before); }
+        assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+        let visible=v.visible_viewport(state.timeline_frames);
+        eprintln!("terminal pan midi={midi} refuse={refuse} held={owned:?} raw={:?} horizon={} settled={visible:?} error={:?}",v.viewport,state.timeline_frames,v.error);
+        assert!(state.timeline_frames<owned.end().unwrap(), "endpoint intentionally short of transient display end");
+        visible
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::from_quarters(128).unwrap(),
+            length: BeatTime::from_quarters(4).unwrap()
+        })));
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v,_| {
+        let state=v.state.as_ref().unwrap();
+        assert!(state.timeline_frames>owned.end().unwrap());
+        let grown=v.visible_viewport(state.timeline_frames);
+        eprintln!("terminal later growth midi={midi} refuse={refuse} settled={settled:?} grown={grown:?}");
+        assert_eq!(grown,settled,"actual terminal must retire hidden raw resize pan before later unrelated project growth");
+    });
+}
