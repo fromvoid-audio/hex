@@ -104,7 +104,7 @@ fn clip_paint_cuts_audio_and_midi_with_source_mapping_boundaries_and_one_undo() 
             assert!(new.notes().is_empty());
             let row = project.track(track).unwrap();
             let mut bounds: Vec<_> = row
-                .audio_clips()
+                .clips()
                 .iter()
                 .map(|c| (c.start(), c.start() + c.duration()))
                 .chain(row.midi_clips().iter().map(|c| {
@@ -139,7 +139,7 @@ fn clip_paint_cuts_audio_and_midi_with_source_mapping_boundaries_and_one_undo() 
                 }
             } else {
                 let old = before.clip(original).unwrap();
-                for fragment in row.audio_clips() {
+                for fragment in row.clips() {
                     assert_eq!(fragment.name(), old.name());
                     assert_eq!(fragment.asset(), old.asset());
                     assert_eq!(fragment.source_offset(), 12_000);
@@ -207,7 +207,7 @@ fn clip_paint_refuses_invalid_stale_and_failed_preparation_without_partial_cuts(
         length: beat(1),
     };
     let result: Result<_, Invalid> = editor.execute_validated(command.clone(), |candidate| {
-        assert_eq!(candidate.track(track).unwrap().audio_clips().len(), 2);
+        assert_eq!(candidate.track(track).unwrap().clips().len(), 2);
         Err(Invalid("injected preparation refusal"))
     });
     assert!(result.is_err());

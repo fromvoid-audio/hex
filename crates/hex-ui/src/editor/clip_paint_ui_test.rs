@@ -251,7 +251,7 @@ fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestA
         let result = canonical.project().track(track).unwrap();
         let tempo = canonical.project().tempo_map();
         let mut bounds: Vec<_> = result
-            .audio_clips()
+            .clips()
             .iter()
             .map(|clip| (clip.start(), clip.start() + clip.duration(), clip.id()))
             .chain(result.midi_clips().iter().map(|clip| {
