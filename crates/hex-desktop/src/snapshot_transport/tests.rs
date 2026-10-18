@@ -81,9 +81,21 @@ fn with_family<R>(
         }
     }
 }
+fn receive(service: &Service) -> Event {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match service.try_event() {
+            Ok(event) => return event,
+            Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            result => panic!("worker Event did not arrive: {:?}", result.err()),
+        }
+    }
+}
 fn event(service: &Service, read: SnapshotReadCapability) -> Event {
     service.submit(Request::Undo).unwrap(); // no history: actual unchanged worker response
-    let mut event = service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    let mut event = receive(service);
     assert_eq!(revision(&read), event.state.revision);
     event.snapshot_reads.canonical = Some(read); // before insertion into transport channel
     event
@@ -114,7 +126,7 @@ fn actual_registered_event_transport_releases_discarded_queued_preview_and_unpai
     })
     .unwrap(); // existing lifecycle worker, no device/output/native lease
     let service = Service::new(48_000, 8, 1024).unwrap();
-    let initial = service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    let initial = receive(&service);
     let (family, key) = SessionExportFamily::try_new_on_control(SnapshotExportReservation {
         snapshot_records: 2,
         read_records: 3,
