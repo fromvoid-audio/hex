@@ -95,14 +95,15 @@ fn browser_caption(value: impl AsRef<str>) -> Div {
     div().text_xs().child(theme::text(value))
 }
 
-fn picker_icon(glyph: Div) -> Div {
+fn picker_icon(icon: Div) -> Div {
+    let icon = icon.whitespace_nowrap();
     div()
         .size(px(PICKER_CONTROL_SIZE))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
-        .child(glyph.whitespace_nowrap())
+        .child(icon)
 }
 
 fn browser_divider() -> Div {
@@ -228,6 +229,11 @@ impl EditorView {
                 hex_project::ElementColor::Cyan,
                 hex_project::ElementColor::Gray,
             ][index];
+            let icon = picker_icon(
+                browser_caption("■")
+                    .text_color(rgb(theme::element_colors(color).accent))
+                    .debug_selector(move || format!("browser-picker-glyph-collection-{index}")),
+            );
             sidebar = sidebar.child(
                 div()
                     .id(("browser-collection", index))
@@ -263,13 +269,7 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
-                    .child(picker_icon(
-                        browser_caption("■")
-                            .text_color(rgb(theme::element_colors(color).accent))
-                            .debug_selector(move || {
-                                format!("browser-picker-glyph-collection-{index}")
-                            }),
-                    ))
+                    .child(icon)
                     .children((!compact).then(|| {
                         browser_caption(name)
                             .flex_1()
@@ -289,6 +289,10 @@ impl EditorView {
                 continue;
             }
             let active = self.browser.section == section;
+            let icon = picker_icon(
+                browser_caption(ICONS[self.browser.layout.icons[index]])
+                    .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
+            );
             sidebar = sidebar.child(
                 div()
                     .id(("browser-section", index))
@@ -324,11 +328,7 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
-                    .child(picker_icon(
-                        browser_caption(ICONS[self.browser.layout.icons[index]]).debug_selector(
-                            move || format!("browser-picker-glyph-section-{index}"),
-                        ),
-                    ))
+                    .child(icon)
                     .children((!compact).then(|| {
                         browser_caption(name)
                             .flex_1()
@@ -426,6 +426,10 @@ impl EditorView {
                     .unwrap_or("folder")
             };
             let tooltip = name.to_owned();
+            let icon = picker_icon(
+                browser_caption("□")
+                    .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
+            );
             sidebar = sidebar.child(
                 div()
                     .id(("browser-place", index))
@@ -458,9 +462,7 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
-                    .child(picker_icon(browser_caption("□").debug_selector(
-                        move || format!("browser-picker-glyph-place-{index}"),
-                    )))
+                    .child(icon)
                     .children((!compact).then(|| {
                         browser_caption(name)
                             .flex_1()
