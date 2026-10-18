@@ -165,7 +165,10 @@ fn clip_paint_cuts_audio_and_midi_with_source_mapping_boundaries_and_one_undo() 
             );
             assert!(editor.undo());
             assert_eq!(editor.project().tracks(), before.tracks());
-            assert_eq!(editor.project().assets(), before.assets());
+            assert_eq!(
+                editor.project().assets().collect::<Vec<_>>(),
+                before.assets().collect::<Vec<_>>()
+            );
             assert!(editor.redo());
             assert_eq!(editor.project().snapshot(), after);
         }
