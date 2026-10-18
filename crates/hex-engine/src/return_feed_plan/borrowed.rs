@@ -171,6 +171,12 @@ fn gain(value: f32) -> Result<(), Invalid> {
     }
     Ok(())
 }
+// Requested scratch bound from the same scalar counts as the constructor.
+// No allocation, owning clone or routing-admission authority is returned.
+pub(super) fn construction_scratch_bytes(project: &Project) -> Result<usize, Invalid> {
+    Counts::of(project)?.bytes()
+}
+
 pub(super) fn validate(project: &Project) -> Result<(), Invalid> {
     let counts = Counts::of(project)?;
     validate_reserved(project, counts, counts.bytes()?)
