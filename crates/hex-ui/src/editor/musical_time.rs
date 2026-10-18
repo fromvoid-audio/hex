@@ -3,7 +3,7 @@
 use super::viewport::Viewport;
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
-use hex_project::{BeatTime, Command, Meter, MeterPosition, Project, Tempo};
+use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
 use hex_session::service::Request;
 
 const MAX_RULER_TICKS: usize = 64;
@@ -769,7 +769,7 @@ impl super::EditorView {
         self.status = format!("arranger · snap {}", self.snap_grid.label());
     }
 
-    fn cursor_beat(&self) -> Option<BeatTime> {
+    pub(super) fn cursor_beat(&self) -> Option<BeatTime> {
         let state = self.state.as_ref()?;
         let beat = state
             .project
@@ -784,31 +784,6 @@ impl super::EditorView {
             && !self.close_prompt_open
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
-    }
-
-    pub(super) fn adjust_tempo(&mut self, direction: i32) {
-        if !self.time_edit_admitted() {
-            self.error = Some("tempo edit waits for pending project work".into());
-            return;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(beat) = self.cursor_beat() else {
-            self.error = Some("tempo point unavailable at this cursor position".into());
-            return;
-        };
-        let current = state.project.tempo_map().tempo_at(beat);
-        let adjusted = i64::from(current.micro_bpm()) + i64::from(direction) * 1_000_000;
-        let Ok(micro_bpm) = u32::try_from(adjusted) else {
-            self.error = Some("tempo must stay within 1–1000 bpm".into());
-            return;
-        };
-        let Ok(tempo) = Tempo::new(micro_bpm) else {
-            self.error = Some("tempo must stay within 1–1000 bpm".into());
-            return;
-        };
-        self.enqueue(Request::Edit(Command::SetTempoPoint { beat, tempo }));
     }
 
     pub(super) fn cycle_meter(&mut self) {
@@ -842,14 +817,6 @@ impl super::EditorView {
             return div().w(px(self.track_header_width())).flex_shrink_0();
         };
         let beat = self.cursor_beat();
-        let tempo_label = beat.map_or_else(
-            || "—".into(),
-            |beat| {
-                let micro = state.project.tempo_map().tempo_at(beat).micro_bpm();
-                let tenths = (micro + 50_000) / 100_000;
-                format!("{}.{:01}", tenths / 10, tenths % 10)
-            },
-        );
         let meter_label = beat.map_or_else(
             || "—".into(),
             |beat| {
@@ -866,30 +833,6 @@ impl super::EditorView {
             .items_center()
             .justify_center()
             .gap(px(2.0))
-            .children([
-                self.time_button(
-                    "−",
-                    "decrease tempo at cursor quarter by 1 bpm",
-                    enabled,
-                    |view, _, _| view.adjust_tempo(-1),
-                    cx,
-                ),
-                self.time_readout(tempo_label, "tempo at cursor snapped quarter · bpm"),
-                self.time_button(
-                    "+",
-                    "increase tempo at cursor quarter by 1 bpm",
-                    enabled,
-                    |view, _, _| view.adjust_tempo(1),
-                    cx,
-                ),
-            ])
-            .child(
-                div()
-                    .w(px(1.0))
-                    .h(px(14.0))
-                    .mx_1()
-                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
-            )
             .children([self.time_button(
                 &meter_label,
                 "cycle meter at cursor snapped quarter · 4/4, 3/4, 6/8, 5/4",
@@ -897,26 +840,6 @@ impl super::EditorView {
                 |view, _, _| view.cycle_meter(),
                 cx,
             )])
-    }
-
-    fn time_readout(&self, label: String, description: &'static str) -> gpui::Stateful<Div> {
-        div()
-            .id(description)
-            .w(px(38.0))
-            .h(px(19.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .tooltip(move |_, cx| {
-                cx.new(|_| super::transport::MiniTooltip {
-                    description: description.into(),
-                })
-                .into()
-            })
-            .child(theme::text(label))
     }
 
     fn time_button(

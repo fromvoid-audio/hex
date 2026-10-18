@@ -6,7 +6,7 @@ use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
 impl EditorView {
-    pub(super) fn transport(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn transport(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
@@ -17,7 +17,9 @@ impl EditorView {
             "computer midi keyboard · m · base midi {} · velocity {} · z/x octave · c/v velocity",
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
+        let field = self.project_tempo_input(cx);
         let mut row = header::toolbar_row()
+            .child(field)
             .child(
                 self.control_icon(
                     "tuning",
