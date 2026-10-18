@@ -86,6 +86,176 @@ pub(super) struct MidiTrimDrag {
     pub(super) preview: Rc<RefCell<Option<MidiClipTrim>>>,
 }
 
+/// One accepted resize awaiting its exact FIFO worker completion. This owns
+/// metadata only, separately from pointer capture and its autoscroll timer.
+pub(super) struct PendingTrim {
+    generation: u64,
+    revision: u64,
+    track: TrackId,
+    command: ResizeCommand,
+    remaining: Option<usize>,
+    display: PendingTrimDisplay,
+}
+
+enum PendingTrimDisplay {
+    Audio {
+        original: Clip,
+        prospective: Clip,
+        asset_frames: u64,
+    },
+    Midi {
+        original: Rc<MidiClip>,
+        prospective: MidiClipTrim,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResizeCommand {
+    Audio {
+        clip: hex_project::ClipId,
+        edge: TrimEdge,
+        frame: u64,
+        stretch: bool,
+    },
+    Midi {
+        clip: hex_project::ClipId,
+        edge: TrimEdge,
+        beat: BeatTime,
+    },
+}
+
+impl ResizeCommand {
+    fn from_request(request: &Request) -> Option<Self> {
+        match request {
+            Request::Edit(Command::StretchAudioClipEdge { clip, edge, frame }) => {
+                Some(Self::Audio {
+                    clip: *clip,
+                    edge: *edge,
+                    frame: *frame,
+                    stretch: true,
+                })
+            }
+            Request::Edit(Command::TrimClipEdge { clip, edge, frame }) => Some(Self::Audio {
+                clip: *clip,
+                edge: *edge,
+                frame: *frame,
+                stretch: false,
+            }),
+            Request::Edit(Command::TrimMidiClipEdge { clip, edge, beat }) => Some(Self::Midi {
+                clip: *clip,
+                edge: *edge,
+                beat: *beat,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl EditorView {
+    pub(super) fn pending_trim_matches(&self, request: &Request) -> bool {
+        self.pending_trim.as_ref().is_some_and(|pending| {
+            pending.remaining.is_none()
+                && ResizeCommand::from_request(request) == Some(pending.command)
+        })
+    }
+
+    /// The queue is serial. Count all already-submitted requests, including
+    /// typed gesture requests, rather than treating an unrelated ack as ours.
+    pub(super) fn trim_request_submitted(&mut self) {
+        if let Some(pending) = self.pending_trim.as_mut() {
+            pending.remaining = Some(self.worker_requests_pending);
+            if let Some(state) = &self.state {
+                pending.revision = state.revision;
+            }
+        }
+    }
+
+    pub(super) fn trim_request_complete(&mut self, event: &hex_session::service::Event) {
+        let Some(pending) = self.pending_trim.as_mut() else {
+            return;
+        };
+        if event.project_replaced || pending.generation != self.project_generation {
+            self.pending_trim = None;
+        } else if event.request_complete
+            && let Some(remaining) = pending.remaining.as_mut()
+        {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                self.pending_trim = None;
+            }
+        }
+    }
+
+    fn pending_trim_current(&self) -> Option<&PendingTrim> {
+        let pending = self.pending_trim.as_ref()?;
+        let state = self.state.as_ref()?;
+        (pending.generation == self.project_generation && pending.revision == state.revision)
+            .then_some(pending)
+    }
+
+    pub(super) fn audio_trim_display(&self, track: TrackId) -> Option<(Clip, Clip)> {
+        if let Some(drag) = self.active_trim_drag.as_ref()
+            && drag.source_track == track
+            && self.trim_drag_current(drag)
+            && let Some(preview) = drag.preview.borrow().as_ref()
+        {
+            return Some((drag.clip.clone(), preview.clip.clone()));
+        }
+        let pending = self.pending_trim_current()?;
+        if pending.track != track {
+            return None;
+        }
+        let PendingTrimDisplay::Audio {
+            original,
+            prospective,
+            asset_frames,
+        } = &pending.display
+        else {
+            return None;
+        };
+        let state = self.state.as_ref()?;
+        let current = state
+            .project
+            .track(track)?
+            .clips()
+            .iter()
+            .find(|clip| clip.id() == original.id())?;
+        (current == original
+            && state.project.asset(original.asset())?.playback_frames() == *asset_frames)
+            .then(|| (original.clone(), prospective.clone()))
+    }
+
+    pub(super) fn midi_trim_display(&self, track: TrackId) -> Option<(Rc<MidiClip>, MidiClipTrim)> {
+        if let Some(drag) = self.active_midi_trim_drag.as_ref()
+            && drag.source_track == track
+            && self.midi_trim_drag_current(drag)
+            && let Some(preview) = *drag.preview.borrow()
+        {
+            return Some((Rc::clone(&drag.clip), preview));
+        }
+        let pending = self.pending_trim_current()?;
+        if pending.track != track {
+            return None;
+        }
+        let PendingTrimDisplay::Midi {
+            original,
+            prospective,
+        } = &pending.display
+        else {
+            return None;
+        };
+        let current = self
+            .state
+            .as_ref()?
+            .project
+            .track(track)?
+            .midi_clips()
+            .iter()
+            .find(|clip| clip.id() == original.id())?;
+        (current == original.as_ref()).then(|| (Rc::clone(original), *prospective))
+    }
+}
+
 fn frame_at_x(x: f32, lane: LaneBounds, viewport: Viewport) -> Option<u64> {
     if !x.is_finite()
         || !lane.left.is_finite()
@@ -112,12 +282,13 @@ fn edge_frame(clip: &Clip, edge: TrimEdge) -> Option<u64> {
 }
 
 fn drag_admitted(view: &EditorView) -> bool {
-    trim_drag_admitted(
-        view.opening_project,
-        view.close_prompt_open,
-        view.worker_requests_pending,
-        view.pending_requests.len(),
-    )
+    view.pending_trim.is_none()
+        && trim_drag_admitted(
+            view.opening_project,
+            view.close_prompt_open,
+            view.worker_requests_pending,
+            view.pending_requests.len(),
+        )
 }
 
 fn trim_drag_admitted(
@@ -874,11 +1045,25 @@ impl EditorView {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        self.enqueue(Request::Edit(Command::TrimMidiClipEdge {
+        let request = Request::Edit(Command::TrimMidiClipEdge {
             clip: drag.clip.id(),
             edge: drag.edge,
             beat,
-        }));
+        });
+        self.pending_trim = Some(PendingTrim {
+            generation: drag.project_generation,
+            revision: drag.revision,
+            track: drag.source_track,
+            command: ResizeCommand::from_request(&request).expect("resize command"),
+            remaining: None,
+            display: PendingTrimDisplay::Midi {
+                original: Rc::clone(&drag.clip),
+                prospective: preview,
+            },
+        });
+        if !self.enqueue(request) {
+            self.pending_trim = None;
+        }
         self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
         cx.notify();
     }
@@ -949,7 +1134,7 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        self.enqueue(Request::Edit(if drag.stretch_modifier.get() {
+        let request = Request::Edit(if drag.stretch_modifier.get() {
             Command::StretchAudioClipEdge {
                 clip: drag.clip.id(),
                 edge: drag.edge,
@@ -961,7 +1146,22 @@ impl EditorView {
                 edge: drag.edge,
                 frame,
             }
-        }));
+        });
+        self.pending_trim = Some(PendingTrim {
+            generation: drag.project_generation,
+            revision: drag.revision,
+            track: drag.source_track,
+            command: ResizeCommand::from_request(&request).expect("resize command"),
+            remaining: None,
+            display: PendingTrimDisplay::Audio {
+                original: drag.clip.clone(),
+                prospective: preview,
+                asset_frames: drag.asset_playback_frames,
+            },
+        });
+        if !self.enqueue(request) {
+            self.pending_trim = None;
+        }
         self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
         cx.notify();
     }

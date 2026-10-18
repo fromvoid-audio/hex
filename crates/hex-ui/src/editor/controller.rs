@@ -621,7 +621,11 @@ impl EditorView {
                     }
                     visible_change = true;
                 }
-                Err(_) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    visible_change |= self.pending_trim.take().is_some();
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
         }
         visible_change |= self.poll_editor_audio_events();
@@ -629,16 +633,23 @@ impl EditorView {
         visible_change |= self.pump_tuning_gesture();
         if !self.tuning.client.has_pending_requests() {
             while let Some(request) = self.pending_requests.pop_front() {
+                let resize_request = self.pending_trim_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
-                            self.worker_requests_pending.saturating_add(1)
+                            self.worker_requests_pending.saturating_add(1);
+                        if resize_request {
+                            self.trim_request_submitted();
+                        }
                     }
                     Err(SubmitError::Full(request)) => {
                         self.pending_requests.push_front(request);
                         break;
                     }
                     Err(SubmitError::Busy(request)) => {
+                        if resize_request {
+                            self.pending_trim = None;
+                        }
                         if matches!(request, Request::Export(_)) {
                             self.export_pending = false;
                         }
@@ -647,6 +658,9 @@ impl EditorView {
                             replace_error(&mut self.error, "an export is already pending");
                     }
                     Err(SubmitError::Closed(request)) => {
+                        if resize_request {
+                            self.pending_trim = None;
+                        }
                         if matches!(&request, Request::ImportAudioBatch { .. }) {
                             if let Some(control) = self.audio_batch.take() {
                                 control.request_cancel();
@@ -1342,6 +1356,7 @@ impl EditorView {
     }
 
     pub(super) fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+        self.trim_request_complete(&event);
         if event.project_replaced {
             self.invalidate_prepared_seek();
             if let Some(audio) = self.audio.as_mut() {
@@ -2314,9 +2329,13 @@ impl EditorView {
                 return false;
             }
         }
+        let resize_request = self.pending_trim_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                if resize_request {
+                    self.trim_request_submitted();
+                }
                 true
             }
             Err(SubmitError::Full(request))

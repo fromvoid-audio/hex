@@ -325,13 +325,7 @@ impl EditorView {
         clip_area = clip_area.child(content);
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
-        let live_midi_trim_preview = self
-            .active_midi_trim_drag
-            .as_ref()
-            .filter(|drag| drag.source_track == track_id && self.midi_trim_drag_current(drag))
-            .and_then(|drag| {
-                (*drag.preview.borrow()).map(|preview| (std::rc::Rc::clone(&drag.clip), preview))
-            });
+        let live_midi_trim_preview = self.midi_trim_display(track_id);
         if let Some((clip, preview)) = live_midi_trim_preview {
             let start_beat = preview.start();
             if let Some(end_beat) = start_beat
@@ -390,16 +384,7 @@ impl EditorView {
                 }
             }
         }
-        let live_trim_preview = self
-            .active_trim_drag
-            .as_ref()
-            .filter(|drag| drag.source_track == track_id && self.trim_drag_current(drag))
-            .and_then(|drag| {
-                drag.preview
-                    .borrow()
-                    .as_ref()
-                    .map(|preview| (drag.clip.clone(), preview.clip.clone()))
-            });
+        let live_trim_preview = self.audio_trim_display(track_id);
         if let Some((original_clip, preview_clip)) = live_trim_preview {
             let preview_start = preview_clip.start();
             if let Some(preview_end) = preview_start.checked_add(preview_clip.duration()) {
@@ -1073,14 +1058,9 @@ impl EditorView {
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
             let trim_preview = self
-                .active_midi_trim_drag
-                .as_ref()
-                .filter(|drag| {
-                    drag.source_track == track_id
-                        && drag.clip.id() == clip.id()
-                        && self.midi_trim_drag_current(drag)
-                })
-                .and_then(|drag| *drag.preview.borrow());
+                .midi_trim_display(track_id)
+                .filter(|(original, _)| original.id() == clip.id())
+                .map(|(_, preview)| preview);
             let pixel_width = self
                 .drag_lanes
                 .get(&track_id)
@@ -1243,19 +1223,9 @@ impl EditorView {
         let clip = self.fade_trim_preview(clip.id()).unwrap_or(clip);
         let clip_id = clip.id();
         let trim_preview_clip = self
-            .active_trim_drag
-            .as_ref()
-            .filter(|drag| {
-                drag.source_track == track
-                    && drag.clip.id() == clip_id
-                    && self.trim_drag_current(drag)
-            })
-            .and_then(|drag| {
-                drag.preview
-                    .borrow()
-                    .as_ref()
-                    .map(|preview| preview.clip.clone())
-            });
+            .audio_trim_display(track)
+            .filter(|(original, _)| original.id() == clip_id)
+            .map(|(_, preview)| preview);
         let active_trim_preview = trim_preview_clip.is_some();
         let Some(viewport_end) = viewport.end() else {
             return div().id(("clip", clip_id.value()));
