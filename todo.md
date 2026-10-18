@@ -5143,3 +5143,15 @@ release and async/layout updates. Unicode grapheme boundaries reuse the locked
 segmentation package. Source selection work is separate from unresolved #2794
 native focus diagnostics. Dedicated merger owns integration/full CI/merge;
 root owns native optimized acceptance and the current app remains untouched.
+## collapsed browser picker geometry — pulse2706 / PR322, 18 october 2026
+
+Collections, Library and Places share a 22 px icon/control column. Picker width
+resizes continuously to 23 px including its existing border; labels still hide
+below 64 px while icons keep their horizontal position. Full-row targets, active
+source paint, keyboard/search focus, hover-name handlers and original Place paths
+remain intact. Rendered glyph-bound red/green regression covers normal, transition
+and minimum widths; the existing source-selection input test now covers row-edge
+clicks, inert hover, focus and resize state across those widths. Targeted results
+and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
+full CI/integration/merge; optimized native drag/hover/optical acceptance remains
+open. No installed app, persisted schema or user files changed.
