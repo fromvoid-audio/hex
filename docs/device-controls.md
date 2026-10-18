@@ -64,6 +64,22 @@ worker Load is covered separately, and actual Load dialog/arrow glyph, physical
 input and native display acceptance need the coordinator's finite Mac session.
 Source/scene checks are not physical acceptance or app delivery.
 
+## selected-device Backspace — pulse2796 / PR402
+
+Click a device title to give that exact card keyboard focus. Backspace then uses
+its canonical instrument/effect removal command, including Return effects. The
+existing draft finalization and terminal barrier precede removal; pending work,
+recording, replaced owners and stale selection refuse it. Canonical reconciliation
+retires the removed card and caches without selecting another device for a held
+key. One Undo restores its full chain state; Redo removes the same device.
+
+Numeric/text/browser editors and EQ graph nodes retain their own Backspace.
+Title focus deliberately leaves nested control pointer handlers alone and keeps
+header drag propagation. Nine rendered, bounded-browser fixtures exercise real
+Service history, valid/invalid drafts, owner/refusal and held-key isolation.
+Targeted source checks are recorded in Pulse; final integrated full local CI is
+owned by the dedicated merger. Native physical input acceptance remains open.
+
 ## Boundary
 
 `hex-widgets` owns knobs, horizontal/vertical sliders, editable numeric values,

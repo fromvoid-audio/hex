@@ -38,7 +38,9 @@ mod eq8_panel;
 mod eq_panel;
 mod gain_meters;
 mod gate_panel;
+mod keyboard;
 mod navigation;
+pub(super) use keyboard::bind_keys as bind_keyboard_keys;
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod operator_panel;
@@ -959,23 +961,23 @@ fn render_track(
             NativeDeviceClass::Effect => render_effect(view, window, cx, track_id, device),
         };
         let focus = view.device_panel.chain_window.focus(device.id(), cx);
-        chain = chain.child(
-            render_device_card_target(
-                view,
-                cx,
-                DeviceCardDropGeometry {
-                    track: track_id,
-                    device: device.id(),
-                    class,
-                    width: device_card_width(class, device.state().type_id()),
-                    next: device_ids.get(index + 1).copied(),
-                    first: first_device,
-                    visible_chain_bounds: visible_chain_bounds.clone(),
-                },
-                rendered,
-            )
-            .track_focus(&focus),
-        );
+        let card = render_device_card_target(
+            view,
+            cx,
+            DeviceCardDropGeometry {
+                track: track_id,
+                device: device.id(),
+                class,
+                width: device_card_width(class, device.state().type_id()),
+                next: device_ids.get(index + 1).copied(),
+                first: first_device,
+                visible_chain_bounds: visible_chain_bounds.clone(),
+            },
+            rendered,
+        )
+        .track_focus(&focus);
+        let card = keyboard::card(view, cx, device.id(), focus, card);
+        chain = chain.child(card);
     }
     chain = chain.child(render_device_end_target(
         view,
@@ -1347,6 +1349,7 @@ fn device_drag_title(
     title: gpui::SharedString,
 ) -> Stateful<Div> {
     let id = device.id();
+    let generation = view.project_generation;
     let payload = drag::NativeDeviceDrag {
         project_generation: view.project_generation,
         revision: view.state.as_ref().map_or(0, |state| state.revision),
@@ -1375,6 +1378,16 @@ fn device_drag_title(
             .into()
         })
         .child(theme::text(title))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                if view.project_generation == generation
+                    && view.device_panel.selected_device == Some(id)
+                {
+                    view.device_panel.chain_window.focus(id, cx).focus(window);
+                }
+            }),
+        )
         .on_drag(payload, move |payload, _, window, cx| {
             cx.set_active_drag_cursor_style(gpui::CursorStyle::ClosedHand, window);
             entity.update(cx, |view, cx| {
