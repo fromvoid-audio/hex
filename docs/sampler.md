@@ -1214,3 +1214,14 @@ a fresh callback-local ledger alongside the still-live original, remaining
 selector/compiler cost helpers, and the closed pre-selector construction call
 remain required; these components do not open runtime admission or close the
 aggregate quote, unwind custody, Service or native publication work.
+
+The private Track selector now obtains a constructor-local cost from its actual
+vacant row destinations before preparing them. It includes outer row replacement,
+reused nested capacity, new send backing, meters and the existing Utility
+allowances, then compares actual selected backing/growth against that bound.
+The same vacancy predicate remains authoritative for both paths. Six finite
+filtered/unfiltered and fresh/replaced/spare-row cases compare actual post-build
+metadata while sizing preserves row addresses and performs no paired births or
+clones. This is a selector-local bound: a future closed aggregate operation must
+still add it to the actual old/input union before either Track or Return
+selection, context construction, cache reservation or compiler entry.

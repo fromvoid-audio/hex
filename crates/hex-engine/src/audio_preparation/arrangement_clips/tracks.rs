@@ -1,6 +1,7 @@
 //! Sealed control-owned Track targets; no Track/Arc/Clone escape.
 mod compiler_bindings;
 mod instrument;
+mod selector_cost;
 pub(super) mod utility;
 use super::*;
 use crate::{
@@ -380,14 +381,28 @@ impl TrackAssembly {
                     .ok_or(AudioStorageError::UnsupportedConstructor)?;
             }
         }
-        self.reserve_rows(project, &[], TrackConstruction::CompilerChildren)
+        let before = self.capacity_at(false, &[])?.bytes()?;
+        let cost = self.compiler_selector_cost(project)?;
+        self.reserve_rows(project, &[], TrackConstruction::CompilerChildren)?;
+        let after = self.capacity_at(true, &[])?;
+        let retained = after.bytes()?;
+        let peak = retained
+            .checked_add(after.previous_growth_backing_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        if retained
+            > before
+                .checked_add(cost.additional_retained_bytes)
+                .ok_or(AudioStorageError::Overflow)?
+            || peak
+                > before
+                    .checked_add(cost.additional_peak_bytes)
+                    .ok_or(AudioStorageError::Overflow)?
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        Ok(())
     }
-    fn reserve_rows(
-        &mut self,
-        project: &hex_project::Project,
-        pairs: &[Pair],
-        construction: TrackConstruction,
-    ) -> Result<(), AudioStorageError> {
+    fn require_vacant_rows(&self) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.compiler_started
             || self.rows.iter().any(|r| {
@@ -407,6 +422,15 @@ impl TrackAssembly {
         {
             return Err(AudioStorageError::Capacity);
         }
+        Ok(())
+    }
+    fn reserve_rows(
+        &mut self,
+        project: &hex_project::Project,
+        pairs: &[Pair],
+        construction: TrackConstruction,
+    ) -> Result<(), AudioStorageError> {
+        self.require_vacant_rows()?;
         crate::gain_envelope::validate_project(project).map_err(invalid)?;
         if project.tracks().iter().any(|t| {
             (matches!(construction, TrackConstruction::OriginalClips)
