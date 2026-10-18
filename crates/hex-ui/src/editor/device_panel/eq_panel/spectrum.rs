@@ -2,6 +2,8 @@
 use super::*;
 use hex_audio::spectrum_target::{SpectrumTarget, TargetError};
 
+const WAITING: &str = "spectrum waits for available current project audio";
+
 #[derive(Default)]
 pub(in super::super) struct SpectrumSelection {
     generation: u64,
@@ -165,6 +167,9 @@ pub(super) fn sync_selected(
     if select(view, identity, floor, rate).is_ok() {
         // Old frames cannot be presented as belonging to a newly selected tap.
         view.device_panel.spectrum_result = None;
+        if view.device_panel.message.as_deref() == Some(WAITING) {
+            view.device_panel.message = None;
+        }
     }
 }
 
@@ -208,9 +213,10 @@ pub(super) fn toggle(
             view.device_panel.selected_device = Some(device);
             sync_selected(view, device, owner);
         }
-        if context(view).is_none() {
-            view.device_panel.message =
-                Some("spectrum waits for available current project audio".into());
+        if view.device_panel.eq_spectrum.enabled(device) && context(view).is_none() {
+            view.device_panel.message = Some(WAITING.into());
+        } else if view.device_panel.message.as_deref() == Some(WAITING) {
+            view.device_panel.message = None;
         }
         cx.notify();
     }))

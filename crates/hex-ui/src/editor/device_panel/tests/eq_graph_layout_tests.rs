@@ -157,10 +157,46 @@ fn eq_default_spectrum_intent_and_explicit_toggle_do_not_edit_or_fake_audio(
             !eq_panel::spectrum_intent_for_test(view, device).0,
             "explicit toggle keeps this eq off"
         );
+        assert_ne!(
+            view.device_panel.message.as_deref(),
+            Some("spectrum waits for available current project audio"),
+            "explicit Off must not claim it is waiting for capture"
+        );
         assert!(view.audio.is_none());
         assert!(view.device_panel.spectrum_result.is_none());
         assert_eq!(view.state.as_ref().unwrap().project, original);
         assert!(view.pending_requests.is_empty());
+    });
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(eq_panel::spectrum_intent_for_test(view, device).0);
+        assert_eq!(
+            view.device_panel.message.as_deref(),
+            Some("spectrum waits for available current project audio")
+        );
+        assert!(view.device_panel.spectrum_result.is_none());
+    });
+    // The previously explicit On selection may activate once a valid fixture
+    // publication becomes available, without retaining an obsolete wait error.
+    let (control, _callback) = hex_audio::spectrum_target::channel();
+    editor.update(cx, |view, cx| {
+        view.device_panel.eq_spectrum.test_channel = Some(control);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.device_panel
+                .eq_spectrum
+                .test_channel
+                .as_ref()
+                .unwrap()
+                .desired()
+                .is_some()
+        );
+        assert!(view.device_panel.message.is_none());
+        assert_eq!(view.state.as_ref().unwrap().project, original);
     });
 }
 
