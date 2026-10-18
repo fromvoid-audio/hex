@@ -1,0 +1,69 @@
+{
+  "canonical_pr": 430,
+  "ticket": 2826,
+  "head": "2f78fdaff5e14138c619619e7457fbba6508aeee",
+  "tree": "c911710e0db4518e0f2f63aa5669418ca921e91f",
+  "expected_before": "e401c03603e65c04c3fd57fd61427249c88deb5a",
+  "expected_before_tree": "bad0590b7a2d82ec09c710bd06704b6746ac56d6",
+  "changed_files": [
+    "crates/hex-ui/src/context_menu.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser/place_icons.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "crates/hex-ui/src/editor/context_menu.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "original_red": {
+    "source": "e401c03603e65c04c3fd57fd61427249c88deb5a",
+    "test": "original-red-test.patch /430-original-grid-test.rs",
+    "result": "0PASS1FAIL actual rightclick menu lacks compact grid;430-original-red.log"
+  },
+  "final_results": {
+    "browser": "88PASS0failed0ignored667filtered23.82s; actual rightclick row anchors at2pointerfractions \u00d7 expanded/compact, same-name paths, pointer choose/reset, grid keyboard, restore search/nontext focus and actual preferences reopen, plus priorbrowsercontracts",
+    "context": "5PASS0failed0ignored750filtered1.02s; existing clip/track/menu input isolation and bounds",
+    "clippy": "UI alltargets ui-test-support -Dwarnings PASS",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "commands": "430-final-checks.json",
+    "identity": "working tree unchanged between final checked tree and source commit; no later source edits",
+    "fullCI": "sole merger prospective qualification, not run by sourceowner"
+  },
+  "retained_diagnostics": {
+    "430-grid-green.log": "initial compile errors from misplaced test-bounds canvas, gpui::point import and tooltip AnyView conversion; corrected without new visibility or dependencies",
+    "430-grid-green-v2.log": "grid/anchor passed but fixture captured source before its intentional CmdF changed Samples to All; corrected precondition/capture, no production source-selection change",
+    "430-place-icons-green.log": "six focused Place tests passed before adding final nontext-focus dismissal case; final88reran after it"
+  },
+  "scope": "Reuse326 catalog/raw path stable identity/persistence. AddedPlace row-anchored rightclick grid+explicitreset only; generic list popup defaults preserved, no source query/selection/preview/import/backend/schema/prefs/vendor changes. Glyphs are existing bundled Ioskeley assets, screenshot not copied.",
+  "known_limits": [
+    "Custom additionalPlaces only; Home/Music,Library/Collections have no persistediconidentity; gap reported to root note24831",
+    "Native optimized pointer/font/GPU/accessibility announcement and normal appclose/reopen not accepted; no app actions",
+    "Independent426/416/415 unmerged followups not silently qualified by430",
+    "Existing PCM declaredArc Unknown unsupported_wrapper warning retained"
+  ],
+  "reference": {
+    "provenance": "Pulse2826 get_ticket_images revision9 supplied530x840 screenshot, inspectedcompositiononly",
+    "original_sha256": "06865d89e649258370b7ae4dd7ad9beabfa109613bab5a9193c29c40bfd3af2a",
+    "original_bytes": 74516
+  },
+  "files": {
+    "430-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "430-final-browser.log": "fb850c9089884af391d439a374fbaa0c4577b3bfe4a23b92ecb20f2e2325dd71",
+    "430-final-checks.json": "c3f99193ea5c04cf773a7ba23a761a85a6ab616a40f82f675aa334db4d7ccf67",
+    "430-final-clippy.log": "001ac300f7fb9737999272e3e1a59383414331d5203df7c8c3513dda1617dfb9",
+    "430-final-context.log": "7ebfb93f1b6734957bcc446e6aef1e4d4bafe8449635325fe8f9e12aa152878d",
+    "430-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "430-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "430-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "430-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "430-grid-green-v2.log": "5b4043c89b560d595043723841caf227aa425aa2807d0602d0116423116c0e7f",
+    "430-grid-green.log": "8049b9ceadc21312bb478e0b3f3ffd50e64a19884735ec9c392059a67404e253",
+    "430-original-grid-test.rs": "15902207edcaa6ae4b32e42648e6500ccb260f7617440389332551e7bffa01e4",
+    "430-original-red.log": "4dd4a054df8bd4f88c66e23df52f564f44499cf023d339fdd8b2df6c14c4fcbf",
+    "430-place-icons-green.log": "0d797361a635e93219a66aafa58e07a555ad19e517d505f79b40d841c6479da3",
+    "before-after-hashes.json": "b1df7c379da8c5efd69f1ed17ed388e331565a15c92cd1cb5d8a0de4bc772403",
+    "integration-note.md": "a87e004c57a6e3835f6d8ee8cce1acbe7de8e890b90095ac4dc536fe49b85f0c",
+    "native-checklist.md": "1d8d845a009d33d4bb5ae922856e65795c084918bd5a94c9478fd01ba30d8dad",
+    "original-red-test.patch": "dad78ffb74ce56b8a70f4ad94e17204649cb91e3c88a3135e75de4ee396d9299",
+    "source.patch": "6c5ec9b40084182325f47a79ca476d971ba88c4247740668275b6e0dca8ba311"
+  }
+}

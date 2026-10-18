@@ -1,0 +1,16 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.14s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 6 tests
+test editor::browser::ui_test::browser_place_icon_popup_outside_click_does_not_start_arrangement_gesture ... ok
+test editor::browser::ui_test::browser_place_icons_coalesced_save_errors_and_stale_menu_are_bounded ... ok
+test editor::browser::ui_test::browser_place_icons_preference_fixture_bounds_startup_before_workers ... ok
+test editor::browser::ui_test::browser_place_icons_input_persistence_identity_fallback_and_geometry ... ok
+test editor::browser::ui_test::browser_place_icon_grid_uses_clicked_row_reset_and_reopens ... ok
+test editor::browser::ui_test::browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 749 filtered out; finished in 3.18s
+

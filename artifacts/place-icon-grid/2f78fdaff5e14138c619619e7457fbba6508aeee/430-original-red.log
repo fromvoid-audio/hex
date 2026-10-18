@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.87s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::browser::ui_test::browser_place_icon_grid_uses_clicked_row_reset_and_reopens' (89425) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:4601:70:
+actual row context menu must contain a compact icon grid
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::browser_place_icon_grid_uses_clicked_row_reset_and_reopens ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::browser_place_icon_grid_uses_clicked_row_reset_and_reopens
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 754 filtered out; finished in 0.32s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

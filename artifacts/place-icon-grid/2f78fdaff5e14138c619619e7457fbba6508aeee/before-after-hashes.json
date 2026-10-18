@@ -1,0 +1,44 @@
+{
+  "crates/hex-ui/src/context_menu.rs": {
+    "before_git_blob": "2a61751611f1ea0ccec8bb9d954f3d3628d1dea6",
+    "before_sha256": "3295eb2ab344caf51ddecfae3e3c75ec73cac96c6667bf07faf5a88c0b1a8bb5",
+    "after_git_blob": "e31a2ce0591bc17b237da50b96c84f0e8c6c3e01",
+    "after_sha256": "db6e350ddc7d43d4dc5ba1fe0462e071d941fc15d7b3118eae12cc8283b3787e"
+  },
+  "crates/hex-ui/src/editor/browser/layout.rs": {
+    "before_git_blob": "88039f2eb14b96c1617cfa6e11af6e72ebcdd6f9",
+    "before_sha256": "6abebefdf28f4c80524ee3aa96f83edaa3af6d345356de913698d173ded6f540",
+    "after_git_blob": "bf86964726ece45f1efacffdd465bd7d7492a000",
+    "after_sha256": "bf4a38d831bf7b65d8243810475902a984fa47bc4fcb486eb11a0c504ca9a4ee"
+  },
+  "crates/hex-ui/src/editor/browser/place_icons.rs": {
+    "before_git_blob": "3fdf35d5ce4bcaf8bb9decf443b64c0e4a994995",
+    "before_sha256": "cdcfe0a69e37ac307c0b4ada7040c46d922681673fff1f1a79af8d5055dbba6a",
+    "after_git_blob": "7aca3b5c53123e0ecfba3e07f96ca7e1d6538be6",
+    "after_sha256": "a93485d4233892b1e6a56de9af704c0963b4ebc6ae3f38f9d96ed3a10048f570"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_git_blob": "f6e1a07bfd0a6abe9ee877070b7abb78bfcfc212",
+    "before_sha256": "369462230a3fb7a9897438ed51453e4b77a9dcf4c54a7f56719ab4df6ab9f273",
+    "after_git_blob": "7e986cd95c860d06f755ee14bbf5649967b166a0",
+    "after_sha256": "6100ae6c0cac4408099445a5451a8f38c0516552ef0d336ea440a816bae8d742"
+  },
+  "crates/hex-ui/src/editor/context_menu.rs": {
+    "before_git_blob": "3d6971ed9284bf0e5682fb89c43fba317fcd85b0",
+    "before_sha256": "a83a27e67428414654de5a1d19504bc87cf61d831d0ffe1a7cceef0df7071f3a",
+    "after_git_blob": "37af3211d3125c2dc4e47106bd7a80a0db902ccd",
+    "after_sha256": "42a87a5d9a73f5026006715e523130e43670a14cc3b7e863881368c9f7f752ff"
+  },
+  "docs/browser-places.md": {
+    "before_git_blob": "332b4be9fbc040ee934a673124fe5292a5388ab2",
+    "before_sha256": "362d273da71a4847aef9aa4b9d57f3a41fee0da541785f685f431a92c395eba3",
+    "after_git_blob": "7b11a4da2e3a7c7215f9758e36d5ab18a4f239cf",
+    "after_sha256": "dfaaee142ed49182c037b2adfa4b16462f02dd532ecf6b85144fa36a59ad0a60"
+  },
+  "todo.md": {
+    "before_git_blob": "69c1e59b72c894229a518ec8ada2b3d7acc08c4e",
+    "before_sha256": "6ed2f49971fff4f19c705d4d3ac5895f2007694fc964adb11935cf83e28b9612",
+    "after_git_blob": "587bc2289a93d76e91be77058f60d2870863c91f",
+    "after_sha256": "fec366de8143ca0de78ed0f6747f25ae35c7fc2357fe73442cdbd9406f263559"
+  }
+}

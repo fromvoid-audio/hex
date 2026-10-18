@@ -1,0 +1,42 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0425]: cannot find value `measured_bounds` in this scope
+   --> crates/hex-ui/src/editor/browser/layout.rs:279:49
+    |
+279 | ...                   move |bounds, _, _| measured_bounds.set(Some(bounds)),
+    |                                           ^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `point` in this scope
+   --> crates/hex-ui/src/editor/browser/layout.rs:488:37
+    |
+488 | ...                   point(bounds.left(), bounds.bottom())
+    |                       ^^^^^ not found in this scope
+    |
+note: these functions exist but are inaccessible:
+      crate::editor::tuning::plots::tests::point
+   --> crates/hex-ui/src/editor/gain_lane/tests.rs:3:1
+    |
+  3 | fn point(raw: u64, gain: f32) -> GainPoint {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `crate::editor::gain_lane::tests::point`: not accessible
+help: consider importing this function
+    |
+  2 + use gpui::point;
+    |
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/context_menu.rs:124:35
+    |
+124 |             .tooltip(move |_, cx| cx.new(|_| MenuTooltip { label }))
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `AnyView`, found `Entity<MenuTooltip>`
+    |
+    = note: expected struct `gpui::AnyView`
+               found struct `gpui::Entity<MenuTooltip>`
+help: call `Into::into` on this expression to convert `gpui::Entity<MenuTooltip>` into `gpui::AnyView`
+    |
+124 |             .tooltip(move |_, cx| cx.new(|_| MenuTooltip { label }).into())
+    |                                                                    +++++++
+
+Some errors have detailed explanations: E0308, E0425.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `hex-ui` (lib test) due to 3 previous errors

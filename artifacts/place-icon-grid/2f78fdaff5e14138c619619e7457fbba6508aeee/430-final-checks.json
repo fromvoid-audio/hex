@@ -1,0 +1,95 @@
+[
+  {
+    "name": "browser",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-ui",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "browser",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "context",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-ui",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "context_menu",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "hex-ui",
+      "--all-targets",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "architecture",
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "gpui",
+    "command": [
+      "python3",
+      "scripts/check-gpui-patch.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "style",
+    "command": [
+      "python3",
+      "scripts/check-ui-style.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "diff",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0
+  }
+]
