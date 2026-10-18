@@ -34,7 +34,31 @@ route evidence. Native viewer acceptance and final candidate qualification remai
 separate from generator validation.
 
 Actual configured Mac CLI output from an exported packet can be consumed with
-`import-result --packet DIR --result RESULT --execution EXECUTION --evidence-commit SHA`.
+`import-result --packet DIR --result RESULT --execution EXECUTION --evidence-commit SHA --evidence-archive ARCHIVE_PATH`.
+`ARCHIVE_PATH` names a regular tar.gz blob inside the immutable evidence commit,
+not an arbitrary local file. Import reads that local Git object without extraction,
+verifies its bounded regular-only members against `PAYLOADS.json`, and binds
+`result.json`, `execution.json` and `original-input/{input.json,schema.json,prompt.txt,INPUTS.json}`
+to the supplied bytes. If the object is absent, explicitly fetch the known evidence
+ref first; import never fetches or calls a model. A missing local object does not
+invalidate remotely retained evidence. Ordinary offline CI does not require
+historical evidence refs in every checkout.
 This validates exact exported bytes, range, schema, prompt, original result hash,
 and successful execution before atomic publication. This supplementary evidence
 transport does not pretend the unavailable cloud inference route succeeded.
+
+Exports include all retained note text in the deduplication prompt. Newly owned
+packet directories are private (`0700`) and packet files are `0600`, independent
+of a usual `022` umask; existing directories are refused without changing their
+permissions. Successful automatic preparation removes its owned temporary source
+packet. Failures retain and identify diagnostics. Imported completion timestamps
+must be real UTC ISO timestamps before publication.
+
+Git diff inputs pin Myers, the indent heuristic, 50% rename detection with a
+1,000-file limit, ordinary `a/` and `b/` prefixes, quoted paths, three context lines,
+zero inter-hunk context, no custom ordering/color/external diff/textconv, and the
+original fixed eight-character index metadata convention. Git emits full object
+IDs first; only exact Git index header lines are shortened, so object-database
+ambiguity cannot extend them and source hunk content is untouched. The original 274,953-byte
+configured-Mac input is byte-identical under these settings; retained input,
+prompt, schema and real generated notes are not rewritten or regenerated.

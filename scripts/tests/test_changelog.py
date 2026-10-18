@@ -39,6 +39,37 @@ class ChangelogTests(unittest.TestCase):
         self.assertEqual(data['base'], self.base)
         return {'entries': [{'category': 'fixes', 'text': 'clip selection stays consistent.', 'commits': [self.source]}], 'reason': 'fixture response, not live inference'}
 
+    def evidence(self, directory, result, execution, overrides=None, corrupt_manifest=False, link=False):
+        import io
+        import tarfile
+        payloads = {'result.json': result.read_bytes(), 'execution.json': execution.read_bytes()}
+        payloads.update({'original-input/' + name: (directory / name).read_bytes()
+                         for name in ('input.json', 'schema.json', 'prompt.txt', 'INPUTS.json')})
+        if overrides:
+            payloads.update(overrides)
+        manifest = {name: {'bytes': len(raw), 'sha256': notes.digest(raw)} for name, raw in payloads.items()}
+        if corrupt_manifest:
+            manifest['result.json']['sha256'] = '0' * 64
+        payloads['PAYLOADS.json'] = notes.encode(manifest)
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode='w:gz') as archive:
+            for name, raw in payloads.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(raw)
+                archive.addfile(member, io.BytesIO(raw))
+            if link:
+                member = tarfile.TarInfo('foreign-link')
+                member.type = tarfile.SYMTYPE
+                member.linkname = '/foreign/user/file'
+                archive.addfile(member)
+        def git_input(args, raw):
+            return subprocess.check_output(['git', '-C', str(self.root), *args], input=raw).decode().strip()
+        blob = git_input(['hash-object', '-w', '--stdin'], buffer.getvalue())
+        tree = git_input(['mktree'], f'100644 blob {blob}\tevidence.tar.gz\n'.encode())
+        commit = git_input(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+                            'commit-tree', tree, '-p', 'HEAD'], b'injected local evidence fixture, not live inference\n')
+        return commit, 'evidence.tar.gz'
+
     def test_real_range_schema_export_and_source_identity(self):
         packet = notes.input_packet(self.root, self.base, self.source)
         out = self.root / 'packet'
@@ -158,18 +189,20 @@ class ChangelogTests(unittest.TestCase):
         proof = {'exit_code': 0, 'timed_out': False, 'attempts': 1, 'result_exists': True,
                  'result_sha256': notes.digest(result.read_bytes()), 'completed_utc': '2026-10-18T18:23:00+00:00'}
         execution.write_bytes(notes.encode(proof))
-        self.assertTrue(notes.import_result(self.root, directory, result, execution, 'a' * 40))
+        evidence = self.evidence(directory, result, execution)
+        self.assertTrue(notes.import_result(self.root, directory, result, execution, *evidence))
         before = (self.root / notes.DATASET).read_bytes()
-        self.assertFalse(notes.import_result(self.root, directory, result, execution, 'a' * 40))
+        self.assertFalse(notes.import_result(self.root, directory, result, execution, *evidence))
         notes.validate_current(self.root, self.source)
         proof['exit_code'] = 1
         execution.write_bytes(notes.encode(proof))
+        failed_evidence = self.evidence(directory, result, execution)
         with self.assertRaisesRegex(notes.Refusal, 'execution did not'):
-            notes.import_result(self.root, directory, result, execution, 'a' * 40)
+            notes.import_result(self.root, directory, result, execution, *failed_evidence)
         self.assertEqual((self.root / notes.DATASET).read_bytes(), before)
         (directory / 'prompt.txt').write_text('different prompt')
         with self.assertRaisesRegex(notes.Refusal, 'schema or prompt'):
-            notes.import_result(self.root, directory, result, execution, 'a' * 40)
+            notes.import_result(self.root, directory, result, execution, *evidence)
         self.assertEqual((self.root / notes.DATASET).read_bytes(), before)
 
     def test_package_payload_retains_exact_generated_bytes_and_rejects_tampering(self):
@@ -280,6 +313,149 @@ runpy.run_path(entry,run_name='__main__')
             self.assertEqual(calls, [], 'nonancestor preparation must not invoke the model')
             self.assertEqual(path.read_bytes(), original)
             self.assertEqual(self.git('rev-parse', 'HEAD'), candidate)
+
+    def test_followup_export_retains_history_for_second_import(self):
+        notes.prepare(self.root, self.base, model=self.model)
+        self.commit('retain first notes')
+        previous = ['clip selection stays consistent.']
+        (self.root / 'feature.txt').write_text('third change\n')
+        current = self.commit('second user feature')
+        directory = self.root / 'second-packet'
+        self.assertEqual(notes.main(['export', '--root', str(self.root), '--base', self.source,
+                                     '--source', current, '--output', str(directory)]), 0)
+        packet = notes.input_packet(self.root, self.source, current)
+        self.assertEqual((directory / 'prompt.txt').read_bytes(), notes.prompt(packet, previous).encode())
+        result = self.root / 'second-result.json'
+        result.write_bytes(notes.encode({'entries': [{'category': 'features', 'text': 'a second user feature.', 'commits': [current]}], 'reason': 'injected fixture only'}))
+        execution = self.root / 'second-execution.json'
+        execution.write_bytes(notes.encode({'exit_code': 0, 'timed_out': False, 'attempts': 1, 'result_exists': True,
+            'result_sha256': notes.digest(result.read_bytes()), 'completed_utc': '2026-10-18T18:23:00+00:00'}))
+        evidence = self.evidence(directory, result, execution)
+        self.assertTrue(notes.import_result(self.root, directory, result, execution, *evidence))
+        self.assertEqual(len(notes.validate_current(self.root)['batches']), 2)
+        repeated = self.root / 'repeated-second-packet'
+        self.assertEqual(notes.main(['export', '--root', str(self.root), '--base', self.source,
+                                     '--source', current, '--output', str(repeated)]), 0)
+        self.assertEqual((repeated / 'prompt.txt').read_bytes(), (directory / 'prompt.txt').read_bytes())
+
+    def test_import_malformed_completion_preserves_existing_dataset(self):
+        notes.prepare(self.root, self.base, model=self.model)
+        self.commit('retained first notes')
+        old = (self.root / notes.DATASET).read_bytes()
+        (self.root / 'feature.txt').write_text('next feature\n')
+        current = self.commit('next feature')
+        directory = self.root / 'timestamp-packet'
+        notes.export_packet(directory, notes.input_packet(self.root, self.source, current), ['clip selection stays consistent.'])
+        result = self.root / 'result.json'
+        result.write_bytes(notes.encode({'entries': [], 'reason': 'injected internal-only fixture'}))
+        execution = self.root / 'execution.json'
+        for timestamp in [None, 123, 'yesterday', '2026-02-30T18:23:00+00:00', '2026-10-18T18:23:00', '2026-10-18T18:23:00+02:00']:
+            with self.subTest(timestamp=timestamp):
+                proof = {'exit_code': 0, 'timed_out': False, 'attempts': 1, 'result_exists': True,
+                         'result_sha256': notes.digest(result.read_bytes()), 'completed_utc': timestamp}
+                execution.write_bytes(notes.encode(proof))
+                evidence = self.evidence(directory, result, execution)
+                (self.root / notes.DATASET).write_bytes(old)
+                try:
+                    with self.assertRaisesRegex(notes.Refusal, 'completion timestamp'):
+                        notes.import_result(self.root, directory, result, execution, *evidence)
+                finally:
+                    self.assertEqual((self.root / notes.DATASET).read_bytes(), old)
+
+    def test_success_removes_own_private_packet_but_failure_retains_diagnostics(self):
+        directories = []
+        def success(directory, timeout):
+            directories.append(directory)
+            return self.model(directory, timeout)
+        notes.prepare(self.root, self.base, model=success)
+        self.assertFalse(directories[0].parent.exists(), 'successful private source packet must be removed')
+        self.commit('retain notes')
+        old = (self.root / notes.DATASET).read_bytes()
+        (self.root / 'feature.txt').write_text('later feature\n')
+        self.commit('later feature')
+        def failure(directory, timeout):
+            directories.append(directory)
+            raise notes.Refusal('injected failure')
+        with self.assertRaisesRegex(notes.Refusal, 'diagnostics:'):
+            notes.prepare(self.root, model=failure)
+        self.assertTrue((directories[-1] / 'input.json').is_file())
+        self.assertEqual((self.root / notes.DATASET).read_bytes(), old)
+        self.addCleanup(__import__('shutil').rmtree, directories[-1].parent)
+
+    def test_export_is_owner_private_under_public_umask_and_preserves_foreign_directory(self):
+        import os
+        directory = self.root / 'private-packet'
+        old_umask = os.umask(0o022)
+        try:
+            notes.export_packet(directory, notes.input_packet(self.root, self.base, self.source))
+        finally:
+            os.umask(old_umask)
+        self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+        for path in directory.iterdir():
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        foreign = self.root / 'foreign-packet'
+        foreign.mkdir(mode=0o755)
+        (foreign / 'user.txt').write_text('keep me')
+        mode = foreign.stat().st_mode
+        with self.assertRaises(FileExistsError):
+            notes.export_packet(foreign, notes.input_packet(self.root, self.base, self.source))
+        self.assertEqual(foreign.stat().st_mode, mode)
+        self.assertEqual((foreign / 'user.txt').read_text(), 'keep me')
+
+    def test_diff_input_is_independent_of_local_formatting_configuration(self):
+        content = 'index ' + 'a' * 40 + '..' + 'b' * 40 + ' 100644'
+        (self.root / 'café.txt').write_text(content + '\n')
+        current = self.commit('add unicode-path fixture')
+        original = notes.input_packet(self.root, self.base, current)
+        self.assertIn('+' + content, original['diff'], 'source hunk content must never be abbreviated')
+        for key, value in [('diff.noprefix', 'true'), ('diff.mnemonicPrefix', 'true'),
+                           ('diff.algorithm', 'histogram'), ('diff.renames', 'false'),
+                           ('diff.context', '8'), ('diff.interHunkContext', '5'),
+                           ('core.abbrev', '12'), ('core.quotePath', 'false')]:
+            self.git('config', key, value)
+        self.assertEqual(notes.input_packet(self.root, self.base, current), original)
+
+    def test_nonexistent_evidence_commit_cannot_publish_imported_notes(self):
+        directory = self.root / 'proof-packet'
+        notes.export_packet(directory, notes.input_packet(self.root, self.base, self.source))
+        result = self.root / 'result.json'
+        result.write_bytes(notes.encode(self.model(directory, 1)))
+        execution = self.root / 'execution.json'
+        execution.write_bytes(notes.encode({'exit_code': 0, 'timed_out': False, 'attempts': 1, 'result_exists': True,
+            'result_sha256': notes.digest(result.read_bytes()), 'completed_utc': '2026-10-18T18:23:00+00:00'}))
+        with self.assertRaisesRegex(notes.Refusal, 'evidence'):
+            notes.import_result(self.root, directory, result, execution, 'f' * 40)
+        self.assertFalse((self.root / notes.DATASET).exists())
+
+    def test_import_binds_exact_offline_archive_and_preserves_notes_on_wrong_proof(self):
+        notes.prepare(self.root, self.base, model=self.model)
+        self.commit('retain valid notes')
+        old = (self.root / notes.DATASET).read_bytes()
+        (self.root / 'feature.txt').write_text('new feature\n')
+        current = self.commit('next feature')
+        directory = self.root / 'bound-packet'
+        notes.export_packet(directory, notes.input_packet(self.root, self.source, current), ['clip selection stays consistent.'])
+        result = self.root / 'result.json'
+        result.write_bytes(notes.encode({'entries': [], 'reason': 'injected fixture'}))
+        execution = self.root / 'execution.json'
+        execution.write_bytes(notes.encode({'exit_code': 0, 'timed_out': False, 'attempts': 1, 'result_exists': True,
+            'result_sha256': notes.digest(result.read_bytes()), 'completed_utc': '2026-10-18T18:23:00Z'}))
+        for overrides in [{'result.json': b'other result'}, {'execution.json': b'other report'},
+                          {'original-input/input.json': b'other input'}, {'../escape': b'preserve outside files'}]:
+            with self.subTest(overrides=overrides):
+                evidence = self.evidence(directory, result, execution, overrides)
+                with self.assertRaisesRegex(notes.Refusal, 'evidence'):
+                    notes.import_result(self.root, directory, result, execution, *evidence)
+                self.assertEqual((self.root / notes.DATASET).read_bytes(), old)
+        for options in [{'corrupt_manifest': True}, {'link': True}]:
+            with self.subTest(options=options):
+                evidence = self.evidence(directory, result, execution, **options)
+                with self.assertRaisesRegex(notes.Refusal, 'evidence'):
+                    notes.import_result(self.root, directory, result, execution, *evidence)
+                self.assertEqual((self.root / notes.DATASET).read_bytes(), old)
+        evidence = self.evidence(directory, result, execution)
+        self.assertTrue(notes.import_result(self.root, directory, result, execution, *evidence))
+        self.assertEqual(len(notes.validate_current(self.root)['batches']), 2)
 
     def test_literal_workspace_version_scope_and_explicit_refusal(self):
         for raw, expected in [('[workspace.package]\nversion = "0.1.0"\n', '0.1.0'),
