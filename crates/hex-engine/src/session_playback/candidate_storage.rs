@@ -211,6 +211,28 @@ fn chain_storage<'a>(
 }
 
 impl<'a> AudioRootStorageLedger<'a> {
+    /// Actual control-held mutable runtime bodies, occurrence capacities and
+    /// resource fields, including retained tails. Other graph owners, custody,
+    /// construction peak, publication and retirement remain separate.
+    pub fn borrow_session_mutable_runtime_storage_on_control(
+        &mut self,
+        session: &'a SessionPlayback,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            ledger.root(session, role)?;
+            ledger.vec(&session.mutable_instruments)?;
+            ledger.vec(&session.tail_mutable_instruments)?;
+            for runtime in session.mutable_instruments.iter().flatten() {
+                runtime.visit_runtime_storage_on_control(ledger, role)?;
+            }
+            for tail in session.tail_mutable_instruments.iter().flatten() {
+                tail.runtime
+                    .visit_runtime_storage_on_control(ledger, role)?;
+            }
+            Ok(())
+        })
+    }
     /// Selected mutable configuration fields of the actual control-held kernel,
     /// including retained tails. Runtime payloads, surrounding vector capacity,
     /// active callback custody and whole-graph admission are outside this view.

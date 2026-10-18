@@ -935,10 +935,10 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
             let runtime = revision
                 .session()
-                .mutable_instrument_factory(id)
+                .mutable_instrument_factory_owner(id)
                 .map(|factory| {
                     let resources = revision.session().clone_mutable_resources_on_control(id)?;
-                    MutableInstrumentTrackRuntime::new_with_configuration(
+                    MutableInstrumentTrackRuntime::new_with_factory(
                         factory,
                         revision.arrangement().sample_rate(),
                         resources,

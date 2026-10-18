@@ -371,7 +371,47 @@ pub struct NativeInstrumentRuntimePair {
     block_started: bool,
 }
 
+/// A neutral borrow of an actual owning runtime Box field. This observation
+/// supplies no provenance, freeze, retirement or storage qualification.
+/// It cannot be constructed from caller bytes, addresses or a runtime reference.
+pub struct InstrumentRuntimeBoxObservation<'a> {
+    // The owning field identity is required; &dyn Runtime loses that identity.
+    #[allow(clippy::borrowed_box)]
+    field: &'a Box<dyn MutableInstrumentRuntime>,
+}
+impl InstrumentRuntimeBoxObservation<'_> {
+    /// Requested pointee layout; excludes the inline fat pointer and vtable.
+    pub fn pointee_layout(&self) -> std::alloc::Layout {
+        std::alloc::Layout::for_value(self.field.as_ref())
+    }
+    pub fn same_owning_field(&self, other: &Self) -> bool {
+        std::ptr::eq(self.field, other.field)
+    }
+    pub fn same_allocation(&self, other: &Self) -> bool {
+        std::ptr::eq(self.field.as_ref(), other.field.as_ref())
+    }
+}
+
 impl NativeInstrumentRuntimePair {
+    /// Borrow actual primary and scratch owner fields. Mutation/moves of the
+    /// pair require this borrow to end; no owner is cloned or exposed.
+    /// ```compile_fail
+    /// fn mutation(pair: &mut hex_lattice::NativeInstrumentRuntimePair) {
+    ///     let fields = pair.runtime_box_observations();
+    ///     pair.reset();
+    ///     let _ = fields[0].pointee_layout();
+    /// }
+    /// ```
+    pub fn runtime_box_observations(&self) -> [InstrumentRuntimeBoxObservation<'_>; 2] {
+        [
+            InstrumentRuntimeBoxObservation {
+                field: &self.primary,
+            },
+            InstrumentRuntimeBoxObservation {
+                field: &self.scratch,
+            },
+        ]
+    }
     /// Validate declarations against explicit caller ceilings before asking
     /// the implementation to allocate either committed/scratch twin.
     pub fn new(

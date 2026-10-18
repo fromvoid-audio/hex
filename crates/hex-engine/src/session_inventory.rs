@@ -18,7 +18,7 @@ use hex_lattice::{
 use hex_project::{
     AssetId, ClipId, DeviceId, MidiSourceIdentity, Project, SceneId, SessionCellContent, TrackId,
 };
-use mutable_factory::PreparedTrackRuntimeFactory;
+pub(crate) use mutable_factory::PreparedTrackRuntimeFactory;
 use routed_midi::{RoutedMidiPlan, account_template, prepare_clip};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -1317,6 +1317,16 @@ impl PreparedSessionInventory {
                     .map_err(|_| crate::mutable_instrument::MutableInstrumentRuntimeError::Budget)
             })
             .transpose()
+    }
+
+    pub(crate) fn mutable_instrument_factory_owner(
+        &self,
+        track: TrackId,
+    ) -> Option<&PreparedTrackRuntimeFactory> {
+        self.mutable_instruments
+            .iter()
+            .find(|instrument| instrument.track == track)
+            .map(|instrument| &instrument.factory)
     }
 
     pub(crate) fn mutable_instrument_factory(

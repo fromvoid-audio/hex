@@ -5,7 +5,7 @@ use crate::{
     AudioRootStorageLedger, AudioStorageError, audio_storage::Owner, owned_shared::OwnedShared,
 };
 
-pub(super) enum PreparedTrackRuntimeFactory {
+pub(crate) enum PreparedTrackRuntimeFactory {
     Opaque(Box<dyn PreparedMutableInstrumentRuntime>),
     Sampler(OwnedShared<hex_devices::sampler::PreparedSamplerRuntime>),
 }

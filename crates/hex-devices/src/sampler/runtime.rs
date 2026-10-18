@@ -29,6 +29,11 @@ pub struct PreparedSamplerRuntime {
     max_events: usize,
 }
 impl PreparedSamplerRuntime {
+    /// Exact requested sized Box body for the closed constructor below.
+    /// This is not provenance for arbitrary factories or trait objects.
+    pub fn runtime_box_layout_on_control() -> std::alloc::Layout {
+        std::alloc::Layout::new::<SamplerRuntime>()
+    }
     /// Narrow fixed-leaf declaration for this actual sampler factory. This is
     /// not a declaration for arbitrary trait objects, wrappers or source owners.
     /// The host separately retains and charges its owning allocation and PCM.
@@ -126,6 +131,27 @@ struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
 }
+impl SamplerRuntime {
+    fn audit_fixed_storage(&self) {
+        let Self { prepared, active } = self;
+        let _ = prepared.control_storage_declaration();
+        let _: &Active = active;
+        // The exhaustive leaf audit is compiled even for an empty voice bank.
+        fn voice(voice: &ActiveVoice) {
+            let ActiveVoice {
+                occurrence,
+                pitch,
+                gain,
+                age,
+                gate,
+            } = voice;
+            let _: (&u64, &u8, &f64, &u64, &Option<u64>) = (occurrence, pitch, gain, age, gate);
+        }
+        for active in active.iter().flatten() {
+            voice(active);
+        }
+    }
+}
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
@@ -146,10 +172,12 @@ impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
         self.tail
     }
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
-        Box::new(SamplerRuntime {
+        let runtime = SamplerRuntime {
             prepared: self.clone(),
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
-        })
+        };
+        runtime.audit_fixed_storage();
+        Box::new(runtime)
     }
     fn as_any(&self) -> &dyn Any {
         self

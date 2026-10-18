@@ -1,8 +1,6 @@
 use crate::mutable_instrument::MutableOccurrence;
 use hex_devices::{SineTable, fm4::PreparedOperatorConfiguration};
-use hex_lattice::{
-    AnalyticContinuationFormat, NativeInstrumentRuntimePair, NativeOwnedInstrumentRuntimePair,
-};
+use hex_lattice::{AnalyticContinuationFormat, NativeOwnedInstrumentRuntimePair};
 use hex_lattice_contract::NativeDeviceState;
 use std::mem::size_of;
 
@@ -173,7 +171,8 @@ pub(super) struct Pair {
 }
 
 pub(super) enum Guard {
-    Independent(NativeInstrumentRuntimePair),
+    // The real host now retains constructor route alongside its pair.
+    Independent(crate::mutable_instrument::RuntimePair),
     Owned(NativeOwnedInstrumentRuntimePair),
 }
 pub(super) struct HostOwner {

@@ -192,9 +192,15 @@ impl MutableRuntimeCheckpointStore {
         let resources = source
             .clone_resources_on_control()
             .map_err(map_runtime_error)?;
-        let mut snapshot =
-            MutableInstrumentTrackRuntime::new_with_configuration(factory, sample_rate, resources)
-                .map_err(map_runtime_error)?;
+        let mut snapshot = MutableInstrumentTrackRuntime::new_with_factory(
+            revision
+                .session()
+                .mutable_instrument_factory_owner(track)
+                .ok_or(MutableRuntimeCheckpointError::MissingMutableRuntime)?,
+            sample_rate,
+            resources,
+        )
+        .map_err(map_runtime_error)?;
         snapshot.inherit_from(source).map_err(map_runtime_error)?;
 
         self.entries[slot_index] = Some(Entry {
@@ -280,9 +286,16 @@ impl MutableRuntimeCheckpointStore {
             .runtime
             .clone_resources_on_control()
             .map_err(map_runtime_error)?;
-        let mut candidate =
-            MutableInstrumentTrackRuntime::new_with_configuration(factory, sample_rate, resources)
-                .map_err(map_runtime_error)?;
+        let mut candidate = MutableInstrumentTrackRuntime::new_with_factory(
+            playback
+                .revision
+                .session()
+                .mutable_instrument_factory_owner(track)
+                .ok_or(MutableRuntimeCheckpointError::MissingMutableRuntime)?,
+            sample_rate,
+            resources,
+        )
+        .map_err(map_runtime_error)?;
         candidate
             .inherit_from(&entry.runtime)
             .map_err(map_runtime_error)?;

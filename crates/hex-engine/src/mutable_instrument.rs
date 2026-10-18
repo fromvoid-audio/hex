@@ -8,12 +8,14 @@ use crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 use crate::midi_template::MidiOccurrenceSuppression;
 use hex_lattice::{
     NativeInstrumentEvent, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
-    NativeInstrumentRuntimePair, PreparedMutableInstrumentRuntime,
+    PreparedMutableInstrumentRuntime,
 };
 use hex_project::{BeatTime, ClipId, NoteId, TrackId};
 
 #[cfg(feature = "instrument-test-support")]
 pub(crate) mod resource_fixture;
+mod runtime_pair;
+pub(crate) use runtime_pair::RuntimePair;
 #[cfg(test)]
 mod resource_tests;
 
@@ -212,7 +214,7 @@ impl MutableOccurrenceKey {
 /// Per-track mutable pair and transactional occurrence ledger. Both ledger
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
-    pair: NativeInstrumentRuntimePair,
+    pair: RuntimePair,
     resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
@@ -230,6 +232,28 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn visit_runtime_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            pair,
+            resources: _,
+            expression_identity: _,
+            expression: _,
+            primary,
+            scratch,
+            next_id: _,
+            next_id_scratch: _,
+        } = self;
+        // Parent/containing Vec charges inline fields once. Actual Box bodies
+        // and occurrence backing capacities are separate physical allocations.
+        pair.visit_storage(ledger)?;
+        ledger.vec(primary)?;
+        ledger.vec(scratch)?;
+        self.visit_resource_owner_on_control(ledger, role)
+    }
     pub(crate) fn visit_resource_owner_on_control<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
@@ -331,6 +355,7 @@ impl MutableInstrumentTrackRuntime {
         Self::new_with_configuration(prepared, sample_rate, resources)
     }
 
+    #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn new_with_configuration(
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,
@@ -338,7 +363,7 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<Self, MutableInstrumentRuntimeError> {
         let max_tail_frames =
             max_mutable_tail_frames(sample_rate).ok_or(MutableInstrumentRuntimeError::Budget)?;
-        let pair = NativeInstrumentRuntimePair::new(
+        let pair = RuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {
                 max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
@@ -348,6 +373,32 @@ impl MutableInstrumentTrackRuntime {
             },
         )
         .map_err(map_runtime_error)?;
+        Self::from_pair(pair, resources)
+    }
+
+    pub(crate) fn new_with_factory(
+        factory: &crate::session_inventory::PreparedTrackRuntimeFactory,
+        sample_rate: u32,
+        resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
+    ) -> Result<Self, MutableInstrumentRuntimeError> {
+        let pair = RuntimePair::from_factory(
+            factory,
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
+                max_events_per_block: MAX_MUTABLE_EVENTS_PER_QUERY,
+                max_active_occurrences: MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+                max_tail_frames: max_mutable_tail_frames(sample_rate)
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?,
+            },
+        )
+        .map_err(map_runtime_error)?;
+        Self::from_pair(pair, resources)
+    }
+
+    fn from_pair(
+        pair: RuntimePair,
+        resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
+    ) -> Result<Self, MutableInstrumentRuntimeError> {
         let pair_bytes = pair
             .fixed_storage_pair_bytes()
             .ok_or(MutableInstrumentRuntimeError::Budget)?;

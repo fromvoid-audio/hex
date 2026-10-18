@@ -3,6 +3,8 @@
 mod midi_gate;
 #[path = "build_support/pcm_gate.rs"]
 mod pcm_gate;
+#[path = "build_support/runtime_box_gate.rs"]
+mod runtime_box_gate;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -69,6 +71,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_support/pcm_gate.rs");
     println!("cargo:rerun-if-changed=build_support/midi_gate.rs");
+    println!("cargo:rerun-if-changed=build_support/runtime_box_gate.rs");
     let host = env::var("HOST").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
     let target_flags = format!(
@@ -128,6 +131,7 @@ fn main() {
         "contract: pinned-std-arc-audiodata-retained-vec-v1\nhost: {host}\ntarget: {target}\n"
     );
     let mut midi_decision = Err("missing_compiler_observation");
+    let mut box_decision = Err("missing_compiler_observation");
     let decision = compiler
         .as_deref()
         .ok_or("missing_cargo_selected_compiler")
@@ -146,6 +150,7 @@ fn main() {
                 unsupported_inputs: unsupported,
             };
             midi_decision = midi_gate::decide(observed);
+            box_decision = runtime_box_gate::decide(observed);
             pcm_gate::decide(observed)
         });
     evidence.push_str(&format!("decision: {decision:?}\nrequested layout declaration only; no security/RSS/physical allocator claim\n"));
@@ -153,6 +158,33 @@ fn main() {
         .map(PathBuf::from)
         .is_some_and(|path| fs::write(path.join("pcm-arc-build-evidence.txt"), &evidence).is_ok());
     let known = decision.is_ok() && saved;
+    let box_evidence = format!(
+        "{evidence}\ncontract: {}\ncompiler: {}\nconstructor: sized Box::new(SamplerRuntime) -> exchange_malloc(size_of::<T>(), align_of::<T>())\ndecision: {box_decision:?}\nrequested allocation only; origin/custody/peak/publication/retirement separate\n",
+        runtime_box_gate::FAMILY,
+        pcm_gate::COMMIT
+    );
+    let box_saved = env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .is_some_and(|path| {
+            fs::write(
+                path.join("sampler-runtime-box-build-evidence.txt"),
+                box_evidence,
+            )
+            .is_ok()
+        });
+    println!(
+        "cargo:rustc-env=HEX_SAMPLER_BOX_LAYOUT_KNOWN={}",
+        if box_decision.is_ok() && saved && box_saved {
+            "1"
+        } else {
+            "0"
+        }
+    );
+    println!("cargo:rustc-env=HEX_SAMPLER_BOX_LAYOUT_TARGET={target}");
+    println!(
+        "cargo:rustc-env=HEX_SAMPLER_BOX_CONSTRUCTOR_FAMILY={}",
+        runtime_box_gate::FAMILY
+    );
     let midi_evidence = format!(
         "{evidence}\ncontract: {}\ncompiler: {}\nconstructors: sized Arc::new; sized Arc::make_mut/clone_from_ref_in/UniqueArcUninit; unique get_mut retains allocation\ndecision: {midi_decision:?}\nrequested allocation only; no RSS/provenance/custody/retirement claim\n",
         midi_gate::FAMILY,

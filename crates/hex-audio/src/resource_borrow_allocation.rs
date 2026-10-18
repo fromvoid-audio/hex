@@ -44,6 +44,13 @@ fn sampler_pair_event_history_and_original_pcm_queries_allocate_and_free_nothing
         let mut checksum = [0.0_f64; 2];
         let measurement = allocation_counter::measure(|| {
             for occurrence_id in 1..=128 {
+                // Neutral observations borrow the actual fields, without any
+                // owner clone/drop or allocation. This is not route admission.
+                let fields = runtime.runtime_box_observations();
+                assert_ne!(fields[0].pointee_layout().size(), 0);
+                assert_eq!(fields[0].pointee_layout(), fields[1].pointee_layout());
+                assert!(!fields[0].same_owning_field(&fields[1]));
+                assert!(!fields[0].same_allocation(&fields[1]));
                 let events = [
                     NativeInstrumentEvent::NoteOn {
                         frame_offset: 0,
