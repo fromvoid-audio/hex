@@ -22,6 +22,7 @@ const STYLE: ControlStyle = ControlStyle {
     dial_rail: 0,
     hover: 0x555555,
     font_size: 9.0,
+    text_case: crate::TextCase::Preserve,
 };
 
 type Masks = Rc<RefCell<Vec<(&'static str, Bounds<Pixels>)>>>;
