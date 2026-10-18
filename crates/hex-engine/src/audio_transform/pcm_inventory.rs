@@ -119,6 +119,13 @@ impl AudioTransformPcmInventory<'_> {
         }
         self.owner.visit_cancellation_storage_on_control(ledger)
     }
+    pub(crate) fn visit_original_only_body_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        ledger.root(self.owner, AudioStorageRole::Caller)?;
+        self.visit_original_only_control_storage_on_control(ledger)
+    }
     fn require_original_only(&self) -> Result<(), AudioStorageError> {
         let AudioTransformPreparation {
             cache: _,

@@ -1299,3 +1299,39 @@ and disallowed crates remain refused; unrelated dependency guards still apply.
 The original8073 guard failure is retained. This exception does not qualify the
 unfinished aggregate operation or make this checkpoint source-ready,
 full-CI-qualified or native accepted.
+
+A subsequent private closed-operation checkpoint binds the actual editor/history,
+preparation parent, resource bank, previous contexts, selected Track/Return/root
+rows, guarded transform cache/cancellation and still-live original ledger. It
+quotes constructor-local context, both selector, MIDI/gain, fresh Return plan,
+validation/topology, container and tempo costs before either selector prepares.
+Arithmetic includes the prospective normal ledger inline/backing reservation,
+its own inline body, original live growth separately, and cache replacement
+backing alongside existing storage. Mandatory normal visitors precede original
+ledger import; normal row sufficiency and shared-handle closure cannot be skipped
+when the cheap bound fits. The fresh normal ledger dies inside the guarded
+inspection, before the same operation constructs into its persistent fields.
+No approval token or borrowed inventory escapes.
+
+The actual Sampler/MIDI fixture accepts a conservative boundary of 714,314
+retained / 785,860 peak bytes; either ceiling minus one refuses with zero actual
+allocations, handle issues, paired births or clones. Row shortage refuses after
+normal inspection backing allocation but before paired construction. Actual
+100-context aliases fit unchanged configured reservations, with shared payload
+observed once. Two equal-content Return plans retain separate physical storage.
+Tests also preserve a nonzero original growth allowance, reject omitted context
+aliases, failed parents/pending destinations, and exercise real cancelled routes
+and the existing deterministic cancellation-poll seam before and after contexts.
+Injected paired Track error/panic preserves the original ledger and retains new
+owners in persistent destinations; the original assertion panic payload survives.
+These are control-side tests, not callback, native or musical-use acceptance.
+
+Successful generic once-only restoration of the newly constructed contexts is
+STILL OPEN. Existing `RootAssembly::restore` requires the actual producer's
+`SessionSharedConstruction` arrangement-transfer state. New Sampler contexts
+constructed directly into the persistent root have no such prior empty-context
+transfer. An unrelated/default restore destination refuses before moving owners;
+no transfer state is fabricated. A genuine new-context destination/retirement
+contract, complete unwind custody, Service incarnation, normal selected-summary
+completeness, publication/registration and the usable native panel remain open.
+This closed operation remains private and unconnected to Service.

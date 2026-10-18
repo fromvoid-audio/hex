@@ -96,6 +96,17 @@ impl ArrangementRootAssembly {
     pub(super) fn restore_project(&mut self, source: &mut Option<Project>) {
         *self.compiler_destination_on_control() = source.take();
     }
+    pub(super) fn compiler_destinations_vacant(&self) -> bool {
+        self.project.is_none() && self.contexts.is_none() && !self.metadata_drop_pending
+    }
+    pub(super) fn compiler_destinations(
+        &mut self,
+    ) -> (
+        &mut Option<Project>,
+        &mut Option<OwnedShared<SharedAnalyticContextTable>>,
+    ) {
+        (&mut self.project, &mut self.contexts)
+    }
     pub(super) fn compiler_destination_on_control(&mut self) -> &mut Option<Project> {
         &mut self.project
     }

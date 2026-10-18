@@ -4,6 +4,7 @@ use crate::{Audio, Invalid, Project, StreamedSourceMetadata};
 use hex_project::{Asset, AssetId};
 use std::{collections::BTreeMap, sync::Arc};
 
+pub(crate) mod sampler_cost;
 pub use crate::midi_compile::midi_events;
 
 /// One prepared Arrangement audio dependency. Streamed entries must come from

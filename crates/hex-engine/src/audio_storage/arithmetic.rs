@@ -100,11 +100,11 @@ impl<'a> Arithmetic<'a> {
 // closed compiler operation must add BOTH live ledger bodies/backings, actual
 // guarded growth and construction overlap before allocating the normal ledger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ArithmeticCost {
-    pub(super) data_bytes: usize,
-    pub(super) growth_bytes: usize,
-    pub(super) replayed: bool,
-    pub(super) observation_visits: usize,
+pub(crate) struct ArithmeticCost {
+    pub(crate) data_bytes: usize,
+    pub(crate) growth_bytes: usize,
+    pub(crate) replayed: bool,
+    pub(crate) observation_visits: usize,
 }
 impl<'a> AudioRootStorageLedger<'a> {
     fn arithmetic_ledger(reservation: AudioStorageLedgerReservation) -> Self {
@@ -154,14 +154,14 @@ impl<'a> AudioRootStorageLedger<'a> {
             Ok(())
         }
     }
-    // This private precursor is not yet wired to the compiler. Keeping the
-    // traversal here makes every existing leaf validator identical in both
-    // passes; no second nested graph walker or caller-approved totals API.
+    // Data-only conformance wrapper. The closed compiler operation uses the
+    // retained AND peak adapter below with the same mandatory leaf validators;
+    // neither path exports an admission or caller-approved totals API.
     #[cfg_attr(
         not(test),
         expect(
             dead_code,
-            reason = "closed aggregate preselector operation is the next integration step"
+            reason = "data-only conformance wrapper; production uses both ceiling limits"
         )
     )]
     pub(super) fn arithmetic_cost(
@@ -169,11 +169,24 @@ impl<'a> AudioRootStorageLedger<'a> {
         max_data_bytes: usize,
         visit: impl Fn(&mut Self) -> Result<(), AudioStorageError>,
     ) -> Result<ArithmeticCost, AudioStorageError> {
+        Self::arithmetic_cost_for_limits(reservation, max_data_bytes, usize::MAX, visit)
+    }
+    pub(crate) fn arithmetic_cost_for_limits(
+        reservation: AudioStorageLedgerReservation,
+        max_data_bytes: usize,
+        max_peak_data_bytes: usize,
+        visit: impl Fn(&mut Self) -> Result<(), AudioStorageError>,
+    ) -> Result<ArithmeticCost, AudioStorageError> {
         let mut ledger = Self::arithmetic_ledger(reservation);
         ledger.run_arithmetic_pass(Pass::Count, &visit)?;
         let shape = ledger.arithmetic_shape()?;
         let (observations, conservative_bytes, _, _, existing, growth) = shape;
-        if conservative_bytes <= max_data_bytes && !existing {
+        if conservative_bytes <= max_data_bytes
+            && conservative_bytes
+                .checked_add(growth)
+                .is_some_and(|n| n <= max_peak_data_bytes)
+            && !existing
+        {
             return Ok(ArithmeticCost {
                 data_bytes: conservative_bytes,
                 growth_bytes: growth,
@@ -226,7 +239,12 @@ impl<'a> AudioRootStorageLedger<'a> {
                 _ => {}
             }
         }
-        if bytes > max_data_bytes {
+        if bytes > max_data_bytes
+            || bytes
+                .checked_add(growth)
+                .ok_or(AudioStorageError::Overflow)?
+                > max_peak_data_bytes
+        {
             return Err(AudioStorageError::ReservationExceeded);
         }
         Ok(ArithmeticCost {
@@ -246,14 +264,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     /// body and three backings. This never substitutes for the mandatory
     /// compiler input visitors. Old and freshly observed physical fields are
     /// idempotent, while inconsistent owner/field declarations refuse.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "closed aggregate preselector integration follows arithmetic checkpoint"
-        )
-    )]
-    pub(super) fn original_ledger_storage(
+    pub(crate) fn original_ledger_storage(
         &mut self,
         original: &'a AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
@@ -305,5 +316,14 @@ impl<'a> AudioRootStorageLedger<'a> {
             }
             Ok(())
         })
+    }
+}
+
+impl AudioRootStorageLedger<'_> {
+    pub(crate) fn original_live_growth_allowance(&self) -> Result<usize, AudioStorageError> {
+        self.summary()?
+            .require_known_storage()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
+        Ok(self.growth)
     }
 }

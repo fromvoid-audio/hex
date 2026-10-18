@@ -159,6 +159,13 @@ impl AudioTransformPreparation {
         }
         self.shutdown.is_cancelled()
     }
+    #[cfg(test)]
+    pub(crate) fn cancel_after_polls_for_test(&self, polls: usize) {
+        self.cancel_after_polls.set(Some(polls));
+    }
+    pub(crate) fn cancellation_requested_on_control(&self) -> bool {
+        self.cancelled()
+    }
     pub fn retained_pcm_bytes(&self) -> usize {
         self.budget.used()
     }
