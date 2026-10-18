@@ -9,7 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn copy_view(source: &ViewState) -> ViewState {
+pub(super) static TABLE_TEST_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(super) fn copy_view(source: &ViewState) -> ViewState {
     // Fresh owned view with actual producer child handles; no raw Arc adoption.
     // Legacy preview/parent custody remains unqualified outside this protocol oracle.
     ViewState {
@@ -81,7 +83,7 @@ fn with_family<R>(
         }
     }
 }
-fn receive(service: &Service) -> Event {
+pub(super) fn receive(service: &Service) -> Event {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match service.try_event() {
@@ -119,6 +121,7 @@ fn verify_two_free(base: &SnapshotReadCapability) {
 }
 #[test]
 fn actual_registered_event_transport_releases_discarded_queued_preview_and_unpainted_reads() {
+    let _serial = TABLE_TEST_GATE.lock().unwrap();
     let failures = failed_release_count();
     hex_audio::reserve_retained_families_on_control(hex_audio::RetainedFamilyReservation {
         family_slots: 2,

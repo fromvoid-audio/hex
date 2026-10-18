@@ -156,3 +156,14 @@ and the ledger's own construction metric cannot recover earlier Project clones,
 input Vecs, old/new/temporary construction overlap or saturated global reaping.
 Registry admission and production UI capability replacement remain closed/open
 work respectively until those separate obligations qualify.
+
+The next Desktop oracle uses the actual registered persistent family, actual
+sealed job Box and scoped Session records together. It joins the actual legacy
+Event child fields inside the same nested guard scope and measures 128 repeated
+inspections after ledger reservation. The legacy raw Event parent and remaining
+worker/prepared owners are explicitly unqualified; omitted physical aliases must
+refuse selected closure. A known record cannot silently qualify that production
+path. The oracle awaits native compilation/execution; no allocation/runtime
+result follows from source inspection. Its test serialization uses the existing
+two-slot table unchanged, with actual control retirement before releasing the
+fixture gate. No backend or GUI is opened.

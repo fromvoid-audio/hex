@@ -132,3 +132,6 @@ pub fn register_family_on_control(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod storage_tests;
