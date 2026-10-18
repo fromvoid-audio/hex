@@ -8,6 +8,10 @@ pub(in crate::audio_preparation::arrangement_clips) struct ConstructionAllowance
     pub(in crate::audio_preparation::arrangement_clips) retained_bytes: usize,
     pub(in crate::audio_preparation::arrangement_clips) construction_peak_bytes: usize,
     pub(in crate::audio_preparation::arrangement_clips) entry_capacity: usize,
+    // Added to an input union that ALREADY visits this custody's actual Entry
+    // backing. These are constructor costs, never approval/commit authority.
+    pub(in crate::audio_preparation::arrangement_clips) additional_retained_bytes: usize,
+    pub(in crate::audio_preparation::arrangement_clips) additional_construction_peak_bytes: usize,
 }
 fn parts(parts: Option<(usize, usize)>) -> Result<usize, AudioStorageError> {
     let (body, header) = parts.ok_or(AudioStorageError::UnsupportedConstructor)?;
@@ -84,12 +88,28 @@ impl UtilityCustody {
                 })
             })
             .ok_or(AudioStorageError::Overflow)?;
+        let construction_peak_bytes = retained_bytes
+            .checked_add(scratch)
+            .ok_or(AudioStorageError::Overflow)?;
+        let old_entries = self.metadata_bytes()?;
+        let reused_entries = if count <= self.entries.capacity() {
+            old_entries
+        } else {
+            0
+        };
         Ok(ConstructionAllowance {
             retained_bytes,
-            construction_peak_bytes: retained_bytes
-                .checked_add(scratch)
-                .ok_or(AudioStorageError::Overflow)?,
+            construction_peak_bytes,
             entry_capacity,
+            additional_retained_bytes: retained_bytes
+                .checked_sub(reused_entries)
+                .ok_or(AudioStorageError::SourceMismatch)?,
+            // On replacement the full quote includes old backing in overlap;
+            // on reuse it includes that same backing in retained storage.
+            // In either case the actual input union already charges it ONCE.
+            additional_construction_peak_bytes: construction_peak_bytes
+                .checked_sub(old_entries)
+                .ok_or(AudioStorageError::SourceMismatch)?,
         })
     }
 }

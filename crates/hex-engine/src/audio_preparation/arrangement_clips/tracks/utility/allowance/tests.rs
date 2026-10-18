@@ -157,3 +157,56 @@ fn utility_allowance_refuses_invalid_state_without_mutating_reserved_destination
     assert_eq!(custody.entries.capacity(), capacity);
     assert_eq!(custody.construction_overlap(), 0);
 }
+
+#[test]
+fn sampler_compiler_utility_additional_cost_does_not_recharge_visited_entry_backing() {
+    assert!(
+        crate::audio_storage_constructor_layout_supported(),
+        "this oracle requires declared paired layouts"
+    );
+    for (old_capacity, count) in [(0, 2), (1, 3), (7, 2), (7, 0)] {
+        let (editor, track) = devices(count, true, false);
+        let source = editor.project().track(track).unwrap().devices();
+        let mut custody = UtilityCustody::default();
+        custody.entries.try_reserve_exact(old_capacity).unwrap();
+        let old_bytes = custody.metadata_bytes().unwrap();
+        let reused = count <= custody.entries.capacity();
+        let quote = custody
+            .construction_allowance(source, ProcessorChainOwner::Track(track.value()))
+            .unwrap();
+        // Independent existing input inventory, before any new Utility owner.
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+            crate::AudioStorageLedgerReservation {
+                data_rows: 16,
+                handle_rows: 16,
+                root_rows: 4,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            },
+        )
+        .unwrap();
+        custody.visit_metadata(&mut ledger).unwrap();
+        assert_eq!(ledger.summary().unwrap().data_bytes, old_bytes);
+        drop(ledger);
+        let chain = custody
+            .prepare(source, ProcessorChainOwner::Track(track.value()), 48_000)
+            .unwrap();
+        let (body, header) = chain.parts().unwrap();
+        let actual_final = custody.bytes(chain.arc()).unwrap() + body + header;
+        // Every device is filtered, so the conservative optional processor is
+        // actually present: actual final child cost is an independent oracle.
+        assert_eq!(
+            quote.additional_retained_bytes,
+            actual_final - if reused { old_bytes } else { 0 }
+        );
+        assert_eq!(
+            old_bytes + quote.additional_construction_peak_bytes,
+            actual_final + custody.construction_overlap()
+        );
+        eprintln!(
+            "SUPPORTED sampler compiler Utility cost old={old_capacity}, count={count}, reused={reused}, old_bytes={old_bytes}"
+        );
+        custody.clear();
+        drop(chain);
+    }
+}

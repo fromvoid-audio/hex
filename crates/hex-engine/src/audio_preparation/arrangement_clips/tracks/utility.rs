@@ -167,7 +167,16 @@ impl UtilityCustody {
             .checked_add(body)
             .and_then(|bytes| bytes.checked_add(header))
             .ok_or(AudioStorageError::Overflow)?;
-        if actual > allowance.retained_bytes
+        let additional_actual = actual
+            .checked_sub(if replacing_entries { 0 } else { old_entries })
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        let additional_peak = actual
+            .checked_add(self.construction_overlap)
+            .and_then(|bytes| bytes.checked_sub(old_entries))
+            .ok_or(AudioStorageError::Overflow)?;
+        if additional_actual > allowance.additional_retained_bytes
+            || additional_peak > allowance.additional_construction_peak_bytes
+            || actual > allowance.retained_bytes
             || actual
                 .checked_add(self.construction_overlap)
                 .is_none_or(|bytes| bytes > allowance.construction_peak_bytes)
