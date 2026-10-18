@@ -222,16 +222,16 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     });
 }
 
-/// Private bounded startup: no ambient browser/catalog or shared fixture changes.
-fn bottom_border_fixture(
-    cx: &mut TestAppContext,
-) -> (
+type BorderFixture = (
     super::external_audio_drop_ui_test::BatchFiles,
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
     hex_project::TrackId,
     Vec<(ClipId, &'static str)>,
-) {
+);
+
+/// Private bounded startup: no ambient browser/catalog or shared fixture changes.
+fn bottom_border_fixture(cx: &mut TestAppContext) -> BorderFixture {
     use gpui::AppContext;
     use hex_session::service::{Event, Request, Service};
     fn next(service: &Service) -> Event {
