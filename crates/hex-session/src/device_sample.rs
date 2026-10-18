@@ -191,6 +191,30 @@ impl PreparedDeviceSample {
         }
         Ok(())
     }
+    /// Actual pending decoder/assignment children, including both distinct
+    /// canonical state FIELDS and path capacity. The worker's enclosing staging
+    /// slot/body, other roots and original input/temporary peak remain separate.
+    pub fn visit_selected_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        let Self {
+            device,
+            expected_state,
+            assignment,
+            path,
+            source: _,
+            source_frames,
+        } = self;
+        let hex_engine::SamplerSampleAssignment { state, slot } = assignment;
+        let _: (&DeviceId, &hex_lattice_contract::DeviceAssetSlot, &u64) =
+            (device, slot, source_frames);
+        ledger.borrow_canonical_native_state_on_control(expected_state)?;
+        ledger.borrow_canonical_native_state_on_control(state)?;
+        ledger.borrow_metadata_path_backing_on_control(path)?;
+        self.visit_original_pcm_on_control(ledger, role)
+    }
     /// PCM fields only; outer staging/path/state metadata and complete graph
     /// custody/peak/publication/retirement are separate mandatory obligations.
     pub fn visit_original_pcm_on_control<'a>(

@@ -407,3 +407,21 @@ pending waveform interaction overlay, not a wired native panel or an admitted
 registered device. Its caller must still use the existing canonical transaction
 and one completed Undo gesture; production loading/UI and full graph safeguards
 remain open. No automatic slice/transient detection or new media owner is added.
+
+### Pending decoder assignment inventory
+
+PreparedDeviceSample now has a selected child visitor joining its actual
+expected-state field, new assignment-state field, path capacity and original
+Mono/Stereo source owner. Both state fields are visited at their actual locations;
+the same payload allocation may also be retained by current/history or a queued
+ImportDeviceAsset command. Repeating a staging visit does not stand in for these
+other physical fields. A pending command has its own path backing even when its
+bytes equal the decoder path.
+
+The new supported-build oracle joins actual current/Undo/Redo native-state
+fields and the real uncommitted assignment command, proves omitted aliases refuse,
+checks independent header/payload/path totals plus exact-minus-one selected
+budgets, and leaves project assets/source binding unchanged. It awaits native
+runtime qualification. The staging struct/slot and all other roots still belong
+to their actual parent; final capacities cannot recover decode input/temporary
+or old/new construction peak, and this visitor is not a loading commit permit.

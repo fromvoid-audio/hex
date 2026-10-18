@@ -424,3 +424,114 @@ fn real_worker_waveform_reuses_original_root_and_keeps_deep_zoom_after_control_r
         assert_eq!((peaks[1].min, peaks[1].max), (right, right));
     }
 }
+
+#[test]
+fn pending_device_sample_inventory_joins_actual_history_command_states_path_and_original_pcm() {
+    if !hex_engine::audio_storage_constructor_layout_supported()
+        || !hex_engine::canonical_native_state_storage_layout_supported()
+    {
+        eprintln!("unsupported pending sample storage constructors; no positive proof");
+        return;
+    }
+    eprintln!(
+        "SUPPORTED actual pending device decode, assignment command, model/history and original PCM inventory"
+    );
+    for stereo in [false, true] {
+        let (session, device) = fixture();
+        let source = if stereo {
+            OwnedAudioSource::try_resident(24_000, vec![[0.25, -0.5]; 4])
+                .ok()
+                .unwrap()
+        } else {
+            OwnedAudioSource::try_resident_mono(24_000, vec![0.25; 4])
+                .ok()
+                .unwrap()
+        };
+        let mut path = PathBuf::with_capacity(311);
+        path.push("pending-original.wav");
+        let pending = PreparedDeviceSample::from_native_on_control(
+            device,
+            session.project().device(device).unwrap().state(),
+            path,
+            source,
+        )
+        .unwrap();
+        let command = pending.assignment_command_on_control();
+        let Command::ImportDeviceAsset {
+            expected_state,
+            state,
+            path,
+            ..
+        } = &command
+        else {
+            panic!("assignment")
+        };
+        assert_eq!(expected_state, &pending.expected_state);
+        assert_eq!(state, &pending.assignment.state);
+        let budget = hex_engine::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 512,
+            root_rows: 16,
+            max_retained_bytes: 4_000_000,
+            max_construction_peak_bytes: 4_000_000,
+        };
+        let collect = |budget| -> Result<_, AudioStorageError> {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(budget)?;
+            pending.visit_original_pcm_on_control(&mut ledger, AudioStorageRole::Caller)?;
+            let pcm = ledger.summary()?.data_bytes;
+            pending.visit_selected_storage_on_control(&mut ledger, AudioStorageRole::Caller)?;
+            let staging = ledger.summary()?.data_bytes;
+            let requested = |length| {
+                std::alloc::Layout::array::<std::sync::atomic::AtomicUsize>(2)
+                    .unwrap()
+                    .extend(std::alloc::Layout::array::<u8>(length).unwrap())
+                    .unwrap()
+                    .0
+                    .pad_to_align()
+                    .size()
+            };
+            assert_eq!(
+                staging - pcm,
+                pending.path.capacity()
+                    + requested(pending.expected_state.payload().len())
+                    + requested(pending.assignment.state.payload().len())
+            );
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err(),
+                "actual model/history and pending command fields have not joined yet"
+            );
+            ledger.borrow_editor_native_states_on_control(&session.editor)?;
+            ledger.borrow_canonical_native_state_on_control(expected_state)?;
+            ledger.borrow_canonical_native_state_on_control(state)?;
+            ledger.borrow_metadata_path_backing_on_control(path)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            let measured = ledger.summary()?;
+            pending.visit_selected_storage_on_control(&mut ledger, AudioStorageRole::Caller)?;
+            ledger.borrow_editor_native_states_on_control(&session.editor)?;
+            assert_eq!(ledger.summary()?, measured);
+            assert!(measured.require_complete().is_err());
+            Ok(measured)
+        };
+        let measured = collect(budget).unwrap();
+        let mut exact = budget;
+        exact.max_retained_bytes = measured.retained_bytes;
+        exact.max_construction_peak_bytes = measured.construction_peak_bytes;
+        assert_eq!(collect(exact).unwrap(), measured);
+        exact.max_retained_bytes -= 1;
+        assert!(collect(exact).is_err());
+        assert_eq!(pending.source_frames(), 4);
+        assert_eq!(pending.source_sample_rate(), 24_000);
+        assert_eq!(session.project().assets().count(), 0);
+        assert!(
+            session
+                .project()
+                .device(device)
+                .unwrap()
+                .state()
+                .asset_references()
+                .is_empty()
+        );
+    }
+}
