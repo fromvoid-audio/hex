@@ -248,6 +248,7 @@ actions!(
         BrowserNext,
         BrowserActivate,
         BrowserPreviewSelected,
+        BrowserCollapseFolder,
         BrowserEscape,
         ToggleSolo,
         AdditiveSolo,
@@ -360,6 +361,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", BrowserNext, Some("hex_browser")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser")),
         KeyBinding::new("right", BrowserPreviewSelected, Some("hex_browser")),
+        KeyBinding::new("left", BrowserCollapseFolder, Some("hex_browser")),
         KeyBinding::new("escape", BrowserEscape, Some("hex_browser")),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser_search")),
         KeyBinding::new("down", BrowserNext, Some("hex_browser_search")),
@@ -1346,6 +1348,8 @@ impl EditorView {
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        // Only a current resize owner may extend the transient display extent.
+        let horizon = horizon.max(self.trim_display_end().unwrap_or(0));
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)
