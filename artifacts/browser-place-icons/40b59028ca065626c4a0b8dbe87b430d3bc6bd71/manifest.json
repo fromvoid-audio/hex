@@ -1,0 +1,72 @@
+{
+  "canonical_pr": 326,
+  "ticket": 2710,
+  "head": "40b59028ca065626c4a0b8dbe87b430d3bc6bd71",
+  "tree": "37fb07c483eff8b9d6df919e2dafb3c78d114693",
+  "expected_before": "2a69ac80a4818f19fb9587c2273bb590e3bac979",
+  "expected_before_tree": "f354acc4051c7de462793a43475fa1f9834aef00",
+  "changed_files": [
+    "crates/hex-preferences/README.md",
+    "crates/hex-preferences/src/lib.rs",
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser/place_icons.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "crates/hex-ui/src/editor/context_menu.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "dependency": {
+    "pr": 322,
+    "frozen_source": "e7cc39515ce4a8be7ccedc7f38b281a1982ed3c5",
+    "merge_parent": "2a69ac80a4818f19fb9587c2273bb590e3bac979",
+    "note": "40b is the single own-source commit; no main chase. Merger owns integration with current main/341 and final prospective full CI."
+  },
+  "results": {
+    "browser": "71 PASS 0failed0ignored / 666filtered, 326-browser-final-v2.log",
+    "preferences": "19 PASS0failed0ignored, 326-final-preferences.log",
+    "strict_clippy": "affected preferences alltargets + featureUIalltargets -Dwarnings PASS",
+    "guards": "architecture/GPUI/style/fmt/diff all0; docs-only final architecture/fmt rechecked",
+    "fullCI": "not run by sourceowner; merger owns future actual combined candidate"
+  },
+  "honest_failure_history": {
+    "326-popup-capture-diagnostic.log": "introduced browser-local popup allowed outside click to start Arrangement selection; actual red, fixed by existing shared editor context menu (not an inherited product bug)",
+    "326-popup-shared-green.log": "compile failure from leftover removed local-popup field, removed; not product red",
+    "326-browser-final.log": "70pass1fail from arbitrary24px status-height assertion; replaced with actual theme short-status height comparison, final71pass",
+    "other_initial_logs": "development checks before final source; not relabeled final qualification"
+  },
+  "limits": [
+    "Existing PCM declared Arc Unknown unsupported_wrapper_or_ambiguous_flags build-script diagnostic retained; no native runtime proof",
+    "No compatibility/migration machinery added; absent icon metadata default and unknown bounded IDs intentionally supported per user icon requirement",
+    "Native optimized font/picker/normal app restart acceptance open; no install/launch/quit/app/permission/user-data actions",
+    "PR4000a502 diagnostic remains frozen and does not qualify a focus fix"
+  ],
+  "files": {
+    "326-browser-final-candidate.log": "4cfd75e1e4357463712d9cac6f1311cac553aac7411ad9392971acd34b34a219",
+    "326-browser-final-v2.log": "80f2e43c77b1a133542f8be08c8c20a8716642f6b37212d454d205e85e2ff170",
+    "326-browser-final.log": "04c78cd5157df8792841a4f0e3cbb9d2aab1a6b1d28d50db6ffb1bc68f653eb2",
+    "326-browser-initial.log": "cf6bf99f02cca29847f61fe90280dc2028792e99760f290b49edfbb7c603b593",
+    "326-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "326-final-checks.json": "08151bcfc27518d1148dd5bb594aa8b9d66c527f312d9d7cbf9019f9fdae1c6e",
+    "326-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "326-final-docs-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "326-final-docs-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "326-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "326-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "326-final-preferences-clippy.log": "682a5202a9ce96e4d5db8957338fcbc5e2fcb1540ddd1e1d40b4dde27a9fec33",
+    "326-final-preferences.log": "f904e6014bd1373fd296d6e2c8835686a68ecc38e69c35420b71dc0149151272",
+    "326-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "326-final-ui-clippy.log": "b47efb3fab57620b82acbbc632b5266046f8b5d55219418117e4aded790ce8be",
+    "326-icons-input-green-initial.log": "ee22013bdfc69261cc87d544d6f90ec9dfcf324f97870d357911e144af973c12",
+    "326-local-popup-candidate-place-icons.rs": "13d28edb4aeb072b892f6bfe35678acf9a6841bb076c0bb3372cfcde373ff33a",
+    "326-local-popup-candidate-ui-tests.rs": "794743e1914088407e59d6c6dff2fe4e93f4bbfbbceb0b92fc965acdc276eb90",
+    "326-local-popup-candidate.patch": "d5625b34bf49dff8729c15bf8e11dee619c01178a99b445c9fa567bce91814f2",
+    "326-popup-capture-diagnostic.log": "fda7a79d36e04147941d6befaa04a54304728c502e72790cb1b52502f207e16f",
+    "326-popup-shared-green.log": "9efbf6482a933b5f85b37f49aea8cd348e50ed31459f390a9632a9528f62e83a",
+    "326-preferences-initial.log": "c430bf8bf2afda9e18eba137939df1d5c14e3e98b32541a4716fcf62b6669c50",
+    "326-preferences-tests.log": "5b36223cc405d2ab3a5bda5ef9727e8190df558b72c0ee656266db6a9fd34778",
+    "before-after-hashes.json": "096aa5c9dd2b18a062cc2d02223a78c7ce73fcfec28efd42795591d26c0804ef",
+    "native-checklist.md": "c8f53e0d5e83f5b9789c726a535267621c3868a95b5e11f14ee754944e204f8e",
+    "source.patch": "03f899a3d336b83f33a1d33172c49cbdf3c318d8087b0d9a222914854a524a10"
+  }
+}

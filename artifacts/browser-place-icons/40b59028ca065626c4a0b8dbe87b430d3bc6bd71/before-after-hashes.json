@@ -1,0 +1,56 @@
+{
+  "crates/hex-preferences/README.md": {
+    "before_git_blob": "0985a4cefa8056988ac94f7c9a390ce0a924f8c5",
+    "before_sha256": "59da02daa3e3f9a03908deea47343b0a7948a21588fa58100367078b47fce987",
+    "after_git_blob": "92caeb0cc6a50119a5dfb93b98a9a7a1509171b1",
+    "after_sha256": "8e12356f2111fb0a4c014459abb76cdb391bae8041f2a3e194df225702e9c795"
+  },
+  "crates/hex-preferences/src/lib.rs": {
+    "before_git_blob": "236ce2ba4781a3fc1da72c8686c058aa78060271",
+    "before_sha256": "2da4405376ed960c6f76f0b715b86e55b4f5e5f37bfcbb013f60cd4c86abaf16",
+    "after_git_blob": "03ef7ef5c40d988b8508e9a74b2ba4268b833583",
+    "after_sha256": "c590d29089ec87828c7b6af6264ea358a7a5fb1224908581c0bf01066cb97d04"
+  },
+  "crates/hex-ui/src/editor/browser.rs": {
+    "before_git_blob": "17997cc40060f76a9fcdecec950460b570cef9d9",
+    "before_sha256": "c5453d0e2ab0eb76b3548300b6d2108560203ac7b813413b1faef0d579f876f5",
+    "after_git_blob": "0e38452f7dd58dfe6cdec54cf73dfe28d232504a",
+    "after_sha256": "198c9bb1a20bac8180ac1d69552baa8350b6c3b19541bf4e74fc9ce7dc98134b"
+  },
+  "crates/hex-ui/src/editor/browser/layout.rs": {
+    "before_git_blob": "6b27686bf14e3fa79fc99a9f6435ad82d7f7e2f1",
+    "before_sha256": "dfb4d74843b5b6c29a0a7e6c697d668477b5f44e6c7e1f645b33af34fe94ed05",
+    "after_git_blob": "4bc1687f06c20408520f7328eb3cba64863080dc",
+    "after_sha256": "01fbbf3caf436f8714102d5c137c24564c2a645f2e58f4b0a4db5a0ed51ddf49"
+  },
+  "crates/hex-ui/src/editor/browser/place_icons.rs": {
+    "before_git_blob": null,
+    "before_sha256": null,
+    "after_git_blob": "3fdf35d5ce4bcaf8bb9decf443b64c0e4a994995",
+    "after_sha256": "cdcfe0a69e37ac307c0b4ada7040c46d922681673fff1f1a79af8d5055dbba6a"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_git_blob": "9c1c428448b481c271322d09d0af2cf3bbba43bb",
+    "before_sha256": "22bd52d42526ad57c05d942c0b566304cda12d35dff457c369f1b2771f015053",
+    "after_git_blob": "9d7f428207f0addf2130510a717e6a738324f01d",
+    "after_sha256": "b7310deac63764fcc3645d78f897a50bacdf536c465bb3528a6d9e132c29c1db"
+  },
+  "crates/hex-ui/src/editor/context_menu.rs": {
+    "before_git_blob": "16c1262b4ba30eea0067d1a3e0364de2e70eb7f9",
+    "before_sha256": "6dc4da41e6dbaf91eee322b34847c82afd05b163d605701fde03dd62975ec7b5",
+    "after_git_blob": "3d6971ed9284bf0e5682fb89c43fba317fcd85b0",
+    "after_sha256": "a83a27e67428414654de5a1d19504bc87cf61d831d0ffe1a7cceef0df7071f3a"
+  },
+  "docs/browser-places.md": {
+    "before_git_blob": "5941573f4ee1897083d90a7eb53b591f9bfffd86",
+    "before_sha256": "33d4fa60efcef6f8436b05bf704d937a76172bc4663e98129a36570a6bb25a4d",
+    "after_git_blob": "4b3b9bbe889e0c43dd50b68a33475bb069e395e6",
+    "after_sha256": "16e2657305c42ab259fb954a3ea2ef7832ef7b1c3983457d617043f790a88c47"
+  },
+  "todo.md": {
+    "before_git_blob": "831f37d6d6bbeec69a15875a8ac967d209e3decf",
+    "before_sha256": "cb10a083f2321fb9285849d2bebe8d11ecfe7ca176e68676d35ddbe83bb66f5d",
+    "after_git_blob": "ae79b8ea0c301a0855d62153836bc90a81c25ad3",
+    "after_sha256": "e9078b37ce79eecee9bd6625a44f54cf376496951cdc504dfc495ebfccace516"
+  }
+}

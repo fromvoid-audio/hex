@@ -1,0 +1,89 @@
+[
+  {
+    "name": "preferences",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-preferences",
+      "--locked"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "preferences-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "hex-preferences",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "ui-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "hex-ui",
+      "--all-targets",
+      "--features",
+      "ui-test-support",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "architecture",
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "gpui",
+    "command": [
+      "python3",
+      "scripts/check-gpui-patch.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "style",
+    "command": [
+      "python3",
+      "scripts/check-ui-style.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "diff",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0
+  }
+]

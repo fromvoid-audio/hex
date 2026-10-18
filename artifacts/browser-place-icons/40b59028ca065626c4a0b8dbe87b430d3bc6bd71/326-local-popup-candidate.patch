@@ -1,0 +1,429 @@
+diff --git a/crates/hex-preferences/src/lib.rs b/crates/hex-preferences/src/lib.rs
+index 236ce2ba..03ef7ef5 100644
+--- a/crates/hex-preferences/src/lib.rs
++++ b/crates/hex-preferences/src/lib.rs
+@@ -2,7 +2,7 @@
+ 
+ use serde::{Deserialize, Serialize};
+ use std::{
+-    collections::HashSet,
++    collections::{BTreeMap, HashSet},
+     ffi::OsString,
+     fs::{self, File, OpenOptions},
+     io::{self, Read, Write},
+@@ -15,6 +15,7 @@ const MAX_DOCUMENT_BYTES: u64 = 64 * 1024;
+ const MAX_PATH_BYTES: usize = 4096;
+ const MAX_TOTAL_PATH_BYTES: usize = 8 * 1024;
+ pub const MAX_USER_PLACES: usize = 14;
++const MAX_PLACE_ICON_ID_BYTES: usize = 64;
+ pub const MAX_RECENT_PROJECTS: usize = 10;
+ const TEMPORARY_ATTEMPTS: usize = 8;
+ static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+@@ -87,6 +88,7 @@ impl RgbColor {
+ #[derive(Clone, Debug, Default, PartialEq, Eq)]
+ pub struct BrowserPlaces {
+     additional: Vec<PathBuf>,
++    icons: BTreeMap<PathBuf, String>,
+ }
+ 
+ impl BrowserPlaces {
+@@ -120,12 +122,49 @@ impl BrowserPlaces {
+                 additional.push(path);
+             }
+         }
+-        Ok(Self { additional })
++        Ok(Self {
++            additional,
++            icons: BTreeMap::new(),
++        })
+     }
+ 
+     pub fn additional(&self) -> &[PathBuf] {
+         &self.additional
+     }
++
++    /// A bounded opaque bundled-icon identifier, keyed by the original native path.
++    /// Unknown identifiers survive a save; the UI owns their visible fallback.
++    pub fn icon(&self, path: &Path) -> Option<&str> {
++        self.icons.get(path).map(String::as_str)
++    }
++
++    pub fn icon_assignments(&self) -> impl Iterator<Item = (&Path, &str)> {
++        self.icons
++            .iter()
++            .map(|(path, id)| (path.as_path(), id.as_str()))
++    }
++
++    pub fn set_icon(&mut self, path: &Path, id: Option<&str>) -> Result<(), PreferencesError> {
++        if !self.additional.iter().any(|place| place == path) {
++            return Err(PreferencesError::InvalidDocument(
++                "icon has no matching place".into(),
++            ));
++        }
++        if let Some(id) = id {
++            if id.is_empty()
++                || id.len() > MAX_PLACE_ICON_ID_BYTES
++                || id.chars().any(char::is_control)
++            {
++                return Err(PreferencesError::InvalidDocument(
++                    "invalid place icon identifier".into(),
++                ));
++            }
++            self.icons.insert(path.to_owned(), id.to_owned());
++        } else {
++            self.icons.remove(path);
++        }
++        Ok(())
++    }
+ }
+ 
+ /// Recently opened project files, most recent first.
+@@ -268,7 +307,23 @@ pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
+         .into_iter()
+         .map(StoredPath::into_path)
+         .collect::<Result<Vec<_>, _>>()?;
+-    BrowserPlaces::new(paths)
++    let mut places = BrowserPlaces::new(paths)?;
++    if document.place_icons.len() > MAX_USER_PLACES {
++        return Err(PreferencesError::InvalidDocument(
++            "too many place icons".into(),
++        ));
++    }
++    let mut seen = HashSet::new();
++    for icon in document.place_icons {
++        let path = icon.path.into_path()?;
++        if !seen.insert(path.clone()) {
++            return Err(PreferencesError::InvalidDocument(
++                "duplicate place icon".into(),
++            ));
++        }
++        places.set_icon(&path, Some(&icon.id))?;
++    }
++    Ok(places)
+ }
+ 
+ /// Load recent project paths. Missing settings are empty; malformed files are
+@@ -383,6 +438,16 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
+     }
+     let document = Document {
+         version: DOCUMENT_VERSION,
++        place_icons: places
++            .icons
++            .iter()
++            .map(|(path, id)| {
++                Ok(StoredPlaceIcon {
++                    path: StoredPath::from_path(path)?,
++                    id: id.clone(),
++                })
++            })
++            .collect::<Result<Vec<_>, PreferencesError>>()?,
+         additional_places: places
+             .additional
+             .iter()
+@@ -517,6 +582,15 @@ fn sync_directory(_directory: &Path) -> io::Result<()> {
+ struct Document {
+     version: u32,
+     additional_places: Vec<StoredPath>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    place_icons: Vec<StoredPlaceIcon>,
++}
++
++#[derive(Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct StoredPlaceIcon {
++    path: StoredPath,
++    id: String,
+ }
+ 
+ #[derive(Serialize, Deserialize)]
+@@ -882,4 +956,81 @@ mod tests {
+         ));
+         assert_eq!(fs::read(&config).expect("read preserved document"), corrupt);
+     }
++    #[test]
++    fn place_icons_round_trip_by_native_identity_allow_reuse_and_preserve_unknown() {
++        let directory = TestDirectory::new();
++        let config = directory.0.join("browser.json");
++        let first = directory.0.join("one/same");
++        let second = directory.0.join("two/same");
++        let mut places = BrowserPlaces::new([second.clone(), first.clone()]).unwrap();
++        assert_eq!(places.icon(&first), None);
++        places.set_icon(&first, Some("samples")).unwrap();
++        places.set_icon(&second, Some("samples")).unwrap();
++        save(&config, &places).unwrap();
++        assert_eq!(load(&config).unwrap(), places);
++        places
++            .set_icon(&second, Some("future-bundled-icon"))
++            .unwrap();
++        save(&config, &places).unwrap();
++        let loaded = load(&config).unwrap();
++        assert_eq!(loaded.additional(), &[second.clone(), first.clone()]);
++        assert_eq!(loaded.icon(&first), Some("samples"));
++        assert_eq!(loaded.icon(&second), Some("future-bundled-icon"));
++        places.set_icon(&first, None).unwrap();
++        save(&config, &places).unwrap();
++        assert_eq!(load(&config).unwrap().icon(&first), None);
++        assert!(
++            places
++                .set_icon(&directory.0.join("absent"), Some("folder"))
++                .is_err()
++        );
++        assert!(
++            places
++                .set_icon(&first, Some(&"x".repeat(MAX_PLACE_ICON_ID_BYTES + 1)))
++                .is_err()
++        );
++        assert!(places.set_icon(&first, Some("bad\nicon")).is_err());
++    }
++
++    #[test]
++    fn invalid_icon_metadata_refuses_load_and_preserves_original_on_save() {
++        let directory = TestDirectory::new();
++        let config = directory.0.join("browser.json");
++        let stored = serde_json::json!({"encoding":"utf8", "value":"/added"});
++        let icon = serde_json::json!({"path":stored.clone(), "id":"samples"});
++        for icons in [
++            serde_json::json!([icon.clone(), icon]),
++            serde_json::json!([{"path":{"encoding":"utf8", "value":"/orphan"}, "id":"folder"}]),
++            serde_json::json!([{"path":stored.clone(), "id":""}]),
++            serde_json::json!([{"path":stored.clone(), "id":"x".repeat(65)}]),
++        ] {
++            let bytes = serde_json::to_vec(&serde_json::json!({"version":1,
++                "additional_places":[stored.clone()], "place_icons":icons}))
++            .unwrap();
++            fs::write(&config, &bytes).unwrap();
++            assert!(load(&config).is_err());
++            assert!(save(&config, &BrowserPlaces::default()).is_err());
++            assert_eq!(fs::read(&config).unwrap(), bytes);
++        }
++        fs::write(
++            &config,
++            br#"{"version":1,"additional_places":[{"encoding":"utf8","value":"/added"}]}"#,
++        )
++        .unwrap();
++        assert_eq!(load(&config).unwrap().icon(Path::new("/added")), None);
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn place_icon_keys_preserve_non_utf8_native_paths() {
++        use std::os::unix::ffi::OsStringExt;
++        let directory = TestDirectory::new();
++        let config = directory.0.join("browser.json");
++        let path = directory.0.join(OsString::from_vec(vec![b'f', 0xff]));
++        let mut places = BrowserPlaces::new([path.clone()]).unwrap();
++        places.set_icon(&path, Some("waveform")).unwrap();
++        save(&config, &places).unwrap();
++        assert_eq!(load(&config).unwrap(), places);
++        assert_eq!(load(&config).unwrap().icon(&path), Some("waveform"));
++    }
+ }
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index 17997cc4..37926e44 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -1,5 +1,6 @@
+ //! Compact, bounded left-side media and project browser.
+ mod audition;
++mod place_icons;
+ mod samples;
+ 
+ use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
+@@ -156,6 +157,8 @@ pub(super) struct BrowserState {
+     home: PathBuf,
+     music: PathBuf,
+     pub(super) places: Vec<PathBuf>,
++    place_icons: HashMap<PathBuf, String>,
++    place_icon_picker: Option<place_icons::Picker>,
+     preferences_path: PathBuf,
+     preferences_loading: bool,
+     pub(super) preferences_writable: bool,
+@@ -231,6 +234,8 @@ impl BrowserState {
+             home,
+             music,
+             places,
++            place_icons: HashMap::new(),
++            place_icon_picker: None,
+             preferences_path,
+             preferences_loading: true,
+             preferences_writable: true,
+@@ -421,6 +426,19 @@ impl EditorView {
+                 ));
+             }
+             Ok(loaded) => {
++                self.browser.place_icons = loaded
++                    .icon_assignments()
++                    .map(|(path, id)| (path.to_owned(), id.to_owned()))
++                    .collect();
++                if self
++                    .browser
++                    .place_icons
++                    .values()
++                    .any(|id| !place_icons::known(id))
++                {
++                    self.browser.places_status =
++                        Some("some place icons unavailable · showing folder".into());
++                }
+                 let mut combined = loaded.additional().to_vec();
+                 let local_places = self
+                     .browser
+@@ -470,7 +488,15 @@ impl EditorView {
+             .iter()
+             .filter(|path| **path != self.browser.home && **path != self.browser.music)
+             .cloned();
+-        match BrowserPlaces::new(additional) {
++        let places = BrowserPlaces::new(additional).and_then(|mut places| {
++            for (path, id) in &self.browser.place_icons {
++                if places.additional().contains(path) {
++                    places.set_icon(path, Some(id))?;
++                }
++            }
++            Ok(places)
++        });
++        match places {
+             Ok(places) => {
+                 self.browser.pending_places_save = Some(places);
+                 self.browser.places_status = Some("saving browser places…".into());
+@@ -1222,6 +1248,9 @@ impl EditorView {
+     }
+ 
+     pub(super) fn browser_key_context(&self, window: &Window, cx: &App) -> &'static str {
++        if self.browser.place_icon_picker.is_some() {
++            return "hex_context_menu";
++        }
+         if self
+             .browser
+             .search
+@@ -1240,6 +1269,7 @@ impl EditorView {
+     }
+ 
+     pub(super) fn search_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.dismiss_browser_place_icons(window, cx);
+         if self.gain_numeric_editing(cx) {
+             self.error = Some(GAIN_SEARCH_ERROR.into());
+             cx.notify();
+@@ -1282,6 +1312,7 @@ impl EditorView {
+     }
+ 
+     pub(super) fn toggle_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.dismiss_browser_place_icons(window, cx);
+         self.browser.open = !self.browser.open;
+         if !self.browser.open {
+             self.browser.layout.sidebar_drag = None;
+@@ -1357,6 +1388,10 @@ impl EditorView {
+     }
+ 
+     pub(super) fn browser_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        if self.browser.place_icon_picker.is_some() {
++            self.dismiss_browser_place_icons(window, cx);
++            return;
++        }
+         if self
+             .browser
+             .search
+@@ -1899,14 +1934,20 @@ impl EditorView {
+             )
+             .size_full(),
+         );
+-        div().flex().min_h_0().flex_shrink_0().child(panel).child(
+-            div()
+-                .w(px(4.0))
+-                .h_full()
+-                .flex_shrink_0()
+-                .min_h_0()
+-                .child(resize),
+-        )
++        div()
++            .flex()
++            .min_h_0()
++            .flex_shrink_0()
++            .children(self.browser_place_icon_overlay(window, cx))
++            .child(panel)
++            .child(
++                div()
++                    .w(px(4.0))
++                    .h_full()
++                    .flex_shrink_0()
++                    .min_h_0()
++                    .child(resize),
++            )
+     }
+ 
+     fn browser_row(
+diff --git a/crates/hex-ui/src/editor/browser/layout.rs b/crates/hex-ui/src/editor/browser/layout.rs
+index 6b27686b..faac5af3 100644
+--- a/crates/hex-ui/src/editor/browser/layout.rs
++++ b/crates/hex-ui/src/editor/browser/layout.rs
+@@ -415,6 +415,7 @@ impl EditorView {
+         sidebar = sidebar.children((!compact).then(|| browser_heading("places")));
+         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
+             let path = place.clone();
++            let icon_path = place.clone();
+             let name = if *place == self.browser.music {
+                 "music"
+             } else if *place == self.browser.home {
+@@ -427,7 +428,7 @@ impl EditorView {
+             };
+             let tooltip = name.to_owned();
+             let icon = picker_icon(
+-                browser_caption("□")
++                browser_caption(self.browser_place_glyph(place))
+                     .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
+             );
+             sidebar = sidebar.child(
+@@ -462,6 +463,19 @@ impl EditorView {
+                             cx.notify();
+                         }),
+                     )
++                    .on_mouse_down(
++                        MouseButton::Right,
++                        cx.listener(move |view, event: &MouseDownEvent, window, cx| {
++                            view.open_browser_place_icons(
++                                icon_path.clone(),
++                                event.position,
++                                window,
++                                cx,
++                            );
++                            window.prevent_default();
++                            cx.stop_propagation();
++                        }),
++                    )
+                     .child(icon)
+                     .children((!compact).then(|| {
+                         browser_caption(name)
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 9c1c4284..cf4e43f8 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -3693,3 +3693,31 @@ fn browser_picker_glyph_alignment_and_continuous_minimum_geometry(cx: &mut TestA
+         }
+     }
+ }
++
++#[gpui::test]
++fn browser_place_icon_popup_outside_click_does_not_start_arrangement_gesture(
++    cx: &mut TestAppContext,
++) {
++    cx.update(super::super::bind_editor_keys);
++    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    editor.update(visual, |view, _| {
++        view.browser.preferences_loading = false;
++        view.browser.preferences_writable = true;
++    });
++    let row = visual.debug_bounds("browser-place-0").unwrap();
++    visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
++    visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
++    assert!(visual.debug_bounds("browser-place-icon-picker").is_some());
++    let lane = visual.debug_bounds("main-track-lane").unwrap();
++    visual.simulate_mouse_down(lane.center(), MouseButton::Left, Modifiers::default());
++    editor.read_with(visual, |view, _| {
++        assert!(
++            view.time_selection_gesture.is_none(),
++            "outside click through icon picker started arrangement selection"
++        );
++        assert!(view.time_range_move_gesture.is_none());
++    });
++    visual.simulate_mouse_up(lane.center(), MouseButton::Left, Modifiers::default());
++}

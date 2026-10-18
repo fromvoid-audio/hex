@@ -1,0 +1,33 @@
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.84s
+     Running unittests src/lib.rs (target/debug/deps/hex_preferences-727cfbc4d3c25cc8)
+
+running 19 tests
+test tests::duplicate_places_keep_first_order_and_empty_paths_are_rejected ... ok
+test tests::aggregate_path_payload_is_bounded_before_serialization ... ok
+test tests::malformed_and_future_theme_documents_are_preserved ... ok
+test tests::excess_paths_are_rejected_without_truncation ... ok
+test tests::malformed_document_is_reported_without_changing_its_bytes ... ok
+test tests::non_utf8_unix_path_bytes_round_trip ... ok
+test tests::missing_file_is_empty_and_save_round_trips_ordered_missing_paths ... ok
+test tests::oversized_paths_are_rejected_before_serialization ... ok
+test tests::place_icon_keys_preserve_non_utf8_native_paths ... ok
+test tests::invalid_icon_metadata_refuses_load_and_preserves_original_on_save ... ok
+test tests::recent_project_promotion_evicts_oldest_to_keep_combined_path_bytes_bounded ... ok
+test tests::recent_projects_preserve_non_utf8_path_bytes ... ok
+test tests::recent_projects_promote_exact_paths_deduplicate_and_evict_oldest ... ok
+test tests::recent_projects_refuse_to_overwrite_malformed_document ... ok
+test tests::recent_projects_round_trip_paths_without_requiring_files_to_exist ... ok
+test tests::place_icons_round_trip_by_native_identity_allow_reuse_and_preserve_unknown ... ok
+test tests::save_refuses_to_replace_malformed_preferences ... ok
+test tests::theme_preferences_default_and_round_trip ... ok
+test tests::theme_rgb_channels_are_bounded_by_the_serialized_type ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hex_preferences
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
