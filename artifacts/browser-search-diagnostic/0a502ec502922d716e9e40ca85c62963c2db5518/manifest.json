@@ -1,0 +1,44 @@
+{
+  "canonical_pr": 400,
+  "ticket": 2794,
+  "head": "0a502ec502922d716e9e40ca85c62963c2db5518",
+  "tree": "b6373a96e15229bcf209ed0c1681f76a0bfdfb42",
+  "expected_before": "a0def9d839c967592a3a7a123470d04e6b4e4473",
+  "production_baseline": "f7bf634afbf4c7505f6acb8179b39cf48c05f30d",
+  "production_baseline_tree": "023f02bfbd0a3922610290e14b933ef952750f69",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser_ui_test.rs"
+  ],
+  "readiness": "DIAGNOSTIC ONLY / DRAFT / NOT READY: no demonstrated product red, no production repair",
+  "results": {
+    "original_click_matrix_and_confirmed_prior_edits": "2PASS0FAILED (12 matrix cases + confirmed tempo/name focus); simulated-IME keystroke input, real directory/catalog workers and16ms ticks",
+    "existing_command_f": "13PASS0FAILED; previous diagnostic source version, production identical",
+    "clippy": "featureUI all targets -Dwarnings PASS; existing PCM Unknown build-script diagnostic retained",
+    "guards": "architecture/GPUI/style/fmt PASS",
+    "fullCI": "not run; not a ready implementation"
+  },
+  "preserved_failures": {
+    "2794-confirmed-previous-edit-original.log": "compiler fixture mismatch &App vs &Context; not product red",
+    "2794-confirmed-previous-edit-original-v2.log": "name draft precondition failed due fixture reused after service state publication; not product red; isolated fixture confirmed in v3",
+    "2794-diagnostic-architecture.log": "cargo missing in nonactivated shell; rerun activated passed"
+  },
+  "native": "open; bounded request note24058; no native actions dispatched",
+  "files": {
+    "2794-click-matrix-original.log": "920e284275aa15ccdfc35c254312a0d30443c285d6f2ab28e1370bebd5fd7cf5",
+    "2794-command-f-original.log": "dfd1cb4543d124ed5c05334c1294076734fed53bef26373b30645b8d8ef082bf",
+    "2794-confirmed-previous-edit-original-v2.log": "52249930d595935193d3edc3ff03eda99b277adca251e997af5efb182c8e8470",
+    "2794-confirmed-previous-edit-original-v3.log": "7579d6da7e12c14585e03d425aa3dbcf314556f1ea0638dcdef1af2e12f7c7d8",
+    "2794-confirmed-previous-edit-original.log": "6b9937e205e9dde05c3721aa87f3f3fbe1f6d33f010c233d1aed3eb2abd137fe",
+    "2794-diagnostic-architecture-activated.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "2794-diagnostic-architecture.log": "0e8660b61284f8dc20367eaf1acdf6296c30c003d260bf97dc0279936661cbdd",
+    "2794-diagnostic-clippy.log": "8fcb39204e21f05e32eb20b466ce2ae0182e76345668c300d5a5eb23636359c0",
+    "2794-diagnostic-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "2794-diagnostic-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "2794-diagnostic-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "2794-mouse-hover-timer-original.log": "da65ad23c11c8ecf363dbff399d6e7121832db3610ffa76f7c6e5b7d5be0e285",
+    "2794-mouse-original.log": "1b69d10f278a76dc77b7bd1d9230a9e92a4f8bfd93357935abb83b7ca82238bc",
+    "2794-previous-edit-original.log": "410378cb96cd89e8ba9ec06832ea907913a933a208649351ddbf657d6b0a4eb7",
+    "diagnostic.patch": "56f370244aee297d6b560ac53f3828c190996cf3495953720a178050beadf3e2",
+    "native-request.txt": "b0726938da2e7b1f46134c460174bd8367cac33949195202f1f6218046a34d5c"
+  }
+}

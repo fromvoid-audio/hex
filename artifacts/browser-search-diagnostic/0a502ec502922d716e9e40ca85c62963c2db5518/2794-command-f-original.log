@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.75s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-06f3ca1078ca4914)
+
+running 13 tests
+test editor::browser::ui_test::command_f_category_switch_scrolls_first_result_into_view ... ok
+test editor::browser::ui_test::command_f_caret_movement_preserves_result_scroll ... ok
+test editor::browser::ui_test::command_f_commits_clip_name_draft_then_routes_typing_to_browser ... ok
+test editor::browser::ui_test::command_f_category_click_keeps_search_focus_in_session ... ok
+test editor::browser::ui_test::command_f_device_click_retains_browser_keys_in_session ... ok
+test editor::browser::ui_test::command_f_escape_empty_query_restores_text_mode ... ok
+test editor::browser::ui_test::command_f_device_highlight_waits_for_result_focus ... ok
+test editor::browser::ui_test::command_f_replaces_entire_query_during_ime_composition ... ok
+test editor::browser::ui_test::command_f_scan_completion_preserves_selected_device ... ok
+test editor::browser::ui_test::command_f_opens_all_search_and_replaces_query_from_editor_and_results ... ok
+test editor::device_panel::tests::command_f_preserves_invalid_device_draft_then_finalizes_repaired_value ... ok
+test editor::device_panel::tests::command_f_preserves_invalid_return_send_draft ... ok
+test editor::gain_lane::tests::native::command_f_preserves_invalid_gain_focus_until_draft_is_cancelled ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 720 filtered out; finished in 3.56s
+
