@@ -965,3 +965,70 @@ fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original)
     });
 }
+
+#[gpui::test]
+fn audio_event_outside_release_only_owns_focus_during_its_actual_gesture(cx: &mut TestAppContext) {
+    let (handle, editor, track, clip, _files) = fixture(cx, false, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetClipLooping {
+            clip,
+            looping: false
+        })));
+    });
+    pump(&editor, &mut visual);
+    let body = visual
+        .debug_bounds("audio-events-waveform")
+        .expect("actual lower event editor");
+    let outside = editor.read_with(&visual, |v, _| {
+        let lane = v.drag_lanes[&track];
+        point(
+            px(lane.left + lane.width / 2.0),
+            px(lane.top + lane.height / 2.0),
+        )
+    });
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    // No event-editor gesture: a release in Arrangement belongs to Arrangement.
+    visual.update(|window, cx| editor.read(cx).focus.focus(window));
+    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    visual.update(|window, cx| {
+        let v = editor.read(cx);
+        assert!(v.audio_event_editor.gesture.is_none());
+        assert!(v.focus.is_focused(window));
+        assert_eq!(v.worker_requests_pending, 0);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    let down = point(
+        body.origin.x + body.size.width * 0.35,
+        body.center().y + px(10.0),
+    );
+    let moved = point(down.x + body.size.width * 0.2, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.update(|window, cx| {
+        let v = editor.read(cx);
+        assert!(
+            v.audio_event_editor.gesture.is_some(),
+            "actual event pointer capture"
+        );
+        assert!(v.audio_event_focus.is_focused(window));
+        assert_eq!(v.worker_requests_pending, 0, "preview submits no edit");
+    });
+    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    visual.update(|window, cx| {
+        let v = editor.read(cx);
+        assert!(
+            v.audio_event_editor.gesture.is_none(),
+            "outside release retires own preview"
+        );
+        assert!(
+            v.audio_event_focus.is_focused(window),
+            "active outside release retains event focus"
+        );
+        assert_eq!(
+            v.worker_requests_pending, 0,
+            "outside cancellation submits no edit"
+        );
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+}
