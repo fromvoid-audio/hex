@@ -1,0 +1,16 @@
+{
+  "cf410bc13d2f8c34c3fab7b3467ec4afd2e6539a": {
+    "crates/hex-ui/src/editor/browser.rs": "571067bb87cdcbafc99b8a535c7d78854c75464db0ee739d864239e1aedf9ac2",
+    "crates/hex-ui/src/editor/browser/samples.rs": "d229cc986728064945e4fa947b67159c34a9de3980962560e5d730187dbceae8",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "8fc541eb89245fa8b6560944e2f86e1037d79438ddb6e2d13e18b494a5f556f4",
+    "docs/browser-layout.md": "342bcd4c609c58e9f5cce6a9945f3713e8dfa23d2b9e9352bf24eb943d1fa05f",
+    "todo.md": "643740520bca94ec40b874b6d8bd7296ff3aa034fa79e7d63bd01abf9167baa2"
+  },
+  "46bb3c3d314ecceabd3197e6268a62458a117d68": {
+    "crates/hex-ui/src/editor/browser.rs": "614a26f3716c5cd297cfdea2ef0c3a3d0bac0eed2c10240b74540759c4412a95",
+    "crates/hex-ui/src/editor/browser/samples.rs": "7eccd0fbc92937106e9829b53c935a1a650fe9899ba0a42ab9b33cf7cc362758",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "003a622322701a8cabc07328cceb735c78ece8eab858f5b13742fe3cd6f37af0",
+    "docs/browser-layout.md": "9989bb184a494977dfee3857a37bfdd13fb61aa7a24ece113825e1610c876d4a",
+    "todo.md": "fc35c5e69b9b11723430e711329d1aadd99307a8e00e40fef8caeb2d73059948"
+  }
+}

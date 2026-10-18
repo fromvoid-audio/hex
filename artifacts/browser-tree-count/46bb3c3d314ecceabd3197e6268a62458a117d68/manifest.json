@@ -1,0 +1,35 @@
+{
+  "canonical_pr": 341,
+  "source_patch_commit": "46bb3c3d314ecceabd3197e6268a62458a117d68",
+  "source_patch_tree": "1dfc83fb61c50db7f65c74240a69760df40530d5",
+  "expected_before": "cf410bc13d2f8c34c3fab7b3467ec4afd2e6539a",
+  "canonical_branch": "unchanged by source owner; merger applies patch to same PR341",
+  "repair": "shared explicit Samples listing mode: hierarchy N items, indexed N samples; no filesystem traversal or hidden sample total",
+  "results": {
+    "before": "two empty roots actual label2 samples versus expected2 items; focusedbehavioralred retained",
+    "counter_only": "1 focused count regression passed on46bb source",
+    "combined_overlay": "cf410+counter46bb+397 production/tests overlay:13library/76browser/featurealltargetclippy pass,0failed; temporary overlay treee6f0829fe326c54dd72c2893b88fa4a24996d77f; trackedoverlayrestored afterwards",
+    "guards": "architecture/GPUI/style/fmt passed on clean46bb source",
+    "fullCI": "merger-owned new actual prospective tree required; no old run relabeled",
+    "native": "not performed; Live gestures unavailable, optimized acceptance coordinator-owned"
+  },
+  "files": {
+    "2728-counter-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "2728-counter-before-and-after-hashes.json": "d5f9a8e249b5ff899af13178a3933d4b84699b57a0d2195f49b8380a2b130b3a",
+    "2728-counter-canonical.patch": "7440c0af8684740c090833696f040174865f3378b09d4cd7fd977b29c840ccf7",
+    "2728-counter-combined-browser.log": "a143ed54e03be79f4e1d78a30a74b355d8f073a204790a9c2ceac1ad100f0c4c",
+    "2728-counter-combined-clippy.log": "a70064195e124b8dae18b6bdbb4727ba5fd3409dbec335f41d93ea753d5bb92f",
+    "2728-counter-combined-library.log": "cd0dc3e744852bdd00efa655e431bafd9d752c22d3282d0026d0c5f0b98dcb48",
+    "2728-counter-combined-tree.json": "4d7aaa1b1f71ec1fbe6fe15a8a8b351b81b61c87b8fbc97d1a2936304f0287c9",
+    "2728-counter-expose.py": "f935e0ca19211d88fbc5e152afbfa683750e71605383840374a69cafb9956813",
+    "2728-counter-fix.py": "d9fd473c4d43fe9be61ffa9bf34627d2609ee49da684ddee1ced3faf54cd445a",
+    "2728-counter-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "2728-counter-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "2728-counter-green.log": "2080771bc34712b427de9d737b898fbf13afcb2d1b2768d6cc48a837d1001d25",
+    "2728-counter-plus-397-overlay.patch": "e1b066acfca356ea4ea76ed0376fe9028b6e23679e05b8ca14f9a3b7f1db3948",
+    "2728-counter-red-instrumentation.patch": "3f2a1a89b3d70861f200ea837aba0ba10bb983c47561b8c2b95b04c2b6316e4e",
+    "2728-counter-red.log": "3cb19b5417510c7bb39a39d4e1a8c4b573753ab04a95fdc652f9b144cde0568b",
+    "2728-counter-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "2728-counter-test.rs": "ecd8019da68ed5382e85f5923a3c5687ed6dcaefdad2ce8b5168de57d1b9667a"
+  }
+}

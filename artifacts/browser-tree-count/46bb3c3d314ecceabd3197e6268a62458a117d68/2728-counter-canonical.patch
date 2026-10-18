@@ -1,0 +1,186 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index 4cda3c83..992c1206 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -1400,7 +1400,9 @@ impl EditorView {
+             .as_ref()
+             .filter(|listing| listing.directory == self.browser.directory);
+         let base = match &self.browser.section {
+-            BrowserSection::Samples if query.is_empty() => {
++            BrowserSection::Samples
++                if samples::ResultsMode::for_query(&query) == samples::ResultsMode::Hierarchy =>
++            {
+                 self.browser.tree.roots(self.sample_roots())
+             }
+             BrowserSection::Samples => self.browser.samples.visible(&query),
+diff --git a/crates/hex-ui/src/editor/browser/samples.rs b/crates/hex-ui/src/editor/browser/samples.rs
+index c25a21f6..f0018bc3 100644
+--- a/crates/hex-ui/src/editor/browser/samples.rs
++++ b/crates/hex-ui/src/editor/browser/samples.rs
+@@ -2,6 +2,30 @@
+ use super::*;
+ use hex_library::catalog::{SampleCatalog, scan_samples};
+ 
++/// The Samples listing model shared by row construction and its count label.
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub(super) enum ResultsMode {
++    Hierarchy,
++    Indexed,
++}
++
++impl ResultsMode {
++    pub(super) fn for_query(query: &str) -> Self {
++        if query.is_empty() {
++            Self::Hierarchy
++        } else {
++            Self::Indexed
++        }
++    }
++
++    fn count_noun(self) -> &'static str {
++        match self {
++            Self::Hierarchy => "items",
++            Self::Indexed => "samples",
++        }
++    }
++}
++
+ struct VisibleCache {
+     query: String,
+     source: Option<PathBuf>,
+@@ -255,8 +279,20 @@ impl EditorView {
+         }
+     }
+ 
+-    pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {
++    pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
+         let count = self.browser_visible_entries(cx).len();
++        let noun = ResultsMode::for_query(&self.browser.search.read(cx).content).count_noun();
++        format!(
++            "{count} {noun}{}",
++            if self.browser.samples.in_flight {
++                " · scanning…"
++            } else {
++                ""
++            }
++        )
++    }
++
++    pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {
+         let mut content = div().flex().flex_col().flex_shrink_0().child(
+             div()
+                 .h(px(23.0))
+@@ -269,14 +305,7 @@ impl EditorView {
+                         .flex_1()
+                         .text_xs()
+                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+-                        .child(theme::text(format!(
+-                            "{count} samples{}",
+-                            if self.browser.samples.in_flight {
+-                                " · scanning…"
+-                            } else {
+-                                ""
+-                            }
+-                        ))),
++                        .child(theme::text(self.sample_results_count_text(cx))),
+                 )
+                 .child(self.browser_icon(
+                     "↻",
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index f9f6ca35..d43994d1 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -3760,3 +3760,61 @@ fn browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels(
+         assert_ne!(entries[0].path, entries[1].path);
+     });
+ }
++
++#[gpui::test]
++fn browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches(cx: &mut TestAppContext) {
++    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
++    let first = PreferencesTestDirectory::new();
++    let second = PreferencesTestDirectory::new();
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    editor.update(&mut visual, |view, cx| {
++        view.browser.places = vec![first.0.clone(), second.0.clone()];
++        view.browser.directory = first.0.clone();
++        view.browser.section = BrowserSection::Samples;
++        view.browser
++            .search
++            .update(cx, |input, _| input.content.clear());
++        view.browser.samples.replace(Default::default());
++        view.browser.tree.source_changed();
++        assert_eq!(view.browser_visible_entries(cx).len(), 2);
++        assert_eq!(view.sample_results_count_text(cx), "2 items");
++        cx.notify();
++    });
++    let nested = first.0.join("nested");
++    std::fs::create_dir(&nested).unwrap();
++    std::fs::write(nested.join("kick.wav"), mono_pcm_wav(16)).unwrap();
++    editor.update(&mut visual, |view, cx| {
++        view.expand_browser_folder(first.0.clone(), cx)
++    });
++    visual.run_until_parked();
++    editor.read_with(&visual, |view, cx| {
++        let entries = view.browser_visible_entries(cx);
++        assert_eq!(entries.len(), 3);
++        assert!(
++            entries
++                .iter()
++                .all(|entry| entry.kind == EntryKind::Directory)
++        );
++        assert_eq!(view.sample_results_count_text(cx), "3 items");
++    });
++    editor.update(&mut visual, |view, cx| {
++        view.browser.search.update(cx, |input, cx| {
++            input.content = "kick".into();
++            cx.notify();
++        });
++        view.refresh_sample_catalog(cx);
++    });
++    visual.run_until_parked();
++    editor.read_with(&visual, |view, cx| {
++        assert_eq!(view.browser_visible_entries(cx).len(), 1);
++        assert_eq!(view.sample_results_count_text(cx), "1 samples");
++    });
++    editor.update(&mut visual, |view, cx| {
++        view.browser
++            .search
++            .update(cx, |input, _| input.content = "missing".into());
++        assert!(view.browser_visible_entries(cx).is_empty());
++        assert_eq!(view.sample_results_count_text(cx), "0 samples");
++    });
++}
+diff --git a/docs/browser-layout.md b/docs/browser-layout.md
+index 4204b54e..2ffb19b6 100644
+--- a/docs/browser-layout.md
++++ b/docs/browser-layout.md
+@@ -191,3 +191,9 @@ Native optimized hierarchy/keyboard/scroll/width/reference acceptance is open.
+ The coordinator's finite reference availability check found no running Live and
+ a locked Mac; no gestures were observed and no app was launched. This implements
+ the documented contract, not an observed claim of exact installed-Live parity.
++
++Samples count labels follow the listing model: the inline hierarchy reports visible
++items (folders plus files), while flat indexed query results report sample matches.
++Expanding a folder can change the item count without discovering another WAV. The
++label does not enumerate collapsed folders or imply a total sample count. Pulse2728
++counter follow-up; optimized native acceptance remains open.
+diff --git a/todo.md b/todo.md
+index 6693a0fb..f6b32d9c 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5076,3 +5076,13 @@ input acceptance remain pending; no installed app changes.
+   full local CI is recorded in PR336/Pulse2720, not inferred from focused tests.
+ - Native optimized physical input, listening and current-format save/reopen remain
+   open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.
++
++### inline-tree count label correction — pulse2728 / PR341
++
++Two empty roots previously displayed “2 samples”. Hierarchy rows now count as items;
++flat indexed queries retain sample counts, including zero matches. Row construction
++and labels share an explicit Samples result mode; no new traversal or WAV-total scan.
++A focused rendered-model regression covers empty roots, expansion with only directory
++rows, and flat search. Source fix is handed to the dedicated merger separately from
++Place correctness2791/397; final combined full CI and optimized native checks remain
++open.

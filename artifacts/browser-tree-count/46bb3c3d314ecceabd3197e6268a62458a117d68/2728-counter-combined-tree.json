@@ -1,0 +1,6 @@
+{
+  "counter_source": "46bb3c3d314ecceabd3197e6268a62458a117d68",
+  "temporary_overlay_tree": "e6f0829fe326c54dd72c2893b88fa4a24996d77f",
+  "overlay_patch_sha256": "e1b066acfca356ea4ea76ed0376fe9028b6e23679e05b8ca14f9a3b7f1db3948",
+  "scope": "counter source46bb +397 production/tests overlay on frozen cf410; not main/final fullCI"
+}
