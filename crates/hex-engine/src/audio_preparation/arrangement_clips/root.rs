@@ -11,6 +11,7 @@ pub struct ArrangementRootCapacity {
     pub return_container_bytes: usize,
     pub tempo_backing_bytes: usize,
     pub midi_routing_backing_bytes: usize,
+    pub signal_topology_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub installed_tracks: usize,
     pub installed_returns: usize,
@@ -22,6 +23,7 @@ impl ArrangementRootCapacity {
             .checked_add(self.return_container_bytes)
             .and_then(|n| n.checked_add(self.tempo_backing_bytes))
             .and_then(|n| n.checked_add(self.midi_routing_backing_bytes))
+            .and_then(|n| n.checked_add(self.signal_topology_bytes))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -46,6 +48,7 @@ pub(super) struct ArrangementRootAssembly {
     contexts: Option<OwnedShared<SharedAnalyticContextTable>>,
     tempo_map: Option<hex_project::TempoMap>,
     midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
+    topology: Option<OwnedShared<crate::signal_graph::SignalGraph>>,
     metadata_drop_pending: bool,
     has_feed: bool,
     scalars: Option<Scalars>,
@@ -77,6 +80,7 @@ impl ArrangementRootAssembly {
             && self.returns.capacity() == 0
             && self.contexts.is_none()
             && self.tempo_map.is_none()
+            && self.topology.is_none()
             && self.midi_routing.capacity() == 0
             && !self.metadata_drop_pending
             && self.feed.has_no_owned_storage()
@@ -94,6 +98,7 @@ impl ArrangementRootAssembly {
             || self.contexts.is_some()
             || self.has_feed
             || self.tempo_map.is_some()
+            || self.topology.is_some()
             || self.midi_routing.capacity() != 0
             || self.metadata_drop_pending
             || self.scalars.is_some()
@@ -175,10 +180,14 @@ impl ArrangementRootAssembly {
         }
         if let Some(project) = self.project.as_ref().or(external) {
             if project.audio_clip_views.capacity() != 0
-                || project.signal_graph.is_some()
+                || project
+                    .signal_graph
+                    .as_ref()
+                    .is_some_and(|graph| graph.parts().is_none())
                 || self.tracks.capacity() != 0
                 || self.returns.capacity() != 0
                 || self.contexts.is_some()
+                || self.topology.is_some()
                 || self.tempo_map.is_some()
                 || self.midi_routing.capacity() != 0
                 || !self.feed.has_no_owned_storage()
@@ -242,7 +251,26 @@ impl ArrangementRootAssembly {
             .as_ref()
             .or(external)
             .map_or(&self.midi_routing, |project| &project.midi_routing);
+        let topology = self
+            .project
+            .as_ref()
+            .or(external)
+            .and_then(|project| project.signal_graph.as_ref())
+            .or(self.topology.as_ref());
+        let signal_topology_bytes = topology
+            .map(|graph| {
+                let (_, overhead) = graph
+                    .parts()
+                    .ok_or(AudioStorageError::UnsupportedConstructor)?;
+                graph
+                    .table_bytes()
+                    .and_then(|bytes| bytes.checked_add(overhead))
+                    .ok_or(AudioStorageError::Overflow)
+            })
+            .transpose()?
+            .unwrap_or(0);
         Ok(ArrangementRootCapacity {
+            signal_topology_bytes,
             tempo_backing_bytes,
             midi_routing_backing_bytes: routes
                 .capacity()
@@ -275,6 +303,7 @@ impl ArrangementRootAssembly {
             || self.has_feed
             || self.contexts.is_some()
             || self.tempo_map.is_some()
+            || self.topology.is_some()
             || self.midi_routing.capacity() != 0
             || self.metadata_drop_pending
             || self.tracks.capacity() < tracks.root_count()
@@ -351,7 +380,7 @@ impl ArrangementRootAssembly {
         if let Some(Project {
             project_track_ids: _,
             audio_clip_views: _,
-            signal_graph: _,
+            signal_graph,
             tempo_map,
             midi_routing,
             sample_rate: _,
@@ -369,6 +398,7 @@ impl ArrangementRootAssembly {
             self.returns = return_buses;
             self.feed = return_feed_plan;
             self.contexts = Some(shared_contexts);
+            self.topology = signal_graph;
             self.install_restored_metadata(tempo_map, midi_routing);
         }
         shared.restore_arrangement(&mut self.contexts);
@@ -389,7 +419,10 @@ impl ArrangementRootAssembly {
         self.midi_routing = midi_routing;
     }
     pub(super) fn has_metadata_disposal(&self) -> bool {
-        self.metadata_drop_pending || self.tempo_map.is_some() || self.midi_routing.capacity() != 0
+        self.metadata_drop_pending
+            || self.tempo_map.is_some()
+            || self.topology.is_some()
+            || self.midi_routing.capacity() != 0
     }
     pub(super) fn dispose_metadata_on_control(&mut self) -> Result<(), AudioStorageError> {
         if self.metadata_drop_pending {
@@ -402,12 +435,22 @@ impl ArrangementRootAssembly {
         {
             return Err(AudioStorageError::Capacity);
         }
+        if self
+            .topology
+            .as_ref()
+            .is_some_and(|graph| graph.parts().is_none())
+        {
+            return Err(AudioStorageError::UnsupportedConstructor);
+        }
+        // SignalGraph descendants are audited fixed scalar vectors; no provider
+        // destructor, mutable runtime buffer, or adopted raw Arc is accepted.
         // Canonical TempoMap owns only TempoPoint/u128 Vecs; routing entries
         // are Copy IDs. Parent catch retains pending/FailedIncomplete on unwind.
         fn copy_element<T: Copy>() {}
         copy_element::<hex_project::TempoPoint>();
         copy_element::<(hex_project::TrackId, hex_project::TrackId)>();
         self.metadata_drop_pending = true;
+        drop(self.topology.take());
         drop(self.tempo_map.take());
         #[cfg(test)]
         assert!(
@@ -452,6 +495,7 @@ impl ArrangementRootAssembly {
             contexts: _,
             tempo_map,
             midi_routing,
+            topology,
             metadata_drop_pending: _,
             has_feed: _,
             scalars: _,
@@ -469,6 +513,9 @@ impl ArrangementRootAssembly {
         feed.visit_audio_storage(l)?;
         l.growth(*growth)?;
         l.vec(midi_routing)?;
+        if let Some(graph) = topology {
+            crate::signal_graph::storage::visit(graph, l)?;
+        }
         if let Some(map) = tempo_map {
             l.mutate(|ledger| ledger.map(map))?;
         }
@@ -480,7 +527,7 @@ impl ArrangementRootAssembly {
                 tracks,
                 return_buses,
                 return_feed_plan: _,
-                signal_graph: _,
+                signal_graph,
                 tempo_map,
                 midi_routing,
                 loop_region: _,
@@ -489,6 +536,9 @@ impl ArrangementRootAssembly {
                 has_streamed_sources: _,
                 shared_contexts: _,
             } = project;
+            if let Some(graph) = signal_graph {
+                crate::signal_graph::storage::visit(graph, l)?;
+            }
             l.vec(audio_clip_views)?;
             l.vec(tracks)?;
             l.vec(return_buses)?;

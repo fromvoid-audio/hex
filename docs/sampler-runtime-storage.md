@@ -333,3 +333,26 @@ its unrelated legacy meters/chains are not adopted or declared qualified.
 This extends selected traversal/retirement only: the public Sampler constructor
 refusal, aggregate before-first-owner allowance, private complete compiler entry,
 callback conservation and final native publication remain open.
+
+
+The existing production signal-topology constructor now creates its one shared
+body through `OwnedShared`, retaining that original receipt in the private
+Arrangement field and the real renderer/Session runtime graph fields. No raw
+Arc is adopted and no second topology is allocated for qualification. The
+scalar musical topology/latency algorithm, zero-latency fast path and runtime
+budgets stay unchanged. This concerns immutable topology; mutable delay rings,
+runtime scratch, callback transitions and complete native conservation remain
+separate obligations.
+
+Root metadata has an existing-custody destination for this paired topology.
+Traversal covers its header/body and actual latency-plan, typed-key, owner-order,
+Track/Return plan and nested device/send/feed Vec capacities. The enclosing
+parent charges the inline handle once. Distinct physical fields join closure;
+repeated visits do not add handles and shared descendants are visited once.
+Restore moves the actual owner to this destination. Control disposal includes
+it under the existing pending-before-destruction marker and refuses untracked
+origins before extraction. The selected oracle exercises actual compiler and
+renderer fields, independent missing aliases, exact/minus-one, normal control
+retirement, stable allocation identity and unchanged raw-ingress refusal. This
+removes one retained child obstacle; it does not supply the aggregate quote or
+private complete-compiler ingress and does not open Sampler admission.

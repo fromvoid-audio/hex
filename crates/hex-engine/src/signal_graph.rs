@@ -1,8 +1,12 @@
 //! Typed production signal topology and control-prepared compensation ownership.
 use crate::{Frame, Invalid, Project, Track, compensation::*};
 mod legacy;
+use crate::owned_shared::OwnedShared;
 use hex_project::{ReturnId, RoutingOwner, TrackId};
-use std::{mem::size_of, sync::Arc};
+use std::mem::size_of;
+#[cfg(test)]
+use std::sync::Arc;
+pub(crate) mod storage;
 mod typed_inputs;
 
 pub(crate) const MAX_COEXISTING_COMPENSATION_BYTES: usize = 32 * 1024 * 1024;
@@ -105,7 +109,7 @@ impl SignalGraph {
         project: &Project,
         feeds: &[(usize, usize, f32)],
         canonical: &hex_project::Project,
-    ) -> Result<Option<Arc<Self>>, Invalid> {
+    ) -> Result<Option<OwnedShared<Self>>, Invalid> {
         let (node_count, edge_count) =
             typed_inputs::counts(project, feeds.len(), canonical.audio_feeds().len())?;
         let mut builder = Builder {
@@ -353,7 +357,7 @@ impl SignalGraph {
         order.sort_unstable_by_key(|(rank, _)| *rank);
         let mut owner_order = typed_inputs::reserved(owner_count)?;
         owner_order.extend(order.into_iter().map(|(_, owner)| owner));
-        let graph = Arc::new(Self {
+        let graph = OwnedShared::new_owned(Self {
             main: node_index(main)?,
             plan,
             tracks,
@@ -457,13 +461,13 @@ impl SignalGraph {
 
 #[derive(Debug)]
 pub(crate) struct SignalRuntime {
-    pub graph: Arc<SignalGraph>,
+    pub graph: OwnedShared<SignalGraph>,
     pub delays: CompensationRuntime,
     pub inputs: Vec<Frame>,
     pub main: Vec<Frame>,
 }
 impl SignalRuntime {
-    pub(crate) fn new(graph: Arc<SignalGraph>) -> Result<Self, Invalid> {
+    pub(crate) fn new(graph: OwnedShared<SignalGraph>) -> Result<Self, Invalid> {
         let scratch_bytes = graph
             .tracks
             .len()

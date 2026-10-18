@@ -1060,7 +1060,7 @@ impl SessionPlayback {
             .arrangement()
             .signal_graph
             .as_ref()
-            .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
+            .map(|graph| crate::signal_graph::SignalRuntime::new(graph.clone_on_control()))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         Ok(Self {

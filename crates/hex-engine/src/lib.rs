@@ -1990,7 +1990,7 @@ pub struct Project {
     tracks: Vec<Track>,
     return_buses: Vec<ReturnBus>,
     return_feed_plan: return_feed_plan::ReturnFeedPlan,
-    signal_graph: Option<Arc<signal_graph::SignalGraph>>,
+    signal_graph: Option<owned_shared::OwnedShared<signal_graph::SignalGraph>>,
     tempo_map: Option<hex_project::TempoMap>,
     midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
     loop_region: Option<hex_project::LoopRegion>,
@@ -2255,7 +2255,7 @@ impl RendererRuntime {
         let compensation = match project
             .signal_graph
             .as_ref()
-            .map(|graph| signal_graph::SignalRuntime::new(Arc::clone(graph)))
+            .map(|graph| signal_graph::SignalRuntime::new(graph.clone_on_control()))
             .transpose()
         {
             Ok(compensation) => compensation,

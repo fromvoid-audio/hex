@@ -185,3 +185,133 @@ fn fresh_arrangement_metadata_moves_actual_backings_and_latches_abnormal_disposa
     assert_eq!(failed.midi_routing.capacity(), route_capacity);
     drop((project, other)); // Outside selected metadata retirement, bank retained.
 }
+
+#[test]
+fn paired_signal_topology_retains_actual_compiler_runtime_aliases_and_control_destination() {
+    if !crate::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported paired signal topology");
+        return;
+    }
+    eprintln!("SUPPORTED paired signal topology actual compiler/runtime/control fields");
+    let fixture = crate::signal_graph::tests::fixture(&[&[], &[7]], 64);
+    let revision = crate::signal_graph::tests::prepare(&fixture).unwrap();
+    let arrangement = revision.arrangement();
+    let graph = arrangement.signal_graph.as_ref().unwrap();
+    let runtime = crate::RendererRuntime::new(arrangement);
+    let runtime_graph = &runtime.compensation.as_ref().unwrap().graph;
+    let pointer = std::sync::Arc::as_ptr(graph.arc());
+    assert_eq!(std::sync::Arc::as_ptr(runtime_graph.arc()), pointer);
+    let mut root = ArrangementRootAssembly {
+        topology: Some(graph.clone_on_control()),
+        ..Default::default()
+    };
+    let (body, header) = graph.parts().unwrap();
+    assert_eq!(body, size_of::<crate::signal_graph::SignalGraph>());
+    let expected = graph.table_bytes().unwrap() + header;
+    assert_eq!(
+        root.capacity(false).unwrap().signal_topology_bytes,
+        expected
+    );
+    let collect = |root: &ArrangementRootAssembly, budget, omit: u8| {
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(budget)?;
+        ledger.root(root, AudioStorageRole::PendingReclaim)?;
+        let before = ledger.summary()?;
+        if omit != 1 {
+            root.visit_audio_storage(&mut ledger, None)?;
+        }
+        if omit != 2 {
+            crate::signal_graph::storage::visit(graph, &mut ledger)?;
+        }
+        if omit != 3 {
+            crate::signal_graph::storage::visit(runtime_graph, &mut ledger)?;
+        }
+        ledger.validate_selected_shared_handles_on_control()?;
+        let after = ledger.summary()?;
+        assert_eq!(after.data_bytes - before.data_bytes, expected);
+        assert_eq!(ledger.selected_shared_counts_on_control(), (1, 3));
+        root.visit_audio_storage(&mut ledger, None)?;
+        crate::signal_graph::storage::visit(graph, &mut ledger)?;
+        assert_eq!(ledger.summary()?, after);
+        Ok::<_, AudioStorageError>(after)
+    };
+    let summary = collect(&root, limits(), 0).unwrap();
+    for omitted in 1..=3 {
+        assert!(collect(&root, limits(), omitted).is_err());
+    }
+    let mut exact = limits();
+    exact.max_retained_bytes = summary.retained_bytes;
+    exact.max_construction_peak_bytes = summary.construction_peak_bytes;
+    assert_eq!(collect(&root, exact, 0).unwrap(), summary);
+    exact.max_retained_bytes -= 1;
+    assert_eq!(
+        collect(&root, exact, 0),
+        Err(AudioStorageError::ReservationExceeded)
+    );
+    // A complete compiler result and its real runtime remain separately alive.
+    // The control destination releases only its actual paired handle.
+    root.dispose_metadata_on_control().unwrap();
+    assert!(!root.has_metadata_disposal());
+    assert_eq!(root.capacity(false).unwrap().signal_topology_bytes, 0);
+    assert_eq!(std::sync::Arc::as_ptr(graph.arc()), pointer);
+    assert_eq!(std::sync::Arc::strong_count(graph.arc()), 2);
+    drop(runtime);
+    assert_eq!(std::sync::Arc::strong_count(graph.arc()), 1);
+    assert_eq!(graph.main_latency(), 7);
+    // Unique/equal raw Arc ingress never receives a constructor receipt.
+    let mut raw = ArrangementRootAssembly {
+        topology: Some(OwnedShared::untracked(std::sync::Arc::clone(graph.arc()))),
+        ..Default::default()
+    };
+    assert!(raw.capacity(false).is_err());
+    assert_eq!(
+        raw.dispose_metadata_on_control(),
+        Err(AudioStorageError::UnsupportedConstructor)
+    );
+    assert_eq!(
+        std::sync::Arc::as_ptr(raw.topology.as_ref().unwrap().arc()),
+        pointer
+    );
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
+    assert_eq!(
+        ledger.mutate(|ledger| crate::signal_graph::storage::visit(
+            raw.topology.as_ref().unwrap(),
+            ledger
+        )),
+        Err(AudioStorageError::UnknownStorage)
+    );
+    assert_eq!(ledger.summary(), Err(AudioStorageError::UnknownStorage));
+    drop(ledger);
+    drop(raw);
+    assert_eq!(std::sync::Arc::strong_count(graph.arc()), 1);
+    let independent = crate::signal_graph::tests::prepare(&fixture).unwrap();
+    let independent_graph = independent.arrangement().signal_graph.as_ref().unwrap();
+    assert_eq!(graph.as_ref(), independent_graph.as_ref());
+    assert_ne!(std::sync::Arc::as_ptr(independent_graph.arc()), pointer);
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
+    crate::signal_graph::storage::visit(graph, &mut ledger).unwrap();
+    crate::signal_graph::storage::visit(independent_graph, &mut ledger).unwrap();
+    ledger
+        .validate_selected_shared_handles_on_control()
+        .unwrap();
+    assert_eq!(ledger.selected_shared_counts_on_control(), (2, 2));
+    assert_eq!(ledger.summary().unwrap().data_bytes, expected * 2);
+    drop(ledger);
+    let mut custody = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+    custody.arrangement_clips.root.topology = Some(graph.clone_on_control());
+    custody.arrangement_clips.root.panic_after_metadata_take = true;
+    assert!(!custody.dispose_arrangement_clips_on_control());
+    assert_eq!(
+        custody.phase,
+        crate::AudioPreparationPhase::FailedIncomplete
+    );
+    assert!(custody.first_panic.is_some());
+    let failed = &mut custody.arrangement_clips.root;
+    assert!(failed.metadata_drop_pending);
+    assert!(failed.topology.is_none());
+    assert_eq!(
+        failed.dispose_metadata_on_control(),
+        Err(AudioStorageError::UnknownStorage)
+    );
+    assert!(failed.capacity(false).is_err());
+    assert_eq!(std::sync::Arc::strong_count(graph.arc()), 1);
+}
