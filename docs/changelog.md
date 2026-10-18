@@ -76,3 +76,39 @@ The lock is never held during inference. A competing successful publication or
 active publisher produces a visible retry refusal and preserves successful notes;
 retry from the now-current history rather than forcing an overwrite. This lock
 does not affect audio callbacks, app state or unrelated local CI.
+
+## Reader presentation — Pulse2849 / PR451
+
+The native reader projects validated embedded entries into features, improvements
+and fixes, omitting empty categories and retaining complete text and order within
+each category. Each batch keeps its version and explicit notes-through source.
+Full original base/source, generation time, generator, origin and evidence commit
+remain available on the coverage tooltip when present in the dataset. This is a
+presentation projection; generation, import, validation, CAS and packaging do not
+change. The original seven-note dataset and its cdba26a8 → cb8befc4 coverage remain
+unchanged; newer source work is not implied to be included.
+
+The centered reader is capped at 640px, with compact header/close and wrapped note
+rows. Existing palette roles distinguish headings: features uses secondary,
+improvements text and fixes primary. A whole note row, including its padding,
+provides the hover region. Only that row's text becomes secondary and its surface
+becomes hover; dimensions, neighbours, scroll and heading colors remain stable.
+Rows have an ordinary arrow cursor and no action or tab stop. The single keyboard
+close target, shortcuts, editor-focus restoration and read-only key isolation are
+preserved. Native drawing still uses bundled Ioskeley Mono through theme::text.
+
+Headless GPUI checks cover completed inherited text paint style/font, row-local
+pointer enter/move/leave, stationary-pointer scrolling, row-ID reuse, widths 480,
+880 and 1280px, wrapped/unbroken long text, empty/unavailable/malformed data, all
+seven original note texts, and the existing opener/close keyboard/scroll cases.
+These checks do not establish physical macOS GPU pixels or accessibility parity.
+
+Finite coordinator-owned optimized native check on the final combined build:
+open beside Log and with cmd-shift-l; confirm the three grouped headings, seven
+notes and original coverage. Hover the padded/wrapped parts of neighbouring notes,
+leave and scroll beneath a stationary pointer; only the current note should gain
+emphasis with no movement or lingering highlight. Resize within supported window
+sizes and confirm readable wrapping, clipping and stable Close. Check Tab and
+Shift-Tab reach only Close, Enter/Space activate it, Escape restores editor focus,
+and Operator's existing Tab cycle works after closing. No save/quit/relaunch,
+listening, generation or user-file operations are needed for this changed case.
