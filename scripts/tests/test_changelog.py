@@ -201,6 +201,21 @@ class ChangelogTests(unittest.TestCase):
             args = command.call_args.args[0]
             self.assertEqual(args[-4:], ['--source', self.source, '--base', self.base])
 
+    def test_broken_dataset_and_redirected_output_directory_are_refused(self):
+        path = self.root / notes.DATASET
+        path.parent.mkdir()
+        path.symlink_to(self.root / 'missing.json')
+        with self.assertRaisesRegex(notes.Refusal, 'bounded regular file'):
+            notes.load_dataset(path)
+        path.unlink()
+        path.parent.rmdir()
+        foreign = self.root / 'foreign'
+        foreign.mkdir()
+        path.parent.symlink_to(foreign, target_is_directory=True)
+        with self.assertRaisesRegex(notes.Refusal, 'directory is a symlink'):
+            notes.atomic_dataset(path, {'format': 1, 'batches': []})
+        self.assertEqual(list(foreign.iterdir()), [])
+
 
 if __name__ == '__main__':
     unittest.main()

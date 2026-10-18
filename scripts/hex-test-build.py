@@ -418,7 +418,6 @@ def changelog_payload(root: Path) -> tuple[bytes | None, dict]:
 def build(args) -> dict:
     if sys.platform != "darwin":
         raise DeliveryError("native test delivery requires macOS")
-    changelog_bytes, changelog_identity = changelog_payload(ROOT)
     common = Path(run(["git", "rev-parse", "--git-common-dir"]))
     if not common.is_absolute():
         common = ROOT / common
@@ -446,6 +445,8 @@ def build(args) -> dict:
             else:
                 validate_ci(args.ci_report, runner, args.candidate)
 
+        revalidate()
+        changelog_bytes, changelog_identity = changelog_payload(ROOT)
         revalidate()
         included = json.loads(args.included.read_text())
         if not isinstance(included, list) or not included:

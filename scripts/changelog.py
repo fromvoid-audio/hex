@@ -143,7 +143,7 @@ def validate_response(value, packet, previous=()):
 
 
 def load_dataset(path):
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return {'format': 1, 'batches': []}
     if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_DATASET:
         raise Refusal('changelog dataset is not a bounded regular file')
@@ -182,6 +182,8 @@ def validate_history(root, dataset):
 
 
 def atomic_dataset(path, dataset):
+    if path.parent.is_symlink():
+        raise Refusal('changelog directory is a symlink; previous files preserved')
     raw = encode(dataset)
     if len(raw) > MAX_DATASET:
         raise Refusal('retained notes exceed 1 MiB; previous file preserved')
