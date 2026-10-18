@@ -2010,10 +2010,25 @@ impl Project {
             owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
         >,
     ) -> Result<Self, Invalid> {
-        if sample_rate == 0 {
-            return Err(Invalid("sample rate must be positive"));
-        }
-        let master_gain = PreparedMasterGain::new(master_gain)?;
+        let scalars =
+            project_output::CompiledProjectScalars::prepare(sample_rate, master_gain, loop_region)?;
+        let has_streamed_sources = Self::validate_compiled_source_rates(sample_rate, &tracks)?;
+        let mut project = scalars.assemble_empty(shared_contexts.unwrap_or_else(|| {
+            owned_shared::OwnedShared::new_owned(
+                shared_analytic::SharedAnalyticContextTable::default(),
+            )
+        }));
+        project.project_track_ids = project_output::ProjectTrackIds::prepare(&tracks);
+        project.audible_end_frame = tracks
+            .iter()
+            .flat_map(|track| track.clips.iter().map(|clip| clip.end))
+            .max();
+        project.tracks = tracks;
+        project.return_buses = return_buses;
+        project.has_streamed_sources = has_streamed_sources;
+        Ok(project)
+    }
+    fn validate_compiled_source_rates(sample_rate: u32, tracks: &[Track]) -> Result<bool, Invalid> {
         let has_streamed_sources = tracks.iter().any(|track| {
             track.clips.iter().any(|clip| {
                 clip.metadata
@@ -2035,48 +2050,20 @@ impl Project {
                 "prepared audio sources must match the project rate",
             ));
         }
-        Ok(Self {
-            project_track_ids: project_output::ProjectTrackIds::prepare(&tracks),
-            audio_clip_views: Vec::new(),
-            audible_end_frame: tracks
-                .iter()
-                .flat_map(|track| track.clips.iter().map(|clip| clip.end))
-                .max(),
-            sample_rate,
-            tracks,
-            return_buses,
-            return_feed_plan: return_feed_plan::ReturnFeedPlan::default(),
-            signal_graph: None,
-            tempo_map: None,
-            midi_routing: Vec::new(),
-            loop_region,
-            master_gain,
-            has_streamed_sources,
-            shared_contexts: shared_contexts.unwrap_or_else(|| {
-                owned_shared::OwnedShared::new_owned(
-                    shared_analytic::SharedAnalyticContextTable::default(),
-                )
-            }),
-        })
+        Ok(has_streamed_sources)
     }
-
-    pub(crate) fn with_compiled_tracks(
-        sample_rate: u32,
-        tracks: Vec<Track>,
-        return_buses: Vec<ReturnBus>,
-        loop_region: Option<hex_project::LoopRegion>,
-        master_gain: f32,
-        shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
-    ) -> Result<Self, Invalid> {
-        let mut project = Self::assemble_with_children(
-            sample_rate,
-            tracks,
-            return_buses,
-            loop_region,
-            master_gain,
-            Some(shared_contexts),
-        )?;
-        project.audible_end_frame = project
+    /// Finalize derived indexes only after the common compiler has filled all
+    /// actual fields. A retained partial value is not processing-ready on Err.
+    pub(crate) fn finalize_compiled_tracks_on_control(&mut self) -> Result<(), Invalid> {
+        let has_streamed_sources =
+            Self::validate_compiled_source_rates(self.sample_rate, &self.tracks)?;
+        self.has_streamed_sources = has_streamed_sources;
+        self.project_track_ids = project_output::ProjectTrackIds::prepare(&self.tracks);
+        self.refresh_compiled_audible_end();
+        Ok(())
+    }
+    fn refresh_compiled_audible_end(&mut self) {
+        self.audible_end_frame = self
             .tracks
             .iter()
             .flat_map(|track| {
@@ -2092,7 +2079,6 @@ impl Project {
                     }))
             })
             .max();
-        Ok(project)
     }
 
     pub(crate) fn shared_contexts(

@@ -980,3 +980,23 @@ restoration and a caught fault after concrete destruction. That injected fault
 is not an opaque destructor panic or complete parent/reaper qualification.
 Public nonempty/touch preparation refusals remain until full closed ingress and
 aggregate reservation are implemented.
+
+The common Arrangement compiler can now fill an actual caller-held vacant
+`Option<Project>` rather than returning completed fields only at the end. Scalar
+validation precedes context transfer; the actual context and subsequently
+completed track, sidecar and Return fields remain in that destination if later
+work refuses. Occupied destinations refuse before resolver calls or input
+transfer. The public legacy wrapper still uses a local slot and the same
+transform transaction and musical algorithm. A partial value is never declared
+processing-ready. Tests retain the first completed original PCM owner across a
+second-source refusal and compare success with independent stereo PCM and block
+partitions. Existing context-assembly, transform-cancellation and full headless
+Sampler host regressions remain covered.
+
+This is destination factoring, not the closed private compiler entry: per-track
+locals and effect/provider births, aggregate before-first-owner reservation,
+parent failed-custody retention, actual Session request binding and continuous
+joint publication guards remain unfinished. Registration and full functional
+panel/load/play acceptance remain open. The urgent user-reported Beats click
+repair is tracked in existing Pulse2830/PR434; the coherent Sampler checkpoint is
+preserved while that bounded musical-quality repair proceeds.

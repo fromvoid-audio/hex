@@ -297,33 +297,52 @@ fn compile_project<'a>(
             &fallback
         }
     };
+    let mut destination = None;
+    let mut shared_contexts = shared_contexts;
+    let mut previews = previews;
     transforms.compile_transaction(|| {
-        compile_project_inner(
+        compile_project_into(
             snapshot,
             resolve_source,
-            previews,
-            _prepared_sine_table,
+            previews.as_deref_mut(),
             registry,
             instrument_registry,
-            shared_contexts,
+            &mut shared_contexts,
             transforms,
+            &mut destination,
         )
-    })
+    })?;
+    let project = destination
+        .take()
+        .ok_or(Invalid("compiled project destination is missing"))?;
+    Ok((project, previews.map(std::mem::take).unwrap_or_default()))
 }
 
+/// Fill the actual caller-held destination using the common compiler. The
+/// caller must enclose this operation in the existing transform transaction.
+/// An error leaves partial fields in custody; it does not make them playable
+/// or certify their origins, destructor safety or aggregate construction peak.
 #[allow(clippy::too_many_arguments)]
-fn compile_project_inner<'a>(
+pub(crate) fn compile_project_into<'a>(
     snapshot: &'a hex_project::Project,
     mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
-    _prepared_sine_table: Option<crate::SharedSineTable>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-    shared_contexts: Option<
+    shared_contexts: &mut Option<
         crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
     >,
     transforms: &crate::audio_transform::AudioTransformPreparation,
-) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
+    destination: &mut Option<Project>,
+) -> Result<(), Invalid> {
+    if destination.is_some() || previews.as_ref().is_some_and(|clips| !clips.is_empty()) {
+        return Err(Invalid("compiler destination is not vacant"));
+    }
+    let scalars = crate::project_output::CompiledProjectScalars::prepare(
+        snapshot.sample_rate(),
+        snapshot.master_gain(),
+        snapshot.loop_region(),
+    )?;
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
     crate::gain_envelope::validate_project(snapshot)?;
@@ -354,7 +373,7 @@ fn compile_project_inner<'a>(
             }
         }
     }
-    let shared_contexts = match shared_contexts {
+    let shared_contexts = match shared_contexts.take() {
         Some(contexts) => contexts,
         None => crate::shared_analytic::SharedAnalyticContextTable::prepare(
             snapshot,
@@ -363,6 +382,15 @@ fn compile_project_inner<'a>(
             None,
         )?,
     };
+    // Secure the actual context and all subsequent completed fields in the
+    // caller's vacant destination before more fallible compiler work. The
+    // public legacy wrapper uses a local slot; the closed private composer can
+    // supply its existing persistent field. This does not qualify any child.
+    *destination = Some(scalars.assemble_empty(shared_contexts));
+    let project = destination
+        .as_mut()
+        .ok_or(Invalid("compiler destination is missing"))?;
+    let shared_contexts = &project.shared_contexts;
     let device_context = hex_lattice::DevicePreparationContext {
         sample_rate: snapshot.sample_rate(),
         tuning: shared_contexts.tuning(),
@@ -378,10 +406,9 @@ fn compile_project_inner<'a>(
             .filter(|&n| n <= hex_project::MAX_CLIPS)
             .ok_or(Invalid("compiled audio clip count exceeds project limit"))
     })?;
-    let mut audio_clip_views = Vec::new();
     let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
-    let mut tracks = Vec::new();
-    tracks
+    project
+        .tracks
         .try_reserve_exact(snapshot.tracks().len())
         .map_err(|_| Invalid("could not reserve compiled tracks"))?;
     let mut stateful_count = 0_usize;
@@ -507,12 +534,13 @@ fn compile_project_inner<'a>(
                 if let Some(audio) = &compiled.audio
                     && audio.frames._derived.is_some()
                 {
-                    if audio_clip_views.capacity() == 0 {
-                        audio_clip_views
+                    if project.audio_clip_views.capacity() == 0 {
+                        project
+                            .audio_clip_views
                             .try_reserve_exact(audio_clip_view_capacity)
                             .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
                     }
-                    audio_clip_views.push(crate::PreparedAudioClipView {
+                    project.audio_clip_views.push(crate::PreparedAudioClipView {
                         clip: clip.id(),
                         audio: audio.clone(),
                         offset: compiled.source_offset as u64,
@@ -634,7 +662,7 @@ fn compile_project_inner<'a>(
             track.gain(),
         )?
         .prepare_instrument_metadata(track.instrument());
-        tracks.push(
+        project.tracks.push(
             track_plan
                 .assemble(
                     clips,
@@ -650,8 +678,8 @@ fn compile_project_inner<'a>(
                 .with_sends(sends),
         );
     }
-    let mut return_buses = Vec::new();
-    return_buses
+    project
+        .return_buses
         .try_reserve_exact(snapshot.return_tracks().len())
         .map_err(|_| Invalid("could not reserve compiled return tracks"))?;
     for return_track in snapshot.return_tracks() {
@@ -683,7 +711,7 @@ fn compile_project_inner<'a>(
                 }
             }
         }
-        return_buses.push(crate::ReturnBus {
+        project.return_buses.push(crate::ReturnBus {
             id: return_track.id(),
             gain: return_track.gain(),
             muted: return_track.muted(),
@@ -691,15 +719,7 @@ fn compile_project_inner<'a>(
             device_chain: std::sync::Arc::from(effect_plan.device_chain),
         });
     }
-    let mut project = Project::with_compiled_tracks(
-        snapshot.sample_rate(),
-        tracks,
-        return_buses,
-        snapshot.loop_region(),
-        snapshot.master_gain(),
-        shared_contexts,
-    )?;
-    project.audio_clip_views = audio_clip_views;
+    project.finalize_compiled_tracks_on_control()?;
     project.return_feed_plan = return_feed_plan;
     let mut feeds = Vec::new();
     feeds
@@ -730,13 +750,13 @@ fn compile_project_inner<'a>(
             .map(|route| (route.source(), route.destination())),
     );
     project.midi_routing.sort_unstable();
-    project.signal_graph = crate::signal_graph::SignalGraph::prepare(&project, &feeds, snapshot)?;
+    project.signal_graph = crate::signal_graph::SignalGraph::prepare(project, &feeds, snapshot)?;
     if project.signal_graph.is_some() {
         for track in &mut project.tracks {
             track.source_mix = crate::PreparedTrackMix::identity();
         }
     }
-    Ok((project, previews.map(std::mem::take).unwrap_or_default()))
+    Ok(())
 }
 
 struct CompiledEffectPlan {
@@ -878,3 +898,6 @@ fn validate_resident(asset: &Asset, project_rate: u32, audio: &Audio) -> Result<
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod retained_target_tests;

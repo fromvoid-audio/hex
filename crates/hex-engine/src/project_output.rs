@@ -1,6 +1,54 @@
 //! Prepared inline identity table for bounded live project observation.
 use crate::Track;
 
+/// Validated scalar inputs for infallible empty compiler field assembly.
+/// This is neither a storage declaration nor a construction-budget permit.
+pub(crate) struct CompiledProjectScalars {
+    sample_rate: std::num::NonZeroU32,
+    master_gain: crate::PreparedMasterGain,
+    loop_region: Option<hex_project::LoopRegion>,
+}
+impl CompiledProjectScalars {
+    pub(crate) fn prepare(
+        sample_rate: u32,
+        master_gain: f32,
+        loop_region: Option<hex_project::LoopRegion>,
+    ) -> Result<Self, crate::Invalid> {
+        let sample_rate = std::num::NonZeroU32::new(sample_rate)
+            .ok_or(crate::Invalid("sample rate must be positive"))?;
+        Ok(Self {
+            sample_rate,
+            master_gain: crate::PreparedMasterGain::new(master_gain)?,
+            loop_region,
+        })
+    }
+    /// Fixed field moves only after scalar validation. No default context
+    /// birth, clone, callback or owning error result can discard this owner.
+    pub(crate) fn assemble_empty(
+        self,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
+    ) -> crate::Project {
+        crate::Project {
+            sample_rate: self.sample_rate.get(),
+            master_gain: self.master_gain,
+            loop_region: self.loop_region,
+            project_track_ids: ProjectTrackIds::prepare(&[]),
+            audio_clip_views: Vec::new(),
+            audible_end_frame: None,
+            tracks: Vec::new(),
+            return_buses: Vec::new(),
+            return_feed_plan: crate::return_feed_plan::ReturnFeedPlan::default(),
+            signal_graph: None,
+            tempo_map: None,
+            midi_routing: Vec::new(),
+            has_streamed_sources: false,
+            shared_contexts,
+        }
+    }
+}
+
 /// Immutable, inline owner index prepared before callback publication. The
 /// callback merges a sorted selection with this table in at most256 comparisons.
 /// No callback sorting, project scan, allocation or independent heap ownership.
@@ -61,11 +109,27 @@ impl ProjectTrackIds {
 #[cfg(test)]
 mod project_owner_index_tests {
     use super::*;
+    fn assemble_compiled(
+        rate: u32,
+        tracks: Vec<Track>,
+        returns: Vec<crate::ReturnBus>,
+        loop_region: Option<hex_project::LoopRegion>,
+        gain: f32,
+        contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
+    ) -> Result<crate::Project, crate::Invalid> {
+        let mut project =
+            CompiledProjectScalars::prepare(rate, gain, loop_region)?.assemble_empty(contexts);
+        project.tracks = tracks;
+        project.return_buses = returns;
+        project.finalize_compiled_tracks_on_control()?;
+        Ok(project)
+    }
     #[test]
     fn compiled_project_moves_original_context_without_discarded_default_birth() {
         use crate::{
-            Audio, Clip, Project, owned_shared::OwnedShared,
-            shared_analytic::SharedAnalyticContextTable,
+            Audio, Clip, owned_shared::OwnedShared, shared_analytic::SharedAnalyticContextTable,
         };
         let contexts = OwnedShared::new_owned(SharedAnalyticContextTable::default());
         let pointer = std::sync::Arc::as_ptr(contexts.arc());
@@ -93,8 +157,7 @@ mod project_owner_index_tests {
         let return_capacity = returns.capacity();
         crate::owned_shared::reset_birth_count();
         crate::owned_shared::reset_clone_count();
-        let project =
-            Project::with_compiled_tracks(48_000, tracks, returns, None, 0.5, contexts).unwrap();
+        let project = assemble_compiled(48_000, tracks, returns, None, 0.5, contexts).unwrap();
         assert_eq!(
             crate::owned_shared::birth_count(),
             0,
@@ -149,8 +212,7 @@ mod project_owner_index_tests {
         let unknown =
             OwnedShared::untracked(std::sync::Arc::new(SharedAnalyticContextTable::default()));
         let pointer = std::sync::Arc::as_ptr(unknown.arc());
-        let project =
-            Project::with_compiled_tracks(48_000, vec![], vec![], None, 1.0, unknown).unwrap();
+        let project = assemble_compiled(48_000, vec![], vec![], None, 1.0, unknown).unwrap();
         assert_eq!(
             std::sync::Arc::as_ptr(project.shared_contexts.arc()),
             pointer
