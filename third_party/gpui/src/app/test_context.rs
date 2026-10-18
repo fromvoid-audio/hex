@@ -154,6 +154,24 @@ impl TestAppContext {
         }
     }
 
+    /// Opt into real macOS font registration and shaping for a disposable test.
+    /// Call before opening any window. This retains the deterministic test
+    /// platform and never creates an OS window or changes system font settings.
+    /// Default test contexts continue to use the no-op text system.
+    #[cfg(all(target_os = "macos", feature = "font-kit"))]
+    pub fn use_native_text_system(&mut self) -> Result<()> {
+        let mut app = self.app.borrow_mut();
+        if !app.windows.is_empty() {
+            bail!("native test text system must be selected before opening windows");
+        }
+        let text_system = Arc::new(TextSystem::new(Arc::new(
+            crate::platform::MacTextSystem::new(),
+        )));
+        app.text_system = Arc::clone(&text_system);
+        self.text_system = text_system;
+        Ok(())
+    }
+
     /// Create a single TestAppContext, for non-multi-client tests
     pub fn single() -> Self {
         let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));

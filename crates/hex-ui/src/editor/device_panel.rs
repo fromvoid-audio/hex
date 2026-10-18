@@ -39,6 +39,7 @@ mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
 mod gate_panel;
 mod navigation;
@@ -132,6 +133,7 @@ pub(super) struct DevicePanelState {
     operator_envelope_gestures:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
+    eq_spectrum: eq_panel::SpectrumSelection,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
@@ -445,6 +447,7 @@ pub(super) fn view(
         view.device_panel.selected_device = None;
         view.device_panel.generation = view.project_generation;
     }
+    reconcile_eq_spectrum(view);
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };

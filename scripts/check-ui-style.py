@@ -85,6 +85,8 @@ widgets = (
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
+    # Changelog body/group captions normalize text; the test paint probe has no label.
+    'self.changelog_group(', 'self.changelog_paint_probe(', 'notes)',
     'lights)', 'crate::build_info::label()', 'crate::build_info::editor_label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     # Device preset header actions reuse themed compact action buttons.
