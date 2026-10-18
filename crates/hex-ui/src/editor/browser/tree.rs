@@ -404,22 +404,20 @@ impl Tree {
     }
 
     fn refresh(&mut self) {
-        let visible: Vec<_> = self
-            .snapshot
-            .borrow()
-            .as_ref()
-            .map(|snapshot| {
-                snapshot
-                    .entries
-                    .iter()
-                    .filter(|entry| self.expanded.contains(&entry.path))
-                    .map(|entry| entry.path.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
+        // The rendered snapshot may be filtered or contain only indexed files.
+        // Refresh the already-bounded expansion set, retaining cached rows until
+        // each replacement arrives. Parents run first so removed branches retire
+        // their queued descendants before those descendants can start.
+        let mut expanded: Vec<_> = self.expanded.iter().cloned().collect();
+        expanded.sort_by(|left, right| {
+            left.components()
+                .count()
+                .cmp(&right.components().count())
+                .then_with(|| left.cmp(right))
+        });
         self.source_changed();
         self.status = None;
-        for path in visible {
+        for path in expanded {
             self.queue(path);
         }
     }

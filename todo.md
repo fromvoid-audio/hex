@@ -5105,3 +5105,14 @@ source repair and browser contract checks are recorded separately in Pulse2791.
 Dedicated merger owns final prospective full CI/integration/merge. Optimized native
 availability/query and unchanged audition/drag acceptance remain coordinator-owned;
 no installed app or user files changed during this source work.
+
+### inline-tree refresh of query-hidden expansions — pulse2728 / PR341
+
+Returned review PRRT_kwDOVB_C-s6trg4M reproduced on canonical29d97330: refresh during
+indexed search started zero folder requests; clearing the query restored a removed
+WAV despite a fresh sample index. Refresh now queues the bounded expanded-folder
+set parent-first, preserving cached rows, existing epochs/serials, one worker and
+all cache budgets. Actual disclosure/query/refresh/clear input has a red/green
+regression. Source patch is isolated against29; its historical full20 pass is
+preserved and does not qualify the new patch. Merger owns future prospective full
+CI/integration/merge; no native/app operations were performed.
