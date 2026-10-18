@@ -2,7 +2,7 @@
 use super::*;
 
 /// Exclusive publication operations. Swapping loans never swaps endpoint owners.
-/// The explicitly unqualified preparation closure remains outside closed-graph use.
+/// Preparation closures receive nonextracting typed operations, not the child owner.
 ///
 /// The concrete endpoint cannot be obtained through the loan.
 /// ```compile_fail
@@ -247,17 +247,27 @@ impl WorkerPublication<'_> {
             .bind_audio_candidate_preparation_domains(token, domains)
     }
 
-    /// Unqualified child loan: this closure can extract preparation owners.
-    /// This operation is excluded from closed-graph conservation qualification.
-    pub fn prepare_audio_candidate_on_control_unqualified(
+    /// Operate on the actual rooted child without exposing its owning value.
+    /// The host retains reservation, cancellation, refusal and cleanup custody.
+    /// A callback cannot retain the preparation loan beyond the guarded call.
+    /// ```compile_fail
+    /// use hex_audio::{AudioCandidatePreparationToken, prepared::WorkerPublication};
+    /// use hex_engine::AudioCandidatePreparationOperations;
+    /// fn escape<'a>(worker: &'a mut WorkerPublication<'_>, token: AudioCandidatePreparationToken) -> Option<AudioCandidatePreparationOperations<'a>> {
+    ///     let mut escaped = None;
+    ///     let _ = worker.prepare_audio_candidate_on_control(token, |operations| { escaped = Some(operations); Ok(()) });
+    ///     escaped
+    /// }
+    /// ```
+    pub fn prepare_audio_candidate_on_control(
         &mut self,
         token: crate::AudioCandidatePreparationToken,
         prepare: impl FnOnce(
-            &mut hex_engine::AudioCandidatePreparation,
+            hex_engine::AudioCandidatePreparationOperations<'_>,
         ) -> Result<(), hex_engine::AudioStorageError>,
     ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
         self.control
-            .prepare_audio_candidate_on_control(token, prepare)
+            .prepare_audio_candidate_on_control(token, |cell| prepare(cell.operations_on_control()))
     }
 
     pub fn stage_audio_candidate_preparation(
@@ -298,3 +308,6 @@ impl WorkerPublication<'_> {
         self.control.poll_resident_publication()
     }
 }
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod tests;

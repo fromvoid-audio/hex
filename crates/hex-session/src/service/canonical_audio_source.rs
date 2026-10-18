@@ -108,7 +108,7 @@ impl CanonicalAudioSourceSnapshot {
     pub fn prepare_candidate_on_control(
         &self,
         source_catalog_generation: u64,
-        destination: &mut hex_engine::AudioCandidatePreparation,
+        destination: &mut hex_engine::AudioCandidatePreparationOperations<'_>,
     ) -> Result<(), hex_engine::AudioStorageError> {
         destination.prepare_on_control(&self.project, source_catalog_generation, self.context)
     }

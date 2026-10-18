@@ -367,7 +367,7 @@ impl NativeAudioSink {
             let token = self.preparation.as_ref().map(|p| p.token);
             if token.is_some_and(|token| {
                 matches!(
-                    control.prepare_audio_candidate_on_control_unqualified(token, |_| Ok(())),
+                    control.prepare_audio_candidate_on_control(token, |_| Ok(())),
                     Err(reason) if reason != "candidate preparation is busy"
                 )
             }) {
@@ -603,30 +603,29 @@ impl NativeAudioSink {
             let record = pending
                 .domain
                 .and_then(|token| self.domains.iter().flatten().find(|d| d.token == token));
-            let prepared =
-                control.prepare_audio_candidate_on_control_unqualified(pending.token, |cell| {
-                    for (asset, source) in pending.snapshot.required_sources() {
-                        match source {
-                            AudioSourceBinding::Resident(audio) => {
-                                cell.copy_resident_source_on_control(asset, audio)?
-                            }
-                            AudioSourceBinding::VerifiedFile(_) => {
-                                let metadata = record
-                                    .and_then(|d| {
-                                        d.sources.metadata_for(hex_engine::StreamSourceKey::new(
-                                            pending.catalog,
-                                            asset,
-                                        ))
-                                    })
-                                    .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
-                                cell.add_streamed_source_on_control(metadata.clone())?;
-                            }
+            let prepared = control.prepare_audio_candidate_on_control(pending.token, |mut cell| {
+                for (asset, source) in pending.snapshot.required_sources() {
+                    match source {
+                        AudioSourceBinding::Resident(audio) => {
+                            cell.copy_resident_source_on_control(asset, audio)?
+                        }
+                        AudioSourceBinding::VerifiedFile(_) => {
+                            let metadata = record
+                                .and_then(|d| {
+                                    d.sources.metadata_for(hex_engine::StreamSourceKey::new(
+                                        pending.catalog,
+                                        asset,
+                                    ))
+                                })
+                                .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
+                            cell.add_streamed_source_on_control(metadata.clone())?;
                         }
                     }
-                    pending
-                        .snapshot
-                        .prepare_candidate_on_control(pending.catalog, cell)
-                });
+                }
+                pending
+                    .snapshot
+                    .prepare_candidate_on_control(pending.catalog, &mut cell)
+            });
             match prepared {
                 Ok(hex_audio::AudioCandidatePreparationProgress::Ready) => pending.built = true,
                 Err("candidate preparation is busy") => {

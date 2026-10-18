@@ -822,12 +822,18 @@ mutable payload access. Swapping loans does not swap endpoint Boxes, terminal
 associations, queues, Root or Status. Legacy unsplit Control remains a separately
 unqualified mutable path.
 
-The explicitly named prepare_audio_candidate_on_control_unqualified operation
-still lends the actual mutable AudioCandidatePreparation child to a closure.
-That permits safe child extraction/replacement and remains OUTSIDE closed-graph
-conservation qualification. Before supported graph use it requires a nonextracting
-preparation facade or concrete typed operations; the endpoint loan alone is not
-complete callback custody, child ownership or admission proof.
+The worker preparation callback now receives only an affine
+AudioCandidatePreparationOperations loan of the actual rooted child. Its explicit
+operations copy an existing legacy resident source, add streamed metadata, or
+prepare the existing project/context bridge; only the ready scalar identity is
+observable. No owner/bank/draft getter, cleanup, mutable concrete loan, Deref or
+Clone is exposed. The host keeps reservations, cancellation, refusal and terminal
+cleanup. This closes child replacement/extraction through the worker callback;
+legacy concrete PublicationControl and independently owned preparation APIs remain
+separately unqualified. The source-copy operation preserves the earlier legacy
+behavior; it is not original-resource adoption or a qualified Sampler PCM shortcut.
+The operations loan alone does not certify children, construction peak, complete
+callback custody, final publication or registry admission.
 
 The record covers the requested full Status Arc allocation and actual fixed
 route Box backing. Compile-exhaustive concrete leaf checks cover every Status,

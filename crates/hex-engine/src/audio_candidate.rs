@@ -3,6 +3,8 @@
 mod claimed;
 mod draft;
 mod preparation;
+mod preparation_operations;
+pub use preparation_operations::AudioCandidatePreparationOperations;
 mod reservation;
 pub use draft::AudioCandidateDraft;
 pub use preparation::AudioCandidatePreparation;
