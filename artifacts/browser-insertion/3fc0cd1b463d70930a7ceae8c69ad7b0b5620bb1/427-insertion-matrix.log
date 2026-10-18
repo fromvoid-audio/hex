@@ -1,0 +1,41 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0609]: no field `length` on type `std::option::Option<viewport::Viewport>`
+   --> crates/hex-ui/src/editor/browser_insert_ui_test.rs:261:27
+    |
+261 |             view.viewport.length = zoom;
+    |                           ^^^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+261 |             view.viewport.unwrap().length = zoom;
+    |                           +++++++++
+
+error[E0599]: no function or associated item named `new` found for struct `hex_project::TrackId` in the current scope
+   --> crates/hex-ui/src/editor/browser_insert_ui_test.rs:305:71
+    |
+305 |                 0 => view.selected_track = Some(hex_project::TrackId::new(u64::MAX)),
+    |                                                                       ^^^ function or associated item not found in `hex_project::TrackId`
+    |
+help: there is a method `ne` with a similar name
+    |
+305 -                 0 => view.selected_track = Some(hex_project::TrackId::new(u64::MAX)),
+305 +                 0 => view.selected_track = Some(hex_project::TrackId::ne(u64::MAX)),
+    |
+
+error[E0599]: no method named `main_track` found for struct `std::sync::Arc<hex_project::Project>` in the current scope
+   --> crates/hex-ui/src/editor/browser_insert_ui_test.rs:306:64
+    |
+306 |                 1 => view.selected_track = Some(before.project.main_track().id()),
+    |                                                                ^^^^^^^^^^
+    |
+help: there is a method `track` with a similar name, but with different arguments
+   --> crates/hex-project/src/lib.rs:651:5
+    |
+651 |     pub fn track(&self, id: TrackId) -> Option<&Track> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0599, E0609.
+For more information about an error, try `rustc --explain E0599`.
+error: could not compile `hex-ui` (lib test) due to 3 previous errors

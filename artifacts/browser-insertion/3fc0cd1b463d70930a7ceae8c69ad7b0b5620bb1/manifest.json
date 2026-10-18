@@ -1,0 +1,182 @@
+{
+  "ticket": 2821,
+  "canonical_pr": 427,
+  "head": "3fc0cd1b463d70930a7ceae8c69ad7b0b5620bb1",
+  "tree": "fdeccab6ceb3409963fd2392342f1429dcdb841d",
+  "expected_before": "c563ee05706e3757678bc4be734ba1849fc94c03",
+  "expected_before_tree": "3af82a4fc14d201060ccff101c855e8a0a1b7a35",
+  "changed_files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/insertion.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser_insert_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "commands": [
+    {
+      "name": "browser",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "browser",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/427-final-browser.log"
+    },
+    {
+      "name": "batch",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-session",
+        "--locked",
+        "batch",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/427-final-batch.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/427-final-clippy.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/427-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/427-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/427-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/427-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/427-final-diff.log"
+    }
+  ],
+  "original_red": {
+    "source": "c563ee05706e3757678bc4be734ba1849fc94c03",
+    "log": "427-original-no-track-red.log",
+    "outcome": "0PASS1FAIL actual rendered Enter -> real Service increased tracks2 to3 without selection",
+    "reproduction": "two original-test.patch files; new test snapshot has corrected imports; separate compile and nonexistent-feature command errors are NOT product RED evidence"
+  },
+  "results": {
+    "browser": "see427-final-browser.log; all101browser tests, including6new real input/worker cases and unchanged focus/audition/Place/tree/search/name cases",
+    "batch": "34 unit PASS + 3 integration PASS (2+1), zero failures; other integration binaries matched zero tests and are explicitly not coverage. Actual service/decode/import: queued cancellation/stale revision/context/final capacity/PCM/Undo/VerifiedStreaming.",
+    "clippy_guards": "strict UI all-targets ui-test-support Clippy -Dwarnings + architecture/GPUI/style/fmt/diff",
+    "full_ci": "not run; sole merger owns exact prospective candidate"
+  },
+  "diagnostics": {
+    "427-first-green.log": "compile only: palette enum Accent unavailable and old direct test method call remained; corrected to existing Primary palette + direct test call rename, removed now unused import",
+    "427-insertion-matrix.log": "test compile only: Option viewport and opaque TrackId/Main APIs assumed incorrectly; corrected fixture to actual worker RemoveTrack staleId, no selectedTrack for ineligible Main (Main has no regular TrackId)",
+    "427-insertion-matrix-2.log": "5PASS1FAIL naive fullProjectUndo equality expected monotonic ID allocator rollback; actual content restored, corrected content/assets/time maps+Redo assertion, no model fix",
+    "427-matrix-undo-candidate.rs": "initial failing Undo test snapshot; production reconstruct from query-guard candidate patch+insertion snapshot, use this test file",
+    "427-browser-green.log": "100PASS1FAIL initial broad query focus guard suppressed existing informational device Enter; guard narrowed to WaveAudio, no expected-device assertion weakened",
+    "427-query-guard-candidate.patch": "tracked diff on parent; pair with query-guard-insertion.rs at browser/insertion.rs and query-guard-test.rs at browser_insert_ui_test.rs to reconstruct that unpublished diagnostic candidate",
+    "427-pre-strengthening-browser-green.log": "101PASS before strengthening positive matching-WAV query/IME assertions; not claimed final source",
+    "427-query-fixture-empty.log": "100PASS1FAIL strengthened fixture correctly found empty All query has collapsed roots, not WAV; changed actual input to matching Loop query and asserted positive WAV before both Enter calls",
+    "427-query-fixture-empty-test.rs": "exact test snapshot for empty-query fixture failure; production same as final"
+  },
+  "limits": [
+    "No native optimized app/input/audio acceptance claimed",
+    "No full prospective CI or merge by source owner",
+    "Global no-overlap2822/428 remains Source6 scope, not completed by Enter route",
+    "Existing per-test caller-owned RAII directory kept until worker completion; broader414 shared Arc FS-job custody not implemented",
+    "400 opposite native click focus-loss remains separate unresolved"
+  ],
+  "payloads": {
+    "427-browser-green.log": "72530a6eb72d2047bc28da4f13113ca94072e5aa9e69b147fc2c44493c1bac4e",
+    "427-feature-command-error.log": "59ac025673f620cc0e5da458a8287cc323d99777763e55d3b9b40e134b4f5c61",
+    "427-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "427-final-batch.log": "994a6068e0eaec55c04dfd2c9792091d4612826348f7d307c9d86bb25bc7bc20",
+    "427-final-browser.log": "b8627cda451573c0f93ebf0441eae04a49fc93cad54b53726ed58d6500cb624c",
+    "427-final-checks.json": "9cfe3d82ec84427092f9ca516740a2907dbb6ae14e4d2a1c3bd926d1517259fc",
+    "427-final-clippy.log": "6308f15976f45e6c757c915f90573198e72ebfcbb3f420d44be8bd00f89e8a62",
+    "427-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "427-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "427-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "427-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "427-first-green.log": "bf32498199f1c4100edd2e3d4dbea7372f000aa33053460de77f77f7e9c2da52",
+    "427-insertion-matrix-2.log": "61a064f324f09b9e28ed7ad1f0880cc614c478fa6cace1651ceac0305ed21f6d",
+    "427-insertion-matrix.log": "9f25baf6bfca6957fca3afe5aa5b93e7298b34cc8abb434a5547143c06604764",
+    "427-matrix-undo-candidate.rs": "c92acb82c6711a02f5e7022be8a948aea8a6fc1901a928d27a34435fe3c671a0",
+    "427-no-track-green.log": "6ce0a4a9cc134d60e5f7c728bc69c53ffd0be8d9f420aa159be5d2b6c79ef442",
+    "427-original-compile.log": "48476b9611cdd3ff05e5e7b38957c033cfe4392b164411f0e3966d64ad8c0979",
+    "427-original-insertion-test.rs": "601d9c4b5ab27e49bb7d31b06d19491a84c4ab0aa585cb588855cbb41e03c872",
+    "427-original-no-track-red.log": "f069fe4cc817010d4745e18a5584533a8c92fc7de80f7dc7e48c44509846ed17",
+    "427-original-test-registration.rs": "d0acf7777da93a56f32f124c1182891aa8311d283e66159ecb71af5216085253",
+    "427-pre-strengthening-browser-green.log": "220818783742b1e1fe1b98ddaf09cb7d24b192df3b9f88aa58a14fdd7a66bd3c",
+    "427-query-fixture-empty-test.rs": "90a42dfa762ffb33340beee7bcd727761cc088bc48aa7ddab2968d54fdaf2eef",
+    "427-query-fixture-empty.log": "92ac30ae9bfcbc54d495cf0f74223184e4e3d7f8c84494722a30597bec728e5d",
+    "427-query-guard-candidate.patch": "9358f5153c352074d0b069f1c0c911d84e0a8ea696672f5d792c451a85be5b56",
+    "427-query-guard-insertion.rs": "8d1651a34447fdb6e2c75cc87b252820493a3e06b3f7e3828849d300a73a99c2",
+    "427-query-guard-test.rs": "b760a4f04b17c841029af2ea95f0651522f21140d37cb76ea0dfea8c0aa177f5",
+    "before-after-hashes.json": "281e53a5ebeb573b23260a0bf9f5a6f2176b5ff7ac2bfdf93b2b12ad8692e6dd",
+    "browser_insert_ui_test.rs.original-test.patch": "4840210d3244a83359c45f8d91786374820fbf85ab48c7e226c92486a709173a",
+    "browser_ui_test.rs.original-test.patch": "2ce17446e44f44e72d9de5046e6947544c476a825796054500824588baac84ee",
+    "integration-note.md": "9f28af303d946e408f224e4397320ef3e22b528fbaa554be7933e702cc50e572",
+    "native-checklist.md": "5b4ac9df4d1ce9ea7fabf280518da07bf315f9f3441781e78952652a25e9cf84",
+    "source.patch": "dfb664400e9b7652410ff81888e5f5db2251e712c1b2e6075c127a1d6e5d727c"
+  }
+}

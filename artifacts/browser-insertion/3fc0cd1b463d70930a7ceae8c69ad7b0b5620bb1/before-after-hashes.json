@@ -1,0 +1,44 @@
+{
+  "crates/hex-ui/src/editor/browser.rs": {
+    "before_git_blob": "b81fc69ea13aa7e0ad5eea919c5d1ec9f37980f5",
+    "before_sha256": "4db032bc681d805578d192ba55dd108eb07f7e04e39ac0bb06fd1dc18db2f520",
+    "after_git_blob": "50a35b92f50677a850088d8352ce7afa2003f931",
+    "after_sha256": "823ddf292cc08b2d49d04c2c722933eb2e8e2459cd239811c040c4abcc8fc3cb"
+  },
+  "crates/hex-ui/src/editor/browser/insertion.rs": {
+    "before_git_blob": null,
+    "before_sha256": null,
+    "after_git_blob": "cd22e7a10ae6e312b7c7c2ae4e56c27d88461e8b",
+    "after_sha256": "8d1651a34447fdb6e2c75cc87b252820493a3e06b3f7e3828849d300a73a99c2"
+  },
+  "crates/hex-ui/src/editor/browser/layout.rs": {
+    "before_git_blob": "5a7ed0981806716a1e2da4b436ca86172b8b9702",
+    "before_sha256": "cb5b147737f0ce97c988a436cc1626519bb18d731c6ff87876fd5f9a563bdebf",
+    "after_git_blob": "1fa38b3042fa9da619ed5086635c89e056ec3216",
+    "after_sha256": "eda5f529a40348a1926c002982d8ae9d088fbc96e93adbb5c694ade871dda839"
+  },
+  "crates/hex-ui/src/editor/browser_insert_ui_test.rs": {
+    "before_git_blob": null,
+    "before_sha256": null,
+    "after_git_blob": "a25d31366a916f74e9c874e15b3426b96dab65a2",
+    "after_sha256": "834dfa83e88f76d57229d221421289b836b31035507c565e64ea58d7420de679"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_git_blob": "e5e388259bb8fdebb668e04ffe6957c1938a2b38",
+    "before_sha256": "abe4e6e746e49898076d627110e5a3c6d966bda77ba3c644fdca3b7cb3071e75",
+    "after_git_blob": "854836e3a4065eacc58362b0fc02353d344e93a0",
+    "after_sha256": "7d13961555d5c2d4b3068196b09ffd63564e9fc9d31dd881f7b2bacd932264b5"
+  },
+  "docs/browser-places.md": {
+    "before_git_blob": "026f1d606e99b6e0301dbc97c606130a88961af3",
+    "before_sha256": "9c48a730738dc41ada6eba9d810039dfef9edb44d0f76437fe100429098492af",
+    "after_git_blob": "ea3ccba7205ec8d951647d0fc0a314bcba2f3512",
+    "after_sha256": "5f5dd6d388538335960f64d12adce2bc74ea9574cac8d4fa35075fefd9869eb7"
+  },
+  "todo.md": {
+    "before_git_blob": "344cbbaa1fc229d691c96eb9d6cf9e02d7f3de5c",
+    "before_sha256": "b4ede8db2c9501bd286d85b059c6b5bfcc91ad7b8f6ef849c67418121140f58b",
+    "after_git_blob": "0445f95df5549db3b5010a945d46040337c69655",
+    "after_sha256": "93dc8f02fc4bcbdf6f7dfe549d6001955d0fa4566e3a51025a0320d473e8fb73"
+  }
+}

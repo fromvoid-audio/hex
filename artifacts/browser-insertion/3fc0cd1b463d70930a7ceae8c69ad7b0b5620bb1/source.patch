@@ -1,0 +1,733 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index b81fc69e..50a35b92 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -1,10 +1,11 @@
+ //! Compact, bounded left-side media and project browser.
+ mod audition;
++mod insertion;
+ mod place_icons;
+ mod samples;
+ mod tree;
+ 
+-use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
++use super::{EditorView, browser_input::BrowserSearch, drag};
+ use crate::theme;
+ use gpui::{
+     App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+@@ -198,6 +199,7 @@ pub(super) struct BrowserState {
+     playback_in_flight: bool,
+     playback_pending: Option<PlaybackPreviewRequest>,
+     auto_audition: bool,
++    insert_quantized: bool,
+     playback_phase: Phase,
+     playback_output: Option<(u64, u64)>,
+     playback_path: Option<PathBuf>,
+@@ -281,6 +283,7 @@ impl BrowserState {
+             _search_observer: observer,
+             playback_generation: 0,
+             auto_audition: true,
++            insert_quantized: false,
+             playback_phase: Phase::Idle,
+             playback_output: None,
+             playback_path: None,
+@@ -1376,7 +1379,7 @@ impl EditorView {
+         cx.notify();
+     }
+ 
+-    pub(super) fn browser_activate(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
++    pub(super) fn browser_activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         if self.browser.section == BrowserSection::Instruments {
+             let count = self
+                 .state
+@@ -1401,7 +1404,19 @@ impl EditorView {
+         };
+         match entry.kind {
+             EntryKind::Directory => self.toggle_browser_folder(entry.path, false, cx),
+-            EntryKind::WaveAudio => self.import_browser_audio(entry.path),
++            EntryKind::WaveAudio => {
++                // Text/IME Enter must not import a sample. Non-file device activation
++                // keeps its existing informational action, independent of this guard.
++                if !self
++                    .browser
++                    .search
++                    .read(cx)
++                    .focus_handle()
++                    .is_focused(window)
++                {
++                    self.insert_browser_audio(entry.path, cx);
++                }
++            }
+             EntryKind::Project => self.open_browser_project(entry.path, cx),
+         }
+         cx.notify();
+@@ -2454,50 +2469,6 @@ impl EditorView {
+         .detach();
+     }
+ 
+-    fn import_browser_audio(&mut self, path: PathBuf) {
+-        if self.browser_place_unavailable() {
+-            return;
+-        }
+-        if self.mode == EditorMode::Session {
+-            let target = self.selected_cell.filter(|(track, scene)| {
+-                self.state.as_ref().is_some_and(|state| {
+-                    state.project.track(*track).is_some()
+-                        && state
+-                            .project
+-                            .scenes()
+-                            .iter()
+-                            .any(|item| item.id() == *scene)
+-                        && state.project.session_cell(*track, *scene).is_none()
+-                })
+-            });
+-            if let Some((track, scene)) = target {
+-                self.enqueue(Request::ImportToSession { path, track, scene });
+-                self.status = "importing sample into selected session cell".into();
+-                return;
+-            }
+-            self.set_mode(EditorMode::Arrangement);
+-            self.error = Some(
+-                "no empty audio session cell selected · imported sample shown in arrangement"
+-                    .into(),
+-            );
+-        }
+-        let target = self.selected_track.filter(|track| {
+-            self.state
+-                .as_ref()
+-                .is_some_and(|state| state.project.track(*track).is_some())
+-        });
+-        if let Some(track) = target {
+-            self.enqueue(Request::ImportToTrack {
+-                path,
+-                track,
+-                start: self.cursor_position(),
+-            });
+-            self.status = "importing sample to selected track".into();
+-        } else {
+-            self.enqueue(Request::Import(path));
+-        }
+-    }
+-
+     fn open_browser_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+         if self.browser_place_unavailable() {
+             return;
+diff --git a/crates/hex-ui/src/editor/browser/insertion.rs b/crates/hex-ui/src/editor/browser/insertion.rs
+new file mode 100644
+index 00000000..cd22e7a1
+--- /dev/null
++++ b/crates/hex-ui/src/editor/browser/insertion.rs
+@@ -0,0 +1,100 @@
++//! Enter captures one selected Arrangement target before bounded worker preparation.
++use super::super::{EditorMode, EditorView, musical_time::SnapGrid};
++use gpui::Context;
++use hex_session::import_batch::AudioBatchDestination;
++use hex_session::import_batch_decode::AudioBatchContext;
++use hex_session::service::Request;
++use std::path::PathBuf;
++
++impl EditorView {
++    pub(super) fn insert_browser_audio(&mut self, path: PathBuf, cx: &mut Context<Self>) {
++        let result = self.browser_insertion_request(path, cx);
++        match result {
++            Ok((request, control)) => {
++                // Capture metadata only. Decode and the canonical overwrite commit stay on
++                // the service worker; later UI selection/cursor changes cannot retarget it.
++                if self.enqueue(request) {
++                    self.audio_batch = Some(control);
++                    self.audio_batch_progress = None;
++                    self.error = None;
++                    self.poll_audio_batch();
++                }
++            }
++            Err(error) => self.error = Some(error.into()),
++        }
++        cx.notify();
++    }
++
++    fn browser_insertion_request(
++        &self,
++        path: PathBuf,
++        cx: &gpui::App,
++    ) -> Result<
++        (
++            Request,
++            std::sync::Arc<hex_session::import_batch_decode::AudioBatchControl>,
++        ),
++        String,
++    > {
++        if self.browser_place_unavailable() {
++            return Err("sample insertion refused · source is unavailable".into());
++        }
++        if self.mode != EditorMode::Arrangement {
++            return Err("sample insertion refused · select an arrangement track".into());
++        }
++        if self.opening_project
++            || self.close_prompt_open
++            || self.save_dialog_open
++            || self.export_dialog_open
++            || self.audio_batch.is_some()
++            || self.device_gesture.snapshot().is_some()
++            || self.device_gesture.has_pending_terminal()
++            || !self.device_gesture_barriers.is_empty()
++            || self.device_panel.has_pending_draft(cx)
++            || self.worker_requests_pending != 0
++            || !self.pending_requests.is_empty()
++            || self.active_clip_drag.is_some()
++            || self.active_browser_audio_drag.is_some()
++            || self.active_native_device_drag.is_some()
++        {
++            return Err("sample insertion refused · arrangement is busy".into());
++        }
++        let state = self
++            .state
++            .as_ref()
++            .ok_or("sample insertion refused · no project")?;
++        let track = self
++            .selected_track
++            .filter(|id| state.project.track(*id).is_some())
++            .ok_or("sample insertion refused · select an arrangement track")?;
++        let mut start = self.cursor_position();
++        if self.browser.insert_quantized {
++            if self.snap_grid == SnapGrid::Off {
++                return Err("sample insertion refused · enable the arrangement grid".into());
++            }
++            let lane = self
++                .main_track_lane_bounds
++                .filter(|lane| lane.width.is_finite() && lane.width > 0.0)
++                .filter(|_| self.main_track_lane_epoch == self.drag_layout_generation)
++                .ok_or("sample insertion refused · arrangement grid layout is not ready")?;
++            start = self
++                .snap_grid
++                .snap_frame(
++                    &state.project,
++                    start,
++                    self.visible_viewport(state.timeline_frames),
++                    lane.width,
++                )
++                .ok_or("sample insertion refused · cannot resolve arrangement grid")?;
++        }
++        Request::audio_batch(
++            vec![path],
++            AudioBatchDestination::Track { track, start },
++            AudioBatchContext {
++                project_generation: self.project_generation,
++                revision: state.revision,
++                active_gesture: false,
++            },
++        )
++    }
++}
+diff --git a/crates/hex-ui/src/editor/browser/layout.rs b/crates/hex-ui/src/editor/browser/layout.rs
+index 5a7ed098..1fa38b30 100644
+--- a/crates/hex-ui/src/editor/browser/layout.rs
++++ b/crates/hex-ui/src/editor/browser/layout.rs
+@@ -172,6 +172,21 @@ impl EditorView {
+                     }))
+                     .child(self.browser.search.clone()),
+             )
++            .child(
++                self.browser_icon(
++                    "⌗",
++                    "quantized sample input · nearest arrangement grid line · enter",
++                    |view, _, cx| {
++                        view.browser.insert_quantized = !view.browser.insert_quantized;
++                        cx.notify();
++                    },
++                    cx,
++                )
++                .debug_selector(|| "browser-insert-grid".to_owned())
++                .when(self.browser.insert_quantized, |button| {
++                    button.text_color(rgb(theme::color(theme::PaletteRole::Primary)))
++                }),
++            )
+             .child(self.browser_icon(
+                 "≡",
+                 "show or hide tag filters",
+diff --git a/crates/hex-ui/src/editor/browser_insert_ui_test.rs b/crates/hex-ui/src/editor/browser_insert_ui_test.rs
+new file mode 100644
+index 00000000..a25d3136
+--- /dev/null
++++ b/crates/hex-ui/src/editor/browser_insert_ui_test.rs
+@@ -0,0 +1,409 @@
++//! Real Enter routing into the canonical worker, using bounded private startup roots.
++use super::*;
++use hex_session::service::Request;
++
++fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, initial: bool) {
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    loop {
++        let done = editor.update(cx, |view, cx| {
++            if view.tick(cx) {
++                cx.notify();
++            }
++            if initial {
++                view.state.is_some()
++            } else {
++                view.worker_requests_pending == 0
++                    && view.pending_requests.is_empty()
++                    && view.audio_batch.is_none()
++            }
++        });
++        if done {
++            return;
++        }
++        assert!(
++            std::time::Instant::now() < deadline,
++            "sample insertion worker timed out"
++        );
++        std::thread::yield_now();
++    }
++}
++
++fn fixture(
++    cx: &mut TestAppContext,
++) -> (
++    gpui::AnyWindowHandle,
++    gpui::Entity<EditorView>,
++    PreferencesTestDirectory,
++    std::path::PathBuf,
++) {
++    cx.update(crate::editor::bind_editor_keys);
++    let directory = PreferencesTestDirectory::new();
++    let samples = directory.0.join("samples");
++    std::fs::create_dir_all(&samples).unwrap();
++    let path = samples.join("Loop.WAV");
++    std::fs::write(&path, mono_pcm_wav(24)).unwrap();
++    let handle = *cx.add_window(|_, _| Empty);
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.replace_root(cx, |window, cx| {
++                EditorView::new_for_test_with_browser_directory(
++                    window,
++                    cx,
++                    Service::new(48_000, 32, 8_000_000).unwrap(),
++                    &directory.0,
++                )
++            })
++        })
++        .unwrap();
++    editor.read_with(cx, |view, _| {
++        assert_eq!(view.browser.directory, samples);
++        assert_eq!(view.browser.places, vec![samples.clone()]);
++        assert_eq!(view.sample_roots(), vec![samples.clone()]);
++    });
++    receive_worker(&editor, cx, true);
++    for name in ["selected", "other"] {
++        editor.update(cx, |view, _| {
++            assert!(view.enqueue(Request::Edit(Command::AddTrack { name: name.into() })))
++        });
++        receive_worker(&editor, cx, false);
++    }
++    editor.update(cx, |view, cx| {
++        view.browser.auto_audition = false;
++        view.select_browser_source(BrowserSection::Place(samples), cx);
++    });
++    (handle, editor, directory, path)
++}
++
++#[gpui::test]
++fn browser_insert_no_selected_track_refuses_without_new_track(cx: &mut TestAppContext) {
++    let (handle, editor, _directory, path) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let row = visual.debug_bounds("browser-entry-0").unwrap();
++    visual.simulate_click(row.center(), Modifiers::default());
++    let before = editor.update(visual, |view, cx| {
++        assert_eq!(view.browser_visible_entries(cx)[0].path, path);
++        view.selected_track = None;
++        view.state.as_ref().unwrap().clone()
++    });
++    visual.simulate_keystrokes("enter");
++    receive_worker(&editor, cx, false);
++    editor.read_with(cx, |view, _| {
++        let after = view.state.as_ref().unwrap();
++        assert_eq!(
++            after.project.tracks().len(),
++            before.project.tracks().len(),
++            "Enter without selected track must not create a fallback track"
++        );
++        assert_eq!(after.revision, before.revision);
++        assert_eq!(after.project, before.project);
++        assert!(
++            view.error
++                .as_deref()
++                .is_some_and(|error| error.contains("select"))
++        );
++        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
++    });
++}
++
++fn select_sample(
++    editor: &gpui::Entity<EditorView>,
++    visual: &mut VisualTestContext,
++) -> hex_project::TrackId {
++    visual.run_until_parked();
++    let row = visual.debug_bounds("browser-entry-0").unwrap();
++    visual.simulate_click(row.center(), Modifiers::default());
++    editor.update(visual, |view, _| {
++        let track = view.state.as_ref().unwrap().project.tracks()[0].id();
++        view.selected_track = Some(track);
++        track
++    })
++}
++
++#[gpui::test]
++fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _directory, path) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    let track = select_sample(&editor, visual);
++    editor.update(visual, |view, _| view.offline_cursor = 100);
++    visual.simulate_keystrokes("enter");
++    // No worker response/tick has been consumed. Changing UI selection/cursor must
++    // not retarget the captured metadata even if the service has already decoded.
++    editor.update(visual, |view, _| {
++        assert_eq!(
++            view.last_enqueued_import_to_track,
++            Some((path.clone(), track, 100, true))
++        );
++        view.selected_track = Some(view.state.as_ref().unwrap().project.tracks()[1].id());
++        view.offline_cursor = 999;
++    });
++    receive_worker(&editor, cx, false);
++    let before = editor.update(cx, |view, _| {
++        let state = view.state.as_ref().unwrap();
++        assert_eq!(state.project.track(track).unwrap().clips()[0].start(), 100);
++        assert!(state.project.tracks()[1].clips().is_empty());
++        let clip = &state.project.track(track).unwrap().clips()[0];
++        assert_eq!(
++            state
++                .project
++                .assets()
++                .find(|asset| asset.id() == clip.asset())
++                .unwrap()
++                .path(),
++            path
++        );
++        view.selected_track = Some(track);
++        view.offline_cursor = 108;
++        state.project.clone()
++    });
++    visual.simulate_keystrokes("enter");
++    receive_worker(&editor, cx, false);
++    let after = editor.read_with(cx, |view, _| {
++        let state = view.state.as_ref().unwrap();
++        let clips = state.project.track(track).unwrap().clips();
++        assert_eq!(clips.len(), 2);
++        assert_eq!((clips[0].start(), clips[0].duration()), (100, 8));
++        assert_eq!((clips[1].start(), clips[1].duration()), (108, 24));
++        assert_eq!(clips[0].id(), before.track(track).unwrap().clips()[0].id());
++        assert_eq!(state.project.tracks()[1], before.tracks()[1]);
++        state.project.clone()
++    });
++    // One Undo restores the complete original source clip; Redo needs no file IO.
++    std::fs::remove_file(&path).unwrap();
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++    receive_worker(&editor, cx, false);
++    editor.read_with(cx, |view, _| {
++        let restored = &view.state.as_ref().unwrap().project;
++        // Canonical Undo deliberately keeps ID allocation monotonic.
++        assert_eq!(restored.tracks(), before.tracks());
++        assert_eq!(
++            restored.assets().collect::<Vec<_>>(),
++            before.assets().collect::<Vec<_>>()
++        );
++        assert_eq!(restored.tempo_map(), before.tempo_map());
++        assert_eq!(restored.meter_map(), before.meter_map());
++        assert!(view.state.as_ref().unwrap().can_redo);
++    });
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
++    receive_worker(&editor, cx, false);
++    editor.read_with(cx, |view, _| {
++        assert_eq!(view.state.as_ref().unwrap().project, after)
++    });
++}
++
++#[gpui::test]
++fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mode(
++    cx: &mut TestAppContext,
++) {
++    use crate::editor::musical_time::SnapGrid;
++    for (quantized, candidate, expected) in [
++        (false, 25_000, 25_000),
++        (true, 25_000, 24_000),
++        (true, 37_000, 48_000),
++    ] {
++        let (handle, editor, _directory, _path) = fixture(cx);
++        let visual = &mut VisualTestContext::from_window(handle, cx);
++        let track = select_sample(&editor, visual);
++        if quantized {
++            let toggle = visual.debug_bounds("browser-insert-grid").unwrap();
++            assert_eq!(f32::from(toggle.size.width), 22.0);
++            visual.simulate_click(toggle.center(), Modifiers::default());
++            select_sample(&editor, visual);
++        }
++        editor.update(visual, |view, _| {
++            assert_eq!(view.browser.insert_quantized, quantized);
++            view.snap_grid = SnapGrid::Quarter;
++            view.offline_cursor = candidate;
++        });
++        visual.simulate_keystrokes("enter");
++        editor.update(visual, |view, _| {
++            assert_eq!(
++                view.last_enqueued_import_to_track.as_ref().unwrap().2,
++                expected
++            );
++            view.snap_grid = SnapGrid::Off;
++            view.browser.insert_quantized = !quantized;
++            view.offline_cursor = 123_456;
++        });
++        receive_worker(&editor, cx, false);
++        editor.read_with(cx, |view, _| {
++            assert_eq!(
++                view.state
++                    .as_ref()
++                    .unwrap()
++                    .project
++                    .track(track)
++                    .unwrap()
++                    .clips()[0]
++                    .start(),
++                expected
++            )
++        });
++    }
++}
++
++#[gpui::test]
++fn browser_insert_adaptive_grid_uses_tempo_meter_and_current_viewport(cx: &mut TestAppContext) {
++    use crate::editor::musical_time::SnapGrid;
++    for zoom in [48_000, 1_500_000] {
++        let (handle, editor, _directory, _path) = fixture(cx);
++        for command in [
++            Command::SetTempoPoint {
++                beat: hex_project::BeatTime::ZERO,
++                tempo: hex_project::Tempo::new(60_000_000).unwrap(),
++            },
++            Command::SetMeterPoint {
++                beat: hex_project::BeatTime::ZERO,
++                meter: hex_project::Meter::new(3, 4).unwrap(),
++            },
++        ] {
++            editor.update(cx, |view, _| assert!(view.enqueue(Request::Edit(command))));
++            receive_worker(&editor, cx, false);
++        }
++        let visual = &mut VisualTestContext::from_window(handle, cx);
++        let track = select_sample(&editor, visual);
++        let expected = editor.update(visual, |view, _| {
++            view.browser.insert_quantized = true;
++            view.snap_grid = SnapGrid::Adaptive;
++            view.viewport = Some(crate::editor::Viewport {
++                start: 0,
++                length: zoom,
++            });
++            view.offline_cursor = 49_000;
++            let state = view.state.as_ref().unwrap();
++            let lane = view.main_track_lane_bounds.unwrap();
++            view.snap_grid
++                .snap_frame(
++                    &state.project,
++                    49_000,
++                    view.visible_viewport(state.timeline_frames),
++                    lane.width,
++                )
++                .unwrap()
++        });
++        assert_ne!(expected, 49_000);
++        visual.simulate_keystrokes("enter");
++        receive_worker(&editor, cx, false);
++        editor.read_with(cx, |view, _| {
++            assert_eq!(
++                view.state
++                    .as_ref()
++                    .unwrap()
++                    .project
++                    .track(track)
++                    .unwrap()
++                    .clips()[0]
++                    .start(),
++                expected
++            )
++        });
++    }
++}
++
++#[gpui::test]
++fn browser_insert_refuses_stale_target_busy_session_grid_and_missing_file_atomically(
++    cx: &mut TestAppContext,
++) {
++    use crate::editor::musical_time::SnapGrid;
++    for refusal in 0..8 {
++        let (handle, editor, _directory, path) = fixture(cx);
++        let visual = &mut VisualTestContext::from_window(handle, cx);
++        let track = select_sample(&editor, visual);
++        if refusal == 0 {
++            editor.update(visual, |view, _| {
++                assert!(view.enqueue(Request::Edit(Command::RemoveTrack(track))))
++            });
++            receive_worker(&editor, cx, false);
++        }
++        let before = editor.update(visual, |view, _| {
++            let before = view.state.as_ref().unwrap().clone();
++            match refusal {
++                0 => view.selected_track = Some(track),
++                1 => view.selected_track = None,
++                2 => view.opening_project = true,
++                3 => view.mode = crate::editor::EditorMode::Session,
++                4 => {
++                    view.browser.insert_quantized = true;
++                    view.snap_grid = SnapGrid::Off;
++                }
++                5 => {
++                    view.browser.insert_quantized = true;
++                    view.drag_layout_generation = view.drag_layout_generation.wrapping_add(1);
++                }
++                6 => std::fs::remove_file(&path).unwrap(),
++                7 => view.project_generation = view.project_generation.wrapping_add(1),
++                _ => unreachable!(),
++            }
++            before
++        });
++        visual.simulate_keystrokes("enter");
++        receive_worker(&editor, cx, false);
++        editor.read_with(cx, |view, _| {
++            assert_eq!(
++                view.state.as_ref().unwrap().project,
++                before.project,
++                "refusal {refusal}"
++            );
++            assert_eq!(
++                view.state.as_ref().unwrap().revision,
++                before.revision,
++                "refusal {refusal}"
++            );
++            assert!(view.error.is_some(), "refusal {refusal}");
++        });
++    }
++}
++
++#[gpui::test]
++fn browser_insert_enter_in_query_cannot_enqueue_sample_or_commit_ime(cx: &mut TestAppContext) {
++    let (handle, editor, _directory, _path) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    select_sample(&editor, visual);
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("Loop");
++    visual.run_until_parked();
++    let before = editor.read_with(visual, |view, cx| {
++        assert!(
++            view.browser_visible_entries(cx)
++                .iter()
++                .any(|entry| entry.kind == hex_library::EntryKind::WaveAudio)
++        );
++        view.state.as_ref().unwrap().clone()
++    });
++    visual.simulate_keystrokes("enter");
++    receive_worker(&editor, cx, false);
++    editor.read_with(cx, |view, _| {
++        assert!(view.last_enqueued_import_to_track.is_none())
++    });
++    use gpui::EntityInputHandler;
++    visual.update(|window, cx| {
++        let input = editor.read(cx).browser.search.clone();
++        input.update(cx, |input, cx| {
++            input.replace_and_mark_text_in_range(Some(0..4), "Loop", Some(1..1), window, cx);
++            assert_eq!(input.marked_text_range(window, cx), Some(0..4));
++        });
++    });
++    visual.run_until_parked();
++    editor.read_with(visual, |view, cx| {
++        assert!(
++            view.browser_visible_entries(cx)
++                .iter()
++                .any(|entry| entry.kind == hex_library::EntryKind::WaveAudio)
++        )
++    });
++    visual.simulate_keystrokes("enter");
++    visual.update(|window, cx| {
++        let input = editor.read(cx).browser.search.clone();
++        input.update(cx, |input, cx| {
++            assert_eq!(input.marked_text_range(window, cx), Some(0..4))
++        });
++    });
++    receive_worker(&editor, cx, false);
++    editor.read_with(cx, |view, _| {
++        assert_eq!(view.state.as_ref().unwrap().project, before.project);
++        assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
++        assert!(view.last_enqueued_import_to_track.is_none());
++    });
++}
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index e5e38825..854836e3 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4025,7 +4025,7 @@ fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
+             view.browser.playback_generation, generation,
+             "old waveform callback admitted stale preview"
+         );
+-        view.import_browser_audio(path.clone());
++        view.insert_browser_audio(path.clone(), cx);
+         assert!(
+             view.last_enqueued_import_to_track.is_none(),
+             "old result callback admitted stale import"
+@@ -4622,3 +4622,6 @@ mod search_selection;
+ 
+ #[path = "browser_focus_ui_test.rs"]
+ mod explicit_focus;
++
++#[path = "browser_insert_ui_test.rs"]
++mod insertion;
+diff --git a/docs/browser-places.md b/docs/browser-places.md
+index 026f1d60..ea3ccba7 100644
+--- a/docs/browser-places.md
++++ b/docs/browser-places.md
+@@ -202,3 +202,30 @@ value edit. Knob reset and nonediting numeric adjustment remain separate gesture
+ Rendered tests exercise actual down/up click counts, partial/drag/release,
+ filesystem worker/tick/resize updates, Unicode composition and empty text. Native
+ physical mouse/IME/accessibility acceptance remains coordinator-owned and open.
++
++## selected-track sample input — pulse2821 / PR427
++
++Enter on a selected sample in browser navigation inserts into the selected regular
++Arrangement TrackId at the current edit/playback cursor. It refuses visibly when
++no valid track is selected, the Arrangement is busy, or Session is active; it never
++falls back to a hovered, default or new track. Enter while editing the query,
++including IME composition, does not insert a sample. Explicit drag/drop remains
++independent, and result double-click still does not import.
++
++The compact grid icon in the browser toolbar toggles quantized sample input. It
++starts off for each editor and survives browser close/reopen and source changes.
++When enabled, input snaps to the **nearest** active Arrangement grid line using
++the same tempo, meter and adaptive zoom resolver as Arrangement snapping. A disabled
++grid or stale/unavailable timeline geometry causes a visible refusal. With input
++quantization off, the original frame position is retained.
++
++Invocation captures the native sample path, selected TrackId, resolved frame,
++document generation and revision before worker preparation. Selection/cursor/grid
++changes cannot retarget that request. The existing bounded audio batch controller
++handles cancellation, stale contexts, errors and one canonical overwrite/history
++commit; decode and graph preparation stay off the UI/audio callback. Same-track
++source fragments remain intact outside the inserted interval, and one Undo restores
++the preceding clip content (ID allocation remains monotonic). This Enter route
++reuses the canonical overwrite entrypoint; global no-overlap coverage across other
++entrypoints remains issue2822/PR428. Optimized native input/audio acceptance remains
++separate from headless input and real-worker checks.
+diff --git a/todo.md b/todo.md
+index 344cbbaa..0445f95d 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5202,3 +5202,12 @@ Focused source tests cover real click pairs, rapid pairs, partial drag/release,
+ workers/window resize, composition and empty text. Frozen426+returned7c4d is a
+ material input dependency, not new main integration. Sole merger owns final
+ prospective full CI/integration; native physical mouse/IME acceptance stays open.
++
++- 18 October 2026 — Pulse2821 / PR427: browser sample Enter captures a valid selected
++  Arrangement TrackId/native path/cursor/document context and uses existing atomic
++  batch overwrite; no new-track fallback. Compact session-local quantized-input
++  toggle resolves nearest active Arrangement grid, preserving ordinary unquantized
++  input; text/IME sample Enter is isolated. Original real-worker no-target regression
++  reproduced two tracks becoming three; targeted input/worker/refusal/nearest-grid/
++  overwrite/Undo tests added. Source6 owns broader2822 global occupancy planner;
++  final integration/full local CI belongs to sole merger and native acceptance is open.

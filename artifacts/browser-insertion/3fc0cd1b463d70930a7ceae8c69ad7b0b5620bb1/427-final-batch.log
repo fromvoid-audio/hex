@@ -1,0 +1,134 @@
+   Compiling serde_json v1.0.151
+   Compiling fs2 v0.4.3
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.58s
+     Running unittests src/lib.rs (target/debug/deps/hex_session-b2894b41f4ccea91)
+
+running 34 tests
+test import_batch::tests::empty_batch_refuses_without_history ... ok
+test import_batch::tests::actual_unregistered_device_compile_failure_commits_no_batch ... ok
+test import_batch::tests::duplicate_foreign_paths_are_not_deduplicated_and_pcm_association_is_ordered ... ok
+test import_batch::tests::metadata_failure_at_end_and_overflow_preserve_candidate_ids_and_redo ... ok
+test import_batch::tests::budget_includes_undo_media_and_later_member_refuses_atomically ... ok
+test import_batch::tests::ordered_tracks_pcm_paths_and_whole_batch_undo_redo_without_files ... ok
+test import_batch::tests::lane_concatenation_uses_converted_lengths_and_existing_overwrite ... ok
+test import_batch::tests::stale_snapshot_and_admission_cancellation_or_gesture_refusal_are_atomic ... ok
+test import_batch::tests::track_capacity_and_waveform_overflow_refuse_atomically ... ok
+test import_batch::tests::unsupported_metadata_in_middle_or_end_never_imports_other_members ... ok
+test import_batch_decode::tests::admission_rejects_empty_oversized_and_busy_payloads_without_io ... ok
+test import_batch_decode::tests::cancel_request_is_observed_after_decode_and_conversion_boundaries ... ok
+test import_batch_decode::tests::aggregate_budget_counts_retained_undo_media_and_converted_lengths ... ok
+test import_batch_decode::tests::cancellation_and_commit_arbitration_have_one_winner ... ok
+test import_batch_decode::tests::cancellation_before_io_between_members_and_after_compile_never_commits ... ok
+test import_batch_decode::tests::generation_revision_gesture_and_actual_project_changes_refuse ... ok
+test import_batch_decode::tests::real_compile_failure_drops_staged_batch_and_preserves_history ... ok
+test import_batch_decode::tests::one_file_matches_existing_worker_decode_and_single_import ... ok
+test import_batch::tests::single_file_equivalent_to_existing_methods_for_both_destinations ... ok
+test import_batch_decode::tests::real_lane_batch_and_duplicate_payload_preserve_existing_placement_contract ... ok
+test import_batch_decode::tests::unsupported_middle_and_end_and_missing_paths_refuse_whole_batch ... ok
+test import_batch_decode::tests::real_ordered_mixed_rate_import_progress_paths_and_undo_redo_without_reopen ... ok
+test resident_pcm::tests::identity_aliases_share_one_buffer_across_batch_and_loaded_assets ... ok
+test import_batch::tests::exact_overwrite_fragment_limit_refuses_without_media_or_history_commit ... ok
+test service::audio_batch_tests::additive_batch_preserves_target_identity_and_cancels_the_old_keyboard_lease_on_publication ... ok
+test service::audio_batch_tests::worker_bad_middle_or_end_never_publishes_partial_media_dirty_or_playback ... ok
+test service::audio_batch_tests::queued_cancel_and_stale_context_refuse_before_import_and_complete_correlated ... ok
+test service::audio_batch_tests::worker_conversion_failure_retains_mixed_case_source_without_history_or_media ... ok
+test resident_pcm::tests::batch_union_refuses_atomically_and_session_cells_retain_original_rate ... ok
+test service::verified_source_tests::invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_adoption ... ok
+test service::audio_batch_tests::worker_batch_publishes_one_revision_playable_ordered_pcm_and_one_undo ... ok
+test service::audio_batch_tests::worker_gesture_refusal_keeps_active_gesture_and_current_project ... ok
+test import_batch_decode::tests::sparse_oversized_actual_files_enforce_file_and_source_frame_limits ... ok
+test service::verified_source_tests::verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_epoch_and_bounds ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.13s
+
+     Running tests/gain_lane.rs (target/debug/deps/gain_lane-cf1498f669c7ad6f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/gain_recording.rs (target/debug/deps/gain_recording-b1d09106a067fe29)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/host_gain.rs (target/debug/deps/host_gain-176a575fc14442cf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/midi_admission.rs (target/debug/deps/midi_admission-b631215d7aecc87c)
+
+running 2 tests
+test batch_note_admission_commits_once_and_rejects_density_without_publication ... ok
+test batch_onset_budget_rejection_keeps_dirty_revision_redo_and_project ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.03s
+
+     Running tests/midi_workflow.rs (target/debug/deps/midi_workflow-aeca31969a94dd67)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/operator_presets.rs (target/debug/deps/operator_presets-7e7670c0cc160ba0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/operator_seek.rs (target/debug/deps/operator_seek-2cd32d81c7efc965)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/prepared_batch_routing.rs (target/debug/deps/prepared_batch_routing-f9375941a7ccc90d)
+
+running 1 test
+test invalid_public_batches_never_prepare_or_replace_continuing_valid_audio ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/project_recovery.rs (target/debug/deps/project_recovery-87830a6b4d44321a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/returns.rs (target/debug/deps/returns-a360c13d34baf09e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/scene_editing.rs (target/debug/deps/scene_editing-33a4a60b4e3cb337)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/service.rs (target/debug/deps/service-432cef91ddf21303)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+     Running tests/session.rs (target/debug/deps/session-913dfd3db4d3f5e6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/session_workflow.rs (target/debug/deps/session_workflow-608d1eac1968a984)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+

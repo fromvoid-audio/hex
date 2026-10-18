@@ -1,0 +1,44 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0425]: cannot find value `bind_editor_keys` in module `super::super`
+  --> crates/hex-ui/src/editor/browser_insert_ui_test.rs:18:29
+   |
+18 |     cx.update(super::super::bind_editor_keys);
+   |                             ^^^^^^^^^^^^^^^^ not found in `super::super`
+   |
+help: consider importing this function
+   |
+ 2 + use crate::editor::bind_editor_keys;
+   |
+help: if you import `bind_editor_keys`, refer to it directly
+   |
+18 -     cx.update(super::super::bind_editor_keys);
+18 +     cx.update(bind_editor_keys);
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `Request`
+  --> crates/hex-ui/src/editor/browser_insert_ui_test.rs:29:56
+   |
+29 |         editor.update(cx,|view,_| assert!(view.enqueue(Request::Edit(Command::AddTrack{name:name.into()}))));
+   |                                                        ^^^^^^^ use of undeclared type `Request`
+   |
+note: struct `crate::editor::browser::tree::Request` exists but is inaccessible
+  --> crates/hex-ui/src/editor/browser/tree.rs:19:1
+   |
+19 | struct Request {
+   | ^^^^^^^^^^^^^^ not accessible
+help: consider importing one of these items
+   |
+ 2 + use crate::editor::Request;
+   |
+ 2 + use std::error::Request;
+   |
+ 2 + use hex_session::service::Request;
+   |
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `hex-ui` (lib test) due to 2 previous errors

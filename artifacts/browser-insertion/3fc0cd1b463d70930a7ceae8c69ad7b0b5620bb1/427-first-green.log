@@ -1,0 +1,37 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+warning: unused import: `EditorMode`
+ --> crates/hex-ui/src/editor/browser.rs:8:13
+  |
+8 | use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
+  |             ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0599]: no variant or associated item named `Accent` found for enum `theme::PaletteRole` in the current scope
+   --> crates/hex-ui/src/editor/browser/layout.rs:187:76
+    |
+187 |                     button.text_color(rgb(theme::color(theme::PaletteRole::Accent)))
+    |                                                                            ^^^^^^ variant or associated item not found in `theme::PaletteRole`
+    |
+   ::: crates/hex-ui/src/theme.rs:18:1
+    |
+ 18 | pub enum PaletteRole {
+    | -------------------- variant or associated item `Accent` not found for this enum
+
+error[E0599]: no method named `import_browser_audio` found for mutable reference `&mut editor::EditorView` in the current scope
+    --> crates/hex-ui/src/editor/browser_ui_test.rs:4028:14
+     |
+4028 |         view.import_browser_audio(path.clone());
+     |              ^^^^^^^^^^^^^^^^^^^^
+     |
+help: there is a method `insert_browser_audio` with a similar name, but with different arguments
+    --> crates/hex-ui/src/editor/browser/insertion.rs:10:5
+     |
+  10 |     pub(super) fn insert_browser_audio(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `hex-ui` (lib test) generated 1 warning
+error: could not compile `hex-ui` (lib test) due to 2 previous errors; 1 warning emitted

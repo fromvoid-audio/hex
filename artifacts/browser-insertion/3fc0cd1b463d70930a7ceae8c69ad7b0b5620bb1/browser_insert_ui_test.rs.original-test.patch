@@ -1,0 +1,58 @@
+--- /dev/null
++++ b/crates/hex-ui/src/editor/browser_insert_ui_test.rs
+@@ -0,0 +1,55 @@
++//! Real Enter routing into the canonical worker, using bounded private startup roots.
++use super::*;
++use hex_session::service::Request;
++
++fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, initial: bool) {
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    loop {
++        let done = editor.update(cx, |view, cx| {
++            if view.tick(cx) { cx.notify(); }
++            if initial {view.state.is_some()} else {view.worker_requests_pending == 0 && view.pending_requests.is_empty() && view.audio_batch.is_none()}
++        });
++        if done {return;}
++        assert!(std::time::Instant::now() < deadline,"sample insertion worker timed out");
++        std::thread::yield_now();
++    }
++}
++
++fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle,gpui::Entity<EditorView>,PreferencesTestDirectory,std::path::PathBuf) {
++    cx.update(crate::editor::bind_editor_keys);
++    let directory = PreferencesTestDirectory::new();
++    let samples = directory.0.join("samples");
++    std::fs::create_dir_all(&samples).unwrap();
++    let path = samples.join("Loop.WAV");
++    std::fs::write(&path,mono_pcm_wav(24)).unwrap();
++    let handle = *cx.add_window(|_,_| Empty);
++    let editor = cx.update_window(handle,|_,window,cx| window.replace_root(cx,|window,cx| EditorView::new_for_test_with_browser_directory(window,cx,Service::new(48_000,32,8_000_000).unwrap(),&directory.0))).unwrap();
++    editor.read_with(cx,|view,_| {assert_eq!(view.browser.directory,samples);assert_eq!(view.browser.places,vec![samples.clone()]);assert_eq!(view.sample_roots(),vec![samples.clone()]);});
++    receive_worker(&editor,cx,true);
++    for name in ["selected","other"] {
++        editor.update(cx,|view,_| assert!(view.enqueue(Request::Edit(Command::AddTrack{name:name.into()}))));
++        receive_worker(&editor,cx,false);
++    }
++    editor.update(cx,|view,cx| {view.browser.auto_audition=false;view.select_browser_source(BrowserSection::Place(samples),cx);});
++    (handle,editor,directory,path)
++}
++
++#[gpui::test]
++fn browser_insert_no_selected_track_refuses_without_new_track(cx: &mut TestAppContext) {
++    let (handle,editor,_directory,path)=fixture(cx);
++    let visual=&mut VisualTestContext::from_window(handle,cx);
++    visual.run_until_parked();
++    let row=visual.debug_bounds("browser-entry-0").unwrap();
++    visual.simulate_click(row.center(),Modifiers::default());
++    let before=editor.update(visual,|view,cx| {assert_eq!(view.browser_visible_entries(cx)[0].path,path);view.selected_track=None;view.state.as_ref().unwrap().clone()});
++    visual.simulate_keystrokes("enter");
++    receive_worker(&editor,cx,false);
++    editor.read_with(cx,|view,_| {
++        let after=view.state.as_ref().unwrap();
++        assert_eq!(after.project.tracks().len(),before.project.tracks().len(),"Enter without selected track must not create a fallback track");
++        assert_eq!(after.revision,before.revision);
++        assert_eq!(after.project,before.project);
++        assert!(view.error.as_deref().is_some_and(|error| error.contains("select")));
++        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
++    });
++}

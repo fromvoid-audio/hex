@@ -1,0 +1,11 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.23s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+test editor::browser::ui_test::insertion::browser_insert_no_selected_track_refuses_without_new_track ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 762 filtered out; finished in 0.56s
+

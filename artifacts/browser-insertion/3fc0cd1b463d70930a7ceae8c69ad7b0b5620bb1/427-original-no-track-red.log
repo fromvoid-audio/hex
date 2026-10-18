@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.99s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::browser::ui_test::insertion::browser_insert_no_selected_track_refuses_without_new_track' (96495) panicked at crates/hex-ui/src/editor/browser_insert_ui_test.rs:49:9:
+assertion `left == right` failed: Enter without selected track must not create a fallback track
+  left: 3
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::insertion::browser_insert_no_selected_track_refuses_without_new_track ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::insertion::browser_insert_no_selected_track_refuses_without_new_track
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 762 filtered out; finished in 0.62s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
