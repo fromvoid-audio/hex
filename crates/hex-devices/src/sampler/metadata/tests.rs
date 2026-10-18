@@ -556,3 +556,63 @@ fn compound_bounds_preserve_slice_markers_and_refuse_invalid_final_geometry_with
             .is_err()
     );
 }
+
+#[test]
+fn sampler_lfo_controls_roundtrip_borrowed_state_replacement_and_strict_current_format() {
+    let original = loaded();
+    let mut native = original.clone();
+    let controls = [
+        (LFO_ENABLED, ParameterValue::Bool(true)),
+        (LFO_WAVEFORM, ParameterValue::Choice(4)),
+        (LFO_SYNC, ParameterValue::Bool(true)),
+        (LFO_RATE, ParameterValue::Float(0.01)),
+        (LFO_DIVISION, ParameterValue::Choice(8)),
+        (LFO_RETRIGGER, ParameterValue::Bool(false)),
+        (LFO_AMPLITUDE, ParameterValue::Float(100.0)),
+        (LFO_PAN, ParameterValue::Float(75.0)),
+    ];
+    for (id, value) in controls {
+        native = METADATA.patch_parameter(&native, id, value).unwrap();
+        assert_eq!(METADATA.read_parameter(&native, id).unwrap(), value);
+    }
+    let authored = SamplerState::from_native(&native).unwrap();
+    let read = super::super::state::SamplerStateRead::from_native(&native).unwrap();
+    assert_eq!(read.modulation(), authored.modulation);
+    let reopened = authored.replace_in(&native).unwrap();
+    assert_eq!(reopened, native);
+    for mode in [1, 2, 0] {
+        native = METADATA
+            .patch_parameter(&native, MODE, ParameterValue::Choice(mode))
+            .unwrap();
+        assert_eq!(
+            SamplerState::from_native(&native).unwrap().modulation,
+            authored.modulation
+        );
+    }
+    let replaced = super::super::state::replacement_state_on_control(&native, 8).unwrap();
+    assert_eq!(
+        SamplerState::from_native(&replaced).unwrap().modulation,
+        authored.modulation
+    );
+    assert!(replaced.shares_asset_reference_storage_with(&original));
+    assert_eq!(
+        replaced.output_gain_millidb(),
+        original.output_gain_millidb()
+    );
+    for (id, value) in [
+        (LFO_RATE, ParameterValue::Float(f32::NAN)),
+        (LFO_RATE, ParameterValue::Float(0.0)),
+        (LFO_RATE, ParameterValue::Float(100.01)),
+        (LFO_PAN, ParameterValue::Float(100.01)),
+        (LFO_WAVEFORM, ParameterValue::Choice(5)),
+        (LFO_DIVISION, ParameterValue::Choice(9)),
+    ] {
+        assert!(METADATA.patch_parameter(&native, id, value).is_err());
+    }
+    let mut bytes = native.payload().to_vec();
+    bytes[112 + super::super::filter::BYTES] = 2;
+    assert!(
+        SamplerState::from_native(&NativeDeviceState::new(TYPE_ID, STATE_VERSION, bytes).unwrap())
+            .is_err()
+    );
+}

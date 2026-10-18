@@ -9,6 +9,38 @@ pub fn sampler_clean_filter_runtime_for_allocation_probe(
     view: hex_lattice::DeviceResourceView<'_>,
     output_rate: u32,
 ) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, hex_devices::Invalid> {
+    filtered_sampler_fixture(
+        view,
+        output_rate,
+        hex_devices::sampler::ModulationSettings::default(),
+    )
+}
+/// Actual enabled amplitude/pan LFO and clean filter; headless allocation only.
+pub fn sampler_modulated_runtime_for_allocation_probe(
+    view: hex_lattice::DeviceResourceView<'_>,
+    output_rate: u32,
+) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, hex_devices::Invalid> {
+    use hex_devices::sampler::metadata::parameter::*;
+    use hex_lattice_contract::ParameterValue;
+    let mut modulation = hex_devices::sampler::ModulationSettings::default();
+    for (id, value) in [
+        (LFO_ENABLED, ParameterValue::Bool(true)),
+        (LFO_WAVEFORM, ParameterValue::Choice(1)),
+        (LFO_RATE, ParameterValue::Float(100.0)),
+        (LFO_AMPLITUDE, ParameterValue::Float(100.0)),
+        (LFO_PAN, ParameterValue::Float(50.0)),
+    ] {
+        modulation
+            .patch_parameter(id, value)
+            .map_err(|_| hex_devices::Invalid("sampler modulation allocation fixture refused"))?;
+    }
+    filtered_sampler_fixture(view, output_rate, modulation)
+}
+fn filtered_sampler_fixture(
+    view: hex_lattice::DeviceResourceView<'_>,
+    output_rate: u32,
+    modulation: hex_devices::sampler::ModulationSettings,
+) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, hex_devices::Invalid> {
     use hex_devices::sampler::{
         metadata::parameter,
         state::{AuthoredMode, SamplerState},
@@ -20,6 +52,7 @@ pub fn sampler_clean_filter_runtime_for_allocation_probe(
         loop_region: Some(state.region),
     };
     state.voices = 4;
+    state.modulation = modulation;
     state
         .filter
         .patch_parameter(parameter::FILTER_ENABLED, ParameterValue::Bool(true))

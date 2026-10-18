@@ -615,7 +615,7 @@ musical workflow above remain the deliverable.
 
 ## clean sampler filter
 
-Sampler's current authored format is version3. It adds bounded clean filter
+Sampler's current authored format is version4. It retains bounded clean filter
 settings to version2's controls; historical alpha payloads are explicitly refused
 rather than converted. Current read/patch/save and source replacement preserve
 the filter, source binding and host gains. Empty devices still have no invented
@@ -646,3 +646,39 @@ and malformed/unsupported input. A filtered Mono/Stereo128-query actual pair pro
 compares an independent PCM oracle and measures total/net allocation/free zero.
 This is DSP/state evidence, not native listening, implemented panel, filter-envelope
 or LFO modulation, live parameter smoothing, registered host or graph admission.
+
+## amplitude and pan lfo
+
+Current format4 appends eight validated LFO controls without a historical-alpha
+reader: enable, waveform, free/sync, rate, beat division, retrigger, amplitude
+and pan depth. The five shapes reuse Hex's existing deterministic modulation
+waveforms. The original default is disabled and preserves the prior sound.
+Free rate is0.01..100hz; sync divisions are1/16..16 quarter-note beats per cycle.
+Amplitude depth0..100% attenuates to `(1 + wave)/2` at full depth; pan depth is
+additional linear stereo balance, preserving source channels without crossmix.
+This is an original finite law, not a sonic-parity claim.
+
+Actual runtime phases are fixed scalar state. Retrigger starts each note at
+phase0; free mode continues its global phase through idle frames. Sync consumes
+actual monotonic Q32.32 host performance beats, including tempo changes. Missing
+or backward clocks refuse before transactional PCM/history mutation. Reset,
+rollback/replay and history copies preserve the same phase contract. Compensated
+phase accumulation avoids a one-frame delayed saw wrap for100hz at8khz; that
+independent failing PCM oracle is retained in the checkpoint evidence. Shared
+sample-and-hold cycles remain deterministic. No pitch/duration/source-coordinate
+change, PCM ownership or per-frame allocation is introduced by this modulation.
+
+The current-format codec, borrowed panel reads, parameter snapshots and sample
+replacement preserve the authored settings and actual host gains/asset binding.
+Control-side settings stay inline; no additional state Box is introduced merely
+to accommodate the LFO. The exhaustive prepared/runtime fixed-leaf audits include
+all settings, per-voice phases and the global phase, even with an empty voice bank.
+
+Independent PCM shape/balance, onset/idle, partition, tempo, invalid-clock,
+transaction/reset, zero-depth/bypass, hold/extreme-rate and roundtrip/refusal
+oracles cover this slice. The enabled filter+LFO Mono/Stereo128-query allocation
+probe checks real PCM and rollback/replay/commit with independent recurrence and
+modulation expectations. This is DSP/state evidence only: pitch/filter modulation,
+parameter transitions, actual panel/gestures, registration/admission, Warp, native
+listening and the complete load/play/history/save/reopen/export workflow remain
+open. It does not complete2679/2789 or grant registry admission.

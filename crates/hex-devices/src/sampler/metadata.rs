@@ -45,6 +45,14 @@ pub mod parameter {
     pub const FILTER_FREQUENCY: ParameterId = ParameterId::from_static(27);
     pub const FILTER_RESONANCE: ParameterId = ParameterId::from_static(28);
     pub const FILTER_MORPH: ParameterId = ParameterId::from_static(29);
+    pub const LFO_ENABLED: ParameterId = ParameterId::from_static(30);
+    pub const LFO_WAVEFORM: ParameterId = ParameterId::from_static(31);
+    pub const LFO_SYNC: ParameterId = ParameterId::from_static(32);
+    pub const LFO_RATE: ParameterId = ParameterId::from_static(33);
+    pub const LFO_DIVISION: ParameterId = ParameterId::from_static(34);
+    pub const LFO_RETRIGGER: ParameterId = ParameterId::from_static(35);
+    pub const LFO_AMPLITUDE: ParameterId = ParameterId::from_static(36);
+    pub const LFO_PAN: ParameterId = ParameterId::from_static(37);
 }
 const fn float(
     id: ParameterId,
@@ -85,7 +93,7 @@ const fn choice(
     }
 }
 use parameter::*;
-static PARAMETERS: [ParameterDescriptor; 29] = [
+static PARAMETERS: [ParameterDescriptor; 37] = [
     choice(MODE, "mode", &["classic", "one-shot", "slice"]),
     boolean(REVERSE, "reverse"),
     float(ROOT, "root", 0.0, 127.0, Some("note"), 60.0),
@@ -148,6 +156,14 @@ static PARAMETERS: [ParameterDescriptor; 29] = [
     super::filter::descriptors()[4],
     super::filter::descriptors()[5],
     super::filter::descriptors()[6],
+    super::modulation::descriptors()[0],
+    super::modulation::descriptors()[1],
+    super::modulation::descriptors()[2],
+    super::modulation::descriptors()[3],
+    super::modulation::descriptors()[4],
+    super::modulation::descriptors()[5],
+    super::modulation::descriptors()[6],
+    super::modulation::descriptors()[7],
 ];
 fn descriptor(id: ParameterId) -> Result<&'static ParameterDescriptor, Error> {
     PARAMETERS
@@ -225,6 +241,9 @@ impl NativeDeviceMetadata for SamplerMetadata {
         let DeviceStateRead::Sample(state) = DeviceStateRead::from_native(native)? else {
             return Ok(descriptor.default);
         };
+        if id.value() >= super::modulation::FIRST {
+            return state.modulation().read_parameter(id);
+        }
         if id.value() >= super::filter::FIRST {
             return state.filter().read_parameter(id);
         }
@@ -327,6 +346,9 @@ fn patch_authored(
 ) -> Result<(), Error> {
     if !enabled(state, id) {
         return Err(Error::InvalidParameterValue);
+    }
+    if id.value() >= super::modulation::FIRST {
+        return state.modulation.patch_parameter(id, value);
     }
     if id.value() >= super::filter::FIRST {
         return state.filter.patch_parameter(id, value);

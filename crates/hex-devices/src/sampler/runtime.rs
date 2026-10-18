@@ -1,7 +1,7 @@
 //! Fixed-capacity mutable sampler host; PCM stays in the borrowed host scope.
 use super::*;
 use hex_lattice::{
-    DeviceResources, MutableInstrumentRuntime, NativeInstrumentEvent,
+    DeviceResources, MutableInstrumentRuntime, NativeInstrumentClock, NativeInstrumentEvent,
     NativeInstrumentRuntimeError as Error, PreparedMutableInstrumentRuntime,
 };
 use std::any::Any;
@@ -28,6 +28,8 @@ pub struct PreparedSamplerRuntime {
     velocity_amount: f64,
     max_events: usize,
     filter: Option<crate::operator_filter::Frame>,
+    modulation: ModulationSettings,
+    output_rate: u32,
 }
 impl PreparedSamplerRuntime {
     /// Exact requested sized Box body for the closed constructor below.
@@ -48,7 +50,11 @@ impl PreparedSamplerRuntime {
             velocity_amount,
             max_events,
             filter,
+            modulation,
+            output_rate,
         } = self;
+        modulation.audit_scalar_storage();
+        let _: &u32 = output_rate;
         let _: &[PreparedKey; 128] = notes;
         let _: &Option<VoiceCoefficients> = common;
         let _: &Option<binding::SourceKey> = source;
@@ -83,6 +89,8 @@ impl PreparedSamplerRuntime {
             velocity_amount: 0.0,
             max_events,
             filter: None,
+            modulation: ModulationSettings::default(),
+            output_rate: 48_000,
         })
     }
     pub(super) fn with_filter_on_control(
@@ -92,6 +100,14 @@ impl PreparedSamplerRuntime {
     ) -> Result<Self, hex_lattice_contract::DeviceContractError> {
         let frame = filter.prepare(rate)?;
         self.filter = (frame.wet != 0.0).then_some(frame);
+        Ok(self)
+    }
+    pub(super) fn with_modulation_on_control(
+        mut self,
+        settings: ModulationSettings,
+    ) -> Result<Self, hex_lattice_contract::DeviceContractError> {
+        settings.validate()?;
+        self.modulation = settings;
         Ok(self)
     }
     fn note(&self, pitch: u8) -> Option<VoiceCoefficients> {
@@ -152,6 +168,8 @@ impl BoundSamplerPlan<'_> {
             velocity_amount: self.plan.settings.velocity_amount,
             max_events,
             filter: None,
+            modulation: ModulationSettings::default(),
+            output_rate: self.plan.output_rate(),
         })
     }
 }
@@ -164,15 +182,22 @@ struct ActiveVoice {
     age: u64,
     gate: Option<u64>,
     filter: [crate::operator_filter::Carrier; 2],
+    modulation_phase: modulation::Phase,
 }
 type Active = [Option<ActiveVoice>; MAX_SAMPLER_RUNTIME_VOICES];
 struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
+    modulation_phase: modulation::Phase,
 }
 impl SamplerRuntime {
     fn audit_fixed_storage(&self) {
-        let Self { prepared, active } = self;
+        let Self {
+            prepared,
+            active,
+            modulation_phase,
+        } = self;
+        modulation_phase.audit_scalar_storage();
         let _: &PreparedSamplerRuntime = prepared;
         let _ = prepared.control_storage_declaration();
         let _: &Active = active;
@@ -185,7 +210,9 @@ impl SamplerRuntime {
                 age,
                 gate,
                 filter,
+                modulation_phase,
             } = voice;
+            modulation_phase.audit_scalar_storage();
             let _: (&u64, &u8, &f64, &u64, &Option<u64>) = (occurrence, pitch, gain, age, gate);
             for lane in filter {
                 lane.audit_scalar_storage();
@@ -219,6 +246,7 @@ impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
         let runtime = SamplerRuntime {
             prepared: self.clone(),
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            modulation_phase: modulation::Phase::default(),
         };
         runtime.audit_fixed_storage();
         Box::new(runtime)
@@ -304,6 +332,7 @@ impl SamplerRuntime {
                     age: 0,
                     gate: None,
                     filter: [crate::operator_filter::Carrier::default(); 2],
+                    modulation_phase: modulation::Phase::default(),
                 });
             }
         }
@@ -346,66 +375,34 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         }
         self.advance(&mut active, (frames - cursor) as u64)
     }
+    fn preflight_clock(
+        &self,
+        clock: Option<&dyn NativeInstrumentClock>,
+        frames: usize,
+        _resources: &dyn DeviceResources,
+    ) -> Result<(), Error> {
+        self.check_modulation_clock(clock, frames)
+    }
     fn process_block(
         &mut self,
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         resources: &dyn DeviceResources,
     ) {
-        let Some(source) = self.prepared.source else {
-            return;
-        };
-        let pcm = (0..resources
-            .len()
-            .min(hex_lattice_contract::MAX_DEVICE_ASSET_REFERENCES))
-            .filter_map(|index| resources.get(index))
-            .find(|view| source.matches(*view));
-        let Some(view) = pcm else { return };
-        let mut active = self.active;
-        let mut next = 0;
-        for (offset, frame) in frames.iter_mut().enumerate() {
-            while events
-                .get(next)
-                .is_some_and(|event| event.frame_offset() == offset)
-            {
-                if self.event(&mut active, events[next]).is_err() {
-                    return;
-                }
-                next += 1;
-            }
-            for voice in active.iter_mut().flatten() {
-                let Some(mut note) = self.prepared.note(voice.pitch) else {
-                    continue;
-                };
-                for channel_gain in &mut note.channel_gain {
-                    *channel_gain *= voice.gain;
-                }
-                let gate = voice.gate.unwrap_or(u64::MAX);
-                let sample = if let Some(filter) = self.prepared.filter {
-                    let Some(input) = note.interpolated_source(view.pcm, voice.age) else {
-                        continue;
-                    };
-                    let filtered = std::array::from_fn(|channel| {
-                        voice.filter[channel].process(input[channel], filter)
-                    });
-                    note.apply_amplitude(filtered, note.envelope_gain(voice.age, gate))
-                } else {
-                    note.sample(view.pcm, voice.age, gate)
-                };
-                for channel in 0..2 {
-                    frame[channel] = (f64::from(frame[channel]) + f64::from(sample[channel]))
-                        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                        as f32;
-                }
-            }
-            if self.advance(&mut active, 1).is_err() {
-                return;
-            }
-        }
-        self.active = active;
+        self.process_modulated(events, frames, None, resources);
+    }
+    fn process_block_with_clock(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        resources: &dyn DeviceResources,
+    ) {
+        self.process_modulated(events, frames, clock, resources);
     }
     fn reset(&mut self) {
         self.active.fill(None);
+        self.modulation_phase = modulation::Phase::default();
     }
     fn is_quiescent(&self) -> bool {
         self.active.iter().all(Option::is_none)
@@ -423,6 +420,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
             .filter(|previous| self.prepared == previous.prepared)
         {
             self.active = previous.active;
+            self.modulation_phase = previous.modulation_phase;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
@@ -489,3 +487,8 @@ impl hex_lattice::PreparedNativeInstrument for PreparedSamplerRuntime {
         Ok(Some(Box::new(self.clone())))
     }
 }
+
+mod modulation_runtime;
+
+#[cfg(test)]
+mod modulation_tests;

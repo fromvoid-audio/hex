@@ -4,9 +4,9 @@ use super::*;
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sampler");
-pub const STATE_VERSION: u32 = 3;
+pub const STATE_VERSION: u32 = 4;
 pub const SOURCE_SLOT: u32 = 1;
-const PREFIX: usize = 112 + filter::BYTES;
+const PREFIX: usize = 112 + filter::BYTES + modulation::BYTES;
 mod read;
 mod slice_edit;
 pub use read::{DeviceStateRead, SamplerReadMode, SamplerStateRead};
@@ -114,7 +114,8 @@ pub fn prepare_runtime_on_control(
         .map_err(|_| Error::AssetResourcesUnavailable)?
         .prepare_runtime_on_control(usize::from(authored.voices), max_events, context.tuning)
         .map_err(|_| Error::InvalidParameterValue)?
-        .with_filter_on_control(authored.filter, context.sample_rate)
+        .with_filter_on_control(authored.filter, context.sample_rate)?
+        .with_modulation_on_control(authored.modulation)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -149,6 +150,7 @@ pub struct SamplerState {
     pub one_shot_fades_seconds: [f64; 2],
     pub voices: u8,
     pub filter: FilterSettings,
+    pub modulation: ModulationSettings,
 }
 impl SamplerState {
     /// Source replacement starts with the whole original source and no loop.
@@ -171,6 +173,7 @@ impl SamplerState {
             one_shot_fades_seconds: [0.0; 2],
             voices: 16,
             filter: FilterSettings::default(),
+            modulation: ModulationSettings::default(),
         };
         state.validate()?;
         Ok(state)
@@ -206,6 +209,7 @@ impl SamplerState {
     }
     fn validate(&self) -> Result<(), Error> {
         self.filter.validate()?;
+        self.modulation.validate()?;
         if !(1..=MAX_SAMPLER_RUNTIME_VOICES as u8).contains(&self.voices) {
             return Err(Error::InvalidParameterValue);
         }
@@ -273,6 +277,7 @@ impl SamplerState {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         self.filter.append(&mut bytes);
+        self.modulation.append(&mut bytes);
         for &start in starts {
             bytes.extend_from_slice(&(start as u32).to_le_bytes());
         }

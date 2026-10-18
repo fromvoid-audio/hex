@@ -9,6 +9,13 @@ use hex_lattice_contract::{
 
 #[test]
 fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
+    sampler_filter_allocation_probe(false);
+}
+#[test]
+fn sampler_lfo_filter_pair_runtime_queries_allocate_and_free_nothing() {
+    sampler_filter_allocation_probe(true);
+}
+fn sampler_filter_allocation_probe(modulated: bool) {
     use hex_lattice::{
         NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
     };
@@ -26,7 +33,18 @@ fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
             - 2.0 * (k * k - 1.0) * norm * y1
             - (1.0 - std::f64::consts::SQRT_2 * k + k * k) * norm * y2;
         history = [input, x1, output, y1];
-        expected[age] = [output as f32; 2];
+        expected[age] = if modulated {
+            // At100 Hz /8kHz, the independent triangle's first8 frames are
+            // its rising segment: wave=n/20; no production phase/shape helper.
+            let wave = age as f64 / 20.0;
+            let amplitude = (1.0 + wave) / 2.0;
+            [
+                (output * amplitude * (1.0 - wave * 0.5)) as f32,
+                (output * amplitude) as f32,
+            ]
+        } else {
+            [output as f32; 2]
+        };
     }
     for pcm in [
         DeviceResourcePcm::Mono(&mono),
@@ -44,8 +62,12 @@ fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
             pcm,
         }];
         let resources = BorrowedDeviceResources(&views);
-        let prepared =
-            hex_engine::sampler_clean_filter_runtime_for_allocation_probe(views[0], 8000).unwrap();
+        let prepared = if modulated {
+            hex_engine::sampler_modulated_runtime_for_allocation_probe(views[0], 8000)
+        } else {
+            hex_engine::sampler_clean_filter_runtime_for_allocation_probe(views[0], 8000)
+        }
+        .unwrap();
         let mut runtime = NativeInstrumentRuntimePair::new(
             prepared.as_ref(),
             NativeInstrumentRuntimeLimits {
@@ -57,7 +79,7 @@ fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
         )
         .unwrap();
         eprintln!(
-            "SUPPORTED actual enabled clean-filter sampler Mono/Stereo pair rollback, PCM oracle and128 allocation queries"
+            "SUPPORTED actual enabled clean-filter sampler lfo={modulated} Mono/Stereo pair rollback, PCM oracle and128 allocation queries"
         );
         let sign = if matches!(pcm, DeviceResourcePcm::Mono(_)) {
             1.0
@@ -99,7 +121,8 @@ fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
         });
         let oracle = expected.iter().map(|v| f64::from(v[0])).sum::<f64>() * 128.0;
         assert!((checksum[0] - oracle).abs() < 1e-4);
-        assert!((checksum[1] - oracle * f64::from(sign)).abs() < 1e-4);
+        let right_oracle = expected.iter().map(|v| f64::from(v[1])).sum::<f64>() * 128.0;
+        assert!((checksum[1] - right_oracle * f64::from(sign)).abs() < 1e-4);
         assert_eq!(
             (
                 measured.count_total,
