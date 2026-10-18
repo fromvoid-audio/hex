@@ -918,3 +918,17 @@ A red/green constructor-route counter (not a general allocator/peak measurement)
 address/capacity checks, independent PCM and validation/Unknown-origin negatives
 cover this removal. Aggregate compiler reservation and selected child births
 remain separate open obligations.
+
+Sampler validation and runtime-factory preparation use the existing validated
+borrowed current-codec reader. Factory preparation copies at most128 Slice
+markers to fixed stack scratch; it no longer materializes an authored marker
+Vec merely to prepare fixed scalar keys. Owned editing/replacement codecs keep
+their existing behavior. The prior conservative factory scratch allowance is
+retained and is not described as an observed heap/aggregate peak.
+
+A red/green control-preparation probe measures128 maximal-Slice preparations:
+the previous path allocated128 temporary vectors; both Mono/Stereo now report
+zero total/net allocations and frees, then independently verify selected-slice
+PCM and end silence. This is preparation work, not an expanded callback or
+publication certificate. Schema6, prepared/runtime layouts, actual binding
+refusals and the public registry gate remain unchanged.

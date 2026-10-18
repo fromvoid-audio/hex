@@ -212,7 +212,7 @@ impl<'a> SamplerStateRead<'a> {
     pub fn filter_envelope(self) -> FilterEnvelopeSettings {
         self.filter_envelope
     }
-    fn settings(self, starts: &[usize]) -> Settings<'_> {
+    pub(super) fn settings(self, starts: &[usize]) -> Settings<'_> {
         Settings {
             region: self.region(),
             mode: match self.mode() {

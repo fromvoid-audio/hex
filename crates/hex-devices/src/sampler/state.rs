@@ -76,9 +76,9 @@ pub fn prepare_runtime_on_control(
     if context.sample_rate == 0 {
         return Err(Error::InvalidParameterValue);
     }
-    let authored = match DeviceState::from_native(state)? {
-        DeviceState::Sample(authored) => authored,
-        DeviceState::Empty => {
+    let authored = match DeviceStateRead::from_native(state)? {
+        DeviceStateRead::Sample(authored) => authored,
+        DeviceStateRead::Empty => {
             if !context.resources.is_empty() {
                 return Err(Error::AssetResourcesUnavailable);
             }
@@ -106,18 +106,27 @@ pub fn prepare_runtime_on_control(
     };
     let shape = SampleShape::new(view.pcm.frames(), view.sample_rate, channels)
         .map_err(|_| Error::AssetResourcesUnavailable)?;
-    let plan = PreparedSamplerPlan::new(shape, context.sample_rate, authored.settings())
+    // The SAME validated codec supplies scalar settings. Runtime preparation
+    // copies at most128 markers to fixed stack scratch, never a temporary
+    // authored Vec before the factory's construction allowance.
+    let mut starts = [0; MAX_SLICES];
+    let count = authored.slice_starts().len();
+    let selected = starts.get_mut(..count).ok_or(Error::MalformedState)?;
+    for (destination, value) in selected.iter_mut().zip(authored.slice_starts()) {
+        *destination = value;
+    }
+    let plan = PreparedSamplerPlan::new(shape, context.sample_rate, authored.settings(selected))
         .map_err(|_| Error::InvalidParameterValue)?;
     // One finite PCM scan on control, not a context scan followed by a second
     // binding scan, and never a per-note or callback operation.
     plan.bind_source_on_control(view)
         .map_err(|_| Error::AssetResourcesUnavailable)?
-        .prepare_runtime_on_control(usize::from(authored.voices), max_events, context.tuning)
+        .prepare_runtime_on_control(usize::from(authored.voices()), max_events, context.tuning)
         .map_err(|_| Error::InvalidParameterValue)?
-        .with_modulation_on_control(authored.modulation)?
+        .with_modulation_on_control(authored.modulation())?
         .with_filter_envelope_on_control(
-            authored.filter,
-            authored.filter_envelope,
+            authored.filter(),
+            authored.filter_envelope(),
             context.sample_rate,
         )
 }

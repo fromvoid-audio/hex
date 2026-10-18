@@ -3,6 +3,42 @@
 use super::*;
 use crate::native_device_resources::DeviceResourceConfiguration;
 
+/// Fixed maximal-Slice codec fixture only, prepared outside measured control
+/// work. No source ownership, native route or publication authority is created.
+pub fn sampler_slice_state_for_factory_probe(
+    view: hex_lattice::DeviceResourceView<'_>,
+) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError> {
+    use hex_devices::sampler::state::{AuthoredMode, SamplerState};
+    let mut state = SamplerState::for_source_frames(view.pcm.frames())?;
+    state.voices = 1;
+    state.mode = AuthoredMode::Slice {
+        starts: (0..128)
+            .map(|index| index * view.pcm.frames() / 128)
+            .collect(),
+        base_note: 0,
+        gate: hex_devices::sampler::GateMode::Trigger,
+    };
+    state
+        .to_native()?
+        .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+            slot: view.slot,
+            asset: view.identity.asset,
+        }])
+}
+/// Return the actual concrete factory without a fixture Box allocation. The
+/// caller's measurement covers production current-codec control preparation.
+pub fn sampler_factory_from_state_for_allocation_probe(
+    state: &hex_lattice_contract::NativeDeviceState,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+) -> Result<hex_devices::sampler::PreparedSamplerRuntime, hex_lattice_contract::DeviceContractError>
+{
+    hex_devices::sampler::state::prepare_runtime_on_control(
+        state,
+        context,
+        MAX_MUTABLE_EVENTS_PER_QUERY,
+    )
+}
+
 /// Current authored filter path for the headless PCM/allocation oracle only.
 /// No source/Box provenance or native publication authority is granted here.
 pub fn sampler_clean_filter_runtime_for_allocation_probe(

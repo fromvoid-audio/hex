@@ -215,12 +215,12 @@ impl SharedContextOwner {
         remaining_payload_bytes: usize,
     ) -> Result<Self, Invalid> {
         use crate::owned_shared::OwnedShared;
-        use hex_devices::sampler::{PreparedSamplerRuntime, state::DeviceState};
+        use hex_devices::sampler::{PreparedSamplerRuntime, state::DeviceStateRead};
         let refused = || Invalid("empty sampler factory preparation refused");
         if identity.device_type != hex_devices::sampler::state::TYPE_ID
             || !matches!(
-                DeviceState::from_native(&identity.state),
-                Ok(DeviceState::Empty)
+                DeviceStateRead::from_native(&identity.state),
+                Ok(DeviceStateRead::Empty)
             )
             || identity.resource_scope != 0
         {
@@ -280,8 +280,9 @@ impl SharedContextOwner {
         }
         let (body, header) =
             OwnedShared::<PreparedSamplerRuntime>::declared_parts().ok_or_else(refused)?;
-        // Bound the fresh factory and decoded marker Vec BEFORE construction.
-        // This component quote is not whole-graph coexistence/peak authority.
+        // Bound the fresh factory BEFORE construction. Keep the conservative
+        // marker-scratch allowance even though decoding now uses fixed stack
+        // storage; it is not an observed heap or whole-graph peak measurement.
         if body > MAX_SHARED_ANALYTIC_CONTEXT_BYTES || body > remaining_payload_bytes {
             return Err(refused());
         }
@@ -579,7 +580,7 @@ impl SharedAnalyticContextTable {
             if device.state().type_id() == hex_devices::sampler::state::TYPE_ID {
                 // This closed preparation branch is not registry/publication
                 // admission. Validate the current codec before resource work.
-                hex_devices::sampler::state::DeviceState::from_native(device.state())
+                hex_devices::sampler::state::DeviceStateRead::from_native(device.state())
                     .map_err(|_| Invalid("sampler state is not a current configuration"))?;
             }
             let resources = match resource_preparation {

@@ -92,6 +92,10 @@ pub use mutable_instrument::resource_fixture::{
     sampler_modulated_runtime_for_allocation_probe,
 };
 #[cfg(feature = "instrument-test-support")]
+pub use mutable_instrument::resource_fixture::{
+    sampler_factory_from_state_for_allocation_probe, sampler_slice_state_for_factory_probe,
+};
+#[cfg(feature = "instrument-test-support")]
 #[doc(hidden)]
 pub use shared_analytic::inline_fixture::{
     InlineResourceFixtureConfiguration, InlineResourceHostFixture,
@@ -320,7 +324,7 @@ pub fn edit_sampler_slice_on_control(
 pub fn validate_sampler_state_on_control(
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<(), Invalid> {
-    hex_devices::sampler::state::DeviceState::from_native(state)
+    hex_devices::sampler::state::DeviceStateRead::from_native(state)
         .map(|_| ())
         .map_err(|_| Invalid("sampler state is invalid"))
 }

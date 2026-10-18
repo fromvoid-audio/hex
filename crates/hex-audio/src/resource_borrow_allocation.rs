@@ -8,6 +8,101 @@ use hex_lattice_contract::{
 };
 
 #[test]
+fn sampler_slice_factory_control_preparation_uses_no_temporary_heap_markers() {
+    use hex_lattice::{
+        NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    };
+    let mono: [f32; 1024] = std::array::from_fn(|index| [0.5, 1.0, -0.25, 0.75][index % 4]);
+    let stereo = mono.map(|value| [value, -value]);
+    for pcm in [
+        DeviceResourcePcm::Mono(&mono),
+        DeviceResourcePcm::Stereo(&stereo),
+    ] {
+        let views = [DeviceResourceView {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            identity: DeviceResourceIdentity {
+                asset: DeviceAssetKey::new(1).unwrap(),
+                content: [2; 32],
+                derivation_version: 1,
+                derivation: [3; 32],
+            },
+            sample_rate: 8_000,
+            pcm,
+        }];
+        let resources = BorrowedDeviceResources(&views);
+        let tuning = TuningTable::default();
+        let context = DevicePreparationContext {
+            sample_rate: 8_000,
+            tuning: &tuning,
+            resources: &resources,
+        };
+        let state = hex_engine::sampler_slice_state_for_factory_probe(views[0]).unwrap();
+        let mut checksum = 0;
+        let measured = allocation_counter::measure(|| {
+            for _ in 0..128 {
+                let factory =
+                    hex_engine::sampler_factory_from_state_for_allocation_probe(&state, &context)
+                        .unwrap();
+                let hex_lattice::PreparedStorageDeclaration::ExclusiveOnly { bytes } =
+                    factory.control_storage_declaration()
+                else {
+                    panic!("unexpected sampler factory storage")
+                };
+                checksum += bytes;
+                std::hint::black_box(&factory);
+            }
+        });
+        assert!(checksum > 0);
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(measured.bytes_total, 0);
+        assert_eq!(measured.count_current, 0);
+        assert_eq!(measured.bytes_current, 0);
+        let factory =
+            hex_engine::sampler_factory_from_state_for_allocation_probe(&state, &context).unwrap();
+        let mut pair = NativeInstrumentRuntimePair::new(
+            &factory,
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: 2 * 1024 * 1024,
+                max_events_per_block: 259,
+                max_active_occurrences: 32,
+                max_tail_frames: 8_000 * 600,
+            },
+        )
+        .unwrap();
+        let events = [NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 0,
+            velocity: 127,
+        }];
+        let mut output = [[0.0; 2]; 12];
+        pair.begin_block();
+        pair.process_block(&events, &mut output, &resources)
+            .unwrap();
+        pair.commit_block();
+        let expected: [[f32; 2]; 12] = std::array::from_fn(|index| {
+            if index < 8 {
+                match pcm {
+                    DeviceResourcePcm::Mono(values) => [values[index]; 2],
+                    DeviceResourcePcm::Stereo(values) => values[index],
+                }
+            } else {
+                [0.0; 2]
+            }
+        });
+        assert_eq!(output, expected);
+        eprintln!(
+            "SUPPORTED borrowed Slice128 factory control pcm_mono={} queries=128 checksum={checksum} total_allocations={} total_bytes={} net_allocations={} net_bytes={}",
+            matches!(pcm, DeviceResourcePcm::Mono(_)),
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        );
+    }
+}
+
+#[test]
 fn sampler_clean_filter_pair_runtime_queries_allocate_and_free_nothing() {
     sampler_filter_allocation_probe(false, false, false);
 }
