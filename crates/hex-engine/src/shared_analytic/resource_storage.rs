@@ -114,12 +114,14 @@ fn visit_state<'a>(
             .checked_add(storage.payload.1)
             .ok_or(AudioStorageError::Overflow)?,
     )?;
-    ledger.handle_at(
-        Owner::device_payload(state),
-        Owner::exclusive(state),
-        Location("inline-state-field", 0),
-        storage.handles[0],
-    )?;
+    if !ledger.has_canonical_state_field(state, 0) {
+        ledger.handle_at(
+            Owner::device_payload(state),
+            Owner::exclusive(state),
+            Location("inline-state-field", 0),
+            storage.handles[0],
+        )?;
+    }
     if let Some((bytes, overhead)) = storage.references {
         ledger.bytes(
             Owner::device_asset_references(state),
@@ -128,12 +130,14 @@ fn visit_state<'a>(
                 .checked_add(overhead)
                 .ok_or(AudioStorageError::Overflow)?,
         )?;
-        ledger.handle_at(
-            Owner::device_asset_references(state),
-            Owner::exclusive(state),
-            Location("inline-state-field", 1),
-            storage.handles[1],
-        )?;
+        if !ledger.has_canonical_state_field(state, 1) {
+            ledger.handle_at(
+                Owner::device_asset_references(state),
+                Owner::exclusive(state),
+                Location("inline-state-field", 1),
+                storage.handles[1],
+            )?;
+        }
     }
     Ok(())
 }

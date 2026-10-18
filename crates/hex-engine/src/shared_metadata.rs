@@ -94,14 +94,7 @@ impl<'a> crate::AudioRootStorageLedger<'a> {
         &mut self,
         value: &'a hex_project::SortedEntries<K, V>,
     ) -> Result<(), crate::AudioStorageError> {
-        self.mutate(|ledger| {
-            ledger.allocation(
-                crate::audio_storage::Owner::exclusive(value),
-                crate::audio_storage::Location("sorted-entry-buffer", 0),
-                value.capacity(),
-                std::mem::size_of::<(K, V)>(),
-            )
-        })
+        self.mutate(|ledger| ledger.entries(value))
     }
 }
 

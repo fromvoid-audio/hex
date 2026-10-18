@@ -276,3 +276,43 @@ fn concrete_sampler_factory_charges_body_header_and_every_actual_alias() {
     assert_eq!(&output[..4], &fixtures::PCM);
     assert_eq!(&output[4..], &[[0.0; 2]; 2]);
 }
+
+#[test]
+fn actual_sampler_prepared_and_canonical_state_visitors_share_one_physical_charge_in_either_order()
+{
+    let Some((source, owner, editor)) = retained_fixture() else {
+        return;
+    };
+    if !crate::canonical_native_state_storage_layout_supported() {
+        return;
+    }
+    eprintln!("executing actual sampler prepared/model canonical state joint storage path");
+    let collect = |canonical_first| {
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+        ledger
+            .borrow_device_resource_bank_on_control(&source, AudioStorageRole::Caller)
+            .unwrap();
+        ledger
+            .borrow_editor_native_states_on_control(&editor)
+            .unwrap();
+        if canonical_first {
+            ledger
+                .borrow_canonical_native_state_on_control(&owner.identity.state)
+                .unwrap();
+        }
+        resource_storage::visit_owner(&owner, &mut ledger, AudioStorageRole::Current).unwrap();
+        let summary = ledger.summary().unwrap();
+        let counts = ledger.selected_shared_counts_on_control();
+        ledger
+            .borrow_canonical_native_state_on_control(&owner.identity.state)
+            .unwrap();
+        assert_eq!(ledger.summary().unwrap(), summary);
+        assert_eq!(ledger.selected_shared_counts_on_control(), counts);
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert!(summary.require_complete().is_err());
+        (summary, counts)
+    };
+    assert_eq!(collect(false), collect(true));
+}

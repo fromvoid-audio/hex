@@ -14,6 +14,39 @@ fn reservation() -> AudioStorageLedgerReservation {
 }
 
 #[test]
+fn actual_history_backings_include_empty_reserved_redo_and_deduplicate_field_visits() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    for name in ["one.wav", "two.wav"] {
+        editor
+            .execute(Command::AddAsset {
+                path: name.into(),
+                sample_rate: 48_000,
+                frames: 4,
+            })
+            .unwrap();
+    }
+    assert!(editor.undo());
+    assert!(editor.redo());
+    let undo = editor.undo_storage_on_control();
+    let redo = editor.redo_storage_on_control();
+    assert!(redo.is_empty());
+    assert!(redo.capacity() > 0);
+    let expected = (undo.capacity() + redo.capacity()) * std::mem::size_of::<Project>();
+    assert!(expected > (undo.len() + redo.len()) * std::mem::size_of::<Project>());
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+    ledger
+        .borrow_editor_history_buffers_on_control(&editor)
+        .unwrap();
+    assert_eq!(ledger.summary().unwrap().data_bytes, expected);
+    ledger
+        .borrow_editor_history_buffers_on_control(&editor)
+        .unwrap();
+    ledger.borrow_metadata_vec_backing_on_control(redo).unwrap();
+    assert_eq!(ledger.summary().unwrap().data_bytes, expected);
+    assert!(ledger.summary().unwrap().require_complete().is_err());
+}
+
+#[test]
 fn actual_asset_history_candidate_and_duplicate_visits_charge_capacity_and_paths_once() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     for name in ["first.wav", "second.wav"] {
@@ -49,6 +82,12 @@ fn actual_asset_history_candidate_and_duplicate_visits_charge_capacity_and_paths
     assert_ne!(history, expected); // omitting the actual pending candidate undercounts
     ledger
         .borrow_project_asset_storage_on_control(&candidate)
+        .unwrap();
+    assert_eq!(ledger.summary().unwrap().data_bytes, expected);
+    // A parent/container visitor and the asset/path visitor name the SAME
+    // physical backing, rather than two logical ownership families.
+    ledger
+        .borrow_metadata_entries_backing_on_control(candidate.asset_entries_on_control())
         .unwrap();
     assert_eq!(ledger.summary().unwrap().data_bytes, expected);
     ledger

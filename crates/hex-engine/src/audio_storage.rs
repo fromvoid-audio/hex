@@ -2,6 +2,8 @@
 //! No owner is cloned or transferred; this is never publication/lifetime authority.
 use crate::{AudioPreparationCustody, AudioStorageError, OwnedAudioInputs, StreamedSourceMetadata};
 use std::{any::Any, sync::Arc};
+mod canonical_state;
+pub use canonical_state::canonical_native_state_storage_layout_supported;
 mod models;
 pub use models::canonical_midi_storage_layout_supported;
 mod sources;
@@ -479,6 +481,17 @@ impl<'a> AudioRootStorageLedger<'a> {
                 overhead: 0,
             },
             None,
+        )
+    }
+    pub(crate) fn entries<K: 'static, V: 'static>(
+        &mut self,
+        value: &'a hex_project::SortedEntries<K, V>,
+    ) -> Result<(), AudioStorageError> {
+        self.allocation(
+            Owner::exclusive(value),
+            Location("sorted-entry-buffer", 0),
+            value.capacity(),
+            std::mem::size_of::<(K, V)>(),
         )
     }
     pub(crate) fn string(&mut self, value: &'a String) -> Result<(), AudioStorageError> {

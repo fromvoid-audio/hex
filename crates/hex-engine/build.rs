@@ -5,6 +5,8 @@ mod midi_gate;
 mod pcm_gate;
 #[path = "build_support/runtime_box_gate.rs"]
 mod runtime_box_gate;
+#[path = "build_support/state_gate.rs"]
+mod state_gate;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -71,6 +73,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_support/pcm_gate.rs");
     println!("cargo:rerun-if-changed=build_support/midi_gate.rs");
+    println!("cargo:rerun-if-changed=build_support/state_gate.rs");
     println!("cargo:rerun-if-changed=build_support/runtime_box_gate.rs");
     let host = env::var("HOST").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
@@ -130,6 +133,7 @@ fn main() {
     let mut evidence = format!(
         "contract: pinned-std-arc-audiodata-retained-vec-v1\nhost: {host}\ntarget: {target}\n"
     );
+    let mut state_decision = Err("missing_compiler_observation");
     let mut midi_decision = Err("missing_compiler_observation");
     let mut box_decision = Err("missing_compiler_observation");
     let decision = compiler
@@ -149,6 +153,7 @@ fn main() {
                 ordinary_install: installed,
                 unsupported_inputs: unsupported,
             };
+            state_decision = state_gate::decide(observed);
             midi_decision = midi_gate::decide(observed);
             box_decision = runtime_box_gate::decide(observed);
             pcm_gate::decide(observed)
@@ -207,6 +212,33 @@ fn main() {
     println!(
         "cargo:rustc-env=HEX_MIDI_ARC_CONSTRUCTOR_FAMILY={}",
         midi_gate::FAMILY
+    );
+    let state_evidence = format!(
+        "{evidence}\ncontract: {}\ncompiler: {}\nconstructors: Arc::from(Vec<u8>); Arc::from(Vec<DeviceAssetReference>); Arc::new([u8;0]) then unsize\nlayout: two atomic counters extended by Layout::array(element,len), padded to alignment; input Vec capacity remains separate construction peak\ndecision: {state_decision:?}\nrequested layout only; compiler selector is not allocator/RSS/custody attestation\n",
+        state_gate::FAMILY,
+        pcm_gate::COMMIT
+    );
+    let state_saved = env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .is_some_and(|path| {
+            fs::write(
+                path.join("canonical-state-arc-build-evidence.txt"),
+                state_evidence,
+            )
+            .is_ok()
+        });
+    println!(
+        "cargo:rustc-env=HEX_CANONICAL_STATE_ARC_LAYOUT_KNOWN={}",
+        if state_decision.is_ok() && saved && state_saved {
+            "1"
+        } else {
+            "0"
+        }
+    );
+    println!("cargo:rustc-env=HEX_CANONICAL_STATE_ARC_LAYOUT_TARGET={target}");
+    println!(
+        "cargo:rustc-env=HEX_CANONICAL_STATE_ARC_CONSTRUCTOR_FAMILY={}",
+        state_gate::FAMILY
     );
     // Always override any caller text; unsupported builds retain legacy Audio.
     println!(

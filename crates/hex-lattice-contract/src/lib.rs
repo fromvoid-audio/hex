@@ -1,5 +1,7 @@
 //! Bounded metadata and authored state shared across native device boundaries.
 mod device_assets;
+mod state_storage;
+pub use state_storage::NativeStateStorageObservation;
 #[cfg(test)]
 mod device_assets_tests;
 pub use device_assets::{

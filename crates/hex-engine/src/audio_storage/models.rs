@@ -57,6 +57,25 @@ pub fn canonical_midi_storage_layout_supported() -> bool {
     native_layout_known()
 }
 impl<'a> AudioRootStorageLedger<'a> {
+    /// Actual Undo/Redo container backing only, including empty reserved slots.
+    /// Inline Project values are in these entries; their owned children require
+    /// separate actual traversal. Editor/current body, custody and construction
+    /// peak are not established by these selected observations.
+    pub fn borrow_editor_history_buffers_on_control(
+        &mut self,
+        editor: &'a hex_project::Editor,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            let undo = editor.undo_storage_on_control();
+            ledger.allocation(
+                Owner::exclusive(undo),
+                Location("vec-deque-buffer", 0),
+                undo.capacity(),
+                std::mem::size_of::<hex_project::Project>(),
+            )?;
+            ledger.vec(editor.redo_storage_on_control())
+        })
+    }
     /// Actual asset-container backing and each live path backing only. The
     /// inline container/path headers belong to their enclosing Project/entry.
     /// This is not complete Project storage, custody or construction-peak proof.
@@ -71,12 +90,7 @@ impl<'a> AudioRootStorageLedger<'a> {
         project: &'a hex_project::Project,
     ) -> Result<(), AudioStorageError> {
         let entries = project.asset_entries_on_control();
-        self.allocation(
-            Owner::exclusive(entries),
-            Location("project-asset-entries", 0),
-            entries.capacity(),
-            std::mem::size_of::<(hex_project::AssetId, hex_project::Asset)>(),
-        )?;
+        self.entries(entries)?;
         for asset in entries.values() {
             let path = asset.path_buffer_on_control();
             self.bytes(

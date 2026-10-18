@@ -32,6 +32,15 @@ impl Editor {
             .chain(self.undo.iter())
             .chain(self.redo.iter())
     }
+    /// Actual immutable history backings, including spare/empty capacity.
+    /// No project snapshot/owner is cloned; borrowing excludes mutation.
+    /// These fields alone establish neither complete model storage nor peak.
+    pub fn undo_storage_on_control(&self) -> &VecDeque<Project> {
+        &self.undo
+    }
+    pub fn redo_storage_on_control(&self) -> &Vec<Project> {
+        &self.redo
+    }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -74,6 +83,12 @@ impl Editor {
         let result = candidate.apply(command)?;
         candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
+        // Keep publication/commit inside the already reserved history backing.
+        // At the history limit the oldest slot is reused, so no growth is
+        // needed. A refusal may retain reservation capacity, never a new edit.
+        self.undo
+            .try_reserve_exact(usize::from(self.undo.len() < self.capacity))
+            .map_err(|_| E::from(Invalid("could not reserve undo history")))?;
         let prepared = prepare(&self.project, &candidate)?;
         // No-op controls should neither add history nor erase a redo branch.
         if candidate == self.project {
@@ -109,7 +124,7 @@ impl Editor {
         candidate.validate_device_asset_references()?;
         // Reserve before preparation/commit. No history allocation follows it.
         self.undo
-            .try_reserve(1)
+            .try_reserve_exact(usize::from(self.undo.len() < self.capacity))
             .map_err(|_| E::from(Invalid("could not reserve batch history")))?;
         let prepared = prepare(&candidate, &results)?;
         if candidate != self.project {
@@ -198,7 +213,7 @@ impl Editor {
         candidate.next_id = candidate.next_id.max(self.project.next_id);
         candidate.retain_gain_touch_epochs_from(&self.project);
         self.undo
-            .try_reserve(1)
+            .try_reserve_exact(usize::from(self.undo.len() < self.capacity))
             .map_err(|_| E::from(Invalid("could not reserve undo history")))?;
         let prepared = prepare(&self.project, &candidate)?;
         let Some(_) = self.redo.pop() else {
@@ -288,6 +303,55 @@ mod gain_touch_epoch_tests {
 #[cfg(test)]
 mod batch_tests {
     use super::*;
+    #[test]
+    fn prepared_single_and_batch_reuse_saturated_backing_and_refusal_preserves_history() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        editor
+            .execute(Command::AddTrack {
+                name: "first".into(),
+            })
+            .unwrap();
+        let capacity = editor.undo_storage_on_control().capacity();
+        editor
+            .execute_prepared(
+                Command::AddTrack {
+                    name: "second".into(),
+                },
+                |_| Ok::<_, Invalid>(()),
+            )
+            .unwrap();
+        assert_eq!(editor.undo_storage_on_control().capacity(), capacity);
+        assert_eq!(editor.undo_storage_on_control().len(), 1);
+        let before = editor.project().clone();
+        assert!(
+            editor
+                .execute_prepared(
+                    Command::AddTrack {
+                        name: "refuse".into()
+                    },
+                    |_| Err::<(), _>(Invalid("refuse preparation"))
+                )
+                .is_err()
+        );
+        assert_eq!(*editor.project(), before);
+        assert_eq!(editor.undo_storage_on_control().capacity(), capacity);
+        editor
+            .execute_many_prepared(
+                vec![Command::AddTrack {
+                    name: "third".into(),
+                }],
+                |_, _| Ok::<_, Invalid>(()),
+            )
+            .unwrap();
+        assert_eq!(editor.undo_storage_on_control().capacity(), capacity);
+        assert!(editor.undo());
+        assert_eq!(editor.project().tracks().len(), 2);
+        assert!(editor.redo_storage_on_control().capacity() > 0);
+        assert!(editor.redo());
+        assert!(editor.redo_storage_on_control().is_empty());
+        assert!(editor.redo_storage_on_control().capacity() > 0);
+        assert_eq!(editor.project().tracks().len(), 3);
+    }
     #[test]
     fn batch_prepares_once_and_one_undo_restores_all_commands() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

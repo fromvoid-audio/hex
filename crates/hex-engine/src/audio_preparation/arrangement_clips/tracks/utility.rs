@@ -251,17 +251,20 @@ impl UtilityCustody {
             )?;
             l.bytes(
                 Owner::device_payload(state),
-                Location("native-state-payload", 0),
+                Location("inline-state-payload", 0),
                 pair.payload
                     .0
                     .checked_add(pair.payload.1)
                     .ok_or(AudioStorageError::Overflow)?,
             )?;
-            l.handle(
-                Owner::device_payload(state),
-                Owner::exclusive(state.as_ref()),
-                pair.handles[1],
-            )?;
+            if !l.has_canonical_state_field(state, 0) {
+                l.handle_at(
+                    Owner::device_payload(state),
+                    Owner::exclusive(state.as_ref()),
+                    Location("inline-state-field", 0),
+                    pair.handles[1],
+                )?;
+            }
             l.shared(
                 &value.meter,
                 pair.meter.parts(&value.meter),
