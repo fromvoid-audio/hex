@@ -1,0 +1,11 @@
+Canonical PR413 source a1a4391e9f5e502a22716423c5bd122a5c9f2290
+Tree54d12aa9f05d4aa2a176bf29a5577657f2576862
+Archive hex-2807-compiled-a1a4391e.tar.gz
+Bytes87711
+SHA2564897c923f8d7a5d0c17c472c2e43165f6cb81dc399dfff4711209980a781e4ae
+56 payload hashes in hex2807-compiled-a1a4391e/PAYLOADS.json; self deliberately excluded.
+64 safe regular/directory members; zero symlinks/special members.
+Evidence-only branch; never build source snapshots from it.
+Use actual frozen canonical source for native request, NOT an old diagnostic binary.
+Targeted67PASS in Linux; Swift/native smoke grammar-checked NOT executed in cloud.
+Root actual running AppKit fixture1–4 remain separately reviewed/unexecuted.
