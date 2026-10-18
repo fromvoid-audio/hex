@@ -449,10 +449,112 @@ impl EditorView {
                 }
             }
         }
+        // Group metadata is projected once per pointer/modifier/timer update.
+        // Render only the members owned by this row; no project/PCM rebuild.
+        if let Some(drag) = self
+            .active_clip_drag
+            .as_ref()
+            .filter(|d| self.drag_start_is_current(d))
+        {
+            let group = drag.group.borrow();
+            if group.ids.len() > 1 {
+                let mut shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
+                for member in group.previews.iter().filter(|p| p.track == track_id) {
+                    use hex_project::ClipGroupContent;
+                    let position = match &member.content {
+                        ClipGroupContent::Audio(c) => ClipPosition::Audio {
+                            start: c.start(),
+                            duration: c.duration(),
+                        },
+                        ClipGroupContent::Midi(c) => ClipPosition::Midi {
+                            start: c.start(),
+                            length: c.length(),
+                        },
+                    };
+                    let Some(bounds) = drag::preview_for(&state.project, track_id, position) else {
+                        continue;
+                    };
+                    let start = bounds.start_frame.max(viewport.start);
+                    let end = bounds.end_frame.min(viewport_end);
+                    if start >= end {
+                        continue;
+                    }
+                    let flavor = match &member.content {
+                        ClipGroupContent::Audio(c) => c.flavor(),
+                        ClipGroupContent::Midi(c) => c.flavor(),
+                    };
+                    let id = member.id();
+                    let mut overlay = div()
+                        .debug_selector(move || format!("group-clip-preview-{}", id.value()))
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(
+                            (start - viewport.start) as f32 / viewport.length as f32,
+                        ))
+                        .w(relative((end - start) as f32 / viewport.length as f32))
+                        .min_w(px(3.0))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                        .bg(rgb(theme::clip_fill(track.color(), flavor, false)))
+                        .children([clip_grid_layer(grid, start, end)]);
+                    match &member.content {
+                        ClipGroupContent::Audio(c) => {
+                            if let Some(original) = state.project.clip(c.id())
+                                && let Some(waveform) =
+                                    super::waveform::preview_waveform_view_cached(
+                                        super::waveform::WaveformPreview {
+                                            original,
+                                            preview: c,
+                                            tempo: state.project.tempo_map(),
+                                            asset: state.waveforms.get(&c.asset()),
+                                        },
+                                        start,
+                                        end,
+                                        std::rc::Rc::clone(&self.waveform_geometry_cache),
+                                        self.waveform_grid(track_id, viewport, scale_factor),
+                                    )
+                            {
+                                overlay = overlay.child(waveform);
+                            }
+                        }
+                        ClipGroupContent::Midi(c) => {
+                            if let Some(end_beat) = c
+                                .start()
+                                .raw()
+                                .checked_add(c.length().raw())
+                                .map(BeatTime::from_raw)
+                                && let Ok(trim) =
+                                    c.preview_edge_trim(hex_project::TrimEdge::Right, end_beat)
+                            {
+                                let shapes =
+                                    midi_trim_note_shapes(&state.project, c, trim, start, end);
+                                let shown = shapes.len().min(shape_budget);
+                                for (x, width, pitch) in shapes.into_iter().take(shown) {
+                                    overlay = overlay.child(
+                                        div()
+                                            .absolute()
+                                            .left(relative(x))
+                                            .top(relative(f32::from(127 - pitch) / 128.0))
+                                            .w(relative(width))
+                                            .h(px(2.0))
+                                            .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
+                                    );
+                                }
+                                shape_budget = shape_budget.saturating_sub(shown);
+                            }
+                        }
+                    }
+                    clip_area = clip_area.child(overlay);
+                }
+            }
+        }
         let clip_preview = self
             .active_clip_drag
             .as_ref()
             .filter(|drag| self.drag_start_is_current(drag))
+            .filter(|drag| drag.group.borrow().ids.len() <= 1)
             .and_then(|drag| drag.preview.get())
             .filter(|preview| preview.target_track == track_id);
         let browser_preview = self
@@ -975,6 +1077,9 @@ impl EditorView {
         let move_display = self.time_range_move_display();
         let exclusions = move_exclusions(move_display.as_ref(), track_id, track_index);
         for clip in track.clips() {
+            if self.group_move_hides_clip(clip.id()) {
+                continue;
+            }
             let Some(end) = clip.start().checked_add(clip.duration()) else {
                 continue;
             };
@@ -1021,6 +1126,9 @@ impl EditorView {
         }
         let mut midi_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         for clip in track.midi_clips() {
+            if self.group_move_hides_clip(clip.id()) {
+                continue;
+            }
             let Some(preview) = state.midi_preview.get(clip.id()) else {
                 continue;
             };

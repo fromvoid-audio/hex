@@ -72,7 +72,22 @@ impl Project {
             ClipGroupPosition::Audio(frame) => frame,
             ClipGroupPosition::Midi(beat) => self.tempo_map().beat_to_frame(beat)?,
         };
-        let delta = i128::from(destination_anchor) - i128::from(original_anchor);
+        let requested_delta = i128::from(destination_anchor) - i128::from(original_anchor);
+        let mut earliest = original_anchor;
+        for row in self.tracks() {
+            for c in row.clips().iter().filter(|c| selected.contains(&c.id())) {
+                earliest = earliest.min(c.start());
+            }
+            for c in row
+                .midi_clips()
+                .iter()
+                .filter(|c| selected.contains(&c.id()))
+            {
+                earliest = earliest.min(self.tempo_map().beat_to_frame(c.start())?);
+            }
+        }
+        // Clamp one shared delta at time zero, never individual members.
+        let delta = requested_delta.max(-i128::from(earliest));
         let mut result = Vec::new();
         result
             .try_reserve_exact(ids.len())
@@ -90,6 +105,10 @@ impl Project {
                 let start = translated(clip.start(), delta)?;
                 let mut projected = clip.clone();
                 crate::audio_edit::move_clip(&mut projected, start, self.tempo_map())?;
+                projected
+                    .start()
+                    .checked_add(projected.duration())
+                    .ok_or(Invalid("group audio end overflow"))?;
                 result.push(ClipGroupPreview {
                     track: destination_track()?,
                     content: ClipGroupContent::Audio(projected),
@@ -101,7 +120,7 @@ impl Project {
                 .filter(|c| selected.contains(&c.id()))
             {
                 let frame = translated(self.tempo_map().beat_to_frame(clip.start())?, delta)?;
-                let start = if clip.id() == anchor {
+                let start = if clip.id() == anchor && delta == requested_delta {
                     let ClipGroupPosition::Midi(beat) = position else {
                         return Err(Invalid("midi anchor kind changed"));
                     };

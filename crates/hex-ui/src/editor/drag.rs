@@ -626,7 +626,34 @@ impl super::EditorView {
                 }
             }
         }
+        let position = if drag.group.borrow().ids.len() > 1 {
+            let group = drag.group.borrow();
+            match &group.previews.iter().find(|p| p.id() == drag.clip)?.content {
+                hex_project::ClipGroupContent::Audio(c) => ClipPosition::Audio {
+                    start: c.start(),
+                    duration: c.duration(),
+                },
+                hex_project::ClipGroupContent::Midi(c) => ClipPosition::Midi {
+                    start: c.start(),
+                    length: c.length(),
+                },
+            }
+        } else {
+            position
+        };
         preview_for(&state.project, target_track, position)
+    }
+
+    pub(super) fn group_move_hides_clip(&self, id: ClipId) -> bool {
+        self.active_clip_drag.as_ref().is_some_and(|drag| {
+            if drag.copy_modifier.get() || !self.drag_start_is_current(drag) {
+                return false;
+            }
+            let group = drag.group.borrow();
+            group.ids.len() > 1
+                && !group.previews.is_empty()
+                && group.ids.binary_search(&id).is_ok()
+        })
     }
 
     pub(super) fn clip_drag_drop_position(
