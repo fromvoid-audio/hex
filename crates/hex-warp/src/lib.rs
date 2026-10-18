@@ -1,4 +1,5 @@
 //! Pure control-side stereo preparation. No I/O, threads, callback work or project model.
+mod beats;
 pub mod fft;
 mod granular;
 mod resample;
@@ -11,7 +12,7 @@ pub const MAX_SCRATCH_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_MAP_SEGMENTS: usize = 8_192;
 pub const MAX_POINTS: usize = 1_024;
 pub const MAX_WORK_UNITS: u64 = 1_000_000_000;
-pub const ALGORITHM_VERSION: u32 = 3;
+pub const ALGORITHM_VERSION: u32 = 4;
 const Q32: i128 = 1_i128 << 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +426,58 @@ struct Accumulator {
     cursor: usize,
 }
 impl Accumulator {
+    fn preview(&self, frame: i128) -> Option<[f64; 2]> {
+        let frame = usize::try_from(frame).ok()?;
+        if frame < self.cursor
+            || frame >= self.output.len()
+            || frame - self.cursor >= self.samples.len()
+        {
+            return None;
+        }
+        let i = frame % self.samples.len();
+        (self.weights[i] > 1e-12).then(|| self.samples[i].map(|x| x / self.weights[i]))
+    }
+    fn add_correlated(
+        &mut self,
+        frame: i128,
+        sample: [f64; 2],
+        weight: f64,
+        correlation: f64,
+        previous_mean: [f64; 2],
+        next_mean: [f64; 2],
+    ) -> Result<(), Error> {
+        let Ok(at) = usize::try_from(frame) else {
+            return Ok(());
+        };
+        if at >= self.output.len() {
+            return Ok(());
+        }
+        if at < self.cursor || at - self.cursor >= self.samples.len() {
+            return Err(Error::Invalid(
+                "audio overlap exceeds bounded normalization ring",
+            ));
+        }
+        let i = at % self.samples.len();
+        let a = self.weights[i];
+        let b = weight;
+        let gain = if a > 1e-12 && b > 1e-12 {
+            ((a + b) / (a * a + b * b + 2.0 * correlation.clamp(0.0, 1.0) * a * b).sqrt())
+                .clamp(1.0, std::f64::consts::SQRT_2)
+        } else {
+            1.0
+        };
+        for c in 0..2 {
+            let sum = self.samples[i][c] + sample[c] * b;
+            let mean = previous_mean[c] * a + next_mean[c] * b;
+            self.samples[i][c] = if gain == 1.0 {
+                sum
+            } else {
+                (sum - mean) * gain + mean
+            };
+        }
+        self.weights[i] += b;
+        Ok(())
+    }
     fn new(frames: usize, ring: usize, work: &mut Work<'_>, extra: usize) -> Result<Self, Error> {
         let bytes = ring
             .checked_mul(24)

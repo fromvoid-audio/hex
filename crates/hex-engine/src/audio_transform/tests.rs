@@ -1429,3 +1429,106 @@ fn beats_actual_preparation_joins_cache_parameters_version_and_undo_match_render
     );
     eprintln!("executed actual Beats canonical/preparation/cache/version/Undo/partition/seek path");
 }
+
+#[test]
+fn beats_wsola_default_preparation_locks_drums_and_keeps_bass_continuous() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    let original: Vec<_> = (0..8_000)
+        .map(|i| {
+            let bass = (std::f32::consts::TAU * 55.0 * i as f32 / 16_000.0).sin() * 0.15;
+            if i % 2_000 == 0 {
+                [0.9, -0.8]
+            } else {
+                [bass, -bass * 0.7]
+            }
+        })
+        .collect();
+    media.insert(asset, Audio::new(16_000, original.clone()).unwrap());
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+    for (tempo, ratio) in [(80_000_000, 1.5), (60_000_000, 2.0)] {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(tempo).unwrap(),
+            })
+            .unwrap();
+        let length = editor.project().clip(clip).unwrap().duration() as usize;
+        assert_eq!(length, (8_000.0 * ratio) as usize);
+        let revision = prepare(&editor, &media, &context);
+        let pcm = render(&revision, 0, length, 127);
+        let expected: Vec<_> = [0, 2_000, 4_000, 6_000]
+            .map(|i| (i as f64 * ratio) as usize)
+            .to_vec();
+        let actual: Vec<_> = pcm
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| (x[0] > 0.7).then_some(i))
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "mapped attacks must neither move nor repeat"
+        );
+        for at in &expected {
+            assert_eq!(pcm[*at], [0.9, -0.8]);
+        }
+        for interval in expected.windows(2) {
+            let from = interval[0] + 500;
+            let to = interval[1] - 500;
+            let rms = (pcm[from..to]
+                .iter()
+                .map(|x| f64::from(x[0]).powi(2))
+                .sum::<f64>()
+                / (to - from) as f64)
+                .sqrt();
+            assert!((0.09..0.12).contains(&rms), "bass bed RMS {rms}");
+            assert!(
+                pcm[from..to]
+                    .iter()
+                    .all(|x| (x[1] + x[0] * 0.7).abs() < 1e-6)
+            );
+            let largest_step = pcm[from..to]
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(largest_step < 0.01, "generated bass edge {largest_step}");
+        }
+        for block in [1, 31, 257, 513] {
+            assert_eq!(render(&revision, 0, length, block), pcm);
+            assert_eq!(
+                render(&revision, expected[1] as u64 - 19, 511, block),
+                pcm[expected[1] - 19..expected[1] + 492]
+            );
+        }
+        let hits = context.cache_hits();
+        let repeated = prepare(&editor, &media, &context);
+        assert!(context.cache_hits() > hits);
+        assert_eq!(render(&repeated, 0, length, 63), pcm);
+        eprintln!(
+            "executed actual default Transients Forward100 WSOLA drum+bass ratio={ratio} frames={length}, locked attacks/continuous bass/partition/seek/cache"
+        );
+    }
+}

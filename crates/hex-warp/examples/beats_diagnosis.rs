@@ -44,6 +44,21 @@ fn source(kind: &str, rate: u32) -> Vec<Frame> {
                 - 1.0;
             match kind {
                 "dc" => [0.5, -0.25],
+                "bass55" => {
+                    let x = (std::f64::consts::TAU * 55.0 * t).sin() * 0.5;
+                    [x as f32, (-x * 0.7) as f32]
+                }
+                "drum-bass" => {
+                    let bass = (std::f64::consts::TAU * 55.0 * t).sin() * 0.15;
+                    if i % (rate as usize / 8) == 0 {
+                        [0.9, -0.8]
+                    } else {
+                        [
+                            (bass + kick * 0.7) as f32,
+                            (-bass * 0.7 + kick * 0.5) as f32,
+                        ]
+                    }
+                }
                 "stereo-tone" => [
                     (0.15 + 0.5 * phase.sin()) as f32,
                     (-0.1 + 0.3 * (phase + 0.7).sin()) as f32,
@@ -62,6 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = std::env::args()
         .nth(1)
         .ok_or("pass a new output directory")?;
+    let automatic = std::env::args().nth(2).as_deref() == Some("transients");
     let directory = Path::new(&directory);
     std::fs::create_dir(directory)?;
     let mut metrics = std::fs::File::create_new(directory.join("metrics.csv"))?;
@@ -72,11 +88,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut settings = std::fs::File::create_new(directory.join("settings.txt"))?;
     writeln!(
         settings,
-        "algorithm_version={}\noriginal synthetic fixtures; 4 fixed Preserve divisions; pitch0; envelope100; no source/clip fade; nonlooping root; PCM16 fixed32767 quantisation, no per-file normalisation; before/after use same listening gain",
-        ALGORITHM_VERSION
+        "algorithm_version={}\noriginal synthetic fixtures; Preserve={}; pitch0; envelope100; no source/clip fade; nonlooping root; PCM16 fixed32767 quantisation, no per-file normalisation; before/after use same listening gain",
+        ALGORITHM_VERSION,
+        if automatic {
+            "automatic Transients"
+        } else {
+            "4 fixed divisions"
+        }
     )?;
+    let kinds: &[&str] = if automatic {
+        &[
+            "dc",
+            "stereo-tone",
+            "kick-sub",
+            "hats",
+            "bass55",
+            "drum-bass",
+        ]
+    } else {
+        &["dc", "stereo-tone", "kick-sub", "hats"]
+    };
     for rate in [44_100, 48_000] {
-        for kind in ["dc", "stereo-tone", "kick-sub", "hats"] {
+        for &kind in kinds {
             let source = source(kind, rate);
             wav(
                 &directory.join(format!("{kind}-{rate}-original.wav")),
@@ -115,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             output_frames: output,
                             pitch_cents: 0,
                             mode: Mode::Beats {
-                                division_frames: Some((source.len() / 4) as u64),
+                                division_frames: (!automatic).then_some((source.len() / 4) as u64),
                                 tail,
                                 decay: 100,
                             },
