@@ -4,6 +4,9 @@
 use super::{MidiArrangementPreview, MidiClipPreview};
 use crate::{AudioStorageError as Error, owned_shared::OwnedShared};
 
+// A wildcard binding would not enforce this trait obligation.
+fn require_copy<T: Copy>(_: &T) {}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AudioPreviewCapacity {
     pub clips_payload_bytes: usize,
@@ -312,7 +315,7 @@ impl PreviewCustody {
             {
                 // Copy is part of the closed scalar-ID leaf contract: an
                 // owning/non-Copy replacement must force this audit to change.
-                let _: hex_project::ClipId = *clip_id;
+                require_copy(clip_id);
                 let _: (&hex_project::ClipId, &u64, &u64, &usize, &usize) = (
                     clip_id,
                     frame_start,
