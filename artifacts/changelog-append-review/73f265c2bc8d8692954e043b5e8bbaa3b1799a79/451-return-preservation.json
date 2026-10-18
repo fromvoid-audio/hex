@@ -1,0 +1,10 @@
+{
+  "parent": "9d342d24285105bd9d1c0b786944124303853061",
+  "only_changed_path": "crates/hex-ui/src/editor/changelog.rs",
+  "before_blob": "33a00391fe2f251c8da18728cb81e2f867cd0bc5",
+  "production_and_non_ui_tests_unchanged": true,
+  "production_prefix_sha256": "bd5a3a8bf07084b14e4f73f4da8d91e3cc2d3410bd2b9422941369a54f466e83",
+  "dataset_sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc",
+  "before_sha256": "b89033680d17b083e77e1607bbe43159bec4b67746b2f0c2d8c7270f82396ae7",
+  "after_sha256": "5dc7c1c79f1d1674ea2d4c407ca75593c1f60e75a036a17ccd83906ef35a07a4"
+}

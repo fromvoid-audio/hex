@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "ticket": 2849,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/451",
+  "source": {
+    "parent": "9d342d24285105bd9d1c0b786944124303853061",
+    "head": "73f265c2bc8d8692954e043b5e8bbaa3b1799a79",
+    "tree": "0fd1ff8dda6fc4a18919e1b04510ad0e440929ca",
+    "branch": "source-fix/451-appended-batch-9d342",
+    "before_blob": "33a00391fe2f251c8da18728cb81e2f867cd0bc5",
+    "after_blob": "734ca6c777414ef6e71a45570058570a26735c34",
+    "canonical_readback": "9d342d24285105bd9d1c0b786944124303853061\trefs/heads/pulse/task-2849-g1-4e5518763c35"
+  },
+  "own_diff": {
+    "files": [
+      "crates/hex-ui/src/editor/changelog.rs"
+    ],
+    "insertions": 98,
+    "deletions": 36,
+    "scope": "cfg ui_tests ONLY"
+  },
+  "checks": [
+    {
+      "name": "operator",
+      "command": "cargo test -p hex-ui --features ui-test-support --locked --lib operator_tab -- --nocapture",
+      "exit": 0,
+      "seconds": 47.94,
+      "log": "/tmp/451-return-operator.log"
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy -p hex-ui --all-targets --features ui-test-support --locked -- -D warnings",
+      "exit": 0,
+      "seconds": 20.34,
+      "log": "/tmp/451-return-clippy.log"
+    },
+    {
+      "name": "contracts",
+      "command": "python3 -m unittest discover -s scripts/tests -p test_changelog.py",
+      "exit": 0,
+      "seconds": 4.0,
+      "log": "/tmp/451-return-contracts.log"
+    },
+    {
+      "name": "architecture",
+      "command": "python3 scripts/check-architecture.py",
+      "exit": 0,
+      "seconds": 0.05,
+      "log": "/tmp/451-return-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": "python3 scripts/check-gpui-patch.py",
+      "exit": 0,
+      "seconds": 0.04,
+      "log": "/tmp/451-return-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": "python3 scripts/check-ui-style.py",
+      "exit": 0,
+      "seconds": 0.1,
+      "log": "/tmp/451-return-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "exit": 0,
+      "seconds": 5.94,
+      "log": "/tmp/451-return-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": "git diff --check",
+      "exit": 0,
+      "seconds": 0.01,
+      "log": "/tmp/451-return-diff.log"
+    }
+  ],
+  "reader": {
+    "command": "cargo test -p hex-ui --features ui-test-support --locked --lib editor::changelog:: -- --nocapture",
+    "exit": 0,
+    "passed": 12,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 810,
+    "test_seconds": 1.02,
+    "log": "451-return-reader.log"
+  },
+  "red": {
+    "command": "cargo test -p hex-ui --features ui-test-support --locked --lib changelog_grouped_headings -- --nocapture",
+    "exit": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "filtered": 821,
+    "test_seconds": 0.28,
+    "reason": "valid newest reader batch has4notes vs hardcoded7",
+    "log": "451-return-original-red.log",
+    "reproduce": "On exact parent9d342 apply451-return-original-red.patch then run command; actualdataset/production unchanged."
+  },
+  "preservation": {
+    "parent": "9d342d24285105bd9d1c0b786944124303853061",
+    "only_changed_path": "crates/hex-ui/src/editor/changelog.rs",
+    "before_blob": "33a00391fe2f251c8da18728cb81e2f867cd0bc5",
+    "production_and_non_ui_tests_unchanged": true,
+    "production_prefix_sha256": "bd5a3a8bf07084b14e4f73f4da8d91e3cc2d3410bd2b9422941369a54f466e83",
+    "dataset_sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc",
+    "before_sha256": "b89033680d17b083e77e1607bbe43159bec4b67746b2f0c2d8c7270f82396ae7",
+    "after_sha256": "5dc7c1c79f1d1674ea2d4c407ca75593c1f60e75a036a17ccd83906ef35a07a4"
+  },
+  "limits": [
+    "Synthetic two-batch fixture is reader-valid, NOT real AI generation/provenance evidence. Original actual dataset bytes are untouched.",
+    "No full prospective CI by source owner; solemerger must newly qualify changed test source.",
+    "No production/native behavior changed; original451 physical acceptance remains open, no new native job requested."
+  ],
+  "payloads": {
+    "451-return-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "451-return-before.rs": {
+      "bytes": 41365,
+      "sha256": "b89033680d17b083e77e1607bbe43159bec4b67746b2f0c2d8c7270f82396ae7"
+    },
+    "451-return-cargo-checks.json": {
+      "bytes": 438,
+      "sha256": "c8c05e8323d6d941f3f8bf0cb7b1310c60d13aecd79cad5c2478760038b9a527"
+    },
+    "451-return-clippy.log": {
+      "bytes": 360,
+      "sha256": "994a2de54c288df4fd331b9cbb38cb84830ef8d392192bad2733a28742fcb071"
+    },
+    "451-return-contracts.log": {
+      "bytes": 403,
+      "sha256": "249f975e82e4c2155ec2779a69e227d1200c55d61f567582d58e3c6338d5b7bf"
+    },
+    "451-return-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "451-return-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "451-return-gpui.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "451-return-guard-checks.json": {
+      "bytes": 972,
+      "sha256": "2a5424bf8c8b28b89fc8121eb23a51dc4f81f3cd806cef956cc55133f0d11559"
+    },
+    "451-return-operator.log": {
+      "bytes": 1621,
+      "sha256": "52bccdd4a097ab291f489702871559b2eef5557046da710b5068dd643bbd6acf"
+    },
+    "451-return-original-red.log": {
+      "bytes": 1051,
+      "sha256": "25966cf3fc4e4ba06521d24f4f62fd509d4821c66411ef93776481ab0e1cabc1"
+    },
+    "451-return-original-red.patch": {
+      "bytes": 1864,
+      "sha256": "0f19f53cdaf26eb4825c16aa4d34faf10e2d242d6078c555da066fcbadb7aee9"
+    },
+    "451-return-original-red.rs": {
+      "bytes": 42586,
+      "sha256": "e250963f56eeee741eb1931cf1a04c3f2187bdb82cc76cf757330d9e29ec1d90"
+    },
+    "451-return-preservation.json": {
+      "bytes": 592,
+      "sha256": "8820e017e753680b699ded6e6cb5440a75a2321405e3abc35cea5675772b8361"
+    },
+    "451-return-reader.log": {
+      "bytes": 1799,
+      "sha256": "34edaaaea739b40d8de5fa2724b2ec8c5da98c3c9d8a887d5b82425c8303be12"
+    },
+    "451-return-source.json": {
+      "bytes": 451,
+      "sha256": "df03440ffb405cd6c39617e3798bd3884828c7061514beaea41ad28debddd0a4"
+    },
+    "451-return-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "integration-note.md": {
+      "bytes": 3346,
+      "sha256": "f3adc2ba29cba62ab9075d6e8a3e7d33ee65d51730044c4ba3871be3251ed61a"
+    },
+    "source.patch": {
+      "bytes": 8250,
+      "sha256": "2612f5f461ec9cbf49f55f29720e6b0c5c014d244df8b24f7e945dfda3602457"
+    },
+    "unchanged-generated.json": {
+      "bytes": 3428,
+      "sha256": "1221c2b9547e77c8ee69da49c5baba05b5eabe2b9848235c5094f77e1c2069cc"
+    }
+  }
+}

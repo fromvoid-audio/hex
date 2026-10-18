@@ -1,0 +1,37 @@
+diff --git a/crates/hex-ui/src/editor/changelog.rs b/crates/hex-ui/src/editor/changelog.rs
+index 33a00391..e19b50ac 100644
+--- a/crates/hex-ui/src/editor/changelog.rs
++++ b/crates/hex-ui/src/editor/changelog.rs
+@@ -731,11 +731,32 @@ mod ui_tests {
+         })
+     }
+ 
++    // Synthetic valid reader history, not generated AI evidence. Deliberately
++    // unequal counts/category sets expose newest-display vs oldest-storage order.
++    fn grouped_history_fixture() -> serde_json::Value {
++        serde_json::json!({"format":1,"batches":[
++            {"input":{"version":"0.1.0","source":"1111111111111111111111111111111111111111"},
++             "result":{"entries":[
++                {"category":"fixes","text":"older first fix"},
++                {"category":"fixes","text":"older second fix"}]}},
++            {"input":{"version":"0.2.0","base":"1111111111111111111111111111111111111111",
++                      "source":"2222222222222222222222222222222222222222"},
++             "generated_at":"fixture time","generator":"test fixture",
++             "result":{"entries":[
++                {"category":"fixes","text":"newer complete fix"},
++                {"category":"features","text":"newer first feature"},
++                {"category":"improvements","text":"newer complete improvement"},
++                {"category":"features","text":"newer second feature"}]}}
++        ]})
++    }
++
+     #[gpui::test]
+     fn changelog_grouped_headings_render_once_and_rows_hover_independently(
+         cx: &mut TestAppContext,
+     ) {
+         let (_directory, mut visual, editor) = fixture(cx);
++        let original = grouped_history_fixture();
++        install(&editor, &mut visual, &original.to_string());
+         click(&mut visual, "open-changelog");
+         for (selector, role) in [
+             ("changelog-heading-0-features", PaletteRole::Secondary),

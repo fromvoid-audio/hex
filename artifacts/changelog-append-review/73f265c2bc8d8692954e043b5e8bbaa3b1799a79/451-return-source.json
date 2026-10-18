@@ -1,0 +1,9 @@
+{
+  "parent": "9d342d24285105bd9d1c0b786944124303853061",
+  "head": "73f265c2bc8d8692954e043b5e8bbaa3b1799a79",
+  "tree": "0fd1ff8dda6fc4a18919e1b04510ad0e440929ca",
+  "branch": "source-fix/451-appended-batch-9d342",
+  "before_blob": "33a00391fe2f251c8da18728cb81e2f867cd0bc5",
+  "after_blob": "734ca6c777414ef6e71a45570058570a26735c34",
+  "canonical_readback": "9d342d24285105bd9d1c0b786944124303853061\trefs/heads/pulse/task-2849-g1-4e5518763c35"
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "contracts",
+    "command": "python3 -m unittest discover -s scripts/tests -p test_changelog.py",
+    "exit": 0,
+    "seconds": 4.0,
+    "log": "/tmp/451-return-contracts.log"
+  },
+  {
+    "name": "architecture",
+    "command": "python3 scripts/check-architecture.py",
+    "exit": 0,
+    "seconds": 0.05,
+    "log": "/tmp/451-return-architecture.log"
+  },
+  {
+    "name": "gpui",
+    "command": "python3 scripts/check-gpui-patch.py",
+    "exit": 0,
+    "seconds": 0.04,
+    "log": "/tmp/451-return-gpui.log"
+  },
+  {
+    "name": "style",
+    "command": "python3 scripts/check-ui-style.py",
+    "exit": 0,
+    "seconds": 0.1,
+    "log": "/tmp/451-return-style.log"
+  },
+  {
+    "name": "fmt",
+    "command": "cargo fmt --all -- --check",
+    "exit": 0,
+    "seconds": 5.94,
+    "log": "/tmp/451-return-fmt.log"
+  },
+  {
+    "name": "diff",
+    "command": "git diff --check",
+    "exit": 0,
+    "seconds": 0.01,
+    "log": "/tmp/451-return-diff.log"
+  }
+]

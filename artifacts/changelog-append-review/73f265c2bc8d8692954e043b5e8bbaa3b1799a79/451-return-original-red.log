@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.09s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-0fb9a42c4f4a32cc)
+
+running 1 test
+
+thread 'editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently' (124857) panicked at crates/hex-ui/src/editor/changelog.rs:781:13:
+assertion `left == right` failed
+  left: 4
+ right: 7
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently ... FAILED
+
+failures:
+
+failures:
+    editor::changelog::ui_tests::changelog_grouped_headings_render_once_and_rows_hover_independently
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 821 filtered out; finished in 0.28s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

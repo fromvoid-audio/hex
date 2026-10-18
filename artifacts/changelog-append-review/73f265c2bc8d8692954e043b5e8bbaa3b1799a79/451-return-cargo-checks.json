@@ -1,0 +1,16 @@
+[
+  {
+    "name": "operator",
+    "command": "cargo test -p hex-ui --features ui-test-support --locked --lib operator_tab -- --nocapture",
+    "exit": 0,
+    "seconds": 47.94,
+    "log": "/tmp/451-return-operator.log"
+  },
+  {
+    "name": "clippy",
+    "command": "cargo clippy -p hex-ui --all-targets --features ui-test-support --locked -- -D warnings",
+    "exit": 0,
+    "seconds": 20.34,
+    "log": "/tmp/451-return-clippy.log"
+  }
+]
