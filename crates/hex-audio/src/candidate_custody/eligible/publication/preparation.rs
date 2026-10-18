@@ -506,11 +506,14 @@ impl Custody {
         let execution = work.publication.preparations[token.slot]
             .as_mut()
             .ok_or("candidate preparation storage differs")?;
+        // Candidate-local budget preflight is NOT the final joint admission.
+        // It retains the existing split allowance before allocating that Box.
+        // Pending native reservation already covers this whole constructor.
         let summary = match catch_unwind(AssertUnwindSafe(|| {
             let owner = execution
                 .cell
                 .as_mut()
-                .and_then(|c| c.owner_on_control())
+                .and_then(|cell| cell.owner_on_control())
                 .ok_or("candidate preparation is not ready")?;
             if owner.sample_rate() != rate
                 || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
@@ -532,14 +535,50 @@ impl Custody {
                 return Err("candidate preparation is incomplete");
             }
         };
+        let cell = execution
+            .cell
+            .as_mut()
+            .ok_or("candidate preparation is not ready")?;
+        // Allocate the ACTUAL claimed wrapper after its local allowance check,
+        // but BEFORE the short terminal scope. Original owner remains rooted.
+        let split = match catch_unwind(AssertUnwindSafe(move || {
+            // Consume the actual mutable reference in this FnOnce call; a
+            // FnMut reborrow cannot escape as the lifetime-bound split handle.
+            let cell = cell;
+            hex_engine::AudioCandidatePreparation::preallocate_publication_split_on_control(cell)
+        })) {
+            Ok(result) => {
+                result.map_err(|_| "candidate constructor split preallocation refused")?
+            }
+            Err(payload) => {
+                execution.failed = true;
+                work.publication.failed_payloads[token.slot] = Some(payload);
+                let mut bank = lock(&self.bank);
+                bank.publication.slots[token.slot].phase = Phase::Failed;
+                self.mark_closing(&mut bank);
+                return Err("candidate preparation is incomplete");
+            }
+        };
+        let owner = split
+            .owner_on_control()
+            .ok_or("candidate preparation is not ready")?;
+        let preliminary = self.preflight_stage(
+            root,
+            owner,
+            &execution.domains,
+            header,
+            summary,
+            Some(token),
+        )?;
+        // This actual empty State Box also exists BEFORE the terminal barrier.
+        // Final preflight below rechecks its exact stamp; this is not a permit.
+        let state = Self::publication_state(preliminary.stamp, &execution.domains, header);
         let barrier = lock(&root.0.bank);
         if barrier.closing || barrier.retiring {
             return Err("candidate Root is closing");
         }
-        let owner = execution
-            .cell
-            .as_mut()
-            .and_then(|c| c.owner_on_control())
+        let owner = split
+            .owner_on_control()
             .ok_or("candidate preparation is not ready")?;
         let plan = self.preflight_stage(
             root,
@@ -549,17 +588,14 @@ impl Custody {
             summary,
             Some(token),
         )?;
-        let state = Self::publication_state(plan.stamp, &execution.domains, header);
+        if plan.stamp != state.stamp {
+            return Err("candidate preallocated publication stamp differs");
+        }
         execution.pending = true;
-        // Split itself preflights while borrowed; only fixed moves follow its
-        // final take. A scalar refusal leaves the exact owner in this cell.
-        let parts = catch_unwind(AssertUnwindSafe(|| {
-            execution
-                .cell
-                .as_mut()
-                .ok_or(hex_engine::AudioStorageError::SourceMismatch)?
-                .split_for_publication_on_control()
-        }));
+        // Only the preallocated transfer moves owners. This remains the legacy
+        // candidate-local stage: claims/metering/continuous native guards and
+        // the actual joint ledger still need the separate closed-graph route.
+        let parts = catch_unwind(AssertUnwindSafe(|| split.transfer_on_control()));
         let (runtime, anchors) = match parts {
             Ok(Ok(parts)) => parts,
             Ok(Err(_)) => {

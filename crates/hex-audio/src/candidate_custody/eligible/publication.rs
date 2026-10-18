@@ -553,16 +553,30 @@ impl super::Custody {
         summary: AudioCandidateConstructorSummary,
         preparation: Option<AudioCandidatePreparationToken>,
     ) -> Result<StagePlan, &'static str> {
+        let bank = lock(&self.bank);
+        Self::preflight_stage_with_bank(&bank, root, owner, domains, header, summary, preparation)
+    }
+    // The final closed-graph operation can retain this SAME actual eligible
+    // bank guard, including cancellation exclusion, through recheck/commit.
+    // Existing callers still acquire their guard in the wrapper above.
+    fn preflight_stage_with_bank(
+        bank: &NativeBank,
+        root: &CandidateRoot,
+        owner: &AudioCandidateOwner,
+        domains: &Vec<AudioCandidateDomainToken>,
+        header: Header,
+        summary: AudioCandidateConstructorSummary,
+        preparation: Option<AudioCandidatePreparationToken>,
+    ) -> Result<StagePlan, &'static str> {
         let Header {
             revision: _,
             context_generation,
             policy: _,
         } = header;
-        let reservation = lock(&self.bank)
+        let reservation = bank
             .publication
             .reservation
             .ok_or("constructor publication is not reserved")?;
-        let bank = lock(&self.bank);
         if bank.closing || bank.root != root.root_id() || domains.len() > 2 {
             return Err("constructor Root is closing or differs");
         }
@@ -666,7 +680,7 @@ impl super::Custody {
             .iter()
             .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
             .ok_or("constructor domain construction overflow")?;
-        let resources = resources::for_candidate(&bank, summary, reserved_slot)?;
+        let resources = resources::for_candidate(bank, summary, reserved_slot)?;
         let mut members = summary.member_rows;
         let mut transfers = summary.transfer_rows;
         for (index, slot) in bank.publication.slots.iter().enumerate() {
@@ -802,6 +816,25 @@ impl super::Custody {
         root: &CandidateRoot,
         commit: StageCommit,
     ) -> (Queued, AudioCandidateTicket) {
+        // Preserve the legacy lock order: constructor custody is inspected
+        // before acquiring the native eligible bank, as before this split.
+        let matched = commit
+            .anchors
+            .constructor_claims(&commit.runtime)
+            .is_some_and(|proof| proof.summary() == Some(commit.summary));
+        let mut bank = lock(&self.bank);
+        self.commit_stage_with_bank(root, commit, matched, &mut bank)
+    }
+    // Guard-preserving primitive only. Claim clones and metering below are
+    // STILL legacy setup and must move before final joint inspection before
+    // this may be used by the new irreversible closed-graph frontier.
+    fn commit_stage_with_bank(
+        &self,
+        root: &CandidateRoot,
+        commit: StageCommit,
+        matched: bool,
+        bank: &mut NativeBank,
+    ) -> (Queued, AudioCandidateTicket) {
         let StageCommit {
             runtime,
             anchors,
@@ -824,10 +857,6 @@ impl super::Custody {
             peak,
             resources,
         } = plan;
-        let matched = anchors
-            .constructor_claims(&runtime)
-            .is_some_and(|proof| proof.summary() == Some(summary));
-        let mut bank = lock(&self.bank);
         // The outer terminal barrier and sole Control writer preserve every
         // checked vacancy. No validation/refusal, user destructor or allocation
         // remains between securing the two actual halves and queue acceptance.
