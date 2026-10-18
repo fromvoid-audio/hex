@@ -90,6 +90,8 @@ widgets = (
     # Device preset header actions reuse themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button(',
     'super::super::device_preset::actions(',
+    # Shared A/B actions compose themed compact buttons, never raw text.
+    'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
     # Track sizing composes non-text pointer handles and capture listeners.

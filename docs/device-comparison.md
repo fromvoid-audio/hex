@@ -1,8 +1,8 @@
 # shared device a/b comparison
 
 Approved implementation contract for Pulse2845 / PR447. The model and storage checkpoints
-implement canonical comparison and pair persistence; service/UI and complete acceptance
-remain in progress. This is not a claim that the end-user feature is qualified. Audited source: main `bc06d7573ffa7f4d989bdff9553ed3108f4f0818`,
+implement canonical comparison and pair persistence. Typed service admission and actual
+shared UI routes are implemented; final integration and native acceptance remain open. This is not a claim that the end-user feature is qualified. Audited source: main `bc06d7573ffa7f4d989bdff9553ed3108f4f0818`,
 canonical intake retained in source checkpoint `38b008c859f3662787f3757a865071eebeec72be`.
 
 ## current boundaries
@@ -16,7 +16,7 @@ canonical intake retained in source checkpoint `38b008c859f3662787f3757a865071ee
 - `hex-session::Session::{preview,commit}_device_parameter` patches only this
   authored state through the class-specific registered definition and existing
   prepared transaction. Failure must precede canonical history/publication.
-- `DeviceSnapshot` and the shared project storage Device DTO carry one state.
+- `DeviceSnapshot` and the shared project storage Device DTO carry both authored variants and the active slot.
   Generic preset schema2 stores the active and optional inactive class/type/version/payload, deliberately preserves
   the target device's host trims, and refuses asset-bound presets without a
   portable asset manifest. Both slots refuse asset-backed portable presets without a manifest.
@@ -55,10 +55,10 @@ migration is required. No existing state-size or resource cap is raised.
    bindings while bypass and host input/output trims remain device-wide, matching
    existing preset semantics. All stored variants must reflect current global
    trims so switching cannot restore stale values. Slot-local host trims are outside the approved comparison contract.
-2. **Actual custody:** Source4's published Sampler checkpoint `4372a09d` has
+2. **Actual custody:** Source5's current Sampler resource checkpoint `0bbbb7bd` has
    `audio_storage/canonical_state.rs::project_native_states` visiting only
    `device.state()`, including current/Undo/Redo through the retained-project
-   iterator. Source4 must include both actual fields in its existing ledger and
+   iterator. The resource owner must include both actual fields in its existing ledger and
    aggregate before resource-backed A/B can be called integrated. This is not a
    new constructor, parallel ledger, ownership family or admission shortcut.
 3. **Asset persistence:** the current outer envelope already preserves active
@@ -71,8 +71,12 @@ migration is required. No existing state-size or resource cap is raised.
 
 Source1 proposes Project's comparison/model/snapshot/reference hunks, shared
 Storage Device/preset codec hunks, bounded Session comparison/preset request
-hunks, and a private shared UI module. Source4 retains all Engine/resource/
-Sampler/compiler/custody writes. Source5 retains EQ body/filter/response behavior.
+hunks, and a private shared UI module. Source5 owns the Sampler resource/compiler/custody slice and supplied the mechanical
+Engine/Audio snapshot adaptation in `6bb1e983`; Source1 consumes that exact commit
+without editing Engine/Audio production. Source4 retains Warp/Beats. Source5 also
+owns EQ body/filter/response behavior. The future Sampler visitor adaptation is
+not imported into this branch: its file is absent here, and its current branch
+lacks the comparison model. It needs explicit composed-source resource validation.
 Shared UI writes are limited to instrument/effect header actions, existing
 ChainWindow focus lookup, module/binding/action wiring; preserve the separate
 PR402 neutral-focus and held-delete changes. No second selection owner.
@@ -120,3 +124,21 @@ new audible state or native resource owner.
 Sole merger owns prospective-candidate full local CI/review/integration/merge.
 Coordinator owns finite native/optimized checks and all user-app delivery. A source
 handoff or passing fixture is not installed, visually accepted or user-approved.
+
+## source checkpoint evidence
+
+The actual shared UI route passed nine rendered cases, including fifteen available
+catalog roles across native instruments, Track effects and Return effects. These
+exercise real title-click then P (also within one dispatch frame), nonselected
+badge targeting, independent numeric A/B edits, direction-correct copy/one Undo,
+real keyboard Undo after stale menu dismissal, pending/held-key refusal and
+text/marked-composition/graph/modal/musical focus isolation. Marked composition is
+an injected GPUI input seam, not native OS IME acceptance.
+
+The two Track/Return callback cases passed debug and optimized allocation probes
+on UI checkpoint `779348be`: continuing 128-frame PCM is compared to the running
+oracle through actual InheritRuntime publication, with unchanged transport and
+zero observed callback allocation/deallocation. These are finite component
+receipts, not all-provider physical audio or future Sampler custody qualification.
+Earlier model, storage and service checkpoints retain their own original receipts;
+no report is relabeled as final prospective full CI.
