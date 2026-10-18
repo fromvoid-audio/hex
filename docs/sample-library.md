@@ -1,6 +1,6 @@
 # Indexed sample library
 
-Requested 17 October 2026; Pulse #2699 / PR317. Samples is a flat catalog of WAV
+Requested 17 October 2026; Pulse #2699 / PR317. The sample index is a catalog of WAV
 files from Music and all explicitly added browser folders, including subfolders.
 Home remains a project-navigation shortcut and is not scanned implicitly. No new
 audio codec support is implied: audio decoding/import keeps its existing WAV
