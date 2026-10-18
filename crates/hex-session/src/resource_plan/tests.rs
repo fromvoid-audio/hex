@@ -1,6 +1,11 @@
 use super::*;
 use crate::{AudioSourceBinding, PreparedImport, ResidentPcm, original_audio::OriginalAudio};
-use hex_engine::{Audio, AudioStorageLedgerReservation};
+use hex_engine::{
+    Audio, AudioStorageLedgerReservation, OwnedAudioInputs, OwnedAudioSource,
+    native_device_resources::{
+        DeviceResourceCatalog, OriginalResourceLayout, OriginalResourceSource,
+    },
+};
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
 };

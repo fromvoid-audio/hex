@@ -661,3 +661,110 @@ fn sampler_snapshot_waveform_reads_actual_bound_original_and_retains_exact_old_d
     records.release_read(old_read).unwrap();
     records.release_read(new_read).unwrap();
 }
+
+#[test]
+fn disjoint_pending_resource_projection_works_beside_actual_editor_transition_and_refusal() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported disjoint pending resource projection");
+        return;
+    }
+    for stereo in [false, true] {
+        eprintln!("SUPPORTED disjoint pending resource projection stereo={stereo}");
+        let (mut session, device) = fixture();
+        let original_project = session.project().clone();
+        let original_undo = session.editor.undo_storage_on_control().clone();
+        let original_redo = session.editor.redo_storage_on_control().clone();
+        let original = if stereo {
+            OwnedAudioSource::try_resident(24000, vec![[0.25, -0.5]; 4])
+                .ok()
+                .unwrap()
+        } else {
+            OwnedAudioSource::try_resident_mono(24000, vec![0.25; 4])
+                .ok()
+                .unwrap()
+        };
+        let pending = PreparedDeviceSample::from_native_on_control(
+            device,
+            session.project().device(device).unwrap().state(),
+            "pending.wav".into(),
+            original,
+        )
+        .unwrap();
+        let expected_pointer = match &pending.source {
+            OriginalAudio::Mono(source) => {
+                source.view().resident_mono_samples().unwrap().as_ptr() as usize
+            }
+            OriginalAudio::Stereo(audio) => audio.frames().as_ptr() as usize,
+        };
+        let projection =
+            crate::resource_plan::producer::ResidentResourceSources::new(&session.media);
+        let mut retained_bank = None;
+        let mut asset_id = None;
+        // The real editor callback borrows source/candidate while editor is
+        // mutable. This compiles because projection borrows ONLY actual media.
+        let result: Result<(Created, ()), SessionError> =
+            session.editor.execute_prepared_transition(
+                pending.assignment_command_on_control(),
+                |source, candidate| {
+                    assert_eq!(source, &original_project);
+                    let reference = candidate.device(device).unwrap().state().asset_references()[0];
+                    let asset = candidate
+                        .assets()
+                        .find(|asset| asset.id().value() == reference.asset.value())
+                        .unwrap();
+                    asset_id = Some(asset.id());
+                    retained_bank = Some(
+                        pending
+                            .prepare_resource_bank_with_sources_on_control(
+                                source,
+                                candidate,
+                                &projection,
+                                &[asset.id()],
+                                limits(),
+                                &AtomicBool::new(false),
+                            )
+                            .map_err(|_| SessionError::Invalid("resource preparation refused"))?,
+                    );
+                    // Simulate a later, still-fallible preparation refusal. No
+                    // native queue/media publication is performed by this test.
+                    Err(SessionError::Invalid("later preparation refused"))
+                },
+            );
+        assert!(result.is_err());
+        assert_eq!(session.project(), &original_project);
+        assert_eq!(session.editor.undo_storage_on_control(), &original_undo);
+        assert_eq!(session.editor.redo_storage_on_control(), &original_redo);
+        assert!(session.media.is_empty());
+        assert!(session.media_bank().unwrap().resident.is_empty());
+        let bank = retained_bank.unwrap();
+        let lease = bank
+            .borrow_original_source_on_control(asset_id.unwrap(), 4096)
+            .unwrap();
+        let view = lease.view().unwrap();
+        assert_eq!(view.sample_rate(), 24000);
+        if stereo {
+            assert_eq!(
+                view.resident_frames().unwrap().as_ptr() as usize,
+                expected_pointer
+            );
+            assert_eq!(view.resident_frames().unwrap(), &[[0.25, -0.5]; 4]);
+        } else {
+            assert_eq!(
+                view.resident_mono_samples().unwrap().as_ptr() as usize,
+                expected_pointer
+            );
+            assert_eq!(view.resident_mono_samples().unwrap(), &[0.25; 4]);
+        }
+        drop(bank);
+        drop(pending);
+        let surviving_view = lease.view().unwrap();
+        if stereo {
+            assert_eq!(
+                surviving_view.resident_frames().unwrap(),
+                &[[0.25, -0.5]; 4]
+            );
+        } else {
+            assert_eq!(surviving_view.resident_mono_samples().unwrap(), &[0.25; 4]);
+        }
+    }
+}

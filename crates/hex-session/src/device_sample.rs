@@ -238,9 +238,30 @@ impl PreparedDeviceSample {
         reservation: ResidentResourcePlanReservation,
         cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<DeviceResourceBank, ResourcePreparationError> {
-        self.validate_target_on_control(session.project())
+        self.prepare_resource_bank_with_sources_on_control(
+            session.project(),
+            candidate,
+            &crate::resource_plan::producer::ResidentResourceSources::new(&session.media),
+            assets,
+            reservation,
+            cancel,
+        )
+    }
+    /// Internal binding facts for the actual editor prepared-transition source
+    /// and candidate. The media projection borrows no editor/whole Session.
+    /// This is not a native reservation, install or publication operation.
+    pub(crate) fn prepare_resource_bank_with_sources_on_control(
+        &self,
+        source: &Project,
+        candidate: &Project,
+        sources: &crate::resource_plan::producer::ResidentResourceSources<'_>,
+        assets: &[AssetId],
+        reservation: ResidentResourcePlanReservation,
+        cancel: &dyn hex_engine::CancellationQuery,
+    ) -> Result<DeviceResourceBank, ResourcePreparationError> {
+        self.validate_target_on_control(source)
             .map_err(|_| ResourcePreparationError::InvalidSource)?;
-        if candidate.sample_rate() != session.project().sample_rate() {
+        if candidate.sample_rate() != source.sample_rate() {
             return Err(ResourcePreparationError::InvalidSource);
         }
         let state = candidate
@@ -268,12 +289,7 @@ impl PreparedDeviceSample {
         if asset.path() != self.path {
             return Err(ResourcePreparationError::InvalidSource);
         }
-        session.prepare_resident_resource_bank_with_pending_on_control(
-            assets,
-            Some((asset, &self.source)),
-            reservation,
-            cancel,
-        )
+        sources.prepare(assets, Some((asset, &self.source)), reservation, cancel)
     }
 }
 

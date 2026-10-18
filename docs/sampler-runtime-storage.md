@@ -378,3 +378,21 @@ is available to the aggregate compiler calculation; it does not itself reserve
 the required global old/current/history/candidate union or authorize ingress,
 registration or publication. The enclosing same-ceiling preconstruction and
 actual final ledger checks remain mandatory.
+
+The Session original-resource producer now borrows a private immutable projection
+of the actual media field. The existing public producer delegates to the same
+algorithm; it does not clone Session or its editor, create another bank family,
+or change source validation, cancellation, capacities or native PCM aliases.
+PreparedDeviceSample can use this disjoint borrow beside the actual mutable
+editor prepared-transition callback, validating the callback's source Project
+and exact candidate assignment against the pending decoded sample.
+
+The focused test runs original Mono and Stereo at 24 kHz against a 48 kHz
+project without a frame-copy derivative. It deliberately refuses after resource
+preparation and checks the complete current Project and Undo/Redo collections
+are unchanged, media is unpublished, and the original PCM pointer and samples
+survive bank and producer retirement through the existing lease. Its test-only
+bank destination is not production custody. This factors the required borrowed
+producer seam only: the sealed candidate/request binding, persistent bank
+installation, aggregate preconstruction reservation, displaced-history retirement
+and final model/media/audio publication frontier remain required and closed.
