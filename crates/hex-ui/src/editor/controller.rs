@@ -2111,7 +2111,15 @@ impl EditorView {
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
         let open_save = self.project_open.permits_save()
             && matches!(&request, Request::SaveCurrent | Request::SaveNew(_));
-        if (self.project_open.busy() || self.pending_open_path.is_some()) && !open_save {
+        // An already-started recovery must finish while a picker/confirmation
+        // pauses user edits. Only the currently owned recovery token qualifies.
+        let recovery_restore = matches!(&request, Request::RestorePlayback { generation }
+            if self.pending_recovery_generation == Some(*generation)
+                && self.recovery.generation() == Some(*generation));
+        if (self.project_open.busy() || self.pending_open_path.is_some())
+            && !open_save
+            && !recovery_restore
+        {
             self.error = Some("finish the current open action before editing".into());
             return false;
         }

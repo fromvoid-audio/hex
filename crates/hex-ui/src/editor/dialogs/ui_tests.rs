@@ -811,3 +811,251 @@ fn one_open_stale_picker_or_confirmation_cannot_replace_a_new_project(cx: &mut T
         });
     }
 }
+
+fn begin_tuning_preview(
+    editor: &gpui::Entity<EditorView>,
+    cx: &mut TestAppContext,
+    tuning: hex_tuning::ProjectTuning,
+) {
+    pump(editor, cx, settled);
+    editor.update(cx, |view, _| {
+        view.tuning.open = true;
+        view.tuning
+            .client
+            .begin(
+                view.project_generation,
+                view.state.as_ref().unwrap().project.tuning(),
+            )
+            .unwrap();
+        assert!(view.pump_tuning_gesture());
+    });
+    pump(editor, cx, |view| {
+        settled(view) && !view.tuning.client.has_pending_requests()
+    });
+    editor.update(cx, |view, _| {
+        view.tuning.client.change(tuning).unwrap();
+        assert!(view.pump_tuning_gesture());
+    });
+    pump(editor, cx, |view| {
+        settled(view) && !view.tuning.client.has_pending_requests()
+    });
+}
+
+fn changed_tuning(reference_key: u8, hz: f64) -> hex_tuning::ProjectTuning {
+    let original = hex_tuning::ProjectTuning::default();
+    let mut scale = original.scale();
+    scale.set_reference(reference_key, hz, 0).unwrap();
+    hex_tuning::ProjectTuning::new(true, scale, original.audition()).unwrap()
+}
+
+#[gpui::test]
+fn returned_open_failed_load_preserves_acknowledged_tuning_draft_and_history(
+    cx: &mut TestAppContext,
+) {
+    for malformed in [false, true] {
+        let directory = Directory::new();
+        let (handle, editor) = directory.window(cx);
+        add_track(&editor, cx);
+        let draft = changed_tuning(60, 333.0);
+        begin_tuning_preview(&editor, cx, draft);
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+        let snapshot = editor.read_with(cx, |view, _| view.tuning.client.snapshot().unwrap());
+        let path = directory.0.join(if malformed {
+            "malformed.hex"
+        } else {
+            "missing.hex"
+        });
+        if malformed {
+            std::fs::write(&path, b"not a current project").unwrap();
+        }
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        select_open(&mut visual, cx, path);
+        cx.simulate_prompt_answer("don't save");
+        visual.run_until_parked();
+        pump(&editor, cx, |view| settled(view) && view.error.is_some());
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.tuning.client.snapshot(),
+                Some(snapshot),
+                "failed load must not retire or commit the user's tuning draft"
+            );
+            assert_eq!(view.tuning.client.snapshot().unwrap().tuning, draft);
+        });
+        assert_document_unchanged(&editor, cx, &before);
+    }
+}
+
+#[gpui::test]
+fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions(
+    cx: &mut TestAppContext,
+) {
+    use hex_project::{BeatTime, Command};
+    use hex_session::service::Request;
+    let directory = Directory::new();
+    let (destination, _) = saved_destination(&directory);
+    let (handle, editor) = directory.window(cx);
+    pump(&editor, cx, settled);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
+            name: "notes".into()
+        })))
+    });
+    pump(&editor, cx, |view| {
+        settled(view) && !view.state.as_ref().unwrap().project.tracks().is_empty()
+    });
+    let track = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE
+        })))
+    });
+    pump(&editor, cx, settled);
+    let clip = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .midi_clips()[0]
+            .id()
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100
+        })))
+    });
+    pump(&editor, cx, settled);
+    let current_path = directory.0.join("current.hex");
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(current_path.clone())))
+    });
+    pump(&editor, cx, |view| {
+        settled(view) && view.state.as_ref().unwrap().document_path.is_some()
+    });
+    let before_bytes = std::fs::read(&current_path).unwrap();
+    begin_tuning_preview(&editor, cx, changed_tuning(0, 20_000.0));
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.tuning.error.is_some(),
+            "actual worker must reject the unplayable preview"
+        )
+    });
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    select_open(&mut visual, cx, destination);
+    cx.simulate_prompt_answer("save");
+    visual.run_until_parked();
+    pump(&editor, cx, |view| {
+        settled(view) && !view.saving_project && view.tuning.error.is_some()
+    });
+    assert_document_unchanged(&editor, cx, &before);
+    assert_eq!(std::fs::read(&current_path).unwrap(), before_bytes);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddTrack {
+            name: "usable after refusal".into()
+        })))
+    });
+    pump(&editor, cx, settled);
+    visual.dispatch_action(OpenProject);
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_paths_selection(None);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            assert!(!view.request_window_close(window, cx));
+            assert!(
+                view.close_prompt_open,
+                "close must reach its normal unsaved-work prompt"
+            );
+        });
+    });
+    cx.simulate_prompt_answer("cancel");
+    visual.run_until_parked();
+    visual.dispatch_action(NewProject);
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.pending_new_mode.is_some(),
+            "New remains reachable after refused Save"
+        );
+        assert!(!view.opening_project);
+    });
+}
+
+#[gpui::test]
+fn returned_open_picker_admits_own_recovery_restore_without_admitting_edits(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::service::Request;
+    let directory = Directory::new();
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    editor.update(cx, |view, _| view.recover_audio());
+    let generation = editor.read_with(cx, |view, _| view.pending_recovery_generation.unwrap());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, _| {
+        window.activate_window();
+        window.blur();
+    });
+    visual.dispatch_action(OpenProject);
+    assert!(cx.did_prompt_for_paths());
+    editor.update(cx, |view, _| {
+        assert!(view.project_open.busy());
+        assert!(!view.enqueue(Request::Edit(hex_project::Command::AddTrack {
+            name: "must not be inserted".into()
+        })));
+        assert!(
+            !view.enqueue(Request::RestorePlayback {
+                generation: generation + 1
+            }),
+            "foreign recovery tokens remain blocked"
+        );
+        assert!(
+            view.enqueue(Request::RestorePlayback { generation }),
+            "picker must not reject its current internal audio-recovery continuation"
+        );
+    });
+    // Receive the real restart and restoration completions explicitly. This
+    // older source's separate restart-counter finding belongs to Source6;
+    // a zero pending count alone must not masquerade as restoration proof.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut restored = false;
+    while !restored {
+        if let Ok(event) = editor.read_with(cx, |view, _| view.service.try_event()) {
+            if event.restore_complete == Some(generation) {
+                assert!(event.error.is_none());
+                assert!(event.playback.is_some());
+                restored = true;
+            }
+            editor.update(cx, |view, _| {
+                view.receive(event);
+            });
+        } else {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual restoration completion missing"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    cx.simulate_paths_selection(None);
+    visual.run_until_parked();
+    pump(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert!(!view.project_open.busy());
+        assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
+    });
+}
