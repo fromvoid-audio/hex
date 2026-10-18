@@ -136,9 +136,30 @@ fn command_d_duplicates_bounded_audio_midi_gaps_and_advances_scope_atomically(
             if scope == 0 {
                 assert_eq!(p.track(midi).unwrap(), &original_midi);
             } else {
-                assert!(
-                    p.track(midi).unwrap().midi_clips().len() > 1,
-                    "MIDI fragments are included"
+                let fragment = p
+                    .track(midi)
+                    .unwrap()
+                    .midi_clips()
+                    .iter()
+                    .find(|c| p.tempo_map().beat_to_frame(c.start()).unwrap() == 72_000)
+                    .expect("partial MIDI copy");
+                assert_ne!(fragment.id(), clip);
+                assert_eq!(
+                    p.tempo_map().beat_to_frame(fragment.length()).unwrap(),
+                    60_000
+                );
+                assert_eq!(fragment.notes().len(), 1);
+                assert_eq!(fragment.notes()[0].start(), BeatTime::ZERO);
+                assert_eq!(
+                    p.tempo_map()
+                        .beat_to_frame(fragment.notes()[0].duration())
+                        .unwrap(),
+                    36_000
+                );
+                assert_eq!(fragment.notes()[0].pitch(), 60);
+                assert_ne!(
+                    fragment.notes()[0].id(),
+                    original_midi.midi_clips()[0].notes()[0].id()
                 );
             }
             let range = view.normalized_time_selection().unwrap();
