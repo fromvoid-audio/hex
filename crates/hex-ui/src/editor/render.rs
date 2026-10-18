@@ -421,20 +421,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
-                if event.button == MouseButton::Left
-                    && let Some(drag) = view.active_trim_drag.clone()
-                {
-                    drag.snap_modifier.set(event.modifiers.platform);
-                    drag.stretch_modifier.set(event.modifiers.shift);
-                    drag.last_pointer_x.set(Some(f32::from(event.position.x)));
-                    view.update_trim_preview(&drag, f32::from(event.position.x), cx);
-                }
-                if event.button == MouseButton::Left
-                    && let Some(drag) = view.active_midi_trim_drag.clone()
-                {
-                    drag.snap_modifier.set(event.modifiers.platform);
-                    drag.last_pointer_x.set(Some(f32::from(event.position.x)));
-                    view.update_midi_trim_preview(&drag, f32::from(event.position.x), cx);
+                if view.finish_trim_pointer_release(event, window, cx) {
+                    cx.stop_active_drag(window);
+                    cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                    cx.stop_propagation();
                 }
             }))
             .on_modifiers_changed(move |event, window, cx| {
