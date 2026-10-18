@@ -9,6 +9,8 @@ use crate::{
 pub struct ArrangementRootCapacity {
     pub track_container_bytes: usize,
     pub return_container_bytes: usize,
+    pub tempo_backing_bytes: usize,
+    pub midi_routing_backing_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub installed_tracks: usize,
     pub installed_returns: usize,
@@ -18,6 +20,8 @@ impl ArrangementRootCapacity {
     pub(crate) fn bytes(self) -> Result<usize, AudioStorageError> {
         self.track_container_bytes
             .checked_add(self.return_container_bytes)
+            .and_then(|n| n.checked_add(self.tempo_backing_bytes))
+            .and_then(|n| n.checked_add(self.midi_routing_backing_bytes))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -40,6 +44,9 @@ pub(super) struct ArrangementRootAssembly {
     returns: Vec<ReturnBus>,
     feed: ReturnFeedPlan,
     contexts: Option<OwnedShared<SharedAnalyticContextTable>>,
+    tempo_map: Option<hex_project::TempoMap>,
+    midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
+    metadata_drop_pending: bool,
     has_feed: bool,
     scalars: Option<Scalars>,
     growth: usize,
@@ -47,6 +54,8 @@ pub(super) struct ArrangementRootAssembly {
     pub(super) fail_after: Option<usize>,
     #[cfg(test)]
     pub(super) panic_after: Option<usize>,
+    #[cfg(test)]
+    pub(super) panic_after_metadata_take: bool,
 }
 impl ArrangementRootAssembly {
     #[cfg(test)]
@@ -67,6 +76,9 @@ impl ArrangementRootAssembly {
             && self.tracks.capacity() == 0
             && self.returns.capacity() == 0
             && self.contexts.is_none()
+            && self.tempo_map.is_none()
+            && self.midi_routing.capacity() == 0
+            && !self.metadata_drop_pending
             && self.feed.has_no_owned_storage()
     }
     pub(super) fn restore_project(&mut self, source: &mut Option<Project>) {
@@ -81,6 +93,9 @@ impl ArrangementRootAssembly {
             || !self.returns.is_empty()
             || self.contexts.is_some()
             || self.has_feed
+            || self.tempo_map.is_some()
+            || self.midi_routing.capacity() != 0
+            || self.metadata_drop_pending
             || self.scalars.is_some()
         {
             return Err(AudioStorageError::Capacity);
@@ -152,17 +167,20 @@ impl ArrangementRootAssembly {
         &'a self,
         external: Option<&'a Project>,
     ) -> Result<RootStorageView<'a>, AudioStorageError> {
+        if self.metadata_drop_pending {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         if self.project.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
         if let Some(project) = self.project.as_ref().or(external) {
             if project.audio_clip_views.capacity() != 0
                 || project.signal_graph.is_some()
-                || project.tempo_map.is_some()
-                || project.midi_routing.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.returns.capacity() != 0
                 || self.contexts.is_some()
+                || self.tempo_map.is_some()
+                || self.midi_routing.capacity() != 0
                 || !self.feed.has_no_owned_storage()
             {
                 return Err(AudioStorageError::UnknownStorage);
@@ -203,7 +221,33 @@ impl ArrangementRootAssembly {
             .map_or((&self.tracks, &self.returns), |p| {
                 (&p.tracks, &p.return_buses)
             });
+        let tempo_map = self
+            .project
+            .as_ref()
+            .or(external)
+            .and_then(|project| project.tempo_map.as_ref())
+            .or(self.tempo_map.as_ref());
+        let tempo_backing_bytes = tempo_map
+            .map(|map| {
+                let layout = map.owned_allocation_layout();
+                layout
+                    .point_bytes()
+                    .and_then(|n| layout.prefix_bytes().and_then(|m| n.checked_add(m)))
+                    .ok_or(AudioStorageError::Overflow)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let routes = self
+            .project
+            .as_ref()
+            .or(external)
+            .map_or(&self.midi_routing, |project| &project.midi_routing);
         Ok(ArrangementRootCapacity {
+            tempo_backing_bytes,
+            midi_routing_backing_bytes: routes
+                .capacity()
+                .checked_mul(mem::size_of::<(hex_project::TrackId, hex_project::TrackId)>())
+                .ok_or(AudioStorageError::Overflow)?,
             track_container_bytes: tracks
                 .capacity()
                 .checked_mul(mem::size_of::<Track>())
@@ -230,6 +274,9 @@ impl ArrangementRootAssembly {
             || !self.returns.is_empty()
             || self.has_feed
             || self.contexts.is_some()
+            || self.tempo_map.is_some()
+            || self.midi_routing.capacity() != 0
+            || self.metadata_drop_pending
             || self.tracks.capacity() < tracks.root_count()
             || self.returns.capacity() < returns.root_count()
         {
@@ -305,8 +352,8 @@ impl ArrangementRootAssembly {
             project_track_ids: _,
             audio_clip_views: _,
             signal_graph: _,
-            tempo_map: _,
-            midi_routing: _,
+            tempo_map,
+            midi_routing,
             sample_rate: _,
             tracks,
             return_buses,
@@ -322,12 +369,53 @@ impl ArrangementRootAssembly {
             self.returns = return_buses;
             self.feed = return_feed_plan;
             self.contexts = Some(shared_contexts);
+            self.install_restored_metadata(tempo_map, midi_routing);
         }
         shared.restore_arrangement(&mut self.contexts);
         returns.restore_root(&mut self.returns, &mut self.feed, self.has_feed);
         tracks.restore_root_rows(&mut self.tracks);
         self.has_feed = false;
         self.scalars = None;
+        Ok(())
+    }
+    /// Fixed move after the actual aggregate/destination preflight. No fresh
+    /// constructor receipt or provenance is manufactured by moving owned Vecs.
+    fn install_restored_metadata(
+        &mut self,
+        tempo_map: Option<hex_project::TempoMap>,
+        midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
+    ) {
+        self.tempo_map = tempo_map;
+        self.midi_routing = midi_routing;
+    }
+    pub(super) fn has_metadata_disposal(&self) -> bool {
+        self.metadata_drop_pending || self.tempo_map.is_some() || self.midi_routing.capacity() != 0
+    }
+    pub(super) fn dispose_metadata_on_control(&mut self) -> Result<(), AudioStorageError> {
+        if self.metadata_drop_pending {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        if self.project.is_some()
+            || !self.tracks.is_empty()
+            || !self.returns.is_empty()
+            || self.contexts.is_some()
+        {
+            return Err(AudioStorageError::Capacity);
+        }
+        // Canonical TempoMap owns only TempoPoint/u128 Vecs; routing entries
+        // are Copy IDs. Parent catch retains pending/FailedIncomplete on unwind.
+        fn copy_element<T: Copy>() {}
+        copy_element::<hex_project::TempoPoint>();
+        copy_element::<(hex_project::TrackId, hex_project::TrackId)>();
+        self.metadata_drop_pending = true;
+        drop(self.tempo_map.take());
+        #[cfg(test)]
+        assert!(
+            !self.panic_after_metadata_take,
+            "persistent Arrangement metadata drop panic"
+        );
+        drop(mem::take(&mut self.midi_routing));
+        self.metadata_drop_pending = false;
         Ok(())
     }
     #[cfg(test)]
@@ -362,6 +450,9 @@ impl ArrangementRootAssembly {
             returns,
             feed,
             contexts: _,
+            tempo_map,
+            midi_routing,
+            metadata_drop_pending: _,
             has_feed: _,
             scalars: _,
             growth,
@@ -369,12 +460,18 @@ impl ArrangementRootAssembly {
                 fail_after: _,
             #[cfg(test)]
                 panic_after: _,
+            #[cfg(test)]
+                panic_after_metadata_take: _,
         } = self;
         let view = self.view_at(external)?;
         l.vec(tracks)?;
         l.vec(returns)?;
         feed.visit_audio_storage(l)?;
         l.growth(*growth)?;
+        l.vec(midi_routing)?;
+        if let Some(map) = tempo_map {
+            l.mutate(|ledger| ledger.map(map))?;
+        }
         if let Some(project) = project.as_ref().or(external) {
             let Project {
                 project_track_ids: _,
@@ -384,7 +481,7 @@ impl ArrangementRootAssembly {
                 return_buses,
                 return_feed_plan: _,
                 signal_graph: _,
-                tempo_map: _,
+                tempo_map,
                 midi_routing,
                 loop_region: _,
                 master_gain: _,
@@ -396,7 +493,13 @@ impl ArrangementRootAssembly {
             l.vec(tracks)?;
             l.vec(return_buses)?;
             l.vec(midi_routing)?;
+            if let Some(map) = tempo_map {
+                l.mutate(|ledger| ledger.map(map))?;
+            }
         }
         Ok(view)
     }
 }
+
+#[cfg(test)]
+mod metadata_tests;

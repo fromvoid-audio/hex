@@ -251,3 +251,20 @@ Existing delayed PCM/partition/handoff tests and actual original-PCM Sampler
 preparation still exercise the changed path. This exposes bounded scalar
 construction backings; it does not qualify a raw SignalGraph Arc, complete
 compiler peak, nonempty Arrangement cleanup or native publication.
+
+Fresh Arrangement tempo and MIDI-route metadata now have destinations in the
+existing root assembly. Inventory visits the actual TempoMap point/prefix Vecs
+and routing Vec capacity in either the aggregate or staged location, including
+empty reserved routing backing. Restore moves these same owned values after
+whole-destination preflight; it does not qualify a raw shared compiler result.
+Capacity reports include these backing bytes independently of root containers.
+
+Control retirement marks metadata disposal pending before taking the map and
+routing backing. Normal completion releases them; abnormal exit leaves pending
+and the existing parent failed custody, refusing inspection, reservation and
+retry. The new regression uses actual fresh compiler metadata, checks independent
+capacity totals, exact/minus-one budgets, backing identity, unchanged authored
+timing and caught disposal failure. Other compiler products remain separately
+rooted in this selected test. Nonempty track/factory teardown, aggregate
+before-first-owner reservation/private ingress, complete native conservation and
+publication remain open; the public MIDI constructor still refuses admission.

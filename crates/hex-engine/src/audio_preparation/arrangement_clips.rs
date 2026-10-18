@@ -458,7 +458,7 @@ impl ArrangementClips {
         self.root.context_at(external)
     }
     pub(super) fn has_next(&self) -> bool {
-        !matches!(self.phase, Phase::Vacant | Phase::Complete)
+        !matches!(self.phase, Phase::Vacant | Phase::Complete) || self.root.has_metadata_disposal()
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         if self.preview.has_next() {
@@ -471,6 +471,10 @@ impl ArrangementClips {
         }
         if self.tracks.has_next() {
             self.tracks.dispose_next(&mut self.rows)?;
+            return Ok(());
+        }
+        if self.root.has_metadata_disposal() {
+            self.root.dispose_metadata_on_control()?;
             return Ok(());
         }
         self.phase = Phase::Cleaning;
