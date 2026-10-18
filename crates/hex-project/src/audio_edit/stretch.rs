@@ -28,6 +28,17 @@ pub(super) fn retime(
     let length = scale(edit.domain.clock.length(), numerator, denominator)?;
     edit.view_start = scale(edit.view_start, numerator, denominator)?;
     edit.view_end = scale(edit.view_end, numerator, denominator)?;
+    if let Some(placement) = &mut edit.placement {
+        placement.outer_length = AudioDomainClock::Beats(BeatTime::from_raw(scale(
+            placement.outer_length.length(),
+            numerator,
+            denominator,
+        )?));
+        placement.cycle_phase = scale(placement.cycle_phase, numerator, denominator)?;
+        if placement.cycle_phase >= edit.view_end - edit.view_start {
+            return Err(Invalid("stretched cycle phase exceeds selected interval"));
+        }
+    }
     edit.musical_start = Some(tempo.frame_to_beat(start)?);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
@@ -120,7 +131,11 @@ pub fn preview_audio_clip_stretch(
         Arc::make_mut(&mut edit.domain).warp = Some(settings);
     }
     Arc::make_mut(&mut edit.domain).warp_enabled = true;
-    let old_span = edit.view_end - edit.view_start;
+    let old_span = edit
+        .placement
+        .map_or(edit.view_end - edit.view_start, |placement| {
+            placement.outer_length.length()
+        });
     let new_span = tempo
         .frame_to_beat(end)?
         .raw()

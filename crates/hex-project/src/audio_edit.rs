@@ -151,6 +151,7 @@ pub struct AudioClipEdit {
     pub view_start: u64,
     pub view_end: u64,
     pub musical_start: Option<BeatTime>,
+    pub placement: Option<AudioViewPlacement>,
 }
 
 /// Read-only output/root-frame fade projection shared by preparation and views.
@@ -315,6 +316,7 @@ impl AudioClipEdit {
             view_start: 0,
             view_end: clip.duration,
             musical_start: None,
+            placement: None,
         }
     }
     pub fn root_frame_at(&self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
@@ -351,7 +353,11 @@ impl AudioClipEdit {
     }
     pub fn projection_origin(&self) -> Result<i128, Invalid> {
         self.musical_start
-            .map(|start| i128::from(start.raw()) - i128::from(self.view_start))
+            .map(|start| {
+                i128::from(start.raw())
+                    - i128::from(self.view_start)
+                    - i128::from(self.placement.map_or(0, |p| p.cycle_phase))
+            })
             .ok_or(Invalid("audio domain has no musical projection"))
     }
     pub fn projected_domain(&self, tempo: &TempoMap) -> Result<(i128, u64, u64, u64), Invalid> {
@@ -463,7 +469,9 @@ impl AudioClipEdit {
                 "audio source cache differs from its canonical domain",
             ));
         }
-        if let Some(start) = self.musical_start {
+        if self.placement.is_some() {
+            AudioViewProjection::new(clip, tempo)?;
+        } else if let Some(start) = self.musical_start {
             let end = start
                 .raw()
                 .checked_add(self.view_end - self.view_start)
@@ -506,7 +514,8 @@ impl AudioClipEdit {
                 "timing mode cannot change after audio event edits; undo those edits first",
             ));
         }
-        let origin_frame = i128::from(clip_start) - i128::from(self.view_start);
+        let phase = self.placement.map_or(0, |p| p.cycle_phase);
+        let origin_frame = i128::from(clip_start) - i128::from(self.view_start) - i128::from(phase);
         let origin_beat = audio_projection_beat(tempo, origin_frame)?;
         let beat_at = |frame: u64| -> Result<u64, Invalid> {
             u64::try_from(
@@ -518,6 +527,34 @@ impl AudioClipEdit {
         let start = beat_at(self.view_start)?;
         let end = beat_at(self.view_end)?;
         let fade_start = beat_at(self.domain.fade_start)?;
+        let placement = self
+            .placement
+            .map(|p| -> Result<_, Invalid> {
+                let outer_start = tempo.frame_to_beat(clip_start)?.raw();
+                let outer_end = tempo
+                    .frame_to_beat(
+                        clip_start
+                            .checked_add(p.outer_length.length())
+                            .ok_or(Invalid("audio outer end overflow"))?,
+                    )?
+                    .raw();
+                let phase_end = self
+                    .view_start
+                    .checked_add(p.cycle_phase)
+                    .ok_or(Invalid("audio cycle phase overflow"))?;
+                Ok(AudioViewPlacement {
+                    mode: p.mode,
+                    outer_length: AudioDomainClock::Beats(BeatTime::from_raw(
+                        outer_end
+                            .checked_sub(outer_start)
+                            .ok_or(Invalid("audio outer beat span invalid"))?,
+                    )),
+                    cycle_phase: beat_at(phase_end)?
+                        .checked_sub(start)
+                        .ok_or(Invalid("audio phase beat span invalid"))?,
+                })
+            })
+            .transpose()?;
         let domain = Arc::make_mut(&mut self.domain);
         domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
         domain.fade_start = fade_start;
@@ -529,6 +566,7 @@ impl AudioClipEdit {
         self.view_start = start;
         self.view_end = end;
         self.musical_start = Some(tempo.frame_to_beat(clip_start)?);
+        self.placement = placement;
         Ok(())
     }
     pub(crate) fn unanchor(&mut self, tempo: &TempoMap) -> Result<(), Invalid> {
@@ -545,7 +583,35 @@ impl AudioClipEdit {
         if self.domain.warp_enabled {
             return Err(Invalid("disable warp before frame anchoring"));
         }
-        let (_, length, start, end) = self.projected_domain(tempo)?;
+        let (origin_frame, length, start, end) = self.projected_domain(tempo)?;
+        let placement = self
+            .placement
+            .map(|p| -> Result<_, Invalid> {
+                if let Some(musical_start) = self.musical_start {
+                    let first = tempo.beat_to_frame(musical_start)?;
+                    let last = tempo.beat_to_frame(BeatTime::from_raw(
+                        musical_start
+                            .raw()
+                            .checked_add(p.outer_length.length())
+                            .ok_or(Invalid("audio outer end overflow"))?,
+                    ))?;
+                    let phase_frame = audio_projection_frame(
+                        tempo,
+                        self.projection_origin()?
+                            + i128::from(self.view_start)
+                            + i128::from(p.cycle_phase),
+                    )?;
+                    Ok(AudioViewPlacement {
+                        mode: p.mode,
+                        outer_length: AudioDomainClock::Frames(last - first),
+                        cycle_phase: u64::try_from(phase_frame - origin_frame - i128::from(start))
+                            .map_err(|_| Invalid("audio phase frame span invalid"))?,
+                    })
+                } else {
+                    Ok(p)
+                }
+            })
+            .transpose()?;
         let domain = Arc::make_mut(&mut self.domain);
         domain.clock = AudioDomainClock::Frames(length);
         // Reanchoring is explicit. Preserve the visible fade endpoints in frames.
@@ -568,6 +634,7 @@ impl AudioClipEdit {
         self.view_start = start;
         self.view_end = end;
         self.musical_start = None;
+        self.placement = placement;
         Ok(())
     }
     pub(crate) fn crop_at_frame(
@@ -595,9 +662,15 @@ impl AudioClipEdit {
 
 mod commands;
 pub use commands::default_audio_warp;
+mod view;
 pub(crate) use commands::{
     apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
     set_fades, source_policy, trim_view,
+};
+pub(crate) use view::resize_view;
+pub use view::{
+    AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
+    AudioViewResizeOperation, preview_view_resize,
 };
 
 mod stretch;
