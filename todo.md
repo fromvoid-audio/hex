@@ -5065,3 +5065,9 @@ input acceptance remain pending; no installed app changes.
   full local CI is recorded in PR336/Pulse2720, not inferred from focused tests.
 - Native optimized physical input, listening and current-format save/reopen remain
   open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.
+
+- pulse2718 / pr334: interior body painting uses one canonical hybrid overwrite
+  plus empty MIDI placement, retaining independently selectable before/after
+  fragments and one Undo/Redo. Focused geometry/source/boundary/refusal regressions
+  are added; exact-source results follow in PR334/Pulse2718. Native optimized
+  audio/MIDI/looped painting acceptance remains coordinator-owned and open.
