@@ -384,7 +384,25 @@ impl Active {
         pending_play: bool,
         command_prefix: u64,
         output: &mut [hex_engine::Frame],
-        mut observer: Option<&mut hex_engine::PostNodeObserver<'_>>,
+        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+    ) -> StreamOutcome {
+        self.render_streamed_with_project(
+            domains,
+            pending_play,
+            command_prefix,
+            output,
+            observer,
+            None,
+        )
+    }
+    pub(crate) fn render_streamed_with_project(
+        &mut self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        pending_play: bool,
+        command_prefix: u64,
+        output: &mut [hex_engine::Frame],
+        mut observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+        mut project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
     ) -> StreamOutcome {
         let mut request = StreamInstall {
             domains,
@@ -512,23 +530,44 @@ impl Active {
                     right: right[0].as_mut().map(|p| p.pages()),
                 };
                 let observed = observer.is_some();
-                let mut observe = |identity, offset, frames: &[hex_engine::Frame]| {
+                let mut observe = |identity, phase, offset, frames: &[hex_engine::Frame]| {
                     if let Some(observer) = observer.as_deref_mut() {
-                        observer(identity, committed + offset, frames);
+                        observer(identity, phase, committed + offset, frames);
                     }
                 };
-                let observer: Option<&mut hex_engine::PostNodeObserver<'_>> =
+                let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
                     if observed { Some(&mut observe) } else { None };
+                let mut project_ids = [0; hex_engine::MAX_SESSION_ROUTE_TRACKS];
+                let project_count = project.as_ref().map_or(0, |tap| {
+                    let count = tap.tracks().len();
+                    project_ids[..count].copy_from_slice(tap.tracks());
+                    count
+                });
+                let project_observed = project.is_some();
+                let mut observe_project = |signal, offset, frames: &[hex_engine::Frame]| {
+                    if let Some(project) = project.as_mut() {
+                        project.observe(signal, committed + offset, frames);
+                    }
+                };
+                let mut project_tap = if project_observed {
+                    hex_engine::ProjectOutputTap::new(
+                        &project_ids[..project_count],
+                        &mut observe_project,
+                    )
+                } else {
+                    None
+                };
                 let rendered = self
                     .state
                     .runtime
                     .as_mut()
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
-                        runtime.render_with_pages_and_post_node_observer(
+                        runtime.render_with_pages_and_signal_observers(
                             &mut output[committed..committed + window.frames],
                             &mut pages,
                             observer,
+                            project_tap.as_mut(),
                         )
                     });
                 if let Err(error) = rendered {

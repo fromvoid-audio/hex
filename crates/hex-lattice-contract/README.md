@@ -20,6 +20,12 @@ control-side and does not add callback allocation or device automation. Existing
 IDs stay unchanged; devices deriving IDs from stable object identities must use
 checked arithmetic and explicitly refuse namespace exhaustion.
 
+Host-owned device asset references form a separate bounded metadata list, not
+PCM in the4KiB payload. Empty lists allocate no reference owner. Codecs preserve
+them through the host metadata helper; processing identity includes them.
+Supported processing currently refuses nonempty references until resource leases
+exist. See [device assets](../../docs/device-assets.md).
+
 ## Dependencies
 
 Rust standard library only.
@@ -28,3 +34,10 @@ Rust standard library only.
 
 DSP, device implementations, project editing, serialization formats, UI, plugin
 hosting, or runtime device registries.
+
+Optional state-aware parameter semantics retain descriptor units/defaults and
+explicitly distinguish undeclared metadata from unsupported capabilities.
+Validated control queries check dynamic membership and semantic/domain agreement;
+normalization refuses invalid values with explicit discrete/singleton behavior.
+No runtime delivery capability follows from metadata. See
+[parameter semantics](../../docs/native-parameter-semantics.md).

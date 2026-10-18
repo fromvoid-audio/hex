@@ -3,6 +3,8 @@
 
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
+#[path = "callback_allocations/project_tuning.rs"]
+mod project_tuning;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
@@ -118,7 +120,7 @@ impl hex_lattice::NativeInstrumentDefinition for SharedContextFixtureDefinition 
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
         let state = self.migrate_state(state)?;
         Ok(Box::new(SharedContextFixturePrepared {
@@ -168,7 +170,13 @@ impl hex_lattice::PreparedSharedAnalyticContext for SharedContextFixture {
         payload[0] = u64::from(self.level.to_bits());
         Ok(hex_lattice::PreparedSharedAnalyticNote::new(payload, 8))
     }
-    fn sample(&self, note: &hex_lattice::PreparedSharedAnalyticNote, age: u64, gate: u64) -> Frame {
+    fn sample(
+        &self,
+        note: &hex_lattice::PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Frame {
         if age < gate.saturating_add(note.release_frames()) {
             [f32::from_bits(note.payload()[0] as u32); 2]
         } else {
@@ -257,7 +265,7 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFixtureDefinition {
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
@@ -327,6 +335,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         &self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
         if output_capture::refuse_gateoff(events) {
             return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
@@ -367,6 +376,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         &mut self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {

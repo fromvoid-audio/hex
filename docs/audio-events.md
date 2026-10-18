@@ -83,6 +83,8 @@ checked for duplicate keys before adapting the older envelope. Strict schemas
 event-only schema27 branch is recognized separately by its strict envelope; mixed
 appearance/event schema27 files are refused instead of dropping either contract. Older
 explicit writers refuse event-bearing processing roots rather than dropping them.
+Current schema29 adds required outer fade shapes on top of this frozen schema28
+envelope; event, appearance, name and fade metadata round-trip together.
 
 Current preparation uses the existing resident transformed-audio path and its
 16,777,216-frame root bound. Streamed event edits refuse before history commit,
