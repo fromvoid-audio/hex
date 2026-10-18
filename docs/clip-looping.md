@@ -148,15 +148,15 @@ missing or unknown current-format policy values refuse explicitly.
 `MidiSource::source_playback(duration)` is the shared checked constructor for
 Arrangement and Session consumers. Bounded Once uses the explicit
 `MidiSourcePlayback::new_bounded_one_shot`; other policies retain the strict
-constructor. Both validate authored note bounds and clip audible onsets/gates
-at the selected end. `has_initial_pass()` and `initial_remaining()` expose zero
+constructor. Project source validation retains authored note bounds against the
+full source; both playback mappings clip audible onsets/gates at the selected end. `has_initial_pass()` and `initial_remaining()` expose zero
 remaining source beats for an exhausted cursor without subtraction underflow.
 The ordinary constructor retains its prior behavior. `effective_end()` exposes the same
 source-owned law without a compiler-owned mirror. Arrangement's existing clip
-query delegates to this constructor. The separate Session template path still
-needs this mapping and verification of both actual compiler paths; model/codec tests
-are not proof of that unfinished runtime integration. No notes or controls are
-removed.
+query and the separate ongoing Session template now delegate to this checked
+mapping. The Session intro predicate uses the source-owned effective end, and
+its first pass uses `initial_remaining()` without unsigned subtraction. No notes
+or controls are removed.
 
 The model/UI silence-tail amendment separates source shape from cursor policy.
 Left trim advances the unwrapped Once cursor and can extend back to recover its
@@ -166,10 +166,14 @@ cuts through sounding material keep the existing carry/retrigger behavior.
 Capacity and cursor-overflow refusals preserve project IDs and history. Numeric
 source editing allows consumed cursors, while explicit Repeat activation alone
 normalizes an exhausted cursor into its retained loop; ordinary commands and
-loads never repair invalid Repeat cursors. Both actual compiler paths still need
-the shared policy-aware mapping verified; Session's separate template currently
-uses the old strict constructor/full source end. This is an explicit runtime
-dependency, not proof of playback/export completion.
+loads never repair invalid Repeat cursors. A concrete differential regression
+against actual finite Arrangement compilation originally found the Session
+template emitting hidden notes/overlong gates, emitting after an exhausted
+selected end, and refusing a valid consumed cursor beyond the full source.
+The policy-aware mapping fixes all three; an adjacent explicit Repeat
+reactivation case preserves event identities across a tempo point. These are
+prepared event/component checks, not new PCM, physical Session workflow or
+export acceptance.
 The Session bounce bridge preserves the actual policy
 and selected end; a Session source with no remaining material explicitly refuses
 before creating any replacement asset/history. Arrangement retains its positive
@@ -191,7 +195,7 @@ first-marker editing, one Undo/Redo, stationary snap modifier refresh and Escape
 This is MIDI source/component evidence, not Audio or optimized native acceptance.
 
 Audio pending preview/marker/corner gestures, audio loop preparation,
-complete Once runtime integration, rendered rounded styling, all-mode PCM/export and optimized
+complete Once playback/PCM and Session workflow verification, rendered rounded styling, all-mode PCM/export and optimized
 native acceptance remain open. PR445 stays draft/In Progress; the sole merger
 owns final prospective-tree full CI/review/integration/merge, and root owns the
 serial Mac lane and app delivery. No native/app operation is part of this source

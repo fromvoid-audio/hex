@@ -57,6 +57,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip,
@@ -82,6 +83,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
                     id: clip,
                     name: format!("session {index:03}"),
                     source: MidiSourceSnapshot {
+                        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                         source_length_raw: 4 << 32,
                         source_start_raw: 0,
                         loop_start_raw: 0,
@@ -154,6 +156,7 @@ pub fn finite_oracle(
                 return Err("oracle source is not midi".into());
             };
             track.content = TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip.id,

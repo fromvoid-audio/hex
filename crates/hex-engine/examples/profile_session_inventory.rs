@@ -73,6 +73,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                     id: clip,
                     name: format!("pattern {index:03}.{scene}"),
                     source: MidiSourceSnapshot {
+                        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                         source_length_raw: 4 << 32,
                         source_start_raw: 0,
                         loop_start_raw: 0,

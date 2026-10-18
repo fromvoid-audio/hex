@@ -7,9 +7,7 @@ use crate::{MidiTiming, midi_compile::MidiEventKind};
 mod density;
 mod spans;
 use density::{DensityEnvelope, DensityEvent, admit_density};
-use hex_project::{
-    BeatTime, ClipId, MidiClip, MidiNote, MidiSource, MidiSourcePlayback, NoteId, TrackId,
-};
+use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, MidiSource, NoteId, TrackId};
 pub(crate) use spans::MidiOccurrenceSuppression;
 
 /// Maximum frame width accepted by one ongoing MIDI edge query.
@@ -127,11 +125,7 @@ pub(crate) fn session_source_note_has_occurrence(source: &MidiSource, note: &Mid
 }
 
 fn source_note_has_intro_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
-    let intro_end = if source.looping() {
-        source.loop_end().raw()
-    } else {
-        source.source_length().raw()
-    };
+    let intro_end = source.effective_end().raw();
     note.start().raw() >= source.source_start().raw() && note.start().raw() < intro_end
 }
 
@@ -178,7 +172,7 @@ impl SourceEdge {
 /// A source template that can produce ongoing events without expanding loops.
 ///
 /// It is prepared from canonical clip metadata and note identity. Arrangement
-/// duration is intentionally ignored; one-shot sources stop at source end and
+/// duration is intentionally ignored; one-shot sources stop at their policy end and
 /// looping sources repeat their loop interval indefinitely. The template owns
 /// sorted intro/repeat edge arrays, and query-time work visits only binary-
 /// searched candidate ranges plus at most 260 overlapping period windows.
@@ -226,28 +220,11 @@ impl PreparedMidiSourceTemplate {
     ) -> Result<Self, MidiTemplateError> {
         let sample_rate = timing.sample_rate();
         let max_micro_bpm = timing.max_micro_bpm();
-        let source = MidiSourcePlayback::new(
-            source_data.source_length(),
-            source_data.source_start(),
-            source_data
-                .looping()
-                .then_some((source_data.loop_start(), source_data.loop_end())),
-            source_data.source_length(),
-        )
-        .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+        let source = source_data
+            .source_playback(source_data.source_length())
+            .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
         let source_start = source.source_start().raw();
-        let first_pass = if let Some((_, loop_end)) = source.loop_range() {
-            loop_end
-                .raw()
-                .checked_sub(source_start)
-                .ok_or(MidiTemplateError::ArithmeticOverflow)?
-        } else {
-            source
-                .source_length()
-                .raw()
-                .checked_sub(source_start)
-                .ok_or(MidiTemplateError::ArithmeticOverflow)?
-        };
+        let first_pass = source.initial_remaining().raw();
         let period = source
             .loop_range()
             .map(|(loop_start, loop_end)| loop_end.raw() - loop_start.raw());
@@ -279,9 +256,7 @@ impl PreparedMidiSourceTemplate {
         repeat_spans
             .try_reserve_exact(source_data.notes().len())
             .map_err(|_| MidiTemplateError::Allocation)?;
-        let intro_end = source
-            .loop_range()
-            .map_or(source.source_length().raw(), |(_, loop_end)| loop_end.raw());
+        let intro_end = source.initial_end().raw();
 
         for note in source_data.notes() {
             let note_start = note.start().raw();

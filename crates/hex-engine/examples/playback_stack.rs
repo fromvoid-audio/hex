@@ -369,6 +369,7 @@ fn project_fixture(
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![MidiClipSnapshot {
+                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: clip_id,

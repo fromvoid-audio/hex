@@ -28,6 +28,7 @@ fn session_loop_project() -> Project {
         panic!("fixture Session MIDI clip")
     };
     clip.source = MidiSourceSnapshot {
+        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
         source_length_raw: 4 * Q,
         source_start_raw: Q / 2,
         loop_start_raw: Q,

@@ -1460,3 +1460,134 @@ fn short_playable_gates_and_loop_periods_are_rejected() {
         Err(MidiTemplateError::LoopPeriodTooShortForAdmission)
     ));
 }
+
+fn captured_once_fixture(cursor: BeatTime) -> Fixture {
+    let mut f = fixture(48_000, beat(3), beat(2), beat(8), beat(2), None);
+    add_note(&mut f, beat(2), beat(3), 60); // Gate must stop at captured end4.
+    add_note(&mut f, beat(6), beat(1), 61); // Retained, outside captured cycle.
+    let command = f
+        .editor
+        .project()
+        .midi_clip(f.clip)
+        .unwrap()
+        .loop_outer_resize_command(beat(11))
+        .unwrap();
+    f.editor.execute(command).unwrap();
+    f.editor
+        .execute(Command::SetMidiClipSource {
+            clip: f.clip,
+            source_length: beat(8),
+            source_start: cursor,
+            loop_start: beat(2),
+            loop_end: beat(4),
+            looping: false,
+            length: beat(8),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetTempoPoint {
+            beat: beat(4),
+            tempo: tempo(90_000_000),
+        })
+        .unwrap();
+    assert_eq!(
+        f.editor
+            .project()
+            .midi_clip(f.clip)
+            .unwrap()
+            .source()
+            .one_shot_boundary(),
+        hex_project::MidiOneShotBoundary::LoopEnd
+    );
+    f
+}
+
+fn assert_captured_template_matches_finite(f: &Fixture) {
+    let project = f.editor.project();
+    let clip = project.midi_clip(f.clip).unwrap();
+    let timing =
+        PreparedTempoMap::prepare(project.tempo_map().clone(), project.sample_rate()).unwrap();
+    let template =
+        PreparedMidiSourceTemplate::prepare_source(f.track, f.clip, clip.source(), &timing)
+            .expect("valid captured Once, including exhausted cursor, must prepare");
+    let end = timing.beat_to_frame(beat(11)).unwrap();
+    let expected: Vec<_> = midi_events(project)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.frame < end)
+        .collect();
+    let mut actual = Vec::new();
+    for start in (0..end).step_by(256) {
+        actual.extend(query(
+            &template,
+            &timing,
+            clip.start(),
+            start,
+            (start + 256).min(end),
+        ));
+    }
+    println!(
+        "captured source cursor={} expected_events={} actual_events={} retained_notes={}",
+        clip.source_start().raw(),
+        expected.len(),
+        actual.len(),
+        clip.notes().len()
+    );
+    assert_eq!(
+        actual, expected,
+        "ongoing Session template must use the same selected end/gates as finite Arrangement compilation"
+    );
+    assert_eq!(clip.notes().len(), 2);
+}
+
+#[test]
+fn captured_once_template_clips_gate_and_keeps_hidden_notes_silent() {
+    let f = captured_once_fixture(beat(2));
+    assert_captured_template_matches_finite(&f);
+}
+
+#[test]
+fn captured_once_template_exact_end_emits_no_events() {
+    let f = captured_once_fixture(beat(4));
+    assert!(
+        !f.editor
+            .project()
+            .midi_clip(f.clip)
+            .unwrap()
+            .source_playback()
+            .unwrap()
+            .has_initial_pass()
+    );
+    assert_captured_template_matches_finite(&f);
+}
+
+#[test]
+fn captured_once_template_beyond_authored_source_prepares_empty() {
+    let f = captured_once_fixture(beat(9));
+    assert!(f.editor.project().midi_clip(f.clip).unwrap().source_start() > beat(8));
+    assert_captured_template_matches_finite(&f);
+}
+
+#[test]
+fn captured_once_template_explicit_repeat_reactivation_matches_finite() {
+    let mut f = captured_once_fixture(beat(9));
+    let clip = f.editor.project().midi_clip(f.clip).unwrap();
+    let cursor = clip
+        .source()
+        .one_shot_boundary()
+        .loop_activation_start(clip.source_start(), clip.loop_start(), clip.loop_end())
+        .unwrap();
+    assert_eq!(cursor, beat(3));
+    f.editor
+        .execute(Command::SetMidiClipSource {
+            clip: f.clip,
+            source_length: beat(8),
+            source_start: cursor,
+            loop_start: beat(2),
+            loop_end: beat(4),
+            looping: true,
+            length: beat(8),
+        })
+        .unwrap();
+    assert_captured_template_matches_finite(&f);
+}
