@@ -5096,3 +5096,9 @@ assertions and is restored. See [fixture contract](docs/operator-tab-fixture.md)
 for original failed/green/control evidence and native limits. Canonical PR363;
 final focused checks and dedicated-merger prospective-tree full CI remain
 separate, with no production browser/Tab/audition or installed-app change.
+
+18 October 2026 source follow-up, Pulse2801/PR407: sparse-EQ cut-node wheel
+uses existing typed slope choices; Option-bell drag uses canonical paired Q.
+Focused source/evidence and native limits are recorded in docs/eq-node-gestures.md.
+Canonical integration/full20/merge belong to the dedicated merger; native visual,
+input/listening and optimized delivery remain coordinator-owned and open.

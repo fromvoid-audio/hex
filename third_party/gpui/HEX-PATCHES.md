@@ -160,3 +160,12 @@ changes no production rendering, native behavior, layout or input. Clip selectio
 regressions use it to verify the actual painted outline and viewport clipping.
 Original baseline hashes remain unchanged; the cumulative patch is regenerated
 against the hash-verified original test_context.rs.
+
+18 October opt-in bundled-font test support: `TestAppContext::use_native_text_system`
+selects the existing macOS `MacTextSystem` before any test windows are created.
+Both the App and test-context shaping references receive the same instance.
+Existing no-op test contexts remain unchanged. The method rejects replacement
+beneath live windows; it creates no OS window, registers no system font and adds
+no FFI or unsafe code. EQ tests still require the real embedded Ioskeley family;
+this corrects their otherwise impossible native assertion against NoopTextSystem.
+Native shaping is not evidence of GPU pixels, audio or physical interaction.

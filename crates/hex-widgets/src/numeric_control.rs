@@ -196,6 +196,7 @@ pub struct NumericControl {
     press: Option<Press>,
     pub(crate) style: ControlStyle,
     meter_readout: crate::DeviceMeterReadout,
+    inline_value_width: Option<f32>,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
     tab_navigation: bool,
@@ -290,11 +291,29 @@ impl NumericControl {
             appearance,
             dial_layout,
             meter_readout: Default::default(),
+            inline_value_width: None,
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
         }
+    }
+
+    /// Size a compact numeric field without changing its codec or input protocol.
+    /// Existing owners retain the forty-six-pixel default.
+    pub fn set_inline_value_width(
+        &mut self,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> Result<(), NumericError> {
+        if !width.is_finite() || !(24.0..=256.0).contains(&width) {
+            return Err(NumericError::InvalidStyle);
+        }
+        if self.inline_value_width != Some(width) {
+            self.inline_value_width = Some(width);
+            cx.notify();
+        }
+        Ok(())
     }
 
     pub fn set_meter_readout(
@@ -1274,7 +1293,7 @@ impl gpui::Render for NumericControl {
             (NumericControlKind::HorizontalSlider, NumericControlAppearance::InlineValue) => div()
                 .id(self.id.clone())
                 .flex()
-                .w(px(46.0))
+                .w(px(self.inline_value_width.unwrap_or(46.0)))
                 .h(px(14.0))
                 .items_center()
                 .track_focus(&self.focus)
@@ -1287,7 +1306,7 @@ impl gpui::Render for NumericControl {
                         editing: self.editing,
                         enabled,
                         style,
-                        width: px(46.0),
+                        width: px(self.inline_value_width.map_or(46.0, |width| width - 2.0)),
                         height: px(14.0),
                     },
                     self.value_mouse_down_listener(cx),
