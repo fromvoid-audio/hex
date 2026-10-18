@@ -1,5 +1,6 @@
 //! Compact, bounded left-side media and project browser.
 mod audition;
+mod place_icons;
 mod samples;
 
 use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
@@ -23,6 +24,19 @@ use std::{
 };
 
 mod layout;
+
+// Preference diagnostics remain useful without unbounded field/path text in UI tooltips.
+fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> String {
+    let reason = error.to_string().to_lowercase();
+    let mut message = format!(
+        "{prefix} · {}",
+        reason.chars().take(160).collect::<String>()
+    );
+    if reason.chars().count() > 160 {
+        message.push('…');
+    }
+    message
+}
 
 pub(super) const DEFAULT_WIDTH: f32 = 480.0;
 const MIN_WIDTH: f32 = 220.0;
@@ -156,6 +170,7 @@ pub(super) struct BrowserState {
     home: PathBuf,
     music: PathBuf,
     pub(super) places: Vec<PathBuf>,
+    place_icons: HashMap<PathBuf, String>,
     preferences_path: PathBuf,
     preferences_loading: bool,
     pub(super) preferences_writable: bool,
@@ -231,6 +246,7 @@ impl BrowserState {
             home,
             music,
             places,
+            place_icons: HashMap::new(),
             preferences_path,
             preferences_loading: true,
             preferences_writable: true,
@@ -415,12 +431,23 @@ impl EditorView {
         match loaded {
             Err(error) => {
                 self.browser.preferences_writable = false;
-                self.browser.places_status = Some(format!(
-                    "could not load browser places · {}",
-                    error.to_string().to_lowercase()
-                ));
+                self.browser.places_status =
+                    Some(places_error("could not load browser places", &error));
             }
             Ok(loaded) => {
+                self.browser.place_icons = loaded
+                    .icon_assignments()
+                    .map(|(path, id)| (path.to_owned(), id.to_owned()))
+                    .collect();
+                if self
+                    .browser
+                    .place_icons
+                    .values()
+                    .any(|id| !place_icons::known(id))
+                {
+                    self.browser.places_status =
+                        Some("some place icons unavailable · showing folder".into());
+                }
                 let mut combined = loaded.additional().to_vec();
                 let local_places = self
                     .browser
@@ -470,14 +497,23 @@ impl EditorView {
             .iter()
             .filter(|path| **path != self.browser.home && **path != self.browser.music)
             .cloned();
-        match BrowserPlaces::new(additional) {
+        let places = BrowserPlaces::new(additional).and_then(|mut places| {
+            for (path, id) in &self.browser.place_icons {
+                if places.additional().contains(path) {
+                    places.set_icon(path, Some(id))?;
+                }
+            }
+            Ok(places)
+        });
+        match places {
             Ok(places) => {
                 self.browser.pending_places_save = Some(places);
                 self.browser.places_status = Some("saving browser places…".into());
                 self.start_browser_places_save(cx);
             }
             Err(error) => {
-                self.browser.places_status = Some(error.to_string().to_lowercase());
+                self.browser.places_status =
+                    Some(places_error("could not save browser places", &error));
             }
         }
     }
@@ -516,10 +552,7 @@ impl EditorView {
         } else {
             self.browser.places_status = Some(match result {
                 Ok(()) => "browser places saved".into(),
-                Err(error) => format!(
-                    "could not save browser places · {}",
-                    error.to_string().to_lowercase()
-                ),
+                Err(error) => places_error("could not save browser places", &error),
             });
         }
     }

@@ -97,3 +97,46 @@ control with the browser collapsed; type a sample/project/device name; confirm
 filtered results, repeat Command-F to replace the query, clear with Escape, and
 drag a matched sample/device to its normal destination. Native macOS interaction
 and reference parity remain unverified by cloud source tests.
+
+## Bundled custom Place icons (Pulse #2710 / PR #326)
+
+Right-click an added Place to choose folder, samples, devices, projects,
+collection, waveform or search from Hex's existing browser glyph collection.
+The same Ioskeley Mono glyphs and shared 22 px picker slot are used expanded and
+icon-only; original folder-name hover tooltips and left-click source selection
+remain. Icons may be reused. The folder choice clears the assignment. Home and
+Music retain their default folder icons. The existing editor context menu owns
+focus, pointer occlusion, Up/Down, Enter, Escape and outside-click dismissal;
+choosing an icon does not select/import/audition a sample or create project history.
+
+The bundled font's existing provenance is in
+`assets/fonts/ioskeley-mono/source.json` (Ioskeley Mono v2.1.0, Normal/Unhinted)
+and its `OFL.txt`. No additional artwork, asset package or dependency is introduced.
+Native reference gesture parity is not established.
+
+The current browser preference document includes optional `place_icons`, a list
+of original native `path` / opaque `id` pairs for additional Places only. Missing
+metadata means the folder default. At most 14 unique assignments are accepted;
+IDs are nonempty, at most 64 UTF-8 bytes, and contain no control characters.
+Duplicate/orphan identities and malformed data are refused without replacing the
+file. Unknown bounded IDs are retained across unrelated saves and display the
+folder fallback, with one load-time status message. Assignment identity is the
+full original native path, independent of order and duplicate basenames; native
+non-UTF-8 paths retain the existing lossless encoding. The existing 64 KiB document
+and path/count bounds, atomic publication, one in-flight write and latest pending
+snapshot apply. Loading/invalid preferences gate the picker; save failures remain
+visible and preserve the original settings. Await saved feedback before closing.
+
+Source tests cover actual pointer/keyboard choices, all seven glyphs at normal
+and minimum width, focus/escape/outside-click handling, same-name path identity,
+unknown fallback, stale removed-Place menus, coalesced saves, malformed-file
+preservation, and recreating the editor through its preference load path. These
+are source tests; optimized native picker/font rendering and normal app
+close/reopen acceptance remain coordinator-owned and open.
+
+Preference error details are limited to 160 characters after the operation prefix;
+the sidebar keeps its normal single-line status height with ellipsis and a tooltip.
+An explicit choice can retry the same unsaved icon after a write failure is repaired.
+Final focused source validation: 19 preferences tests and 71 browser-related UI/
+model tests pass; strict affected preferences/UI Clippy and architecture, GPUI,
+style, formatting and diff checks pass. This is not prospective full-candidate CI.

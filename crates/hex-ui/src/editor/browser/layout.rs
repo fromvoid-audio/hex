@@ -415,6 +415,7 @@ impl EditorView {
         sidebar = sidebar.children((!compact).then(|| browser_heading("places")));
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
             let path = place.clone();
+            let icon_path = place.clone();
             let name = if *place == self.browser.music {
                 "music"
             } else if *place == self.browser.home {
@@ -427,7 +428,7 @@ impl EditorView {
             };
             let tooltip = name.to_owned();
             let icon = picker_icon(
-                browser_caption("□")
+                browser_caption(self.browser_place_glyph(place))
                     .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
             );
             sidebar = sidebar.child(
@@ -462,6 +463,19 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                            view.open_browser_place_icons(
+                                icon_path.clone(),
+                                event.position,
+                                window,
+                                cx,
+                            );
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        }),
+                    )
                     .child(icon)
                     .children((!compact).then(|| {
                         browser_caption(name)
@@ -486,6 +500,9 @@ impl EditorView {
             sidebar = sidebar.child(
                 browser_heading(if compact { "!" } else { status })
                     .id("browser-places-status")
+                    .debug_selector(|| "browser-places-status".into())
+                    .whitespace_nowrap()
+                    .text_ellipsis()
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx)),
             );
         }
