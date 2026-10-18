@@ -883,6 +883,92 @@ impl EditorView {
         cx.notify();
     }
 
+    pub(super) fn trim_pan_advances(&self, drag: &TrimDrag, x: f32, next: Viewport) -> bool {
+        let Some(state) = &self.state else {
+            return false;
+        };
+        let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
+            return false;
+        };
+        let Some(delta) = *drag.grab_delta.borrow() else {
+            return false;
+        };
+        let candidate = |viewport| {
+            let frame = corrected_edge_frame(frame_at_x(x, lane, viewport)?, delta);
+            preview_clip(drag, &state.project, frame).ok()
+        };
+        match (candidate(drag.viewport()), candidate(next)) {
+            (Some(before), Some(after)) => before != after,
+            _ => false,
+        }
+    }
+
+    pub(super) fn midi_trim_pan_advances(
+        &self,
+        drag: &MidiTrimDrag,
+        x: f32,
+        next: Viewport,
+    ) -> bool {
+        let Some(state) = &self.state else {
+            return false;
+        };
+        let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
+            return false;
+        };
+        let Some(delta) = *drag.grab_delta.borrow() else {
+            return false;
+        };
+        let candidate = |viewport| {
+            let beat = midi_pointer_beat(&state.project, x, lane, viewport)?;
+            let beat = BeatTime::from_raw(
+                (i128::from(beat.raw()) - delta).clamp(0, i128::from(u64::MAX)) as u64,
+            );
+            drag.clip.preview_edge_trim(drag.edge, beat).ok()
+        };
+        match (candidate(drag.viewport()), candidate(next)) {
+            (Some(before), Some(after)) => before != after,
+            _ => false,
+        }
+    }
+
+    /// A private resize may navigate beyond the current display extent, never
+    /// beyond its checked viewport or into a stale owner's project/geometry.
+    pub(super) fn trim_display_end(&self) -> Option<u64> {
+        if !drag_admitted(self) {
+            return None;
+        }
+        let state = self.state.as_ref()?;
+        if let Some(drag) = &self.active_trim_drag {
+            let viewport = drag.scroll.get().viewport?;
+            if self.viewport == Some(viewport)
+                && payload_is_current(
+                    drag,
+                    self.project_generation,
+                    state,
+                    viewport,
+                    self.drag_lanes.get(&drag.source_track).copied(),
+                )
+            {
+                return viewport.end();
+            }
+        }
+        if let Some(drag) = &self.active_midi_trim_drag {
+            let viewport = drag.scroll.get().viewport?;
+            if self.viewport == Some(viewport)
+                && midi_payload_is_current(
+                    drag,
+                    self.project_generation,
+                    state,
+                    viewport,
+                    self.drag_lanes.get(&drag.source_track).copied(),
+                )
+            {
+                return viewport.end();
+            }
+        }
+        None
+    }
+
     pub(super) fn trim_drag_current(&self, drag: &TrimDrag) -> bool {
         if !drag_admitted(self) {
             return false;

@@ -217,7 +217,8 @@ impl EditorView {
         }
         if let Some(drag) = self.active_trim_drag.clone() {
             if !self.trim_drag_current(&drag) {
-                return false;
+                self.cancel_trim_gesture(cx);
+                return true;
             }
             let Some(x) = drag.last_pointer_x.get() else {
                 return false;
@@ -225,16 +226,21 @@ impl EditorView {
             let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
                 return false;
             };
-            let Some(next) = next_viewport(&drag.scroll, viewport, horizon, lane, x, now) else {
+            let Some(next) = next_viewport(&drag.scroll, viewport, u64::MAX, lane, x, now) else {
                 return false;
             };
+            // Source/minimum bounds, not grid quantization, may stop navigation.
+            if !self.trim_pan_advances(&drag, x, next) {
+                return false;
+            }
             self.apply_drag_scroll(&drag.scroll, next, horizon);
             self.update_trim_preview(&drag, x, cx);
             return true;
         }
         if let Some(drag) = self.active_midi_trim_drag.clone() {
             if !self.midi_trim_drag_current(&drag) {
-                return false;
+                self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+                return true;
             }
             let Some(x) = drag.last_pointer_x.get() else {
                 return false;
@@ -242,9 +248,12 @@ impl EditorView {
             let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
                 return false;
             };
-            let Some(next) = next_viewport(&drag.scroll, viewport, horizon, lane, x, now) else {
+            let Some(next) = next_viewport(&drag.scroll, viewport, u64::MAX, lane, x, now) else {
                 return false;
             };
+            if !self.midi_trim_pan_advances(&drag, x, next) {
+                return false;
+            }
             self.apply_drag_scroll(&drag.scroll, next, horizon);
             self.update_midi_trim_preview(&drag, x, cx);
             return true;
