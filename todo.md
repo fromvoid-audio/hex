@@ -5041,6 +5041,17 @@ or neutral shared-library implementation is claimed. Source checks and native
 coordinator-only acceptance recorded separately; inline tree2728 follows this
 checked/reviewed foundation.
 
+## inline browser hierarchy — pulse2728 / PR341, 18 october2026
+
+Browse folders in place within the one active source, with bounded asynchronous
+child snapshots, disclosure/keyboard gestures, explicit cache/scan errors and
+stale-request refusal. Preserve indexed query mode, native path identities,
+filename-only sample labels, selection and existing preview/import/drag behavior.
+Source regression/check evidence belongs to Pulse/PR; native optimized interaction
+and actual installed-Live comparison remain open. Official Live12 documented
+gestures guide this change; the read-only reference attempt found Live closed
+and the Mac locked, so no gestures/parity were observed and no app was launched.
+
 ## command-d time range — pulse2759 / PR367, 18 october2026
 
 Arrangement Command-D uses existing atomic time-chunk copy at the range end,
@@ -5066,6 +5077,15 @@ input acceptance remain pending; no installed app changes.
 - Native optimized physical input, listening and current-format save/reopen remain
   open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.
 
+### inline-tree count label correction — pulse2728 / PR341
+
+Two empty roots previously displayed “2 samples”. Hierarchy rows now count as items;
+flat indexed queries retain sample counts, including zero matches. Row construction
+and labels share an explicit Samples result mode; no new traversal or WAV-total scan.
+A focused rendered-model regression covers empty roots, expansion with only directory
+rows, and flat search. Source fix is handed to the dedicated merger separately from
+Place correctness2791/397; final combined full CI and optimized native checks remain
+open.
 - pulse2718 / pr334: interior body painting uses one canonical hybrid overwrite
   plus empty MIDI placement, retaining independently selectable before/after
   fragments and one Undo/Redo. Focused geometry/source/boundary/refusal regressions
@@ -5096,6 +5116,25 @@ assertions and is restored. See [fixture contract](docs/operator-tab-fixture.md)
 for original failed/green/control evidence and native limits. Canonical PR363;
 final focused checks and dedicated-merger prospective-tree full CI remain
 separate, with no production browser/Tab/audition or installed-app change.
+
+### inline-tree refresh of query-hidden expansions — pulse2728 / PR341
+
+Returned review PRRT_kwDOVB_C-s6trg4M reproduced on canonical29d97330: refresh during
+indexed search started zero folder requests; clearing the query restored a removed
+WAV despite a fresh sample index. Refresh now queues the bounded expanded-folder
+set parent-first, preserving cached rows, existing epochs/serials, one worker and
+all cache budgets. Actual disclosure/query/refresh/clear input has a red/green
+regression. Source patch is isolated against29; its historical full20 pass is
+preserved and does not qualify the new patch. Merger owns future prospective full
+CI/integration/merge; no native/app operations were performed.
+
+After integrating merged373/main in389, the3bank tests and2callback probes
+pass unchanged. Joint engine+audio all-target Clippy with allocation-probe
+exposed an inherited non-exhaustive Expression match in the feature-gated
+playback-stack example. The note-only fixture now explicitly refuses controller
+events during preflight. Its focused regression passes; the same joint strict
+Clippy command now passes. The negative compiler log is retained. This repairs
+a verification fixture and adds no sampler/controller playback behavior.
 
 ## collapsed browser picker geometry — pulse2706 / PR322, 18 october 2026
 
