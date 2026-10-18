@@ -5,6 +5,7 @@ pub mod eq8;
 pub use eq8::flexible as eq;
 pub mod fm4;
 pub mod gate;
+mod modulation_waveform;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
