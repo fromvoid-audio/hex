@@ -808,3 +808,117 @@ fn device_delete_review_pointer_instrument_keeps_keyboard(cx: &mut TestAppContex
 fn device_delete_review_pointer_return_keeps_keyboard(cx: &mut TestAppContext) {
     pointer_remove_retains_keyboard(cx, 2);
 }
+
+fn refused_release_respects_new_focus(cx: &mut TestAppContext, text: bool) {
+    let browser = BrowserDirectory::new();
+    cx.update(super::super::super::bind_editor_keys);
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, editor) = browser.window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    let point = title(&mut visual, device);
+    visual.simulate_click(point, Modifiers::default());
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::RenameTrack {
+                track,
+                name: "release focus guard".into(),
+            })))
+        });
+        window.dispatch_input(
+            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+                is_held: false,
+            }),
+            cx,
+        );
+    });
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    if text {
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window))
+        });
+        visual.simulate_input("keep");
+    } else {
+        let point = title(&mut visual, instrument);
+        visual.simulate_click(point, Modifiers::default());
+    }
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .is_some()
+            );
+            if text {
+                assert!(
+                    view.browser
+                        .search
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+                );
+            } else {
+                assert_eq!(view.device_panel.selected_device, Some(instrument));
+                assert!(
+                    view.device_panel
+                        .chain_window
+                        .device_is_focused(instrument, window)
+                );
+            }
+        })
+    });
+    if text {
+        visual.simulate_keystrokes("backspace");
+        editor.read_with(cx, |view, cx| {
+            assert_eq!(view.browser.search.read(cx).content, "kee");
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .is_some()
+            );
+        });
+        let point = title(&mut visual, device);
+        visual.simulate_click(point, Modifiers::default());
+        visual.simulate_keystrokes("backspace");
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .is_none(),
+                "release in text followed by a fresh card press must not retain a stale refusal"
+            )
+        });
+    }
+}
+#[gpui::test]
+fn device_delete_release_preserves_new_text_focus(cx: &mut TestAppContext) {
+    refused_release_respects_new_focus(cx, true);
+}
+#[gpui::test]
+fn device_delete_release_does_not_rearm_old_card_after_selection_changes(cx: &mut TestAppContext) {
+    refused_release_respects_new_focus(cx, false);
+}

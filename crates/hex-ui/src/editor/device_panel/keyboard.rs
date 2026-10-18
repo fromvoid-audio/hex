@@ -60,38 +60,43 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -
     let focus = view.device_panel.chain_window.selection_focus(cx);
     rail.track_focus(&focus)
         .key_context("hex_device_selection")
-        // A removed card must not blur the window or retarget held Backspace.
         // Other actions, including Undo and transport, still reach the editor.
         .on_action(cx.listener(|_, _: &RemoveSelectedDevice, _, cx| cx.stop_propagation()))
-        .on_key_up(
-            cx.listener(move |view, event: &gpui::KeyUpEvent, window, cx| {
-                if event.keystroke.key != "backspace" {
-                    return;
-                }
-                let Some(intent) = view.device_panel.chain_window.refused_delete.take() else {
-                    return;
-                };
-                let live = intent.generation == view.project_generation
-                    && intent.owner == view.device_panel.owner
-                    && view.device_panel.selected_device == Some(intent.device)
-                    && view.clip_view_open
-                    && view.device_panel_active
-                    && intent.owner.is_some_and(|owner| {
-                        view.state.as_ref().is_some_and(|state| {
-                            removal(&state.project, owner, intent.device).is_some()
-                        })
-                    });
-                // Only release on the neutral rail can restore this exact card.
-                // A new text/graph focus or changed project/selection always wins.
-                if live && focus.is_focused(window) {
-                    view.device_panel
-                        .chain_window
-                        .focus(intent.device, cx)
-                        .focus(window);
-                }
-                cx.notify();
-            }),
-        )
+}
+
+/// Observe release even after focus moved from the neutral rail into text.
+/// This is bookkeeping only; never consume the destination editor's key event.
+pub(in crate::editor) fn key_up(
+    view: &mut EditorView,
+    event: &gpui::KeyUpEvent,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    if event.keystroke.key != "backspace" {
+        return;
+    }
+    let Some(intent) = view.device_panel.chain_window.refused_delete.take() else {
+        return;
+    };
+    let live = intent.generation == view.project_generation
+        && intent.owner == view.device_panel.owner
+        && view.device_panel.selected_device == Some(intent.device)
+        && view.clip_view_open
+        && view.device_panel_active
+        && intent.owner.is_some_and(|owner| {
+            view.state
+                .as_ref()
+                .is_some_and(|state| removal(&state.project, owner, intent.device).is_some())
+        });
+    let focus = view.device_panel.chain_window.selection_focus(cx);
+    // A new text/graph focus or changed project/selection always wins.
+    if live && focus.is_focused(window) {
+        view.device_panel
+            .chain_window
+            .focus(intent.device, cx)
+            .focus(window);
+    }
+    cx.notify();
 }
 
 fn removal(

@@ -79,7 +79,12 @@ Redo removes the same device.
 
 Numeric/text/browser editors and EQ graph nodes retain their own Backspace.
 Title focus deliberately leaves nested control pointer handlers alone and keeps
-header drag propagation. Nine rendered, bounded-browser fixtures exercise real
+header drag propagation. A refused first press stays refused while held, including after pending work
+finishes. Release bookkeeping observes the editor window even after focus moves
+into text; it restores only the same live card when the neutral rail still owns
+focus. A later fresh card press is not blocked by a stale refusal. Accepted
+pointer-X removal also transfers only direct card focus to the neutral rail.
+Fifteen rendered, bounded-browser fixtures exercise real
 Service history, valid/invalid drafts, owner/refusal and held-key isolation.
 Targeted source checks are recorded in Pulse; final integrated full local CI is
 owned by the dedicated merger. Native physical input acceptance remains open.

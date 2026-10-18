@@ -40,7 +40,7 @@ mod gain_meters;
 mod gate_panel;
 mod keyboard;
 mod navigation;
-pub(super) use keyboard::bind_keys as bind_keyboard_keys;
+pub(super) use keyboard::{bind_keys as bind_keyboard_keys, key_up as selection_key_up};
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod operator_panel;
