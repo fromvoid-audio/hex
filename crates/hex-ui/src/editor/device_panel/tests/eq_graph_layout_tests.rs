@@ -21,6 +21,9 @@ pub(super) fn bounded_window(
     )));
     std::fs::create_dir(&root.0).unwrap();
     std::fs::create_dir(root.0.join("samples")).unwrap();
+    #[cfg(target_os = "macos")]
+    cx.use_native_text_system()
+        .expect("opt into native bundled-font shaping before windows");
     let bootstrap = cx.add_window(|_, _| gpui::Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -724,4 +727,323 @@ fn eq_two_device_selection_focus_off_and_removed_targets_use_one_real_control_ch
     visual.run_until_parked();
     assert!(desired(&editor, cx).is_none());
     assert!(callback.current().is_none());
+}
+
+#[gpui::test]
+fn eq_analyzer_status_closed_public_client_is_visible_without_changing_intent(
+    cx: &mut TestAppContext,
+) {
+    let (service, state, track, device) = fixture(false);
+    let original = state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    // Existing instrumented constructor owns real endpoint guards; it never
+    // opens CPAL, queries a device, renders audio or requests OS permission.
+    let (mut output, backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+    let mut client = output.take_client().unwrap();
+    client.close();
+    let identity = hex_engine::PostNodeIdentity::new(
+        hex_engine::ProcessorChainOwner::Track(track.value()),
+        device.value(),
+        EQ_TYPE_ID,
+    );
+    assert_eq!(
+        client.spectrum_select(identity, 1, 1, 48_000),
+        Err(hex_audio::spectrum_target::TargetError::OutputClosed),
+        "the public guarded client, not a fabricated error, must refuse"
+    );
+    editor.update(cx, |view, cx| {
+        view.device_panel.eq_spectrum.test_client = Some(client);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let focus = editor.update(cx, |view, cx| {
+        view.device_panel.chain_window.focus(device, cx)
+    });
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(device));
+        assert_eq!(
+            view.device_panel.message.as_deref(),
+            Some("spectrum unavailable: audio output is closed")
+        );
+        assert!(eq_panel::spectrum_intent_for_test(view, device).0);
+        assert!(view.device_panel.spectrum_result.is_none());
+        assert!(view.audio.is_none());
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert!(view.pending_requests.is_empty());
+    });
+    editor.update(cx, |view, _| {
+        view.device_panel.eq_spectrum.test_client.take();
+    });
+    drop(backend);
+    drop(output);
+}
+
+#[gpui::test]
+fn eq_analyzer_status_off_selection_clears_only_analyzer_waiting(cx: &mut TestAppContext) {
+    let (service, _, track, first) = fixture(false);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(EQ_TYPE_ID),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let second = state.project.track(track).unwrap().devices()[1].id();
+    let original = state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1800.0), px(650.0)));
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.device_panel
+            .chain_window
+            .scroll
+            .set_offset(point(px(-1200.0), px(0.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let toggle = visual
+        .debug_bounds(selector("eq8-spectrum", second))
+        .unwrap();
+    let viewport = visual.update(|window, _| window.viewport_size());
+    assert!(toggle.center().x > px(0.0) && toggle.center().x < viewport.width);
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(!editor.read_with(cx, |view, _| {
+        eq_panel::spectrum_intent_for_test(view, second).0
+    }));
+    editor.update(cx, |view, cx| {
+        view.device_panel
+            .chain_window
+            .scroll
+            .set_offset(point(px(0.0), px(0.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let toggle = visual
+        .debug_bounds(selector("eq8-spectrum", first))
+        .unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(eq_panel::spectrum_intent_for_test(view, first).0);
+        assert_eq!(
+            view.device_panel.message.as_deref(),
+            Some("spectrum waits for available current project audio")
+        );
+    });
+    let focus = editor.update(cx, |view, cx| {
+        view.device_panel.chain_window.focus(second, cx)
+    });
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(second));
+        assert!(
+            view.device_panel.message.is_none(),
+            "intentionally Off is not waiting"
+        );
+    });
+    editor.update(cx, |view, cx| {
+        view.device_panel.message = Some("could not save project".into());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.message.as_deref(),
+            Some("could not save project")
+        );
+        assert!(!eq_panel::spectrum_intent_for_test(view, second).0);
+        assert!(view.device_panel.spectrum_result.is_none());
+        assert!(view.audio.is_none());
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert!(view.pending_requests.is_empty());
+    });
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn eq_native_bundled_font_test_context(cx: &mut TestAppContext) {
+    cx.use_native_text_system().unwrap();
+    cx.update(|cx| {
+        theme::load_fonts(cx).expect("actual embedded ioskeley family must register");
+        assert!(
+            cx.text_system()
+                .all_font_names()
+                .iter()
+                .any(|name| name == theme::FONT_FAMILY)
+        );
+    });
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let single = measured_label(&mut visual, "q", 9.0);
+    let multiple = measured_label(&mut visual, "20000.00 hz", 9.0);
+    assert!(single > px(0.0) && multiple > single * 8.0);
+    assert!(
+        cx.use_native_text_system().is_err(),
+        "cannot replace fonts beneath live windows"
+    );
+}
+
+#[gpui::test]
+fn eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_operable(
+    cx: &mut TestAppContext,
+) {
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    let node = editor.read_with(cx, |view, _| read(view, device).nodes[0].id);
+    choose_option(
+        &mut visual,
+        device,
+        node.parameter(hex_engine::eq::NodeParameter::Kind).unwrap(),
+        4,
+    );
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes[0].kind == hex_engine::eq::NodeKind::HighCut
+    });
+    let parameter_name = |id: hex_lattice_contract::ParameterId, suffix: &str| {
+        Box::leak(
+            format!("device-{}-parameter-{}{suffix}", device.value(), id.value()).into_boxed_str(),
+        ) as &'static str
+    };
+    // 1314x426 is also tested as a deliberately short viewport stress case;
+    // the actual production minimum is 960x600, not inferred from a cropped image.
+    for (width, height) in [
+        (960.0, 600.0),
+        (1314.0, 426.0),
+        (1314.0, 600.0),
+        (1800.0, 900.0),
+    ] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        editor.update(cx, |view, cx| {
+            view.device_panel
+                .chain_window
+                .scroll
+                .set_offset(point(px(-600.0), px(0.0)));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let sidebar = visual.debug_bounds(selector("eq-sidebar", device)).unwrap();
+        let graph = visual
+            .debug_bounds(selector("eq-response", device))
+            .unwrap();
+        assert!(
+            graph.right() <= sidebar.left(),
+            "plot and controls have separate geometry"
+        );
+        assert!(
+            graph.size.height >= px(150.0),
+            "device plot keeps practical vertical room"
+        );
+        let mut rows: Vec<gpui::Bounds<gpui::Pixels>> = Vec::new();
+        for field in [
+            hex_engine::eq::NodeParameter::Enabled,
+            hex_engine::eq::NodeParameter::Kind,
+            hex_engine::eq::NodeParameter::Frequency,
+            hex_engine::eq::NodeParameter::Gain,
+            hex_engine::eq::NodeParameter::Q,
+            hex_engine::eq::NodeParameter::Slope,
+        ] {
+            let id = node.parameter(field).unwrap();
+            let row = visual
+                .debug_bounds(Box::leak(
+                    format!("eq-control-{}-{}", device.value(), id.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            assert!(
+                row.left() >= sidebar.left() && row.right() <= sidebar.right(),
+                "complete row within sidebar: {row:?} / {sidebar:?}"
+            );
+            let input = visual.debug_bounds(parameter_name(id, "")).unwrap();
+            assert!(
+                input.left() >= row.left()
+                    && input.right() <= row.right()
+                    && input.top() >= row.top()
+                    && input.bottom() <= row.bottom(),
+                "real control within independently sized row: {input:?} / {row:?}"
+            );
+            for previous in &rows {
+                assert!(
+                    row.right() <= previous.left()
+                        || previous.right() <= row.left()
+                        || row.bottom() <= previous.top()
+                        || previous.bottom() <= row.top(),
+                    "closed controls cannot overlap: {row:?} / {previous:?}"
+                );
+            }
+            rows.push(row);
+        }
+        if height < 600.0 {
+            // This is deliberately outside the actual WindowOptions minimum.
+            // A screenshot crop is not evidence of a 426 logical-pixel app
+            // window. Retain the bounds check, but do not claim offscreen input
+            // is operable or weaken the supported-window assertions below.
+            assert!(sidebar.bottom() > px(height));
+            eprintln!(
+                "UNSUPPORTED viewport stress {width}x{height}: below production 960x600 minimum; cropped rail geometry is disjoint, input/visual acceptance not established"
+            );
+            continue;
+        }
+        let slope = node
+            .parameter(hex_engine::eq::NodeParameter::Slope)
+            .unwrap();
+        let field = visual.debug_bounds(parameter_name(slope, "")).unwrap();
+        assert!(
+            field.center().x > px(0.0)
+                && field.center().x < px(width)
+                && field.center().y > px(0.0)
+                && field.center().y < px(height),
+            "slope hit target visible in viewport {width}x{height}: {field:?}; sidebar={sidebar:?}"
+        );
+        let before = editor.read_with(cx, |view, _| read(view, device));
+        visual.simulate_click(field.center(), Modifiers::default());
+        visual.run_until_parked();
+        let popup = visual
+            .debug_bounds(parameter_name(slope, "-popup"))
+            .expect("actual slope popup opened from hit target");
+        assert!(
+            popup.left() >= px(0.0)
+                && popup.right() <= px(width)
+                && popup.top() >= px(0.0)
+                && popup.bottom() <= px(height)
+        );
+        for (index, label) in ["12 db/oct", "24 db/oct", "36 db/oct", "48 db/oct"]
+            .into_iter()
+            .enumerate()
+        {
+            let option = visual
+                .debug_bounds(parameter_name(slope, &format!("-option-{index}")))
+                .unwrap();
+            assert!(option.left() >= popup.left() && option.right() <= popup.right());
+            assert!(measured_label(&mut visual, label, 8.0) + px(8.0) <= option.size.width);
+        }
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds(parameter_name(slope, "-popup"))
+                .is_none()
+        );
+        editor.read_with(cx, |view, _| assert_eq!(read(view, device), before));
+    }
 }

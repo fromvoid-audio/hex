@@ -24,6 +24,7 @@ hex-widgets = { path = "../hex-widgets" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
 [dev-dependencies]
+hex-audio = { path = "../hex-audio", features = ["allocation-probe"] }
 hex-media = { path = "../hex-media" }
 
 [lints]

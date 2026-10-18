@@ -246,7 +246,10 @@
 +}
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -122,0 +123,12 @@
+@@ -120,6 +120,18 @@
+ }
+ 
+ impl TestAppContext {
 +    /// Verify private cached-scene replay against the retained legacy painter.
 +    /// Test support only; no window, native graphics or public scene API.
 +    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
@@ -259,7 +262,38 @@
 +        self.test_platform.cursor_style()
 +    }
 +
-@@ -677,0 +690,65 @@
+     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
+     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
+         let arc_dispatcher = Arc::new(dispatcher.clone());
+@@ -140,6 +152,24 @@
+             fn_name,
+             on_quit: Rc::new(RefCell::new(Vec::default())),
+         }
++    }
++
++    /// Opt into real macOS font registration and shaping for a disposable test.
++    /// Call before opening any window. This retains the deterministic test
++    /// platform and never creates an OS window or changes system font settings.
++    /// Default test contexts continue to use the no-op text system.
++    #[cfg(all(target_os = "macos", feature = "font-kit"))]
++    pub fn use_native_text_system(&mut self) -> Result<()> {
++        let mut app = self.app.borrow_mut();
++        if !app.windows.is_empty() {
++            bail!("native test text system must be selected before opening windows");
++        }
++        let text_system = Arc::new(TextSystem::new(Arc::new(
++            crate::platform::MacTextSystem::new(),
++        )));
++        app.text_system = Arc::clone(&text_system);
++        self.text_system = text_system;
++        Ok(())
+     }
+ 
+     /// Create a single TestAppContext, for non-multi-client tests
+@@ -675,6 +705,71 @@
+ }
+ 
+ impl VisualTestContext {
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -325,6 +359,9 @@
 +        })
 +    }
 +
+     /// Provides a `Window` and `App` for the duration of the closure.
+     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+         self.cx
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
 @@ -35,0 +36,15 @@

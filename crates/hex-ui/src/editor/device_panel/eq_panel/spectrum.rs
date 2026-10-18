@@ -9,14 +9,46 @@ pub(in super::super) struct SpectrumSelection {
     generation: u64,
     revision: Option<u64>,
     off: HashSet<DeviceId>,
+    status_message: Option<&'static str>,
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in super::super) test_channel: Option<hex_audio::spectrum_target::SpectrumTargetControl>,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in super::super) test_client: Option<hex_audio::prepared::Client>,
 }
 
 impl SpectrumSelection {
     pub(super) fn enabled(&self, device: DeviceId) -> bool {
         !self.off.contains(&device)
     }
+}
+
+// The shared panel status can also carry save/edit failures. Retire only the
+// analyzer message that this intent owns, never an unrelated newer message.
+fn clear_status(view: &mut EditorView) {
+    let owned = view.device_panel.eq_spectrum.status_message.take();
+    if view.device_panel.message.as_deref() == Some(WAITING)
+        || owned.is_some_and(|message| view.device_panel.message.as_deref() == Some(message))
+    {
+        view.device_panel.message = None;
+    }
+}
+
+fn report_error(view: &mut EditorView, error: TargetError) {
+    let message = match error {
+        TargetError::OutputClosed => "spectrum unavailable: audio output is closed",
+        TargetError::InvalidDevice | TargetError::InvalidOwner | TargetError::WrongDeviceType => {
+            "spectrum unavailable: selected eq target is invalid"
+        }
+        TargetError::InvalidActivationFloor => "spectrum waits for a valid audio publication",
+        TargetError::UnsupportedSampleRate(_) => {
+            "spectrum unavailable: unsupported audio sample rate"
+        }
+        TargetError::EpochExhausted | TargetError::TokenExhausted => {
+            "spectrum unavailable: target identity exhausted; reopen audio output"
+        }
+    };
+    view.device_panel.eq_spectrum.status_message = Some(message);
+    view.device_panel.message = Some(message.into());
 }
 
 fn reconcile(view: &mut EditorView) {
@@ -70,6 +102,10 @@ fn reconcile(view: &mut EditorView) {
 
 fn desired(view: &EditorView) -> Option<SpectrumTarget> {
     #[cfg(all(test, feature = "ui-test-support"))]
+    if let Some(client) = &view.device_panel.eq_spectrum.test_client {
+        return client.spectrum_desired();
+    }
+    #[cfg(all(test, feature = "ui-test-support"))]
     if let Some(channel) = &view.device_panel.eq_spectrum.test_channel {
         return channel.desired();
     }
@@ -80,7 +116,9 @@ fn desired(view: &EditorView) -> Option<SpectrumTarget> {
 
 fn context(view: &EditorView) -> Option<(u64, u32)> {
     #[cfg(all(test, feature = "ui-test-support"))]
-    if view.device_panel.eq_spectrum.test_channel.is_some() {
+    if view.device_panel.eq_spectrum.test_channel.is_some()
+        || view.device_panel.eq_spectrum.test_client.is_some()
+    {
         // Only the public control channel is injected, never a Client/backend.
         return Some((1, 48_000));
     }
@@ -96,6 +134,12 @@ fn context(view: &EditorView) -> Option<(u64, u32)> {
 }
 
 fn clear(view: &mut EditorView) {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if let Some(client) = &mut view.device_panel.eq_spectrum.test_client {
+        let _ = client.spectrum_clear();
+        view.device_panel.spectrum_result = None;
+        return;
+    }
     #[cfg(all(test, feature = "ui-test-support"))]
     if let Some(channel) = &mut view.device_panel.eq_spectrum.test_channel {
         let _ = channel.clear();
@@ -114,6 +158,11 @@ fn select(
     floor: u64,
     rate: u32,
 ) -> Result<(), TargetError> {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if let Some(client) = &mut view.device_panel.eq_spectrum.test_client {
+        client.spectrum_select(identity, view.project_generation, floor, rate)?;
+        return Ok(());
+    }
     #[cfg(all(test, feature = "ui-test-support"))]
     if let Some(channel) = &mut view.device_panel.eq_spectrum.test_channel {
         channel.select(identity, view.project_generation, floor, rate)?;
@@ -149,6 +198,7 @@ pub(super) fn sync_selected(
         if desired(view).is_some() {
             clear(view);
         }
+        clear_status(view);
         return;
     }
     let Some((floor, rate)) = context(view) else {
@@ -164,12 +214,11 @@ pub(super) fn sync_selected(
     }) {
         return;
     }
-    if select(view, identity, floor, rate).is_ok() {
-        // Old frames cannot be presented as belonging to a newly selected tap.
-        view.device_panel.spectrum_result = None;
-        if view.device_panel.message.as_deref() == Some(WAITING) {
-            view.device_panel.message = None;
-        }
+    // Both successful activation and refusal retire the previous tap's pixels.
+    view.device_panel.spectrum_result = None;
+    match select(view, identity, floor, rate) {
+        Ok(()) => clear_status(view),
+        Err(error) => report_error(view, error),
     }
 }
 
@@ -215,8 +264,8 @@ pub(super) fn toggle(
         }
         if view.device_panel.eq_spectrum.enabled(device) && context(view).is_none() {
             view.device_panel.message = Some(WAITING.into());
-        } else if view.device_panel.message.as_deref() == Some(WAITING) {
-            view.device_panel.message = None;
+        } else if !view.device_panel.eq_spectrum.enabled(device) {
+            clear_status(view);
         }
         cx.notify();
     }))

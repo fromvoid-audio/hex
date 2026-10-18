@@ -105,3 +105,50 @@ user-present plan: confirm real pre/post spectrum data/default/toggle behavior,
 track/device switching, two-EQ deliberate selection/focus, explicit Off and
 return ownership, then listening. No sound/parity or
 physical deadline claim follows from headless UI tests.
+
+## returned status and font-fixture repairs
+
+The original9f56 source is preserved with its source reports. Independent review
+found two real status omissions, reproduced by `eq_analyzer_status_` tests:
+closing an actual guarded public Client refused with `OutputClosed` but left no
+UI status, and focusing an intentionally-Off second EQ retained the first EQ's
+waiting message. Selection now handles the typed refusal, clears previous tap
+pixels and reports a lowercase error. Off/success retire only analyzer-owned
+status, preserving unrelated save/edit messages. Intent and target lifecycle,
+frame filtering, canonical project/history and backend ownership are unchanged.
+The closed-client regression uses the existing dev-only headless constructor;
+it opens no OS device and renders no samples. It does not test real shutdown.
+
+The first actual native9f56 fixture run matched15 tests: one shared-width test
+passed and14 EditorView cases failed at bundled-font registration, before any
+editor geometry was constructed. GPUI's default TestAppContext uses
+NoopTextSystem even on macOS; accepting bytes there cannot establish registration.
+The corrected fixture explicitly installs the existing macOS text system into
+both App and test-context shaping references before opening any window, retaining
+the strict embedded-family assertion. Other test contexts remain unchanged.
+The opt-in rejects replacement beneath live windows. Its native compile, actual
+embedded registration/shaping and layout bounds require new-source Mac evidence;
+Linux green cannot establish those facts. No system fonts are installed.
+
+The additional production rail test checks actual control-row/field separation,
+plot/sidebar geometry, slope hit testing, all popup choices and keyboard cancel
+at960x600,1314x600 and1800x900. A deliberately short1314x426 whole-window stress
+case exposes the rail extending beyond that viewport, which is below the actual
+production960x600 minimum. Its original failure and exact bounds are retained;
+it is explicitly unsupported for input acceptance. The screenshot is a cropped
+1314x426 image with unverified display scaling, not proof of that logical app
+window size. No production minimum or parent layout was changed to satisfy it.
+All supported-size input assertions remain active. The user's visual rejection
+remains open until actual redesigned-source native pixels and interaction are
+reviewed; these tests do not establish visual acceptance.
+
+For the repaired immutable candidate, the coordinator first runs
+`cargo test -p hex-ui --lib --features ui-test-support --locked eq_native_bundled_font_test_context -- --nocapture`
+(one positive native-only test), then the affected `eq_ui_tests` and strict
+feature Clippy. `eq_analyzer_status_` selects the two new semantic regressions;
+`eq_production_rail_screenshot_sizes_` selects the additional real control/menu
+geometry case. Existing model/catalog/widget evidence remains historical on its
+original source until included in the merger's actual candidate qualification.
+No old native report is relabeled, and no user app, backend, TCC or MTS operation
+is requested by these disposable tests. Shared device outline2829/433 and future
+shared spectrum fills2832/436 are separate source work.
