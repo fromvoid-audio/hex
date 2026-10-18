@@ -102,6 +102,7 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
@@ -248,6 +249,7 @@ actions!(
         BrowserNext,
         BrowserActivate,
         BrowserPreviewSelected,
+        BrowserCollapseFolder,
         BrowserEscape,
         ToggleSolo,
         AdditiveSolo,
@@ -360,6 +362,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", BrowserNext, Some("hex_browser")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser")),
         KeyBinding::new("right", BrowserPreviewSelected, Some("hex_browser")),
+        KeyBinding::new("left", BrowserCollapseFolder, Some("hex_browser")),
         KeyBinding::new("escape", BrowserEscape, Some("hex_browser")),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser_search")),
         KeyBinding::new("down", BrowserNext, Some("hex_browser_search")),
@@ -539,6 +542,7 @@ pub(super) struct EditorView {
     gain_lane: gain_lane::GainLane,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
+    track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
@@ -803,6 +807,7 @@ impl EditorView {
                 directory.join("theme.json"),
             ),
             Some(directory.join("samples")),
+            None,
         )
     }
 
@@ -827,6 +832,8 @@ impl EditorView {
             ),
             #[cfg(all(test, feature = "ui-test-support"))]
             None,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            None,
         )
     }
 
@@ -837,6 +844,9 @@ impl EditorView {
         output: Result<crate::EditorAudio, String>,
         paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
         #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
+            std::path::PathBuf,
+        >,
+        #[cfg(all(test, feature = "ui-test-support"))] test_browser_home: Option<
             std::path::PathBuf,
         >,
     ) -> Self {
@@ -955,7 +965,12 @@ impl EditorView {
             }
         });
         focus.focus(window);
-        let browser = browser::BrowserState::new(cx, preferences_path);
+        let browser = browser::BrowserState::new(
+            cx,
+            preferences_path,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            test_browser_home,
+        );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
@@ -979,6 +994,7 @@ impl EditorView {
             gain_lane: gain_lane::GainLane::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
+            track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,

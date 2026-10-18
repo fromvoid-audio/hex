@@ -1,6 +1,8 @@
 //! Compact, bounded left-side media and project browser.
 mod audition;
+mod place_icons;
 mod samples;
+mod tree;
 
 use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
 use crate::theme;
@@ -23,6 +25,19 @@ use std::{
 };
 
 mod layout;
+
+// Preference diagnostics remain useful without unbounded field/path text in UI tooltips.
+fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> String {
+    let reason = error.to_string().to_lowercase();
+    let mut message = format!(
+        "{prefix} · {}",
+        reason.chars().take(160).collect::<String>()
+    );
+    if reason.chars().count() > 160 {
+        message.push('…');
+    }
+    message
+}
 
 pub(super) const DEFAULT_WIDTH: f32 = 480.0;
 const MIN_WIDTH: f32 = 220.0;
@@ -156,6 +171,7 @@ pub(super) struct BrowserState {
     home: PathBuf,
     music: PathBuf,
     pub(super) places: Vec<PathBuf>,
+    place_icons: HashMap<PathBuf, String>,
     preferences_path: PathBuf,
     preferences_loading: bool,
     pub(super) preferences_writable: bool,
@@ -164,6 +180,7 @@ pub(super) struct BrowserState {
     pending_places_save: Option<BrowserPlaces>,
     pub(super) places_status: Option<String>,
     samples: samples::SampleBrowser,
+    tree: tree::Tree,
     listing: Option<DirectoryListing>,
     loading: bool,
     pending_selection: Option<BrowserItemKey>,
@@ -171,6 +188,8 @@ pub(super) struct BrowserState {
     error: Option<String>,
     resizing: bool,
     pub search: gpui::Entity<BrowserSearch>,
+    results_focus: gpui::FocusHandle,
+    // Selection/highlight activity, independent of actual query/navigation focus.
     results_focused: bool,
     selected_index: usize,
     scroll: gpui::UniformListScrollHandle,
@@ -202,10 +221,17 @@ pub(super) struct BrowserState {
 }
 
 impl BrowserState {
-    pub fn new(cx: &mut Context<EditorView>, preferences_path: PathBuf) -> Self {
+    pub fn new(
+        cx: &mut Context<EditorView>,
+        preferences_path: PathBuf,
+        #[cfg(all(test, feature = "ui-test-support"))] test_home: Option<PathBuf>,
+    ) -> Self {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
+        // Explicit fixture defaults precede discovery, catalog roots and fallback.
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let home = test_home.unwrap_or(home);
         let music = home.join("Music");
         let search = cx.new(BrowserSearch::new);
         let mut previous_query = String::new();
@@ -231,6 +257,7 @@ impl BrowserState {
             home,
             music,
             places,
+            place_icons: HashMap::new(),
             preferences_path,
             preferences_loading: true,
             preferences_writable: true,
@@ -239,6 +266,7 @@ impl BrowserState {
             pending_places_save: None,
             places_status: None,
             samples: samples::SampleBrowser::default(),
+            tree: tree::Tree::default(),
             listing: None,
             loading: false,
             pending_selection: None,
@@ -246,6 +274,7 @@ impl BrowserState {
             error: None,
             resizing: false,
             search,
+            results_focus: cx.focus_handle(),
             results_focused: false,
             selected_index: 0,
             scroll: gpui::UniformListScrollHandle::new(),
@@ -415,12 +444,23 @@ impl EditorView {
         match loaded {
             Err(error) => {
                 self.browser.preferences_writable = false;
-                self.browser.places_status = Some(format!(
-                    "could not load browser places · {}",
-                    error.to_string().to_lowercase()
-                ));
+                self.browser.places_status =
+                    Some(places_error("could not load browser places", &error));
             }
             Ok(loaded) => {
+                self.browser.place_icons = loaded
+                    .icon_assignments()
+                    .map(|(path, id)| (path.to_owned(), id.to_owned()))
+                    .collect();
+                if self
+                    .browser
+                    .place_icons
+                    .values()
+                    .any(|id| !place_icons::known(id))
+                {
+                    self.browser.places_status =
+                        Some("some place icons unavailable · showing folder".into());
+                }
                 let mut combined = loaded.additional().to_vec();
                 let local_places = self
                     .browser
@@ -470,14 +510,23 @@ impl EditorView {
             .iter()
             .filter(|path| **path != self.browser.home && **path != self.browser.music)
             .cloned();
-        match BrowserPlaces::new(additional) {
+        let places = BrowserPlaces::new(additional).and_then(|mut places| {
+            for (path, id) in &self.browser.place_icons {
+                if places.additional().contains(path) {
+                    places.set_icon(path, Some(id))?;
+                }
+            }
+            Ok(places)
+        });
+        match places {
             Ok(places) => {
                 self.browser.pending_places_save = Some(places);
                 self.browser.places_status = Some("saving browser places…".into());
                 self.start_browser_places_save(cx);
             }
             Err(error) => {
-                self.browser.places_status = Some(error.to_string().to_lowercase());
+                self.browser.places_status =
+                    Some(places_error("could not save browser places", &error));
             }
         }
     }
@@ -516,10 +565,7 @@ impl EditorView {
         } else {
             self.browser.places_status = Some(match result {
                 Ok(()) => "browser places saved".into(),
-                Err(error) => format!(
-                    "could not save browser places · {}",
-                    error.to_string().to_lowercase()
-                ),
+                Err(error) => places_error("could not save browser places", &error),
             });
         }
     }
@@ -529,6 +575,7 @@ impl EditorView {
         self.browser.scans.pending = None;
         self.browser.loading = false;
         self.browser.error = None;
+        self.browser.tree.source_changed();
         self.browser.section = source;
         self.reset_browser_results();
         match &self.browser.section {
@@ -747,7 +794,7 @@ impl EditorView {
         {
             match entry.kind {
                 EntryKind::WaveAudio => self.play_browser_sample(entry.path, cx),
-                EntryKind::Directory => self.request_browser_scan(entry.path, cx),
+                EntryKind::Directory => self.expand_browser_folder(entry.path, cx),
                 EntryKind::Project => {}
             }
         }
@@ -1229,11 +1276,9 @@ impl EditorView {
             .focus_handle()
             .is_focused(window)
         {
-            if self.browser.results_focused {
-                "hex_browser"
-            } else {
-                "hex_browser_search"
-            }
+            "hex_browser_search"
+        } else if self.browser.results_focus.is_focused(window) {
+            "hex_browser"
         } else {
             "hex_editor"
         }
@@ -1292,12 +1337,18 @@ impl EditorView {
         cx.notify();
     }
 
-    pub(super) fn browser_previous(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn browser_previous(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.move_browser_selection(false, cx);
+        if self.browser.results_focused {
+            self.browser.results_focus.focus(window);
+        }
     }
 
-    pub(super) fn browser_next(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn browser_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.move_browser_selection(true, cx);
+        if self.browser.results_focused {
+            self.browser.results_focus.focus(window);
+        }
     }
 
     fn move_browser_selection(&mut self, next: bool, cx: &mut Context<Self>) {
@@ -1349,7 +1400,7 @@ impl EditorView {
             return;
         };
         match entry.kind {
-            EntryKind::Directory => self.request_browser_scan(entry.path, cx),
+            EntryKind::Directory => self.toggle_browser_folder(entry.path, false, cx),
             EntryKind::WaveAudio => self.import_browser_audio(entry.path),
             EntryKind::Project => self.open_browser_project(entry.path, cx),
         }
@@ -1363,6 +1414,7 @@ impl EditorView {
             .read(cx)
             .focus_handle()
             .is_focused(window)
+            || self.browser.results_focus.is_focused(window)
         {
             self.reset_browser_results();
             self.browser.search.update(cx, |input, cx| {
@@ -1427,7 +1479,12 @@ impl EditorView {
             .listing
             .as_ref()
             .filter(|listing| listing.directory == self.browser.directory);
-        match &self.browser.section {
+        let base = match &self.browser.section {
+            BrowserSection::Samples
+                if samples::ResultsMode::for_query(&query) == samples::ResultsMode::Hierarchy =>
+            {
+                self.browser.tree.roots(self.sample_roots())
+            }
             BrowserSection::Samples => self.browser.samples.visible(&query),
             BrowserSection::Place(root) if !query.is_empty() => self
                 .browser
@@ -1435,13 +1492,27 @@ impl EditorView {
                 .visible_with_listing(&query, Some(root), listing),
             BrowserSection::Place(_) => self.browser.samples.folder(&query, listing, false),
             BrowserSection::Collection(_) => Arc::new(Vec::new()),
+            BrowserSection::All if query.is_empty() => {
+                let mut roots = self.sample_roots();
+                roots.push(self.browser.directory.clone());
+                self.browser.tree.roots(roots)
+            }
             BrowserSection::All => self
                 .browser
                 .samples
                 .visible_with_listing(&query, None, listing),
             BrowserSection::Projects => self.browser.samples.folder(&query, listing, true),
             BrowserSection::Instruments => Arc::new(Vec::new()),
-        }
+        };
+        self.browser.tree.visible(
+            base,
+            &query,
+            match self.browser.section {
+                BrowserSection::Samples => tree::Files::Samples,
+                BrowserSection::Projects => tree::Files::Projects,
+                _ => tree::Files::All,
+            },
+        )
     }
 
     fn browser_visible_devices(
@@ -1495,6 +1566,7 @@ impl EditorView {
         }
 
         self.reconcile_browser_source(cx);
+        self.reconcile_browser_tree_requests(cx);
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
         let section = self.browser.section.clone();
@@ -1577,26 +1649,22 @@ impl EditorView {
                         .items_center()
                         .gap_1()
                         .child(self.browser_icon(
-                            "↑",
-                            "parent folder",
+                            "↻",
+                            "refresh browser source",
                             |view, _, cx| {
-                                if !matches!(&view.browser.section, BrowserSection::Place(root) if *root == view.browser.directory)
-                                    && let Some(parent) = view.browser.directory.parent().map(PathBuf::from)
-                                {
-                                    view.request_browser_scan(parent, cx);
-                                }
+                                view.refresh_browser_tree(cx);
                             },
                             cx,
                         ))
-                        .child(
-                            div().flex_1().min_w_0().overflow_hidden().text_xs().child(
-                                theme::text(
-                                    path.file_name()
-                                        .and_then(|name| name.to_str())
-                                        .unwrap_or("folder"),
-                                ),
-                            ),
-                        )
+                        .child(div().flex_1().min_w_0().overflow_hidden().text_xs().child(
+                            theme::text(if section == BrowserSection::All {
+                                "all folders"
+                            } else {
+                                path.file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("folder")
+                            }),
+                        ))
                         .child(folder_dialog),
                 );
         }
@@ -1803,6 +1871,18 @@ impl EditorView {
             }
         }
 
+        if let Some(status) = self.browser.tree.status.clone() {
+            panel = panel.child(
+                div()
+                    .h(px(18.0))
+                    .flex_shrink_0()
+                    .px_1()
+                    .overflow_hidden()
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .child(theme::text(status)),
+            );
+        }
         let preview = self.browser_selection_preview(cx);
         let sidebar = self.browser_sidebar(pane_width, cx);
         let editor = self.browser_tag_editor(pane_width, cx);
@@ -1899,14 +1979,34 @@ impl EditorView {
             )
             .size_full(),
         );
-        div().flex().min_h_0().flex_shrink_0().child(panel).child(
-            div()
-                .w(px(4.0))
-                .h_full()
-                .flex_shrink_0()
-                .min_h_0()
-                .child(resize),
-        )
+        div()
+            .track_focus(&self.browser.results_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    // Only explicit text entry keeps editing focus. Descendant text
+                    // inputs stop this local bubble; no global pointer interception.
+                    if view.browser.open {
+                        view.browser.results_focus.focus(window);
+                    } else {
+                        view.focus.focus(window);
+                    }
+                    window.prevent_default();
+                    cx.notify();
+                }),
+            )
+            .flex()
+            .min_h_0()
+            .flex_shrink_0()
+            .child(panel)
+            .child(
+                div()
+                    .w(px(4.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .min_h_0()
+                    .child(resize),
+            )
     }
 
     fn browser_row(
@@ -1916,7 +2016,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let icon = match entry.kind {
-            EntryKind::Directory => "▸",
+            EntryKind::Directory => self.browser.tree.icon(&entry.path),
             EntryKind::WaveAudio => "♫",
             EntryKind::Project => "▤",
         };
@@ -1984,7 +2084,7 @@ impl EditorView {
         let click_path = path.clone();
         let click_kind = entry.kind;
         let mut row = div()
-            .id(("library-entry", index))
+            .id(gpui::SharedString::from(tree::row_id(&path)))
             .debug_selector(|| format!("browser-entry-{index}"))
             .w_full()
             .min_w_0()
@@ -2004,18 +2104,17 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    // Even a stale painted row leaves query editing; availability
+                    // still gates every selection/audition/import action below.
+                    view.browser.results_focus.focus(window);
+                    window.prevent_default();
                     if view.browser_place_unavailable() {
+                        cx.notify();
                         cx.stop_propagation();
                         return;
                     }
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
-                    view.browser
-                        .search
-                        .update(cx, |input, _| input.focus(window));
-                    // Keep the editor's focusable ancestor from replacing the
-                    // explicit browser focus during this mouse-down's bubble.
-                    window.prevent_default();
                     view.browser_selection_audition(
                         (click_kind == EntryKind::WaveAudio).then(|| click_path.clone()),
                         cx,
@@ -2023,9 +2122,11 @@ impl EditorView {
                     cx.notify();
                     if event.click_count >= 2 {
                         match click_kind {
-                            EntryKind::Directory => {
-                                view.request_browser_scan(click_path.clone(), cx)
-                            }
+                            EntryKind::Directory => view.toggle_browser_folder(
+                                click_path.clone(),
+                                event.modifiers.platform,
+                                cx,
+                            ),
                             EntryKind::WaveAudio => {
                                 // Sample double-click remains selection/audition.
                                 // Import is an explicit Enter or drag/drop action.
@@ -2110,40 +2211,51 @@ impl EditorView {
                 });
             });
         }
-        row.child(
-            div()
-                .w(px(16.0))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(icon)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .line_clamp(1)
-                .text_ellipsis()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text(
-                    if matches!(
-                        self.browser.section,
-                        BrowserSection::All | BrowserSection::Samples
-                    ) && entry.kind == EntryKind::WaveAudio
-                    {
-                        format!(
-                            "{} · {}",
-                            entry.name,
-                            entry.path.parent().map_or_else(String::new, |path| path
-                                .to_string_lossy()
-                                .into_owned())
-                        )
-                    } else {
-                        entry.name
-                    },
-                )),
-        )
+        let depth = self.browser.tree.depth(&path);
+        let mut control = div()
+            .w(px(16.0))
+            .flex_shrink_0()
+            .text_xs()
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .child(theme::text(icon));
+        if entry.kind == EntryKind::Directory {
+            let folder = path.clone();
+            control = control
+                .debug_selector(move || format!("browser-disclosure-{index}"))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                        view.toggle_browser_folder(folder.clone(), event.modifiers.platform, cx);
+                        view.browser.results_focus.focus(window);
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }),
+                );
+        }
+        let tooltip = self.browser.tree.error(&path).map_or_else(
+            || path.to_string_lossy().into_owned(),
+            |error| format!("{} · {error}", path.display()),
+        );
+        row.tooltip(move |_, cx| layout::browser_label_tooltip(&tooltip, cx))
+            .child(
+                div()
+                    .w(px((depth as f32 * 12.0).min(96.0)))
+                    .max_w(relative(0.4))
+                    .flex_shrink_0(),
+            )
+            .child(control)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .line_clamp(1)
+                    .text_ellipsis()
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .debug_selector(move || format!("browser-entry-label-{index}"))
+                    .child(theme::text(entry.name)),
+            )
     }
 
     fn browser_device_row(
@@ -2189,9 +2301,7 @@ impl EditorView {
                 cx.listener(move |view, _, window, cx| {
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
-                    view.browser
-                        .search
-                        .update(cx, |input, _| input.focus(window));
+                    view.browser.results_focus.focus(window);
                     window.prevent_default();
                     cx.notify();
                 }),

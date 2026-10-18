@@ -31,7 +31,10 @@ use bindings::{
     parameter_control_matches_identity,
 };
 mod gesture_adapter;
-pub(super) use gesture_adapter::{commit_owned_numeric_edit, dispatch_numeric_gesture};
+pub(super) use gesture_adapter::{
+    NumericGestureLease, commit_owned_numeric_edit, dispatch_bound_numeric_gesture,
+    dispatch_numeric_gesture, owns_numeric_gesture,
+};
 mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
@@ -292,6 +295,11 @@ pub(super) fn finalize_controls_except(
             None,
         ));
     }
+    controls.extend(
+        super::track_gain::controls_for_finalize(view, cx)
+            .into_iter()
+            .map(|(target, entity)| (target, entity, None)),
+    );
     controls.sort_by_key(|(target, _, _)| u8::from(Some(*target) != active));
     for (target, entity, parameter_key) in controls {
         let finalized =
@@ -747,7 +755,7 @@ fn render_track(
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
-        GestureTarget::ReturnSend { .. } => false,
+        GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
             view.device_panel.controls.get(key),
