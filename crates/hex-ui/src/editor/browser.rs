@@ -532,11 +532,11 @@ impl EditorView {
         match &self.browser.section {
             BrowserSection::Place(path) => self.request_browser_scan(path.clone(), cx),
             BrowserSection::All | BrowserSection::Projects => {
-                if !self
+                if self
                     .browser
                     .listing
                     .as_ref()
-                    .is_some_and(|listing| listing.directory == self.browser.directory)
+                    .is_none_or(|listing| listing.directory != self.browser.directory)
                 {
                     self.request_browser_scan(self.browser.directory.clone(), cx);
                 }
