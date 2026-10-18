@@ -235,3 +235,38 @@ fn database_preserves_non_utf8_path_bytes_without_creating_that_sample_file() {
         path.as_os_str().as_bytes()
     );
 }
+
+#[test]
+fn place_scoped_search_keeps_path_identity_and_excludes_other_roots_and_listings() {
+    let fixture = Fixture::new();
+    let left = fixture.0.join("left");
+    let right = fixture.0.join("left-other");
+    let a = fixture.file("left/nested/Kick.wav");
+    let b = fixture.file("left-other/nested/Kick.wav");
+    let project = fixture.file("left/Kick.hex");
+    let foreign = fixture.file("left-other/Kick.hex");
+    let catalog = scan_samples(std::slice::from_ref(&fixture.0)).catalog;
+    let listing = crate::scan_directory(&left).unwrap();
+    let scoped = catalog.search_with_listing_in("kick", Some(&left), Some(&listing));
+    assert_eq!(scoped.len(), 2);
+    assert!(scoped.iter().any(|entry| entry.path == a));
+    assert!(scoped.iter().any(|entry| entry.path == project));
+    assert!(
+        !scoped
+            .iter()
+            .any(|entry| entry.path == b || entry.path == foreign)
+    );
+    let wrong_listing = crate::scan_directory(&right).unwrap();
+    assert_eq!(
+        catalog
+            .search_with_listing_in("kick", Some(&left), Some(&wrong_listing))
+            .iter()
+            .map(|entry| &entry.path)
+            .collect::<Vec<_>>(),
+        [&a]
+    );
+    let all = catalog.search_with_listing("kick", Some(&listing));
+    assert_eq!(all.len(), 3);
+    assert!(all.iter().any(|entry| entry.path == a));
+    assert!(all.iter().any(|entry| entry.path == b));
+}

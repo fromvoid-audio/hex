@@ -5010,6 +5010,21 @@ and asserts its complete canonical drop request; fresh exact-source full CI is
 being run. Native
 Load dialog, glyph/input/compact layout acceptance remains coordinator-owned.
 
+## one active browser source — pulse2727 / PR340, 18 october 2026
+
+Replace independently selected category/directory/Samples-root filters with one
+session source across Library, original-path Places and collection placeholders.
+Rendered normal/icon picker regression reproduces the old double-highlight and
+verifies all group transition directions; results follow the same source. Keep
+query/global index, identity remapping, audition/offset/Stop/no-doubleclick and
+explicit import/drag contracts. Reject late scans; unavailable Place shows an
+error without stale indexed data/Home substitution, removed Place explicitly
+falls back to Samples and prunes removed-root derived matches. Cache unchanged
+folder snapshots. Collection assignments remain explicitly pending; no tag/history
+or neutral shared-library implementation is claimed. Source checks and native
+coordinator-only acceptance recorded separately; inline tree2728 follows this
+checked/reviewed foundation.
+
 ## command-d time range — pulse2759 / PR367, 18 october2026
 
 Arrangement Command-D uses existing atomic time-chunk copy at the range end,
