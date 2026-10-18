@@ -22,7 +22,18 @@ categories (at least one remains visible) and cycling six icons for visual revie
 Those settings are session-only. Existing folder places still persist through
 hex-preferences; their add/folder-picker/status behavior remains available.
 Sample selection shows a real waveform from the existing bounded background
-preview cache, with loading/error/unsupported states and an audition control.
+preview cache. Below the tag strip, a single 22 px row contains automatic
+audition (the `a` toggle, initially on), manual Play/Stop, and a clipped miniature
+waveform. Stereo channel extrema share one neutral envelope without cancelling
+opposite-phase peaks. Loading/errors remain bounded single-line placeholders.
+Clicking or moving Up/Down to a new sample auditions it when automatic audition
+is on; manual Play and Right remain independent. Repeating navigation at a list
+boundary cannot retrigger the same selection. Search/category/source resets stop
+obsolete requests. The controls preserve result focus and never start project
+transport. Stop invalidates decode and queued/active preview PCM; actual callback
+acknowledgements drive playing/finished state, with repaint only on transitions.
+There is no preview loop control or automatic replay. Native audio/visual
+acceptance is separate from headless layout and deterministic PCM tests.
 No fabricated waveform or sample tags are used. File import, project opening,
 device/sample dragging and current search semantics retain their existing paths.
 
@@ -70,3 +81,34 @@ User-owned macOS acceptance remains pending. Review the actual native window:
 
 Automated GPUI geometry/input checks verify the split and toggles; they do not
 establish native GPU pixels, macOS glyph rendering, accessibility or listening.
+
+
+Preview-cache ownership (Pulse2778 / PR384): composing visible result rows only
+reads existing metadata and cannot insert or evict cache entries. Actual preview
+requests own the bounded16-entry cache; the selected waveform and in-flight/latest
+pending requests are protected from eviction. Cached failures are stable on hover;
+deliberate drag preparation retains its existing refresh path. This removes a
+render/evict/reprepare/notify cycle that could flash preparing and repaint the
+whole editor. Headless input checks retain canonical project identity, surrounding
+lane geometry/background and selected metadata across hover/selection. Native
+temporal paint acceptance remains separate; no generic GPUI patch is inferred.
+
+
+Browser waveform clicks (Pulse2779 / PR385) are manual audition, independent of
+automatic result-selection audition. The hit is normalized to finite clipped
+bounds; background decoding resolves it once to an absolute frame in the actual
+output-rate preview PCM, avoiding stale display metadata/rate conversions. Exact
+end is valid and finishes silently; invalid/zero-width geometry cannot dispatch.
+Publication moves the existing PCM owner with a starting cursor; there is no
+slicing/copying, new stream or callback seek command. Generation cancellation
+covers repeated clicks, selection and Stop. A one-pixel position marker follows
+actual callback frame acknowledgements; pointer moves cannot start playback.
+Progress invalidation occurs only when the phase or visible pixel changes. The
+lower clip-editor waveform retains its own interaction contracts.
+
+
+Sample-result double-click (Pulse2780 / PR386) selects/auditions according to the
+automatic audition preference and consumes its second-click bubble. It cannot
+import into a track/Session cell or create history. Enter and deliberate drag/drop
+remain explicit import routes; device, project and directory double-click retain
+their own handlers. Manual waveform/Play/Stop controls are independent.

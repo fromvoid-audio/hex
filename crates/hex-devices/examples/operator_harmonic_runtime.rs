@@ -79,7 +79,16 @@ fn main() {
                         .unwrap();
                 }
             }
-            let instrument = OPERATOR_METADATA.prepare_instrument(&state, rate).unwrap();
+            let instrument = OPERATOR_METADATA
+                .prepare_instrument(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: rate,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
+                .unwrap();
             let factory = instrument.prepare_mutable_runtime().unwrap().unwrap();
             let mut runtime = factory.create_runtime();
             let events: Vec<_> = (0..voices)
@@ -91,11 +100,13 @@ fn main() {
                 })
                 .collect();
             let mut block = [[0.0; 2]; 256];
-            runtime.preflight_events(&events, block.len()).unwrap();
-            runtime.process_block(&events, &mut block);
+            runtime
+                .preflight_events(&events, block.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            runtime.process_block(&events, &mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             for _ in 0..4 {
                 block.fill([0.0; 2]);
-                runtime.process_block(&[], &mut block);
+                runtime.process_block(&[], &mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             }
             cpu_checkpoint(cpu_handshake, "ready", rate, voices);
             let mut timings = Vec::with_capacity(blocks);
@@ -103,7 +114,11 @@ fn main() {
             for _ in 0..blocks {
                 block.fill([0.0; 2]);
                 let start = Instant::now();
-                runtime.process_block(black_box(&[]), black_box(&mut block));
+                runtime.process_block(
+                    black_box(&[]),
+                    black_box(&mut block),
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
                 timings.push(start.elapsed().as_secs_f64() * 1000.0);
                 checksum += block
                     .iter()

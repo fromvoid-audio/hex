@@ -8,7 +8,16 @@ fn chain(bypassed: bool) -> NativeRuntimeChain {
     let providers: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&owned_delay::DEFINITION];
     let registry = NativeDeviceRegistry::new(&providers).unwrap();
     let state = owned_delay::state(4096).unwrap();
-    let prepared = registry.prepare_runtime_device(&state, 48_000).unwrap();
+    let prepared = registry
+        .prepare_runtime_device(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap();
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),

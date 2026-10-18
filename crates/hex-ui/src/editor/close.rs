@@ -38,6 +38,9 @@ impl EditorView {
         }
         let _ = super::device_panel::finalize_controls(self, cx);
         self.finalize_device_gesture_for_close();
+        if let Err(reason) = self.finalize_tuning_gesture() {
+            self.error = Some(reason.into());
+        }
         if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, false);
             false
@@ -62,6 +65,9 @@ impl EditorView {
         }
         let _ = super::device_panel::finalize_controls(self, cx);
         self.finalize_device_gesture_for_close();
+        if let Err(reason) = self.finalize_tuning_gesture() {
+            self.error = Some(reason.into());
+        }
         if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, true);
         } else {
@@ -79,7 +85,9 @@ impl EditorView {
             self.duplicate_intent.is_pending(),
             self.opening_project,
             self.export_pending,
-            self.device_gesture_pending() || self.device_panel.has_pending_draft(cx),
+            self.device_gesture_pending()
+                || self.device_panel.has_pending_draft(cx)
+                || self.tuning.client.snapshot().is_some(),
         )
     }
 

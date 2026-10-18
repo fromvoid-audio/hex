@@ -79,7 +79,7 @@ impl BrowserLayout {
     }
 }
 
-fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpui::AnyView {
+pub(super) fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpui::AnyView {
     cx.new(|_| super::super::transport::MiniTooltip {
         description: theme::text(label),
     })
@@ -271,7 +271,7 @@ impl EditorView {
                             if section == BrowserSection::Samples {
                                 view.browser.samples.source = None;
                             }
-                            view.browser.reset_results();
+                            view.reset_browser_results();
                             view.browser
                                 .search
                                 .update(cx, |input, _| input.focus(window));
@@ -328,7 +328,7 @@ impl EditorView {
                                                 layout.visible.iter().position(|v| *v)
                                         {
                                             view.browser.section = SECTIONS[next].0;
-                                            view.browser.reset_results();
+                                            view.reset_browser_results();
                                         }
                                         cx.notify();
                                     }),
@@ -396,7 +396,7 @@ impl EditorView {
                                 && path != view.browser.home
                             {
                                 view.browser.samples.source = Some(path.clone());
-                                view.browser.reset_results();
+                                view.reset_browser_results();
                                 cx.notify();
                             } else {
                                 if path == view.browser.home
@@ -625,10 +625,11 @@ impl EditorView {
                 .get(self.browser.selected_index)
                 .cloned()
         };
-        let mut preview = browser_divider()
-            .h(px(108.0))
+        browser_divider()
+            .h(px(50.0))
             .flex_shrink_0()
             .min_w_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .border_t_1()
@@ -637,13 +638,15 @@ impl EditorView {
                 browser_divider()
                     .h(px(26.0))
                     .flex_shrink_0()
+                    .min_w_0()
+                    .overflow_hidden()
                     .px_1()
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(browser_caption("tags:"))
-                    .child(browser_pending("add…"))
-                    .child(div().flex_1())
+                    .child(browser_caption("tags:").whitespace_nowrap().flex_shrink_0())
+                    .child(browser_pending("add…").whitespace_nowrap().flex_shrink_0())
+                    .child(div().flex_1().min_w_0())
                     .child(self.browser_icon(
                         "⋯",
                         "open full tag editor",
@@ -653,95 +656,7 @@ impl EditorView {
                         },
                         cx,
                     )),
-            );
-        if let Some(entry) = entry {
-            preview = preview.child(
-                browser_caption(&entry.name)
-                    .px_2()
-                    .overflow_hidden()
-                    .text_ellipsis(),
-            );
-            if entry.kind == EntryKind::WaveAudio {
-                let rate = self
-                    .state
-                    .as_ref()
-                    .map_or(48_000, |state| state.project.sample_rate());
-                let slot = self.browser_preview_cell(entry.path.clone(), rate);
-                if slot.metadata.borrow().is_none() && slot.error.borrow().is_none() {
-                    self.queue_browser_audio_preview(
-                        PreviewKey {
-                            path: entry.path.clone(),
-                            sample_rate: rate,
-                        },
-                        slot.clone(),
-                        cx,
-                    );
-                }
-                let metadata = slot.metadata.borrow().clone();
-                let waveform = div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .bg(rgb(theme::color(theme::PaletteRole::ClipFill)));
-                let waveform_panel = if let Some(metadata) = metadata {
-                    waveform.child(super::super::waveform::waveform_summary_view(Arc::clone(
-                        &metadata.waveform,
-                    )))
-                } else {
-                    let key = PreviewKey {
-                        path: entry.path.clone(),
-                        sample_rate: rate,
-                    };
-                    let error = self
-                        .browser
-                        .preview_cache
-                        .get(&key)
-                        .is_some_and(|slot| slot.error.borrow().is_some());
-                    waveform.child(browser_heading(if error {
-                        "waveform unavailable"
-                    } else {
-                        "preparing waveform…"
-                    }))
-                };
-                preview = preview.child(waveform_panel);
-                preview = preview.child(
-                    div()
-                        .h(px(22.0))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .child(self.browser_icon(
-                            "▶",
-                            "audition selected sample",
-                            move |view, _, cx| {
-                                view.play_browser_sample(entry.path.clone(), cx);
-                            },
-                            cx,
-                        ))
-                        .child(browser_heading("sample preview")),
-                );
-                return preview;
-            }
-            preview.child(browser_heading(if entry.kind == EntryKind::Directory {
-                "folder"
-            } else {
-                "project"
-            }))
-        } else {
-            preview = preview.child(
-                browser_caption(self.browser_selected_label(cx))
-                    .px_2()
-                    .overflow_hidden()
-                    .text_ellipsis(),
-            );
-            preview.child(browser_heading(
-                if !self.browser_visible_devices(cx).is_empty() {
-                    "device preview · tags pending"
-                } else {
-                    "select an item to preview"
-                },
-            ))
-        }
+            )
+            .child(self.browser_audition_row(entry, cx))
     }
 }
