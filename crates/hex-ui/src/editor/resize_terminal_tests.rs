@@ -174,6 +174,10 @@ fn terminal_deferred_match_normalizes_before_later_growth_in_one_receive_batch(
     let f = fixture(cx);
     let mut visual = VisualTestContext::from_window(f.window, cx);
     f.editor.update(&mut visual, |v, cx| {
+        assert!(v.enqueue(Request::Edit(Command::RenameClip {
+            clip: f.clip,
+            name: "already in flight".into()
+        })));
         let resize = install(v, f.clip);
         v.pending_requests
             .push_back(Request::Edit(Command::RenameClip {
@@ -182,8 +186,17 @@ fn terminal_deferred_match_normalizes_before_later_growth_in_one_receive_batch(
             }));
         assert!(v.enqueue(resize));
         assert!(v.enqueue(growth(f.track)));
-        assert_eq!(v.worker_requests_pending, 0);
+        assert_eq!(v.worker_requests_pending, 1);
         assert!(v.pending_trim.as_ref().unwrap().remaining.is_none());
+        let old_ack = ok(&v.service);
+        assert!(old_ack.request_complete);
+        v.receive(old_ack);
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(
+            v.pending_trim.as_ref().unwrap().remaining.is_none(),
+            "an old ack cannot complete a request still in the UI queue"
+        );
+        assert_eq!(v.viewport, Some(OWNED));
         // Real controller drain stamps only the matching second request.
         v.tick(cx);
         assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(2));
