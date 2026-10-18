@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 
 DATASET = 'changelog/generated.json'
 PROMPT_VERSION = 1
@@ -72,10 +71,28 @@ def source_identity(root, source):
     return digest(b'hex-changelog-input-v1\0' + b'\0'.join(selected) + b'\0')
 
 
+def workspace_version(raw):
+    """Read this repository's literal version without requiring Python 3.11.
+
+    This is deliberately not a general TOML parser: ambiguous or unsupported
+    version layouts fail rather than attributing notes to a guessed version.
+    """
+    sections = re.findall(r'(?ms)^\s*\[workspace\.package\][ \t]*(?:#[^\n]*)?\n(.*?)(?=^\s*\[|\Z)', raw)
+    if len(sections) != 1:
+        raise Refusal('expected one workspace.package version section')
+    declarations = [line for line in sections[0].splitlines() if re.match(r'\s*version\s*=', line)]
+    if len(declarations) != 1:
+        raise Refusal('expected one literal workspace package version')
+    match = re.fullmatch(r'''\s*version\s*=\s*(["'])([0-9A-Za-z.+-]{1,128})\1\s*(?:#.*)?''', declarations[0])
+    if match is None:
+        raise Refusal('unsupported workspace package version literal')
+    return match[2]
+
+
 def input_packet(root, base, source):
     base, source = revision(root, base), revision(root, source)
     git(root, 'merge-base', '--is-ancestor', base, source)
-    version = tomllib.loads(git(root, 'show', source + ':Cargo.toml').decode())['workspace']['package']['version']
+    version = workspace_version(git(root, 'show', source + ':Cargo.toml').decode())
     commits = []
     log = git(root, 'log', '--reverse', '--format=%H%x00%s', base + '..' + source)
     for line in log.decode().splitlines():
@@ -164,6 +181,10 @@ def validate_history(root, dataset):
         if not isinstance(batch, dict) or set(batch) not in ({'input', 'input_sha256', 'generated_at', 'generator', 'result'}, {'input', 'input_sha256', 'generated_at', 'generator', 'result', 'execution'}):
             raise Refusal('invalid changelog batch')
         identity = batch['input']
+        try:
+            git(root, 'merge-base', '--is-ancestor', identity['source'], 'HEAD')
+        except Refusal as error:
+            raise Refusal('declared changelog coverage is not an ancestor of this candidate') from error
         packet = input_packet(root, identity['base'], identity['source'])
         if identity != packet_identity(packet, previous) or batch['input_sha256'] != digest(encode(packet)):
             raise Refusal('retained notes do not match their original named Git input')

@@ -184,6 +184,10 @@ class ChangelogTests(unittest.TestCase):
         self.assertEqual(raw, (self.root / notes.DATASET).read_bytes())
         self.assertEqual(identity['sha256'], notes.digest(raw))
         self.assertEqual(identity['coverage'], [self.source])
+        self.commit('retain notes')
+        (self.root / 'later.txt').write_text('unrelated later candidate content')
+        self.commit('later unrelated candidate')
+        self.assertEqual(package.changelog_payload(self.root), (raw, identity))
         (self.root / notes.DATASET).write_bytes(raw.replace(b'fixes', b'wrong'))
         with self.assertRaises(package.DeliveryError):
             package.changelog_payload(self.root)
@@ -215,6 +219,59 @@ class ChangelogTests(unittest.TestCase):
         with self.assertRaisesRegex(notes.Refusal, 'directory is a symlink'):
             notes.atomic_dataset(path, {'format': 1, 'batches': []})
         self.assertEqual(list(foreign.iterdir()), [])
+
+    def test_pre311_entrypoints_start_without_toml_modules(self):
+        import sys
+        root = Path(__file__).resolve().parents[2]
+        harness = """import builtins,runpy,sys
+original=builtins.__import__
+def refuse(name,*args,**kwargs):
+    if name in ('tomllib','tomli'):
+        raise ModuleNotFoundError('unavailable before Python 3.11',name=name)
+    return original(name,*args,**kwargs)
+builtins.__import__=refuse
+entry=sys.argv[1]
+sys.argv=[entry,'--help']
+runpy.run_path(entry,run_name='__main__')
+"""
+        for entry in [root / 'launch', root / 'scripts/hex-test-build.py', root / 'scripts/changelog.py']:
+            result = subprocess.run([sys.executable, '-c', harness, str(entry)], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('usage:', result.stdout)
+
+    def test_sibling_coverage_is_not_candidate_history(self):
+        self.git('checkout', '-qb', 'sibling', self.base)
+        (self.root / 'feature.txt').write_text('a different sibling feature\n')
+        sibling = self.commit('different sibling feature')
+        def model(directory, timeout):
+            return {'entries': [{'category': 'features', 'text': 'a sibling-only fixture feature.', 'commits': [sibling]}], 'reason': 'fixture only'}
+        notes.prepare(self.root, self.base, model=model)
+        raw = (self.root / notes.DATASET).read_bytes()
+        self.git('checkout', '-q', self.source)
+        with self.assertRaisesRegex(notes.Refusal, 'ancestor'):
+            notes.validate_current(self.root, if_present=True)
+        import sys
+        spec = importlib.util.spec_from_file_location('sibling_package_fixture', Path(__file__).resolve().parent.parent / 'hex-test-build.py')
+        package = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = package
+        spec.loader.exec_module(package)
+        with self.assertRaisesRegex(package.DeliveryError, 'ancestor'):
+            package.changelog_payload(self.root)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), self.source)
+        self.assertEqual((self.root / notes.DATASET).read_bytes(), raw)
+
+    def test_literal_workspace_version_scope_and_explicit_refusal(self):
+        for raw, expected in [('[workspace.package]\nversion = "0.1.0"\n', '0.1.0'),
+                              ("[workspace.package] # workspace metadata\nversion = '1.2.3-beta.1+build' # bounded literal\n", '1.2.3-beta.1+build'),
+                              ('[package]\nversion="9.9.9"\n[workspace.package]\nversion="0.1.0"\n[workspace.dependencies]\nversion="8.8.8"\n', '0.1.0')]:
+            self.assertEqual(notes.workspace_version(raw), expected)
+        for raw in ['[package]\nversion="0.1.0"\n', '[workspace.package]\n',
+                    '[workspace.package]\nversion.workspace=true\n',
+                    '[workspace.package]\nversion=123\n',
+                    '[workspace.package]\nversion="0.1.0"\nversion="0.2.0"\n',
+                    '[workspace.package]\nversion="0.1.0"\n[workspace.package]\nversion="0.2.0"\n']:
+            with self.assertRaises(notes.Refusal):
+                notes.workspace_version(raw)
 
 
 if __name__ == '__main__':
