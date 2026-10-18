@@ -1,0 +1,1218 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index b81fc69e..f5c23f22 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -1,5 +1,6 @@
+ //! Compact, bounded left-side media and project browser.
+ mod audition;
++mod history;
+ mod place_icons;
+ mod samples;
+ mod tree;
+@@ -157,6 +158,7 @@ pub(super) enum BrowserSection {
+     Collection(usize),
+ }
+ 
++#[derive(Clone)]
+ enum BrowserItemKey {
+     File(PathBuf),
+     Device(hex_engine::NativeDeviceClass, hex_engine::DeviceTypeId),
+@@ -194,6 +196,8 @@ pub(super) struct BrowserState {
+     selected_index: usize,
+     scroll: gpui::UniformListScrollHandle,
+     _search_observer: gpui::Subscription,
++    observed_query: String,
++    history: history::History,
+     playback_generation: u64,
+     playback_in_flight: bool,
+     playback_pending: Option<PlaybackPreviewRequest>,
+@@ -234,13 +238,8 @@ impl BrowserState {
+         let home = test_home.unwrap_or(home);
+         let music = home.join("Music");
+         let search = cx.new(BrowserSearch::new);
+-        let mut previous_query = String::new();
+-        let observer = cx.observe(&search, move |view, search, cx| {
+-            let query = &search.read(cx).content;
+-            if *query != previous_query {
+-                previous_query.clone_from(query);
+-                view.reset_browser_results();
+-            }
++        let observer = cx.observe(&search, |view, _, cx| {
++            view.sync_browser_query(cx);
+             cx.notify();
+         });
+         let places = if music != home {
+@@ -279,6 +278,8 @@ impl BrowserState {
+             selected_index: 0,
+             scroll: gpui::UniformListScrollHandle::new(),
+             _search_observer: observer,
++            observed_query: String::new(),
++            history: history::History::default(),
+             playback_generation: 0,
+             auto_audition: true,
+             playback_phase: Phase::Idle,
+@@ -571,6 +572,12 @@ impl EditorView {
+     }
+ 
+     fn select_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {
++        self.checkpoint_browser_history(cx);
++        self.apply_browser_source(source, cx);
++        self.record_browser_location(cx);
++    }
++
++    fn apply_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {
+         self.browser.scans.generation = self.browser.scans.generation.saturating_add(1);
+         self.browser.scans.pending = None;
+         self.browser.loading = false;
+@@ -1352,6 +1359,7 @@ impl EditorView {
+     }
+ 
+     fn move_browser_selection(&mut self, next: bool, cx: &mut Context<Self>) {
++        self.checkpoint_browser_history(cx);
+         let previous = (self.browser.results_focused, self.browser.selected_index);
+         let count = self.browser_visible_entries(cx).len() + self.browser_visible_devices(cx).len();
+         self.browser.selected_index = if !self.browser.results_focused || count == 0 {
+@@ -1377,6 +1385,7 @@ impl EditorView {
+     }
+ 
+     pub(super) fn browser_activate(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
++        self.checkpoint_browser_history(cx);
+         if self.browser.section == BrowserSection::Instruments {
+             let count = self
+                 .state
+@@ -1408,6 +1417,7 @@ impl EditorView {
+     }
+ 
+     pub(super) fn browser_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.checkpoint_browser_history(cx);
+         if self
+             .browser
+             .search
+@@ -1567,6 +1577,7 @@ impl EditorView {
+ 
+         self.reconcile_browser_source(cx);
+         self.reconcile_browser_tree_requests(cx);
++        self.restore_browser_history_position(cx);
+         let path = self.browser.directory.clone();
+         let folder_dialog = self.browser_folder_button(cx);
+         let section = self.browser.section.clone();
+@@ -2113,6 +2124,7 @@ impl EditorView {
+                         cx.stop_propagation();
+                         return;
+                     }
++                    view.checkpoint_browser_history(cx);
+                     view.browser.selected_index = index;
+                     view.browser.results_focused = true;
+                     view.browser_selection_audition(
+@@ -2299,6 +2311,7 @@ impl EditorView {
+             .on_mouse_down(
+                 MouseButton::Left,
+                 cx.listener(move |view, _, window, cx| {
++                    view.checkpoint_browser_history(cx);
+                     view.browser.selected_index = index;
+                     view.browser.results_focused = true;
+                     view.browser.results_focus.focus(window);
+diff --git a/crates/hex-ui/src/editor/browser/history.rs b/crates/hex-ui/src/editor/browser/history.rs
+new file mode 100644
+index 00000000..314f5079
+--- /dev/null
++++ b/crates/hex-ui/src/editor/browser/history.rs
+@@ -0,0 +1,350 @@
++//! Session-local browser locations, independent of project Undo and audio history.
++use super::*;
++
++const CAPACITY: usize = 64;
++// The catalog already bounds native paths to 16KiB. Bound query retention too,
++// without changing the live input or truncating a case-sensitive path/query.
++const FIELD_BYTES: usize = 16_384;
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++struct Location {
++    section: BrowserSection,
++    directory: PathBuf,
++    query: String,
++}
++
++#[derive(Clone, Default)]
++struct Position {
++    selected: Option<BrowserItemKey>,
++    top: Option<BrowserItemKey>,
++}
++
++#[derive(Clone)]
++struct Entry {
++    location: Location,
++    position: Position,
++}
++
++impl Entry {
++    fn bounded(&self) -> bool {
++        let path_fits = |path: &PathBuf| path.as_os_str().as_encoded_bytes().len() <= FIELD_BYTES;
++        let key_fits = |key: &Option<BrowserItemKey>| match key {
++            Some(BrowserItemKey::File(path)) => path_fits(path),
++            _ => true,
++        };
++        self.location.query.len() <= FIELD_BYTES
++            && path_fits(&self.location.directory)
++            && match &self.location.section {
++                BrowserSection::Place(path) => path_fits(path),
++                _ => true,
++            }
++            && key_fits(&self.position.selected)
++            && key_fits(&self.position.top)
++    }
++}
++
++#[derive(Default)]
++pub(super) struct History {
++    entries: Vec<Entry>,
++    cursor: usize,
++    editing_query: bool,
++    pending: Option<Entry>,
++}
++
++impl History {
++    pub(super) fn can_back(&self) -> bool {
++        self.cursor > 0
++    }
++    pub(super) fn can_forward(&self) -> bool {
++        self.cursor + 1 < self.entries.len()
++    }
++
++    fn save(&mut self, entry: Entry) -> bool {
++        if !entry.bounded() {
++            *self = Self::default();
++            return false;
++        }
++        if self.entries.is_empty() {
++            self.entries.push(entry);
++        } else if self.pending.is_none() {
++            self.entries[self.cursor] = entry;
++        }
++        true
++    }
++
++    fn push(&mut self, entry: Entry) -> bool {
++        if !entry.bounded() {
++            *self = Self::default();
++            return false;
++        }
++        if self
++            .entries
++            .get(self.cursor)
++            .is_some_and(|old| old.location == entry.location)
++        {
++            return true;
++        }
++        self.entries.truncate(self.cursor + 1);
++        if self.entries.len() == CAPACITY {
++            self.entries.remove(0);
++        }
++        self.entries.push(entry);
++        self.cursor = self.entries.len() - 1;
++        true
++    }
++
++    fn step(&mut self, forward: bool) -> Option<Entry> {
++        if forward {
++            if !self.can_forward() {
++                return None;
++            }
++            self.cursor += 1;
++        } else {
++            if !self.can_back() {
++                return None;
++            }
++            self.cursor -= 1;
++        }
++        self.editing_query = false;
++        let entry = self.entries[self.cursor].clone();
++        self.pending = Some(entry.clone());
++        Some(entry)
++    }
++}
++
++impl EditorView {
++    fn browser_history_entry(&self, cx: &App) -> Entry {
++        Entry {
++            location: Location {
++                section: self.browser.section.clone(),
++                directory: self.browser.directory.clone(),
++                query: self.browser.search.read(cx).content.clone(),
++            },
++            position: Position {
++                selected: self.browser_selected_item(cx),
++                top: self.browser_item_at(self.browser.scroll.logical_scroll_top_index(), cx),
++            },
++        }
++    }
++
++    // Synchronize before navigation as well as from the observer: a queued observer
++    // must not turn a restored query into another edit or reset restored selection.
++    pub(super) fn sync_browser_query(&mut self, cx: &mut Context<Self>) {
++        let query = &self.browser.search.read(cx).content;
++        if *query == self.browser.observed_query {
++            return;
++        }
++        let location = Location {
++            section: self.browser.section.clone(),
++            directory: self.browser.directory.clone(),
++            query: query.clone(),
++        };
++        let editing = self.browser.history.editing_query;
++        if self.browser.history.entries.is_empty() {
++            let mut old = location.clone();
++            old.query.clone_from(&self.browser.observed_query);
++            self.browser.history.save(Entry {
++                location: old,
++                position: Position::default(),
++            });
++        }
++        // Explicit query entry snapshots the old highlight/scroll BEFORE the
++        // query changes. Never remap its old row index through the new filter.
++        self.browser.history.pending = None;
++        let next = Entry {
++            location,
++            position: Position::default(),
++        };
++        let retained = if editing {
++            self.browser.history.save(next)
++        } else {
++            self.browser.history.push(next)
++        };
++        self.browser.history.editing_query = retained;
++        self.browser.observed_query = self.browser.search.read(cx).content.clone();
++        if !retained {
++            self.browser.places_status = Some("browser history field limit reached".into());
++        }
++        self.reset_browser_results();
++    }
++
++    /// A source choice or deliberate result navigation commits the current query
++    /// transaction. No timer, per-character entries, or focus/paint bookkeeping.
++    pub(super) fn checkpoint_browser_history(&mut self, cx: &mut Context<Self>) {
++        self.sync_browser_query(cx);
++        let entry = self.browser_history_entry(cx);
++        if !self.browser.history.save(entry) {
++            self.browser.places_status = Some("browser history field limit reached".into());
++        }
++        self.browser.history.editing_query = false;
++        self.browser.history.pending = None;
++    }
++
++    pub(super) fn record_browser_location(&mut self, cx: &App) {
++        let entry = self.browser_history_entry(cx);
++        if !self.browser.history.push(entry) {
++            self.browser.places_status = Some("browser history field limit reached".into());
++        }
++    }
++
++    pub(super) fn move_browser_history(&mut self, forward: bool, cx: &mut Context<Self>) {
++        self.checkpoint_browser_history(cx);
++        let Some(mut entry) = self.browser.history.step(forward) else {
++            return;
++        };
++        self.accept_browser_sample_phase(Phase::Idle);
++        self.cancel_browser_sample_playback();
++        let removed = matches!(&entry.location.section, BrowserSection::Place(path) if !self.browser.places.contains(path));
++        if removed
++            || !self
++                .browser
++                .layout
++                .history_source_available(&entry.location.section)
++        {
++            // A configuration change must not resurrect an unconfigured source,
++            // nor turn restoration into another pushed history entry.
++            entry.location.section = BrowserSection::All;
++            entry.location.directory.clone_from(&self.browser.directory);
++            entry.position = Position::default();
++            self.browser.layout.reveal_all();
++            self.browser.places_status = Some("history source unavailable · showing all".into());
++        }
++        // Update the input's own caret/mark state without taking focus. A later
++        // observer acknowledges this exact value and does not create another step.
++        self.browser
++            .observed_query
++            .clone_from(&entry.location.query);
++        self.browser.search.update(cx, |input, cx| {
++            input.restore_query(&entry.location.query, cx);
++        });
++        self.apply_browser_source(entry.location.section.clone(), cx);
++        if self.browser.directory != entry.location.directory {
++            self.request_browser_scan(entry.location.directory.clone(), cx);
++        }
++        // reset_results/scan setup may clear ordinary pending item selection;
++        // this restoration is owned by the latest history intent instead.
++        self.browser.history.pending = Some(entry);
++        cx.notify();
++    }
++
++    fn browser_item_at(&self, index: usize, cx: &App) -> Option<BrowserItemKey> {
++        let files = self.browser_visible_entries(cx);
++        if let Some(entry) = files.get(index) {
++            Some(BrowserItemKey::File(entry.path.clone()))
++        } else {
++            self.browser_visible_devices(cx)
++                .get(index.checked_sub(files.len())?)
++                .map(|(class, entry)| BrowserItemKey::Device(*class, entry.type_id))
++        }
++    }
++
++    fn browser_history_index(&self, key: &BrowserItemKey, cx: &App) -> Option<usize> {
++        let files = self.browser_visible_entries(cx);
++        match key {
++            BrowserItemKey::File(path) => files.iter().position(|entry| &entry.path == path),
++            BrowserItemKey::Device(class, id) => self
++                .browser_visible_devices(cx)
++                .iter()
++                .position(|(candidate, entry)| candidate == class && entry.type_id == *id)
++                .map(|index| files.len() + index),
++        }
++    }
++
++    pub(super) fn restore_browser_history_position(&mut self, cx: &App) {
++        let files = !matches!(
++            self.browser.section,
++            BrowserSection::Instruments | BrowserSection::Collection(_)
++        );
++        let catalog = matches!(
++            self.browser.section,
++            BrowserSection::Samples | BrowserSection::All | BrowserSection::Place(_)
++        );
++        if self.browser.history.pending.is_none()
++            || (files && (self.browser.loading || self.browser.tree.history_loading()))
++            || (catalog && self.browser.samples.history_loading())
++        {
++            return;
++        }
++        let entry = self
++            .browser
++            .history
++            .pending
++            .take()
++            .expect("checked pending history");
++        // A user edit/source choice cancels pending before reaching here. Workers
++        // have their own scan/tree/catalog generations and cannot change location.
++        if entry.location.section != self.browser.section
++            || entry.location.directory != self.browser.directory
++            || entry.location.query != self.browser.search.read(cx).content
++        {
++            return;
++        }
++        let selected = entry
++            .position
++            .selected
++            .as_ref()
++            .and_then(|key| self.browser_history_index(key, cx));
++        self.browser.results_focused = selected.is_some();
++        self.browser.selected_index = selected.unwrap_or(0);
++        let top = entry
++            .position
++            .top
++            .as_ref()
++            .and_then(|key| self.browser_history_index(key, cx))
++            .unwrap_or(0);
++        self.browser
++            .scroll
++            .scroll_to_item(top, gpui::ScrollStrategy::Top);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn entry(index: usize) -> Entry {
++        Entry {
++            location: Location {
++                section: BrowserSection::Collection(index),
++                directory: "/samples".into(),
++                query: String::new(),
++            },
++            position: Position::default(),
++        }
++    }
++    #[test]
++    fn bounded_locations_boundaries_branch_duplicates_and_oversized_fields() {
++        let mut history = History::default();
++        assert!(history.step(false).is_none());
++        assert!(history.step(true).is_none());
++        for index in 0..CAPACITY * 2 {
++            assert!(history.push(entry(index)));
++        }
++        assert_eq!(history.entries.len(), CAPACITY);
++        assert_eq!(history.cursor, CAPACITY - 1);
++        assert!(history.step(true).is_none());
++        for _ in 1..CAPACITY {
++            assert!(history.step(false).is_some());
++        }
++        assert!(history.step(false).is_none());
++        assert!(history.push(entry(CAPACITY)));
++        assert_eq!(
++            history.entries.len(),
++            CAPACITY,
++            "same location is not another step"
++        );
++        assert!(history.push(entry(999)));
++        assert_eq!(history.entries.len(), 2);
++        assert!(!history.can_forward());
++        let mut oversized = entry(1000);
++        oversized.location.query = "é".repeat(FIELD_BYTES);
++        assert!(!history.push(oversized));
++        assert!(
++            history.entries.is_empty(),
++            "refuse retention; never truncate the live query/path"
++        );
++        assert!(!history.can_back());
++        assert!(!history.can_forward());
++        assert!(history.save(entry(1001)));
++        assert!(!history.can_back());
++    }
++}
+diff --git a/crates/hex-ui/src/editor/browser/layout.rs b/crates/hex-ui/src/editor/browser/layout.rs
+index 0e2db9f6..4b131b1a 100644
+--- a/crates/hex-ui/src/editor/browser/layout.rs
++++ b/crates/hex-ui/src/editor/browser/layout.rs
+@@ -50,6 +50,13 @@ impl Default for BrowserLayout {
+ }
+ 
+ impl BrowserLayout {
++    pub(super) fn history_source_available(&self, source: &BrowserSection) -> bool {
++        SECTIONS
++            .iter()
++            .position(|(section, _)| section == source)
++            .is_none_or(|index| self.visible[index])
++    }
++
+     pub(super) fn reveal_all(&mut self) {
+         if let Some(index) = SECTIONS
+             .iter()
+@@ -147,6 +154,39 @@ fn browser_pending(value: &str) -> Div {
+ }
+ 
+ impl EditorView {
++    fn browser_history_arrow(&self, forward: bool, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
++        let enabled = if forward {
++            self.browser.history.can_forward()
++        } else {
++            self.browser.history.can_back()
++        };
++        let selector = if forward {
++            "browser-history-forward"
++        } else {
++            "browser-history-back"
++        };
++        browser_pending(if forward { "›" } else { "‹" })
++            .id(selector)
++            .debug_selector(move || selector.to_owned())
++            .when(enabled, |button| {
++                button
++                    .cursor_pointer()
++                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
++            })
++            .tooltip(move |_, cx| {
++                cx.new(|_| super::super::transport::MiniTooltip {
++                    description: theme::text(if forward { "forward" } else { "back" }),
++                })
++                .into()
++            })
++            .on_mouse_down(
++                MouseButton::Left,
++                cx.listener(move |view, _, _, cx| {
++                    view.move_browser_history(forward, cx);
++                }),
++            )
++    }
++
+     pub(super) fn browser_toolbar(&self, cx: &mut Context<Self>) -> Div {
+         browser_divider()
+             .h(px(30.0))
+@@ -156,33 +196,15 @@ impl EditorView {
+             .px_1()
+             .gap_1()
+             .debug_selector(|| "browser-toolbar".to_owned())
+-            .child(
+-                browser_pending("‹")
+-                    .id("browser-history-back")
+-                    .debug_selector(|| "browser-history-back".to_owned())
+-                    .tooltip(|_, cx| {
+-                        cx.new(|_| super::super::transport::MiniTooltip {
+-                            description: theme::text("back · history pending"),
+-                        })
+-                        .into()
+-                    }),
+-            )
+-            .child(
+-                browser_pending("›")
+-                    .id("browser-history-forward")
+-                    .tooltip(|_, cx| {
+-                        cx.new(|_| super::super::transport::MiniTooltip {
+-                            description: theme::text("forward · history pending"),
+-                        })
+-                        .into()
+-                    }),
+-            )
++            .child(self.browser_history_arrow(false, cx))
++            .child(self.browser_history_arrow(true, cx))
+             .child(
+                 div()
+                     .flex_1()
+                     .min_w_0()
+                     .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                         if event.button == MouseButton::Left {
++                            view.checkpoint_browser_history(cx);
+                             view.browser.results_focused = false;
+                             cx.notify();
+                         }
+@@ -369,6 +391,9 @@ impl EditorView {
+                         .child(
+                             div()
+                                 .id(("browser-section-visibility", index))
++                                .debug_selector(move || {
++                                    format!("browser-section-visibility-{index}")
++                                })
+                                 .flex_1()
+                                 .min_w_0()
+                                 .overflow_hidden()
+diff --git a/crates/hex-ui/src/editor/browser/samples.rs b/crates/hex-ui/src/editor/browser/samples.rs
+index c0615443..0e97f6e4 100644
+--- a/crates/hex-ui/src/editor/browser/samples.rs
++++ b/crates/hex-ui/src/editor/browser/samples.rs
+@@ -52,6 +52,10 @@ pub(super) struct SampleBrowser {
+ }
+ 
+ impl SampleBrowser {
++    pub(super) fn history_loading(&self) -> bool {
++        self.in_flight || self.pending
++    }
++
+     pub(super) fn visible(&self, query: &str) -> Arc<Vec<LibraryEntry>> {
+         self.visible_with_listing(query, None, None)
+     }
+diff --git a/crates/hex-ui/src/editor/browser/tree.rs b/crates/hex-ui/src/editor/browser/tree.rs
+index 9e8f385c..820fd1ce 100644
+--- a/crates/hex-ui/src/editor/browser/tree.rs
++++ b/crates/hex-ui/src/editor/browser/tree.rs
+@@ -68,6 +68,10 @@ pub(super) struct Tree {
+ }
+ 
+ impl Tree {
++    pub(super) fn history_loading(&self) -> bool {
++        self.in_flight || !self.queue.is_empty() || self.dirty.get()
++    }
++
+     pub(super) fn source_changed(&mut self) {
+         self.dirty.set(true);
+         self.status = None;
+@@ -493,6 +497,7 @@ impl EditorView {
+         keep_others: bool,
+         cx: &mut Context<Self>,
+     ) {
++        self.checkpoint_browser_history(cx);
+         let selection = self.browser_selected_item(cx);
+         if self.browser.tree.expanded.contains(&path) {
+             self.browser.tree.close(&path);
+@@ -521,6 +526,7 @@ impl EditorView {
+         _: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        self.checkpoint_browser_history(cx);
+         let entries = self.browser_visible_entries(cx);
+         let Some(entry) = entries.get(self.browser.selected_index) else {
+             return;
+diff --git a/crates/hex-ui/src/editor/browser_history_ui_test.rs b/crates/hex-ui/src/editor/browser_history_ui_test.rs
+new file mode 100644
+index 00000000..6970d8c8
+--- /dev/null
++++ b/crates/hex-ui/src/editor/browser_history_ui_test.rs
+@@ -0,0 +1,437 @@
++//! History through real toolbar input over bounded private worker roots.
++use super::*;
++
++fn fixture(
++    cx: &mut TestAppContext,
++) -> (
++    gpui::AnyWindowHandle,
++    gpui::Entity<EditorView>,
++    PreferencesTestDirectory,
++) {
++    cx.update(crate::editor::bind_editor_keys);
++    let directory = PreferencesTestDirectory::new();
++    std::fs::create_dir_all(directory.0.join("samples")).unwrap();
++    std::fs::write(directory.0.join("samples/loop.wav"), mono_pcm_wav(24)).unwrap();
++    let bootstrap = cx.add_window(|_, _| Empty);
++    let handle = *bootstrap;
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.replace_root(cx, |window, cx| {
++                EditorView::new_for_test_with_browser_directory(
++                    window,
++                    cx,
++                    Service::new(48_000, 32, 8_000_000).unwrap(),
++                    &directory.0,
++                )
++            })
++        })
++        .unwrap();
++    (handle, editor, directory)
++}
++
++#[gpui::test]
++fn browser_history_toolbar_restores_source_without_preview_or_import(cx: &mut TestAppContext) {
++    let (handle, editor, _directory) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    for selector in ["browser-section-devices", "browser-section-projects"] {
++        let hit = visual.debug_bounds(selector).unwrap().center();
++        visual.simulate_click(hit, Modifiers::default());
++        visual.run_until_parked();
++    }
++    let hit = visual
++        .debug_bounds("browser-history-back")
++        .unwrap()
++        .center();
++    visual.simulate_click(hit, Modifiers::default());
++    visual.run_until_parked();
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Instruments);
++        assert!(view.pending_requests.is_empty());
++        assert!(view.pending_audio_commands.is_empty());
++        assert!(view.browser.playback_path.is_none());
++    });
++}
++
++fn click(visual: &mut VisualTestContext, selector: &'static str) {
++    let point = visual
++        .debug_bounds(selector)
++        .unwrap_or_else(|| panic!("missing {selector}"))
++        .center();
++    visual.simulate_click(point, Modifiers::default());
++    visual.run_until_parked();
++}
++
++fn query(editor: &gpui::Entity<EditorView>, cx: &mut VisualTestContext) -> String {
++    editor.read_with(cx, |view, cx| view.browser.search.read(cx).content.clone())
++}
++
++#[gpui::test]
++fn browser_history_typing_coalesces_until_navigation_and_branch_clears_forward(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _directory) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    click(visual, "browser-search");
++    for letter in ["l", "o", "o", "p"] {
++        visual.simulate_input(letter);
++        visual.run_until_parked();
++    }
++    click(visual, "browser-section-devices");
++    click(visual, "browser-history-back");
++    assert_eq!(query(&editor, visual), "loop");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Samples)
++    });
++    click(visual, "browser-history-back");
++    assert_eq!(query(&editor, visual), "");
++    click(visual, "browser-history-back"); // disabled boundary
++    assert_eq!(query(&editor, visual), "");
++    click(visual, "browser-history-forward");
++    assert_eq!(query(&editor, visual), "loop");
++    click(visual, "browser-history-back");
++    click(visual, "browser-search");
++    visual.simulate_input("新");
++    visual.run_until_parked();
++    click(visual, "browser-history-forward"); // old branch is gone
++    assert_eq!(query(&editor, visual), "新");
++    click(visual, "browser-history-back");
++    assert_eq!(query(&editor, visual), "");
++    // Command-F commits a distinct location, keeps its accepted selection behavior.
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("utility");
++    visual.run_until_parked();
++    assert_eq!(query(&editor, visual), "utility");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::All)
++    });
++    click(visual, "browser-history-back");
++    assert_eq!(query(&editor, visual), "");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::All)
++    });
++    click(visual, "browser-history-back");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Samples)
++    });
++}
++
++#[gpui::test]
++fn browser_history_restores_native_item_and_scroll_identity_without_focus_or_audition(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, directory) = fixture(cx);
++    // A positive scroll anchor far below the first viewport.
++    for index in 0..80 {
++        std::fs::write(
++            directory.0.join(format!("samples/{index:03}.wav")),
++            mono_pcm_wav(24),
++        )
++        .unwrap();
++    }
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    click(visual, "browser-place-0");
++    editor.update(visual, |view, cx| {
++        view.browser.auto_audition = true;
++        view.browser.results_focused = true;
++        view.browser.selected_index = 62;
++        view.browser
++            .scroll
++            .scroll_to_item(60, gpui::ScrollStrategy::Top);
++        cx.notify();
++    });
++    visual.run_until_parked();
++    let (selected, top) = editor.read_with(visual, |view, cx| {
++        let entries = view.browser_visible_entries(cx);
++        (
++            entries[62].path.clone(),
++            entries[view.browser.scroll.logical_scroll_top_index()]
++                .path
++                .clone(),
++        )
++    });
++    click(visual, "browser-section-devices");
++    let generation = editor.read_with(visual, |view, _| view.browser.playback_generation);
++    click(visual, "browser-history-back");
++    visual.update(|window,cx|editor.read_with(cx,|view,cx| {
++        assert!(matches!(view.browser_selected_item(cx),Some(crate::editor::browser::BrowserItemKey::File(path)) if path==selected));
++        let entries=view.browser_visible_entries(cx);
++        assert_eq!(entries[view.browser.scroll.logical_scroll_top_index()].path,top);
++        assert!(!view.browser.search.read(cx).focus_handle().is_focused(window));
++        assert_eq!(view.browser.playback_generation,generation+1,"only cancellation, no replay");
++        assert!(view.browser.playback_path.is_none());
++        assert!(view.pending_requests.is_empty());
++        assert!(view.pending_audio_commands.is_empty());
++    }));
++    // Restore again after deleting the exact selected item: deterministic clearing,
++    // never a same-name or row-index substitute.
++    click(visual, "browser-section-devices");
++    std::fs::remove_file(&selected).unwrap();
++    click(visual, "browser-history-back");
++    editor.read_with(visual, |view, _| {
++        assert!(!view.browser.results_focused);
++        assert_eq!(view.browser.selected_index, 0);
++    });
++}
++
++#[gpui::test]
++fn browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, directory) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let missing = directory.0.join("offline");
++    editor.update(visual, |view, cx| {
++        view.browser.places.push(missing.clone());
++        view.select_browser_source(BrowserSection::Place(missing.clone()), cx);
++        cx.notify();
++    });
++    visual.run_until_parked();
++    editor.read_with(visual, |view, _| assert!(view.browser.error.is_some()));
++    click(visual, "browser-section-devices");
++    click(visual, "browser-history-back");
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.section, BrowserSection::Place(missing.clone()));
++        assert!(view.browser.error.is_some());
++        assert!(view.browser_visible_entries(cx).is_empty());
++    });
++    click(visual, "browser-history-back");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Samples)
++    });
++    click(visual, "browser-history-forward");
++    click(visual, "browser-section-projects");
++    editor.update(visual, |view, cx| {
++        let old = crate::editor::browser::ScanRequest {
++            generation: view.browser.scans.generation.saturating_sub(1),
++            directory: missing.clone(),
++        };
++        view.browser_scan_finished(
++            old,
++            Ok(DirectoryListing {
++                directory: missing.clone(),
++                entries: vec![LibraryEntry {
++                    name: "late.wav".into(),
++                    path: missing.join("late.wav"),
++                    kind: EntryKind::WaveAudio,
++                }],
++                enumerated_entries: 1,
++                truncated: false,
++            }),
++            cx,
++        );
++        cx.notify();
++    });
++    visual.run_until_parked();
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(view.browser.section, BrowserSection::Projects);
++        assert!(
++            view.browser_visible_entries(cx)
++                .iter()
++                .all(|entry| entry.name != "late.wav")
++        );
++        assert!(view.pending_requests.is_empty());
++    });
++}
++
++#[gpui::test]
++fn browser_history_query_back_restores_item_before_filter_and_ime_restore_is_not_an_edit(
++    cx: &mut TestAppContext,
++) {
++    use gpui::EntityInputHandler;
++    let (handle, editor, _directory) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    click(visual, "browser-place-0");
++    editor.update(visual, |view, _| view.browser.auto_audition = false);
++    click(visual, "browser-entry-0");
++    click(visual, "browser-search");
++    visual.simulate_input("no-match");
++    visual.run_until_parked();
++    click(visual, "browser-history-back");
++    editor.read_with(visual,|view,cx| {
++        assert_eq!(view.browser.search.read(cx).content,"");
++        assert!(matches!(view.browser_selected_item(cx),Some(crate::editor::browser::BrowserItemKey::File(path)) if path.ends_with("loop.wav")),"query back must restore the original highlighted identity");
++    });
++    click(visual, "browser-search");
++    visual.update(|window, cx| {
++        editor
++            .read(cx)
++            .browser
++            .search
++            .clone()
++            .update(cx, |input, cx| {
++                input.replace_and_mark_text_in_range(None, "音", Some(1..1), window, cx);
++                assert!(input.marked_text_range(window, cx).is_some());
++            })
++    });
++    visual.run_until_parked();
++    click(visual, "browser-history-back");
++    assert_eq!(query(&editor, visual), "");
++    visual.update(|window, cx| {
++        editor
++            .read(cx)
++            .browser
++            .search
++            .clone()
++            .update(cx, |input, cx| {
++                assert!(input.marked_text_range(window, cx).is_none());
++                assert!(!input.focus_handle().is_focused(window));
++            })
++    });
++    visual.run_until_parked();
++    click(visual, "browser-history-forward");
++    assert_eq!(query(&editor, visual), "音");
++}
++
++#[gpui::test]
++fn browser_history_same_name_rows_collection_and_queued_query_observer_keep_latest_intent(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, directory) = fixture(cx);
++    for folder in ["a", "b"] {
++        std::fs::create_dir_all(directory.0.join("samples").join(folder)).unwrap();
++        std::fs::write(
++            directory.0.join("samples").join(folder).join("loop.wav"),
++            mono_pcm_wav(24),
++        )
++        .unwrap();
++    }
++    let target = directory.0.join("samples/b/loop.wav");
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("loop");
++    visual.run_until_parked();
++    let index = editor.read_with(visual, |view, cx| {
++        view.browser_visible_entries(cx)
++            .iter()
++            .position(|entry| entry.path == target)
++            .unwrap()
++    });
++    editor.update(visual, |view, _| view.browser.auto_audition = false);
++    let row = visual
++        .debug_bounds(["browser-entry-0", "browser-entry-1", "browser-entry-2"][index])
++        .unwrap()
++        .center();
++    visual.simulate_click(row, Modifiers::default());
++    visual.run_until_parked();
++    click(visual, "browser-collection-0");
++    click(visual, "browser-history-back");
++    editor.read_with(visual,|view,cx|assert!(matches!(view.browser_selected_item(cx),Some(crate::editor::browser::BrowserItemKey::File(path)) if path==target)));
++    click(visual, "browser-history-forward");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Collection(0))
++    });
++    click(visual, "browser-history-back");
++    // Queue an input notification and Back in the same UI update. The delayed
++    // observer must acknowledge restoration, not reset its item or push history.
++    editor.update(visual, |view, cx| {
++        view.browser
++            .search
++            .update(cx, |input, cx| input.restore_query("new query", cx));
++        view.move_browser_history(false, cx);
++    });
++    visual.run_until_parked();
++    assert_eq!(query(&editor, visual), "loop");
++    editor.read_with(visual,|view,cx|assert!(matches!(view.browser_selected_item(cx),Some(crate::editor::browser::BrowserItemKey::File(path)) if path==target)));
++    click(visual, "browser-history-forward");
++    assert_eq!(query(&editor, visual), "new query");
++    // Latest deliberate source selection cancels any deferred position restore.
++    editor.update(visual, |view, cx| {
++        view.move_browser_history(false, cx);
++        view.select_browser_source(BrowserSection::Projects, cx);
++    });
++    visual.run_until_parked();
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Projects);
++        assert!(!view.browser.results_focused);
++        assert!(view.pending_requests.is_empty());
++        assert!(view.pending_audio_commands.is_empty());
++    });
++}
++
++#[gpui::test]
++fn browser_history_transition_clears_observed_preview_presentation(cx: &mut TestAppContext) {
++    let (handle, editor, _directory) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    click(visual, "browser-section-devices");
++    click(visual, "browser-section-projects");
++    let (mut control, mut callback) = hex_audio::prepared::channel(48_000).unwrap();
++    let generation = control.sample_preview.request().unwrap();
++    control
++        .sample_preview
++        .publish(
++            generation,
++            hex_engine::Audio::new(48_000, vec![[0.25; 2]; 8]).unwrap(),
++        )
++        .unwrap();
++    callback.begin_block();
++    callback.render(&mut [[0.0; 2]; 2]).unwrap();
++    editor.update(visual, |view, cx| {
++        assert!(view.accept_browser_sample_phase(control.sample_preview.snapshot().phase));
++        assert_eq!(view.status.as_str(), "sample preview playing");
++        cx.notify();
++    });
++    visual.run_until_parked();
++    click(visual, "browser-history-back");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(
++            view.browser.playback_phase,
++            hex_audio::sample_preview::Phase::Idle
++        );
++        assert_eq!(view.status.as_str(), "sample preview stopped");
++        assert!(view.browser.playback_pending.is_none());
++        assert!(view.browser.playback_output.is_none());
++        assert!(view.pending_audio_commands.is_empty());
++    });
++}
++
++#[gpui::test]
++fn browser_history_removed_or_hidden_source_fallback_does_not_push_or_clear_forward(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _directory) = fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    click(visual, "browser-place-0");
++    click(visual, "browser-section-devices");
++    editor.update(visual, |view, _| view.browser.places.clear());
++    click(visual, "browser-history-back");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::All);
++        assert!(
++            view.browser.places.is_empty(),
++            "history cannot reconfigure a removed source"
++        );
++        assert!(
++            view.browser
++                .places_status
++                .as_ref()
++                .unwrap()
++                .contains("history source unavailable")
++        );
++    });
++    click(visual, "browser-history-forward");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Instruments)
++    });
++    click(visual, "browser-control-⚙");
++    click(visual, "browser-section-visibility-1");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Samples)
++    });
++    click(visual, "browser-history-back");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::All)
++    });
++    click(visual, "browser-history-forward");
++    editor.read_with(visual, |view, _| {
++        assert_eq!(view.browser.section, BrowserSection::Samples);
++        assert!(view.pending_requests.is_empty());
++    });
++}
+diff --git a/crates/hex-ui/src/editor/browser_input.rs b/crates/hex-ui/src/editor/browser_input.rs
+index 1c3dd232..49e64ab3 100644
+--- a/crates/hex-ui/src/editor/browser_input.rs
++++ b/crates/hex-ui/src/editor/browser_input.rs
+@@ -93,6 +93,15 @@ impl BrowserSearch {
+         cx.notify();
+     }
+ 
++    /// Browser-owned location restoration, without focus or a text edit event.
++    pub(super) fn restore_query(&mut self, content: &str, cx: &mut Context<Self>) {
++        // Reuse clear's complete input/gesture invariants (including any shared
++        // selection policy), then publish only the final value at update end.
++        self.clear(cx);
++        self.content.push_str(content);
++        self.selected = self.content.len()..self.content.len();
++    }
++
+     #[cfg(all(test, feature = "ui-test-support"))]
+     pub(super) fn painted_text_for_test(&self) -> Option<&str> {
+         self.last_layout.as_ref().map(|line| line.text.as_ref())
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 306c6e49..468eafba 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4894,3 +4894,6 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
+         assert!(view.pending_audio_commands.is_empty());
+     });
+ }
++
++#[path = "browser_history_ui_test.rs"]
++mod browser_history_ui_test;
+diff --git a/docs/browser-layout.md b/docs/browser-layout.md
+index c01a0c74..563bbb26 100644
+--- a/docs/browser-layout.md
++++ b/docs/browser-layout.md
+@@ -43,7 +43,7 @@ acceptance is separate from headless layout and deterministic PCM tests.
+ No fabricated waveform or sample tags are used. File import, project opening,
+ device/sample dragging and current search semantics retain their existing paths.
+ 
+-Tag chips/checkboxes, the mini add field and history arrows are disabled placeholders.
++Tag chips/checkboxes and the mini add field are disabled placeholders.
+ Collection names can select their own empty source; membership and editing remain
+ explicitly pending. Labels/tooltips identify pending
+ functionality. Disclosure, filtering-panel visibility and opening/closing the
+@@ -55,7 +55,6 @@ Pulse owns the remaining plans (Hex 0.1):
+ - #2665: shared bounded tag taxonomy, item identity and persistent assignments.
+ - #2666: top tag filtering and combined query semantics; depends on #2665.
+ - #2667: mini/full editors, suggestions, mixed states and atomic writes; depends on #2665.
+-- #2669: bounded back/forward navigation history and restoration.
+ - #2672: collections, icon picker and sidebar preference persistence; depends on #2665.
+ 
+ The visual implementation is #2678 / PR294. Global Command-F work remains #2659.
+@@ -146,8 +145,8 @@ indexed results; it does not silently substitute Home. If a selected Place is
+ removed from the place model, fall back explicitly to Samples and prune derived
+ catalog records outside the remaining roots before rescan. Added places keep their
+ existing bounded persistence; no user files are changed by source selection.
+-Inline hierarchy, collections/tag editing and navigation history remain their
+-separate owning issues. Native normal/icon picker, focus and offline-source
++Inline hierarchy and navigation history have separate source implementations
++below; collection/tag editing remains its separate owning issue. Native normal/icon picker, focus and offline-source
+ acceptance is coordinator-owned and pending.
+ 
+ ## Inline source hierarchy — Pulse2728 / PR341
+@@ -224,3 +223,59 @@ inspection; their physical native display and optical glyph appearance remain
+ coordinator-owned optimized acceptance, alongside smooth native divider dragging.
+ No tree indentation, results, preview, persisted preferences or divider feedback
+ behavior is implemented by this follow-up.
++
++
++## Browser navigation history (Pulse2669 / PR286)
++
++The two top arrows now navigate a session-local, browser-owned history, separate
++from project Undo. It retains at most 64 locations: the single selected source
++(including the existing collection index), native directory, and exact query.
++Each retained query/path field is capped at 16 KiB, matching the catalog's path
++bound. Exceeding that bound clears retained history with a visible diagnostic;
++the live query, paths and user files are never truncated or changed. Nothing is
++persisted across app sessions. Tag groups and collection assignments remain
++placeholders; there is no active tag-filter model to snapshot or new tag storage
++in this change. Existing collection source selection is navigable.
++
++Typing, paste and IME updates replace one current query step until a deliberate
++boundary: clicking into the query, choosing a source (including Command-F),
++navigating/selecting/activating results, collapsing a parent folder, Escape, or
++Back/Forward. These existing input events commit the transaction; no timer or
++step per character is used. A changed location clears the forward branch.
++Restoring a query updates its caret/mark state without focusing it or generating
++another history entry; a queued search observer acknowledges that exact value.
++Command-F keeps its existing All/search/select-all and invalid-draft barriers.
++
++Before leaving a location, history captures its highlighted item and top visible
++row by original native path or device class/type ID, not row index or display
++name. Restoration waits for applicable existing bounded scan/tree/catalog work,
++then restores those identities without audition, import or text focus. A missing
++highlight clears deterministically; a missing scroll anchor falls back to the top.
++A still-configured missing/offline Place remains an error location that Back can
++leave. Restoring a removed or hidden source falls back explicitly to All without
++pushing another history entry or re-adding a configured path.
++New selection, query or source navigation cancels deferred restoration; existing
++scan/tree/catalog generations reject stale worker results. Devices/collections
++do not wait for unrelated filesystem workers.
++
++Inline folder disclosure/Left parent navigation retains the current tree and its
++existing expansion state; it does not create a separate folder page or one history
++step per disclosure. Existing refresh and bounded child enumeration are unchanged.
++
++Headless regressions cover toolbar boundary/branch behavior, coalesced real input,
++Command-F, IME restoration, queued observer acknowledgement, collection navigation,
++same-name files with distinct native paths, positive scroll/item restoration,
++missing items/Places, late scan generations and latest navigation intent. Existing
++audition/Stop/offset, no-double-click-import and actual focus cases remain in the
++browser suite. This is source evidence, not native acceptance.
++
++Finite optimized native check, scheduled only by the coordinator: on the exact
++combined source, choose a Place, scroll/select a WAV, type a multi-character query,
++choose another source, and use both arrows. Check each query is one step, arrows
++are disabled at boundaries, and branching removes Forward. Confirm the same WAV
++and top row return without replay or search focus; compare same-name files from
++two directories. Check a safely configured unavailable fixture folder remains
++recoverable, rapid Back/Forward/source changes keep latest intent, and IME,
++Command-F, Left parent navigation and unfinished numeric drafts retain their
++existing ownership. No save/quit/relaunch, listening or app replacement is needed
++for this changed-case checklist; any native execution remains root-owned.
+diff --git a/scripts/check-ui-style.py b/scripts/check-ui-style.py
+index 32ba55b8..1d52f11a 100644
+--- a/scripts/check-ui-style.py
++++ b/scripts/check-ui-style.py
+@@ -51,6 +51,7 @@ widgets = (
+     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
+     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
+     # Split browser components normalize every caption at their boundary.
++    'self.browser_history_arrow(',
+     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
+     'picker_label(', 'picker_heading(',
+     # Audition row controls normalize labels; miniature waveform contains no text.
+diff --git a/todo.md b/todo.md
+index 7c5fc5b1..02e60fd3 100644
+--- a/todo.md
++++ b/todo.md
+@@ -1,3 +1,14 @@
++## Browser history source checkpoint (Pulse2669 / PR286)
++
++Session-local bounded source/directory/query history replaces the disabled arrow
++slots. Query edits coalesce at explicit input/navigation boundaries; restoration
++retains native item/top-row identity without audition/import/text focus, rejects
++stale scan results and leaves missing Places recoverable. Current tag/collection
++storage placeholders remain separate. See docs/browser-layout.md for exact
++coalescing, bounds, fallback and finite native acceptance. Source checks and
++immutable handoff are recorded in live Pulse; prospective-tree fullCI/review/merge
++remain the dedicated merger's work, native optimized acceptance remains open.
++
+ ## header volume automation indication — returned pulse2715 / PR331
+ 
+ Restored explicit `auto` readout for authored gain envelopes and recorded touch

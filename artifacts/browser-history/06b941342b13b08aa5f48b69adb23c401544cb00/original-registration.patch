@@ -1,0 +1,9 @@
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4894,3 +4894,6 @@
+         assert!(view.pending_audio_commands.is_empty());
+     });
+ }
++
++#[path = "browser_history_ui_test.rs"]
++mod browser_history_ui_test;

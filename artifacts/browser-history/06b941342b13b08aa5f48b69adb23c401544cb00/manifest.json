@@ -1,0 +1,178 @@
+{
+  "schema": 1,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/286",
+  "ticket": 2669,
+  "source_head": "06b941342b13b08aa5f48b69adb23c401544cb00",
+  "tree": "46ed45c5d196081ab2d87327acf72ae193eada5f",
+  "own_parent": "9b01ace01b55b271960765529fb872cfe106aaef",
+  "own_parent_tree": "2724e12204f626966f48bc692d859f368ba8ad49",
+  "actual_main_at_initial_integration": "bc06d7573ffa7f4d989bdff9553ed3108f4f0818",
+  "files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/history.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "crates/hex-ui/src/editor/browser/samples.rs",
+    "crates/hex-ui/src/editor/browser/tree.rs",
+    "crates/hex-ui/src/editor/browser_history_ui_test.rs",
+    "crates/hex-ui/src/editor/browser_input.rs",
+    "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "docs/browser-layout.md",
+    "scripts/check-ui-style.py",
+    "todo.md"
+  ],
+  "checks": [
+    {
+      "name": "browser",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "editor::browser::",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "log": "/tmp/286-final-browser.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "log": "/tmp/286-final-clippy.log"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/286-final-architecture.log"
+    },
+    {
+      "name": "gpui",
+      "command": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/286-final-gpui.log"
+    },
+    {
+      "name": "style",
+      "command": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/286-final-style.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/286-final-fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/286-final-diff.log"
+    }
+  ],
+  "results": {
+    "browser": "95 PASS,0fail/0ignored,716filtered,27.82s",
+    "strict_clippy": "hex-ui all targets ui-test-support PASS20.31s",
+    "guards": "architecture/GPUI/style/fmt/diff all0",
+    "fullCI": "NOTRUN bysourceowner; merger owns actual prospective candidate"
+  },
+  "original_red": {
+    "log": "286-original-red.log",
+    "result": "0PASS1FAIL,Projects remained selected after actual Back input",
+    "reproduce": "On own_parent9b01 apply original-registration.patch and use286-original-red-test.rs as crates/hex-ui/src/editor/browser_history_ui_test.rs; run command from log/current targeted source test. No production source change for original red."
+  },
+  "retained_diagnostics": {
+    "286-expanded-check.log": "compile E0521 test helper selector lifetime; corrected static helper",
+    "286-expanded-check2.log": "first4expanded UI cases PASS before later coverage/review fixes",
+    "286-query-position-red.log": "own uncommitted candidate1FAIL: original prefilter highlight lost; history/test snapshots retained; not a whole-tree frozen receipt",
+    "286-browser-check1.log": "compile E0308 dynamic selector String vs static str; fixed finite static selectors",
+    "286-browser-check2.log": "prior93browserPASS28.16s before later idle-worker/footer/config-fallback review changes",
+    "286-pre-footer-checks.json": "prior93PASS/Clippy27.28s/architectureGPUI0/style1 new component registration missing; fmt/diff not yet executed",
+    "286-pre-footer-style.log": "raw exact two helper-component registration findings; final guard adds one exact view entry",
+    "286-footer-red.log": "own intermediate candidate1FAIL: Idle phase but stale playing footer after Back; real isolated PCM phase fed to view, not a native output cancellation test; partial history/test snapshots retained"
+  },
+  "coverage": "Bounded64 model and field refusal, actual toolbar boundaries/branch, coalesced input and CmdF, Unicode/IME restore, queued observer/no extra step, collections, same-name native paths, positive selected/top-row restoration, absent item clearing, missing Place/late scan generation/latest intent, observed preview presentation, removed/hidden-library fallback keeping Forward. Existing audition/PCMStop/offset/no-hover-reprepare/no-doubleclickimport and focus/search cases passed. Existing numeric-draft CmdF barriers are unchanged source; separate numeric-draft suites were NOT run in this focused packet, combined fullCI/native acceptance remain required.",
+  "limits": [
+    "All final behavior/check source content is identical to committed tree; tests ran before source commit, so compiled test build label is not a claim of native Git-head delivery.",
+    "Current parent lacks future446 hidden-Place API; integration note names exact required visibility condition/regression before final merge.",
+    "Current tag/collection assignment storage not implemented by this scope; no active-tag state model to snapshot.",
+    "Inline expansion retained by existing tree, not a new folder-page history.",
+    "No full20, selfmerge, hostedCI, native/app/backend/permission/userdata operations.",
+    "Pulse remains InProgress until authenticated actualmerge.",
+    "Original400 opposite clickfocus bug and Live comparison/other native acceptance remain open."
+  ],
+  "payloads": {
+    "286-browser-check1.log": "0d8a3c1237250215959ff1f0b7a59a4ccef0b39fa77c2ca65c120ee3c8248caa",
+    "286-browser-check2.log": "caab7241f79adadd1eccac6b55701ff81fb51e60c2c73f5a987b400117fcdc55",
+    "286-expanded-check.log": "c722f9a9663819ba4216c76e0670e965d89f55ed8e183eae81f5ceba6ddb9027",
+    "286-expanded-check2.log": "eae0924836a1c5d8a6349b60e57d23fcb80f93b8c26bc9c97054fe1f11a47a9b",
+    "286-final-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "286-final-browser.log": "9f8670e3f232ec3ab0854304ebd69b579dc71471e42854e7c538e10f87d43e11",
+    "286-final-checks.json": "93486164abb7b688dc8cff9795d71d9308b0bbee0b612a3ffa3093d5f62d0059",
+    "286-final-clippy.log": "2f2d96b2ad6b1cc264f994e81f7d7aa220d958e93515d6c39a8b9c0039080bb4",
+    "286-final-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "286-final-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "286-final-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "286-final-style.log": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "286-first-green.log": "d47861b047218cd55a755361c07c71423e2296e7909bc3af4ed972e4ff186b2b",
+    "286-footer-red-history.rs": "544e5211314d5bc517c433f112291838643c34b10d6ab3326ae15134d70e035b",
+    "286-footer-red-test.rs": "c0cd54323913b2dd9df2ec2d257318749decaa1f027a5813d361ec67662b52f1",
+    "286-footer-red.log": "afd3bf5be71dc0982c9eb6327d83cf5a27584440589c108b28643c5e2a032fdf",
+    "286-original-red-registration.rs": "ca0b99392f4b716d59058ac222dcff86d4989342756ef485791a0229ca0df60a",
+    "286-original-red-test.rs": "15f6144a2fa47ed2e445c7dea05581c91e093aa6d1feb3de5f18afaf749616af",
+    "286-original-red.log": "b67ac7b1eebe82700a5335158e3d0f181091ce4f2c41b5c98200b170488a08d8",
+    "286-original-style-guard.py": "a92dcb40c6b4e0f44c404c4210e137a1a7126717870bb720592f719237381455",
+    "286-pre-footer-architecture.log": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "286-pre-footer-browser.log": "788e8b1443dc5e88cafd7155b72dd6c5de8e0ad50cdb49003198698d85c451e2",
+    "286-pre-footer-checks.json": "d1128d0c8ab325ddef09721239964f1c8663edc1c48a5f68dd239508ba22d6be",
+    "286-pre-footer-clippy.log": "99131975ba4fc75c8f96053a71d0d85f000f09205d817d50569996c70a91de1b",
+    "286-pre-footer-gpui.log": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "286-pre-footer-style.log": "e820388a046c183be33085439777f8e71000077f8bcdfafc2d5daf989cc7c5ef",
+    "286-publish-evidence.py": "143110ed0b752fbcdce375aa8f6ccf927b2d9f8743fef9b29ec8bed04fd72368",
+    "286-query-position-red-history.rs": "c1d85e483ce517bfbc65a855d041004a0ef777ae6aa5a34d8852a92a35622628",
+    "286-query-position-red-test.rs": "6869bac4fec5a2d15e2296205a9b912ebe631e3220ac3344be465562e9865132",
+    "286-query-position-red.log": "632dc656eeed07cf81f49ad816f36d9df2a2e0f67d39b77c70c2d10efe6b2afb",
+    "before-after-hashes.json": "61b94e3d100f53310655ea6231df89c8c9e6500822265e6e8fe3e50ab4ec6b41",
+    "finite-mac-checklist.md": "9a0fd3e422fac923cc210b90737e0c6adec7325582b2d1b9f7c27405129c07c7",
+    "integration-note.md": "c4c4290cb161aa84320fbf69ce6639b5f66ecf225d53367542e5e5df9b5bff25",
+    "original-registration.patch": "e3d26937c9a12179eb93fda9becd1a7aebc104d20286b076e32aabc2393aa79c",
+    "source.patch": "300e9391637886952f6344741e2fa039e4114374fbca0202ed1b07d09277d874"
+  }
+}

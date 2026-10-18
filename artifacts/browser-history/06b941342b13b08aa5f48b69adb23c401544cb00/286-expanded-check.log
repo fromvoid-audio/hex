@@ -1,0 +1,20 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0521]: borrowed data escapes outside of function
+  --> crates/hex-ui/src/editor/browser_history_ui_test.rs:57:17
+   |
+56 |   fn click(visual: &mut VisualTestContext, selector: &str) {
+   |                                            --------  - let's call the lifetime of this reference `'1`
+   |                                            |
+   |                                            `selector` is a reference that is only valid in the function body
+57 |       let point = visual
+   |  _________________^
+58 | |         .debug_bounds(selector)
+   | |                               ^
+   | |                               |
+   | |_______________________________`selector` escapes the function body here
+   |                                 argument requires that `'1` must outlive `'static`
+
+For more information about this error, try `rustc --explain E0521`.
+error: could not compile `hex-ui` (lib test) due to 1 previous error

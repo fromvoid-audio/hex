@@ -1,0 +1,14 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.31s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 4 tests
+test editor::browser::ui_test::browser_history_ui_test::browser_history_toolbar_restores_source_without_preview_or_import ... ok
+test editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget ... ok
+test editor::browser::ui_test::browser_history_ui_test::browser_history_restores_native_item_and_scroll_identity_without_focus_or_audition ... ok
+test editor::browser::ui_test::browser_history_ui_test::browser_history_typing_coalesces_until_navigation_and_branch_clears_forward ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 803 filtered out; finished in 0.85s
+

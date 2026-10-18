@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.62s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::browser::ui_test::browser_history_ui_test::browser_history_query_back_restores_item_before_filter_and_ime_restore_is_not_an_edit' (118610) panicked at crates/hex-ui/src/editor/browser_history_ui_test.rs:258:9:
+query back must restore the original highlighted identity
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::browser_history_ui_test::browser_history_query_back_restores_item_before_filter_and_ime_restore_is_not_an_edit ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::browser_history_ui_test::browser_history_query_back_restores_item_before_filter_and_ime_restore_is_not_an_edit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 807 filtered out; finished in 0.50s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
