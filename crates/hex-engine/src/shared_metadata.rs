@@ -37,6 +37,14 @@ impl<T> SharedMetadata<T> {
         std::sync::Arc::ptr_eq(self.owner.arc(), other.owner.arc())
     }
 }
+// Preserve value equality semantics of the previous Arc<T> consumers.
+// Content equality is never allocation identity or storage provenance.
+impl<T: PartialEq> PartialEq for SharedMetadata<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+impl<T: Eq> Eq for SharedMetadata<T> {}
 impl<T> Clone for SharedMetadata<T> {
     fn clone(&self) -> Self {
         Self {

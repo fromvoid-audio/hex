@@ -526,7 +526,7 @@ mod native {
                     point: point(100 * BeatTime::ONE.raw(), 0.5),
                 })
                 .unwrap();
-            let project = Arc::new(project.project().clone());
+            let project = hex_session::SharedProject::new_on_control(project.project().clone());
             let preview = hex_engine::GainAutomationPreview::prepare(&project).unwrap();
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
@@ -594,7 +594,9 @@ mod native {
                     source_sequence: 1,
                 }],
             }];
-            let project = Arc::new(Project::from_snapshot(snapshot).unwrap());
+            let project = hex_session::SharedProject::new_on_control(
+                Project::from_snapshot(snapshot).unwrap(),
+            );
             let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {

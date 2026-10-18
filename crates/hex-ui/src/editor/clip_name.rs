@@ -351,7 +351,9 @@ mod tests {
                 editor.update(cx, |v, cx| {
                     v.state = Some(Arc::new(hex_session::service::ViewState {
                         canonical_audio_source: None,
-                        project: Arc::new(canonical.project().clone()),
+                        project: hex_session::SharedProject::new_on_control(
+                            canonical.project().clone(),
+                        ),
                         waveforms: Default::default(),
                         audio_clip_waveforms: Default::default(),
                         midi_preview: Arc::default(),

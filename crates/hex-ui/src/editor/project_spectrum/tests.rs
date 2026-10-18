@@ -12,7 +12,7 @@ fn publish(view: &mut EditorView, project: Project) {
     let old = view.state.as_ref().unwrap();
     view.state = Some(Arc::new(ViewState {
         canonical_audio_source: None,
-        project: Arc::new(project),
+        project: hex_session::SharedProject::new_on_control(project),
         waveforms: old.waveforms.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
         midi_preview: Arc::clone(&old.midi_preview),

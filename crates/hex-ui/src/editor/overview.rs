@@ -330,7 +330,7 @@ mod tests {
     fn view_state(project: Project, revision: u64, timeline_frames: u64) -> ViewState {
         ViewState {
             canonical_audio_source: None,
-            project: Arc::new(project),
+            project: hex_session::SharedProject::new_on_control(project),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(Default::default()),

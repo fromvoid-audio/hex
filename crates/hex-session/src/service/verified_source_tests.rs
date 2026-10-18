@@ -127,8 +127,12 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
             .collect::<Vec<_>>(),
         vec![262144, 131072]
     );
-    let captured =
-        CanonicalAudioSourceSnapshot::capture(&Arc::new(session.project().clone()), 0, 1, &session);
+    let captured = CanonicalAudioSourceSnapshot::capture(
+        &crate::SharedProject::new_on_control(session.project().clone()),
+        0,
+        1,
+        &session,
+    );
     assert_eq!(captured.required_sources().count(), 2);
     assert_ne!(session.semantic_source_epoch, initial_epoch);
     let epoch = session.semantic_source_epoch;
@@ -138,8 +142,12 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
         .unwrap();
     assert!(session.project().assets().next().is_none());
     assert_eq!(session.verified_sources.len(), 2);
-    let undone_capture =
-        CanonicalAudioSourceSnapshot::capture(&Arc::new(session.project().clone()), 0, 2, &session);
+    let undone_capture = CanonicalAudioSourceSnapshot::capture(
+        &crate::SharedProject::new_on_control(session.project().clone()),
+        0,
+        2,
+        &session,
+    );
     assert_eq!(undone_capture.sources().len(), 0); // history facts are not the current Project
     assert_eq!(undone_capture.required_sources().count(), 0);
     assert_eq!(captured.required_sources().count(), 2); // frozen old projection
@@ -181,8 +189,12 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
             .1;
     }
     assert_eq!(session.project().assets().count(), 2);
-    let source_free =
-        CanonicalAudioSourceSnapshot::capture(&Arc::new(session.project().clone()), 0, 3, &session);
+    let source_free = CanonicalAudioSourceSnapshot::capture(
+        &crate::SharedProject::new_on_control(session.project().clone()),
+        0,
+        3,
+        &session,
+    );
     assert_eq!(source_free.sources().len(), 2); // actual unused current asset records
     assert_eq!(source_free.required_sources().count(), 0);
     assert!(

@@ -2,20 +2,20 @@
 //! Correlation only: constructor custody and exact page protection remain separate.
 use super::*;
 pub struct CanonicalAudioSourceSnapshot {
-    project: Arc<Project>,
+    project: crate::SharedProject,
     context: hex_engine::AudioSourceContext,
     mode: crate::DocumentAudioMode,
     sources: SortedEntries<hex_project::AssetId, crate::AudioSourceBinding>,
 }
 impl CanonicalAudioSourceSnapshot {
     pub(super) fn capture(
-        project: &Arc<Project>,
+        project: &crate::SharedProject,
         project_generation: u64,
         editor_revision: u64,
         session: &Session,
     ) -> Self {
         Self {
-            project: Arc::clone(project),
+            project: project.clone(),
             mode: session.audio_mode(),
             sources: session.source_bindings(),
             context: hex_engine::AudioSourceContext {
@@ -23,6 +23,10 @@ impl CanonicalAudioSourceSnapshot {
                 editor_revision,
             },
         }
+    }
+    /// Borrow the actual paired model field; no raw Arc or synthetic snapshot.
+    pub fn project_owner_on_control(&self) -> &crate::SharedProject {
+        &self.project
     }
     pub fn audio_mode(&self) -> crate::DocumentAudioMode {
         self.mode
@@ -153,7 +157,7 @@ mod tests {
         let captured = next(&service);
         assert!(captured.error.is_none());
         let snapshot = captured.state.canonical_audio_source.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&snapshot.project, &captured.state.project));
+        assert!(snapshot.project.shares_owner_with(&captured.state.project));
         assert_eq!(snapshot.context().editor_revision, captured.state.revision);
         assert_eq!(snapshot.context().project_generation, 0);
         service
@@ -183,11 +187,7 @@ mod tests {
                 .prepared_revision()
                 .unwrap(),
         );
-        let preview = preview_view_state(
-            &captured.state,
-            Arc::clone(&captured.state.project),
-            prepared,
-        );
+        let preview = preview_view_state(&captured.state, captured.state.project.clone(), prepared);
         assert!(preview.canonical_audio_source.is_none());
         if !hex_engine::audio_storage_constructor_layout_supported() {
             return;

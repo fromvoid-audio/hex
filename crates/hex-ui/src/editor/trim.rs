@@ -1137,7 +1137,7 @@ mod tests {
 
         let stale_revision = ViewState {
             canonical_audio_source: None,
-            project: Arc::clone(&state.project),
+            project: state.project.clone(),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&state.midi_preview),
@@ -1196,7 +1196,7 @@ mod tests {
             .expect("remove clip");
         let removed = ViewState {
             canonical_audio_source: None,
-            project: Arc::new(editor.project().clone()),
+            project: hex_session::SharedProject::new_on_control(editor.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
@@ -1243,7 +1243,7 @@ mod tests {
         );
         let moved = ViewState {
             canonical_audio_source: None,
-            project: Arc::new(moved_editor.project().clone()),
+            project: hex_session::SharedProject::new_on_control(moved_editor.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
@@ -1293,7 +1293,7 @@ mod tests {
         };
         let state = ViewState {
             canonical_audio_source: None,
-            project: Arc::new(editor.project().clone()),
+            project: hex_session::SharedProject::new_on_control(editor.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),

@@ -2,7 +2,7 @@
 use crate::{Session, SessionError};
 use hex_engine::PreparedRevision;
 use hex_lattice_contract::DeviceParameterSnapshot;
-use hex_project::{Command, DeviceId, Editor, Project};
+use hex_project::{Command, DeviceId, Editor};
 use std::sync::Arc;
 
 impl Session {
@@ -11,7 +11,7 @@ impl Session {
         device: DeviceId,
         snapshot: &DeviceParameterSnapshot,
         previous: Option<&PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<PreparedRevision>), SessionError> {
         let current = self
             .project()
             .device(device)
@@ -37,7 +37,10 @@ impl Session {
                     .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Patch the latest state, preserving every parameter outside the snapshot.

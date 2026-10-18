@@ -243,7 +243,9 @@ mod window_tests {
                 editor.update(cx, |view, cx| {
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
-                        project: Arc::new(hex_project::Project::new(48_000).expect("test project")),
+                        project: hex_session::SharedProject::new_on_control(
+                            hex_project::Project::new(48_000).expect("test project"),
+                        ),
                         waveforms: Default::default(),
                         audio_clip_waveforms: Default::default(),
                         midi_preview: Arc::new(Default::default()),
@@ -296,7 +298,7 @@ mod window_tests {
             if let Some(state) = view.state.as_ref() {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::clone(&state.project),
+                    project: state.project.clone(),
                     waveforms: state.waveforms.clone(),
                     audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                     midi_preview: Arc::clone(&state.midi_preview),
@@ -442,7 +444,7 @@ mod window_tests {
                     let state = &device_event.state;
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
-                        project: Arc::clone(&state.project),
+                        project: state.project.clone(),
                         waveforms: state.waveforms.clone(),
                         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                         midi_preview: Arc::clone(&state.midi_preview),

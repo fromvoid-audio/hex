@@ -273,7 +273,7 @@ impl TuningGestureRequest {
 pub(crate) struct TuningGestureOutcome {
     pub ack: TuningGestureAck,
     pub playback: Option<Arc<PreparedRevision>>,
-    pub preview_project: Option<Arc<Project>>,
+    pub preview_project: Option<crate::SharedProject>,
     pub canonical_changed: bool,
 }
 

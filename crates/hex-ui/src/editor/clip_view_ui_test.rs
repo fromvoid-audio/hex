@@ -124,7 +124,7 @@ pub(super) fn audio_detail_fixture(
             .unwrap();
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::new(project),
+            project: hex_session::SharedProject::new_on_control(project),
             waveforms,
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(Default::default()),
@@ -334,7 +334,8 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     committed_edit
         .execute(Command::RemoveDevice(device_id))
         .expect("remove utility from committed project");
-    let project_after_remove = Arc::new(committed_edit.project().clone());
+    let project_after_remove =
+        hex_session::SharedProject::new_on_control(committed_edit.project().clone());
     let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
@@ -582,7 +583,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         let previous = view.state.as_ref().expect("initial view state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::clone(&project_after_remove),
+            project: project_after_remove.clone(),
             waveforms: previous.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&previous.midi_preview),
@@ -699,7 +700,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::clone(&old.project),
+            project: old.project.clone(),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
@@ -720,7 +721,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::clone(&old.project),
+            project: old.project.clone(),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
@@ -758,7 +759,7 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::clone(&old.project),
+            project: old.project.clone(),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
@@ -824,7 +825,7 @@ fn conversion_control_dispatches_selected_clip_and_blocks_pending_edits(cx: &mut
             .unwrap();
         let state = ViewState {
             canonical_audio_source: None,
-            project: Arc::new(model.project().clone()),
+            project: hex_session::SharedProject::new_on_control(model.project().clone()),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: old.audio_clip_waveforms.clone(),
             midi_preview: Arc::default(),

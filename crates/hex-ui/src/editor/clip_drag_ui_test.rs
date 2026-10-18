@@ -107,7 +107,7 @@ pub(super) fn editor_window(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::new(project),
+                    project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview,
@@ -736,7 +736,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             .unwrap();
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::clone(&old.project),
+            project: old.project.clone(),
             waveforms,
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::clone(&old.midi_preview),
@@ -1607,7 +1607,7 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
         let previous = view.state.as_ref().expect("project state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::new(moved_project.project().clone()),
+            project: hex_session::SharedProject::new_on_control(moved_project.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(moved_preview),

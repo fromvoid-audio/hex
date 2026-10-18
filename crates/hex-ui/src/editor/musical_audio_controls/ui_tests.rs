@@ -48,7 +48,7 @@ fn assert_mode_choice(cx: &mut TestAppContext, requested: usize) {
             .unwrap();
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::new(model.project().clone()),
+            project: hex_session::SharedProject::new_on_control(model.project().clone()),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: old.audio_clip_waveforms.clone(),
             midi_preview: old.midi_preview.clone(),

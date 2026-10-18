@@ -4186,7 +4186,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::new(initial_project.clone()),
+                    project: hex_session::SharedProject::new_on_control(initial_project.clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::new(Default::default()),
@@ -4327,7 +4327,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         let current = view.state.as_ref().expect("view state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::new(next_project.clone()),
+            project: hex_session::SharedProject::new_on_control(next_project.clone()),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: current.midi_preview.clone(),
@@ -5221,7 +5221,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         .expect("first acknowledged edit");
     let changed_state = Arc::new(ViewState {
         canonical_audio_source: None,
-        project: Arc::new(project_editor.project().clone()),
+        project: hex_session::SharedProject::new_on_control(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),

@@ -66,7 +66,7 @@ pub struct ViewState {
     /// Present only for a canonical worker snapshot. Preview views cannot mint
     /// source freshness for streamed constructor publication.
     pub canonical_audio_source: Option<Arc<CanonicalAudioSourceSnapshot>>,
-    pub project: Arc<Project>,
+    pub project: crate::SharedProject,
     pub waveforms: SortedEntries<hex_project::AssetId, crate::SharedWaveform>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
     pub audio_clip_waveforms: SortedEntries<hex_project::ClipId, AudioClipWaveform>,
@@ -105,6 +105,8 @@ impl ViewState {
     }
 }
 
+#[cfg(test)]
+mod shared_project_storage_tests;
 #[cfg(test)]
 mod waveform_storage_tests;
 
@@ -881,7 +883,7 @@ fn view_state(
     unsaved: bool,
     document_path: Option<&Path>,
 ) -> Arc<ViewState> {
-    let project = Arc::new(session.project().clone());
+    let project = crate::SharedProject::new_on_control(session.project().clone());
     let rate = u64::from(project.sample_rate());
     let latest_clip_end = latest_clip_end(&project);
     let latest_content_end = latest_clip_end.max(
@@ -915,7 +917,7 @@ fn view_state(
 
 fn preview_view_state(
     canonical: &Arc<ViewState>,
-    project: Arc<Project>,
+    project: crate::SharedProject,
     prepared: Arc<PreparedRevision>,
 ) -> Arc<ViewState> {
     let rate = u64::from(project.sample_rate());
@@ -993,7 +995,7 @@ fn project_source_for_runtime_input(
     session: &Session,
     tuning: Option<TuningGestureSnapshot>,
     canonical: &Arc<PreparedRevision>,
-) -> Result<(Arc<Project>, Arc<PreparedRevision>, bool), String> {
+) -> Result<(crate::SharedProject, Arc<PreparedRevision>, bool), String> {
     if let Some(snapshot) = tuning {
         session
             .preview_tuning(snapshot.tuning, Some(canonical))
@@ -1001,7 +1003,7 @@ fn project_source_for_runtime_input(
             .map_err(|error| error.to_string().to_lowercase())
     } else {
         Ok((
-            Arc::new(session.project().clone()),
+            crate::SharedProject::new_on_control(session.project().clone()),
             Arc::clone(canonical),
             false,
         ))

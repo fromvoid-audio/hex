@@ -1,7 +1,7 @@
 //! One worker-owned, typed native parameter overlay. No callback ownership.
 use crate::{Session, SessionError};
 use hex_engine::{NativeDeviceClass, PreparedRevision};
-use hex_project::{DeviceId, Project, ReturnId, TrackId};
+use hex_project::{DeviceId, ReturnId, TrackId};
 use std::sync::Arc;
 #[cfg(test)]
 mod snapshot_tests;
@@ -806,7 +806,7 @@ mod client_tests {
 pub(crate) struct GestureOutcome {
     pub ack: GestureAck,
     pub playback: Option<Arc<PreparedRevision>>,
-    pub preview_project: Option<Arc<Project>>,
+    pub preview_project: Option<crate::SharedProject>,
     pub canonical_changed: bool,
 }
 
@@ -1410,7 +1410,7 @@ fn preview_target(
     target: GestureTarget,
     value: ParameterValue,
     previous: Option<&PreparedRevision>,
-) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
+) -> Result<(crate::SharedProject, Arc<PreparedRevision>), SessionError> {
     match target {
         GestureTarget::DeviceParameter { device, parameter } => {
             session.preview_device_parameter(device, parameter, value, previous)
@@ -1452,7 +1452,7 @@ fn preview_pair_target(
     target: GestureTarget,
     value: ParameterPairValue,
     previous: Option<&PreparedRevision>,
-) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
+) -> Result<(crate::SharedProject, Arc<PreparedRevision>), SessionError> {
     match target {
         GestureTarget::DeviceParameterPair {
             device,

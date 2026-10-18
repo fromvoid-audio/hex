@@ -268,7 +268,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     let old = view.state.as_ref().unwrap();
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
-                        project: Arc::clone(&old.project),
+                        project: old.project.clone(),
                         waveforms: hex_project::SortedEntries::try_from_unsorted_on_control(
                             vec![(asset, peaks.clone())],
                             hex_project::MAX_ASSETS,

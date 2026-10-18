@@ -195,12 +195,12 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         for track in project.tracks() {
             for clip in track.midi_clips() {
-                self.model_source(clip)?;
+                self.model_source_if_unvisited(clip)?;
             }
         }
         for cell in project.session_cells() {
             if let hex_project::SessionCellContent::Midi(clip) = cell.content() {
-                self.model_source(clip)?;
+                self.model_source_if_unvisited(clip)?;
             }
         }
         Ok(())

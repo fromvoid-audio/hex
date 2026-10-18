@@ -106,7 +106,7 @@ fn browser_drag_fixture_with_tracks(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::new(model.project().clone()),
+                    project: hex_session::SharedProject::new_on_control(model.project().clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::new(Default::default()),
@@ -575,7 +575,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                     .clone();
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::new(project),
+                    project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::new(Default::default()),
@@ -633,7 +633,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                 let project = Project::new(48_000).expect("project");
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::new(project),
+                    project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::new(Default::default()),
@@ -783,7 +783,7 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
                     .clone();
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::new(project),
+                    project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::new(Default::default()),
@@ -2117,7 +2117,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
         let clip = project.project().midi_clip(clip_id).expect("clip");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
-            project: Arc::new(project.project().clone()),
+            project: hex_session::SharedProject::new_on_control(project.project().clone()),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: current.midi_preview.clone(),

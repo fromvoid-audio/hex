@@ -82,7 +82,7 @@ fn session_window(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::new(project),
+                    project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::new(Default::default()),

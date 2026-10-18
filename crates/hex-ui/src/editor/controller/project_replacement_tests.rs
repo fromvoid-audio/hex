@@ -7,7 +7,7 @@ use hex_session::service::{Request, Service, ViewState};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
+fn event(project: hex_session::SharedProject, revision: u64, replaced: bool) -> Event {
     let prepared = Arc::new(
         PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
             .expect("test revision"),
@@ -60,7 +60,7 @@ fn open_response(mut event: Event, path: Option<std::path::PathBuf>, failed: boo
     let previous = &event.state;
     event.state = Arc::new(ViewState {
         canonical_audio_source: None,
-        project: Arc::clone(&previous.project),
+        project: previous.project.clone(),
         waveforms: Default::default(),
         audio_clip_waveforms: Default::default(),
         midi_preview: Arc::new(Default::default()),
@@ -79,7 +79,7 @@ fn open_response(mut event: Event, path: Option<std::path::PathBuf>, failed: boo
 }
 
 fn eq8_project() -> (
-    Arc<Project>,
+    hex_session::SharedProject,
     hex_project::TrackId,
     hex_project::DeviceId,
     hex_project::TrackId,
@@ -120,7 +120,7 @@ fn eq8_project() -> (
         other => panic!("unexpected track result: {other:?}"),
     };
     (
-        Arc::new(editor.project().clone()),
+        hex_session::SharedProject::new_on_control(editor.project().clone()),
         track,
         device,
         other_track,
@@ -159,7 +159,7 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
 
     window
         .update(cx, |view, _, cx| {
-            view.receive(event(Arc::clone(&project), 1, true));
+            view.receive(event(project.clone(), 1, true));
             view.project_generation = 1;
             view.selected_track = Some(track);
             view.clip_view_open = true;
@@ -185,10 +185,17 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
             without_eq8
                 .execute(Command::RemoveDevice(device))
                 .expect("remove eq8");
-            view.state = Some(event(Arc::new(without_eq8.project().clone()), 2, false).state);
+            view.state = Some(
+                event(
+                    hex_session::SharedProject::new_on_control(without_eq8.project().clone()),
+                    2,
+                    false,
+                )
+                .state,
+            );
             assert!(!view.spectrum_target_is_visible_and_current(target));
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
-            view.state = Some(event(Arc::clone(&project), 3, false).state);
+            view.state = Some(event(project.clone(), 3, false).state);
 
             let mut replaced_eq8 = Editor::new((*project).clone(), 8).expect("editor");
             replaced_eq8
@@ -201,14 +208,21 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
                     .expect("utility state"),
                 })
                 .expect("replace eq8 type");
-            view.state = Some(event(Arc::new(replaced_eq8.project().clone()), 4, false).state);
+            view.state = Some(
+                event(
+                    hex_session::SharedProject::new_on_control(replaced_eq8.project().clone()),
+                    4,
+                    false,
+                )
+                .state,
+            );
             assert!(!view.spectrum_target_is_visible_and_current(target));
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
-            view.state = Some(event(Arc::clone(&project), 5, false).state);
+            view.state = Some(event(project.clone(), 5, false).state);
 
             // Reopening the same project preserves numeric IDs but advances the
             // project generation, so an old callback target cannot reattach.
-            view.receive(event(Arc::clone(&project), 2, true));
+            view.receive(event(project.clone(), 2, true));
             assert_ne!(view.project_generation, target.project_generation);
             assert!(!view.spectrum_target_is_visible_and_current(target));
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
@@ -246,12 +260,13 @@ fn only_successful_open_response_promotes_the_worker_document_path(cx: &mut Test
         let service = Service::new(48_000, 8, 8_000_000).expect("test service");
         EditorView::new(window, cx, service, Err("offline test".into()))
     });
-    let project = Arc::new(Project::new(48_000).expect("project"));
+    let project =
+        hex_session::SharedProject::new_on_control(Project::new(48_000).expect("project"));
     let actual_path = std::env::temp_dir().join("recent-open-document.hex");
     window
         .update(cx, |view, _, cx| {
             let success = open_response(
-                event(Arc::clone(&project), 1, true),
+                event(project.clone(), 1, true),
                 Some(actual_path.clone()),
                 false,
             );
@@ -278,22 +293,22 @@ fn worker_snapshots_and_undo_keep_the_last_user_detail_focus(cx: &mut TestAppCon
         EditorView::new(window, cx, service, Err("offline test".into()))
     });
     let (project, track, _, clip) = super::super::clip_drag_ui_test::midi_project();
-    let project = Arc::new(project);
+    let project = hex_session::SharedProject::new_on_control(project);
     let mut without_clip = Editor::new((*project).clone(), 8).expect("project editor");
     without_clip
         .execute(Command::RemoveMidiClip(clip))
         .expect("remove clip");
-    let without_clip = Arc::new(without_clip.project().clone());
+    let without_clip = hex_session::SharedProject::new_on_control(without_clip.project().clone());
 
     window
         .update(cx, |view, _, _| {
-            view.receive(event(Arc::clone(&project), 1, true));
+            view.receive(event(project.clone(), 1, true));
             view.selected_track = Some(track);
             view.selected_clip = Some(clip);
             view.clip_view_open = true;
             view.device_panel_active = false;
 
-            view.receive(event(Arc::clone(&without_clip), 2, false));
+            view.receive(event(without_clip.clone(), 2, false));
             assert_eq!(view.selected_clip, None, "snapshot removes stale selection");
             assert!(
                 !view.device_panel_active,
@@ -343,22 +358,22 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
     else {
         panic!("track expected")
     };
-    let original = Arc::new(project.project().clone());
+    let original = hex_session::SharedProject::new_on_control(project.project().clone());
     project
         .execute(Command::Gain { track, gain: 0.5 })
         .expect("first edit");
-    let first_edit = Arc::new(project.project().clone());
+    let first_edit = hex_session::SharedProject::new_on_control(project.project().clone());
     project
         .execute(Command::Gain { track, gain: 0.25 })
         .expect("second edit");
-    let second_edit = Arc::new(project.project().clone());
+    let second_edit = hex_session::SharedProject::new_on_control(project.project().clone());
     project
         .execute(Command::Gain { track, gain: 0.75 })
         .expect("later edit");
-    let later_edit = Arc::new(project.project().clone());
+    let later_edit = hex_session::SharedProject::new_on_control(project.project().clone());
     window
         .update(cx, |view, _, _| {
-            view.receive(event(Arc::clone(&original), 0, true));
+            view.receive(event(original.clone(), 0, true));
             let generation = view.project_generation;
             assert!(
                 view.pending_playback
@@ -369,7 +384,7 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
             // Multiple committed edits can arrive before audio publication has
             // space. They replace the candidate, not its project identity.
             view.receive(event(first_edit, 1, false));
-            view.receive(event(Arc::clone(&second_edit), 2, false));
+            view.receive(event(second_edit.clone(), 2, false));
             let pending = view.pending_playback.as_ref().unwrap();
             assert!(pending.install_fresh_runtime);
             assert_eq!(pending.project_revision, 2);
@@ -515,7 +530,9 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             assert_eq!(view.viewport, Some(explicit_pan));
 
             let replacement = event(
-                Arc::new(Project::new(48_000).expect("replacement project")),
+                hex_session::SharedProject::new_on_control(
+                    Project::new(48_000).expect("replacement project"),
+                ),
                 view.state.as_ref().unwrap().revision + 1,
                 true,
             );
@@ -543,8 +560,8 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
     });
     window
         .update(cx, |view, _, _| {
-            let project = Arc::new(Project::new(48_000).unwrap());
-            view.receive(event(Arc::clone(&project), 2, false));
+            let project = hex_session::SharedProject::new_on_control(Project::new(48_000).unwrap());
+            view.receive(event(project.clone(), 2, false));
             view.pending_playback = None;
             let generation = view.project_generation;
             view.stopped_playback_restore =
@@ -554,7 +571,7 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
             assert!(view.tick_computer_keyboard());
             assert!(view.computer_keyboard.suspended);
             assert!(view.computer_keyboard.target.is_none());
-            let mut restored = event(Arc::clone(&project), 2, false);
+            let mut restored = event(project.clone(), 2, false);
             restored.stopped_playback_restore_complete = true;
             view.receive(restored);
             assert_eq!(view.project_generation, generation);
@@ -567,7 +584,7 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
             );
             // The reset belongs to the explicit Stop even if a newer canonical edit
             // coalesces before publication. Ordinary edits alone retain histories.
-            view.receive(event(Arc::clone(&project), 3, false));
+            view.receive(event(project.clone(), 3, false));
             assert!(
                 view.pending_playback
                     .as_ref()

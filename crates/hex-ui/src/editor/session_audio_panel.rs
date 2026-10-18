@@ -685,7 +685,7 @@ mod tests {
             editor.update(window_cx, |view, window_cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
-                    project: Arc::new(project.project().clone()),
+                    project: hex_session::SharedProject::new_on_control(project.project().clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::new(Default::default()),

@@ -969,3 +969,78 @@ fn actual_mutable_host_replays_nonconstant_pcm_after_speculation_without_callbac
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn paired_project_body_and_nested_control_inspection_allocate_and_free_nothing() {
+    if !hex_engine::audio_storage_constructor_layout_supported()
+        || !hex_engine::canonical_midi_storage_layout_supported()
+        || !hex_engine::canonical_native_state_storage_layout_supported()
+    {
+        return;
+    }
+    eprintln!("executing paired Project body/MIDI/state/model buffer allocation inspection");
+    use hex_project::{BeatTime, Command, Created, Editor, Project};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap();
+    // Exact same existing paired facade used by Session::SharedProject. The
+    // audio probe does not add a production dependency on Session.
+    let project = hex_engine::SharedMetadata::new_on_control(editor.project().clone());
+    drop(editor);
+    let alias = project.clone();
+    let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+        hex_engine::AudioStorageLedgerReservation {
+            data_rows: 128,
+            handle_rows: 128,
+            root_rows: 16,
+            max_retained_bytes: 2_000_000,
+            max_construction_peak_bytes: 2_000_000,
+        },
+    )
+    .unwrap();
+    let measurement = allocation_counter::measure(|| {
+        for _ in 0..128 {
+            for actual_field in [&project, &alias] {
+                ledger
+                    .borrow_shared_metadata_body_on_control(actual_field)
+                    .unwrap();
+                ledger
+                    .borrow_project_exclusive_buffers_on_control(actual_field)
+                    .unwrap();
+                ledger
+                    .borrow_project_midi_sources_on_control(actual_field)
+                    .unwrap();
+                ledger
+                    .borrow_project_native_states_on_control(actual_field)
+                    .unwrap();
+            }
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap();
+        }
+    });
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(ledger.selected_shared_counts_on_control(), (3, 4));
+    assert!(ledger.summary().unwrap().require_complete().is_err());
+}

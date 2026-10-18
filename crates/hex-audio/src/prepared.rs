@@ -3096,9 +3096,10 @@ mod tests {
         .expect("valid track and Return graph");
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize])
             .expect("audio fixture");
-        let media = [(project.assets().next().expect("asset").id(), audio)]
-            .into_iter()
-            .collect();
+        let media: std::collections::BTreeMap<hex_project::AssetId, hex_engine::Audio> =
+            [(project.assets().next().expect("asset").id(), audio)]
+                .into_iter()
+                .collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
@@ -3217,9 +3218,10 @@ mod tests {
         .expect("valid compressor track and Return graph");
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize])
             .expect("audio fixture");
-        let media = [(project.assets().next().expect("asset").id(), audio)]
-            .into_iter()
-            .collect();
+        let media: std::collections::BTreeMap<hex_project::AssetId, hex_engine::Audio> =
+            [(project.assets().next().expect("asset").id(), audio)]
+                .into_iter()
+                .collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
@@ -3350,9 +3352,10 @@ mod tests {
         .expect("valid track and Return Gate graph");
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize])
             .expect("audio fixture");
-        let media = [(project.assets().next().expect("asset").id(), audio)]
-            .into_iter()
-            .collect();
+        let media: std::collections::BTreeMap<hex_project::AssetId, hex_engine::Audio> =
+            [(project.assets().next().expect("asset").id(), audio)]
+                .into_iter()
+                .collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,

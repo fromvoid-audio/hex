@@ -3775,7 +3775,8 @@ mod tests {
     }
 
     fn candidate(audio_revision: u64, project_revision: u64, generation: u64) -> PlaybackCandidate {
-        let project = Arc::new(Project::new(48_000).expect("project"));
+        let project =
+            hex_session::SharedProject::new_on_control(Project::new(48_000).expect("project"));
         PlaybackCandidate {
             audio_revision,
             project_generation: generation,

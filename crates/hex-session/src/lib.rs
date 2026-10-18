@@ -1,6 +1,9 @@
 //! Control-side owner of canonical editing state and its bounded decoded media.
 pub mod gain_recording;
 
+mod shared_project;
+pub use shared_project::{SharedProject, visit_shared_project_selected_storage_on_control};
+
 use hex_engine::{Audio, Project as PlaybackProject};
 use hex_media::{
     DecodedAudio, ImportError as MediaInvalid, ResampleLimits, resample,
@@ -658,7 +661,7 @@ impl Session {
         &self,
         tuning: hex_tuning::ProjectTuning,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         let mut preview = Editor::new(self.project().clone(), 1)?;
         let media = self.media_bank()?;
         let table = self.sine_table();
@@ -680,7 +683,10 @@ impl Session {
                 .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Prepare a typed native parameter overlay without changing canonical
@@ -691,7 +697,7 @@ impl Session {
         parameter: hex_lattice_contract::ParameterId,
         value: hex_lattice_contract::ParameterValue,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         let class = self.native_device_class(device)?;
         let current = self
             .project()
@@ -721,7 +727,10 @@ impl Session {
                 .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Prepare two native parameter values as one atomic project overlay.
@@ -739,7 +748,7 @@ impl Session {
             hex_lattice_contract::ParameterValue,
         ),
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         if first.0 == second.0 {
             return Err(SessionError::Invalid(
                 "device parameter pair must target two distinct parameters",
@@ -776,7 +785,10 @@ impl Session {
                 .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Commit only this parameter onto the latest authored device state.
@@ -847,7 +859,7 @@ impl Session {
         return_track: hex_project::ReturnId,
         gain: f32,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
             return Err(SessionError::Invalid(
                 "return send gain must be finite and between zero and two",
@@ -875,7 +887,10 @@ impl Session {
                 .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Commit one return-send value onto the latest canonical project as one
