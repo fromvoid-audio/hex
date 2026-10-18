@@ -62,6 +62,7 @@ impl SampleCatalog {
         let mut entries = self.filtered(query, source);
         if let Some(listing) = listing {
             let query = query.to_lowercase();
+            let terms: Vec<_> = query.split_whitespace().collect();
             let extra = {
                 let mut seen = entries
                     .iter()
@@ -72,7 +73,13 @@ impl SampleCatalog {
                     .iter()
                     .take(MAX_RETAINED_ENTRIES)
                     .filter(|entry| source.is_none_or(|root| entry.path.starts_with(root)))
-                    .filter(|entry| entry.name.to_lowercase().contains(&query))
+                    .filter(|entry| {
+                        if source.is_some() {
+                            matches_path_terms(&entry.path, &terms)
+                        } else {
+                            entry.name.to_lowercase().contains(&query)
+                        }
+                    })
                     .filter(|entry| seen.insert(entry.path.as_path()))
                     .cloned()
                     .collect::<Vec<_>>()
@@ -101,15 +108,19 @@ impl SampleCatalog {
                 if !source.is_none_or(|source| entry.path.starts_with(source)) {
                     return false;
                 }
-                if terms.is_empty() {
-                    return true;
-                }
-                let path = entry.path.to_string_lossy().to_lowercase();
-                terms.iter().all(|term| path.contains(term))
+                matches_path_terms(&entry.path, &terms)
             })
             .cloned()
             .collect()
     }
+}
+
+fn matches_path_terms(path: &Path, terms: &[&str]) -> bool {
+    if terms.is_empty() {
+        return true;
+    }
+    let path = path.to_string_lossy().to_lowercase();
+    terms.iter().all(|term| path.contains(term))
 }
 
 /// Scan Music and explicitly added places, skipping hidden entries and directory
