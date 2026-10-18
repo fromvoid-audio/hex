@@ -1,0 +1,24 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.03s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 1 test
+
+thread 'editor::track_name::tests::focused_track_header_renames_inline_enter_is_one_persisted_canonical_edit' (84875) panicked at crates/hex-ui/src/editor/track_name.rs:403:13:
+assertion `left == right` failed: editing and committed display must use the same lowercase policy
+  left: Some("Verse S 🎹")
+ right: Some("verse s 🎹")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::track_name::tests::focused_track_header_renames_inline_enter_is_one_persisted_canonical_edit ... FAILED
+
+failures:
+
+failures:
+    editor::track_name::tests::focused_track_header_renames_inline_enter_is_one_persisted_canonical_edit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 748 filtered out; finished in 0.94s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

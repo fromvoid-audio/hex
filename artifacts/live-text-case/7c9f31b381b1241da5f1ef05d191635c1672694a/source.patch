@@ -1,0 +1,756 @@
+diff --git a/crates/hex-ui/examples/knob_review.rs b/crates/hex-ui/examples/knob_review.rs
+index 948f92c5..03720140 100644
+--- a/crates/hex-ui/examples/knob_review.rs
++++ b/crates/hex-ui/examples/knob_review.rs
+@@ -32,6 +32,7 @@ fn style() -> ControlStyle {
+         dial_rail: 0x000000,
+         hover: theme::color(theme::PaletteRole::Hover),
+         font_size: 9.0,
++        text_case: hex_widgets::TextCase::Lowercase,
+     }
+ }
+ 
+diff --git a/crates/hex-ui/src/editor/browser_input.rs b/crates/hex-ui/src/editor/browser_input.rs
+index d2a8d419..46b23828 100644
+--- a/crates/hex-ui/src/editor/browser_input.rs
++++ b/crates/hex-ui/src/editor/browser_input.rs
+@@ -5,6 +5,7 @@ use gpui::{
+     MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, Style, TextRun, UTF16Selection,
+     UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, rgba, size,
+ };
++use hex_widgets::TextCase;
+ use std::ops::Range;
+ use unicode_segmentation::UnicodeSegmentation;
+ 
+@@ -104,6 +105,11 @@ impl BrowserSearch {
+         cx.notify();
+     }
+ 
++    #[cfg(all(test, feature = "ui-test-support"))]
++    pub(super) fn painted_text_for_test(&self) -> Option<&str> {
++        self.last_layout.as_ref().map(|line| line.text.as_ref())
++    }
++
+     fn cursor(&self) -> usize {
+         if self.reversed {
+             self.selected.start
+@@ -273,6 +279,7 @@ impl BrowserSearch {
+             return self.content.len();
+         }
+         let index = line.closest_index_for_x(point.x - self.last_origin_x.unwrap_or(bounds.left()));
++        let index = TextCase::Lowercase.source_offset(&self.content, index);
+         if index == self.content.len() {
+             return index;
+         }
+@@ -474,8 +481,19 @@ impl EntityInputHandler for BrowserSearch {
+         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
+         let range = self.range_from_utf16(&range);
+         Some(Bounds::from_corners(
+-            point(origin_x + line.x_for_index(range.start), bounds.top()),
+-            point(origin_x + line.x_for_index(range.end), bounds.bottom()),
++            point(
++                origin_x
++                    + line.x_for_index(
++                        TextCase::Lowercase.display_offset(&self.content, range.start),
++                    ),
++                bounds.top(),
++            ),
++            point(
++                origin_x
++                    + line
++                        .x_for_index(TextCase::Lowercase.display_offset(&self.content, range.end)),
++                bounds.bottom(),
++            ),
+         ))
+     }
+ 
+@@ -488,7 +506,7 @@ impl EntityInputHandler for BrowserSearch {
+         let bounds = self.last_bounds?;
+         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
+         let index = self.last_layout.as_ref()?.index_for_x(point.x - origin_x)?;
+-        Some(self.offset_to_utf16(index))
++        Some(self.offset_to_utf16(TextCase::Lowercase.source_offset(&self.content, index)))
+     }
+ }
+ 
+@@ -630,7 +648,7 @@ impl Element for BrowserSearchElement {
+             )
+         } else {
+             (
+-                input.content.clone(),
++                TextCase::Lowercase.present(&input.content),
+                 gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Text)).into(),
+             )
+         };
+@@ -642,7 +660,11 @@ impl Element for BrowserSearchElement {
+             underline: None,
+             strikethrough: None,
+         };
+-        let runs = if let Some(marked) = input.marked.as_ref() {
++        let marked = input.marked.as_ref().map(|range| {
++            TextCase::Lowercase.display_offset(&input.content, range.start)
++                ..TextCase::Lowercase.display_offset(&input.content, range.end)
++        });
++        let runs = if let Some(marked) = marked {
+             vec![
+                 TextRun {
+                     len: marked.start,
+@@ -672,7 +694,8 @@ impl Element for BrowserSearchElement {
+         let line = window
+             .text_system()
+             .shape_line(text.into(), font_size, &runs, None);
+-        let cursor_x = line.x_for_index(input.cursor());
++        let cursor_x =
++            line.x_for_index(TextCase::Lowercase.display_offset(&input.content, input.cursor()));
+         let max_cursor_x = bounds.size.width - px(2.0);
+         let text_shift = if cursor_x > max_cursor_x {
+             cursor_x - max_cursor_x
+@@ -699,11 +722,19 @@ impl Element for BrowserSearchElement {
+             Some(fill(
+                 Bounds::from_corners(
+                     point(
+-                        origin_x + line.x_for_index(input.selected.start),
++                        origin_x
++                            + line.x_for_index(
++                                TextCase::Lowercase
++                                    .display_offset(&input.content, input.selected.start),
++                            ),
+                         bounds.top(),
+                     ),
+                     point(
+-                        origin_x + line.x_for_index(input.selected.end),
++                        origin_x
++                            + line.x_for_index(
++                                TextCase::Lowercase
++                                    .display_offset(&input.content, input.selected.end),
++                            ),
+                         bounds.bottom(),
+                     ),
+                 ),
+@@ -795,3 +826,7 @@ mod tests {
+         assert_eq!(lowercase_utf16_offset(raw, 3), "🎛a".len());
+     }
+ }
++
++#[cfg(all(test, feature = "ui-test-support"))]
++#[path = "name_case_ui_test.rs"]
++mod name_case_ui_test;
+diff --git a/crates/hex-ui/src/editor/name_case_ui_test.rs b/crates/hex-ui/src/editor/name_case_ui_test.rs
+new file mode 100644
+index 00000000..83a37f5f
+--- /dev/null
++++ b/crates/hex-ui/src/editor/name_case_ui_test.rs
+@@ -0,0 +1,138 @@
++//! Real shaped-name input, raw clipboard and UTF-16 IME geometry; no filesystem jobs.
++use super::*;
++use gpui::{AppContext, TestAppContext, VisualTestContext};
++
++struct NameCaseRoot {
++    input: Entity<BrowserSearch>,
++}
++impl gpui::Render for NameCaseRoot {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        let input = self.input.clone();
++        div()
++            .w(px(400.0))
++            .key_context("hex_track_name")
++            .child(input)
++    }
++}
++
++fn fixture(
++    cx: &mut TestAppContext,
++    original: &str,
++) -> (gpui::AnyWindowHandle, Entity<BrowserSearch>) {
++    cx.update(crate::editor::bind_editor_keys);
++    let handle = cx.add_window(|window, cx| {
++        let input = cx.new(|cx| BrowserSearch::for_clip_name(original.to_owned(), cx));
++        input.update(cx, |input, _| input.focus(window));
++        NameCaseRoot { input }
++    });
++    let input = handle
++        .root(cx)
++        .unwrap()
++        .read_with(cx, |view, _| view.input.clone());
++    (*handle, input)
++}
++
++#[gpui::test]
++fn name_case_paste_keyboard_clipboard_and_reopening_preserve_source(cx: &mut TestAppContext) {
++    let original = "İA🎛 /Samples/Kick.WAV";
++    let (handle, input) = fixture(cx, original);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    input.read_with(visual, |input, _| {
++        assert_eq!(input.content, original);
++        assert_eq!(
++            input.painted_text_for_test(),
++            Some(original.to_lowercase().as_str())
++        );
++    });
++    visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(original.into())));
++    visual.simulate_keystrokes("cmd-a cmd-v home right");
++    visual.simulate_input("Z");
++    visual.run_until_parked();
++    let expected = "İZA🎛 /Samples/Kick.WAV";
++    input.read_with(visual, |input, _| {
++        assert_eq!(input.content, expected);
++        assert_eq!(
++            input.painted_text_for_test(),
++            Some(expected.to_lowercase().as_str())
++        );
++    });
++    visual.simulate_keystrokes("cmd-a cmd-x cmd-v cmd-a cmd-c");
++    visual.run_until_parked();
++    visual.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), expected));
++    input.read_with(visual, |input, _| assert_eq!(input.content, expected));
++    // Reopen with exactly the submitted/persisted case, without normalizing it.
++    let (reopened_handle, reopened) = fixture(cx, expected);
++    let reopened_visual = &mut VisualTestContext::from_window(reopened_handle, cx);
++    reopened_visual.run_until_parked();
++    reopened.read_with(reopened_visual, |input, _| {
++        assert_eq!(input.content, expected);
++        assert_eq!(
++            input.painted_text_for_test(),
++            Some(expected.to_lowercase().as_str())
++        );
++    });
++}
++
++#[gpui::test]
++fn name_case_marked_unicode_and_scrolled_caret_use_original_utf16(cx: &mut TestAppContext) {
++    let (handle, input) = fixture(cx, "Original");
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    visual.update(|window, cx| {
++        input.update(cx, |input, cx| {
++            input.replace_and_mark_text_in_range(None, "İA🎹", Some(1..1), window, cx);
++        })
++    });
++    visual.run_until_parked();
++    visual.update(|window, cx| {
++        input.update(cx, |input, cx| {
++            assert_eq!(input.content, "İA🎹");
++            assert_eq!(input.painted_text_for_test(), Some("i\u{307}a🎹"));
++            assert_eq!(input.marked_text_range(window, cx), Some(0..4));
++            assert_eq!(
++                input.selected_text_range(false, window, cx).unwrap().range,
++                1..1
++            );
++            let bounds = input.last_bounds.unwrap();
++            let caret = input.bounds_for_range(1..1, bounds, window, cx).unwrap();
++            assert_eq!(
++                input.character_index_for_point(caret.center(), window, cx),
++                Some(1)
++            );
++            // A real mouse click at that position must keep the same source boundary.
++            assert_eq!(input.index_for_point(caret.center()), "İ".len());
++            let mut actual = None;
++            assert_eq!(
++                input
++                    .text_for_range(0..4, &mut actual, window, cx)
++                    .as_deref(),
++                Some("İA🎹")
++            );
++        })
++    });
++    visual.simulate_keystrokes("cmd-a");
++    let long = format!("{}END", "İ".repeat(80));
++    visual.simulate_input(&long);
++    visual.run_until_parked();
++    visual.update(|window, cx| {
++        input.update(cx, |input, cx| {
++            assert_eq!(input.content, long);
++            assert_eq!(
++                input.painted_text_for_test(),
++                Some(long.to_lowercase().as_str())
++            );
++            let end = long.encode_utf16().count();
++            let bounds = input.last_bounds.unwrap();
++            let caret = input
++                .bounds_for_range(end..end, bounds, window, cx)
++                .unwrap();
++            assert!(caret.left() >= bounds.left() && caret.right() <= bounds.right());
++            assert_eq!(
++                input.selected_text_range(false, window, cx).unwrap().range,
++                end..end
++            );
++            assert!(input.marked_text_range(window, cx).is_none());
++        })
++    });
++}
+diff --git a/crates/hex-ui/src/editor/track_name.rs b/crates/hex-ui/src/editor/track_name.rs
+index c6107de8..15f22532 100644
+--- a/crates/hex-ui/src/editor/track_name.rs
++++ b/crates/hex-ui/src/editor/track_name.rs
+@@ -396,6 +396,19 @@ mod tests {
+         visual.run_until_parked();
+         assert!(visual.debug_bounds("track-name-input").is_some());
+         visual.simulate_input("Verse S 🎹");
++        visual.run_until_parked();
++        editor.read_with(&visual, |view, cx| {
++            let input = view.track_name.edit.as_ref().unwrap().input.read(cx);
++            assert_eq!(
++                input.content, "Verse S 🎹",
++                "display policy must preserve the submitted name"
++            );
++            assert_eq!(
++                input.painted_text_for_test(),
++                Some("verse s 🎹"),
++                "editing and committed display must use the same lowercase policy"
++            );
++        });
+         visual.simulate_keystrokes("enter");
+         let command = editor.read_with(&visual,|view,_| {
+             assert!(view.track_name.edit.is_none());
+diff --git a/crates/hex-ui/src/theme/device.rs b/crates/hex-ui/src/theme/device.rs
+index d2acda85..53822908 100644
+--- a/crates/hex-ui/src/theme/device.rs
++++ b/crates/hex-ui/src/theme/device.rs
+@@ -31,6 +31,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
+         dial_rail: color(PaletteRole::Border),
+         hover: color(PaletteRole::Hover),
+         font_size: 9.0,
++        text_case: hex_widgets::TextCase::Lowercase,
+     };
+     match role {
+         DeviceStyleRole::Control => {}
+diff --git a/crates/hex-widgets/README.md b/crates/hex-widgets/README.md
+index 11db3da3..cf9f2e71 100644
+--- a/crates/hex-widgets/README.md
++++ b/crates/hex-widgets/README.md
+@@ -226,3 +226,9 @@ consumes focused Backspace before editor actions and emits Remove for an idle
+ selected node. Its scoped Escape action cancels a held pointer before ancestor
+ application actions; idle Escape propagates. Owners retain canonical identity
+ and removal/history semantics.
++
++Editable text presentation is caller-selected through `ControlStyle::text_case`.
++`TextCase` maps original UTF-8 offsets to shaped case expansions and back, while
++input handlers, IME UTF-16 ranges, clipboard and numeric parsers retain original
++source text. Hex injects lowercase; neutral widget fixtures can preserve case.
++This is display styling, not content normalization or a project edit.
+diff --git a/crates/hex-widgets/src/curve.rs b/crates/hex-widgets/src/curve.rs
+index c0712f66..eccaa85a 100644
+--- a/crates/hex-widgets/src/curve.rs
++++ b/crates/hex-widgets/src/curve.rs
+@@ -111,6 +111,7 @@ mod tests {
+         dial_rail: 0x000000,
+         hover: 0x404040,
+         font_size: 8.0,
++        text_case: crate::TextCase::Preserve,
+     };
+ 
+     struct CurveFixture(std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>);
+diff --git a/crates/hex-widgets/src/frame_tests.rs b/crates/hex-widgets/src/frame_tests.rs
+index 2fcb3dc9..ce6931c3 100644
+--- a/crates/hex-widgets/src/frame_tests.rs
++++ b/crates/hex-widgets/src/frame_tests.rs
+@@ -22,6 +22,7 @@ const STYLE: ControlStyle = ControlStyle {
+     dial_rail: 0,
+     hover: 0x555555,
+     font_size: 9.0,
++    text_case: crate::TextCase::Preserve,
+ };
+ 
+ type Masks = Rc<RefCell<Vec<(&'static str, Bounds<Pixels>)>>>;
+diff --git a/crates/hex-widgets/src/lib.rs b/crates/hex-widgets/src/lib.rs
+index 169f9b48..aed0ff38 100644
+--- a/crates/hex-widgets/src/lib.rs
++++ b/crates/hex-widgets/src/lib.rs
+@@ -20,9 +20,11 @@ mod numeric_text;
+ mod response_graph;
+ mod spectrum_plot;
+ mod style;
++mod text_case;
+ pub use spectrum_plot::{
+     MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
+ };
++pub use text_case::TextCase;
+ 
+ pub use color_picker::{
+     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
+diff --git a/crates/hex-widgets/src/numeric_control.rs b/crates/hex-widgets/src/numeric_control.rs
+index e834ef0f..ace68e24 100644
+--- a/crates/hex-widgets/src/numeric_control.rs
++++ b/crates/hex-widgets/src/numeric_control.rs
+@@ -312,7 +312,7 @@ impl NumericControl {
+         self.value
+     }
+ 
+-    /// Text currently shown in the editable value field.
++    /// Original editable draft, preserving parser and clipboard semantics.
+     pub fn display_text(&self) -> &str {
+         &self.text
+     }
+@@ -1029,9 +1029,11 @@ impl NumericControl {
+ 
+     pub(crate) fn value_string(&self) -> String {
+         if self.editing {
+-            self.text.clone()
++            self.style.text_case.present(&self.text)
+         } else {
+-            self.spec.format(self.draft).unwrap_or_default()
++            self.style
++                .text_case
++                .present(&self.spec.format(self.draft).unwrap_or_default())
+         }
+     }
+ 
+diff --git a/crates/hex-widgets/src/numeric_text.rs b/crates/hex-widgets/src/numeric_text.rs
+index d8a441a9..87b24a67 100644
+--- a/crates/hex-widgets/src/numeric_text.rs
++++ b/crates/hex-widgets/src/numeric_text.rs
+@@ -134,8 +134,17 @@ impl EntityInputHandler for NumericControl {
+         let range = range_utf16_to_bytes(&self.text, range);
+         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
+         Some(Bounds::from_corners(
+-            point(origin_x + line.x_for_index(range.start), bounds.top()),
+-            point(origin_x + line.x_for_index(range.end), bounds.bottom()),
++            point(
++                origin_x
++                    + line
++                        .x_for_index(self.style.text_case.display_offset(&self.text, range.start)),
++                bounds.top(),
++            ),
++            point(
++                origin_x
++                    + line.x_for_index(self.style.text_case.display_offset(&self.text, range.end)),
++                bounds.bottom(),
++            ),
+         ))
+     }
+ 
+@@ -148,6 +157,7 @@ impl EntityInputHandler for NumericControl {
+         let bounds = self.last_bounds?;
+         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
+         let index = self.last_layout.as_ref()?.index_for_x(point.x - origin_x)?;
++        let index = self.style.text_case.source_offset(&self.text, index);
+         Some(byte_offset_to_utf16(&self.text, index))
+     }
+ }
+@@ -209,7 +219,14 @@ impl Element for NumericTextElement {
+             underline: None,
+             strikethrough: None,
+         };
+-        let runs = if let Some(marked) = input.marked.as_ref() {
++        let marked = input.marked.as_ref().map(|range| {
++            input
++                .style
++                .text_case
++                .display_offset(&input.text, range.start)
++                ..input.style.text_case.display_offset(&input.text, range.end)
++        });
++        let runs = if let Some(marked) = marked {
+             vec![
+                 TextRun {
+                     len: marked.start,
+@@ -241,7 +258,12 @@ impl Element for NumericTextElement {
+             &runs,
+             None,
+         );
+-        let cursor_x = line.x_for_index(input.cursor());
++        let cursor_x = line.x_for_index(
++            input
++                .style
++                .text_case
++                .display_offset(&input.text, input.cursor()),
++        );
+         let max_x = bounds.size.width - px(2.0);
+         let shift = if cursor_x > max_x {
+             cursor_x - max_x
+@@ -255,11 +277,23 @@ impl Element for NumericTextElement {
+             fill(
+                 Bounds::from_corners(
+                     point(
+-                        origin_x + line.x_for_index(input.selected.start),
++                        origin_x
++                            + line.x_for_index(
++                                input
++                                    .style
++                                    .text_case
++                                    .display_offset(&input.text, input.selected.start),
++                            ),
+                         bounds.top(),
+                     ),
+                     point(
+-                        origin_x + line.x_for_index(input.selected.end),
++                        origin_x
++                            + line.x_for_index(
++                                input
++                                    .style
++                                    .text_case
++                                    .display_offset(&input.text, input.selected.end),
++                            ),
+                         bounds.bottom(),
+                     ),
+                 ),
+@@ -389,6 +423,7 @@ mod tests {
+             dial_rail: 0x000000,
+             hover: 0x404040,
+             font_size: 10.0,
++            text_case: crate::TextCase::Preserve,
+         }
+     }
+ 
+diff --git a/crates/hex-widgets/src/style.rs b/crates/hex-widgets/src/style.rs
+index df267a03..3c790281 100644
+--- a/crates/hex-widgets/src/style.rs
++++ b/crates/hex-widgets/src/style.rs
+@@ -22,6 +22,8 @@ pub struct ControlStyle {
+     pub dial_rail: u32,
+     pub hover: u32,
+     pub font_size: f32,
++    /// Presentation only; source drafts, parser inputs and clipboard stay unchanged.
++    pub text_case: crate::TextCase,
+ }
+ 
+ impl ControlStyle {
+diff --git a/crates/hex-widgets/src/tests.rs b/crates/hex-widgets/src/tests.rs
+index 1f7e3dc6..9a39e304 100644
+--- a/crates/hex-widgets/src/tests.rs
++++ b/crates/hex-widgets/src/tests.rs
+@@ -25,6 +25,7 @@ const STYLE: ControlStyle = ControlStyle {
+     dial_rail: 0x000000,
+     hover: 0x404040,
+     font_size: 10.0,
++    text_case: crate::TextCase::Preserve,
+ };
+ 
+ #[test]
+@@ -2246,3 +2247,91 @@ fn accessibility_duplicate_snapshot_recovers_through_cached_prepaint_and_nested_
+     );
+     assert_eq!(nested.get(), 1);
+ }
++
++#[gpui::test]
++fn lowercase_numeric_presentation_preserves_raw_clipboard_parser_and_ime_offsets(
++    cx: &mut TestAppContext,
++) {
++    let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
++    control.update(cx, |control, cx| {
++        control
++            .set_external_style(
++                ControlStyle {
++                    text_case: crate::TextCase::Lowercase,
++                    ..STYLE
++                },
++                cx,
++            )
++            .unwrap();
++    });
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let value = visual.debug_bounds("test-control-value").unwrap();
++    visual.simulate_click(value.center(), Modifiers::default());
++    visual.simulate_input("0.5E0");
++    visual.run_until_parked();
++    control.read_with(visual, |control, _| {
++        assert_eq!(control.display_text(), "0.5E0");
++        assert_eq!(control.last_layout.as_ref().unwrap().text.as_ref(), "0.5e0");
++    });
++    visual.simulate_keystrokes("cmd-a cmd-c");
++    visual.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "0.5E0"));
++    visual.simulate_keystrokes("cmd-v enter");
++    visual.run_until_parked();
++    control.read_with(visual, |control, _| assert_eq!(control.value(), 0.5));
++    let value = visual.debug_bounds("test-control-value").unwrap();
++    visual.simulate_click(value.center(), Modifiers::default());
++    visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            gpui::EntityInputHandler::replace_and_mark_text_in_range(
++                control,
++                None,
++                "İA",
++                Some(1..1),
++                window,
++                cx,
++            );
++        })
++    });
++    visual.run_until_parked();
++    visual.update(|window, cx| {
++        control.update(cx, |control, cx| {
++            assert_eq!(control.display_text(), "İA");
++            assert_eq!(
++                control.last_layout.as_ref().unwrap().text.as_ref(),
++                "i\u{307}a"
++            );
++            assert_eq!(
++                gpui::EntityInputHandler::marked_text_range(control, window, cx),
++                Some(0..2)
++            );
++            assert_eq!(
++                gpui::EntityInputHandler::selected_text_range(control, false, window, cx)
++                    .unwrap()
++                    .range,
++                1..1
++            );
++            let caret =
++                gpui::EntityInputHandler::bounds_for_range(control, 1..1, value, window, cx)
++                    .unwrap();
++            assert_eq!(
++                gpui::EntityInputHandler::character_index_for_point(
++                    control,
++                    caret.center(),
++                    window,
++                    cx
++                ),
++                Some(1),
++                "shaped case expansion must map back to original UTF16 caret"
++            );
++            let mut actual = None;
++            assert_eq!(
++                gpui::EntityInputHandler::text_for_range(control, 0..2, &mut actual, window, cx)
++                    .as_deref(),
++                Some("İA")
++            );
++        })
++    });
++    visual.simulate_keystrokes("escape");
++    control.read_with(visual, |control, _| assert_eq!(control.value(), 0.5));
++}
+diff --git a/crates/hex-widgets/src/text_case.rs b/crates/hex-widgets/src/text_case.rs
+new file mode 100644
+index 00000000..cd4b2172
+--- /dev/null
++++ b/crates/hex-widgets/src/text_case.rs
+@@ -0,0 +1,100 @@
++//! Caller-selected text presentation; editing, parsing and storage retain source text.
++
++/// Visual casing only. The product chooses its policy at the styling boundary.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum TextCase {
++    Preserve,
++    Lowercase,
++}
++
++impl TextCase {
++    pub fn present(self, source: &str) -> String {
++        match self {
++            Self::Preserve => source.to_owned(),
++            Self::Lowercase => source.to_lowercase(),
++        }
++    }
++
++    /// Map a source UTF-8 boundary into the shaped presentation, including case
++    /// expansions. Native selection and clipboard offsets remain source-based.
++    pub fn display_offset(self, source: &str, offset: usize) -> usize {
++        if self == Self::Preserve {
++            return source
++                .char_indices()
++                .map(|(index, _)| index)
++                .chain([source.len()])
++                .take_while(|index| *index <= offset)
++                .last()
++                .unwrap_or(0);
++        }
++        source
++            .char_indices()
++            .take_while(|(index, character)| index + character.len_utf8() <= offset)
++            .map(|(_, character)| character.to_lowercase().map(char::len_utf8).sum::<usize>())
++            .sum()
++    }
++
++    /// Map a shaped UTF-8 hit to a source boundary. An interior hit in a case
++    /// expansion resolves to its nearest source endpoint, never an invalid byte.
++    pub fn source_offset(self, source: &str, offset: usize) -> usize {
++        if self == Self::Preserve {
++            return source
++                .char_indices()
++                .map(|(index, _)| index)
++                .chain([source.len()])
++                .take_while(|index| *index <= offset)
++                .last()
++                .unwrap_or(0);
++        }
++        let mut display_start = 0;
++        for (index, character) in source.char_indices() {
++            let length = character.to_lowercase().map(char::len_utf8).sum::<usize>();
++            if offset <= display_start {
++                return index;
++            }
++            if offset < display_start + length {
++                return if (offset - display_start) * 2 < length {
++                    index
++                } else {
++                    index + character.len_utf8()
++                };
++            }
++            display_start += length;
++        }
++        source.len()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::TextCase;
++
++    #[test]
++    fn lowercase_presentation_maps_source_boundaries_without_changing_values() {
++        for source in [
++            "Verse S 🎹",
++            "İA",
++            "Ⱥİ🎛Z",
++            "ΟΣ",
++            "A\u{301}",
++            "/Samples/Kick.WAV",
++            "1E3",
++        ] {
++            let display = TextCase::Lowercase.present(source);
++            assert_eq!(display, source.to_lowercase());
++            for offset in source
++                .char_indices()
++                .map(|(index, _)| index)
++                .chain([source.len()])
++            {
++                let shown = TextCase::Lowercase.display_offset(source, offset);
++                assert!(display.is_char_boundary(shown));
++                assert_eq!(TextCase::Lowercase.source_offset(source, shown), offset);
++            }
++            for offset in 0..=display.len() + 1 {
++                assert!(source.is_char_boundary(TextCase::Lowercase.source_offset(source, offset)));
++            }
++            assert_eq!(TextCase::Preserve.present(source), source);
++        }
++    }
++}
+diff --git a/docs/ui-design.md b/docs/ui-design.md
+index 9c141636..43017e79 100644
+--- a/docs/ui-design.md
++++ b/docs/ui-design.md
+@@ -532,3 +532,15 @@ The canonical project toolbar begins with the shared numeric BPM input, replacin
+ its tempo plus/minus controls. Range, precision, focus/lifecycle behavior and the
+ finite native checklist are recorded in [project tempo input](project-tempo-input.md).
+ Native physical acceptance remains open until user verification.
++
++### live editable casing — pulse2810 / PR416
++
++Names use the same lowercase presentation while typing, pasting, composing,
++committed and reopened. Stored names, original paths, identifiers, clipboard text
++and parser inputs retain their exact case; this does not rewrite user content.
++The shared widget presentation token is injected by Hex's theme. Caret, selection,
++composition underline, horizontal scrolling and pointer geometry translate between
++original UTF-8 offsets and shaped lowercase expansions; native input ranges remain
++in original UTF-16 units. File-path error fragments retain the separate source-data
++display contract from Pulse2649. Native optimized pointer/IME/clipboard acceptance
++remains coordinator-owned and is not established by headless scene tests.
+diff --git a/todo.md b/todo.md
+index a65e42a8..8aa3e9e5 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5155,3 +5155,14 @@ release and async/layout updates. Unicode grapheme boundaries reuse the locked
+ segmentation package. Source selection work is separate from unresolved #2794
+ native focus diagnostics. Dedicated merger owns integration/full CI/merge;
+ root owns native optimized acceptance and the current app remains untouched.
++
++## consistent live input casing — pulse2810 / PR416, 18 october 2026
++
++Actual track rename shaped uppercase while editing and lowercase after commit.
++Name/search and themed numeric inputs now shape lowercase immediately, preserving
++original stored names, clipboard and parser values. A neutral injected case token
++shares raw-byte/shaped-byte offset mapping for expanded lowercase glyphs; native
++IME selection remains original UTF-16. Canonical rename Undo/Redo/save/reopen,
++actual typing/paste/cut/copy and marked Unicode/caret/scroll regressions cover the
++boundary. Source-path casing2649 stays intact. Dedicated merger owns final
++integration/full CI/merge; native app/IME/clipboard acceptance remains open.

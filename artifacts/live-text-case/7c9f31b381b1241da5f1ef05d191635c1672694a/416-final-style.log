@@ -1,0 +1,1 @@
+crates/hex-ui/src/editor/name_case_ui_test.rs:13: route text through theme::text or add an explicit view component

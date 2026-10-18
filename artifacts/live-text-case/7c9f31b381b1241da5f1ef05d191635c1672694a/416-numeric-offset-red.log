@@ -1,0 +1,22 @@
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.34s
+     Running unittests src/lib.rs (target/debug/deps/hex_widgets-ba49dcf5db2a657f)
+
+running 1 test
+
+thread 'tests::lowercase_numeric_presentation_preserves_raw_clipboard_parser_and_ime_offsets' (85152) panicked at crates/hex-widgets/src/tests.rs:2319:13:
+assertion `left == right` failed: shaped case expansion must map back to original UTF16 caret
+  left: Some(2)
+ right: Some(1)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::lowercase_numeric_presentation_preserves_raw_clipboard_parser_and_ime_offsets ... FAILED
+
+failures:
+
+failures:
+    tests::lowercase_numeric_presentation_preserves_raw_clipboard_parser_and_ime_offsets
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 60 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p hex-widgets --lib`

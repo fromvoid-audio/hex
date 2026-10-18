@@ -1,0 +1,34 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.85s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 19 tests
+test editor::browser::tree::tests::siblings_filter_refresh_error_and_same_names_keep_native_identity ... ok
+test editor::browser_input::name_case_ui_test::name_case_paste_keyboard_clipboard_and_reopening_preserve_source ... ok
+test editor::browser_input::name_case_ui_test::name_case_marked_unicode_and_scrolled_caret_use_original_utf16 ... ok
+test editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels ... ok
+test editor::clip_name::tests::midi_and_session_sources_show_inline_drafts_without_launching ... ok
+test editor::browser::ui_test::command_f_commits_clip_name_draft_then_routes_typing_to_browser ... ok
+test editor::header::tests::project_title_uses_filename_without_mutating_original_path_and_falls_back_to_hex ... ok
+test editor::recent_projects::tests::duplicate_filename_labels_include_lowercase_parent_path ... ok
+test editor::clip_name::tests::click_selects_header_cmd_r_edits_in_place_and_escape_cancels ... ok
+test editor::clip_name::tests::stale_rename_never_changes_a_new_generation ... ok
+test editor::track_keyboard_ui_test::command_t_preserves_browser_and_clip_name_text_focus ... ok
+test editor::clip_paint_ui_test::clip_review_header_selects_while_pending_and_when_leaving_rename ... ok
+toolbar retained_focus=false toggled_out=true immediate_focus=false pending=true edit=Some(RemoveTrack(TrackId(3)))
+test editor::track_name::delete_tests::header_backspace_respects_clip_rename_browser_and_empty_selection ... ok
+test editor::track_name::tests::focused_track_header_renames_inline_enter_is_one_persisted_canonical_edit ... ok
+toolbar retained_focus=false toggled_out=false immediate_focus=false pending=true edit=Some(RemoveTrack(TrackId(3)))
+test editor::track_name::tests::header_navigation_follows_actual_focus_and_text_focus_cannot_start_rename ... ok
+test editor::track_name::tests::header_escape_cancels_and_clip_focus_keeps_existing_clip_rename ... ok
+test editor::track_selection_ui_test::export_sources_use_explicit_ids_and_names_not_time_scope_or_focused_track ... ok
+test editor::track_name::delete_tests::header_backspace_removes_selected_tracks_and_restores_contents_in_one_undo ... ok
+toolbar retained_focus=true toggled_out=true immediate_focus=true pending=true edit=Some(RemoveTrack(TrackId(3)))
+toolbar retained_focus=true toggled_out=false immediate_focus=true pending=true edit=Some(RemoveTrack(TrackId(3)))
+test editor::track_name::delete_tests::toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 732 filtered out; finished in 6.24s
+

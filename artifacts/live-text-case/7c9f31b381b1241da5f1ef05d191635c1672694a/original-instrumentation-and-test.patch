@@ -1,0 +1,29 @@
+--- a/crates/hex-ui/src/editor/browser_input.rs
++++ b/crates/hex-ui/src/editor/browser_input.rs
+@@ -102,6 +102,11 @@
+         self.reversed = false;
+         self.marked = None;
+         cx.notify();
++    }
++
++    #[cfg(all(test, feature = "ui-test-support"))]
++    pub(super) fn painted_text_for_test(&self) -> Option<&str> {
++        self.last_layout.as_ref().map(|line| line.text.as_ref())
+     }
+ 
+     fn cursor(&self) -> usize {
+--- a/crates/hex-ui/src/editor/track_name.rs
++++ b/crates/hex-ui/src/editor/track_name.rs
+@@ -396,6 +396,12 @@
+         visual.run_until_parked();
+         assert!(visual.debug_bounds("track-name-input").is_some());
+         visual.simulate_input("Verse S 🎹");
++        visual.run_until_parked();
++        editor.read_with(&visual, |view, cx| {
++            let input = view.track_name.edit.as_ref().unwrap().input.read(cx);
++            assert_eq!(input.content, "Verse S 🎹", "display policy must preserve the submitted name");
++            assert_eq!(input.painted_text_for_test(), Some("verse s 🎹"), "editing and committed display must use the same lowercase policy");
++        });
+         visual.simulate_keystrokes("enter");
+         let command = editor.read_with(&visual,|view,_| {
+             assert!(view.track_name.edit.is_none());
