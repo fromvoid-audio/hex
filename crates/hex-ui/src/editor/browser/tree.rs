@@ -8,6 +8,13 @@ const MAX_ENTRIES: usize = 8_192;
 const MAX_PATH_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Files {
+    All,
+    Samples,
+    Projects,
+}
+
 #[derive(Clone)]
 struct Request {
     epoch: u64,
@@ -28,7 +35,7 @@ struct Snapshot {
     entries: Arc<Vec<LibraryEntry>>,
     depths: HashMap<PathBuf, usize>,
     query: String,
-    projects_only: bool,
+    files: Files,
 }
 
 struct RootCache {
@@ -38,7 +45,7 @@ struct RootCache {
 
 struct Projection<'a> {
     query: &'a str,
-    projects_only: bool,
+    files: Files,
     entries: Vec<LibraryEntry>,
     depths: HashMap<PathBuf, usize>,
     seen: HashSet<&'a Path>,
@@ -296,13 +303,13 @@ impl Tree {
         &self,
         base: Arc<Vec<LibraryEntry>>,
         query: &str,
-        projects_only: bool,
+        files: Files,
     ) -> Arc<Vec<LibraryEntry>> {
         let mut cache = self.snapshot.borrow_mut();
         if let Some(previous) = cache.as_ref()
             && Arc::ptr_eq(&previous.base, &base)
             && previous.query == query
-            && previous.projects_only == projects_only
+            && previous.files == files
         {
             return previous.entries.clone();
         }
@@ -316,13 +323,13 @@ impl Tree {
                 entries: entries.clone(),
                 depths: HashMap::new(),
                 query: query.into(),
-                projects_only,
+                files,
             });
             return entries;
         }
         let mut projection = Projection {
             query,
-            projects_only,
+            files,
             entries: Vec::new(),
             depths: HashMap::new(),
             seen: HashSet::new(),
@@ -336,7 +343,7 @@ impl Tree {
             entries: entries.clone(),
             depths: projection.depths,
             query: query.into(),
-            projects_only,
+            files,
         });
         entries
     }
@@ -357,7 +364,9 @@ impl Tree {
                 .and_then(|node| node.listing.as_ref())
         {
             for child in &listing.entries {
-                if output.projects_only && child.kind == EntryKind::WaveAudio {
+                if (output.files == Files::Projects && child.kind == EntryKind::WaveAudio)
+                    || (output.files == Files::Samples && child.kind == EntryKind::Project)
+                {
                     continue;
                 }
                 let path = child.path.to_string_lossy().to_lowercase();
@@ -639,7 +648,7 @@ mod tests {
                 vec![entry(root.join("old.wav"), EntryKind::WaveAudio)],
             )),
         );
-        assert_eq!(tree.visible(base.clone(), "", false).len(), 1);
+        assert_eq!(tree.visible(base.clone(), "", Files::All).len(), 1);
         let current = tree.next().unwrap();
         tree.complete(
             current,
@@ -648,7 +657,10 @@ mod tests {
                 vec![entry(root.join("new.wav"), EntryKind::WaveAudio)],
             )),
         );
-        assert_eq!(tree.visible(base.clone(), "", false)[1].name, "new.wav");
+        assert_eq!(
+            tree.visible(base.clone(), "", Files::All)[1].name,
+            "new.wav"
+        );
         tree.refresh();
         let old_source = tree.next().unwrap();
         tree.source_changed();
@@ -659,7 +671,7 @@ mod tests {
                 vec![entry(root.join("stale.wav"), EntryKind::WaveAudio)],
             )),
         );
-        assert_eq!(tree.visible(base, "", false)[1].name, "new.wav");
+        assert_eq!(tree.visible(base, "", Files::All)[1].name, "new.wav");
     }
 
     #[test]
@@ -690,21 +702,24 @@ mod tests {
                 vec![entry(right.join("kick.wav"), EntryKind::WaveAudio)],
             )),
         );
-        let rows = tree.visible(base.clone(), "", false);
+        let rows = tree.visible(base.clone(), "", Files::All);
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[1].name, rows[3].name);
         assert_ne!(row_id(&rows[1].path), row_id(&rows[3].path));
-        assert!(Arc::ptr_eq(&rows, &tree.visible(base.clone(), "", false)));
-        assert_eq!(tree.visible(base.clone(), "left kick", false).len(), 3);
+        assert!(Arc::ptr_eq(
+            &rows,
+            &tree.visible(base.clone(), "", Files::All)
+        ));
+        assert_eq!(tree.visible(base.clone(), "left kick", Files::All).len(), 3);
         assert_eq!(
-            tree.visible(base.clone(), "", true).len(),
+            tree.visible(base.clone(), "", Files::Projects).len(),
             2,
             "Projects excludes WAV children"
         );
-        tree.visible(base.clone(), "", false);
+        tree.visible(base.clone(), "", Files::All);
         tree.refresh();
         assert_eq!(
-            tree.visible(base.clone(), "", false).len(),
+            tree.visible(base.clone(), "", Files::All).len(),
             4,
             "refresh retains existing rows while work is real"
         );
@@ -717,7 +732,7 @@ mod tests {
                 source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
             }),
         );
-        let rows = tree.visible(base, "", false);
+        let rows = tree.visible(base, "", Files::All);
         assert_eq!(rows.len(), 3);
         assert!(
             rows.iter()
@@ -751,12 +766,61 @@ mod tests {
                 <= MAX_ENTRIES
         );
         let base = tree.roots(roots);
-        let rows = tree.visible(base, "", false);
+        let rows = tree.visible(base, "", Files::All);
         assert!(rows.iter().all(|row| row.path != Path::new("/escape.wav")));
         assert!(tree.status.is_some());
         let before = tree.nodes.len();
         tree.close(Path::new("/root0"));
         assert!(tree.nodes.len() < before);
+    }
+
+    #[test]
+    fn source_file_kind_filters_apply_to_inline_children_and_flat_snapshots_are_shared() {
+        let root = PathBuf::from("/tree");
+        let mut tree = Tree::default();
+        let base = tree.roots(vec![root.clone()]);
+        assert!(Arc::ptr_eq(
+            &base,
+            &tree.visible(base.clone(), "", Files::Samples)
+        ));
+        tree.open(root.clone(), false);
+        let request = tree.next().unwrap();
+        tree.complete(
+            request,
+            Ok(listing(
+                &root,
+                vec![
+                    entry(root.join("kick.wav"), EntryKind::WaveAudio),
+                    entry(root.join("song.hex"), EntryKind::Project),
+                    entry(root.join("nested"), EntryKind::Directory),
+                ],
+            )),
+        );
+        let samples = tree.visible(base.clone(), "", Files::Samples);
+        assert_eq!(samples.len(), 3);
+        assert!(!samples.iter().any(|entry| entry.kind == EntryKind::Project));
+        let projects = tree.visible(base.clone(), "", Files::Projects);
+        assert_eq!(projects.len(), 3);
+        assert!(
+            !projects
+                .iter()
+                .any(|entry| entry.kind == EntryKind::WaveAudio)
+        );
+        assert_eq!(tree.visible(base, "", Files::All).len(), 4);
+    }
+
+    #[test]
+    fn exhausted_request_identity_refuses_work_without_a_false_loading_state() {
+        let root = PathBuf::from("/tree");
+        let mut tree = Tree {
+            next_serial: u64::MAX,
+            ..Tree::default()
+        };
+        tree.open(root.clone(), false);
+        assert!(tree.next().is_none());
+        assert_eq!(tree.requests_started, 0);
+        assert_ne!(tree.icon(&root), "…");
+        assert!(tree.status.as_ref().unwrap().contains("counter exhausted"));
     }
 
     #[cfg(unix)]

@@ -1426,7 +1426,11 @@ impl EditorView {
         self.browser.tree.visible(
             base,
             &query,
-            self.browser.section == BrowserSection::Projects,
+            match self.browser.section {
+                BrowserSection::Samples => tree::Files::Samples,
+                BrowserSection::Projects => tree::Files::Projects,
+                _ => tree::Files::All,
+            },
         )
     }
 

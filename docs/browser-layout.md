@@ -149,7 +149,8 @@ acceptance is coordinator-owned and pending.
 Source browsing uses one virtualized inline list. Samples shows the configured
 sample roots as collapsed folders; All shows the configured roots/current folder
 and registered devices. Place and Projects show the selected root's immediate
-children. Folder disclosure inserts indented descendants without changing the
+children. Samples filters children to folders/WAVs, Projects to folders/Hex
+projects, and Places/All retain both supported file kinds. Folder disclosure inserts indented descendants without changing the
 source/root or replacing surrounding rows. Original native path bytes identify
 rows; sample labels show only their filename, including identical filenames in
 different folders. The full path remains available in the tooltip and for
