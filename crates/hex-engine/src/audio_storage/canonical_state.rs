@@ -46,7 +46,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| ledger.canonical_native_state(state))
     }
-    fn canonical_native_state(
+    pub(crate) fn canonical_native_state(
         &mut self,
         state: &'a NativeDeviceState,
     ) -> Result<(), AudioStorageError> {

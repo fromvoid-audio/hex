@@ -309,3 +309,27 @@ This does not open the public constructor: its nonempty Return refusal remains
 covered by the new test. The private complete compiler selection and aggregate
 before-first-owner allowance, nonempty Arrangement instrument rows, full native
 conservation/publication and the functional Sampler workflow still need work.
+
+
+Private Arrangement rows now have fixed destinations for the actual instrument
+and canonical native-state fields. Their existing paired note bank/context
+children and scalar span/tree Vec capacities are traversed in both installed
+and returned locations. The enclosing row backing charges the inline instrument
+body once; a parent-aware child visitor avoids an extra standalone-body charge.
+The state observer joins the existing ledger transaction without starting a
+nested transaction. Reservation, construction and restore require vacant
+instrument destinations before any owner movement.
+
+Control retirement preflights the actual context-table destructor surface and
+all existing meter/chain births before extracting the Track. Instrument and
+state move directly into the persistent row; each disposal marks pending before
+removing its owner. An abnormal exit remains pending, blocks observation/retry,
+and is retained by the existing parent failed-custody path. Tests exercise
+direct and routed loaded Sampler fields, spare span/node capacities, physical
+backing preservation, independent omitted-alias refusal, exact/minus-one budgets,
+unchanged inline charge across extraction and the actual parent panic boundary.
+The fixture extracts selected instrument fields from a complete compiler output;
+its unrelated legacy meters/chains are not adopted or declared qualified.
+This extends selected traversal/retirement only: the public Sampler constructor
+refusal, aggregate before-first-owner allowance, private complete compiler entry,
+callback conservation and final native publication remain open.

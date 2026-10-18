@@ -1,4 +1,5 @@
 //! Sealed control-owned Track targets; no Track/Arc/Clone escape.
+mod instrument;
 pub(super) mod utility;
 use super::*;
 use crate::{
@@ -17,6 +18,8 @@ pub struct ArrangementTrackCapacity {
     pub send_bytes: usize,
     pub gain_bytes: usize,
     pub pair_bytes: usize,
+    pub midi_span_bytes: usize,
+    pub midi_node_bytes: usize,
     pub meter_payload_bytes: usize,
     pub meter_declared_overhead_bytes: usize,
     pub chain_payload_bytes: usize,
@@ -34,6 +37,8 @@ impl ArrangementTrackCapacity {
             self.send_bytes,
             self.gain_bytes,
             self.pair_bytes,
+            self.midi_span_bytes,
+            self.midi_node_bytes,
             self.meter_payload_bytes,
             self.meter_declared_overhead_bytes,
             self.chain_payload_bytes,
@@ -71,6 +76,7 @@ struct Row {
     meter: Option<OwnedShared<hex_lattice::DeviceMeter>>,
     chain: Option<OwnedShared<[crate::PreparedEffectInstance]>>,
     utility: utility::UtilityCustody,
+    midi: instrument::InstrumentCustody,
     bare_meter: Option<Arc<hex_lattice::DeviceMeter>>,
     bare_chain: Option<Arc<[crate::PreparedEffectInstance]>>,
     meter_declaration: Option<SharedDeclaration>,
@@ -165,6 +171,15 @@ impl TrackAssembly {
             ..Default::default()
         };
         for r in &self.rows {
+            let (spans, nodes) = r.midi.backing_bytes(r.actual(root)?)?;
+            c.midi_span_bytes = c
+                .midi_span_bytes
+                .checked_add(spans)
+                .ok_or(AudioStorageError::Overflow)?;
+            c.midi_node_bytes = c
+                .midi_node_bytes
+                .checked_add(nodes)
+                .ok_or(AudioStorageError::Overflow)?;
             let (clips, sends, gain) = if let Some(t) = r.actual(root)? {
                 if r.clips.capacity() != 0
                     || r.sends.capacity() != 0
@@ -325,6 +340,7 @@ impl TrackAssembly {
                 r.id.is_some()
                     || r.root_index.is_some()
                     || r.track.is_some()
+                    || !r.midi.vacant()
                     || !r.clips.is_empty()
                     || !r.pairs.is_empty()
                     || !r.sends.is_empty()
@@ -474,6 +490,7 @@ impl TrackAssembly {
             if r.handles.contains(&0)
                 || r.handles[0] == r.handles[1]
                 || r.installed_ordinal.is_some()
+                || !r.midi.vacant()
                 || r.track.is_some()
                 || !r.clips.is_empty()
                 || r.clips.capacity() < r.pairs.len()
@@ -604,20 +621,23 @@ impl TrackAssembly {
                 || r.prepared_gain.is_some()
                 || r.bare_meter.is_some()
                 || r.bare_chain.is_some()
-                || t.instrument.is_some()
-                || t.instrument_state.is_some()
-                || t.instrument_id.is_some()
-                || t.mutable_instrument
-                || t.mutable_looping_source
-                || t.ordered_prefix.is_some()
-                || t.ordered_suffix.is_some()
-                || t.instrument_position != 0
-                || t.instrument_bypassed
-                || t.instrument_output_gain != 1.0
                 || t.track_id != r.id
                 || t.clips.len() != r.pairs.len()
             {
                 return Err(AudioStorageError::UnknownStorage);
+            }
+            r.midi.preflight_take(t)?;
+            r.utility.bytes(&t.device_chain)?;
+            if r.meter_declaration
+                .as_ref()
+                .and_then(|d| d.parts(&t.instrument_meter))
+                .is_none()
+                || r.chain_declaration
+                    .as_ref()
+                    .and_then(|d| d.parts(&t.device_chain))
+                    .is_none()
+            {
+                return Err(AudioStorageError::UnsupportedConstructor);
             }
             for plan in &r.pairs {
                 let p = pairs
@@ -645,29 +665,48 @@ impl TrackAssembly {
             if let Some(Track {
                 track_id: _,
                 clips,
-                mix: _,
-                source_mix: _,
+                mix,
+                source_mix,
                 gain_envelope,
-                instrument: _,
-                instrument_position: _,
-                ordered_prefix: _,
-                ordered_suffix: _,
+                instrument,
+                instrument_position,
+                ordered_prefix,
+                ordered_suffix,
                 device_chain,
                 sends,
-                instrument_id: _,
-                instrument_state: _,
-                tuning_identity: _,
-                instrument_bypassed: _,
-                instrument_input_gain: _,
-                instrument_output_gain: _,
-                instrument_latency: _,
-                instrument_runtime_latency: _,
-                midi_source_index: _,
+                instrument_id,
+                instrument_state,
+                tuning_identity,
+                instrument_bypassed,
+                instrument_input_gain,
+                instrument_output_gain,
+                instrument_latency,
+                instrument_runtime_latency,
+                midi_source_index,
                 instrument_meter,
-                mutable_instrument: _,
-                mutable_looping_source: _,
+                mutable_instrument,
+                mutable_looping_source,
             }) = r.track.take()
             {
+                fn scalar<T: Copy>(_: T) {}
+                scalar((
+                    mix,
+                    source_mix,
+                    instrument_id,
+                    instrument_position,
+                    ordered_prefix,
+                    ordered_suffix,
+                    tuning_identity,
+                    instrument_bypassed,
+                    instrument_input_gain,
+                    instrument_output_gain,
+                    instrument_latency,
+                    instrument_runtime_latency,
+                    midi_source_index,
+                    mutable_instrument,
+                    mutable_looping_source,
+                ));
+                r.midi.install(instrument, instrument_state);
                 r.clips = clips;
                 r.prepared_gain = gain_envelope;
                 r.bare_chain = Some(device_chain);
@@ -685,6 +724,10 @@ impl TrackAssembly {
                 }
                 p.transferred = false;
             }
+            return Ok(());
+        }
+        if r.midi.has_next() {
+            r.midi.dispose_next()?;
             return Ok(());
         }
         if r.meter_disposal == Disposal::Unstarted {
@@ -712,6 +755,7 @@ impl TrackAssembly {
         if r.chain_disposal != Disposal::Complete {
             return Err(AudioStorageError::UnknownStorage);
         }
+        r.midi.clear_disposed()?;
         r.gain.restore(&mut r.prepared_gain).map_err(gain_error)?;
         r.gain.clear_on_control();
         r.sends.clear();
@@ -733,6 +777,7 @@ impl TrackAssembly {
         if self.phase != Phase::Complete
             || self.rows.iter().any(|r| {
                 r.track.is_some()
+                    || !r.midi.vacant()
                     || r.id.is_some()
                     || !r.clips.is_empty()
                     || !r.pairs.is_empty()
@@ -825,7 +870,11 @@ impl TrackAssembly {
                 .rows
                 .get(index)
                 .ok_or(AudioStorageError::SourceMismatch)?;
-            if row.root_index != Some(index) || row.track.is_some() || track.track_id != row.id {
+            if row.root_index != Some(index)
+                || row.track.is_some()
+                || !row.midi.vacant()
+                || track.track_id != row.id
+            {
                 return Err(AudioStorageError::SourceMismatch);
             }
         }
@@ -939,6 +988,7 @@ impl TrackAssembly {
                 meter,
                 chain,
                 utility,
+                midi,
                 bare_meter,
                 bare_chain,
                 meter_declaration,
@@ -958,6 +1008,7 @@ impl TrackAssembly {
                 gain.visit_audio_storage(l)?;
             }
             let actual = r.actual(root)?;
+            midi.visit(actual, l)?;
             let actual_clips = if let Some(t) = actual {
                 let Track {
                     track_id: _,
@@ -984,14 +1035,13 @@ impl TrackAssembly {
                     mutable_looping_source,
                     midi_source_index,
                 } = t;
-                if instrument.is_some()
-                    || instrument_state.is_some()
-                    || *mutable_instrument
-                    || *mutable_looping_source
-                    || midi_source_index.is_some()
-                {
-                    return Err(AudioStorageError::UnknownStorage);
-                }
+                let _ = (
+                    instrument,
+                    instrument_state,
+                    mutable_instrument,
+                    mutable_looping_source,
+                    midi_source_index,
+                );
                 l.vec(clips)?;
                 l.vec(sends)?;
                 if let Some(gain) = gain_envelope {

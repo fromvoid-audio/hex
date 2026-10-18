@@ -96,6 +96,14 @@ pub(crate) fn visit_arrangement_instrument<'a>(
         return Ok(());
     }
     ledger.root(instrument, role)?;
+    visit_arrangement_instrument_contents(instrument, ledger)
+}
+/// The enclosing Track/row already charges the inline InstrumentTrack body.
+/// Each actual child handle still needs its original paired observation once.
+pub(crate) fn visit_arrangement_instrument_contents<'a>(
+    instrument: &'a crate::InstrumentTrack,
+    ledger: &mut AudioRootStorageLedger<'a>,
+) -> Result<(), AudioStorageError> {
     let crate::InstrumentTrack {
         spans,
         nodes,
@@ -108,9 +116,8 @@ pub(crate) fn visit_arrangement_instrument<'a>(
     let _: (&Option<usize>, &Option<u64>, &bool) = (root, timeline_end, mutable);
     ledger.vec(spans)?;
     ledger.vec(nodes)?;
-    for span in spans {
-        let _: crate::midi_compile::CompiledNoteSpan = *span;
-    }
+    fn copy_leaf<T: Copy>() {}
+    copy_leaf::<crate::midi_compile::CompiledNoteSpan>();
     for node in nodes {
         let crate::midi_compile::SpanNode {
             span_index,
