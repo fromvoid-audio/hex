@@ -1,0 +1,13 @@
+{
+  "source": {
+    "commit": "6b6627601ae057b06a1d5be138909bc1cce609fa",
+    "dirty": false,
+    "dirty_files": [],
+    "content_sha256": "262d08f5bc1bb6d31f155600b9514bcf69830f48d9362f949edf376ecb36a137"
+  },
+  "archive": "device-focus-repair-6b662760-v1.tar.gz",
+  "bytes": 8271,
+  "sha256": "1f9ff258e62aaa9be32f7e96abc7170a93c8aa65d80978e803d665323b333e29",
+  "payloads": 16,
+  "evidence_only": true
+}
