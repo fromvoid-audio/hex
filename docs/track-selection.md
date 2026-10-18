@@ -55,9 +55,13 @@ acceptance is still open; source tests do not establish it.
 The toolbar's existing remove control keeps its single focused-track semantics,
 including when that header has been toggled out of the explicit selection.
 Toolbar `RemoveTrack` and header-key `RemoveHeaderTracks` actions are distinct:
-a toolbar click does not change focus and must not inherit the header-key
-no-op or multi-selection contract. The rendered real-worker regression clicks
+toolbar behavior must not depend on whether a click transfers or retains
+header focus and must not inherit the header-key no-op or multi-selection
+contract. The rendered real-worker regression clicks
 the actual toolbar after both toggled-out and multi-header selection, preserves
 header Backspace's no-op, and checks single-track removal plus one Undo/Redo.
+Ordinary GPUI clicks transfer focus in the cloud test; a separate controlled
+focus-retention case proves the action contract without claiming native focus
+reproduction.
 Source repair/final integration qualification receipts remain separate from the
 original09c/native4 evidence in Pulse2721/PR337.

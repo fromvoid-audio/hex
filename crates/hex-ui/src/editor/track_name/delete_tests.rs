@@ -306,7 +306,7 @@ fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
             visual.update(|window, cx| {
                 editor.read_with(cx, |view, _| {
                     eprintln!(
-                        "toolbar immediate focus={} pending={} edit={:?}",
+                        "toolbar retained_focus={retained_focus} toggled_out={toggled_out} immediate_focus={} pending={} edit={:?}",
                         view.track_name.focuses[&focused].is_focused(window),
                         view.edit_pending(),
                         view.last_enqueued_edit
