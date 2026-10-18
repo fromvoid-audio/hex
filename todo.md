@@ -5059,3 +5059,17 @@ input acceptance remain pending; no installed app changes.
   full local CI is recorded in PR336/Pulse2720, not inferred from focused tests.
 - Native optimized physical input, listening and current-format save/reopen remain
   open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.
+
+## Place availability and query correctness — pulse2791 / PR397, 18 october 2026
+
+Focused follow-up to merged2727/340: pending or failed Place validation hides cached
+folder/indexed rows and blocks stale row, audition-offset, import and project-open
+callbacks. Fresh validation cancels queued/active Place audition. Successful current
+scans restore surviving selection by native path, including a concurrent catalog
+publication; source/query changes discard the saved identity. Scoped folder additions
+use indexed whitespace-term/full-path matching without changing All composition.
+Three targeted regressions fail on original dc70 and integrated cf410 tree sources;
+source repair and browser contract checks are recorded separately in Pulse2791.
+Dedicated merger owns final prospective full CI/integration/merge. Optimized native
+availability/query and unchanged audition/drag acceptance remain coordinator-owned;
+no installed app or user files changed during this source work.
