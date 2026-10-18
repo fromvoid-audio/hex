@@ -224,11 +224,10 @@ impl<'a> AudioRootStorageLedger<'a> {
             ledger.vec(&session.mutable_instruments)?;
             ledger.vec(&session.tail_mutable_instruments)?;
             for runtime in session.mutable_instruments.iter().flatten() {
-                runtime.visit_runtime_storage_on_control(ledger, role)?;
+                runtime.visit_runtime_storage_on_control(ledger)?;
             }
             for tail in session.tail_mutable_instruments.iter().flatten() {
-                tail.runtime
-                    .visit_runtime_storage_on_control(ledger, role)?;
+                tail.runtime.visit_runtime_storage_on_control(ledger)?;
             }
             Ok(())
         })
@@ -244,3 +243,6 @@ impl<'a> AudioRootStorageLedger<'a> {
         self.mutate(|ledger| session.visit_mutable_resource_owners_on_control(ledger, role))
     }
 }
+
+#[cfg(test)]
+mod runtime_storage_tests;

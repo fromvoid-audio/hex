@@ -48,6 +48,16 @@ resource configuration owners are separate. Repeated visitation deduplicates
 the same actual fields. Whole-body omission needs an independent expected
 allocation/byte oracle because Box owners have no Arc count closure.
 
+The complete mutable-runtime visitor charges its embedded resource configuration
+through the actual containing runtime Vec/body, then visits the configuration's
+shared lease and source children. It does not charge that inline field again as
+a standalone root. The separate resource-only visitor still charges its actual
+standalone field. An independent comparison of these two views reproduced a
+24-byte overcharge and now checks the actual Session body, parent Vec capacities,
+two concrete Box layouts and occurrence Vec capacities, plus exact/minus-one
+limits. Both views remain selected inventories: unvisited Session/revision/source
+owners prevent complete closure.
+
 This is requested allocation accounting, not RSS or a universal Rust ABI.
 Surrounding graph/model/history/pending/unreclaimed owners, root custody,
 old/new/preparation construction peak, stale/cancel atomic publication and

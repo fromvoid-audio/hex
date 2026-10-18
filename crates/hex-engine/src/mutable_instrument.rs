@@ -235,7 +235,6 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn visit_runtime_storage_on_control<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
-        role: crate::AudioStorageRole,
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             pair,
@@ -252,7 +251,13 @@ impl MutableInstrumentTrackRuntime {
         pair.visit_storage(ledger)?;
         ledger.vec(primary)?;
         ledger.vec(scratch)?;
-        self.visit_resource_owner_on_control(ledger, role)
+        // The containing runtime Vec/body already charges the inline
+        // configuration field. Visit its actual shared lease/children, without
+        // registering the same embedded bytes as a separate standalone root.
+        if let Some(configuration) = &self.resources {
+            configuration.visit_storage(ledger)?;
+        }
+        Ok(())
     }
     pub(crate) fn visit_resource_owner_on_control<'a>(
         &'a self,
