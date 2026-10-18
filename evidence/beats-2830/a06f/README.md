@@ -8,5 +8,5 @@ cases, both exit0. Its manifest records commands, environment and per-file hashe
 The existing ambient editor constructor remains ineligible for future Mac testing;
 these passes do not remove that issue or qualify a corrected fixture/new source.
 No native/listening/full CI claim. Original b38b WAV transport remains immutable
-at61055f5905bf1046f8c9bd5226e45a80039522fc; source23997 documents byte-identical
+at61055f5905bf1046f8c9bd5226e45a80039522fc; Pulse2830 note24997 documents byte-identical
 a06f audio and separate work-accounting correction.
