@@ -507,3 +507,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "resize_pan_tests.rs"]
+mod resize_pan_tests;
