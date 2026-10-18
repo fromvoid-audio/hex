@@ -2,6 +2,30 @@
 use super::*;
 use hex_library::catalog::{SampleCatalog, scan_samples};
 
+/// The Samples listing model shared by row construction and its count label.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResultsMode {
+    Hierarchy,
+    Indexed,
+}
+
+impl ResultsMode {
+    pub(super) fn for_query(query: &str) -> Self {
+        if query.is_empty() {
+            Self::Hierarchy
+        } else {
+            Self::Indexed
+        }
+    }
+
+    fn count_noun(self) -> &'static str {
+        match self {
+            Self::Hierarchy => "items",
+            Self::Indexed => "samples",
+        }
+    }
+}
+
 struct VisibleCache {
     query: String,
     source: Option<PathBuf>,
@@ -245,18 +269,31 @@ impl EditorView {
     }
 
     pub(super) fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
-        let remap = matches!(
-            self.browser.section,
-            BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
-        );
+        let remap = !self.browser_place_unavailable()
+            && matches!(
+                self.browser.section,
+                BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
+            );
         let selection = remap.then(|| self.browser_selected_item(cx)).flatten();
         if self.browser.samples.replace(catalog) && remap {
             self.restore_browser_selection(selection, cx);
         }
     }
 
-    pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
         let count = self.browser_visible_entries(cx).len();
+        let noun = ResultsMode::for_query(&self.browser.search.read(cx).content).count_noun();
+        format!(
+            "{count} {noun}{}",
+            if self.browser.samples.in_flight {
+                " · scanning…"
+            } else {
+                ""
+            }
+        )
+    }
+
+    pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {
         let mut content = div().flex().flex_col().flex_shrink_0().child(
             div()
                 .h(px(23.0))
@@ -269,19 +306,12 @@ impl EditorView {
                         .flex_1()
                         .text_xs()
                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                        .child(theme::text(format!(
-                            "{count} samples{}",
-                            if self.browser.samples.in_flight {
-                                " · scanning…"
-                            } else {
-                                ""
-                            }
-                        ))),
+                        .child(theme::text(self.sample_results_count_text(cx))),
                 )
                 .child(self.browser_icon(
                     "↻",
                     "rescan sample folders",
-                    |view, _, cx| view.refresh_sample_catalog(cx),
+                    |view, _, cx| view.refresh_browser_tree(cx),
                     cx,
                 ))
                 .child(self.browser_icon(
