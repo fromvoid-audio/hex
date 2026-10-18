@@ -272,7 +272,11 @@ impl UtilityFilterProcessor {
 }
 
 impl NativeProcessorRuntime for UtilityFilterProcessor {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         UtilityFilterProcessor::process_block(self, frames);
     }
 

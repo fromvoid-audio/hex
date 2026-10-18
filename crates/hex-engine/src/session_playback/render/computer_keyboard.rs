@@ -5,8 +5,8 @@ impl SessionPlayback {
     pub(super) fn render_keyboard_monitor(
         &mut self,
         output: &mut [Frame],
-        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
-        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         for chain in &mut self.device_chains {
             chain.begin_block();
@@ -56,13 +56,14 @@ impl SessionPlayback {
                     track.apply_ordered_suffix(frames);
                 } else if let Some(observer) = observer.as_mut() {
                     chain
-                        .process_range_observed(
+                        .process_range_tapped(
                             track.instrument_position()..chain.len(),
                             frames,
                             offset,
-                            &mut |owner, device, kind, offset, frames| {
+                            &mut |owner, device, kind, phase, offset, frames| {
                                 observer(
                                     crate::PostNodeIdentity::new(owner, device, kind),
+                                    phase,
                                     offset,
                                     frames,
                                 )
@@ -76,6 +77,7 @@ impl SessionPlayback {
                 }
                 for (frame_index, frame) in frames.iter_mut().enumerate() {
                     let mixed = track.mix_at(self.arrangement_frame).apply_frame(*frame);
+                    *frame = mixed;
                     chunk[frame_index][0] += mixed[0];
                     chunk[frame_index][1] += mixed[1];
                     for send in track.sends() {
@@ -84,6 +86,11 @@ impl SessionPlayback {
                         self.return_scratch[send.return_index][frame_index][1] +=
                             mixed[1] * send.gain;
                     }
+                }
+                if let Some(capture) = capture.as_mut()
+                    && let Some(id) = track.canonical_track_id()
+                {
+                    capture.add(OutputCaptureId::Track(id), offset, frames)?;
                 }
             }
             self.render_return_buses(chunk, offset, None, observer, capture)?;
