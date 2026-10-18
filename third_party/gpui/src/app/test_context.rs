@@ -317,6 +317,16 @@ impl TestAppContext {
         self.test_platform.simulate_new_path_selection(select_path);
     }
 
+    /// Whether the test platform has an outstanding Open picker request.
+    pub fn did_prompt_for_paths(&self) -> bool {
+        self.test_platform.did_prompt_for_paths()
+    }
+
+    /// Complete the test platform Open picker; this does not show a native picker.
+    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
+        self.test_platform.simulate_paths_selection(paths);
+    }
+
     /// Simulates clicking a button in an platform-level alert dialog.
     #[track_caller]
     pub fn simulate_prompt_answer(&self, button: &str) {
@@ -728,6 +738,30 @@ impl VisualTestContext {
                 .rev()
                 .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
                 .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
+        })
+    }
+
+    /// Completed quad fragments for a debug element, including cache replay
+    /// masks. The caller can check coverage and ordering across all fragments.
+    /// This is scene evidence, not native framebuffer/pixel readback.
+    pub fn rendered_quad_paint_layers(
+        &mut self,
+        selector: &'static str,
+        border: bool,
+    ) -> Vec<((u32, usize), Bounds<crate::ScaledPixels>)> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.quads.iter().enumerate()
+                .filter(|(_, quad)| quad.bounds == scaled && if border {
+                    quad.border_widths != crate::Edges::default()
+                } else {
+                    !quad.background.is_transparent()
+                })
+                .map(|(index, quad)| ((quad.order, index), quad.content_mask.bounds))
+                .collect()
         })
     }
 

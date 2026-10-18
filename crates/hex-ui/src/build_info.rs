@@ -17,6 +17,45 @@ pub(crate) fn label() -> Stateful<Div> {
         .child(debug_button())
 }
 
+pub(crate) fn editor_label() -> Stateful<Div> {
+    label().child(
+        div()
+            .id("open-changelog")
+            .tab_index(0)
+            .key_context("hex_changelog_button")
+            .debug_selector(|| "open-changelog".into())
+            .h(px(20.0))
+            .px_1()
+            .flex()
+            .items_center()
+            .text_size(px(10.0))
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+            .focus(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+            .cursor_pointer()
+            .child(theme::text("changelog"))
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_key_down(|event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab"
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform
+                {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                    cx.stop_propagation();
+                }
+            })
+            .on_click(|_, window, cx| {
+                cx.stop_propagation();
+                window.dispatch_action(Box::new(crate::editor::changelog::OpenChangelog), cx);
+            }),
+    )
+}
+
 fn version_label() -> Stateful<Div> {
     div()
         .id("application-build-version")

@@ -333,6 +333,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_project_open(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
         self.sync_tuning(cx);
@@ -392,7 +393,9 @@ impl Render for EditorView {
             .child(self.fade_pointer_events(cx))
             .child(self.project_spectrum_pointer_events(cx))
             .track_focus(&self.focus)
-            .key_context(if self.track_name.is_editing() {
+            .key_context(if self.changelog.is_open() {
+                "hex_changelog"
+            } else if self.track_name.is_editing() {
                 "hex_track_name hex_text_editing"
             } else if self.clip_name_edit.is_some() {
                 "hex_clip_name hex_text_editing"
@@ -551,6 +554,16 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
+            .on_action(
+                cx.listener(|view, _: &super::changelog::OpenChangelog, window, cx| {
+                    view.open_changelog(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|view, _: &super::changelog::CloseChangelog, window, cx| {
+                    view.close_changelog(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::OpenTuning, window, cx| {
                 view.open_tuning(window, cx);
             }))
@@ -706,11 +719,15 @@ impl Render for EditorView {
                 view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &OpenProject, _, cx| {
-                view.open_dialog(hex_session::DocumentAudioMode::Resident, cx)
+            .on_action(cx.listener(|view, _: &OpenProject, window, cx| {
+                view.open_dialog(hex_session::DocumentAudioMode::Resident, window, cx)
             }))
-            .on_action(cx.listener(|view, _: &OpenStreamingProject, _, cx| {
-                view.open_dialog(hex_session::DocumentAudioMode::VerifiedStreaming, cx)
+            .on_action(cx.listener(|view, _: &OpenStreamingProject, window, cx| {
+                view.open_dialog(
+                    hex_session::DocumentAudioMode::VerifiedStreaming,
+                    window,
+                    cx,
+                )
             }))
             .on_action(cx.listener(|view, _: &OpenRelinkedProject, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Relink, window, cx)
@@ -1160,5 +1177,6 @@ impl Render for EditorView {
             .children(self.controller_input_overlay(cx))
             .children(super::theme_settings::overlay(self, cx))
             .children(self.tuning_overlay(cx))
+            .children(self.changelog_overlay(cx))
     }
 }
