@@ -16,6 +16,14 @@ pub(crate) struct ReturnFeedPlan {
     order: Vec<usize>,
     outgoing: Vec<Vec<Feed>>,
 }
+fn plan_vec<T>(capacity: usize) -> Result<Vec<T>, Invalid> {
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(capacity)
+        .map_err(|_| Invalid("return plan allocation failed"))?;
+    Ok(result)
+}
+
 impl ReturnFeedPlan {
     pub(crate) fn has_no_owned_storage(&self) -> bool {
         let Self { order, outgoing } = self;
@@ -28,8 +36,22 @@ impl ReturnFeedPlan {
             return Ok(Self::default());
         }
         let returns = project.return_tracks();
-        let mut outgoing = vec![Vec::new(); returns.len()];
-        let mut incoming = vec![0_usize; returns.len()];
+        // Every backing is reserved from validated scalar counts before fill.
+        // No push below can trigger implicit growth or a stable-sort workspace.
+        let mut outgoing = plan_vec(returns.len())?;
+        let mut incoming = plan_vec(returns.len())?;
+        incoming.resize(returns.len(), 0_usize);
+        let mut visited = plan_vec(returns.len())?;
+        visited.resize(returns.len(), false);
+        let mut order = plan_vec(returns.len())?;
+        for bus in returns {
+            let count = project
+                .authored_routing()
+                .iter()
+                .filter(|feed| feed.source() == bus.id())
+                .count();
+            outgoing.push(plan_vec(count)?);
+        }
         for feed in project.authored_routing() {
             let source = returns
                 .iter()
@@ -47,10 +69,10 @@ impl ReturnFeedPlan {
             incoming[destination] += 1;
         }
         for feeds in &mut outgoing {
-            feeds.sort_by_key(|feed| (feed.destination, feed.id));
+            // The complete key includes globally unique route identity. Equal
+            // keys cannot exist, so stability cannot affect processing order.
+            feeds.sort_unstable_by_key(|feed| (feed.destination, feed.id));
         }
-        let mut order = Vec::with_capacity(returns.len());
-        let mut visited = vec![false; returns.len()];
         while order.len() < returns.len() {
             // Pinned ready tie-order, independent of route serialization order.
             let index = (0..returns.len())
@@ -157,6 +179,11 @@ mod tests {
         let plan = ReturnFeedPlan::prepare(&project).unwrap();
         assert_eq!(plan.order(), &(0..16).collect::<Vec<_>>());
         assert_eq!(plan.outgoing.iter().map(Vec::len).sum::<usize>(), 120);
+        assert_eq!(plan.order.capacity(), 16);
+        assert_eq!(plan.outgoing.capacity(), 16);
+        for (source, feeds) in plan.outgoing.iter().enumerate() {
+            assert_eq!(feeds.capacity(), 15 - source);
+        }
         let mut scratch = vec![[[0.0; 2]; 256]; 16];
         scratch[0].fill([1.0, -1.0]);
         for &index in plan.order() {

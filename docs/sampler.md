@@ -769,3 +769,11 @@ incorrectly imposed on the combined graph. The public untrusted snapshot validat
 and global model-ID checks remain unchanged. This local scratch quote is not a
 whole-compiler construction peak or a native admission permit; the closed entry
 must still reserve the aggregate retained/temporary overlap before construction.
+
+The Return processing plan also reserves its outer rows, each source's exact
+feed count, order and incoming/visited scratch fallibly before filling them.
+Its complete `(destination, route identity)` key uses an allocation-free unstable
+sort with no equal keys, preserving canonical processing order. The full
+sixteen-Return oracle checks actual retained capacities and unchanged propagated
+PCM. These explicit backings still need inclusion in the aggregate closed-entry
+reservation; this change does not replace that reservation.
