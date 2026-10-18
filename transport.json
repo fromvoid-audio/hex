@@ -1,0 +1,13 @@
+{
+  "source": {
+    "commit": "776d223c2e7d1f7b57c45bd9c3edc738d42379f1",
+    "dirty": false,
+    "dirty_files": [],
+    "content_sha256": "df2d7ebe012f5f6920e228833b203f82b9daf5825fa7da1f6c2201465e16f0fd"
+  },
+  "archive": "project-file-actions-776d223c-v1.tar.gz",
+  "bytes": 115099,
+  "sha256": "ab0466aad621ef549fc34de707ce0c9c9e26c517cf470ff4b3dda4c3ace663a8",
+  "payloads": 30,
+  "evidence_only": true
+}
