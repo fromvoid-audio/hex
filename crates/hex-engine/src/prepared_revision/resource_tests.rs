@@ -5,7 +5,10 @@ use hex_lattice::DeviceResources;
 use hex_project::{BeatTime, Command, Created};
 use std::collections::BTreeMap;
 
-fn musical_clips(editor: &mut hex_project::Editor, track: TrackId) -> hex_project::ClipId {
+pub(super) fn musical_clips(
+    editor: &mut hex_project::Editor,
+    track: TrackId,
+) -> hex_project::ClipId {
     let Created::Clip(arrangement) = editor
         .execute(Command::PlaceMidiClip {
             track,
@@ -75,7 +78,7 @@ fn source_address(pcm: hex_lattice::DeviceResourcePcm<'_>) -> usize {
         hex_lattice::DeviceResourcePcm::Stereo(v) => v.as_ptr() as usize,
     }
 }
-fn source_fixture(
+pub(super) fn source_fixture(
     mono: bool,
 ) -> Option<(
     crate::native_device_resources::DeviceResourceBank,

@@ -8,7 +8,9 @@ use crate::{
 };
 
 /// Requested-layout declarations for the four private shared root allocations.
-/// Child heap backings remain charged by their existing stage reports. Reserved
+/// Child heap backings remain charged by their existing stage reports; actual
+/// mutable-descriptor Vec backings are included here. Their shared canonical
+/// state/source bodies still require the joint ledger. Reserved
 /// bytes conservatively remain charged through incomplete control extraction;
 /// these fields never establish whole-graph storage or publication eligibility.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -20,6 +22,8 @@ pub struct AudioRevisionRootCapacity {
     pub actual_declared_overhead_bytes: usize,
     pub control_extracted_allocations: usize,
     pub constructed: bool,
+    /// Actual descriptor Vec backings, not a preconstruction allowance.
+    pub mutable_descriptor_backing_bytes: usize,
 }
 impl AudioRevisionRootCapacity {
     pub(crate) fn bytes(self) -> usize {
@@ -48,6 +52,7 @@ pub(crate) struct RevisionAssembly {
     session_value: Option<PreparedSessionInventory>,
     preview_value: Option<MidiArrangementPreview>,
     mutable_descriptors: Vec<PreparedMutableTrackRevision>,
+    descriptor_drop_pending: bool,
     handles: [u64; 4],
     reserved_bytes: usize,
     reserved: bool,
@@ -134,6 +139,7 @@ impl RevisionAssembly {
             || self.session_value.is_some()
             || self.preview_value.is_some()
             || self.mutable_descriptors.capacity() != 0
+            || self.descriptor_drop_pending
             || self.handles != [0; 4]
         {
             return Err(Error::Capacity);
@@ -185,6 +191,9 @@ impl RevisionAssembly {
         Ok(())
     }
     pub(crate) fn storage_view(&self) -> Result<RevisionStorageView<'_>, Error> {
+        if self.descriptor_drop_pending {
+            return Err(Error::UnknownStorage);
+        }
         if self.owner.is_some() && self.revision_value.is_some() {
             return Err(Error::SourceMismatch);
         }
@@ -198,7 +207,7 @@ impl RevisionAssembly {
             arrangement,
             session,
             midi_preview,
-            mutable_track_revisions,
+            mutable_track_revisions: _,
             gain_recording_track,
         }) = revision
         {
@@ -209,7 +218,6 @@ impl RevisionAssembly {
                 || self.session_value.is_some()
                 || self.preview_value.is_some()
                 || gain_recording_track.is_some()
-                || mutable_track_revisions.capacity() != 0
                 || self.mutable_descriptors.capacity() != 0
             {
                 return Err(Error::UnknownStorage);
@@ -223,7 +231,6 @@ impl RevisionAssembly {
         if (self.arrangement.is_some() && self.arrangement_value.is_some())
             || (self.session.is_some() && self.session_value.is_some())
             || (self.preview.is_some() && self.preview_value.is_some())
-            || self.mutable_descriptors.capacity() != 0
         {
             return Err(Error::UnknownStorage);
         }
@@ -254,6 +261,22 @@ impl RevisionAssembly {
             constructed: self.owner.is_some(),
             ..Default::default()
         };
+        let descriptors = self
+            .owner
+            .as_ref()
+            .map(|r| &r.mutable_track_revisions)
+            .or_else(|| {
+                self.revision_value
+                    .as_ref()
+                    .map(|r| &r.mutable_track_revisions)
+            })
+            .unwrap_or(&self.mutable_descriptors);
+        report.mutable_descriptor_backing_bytes =
+            super::descriptor_storage::backing_bytes(descriptors)?;
+        report.reserved_data_bytes = report
+            .reserved_data_bytes
+            .checked_add(report.mutable_descriptor_backing_bytes)
+            .ok_or(Error::Overflow)?;
         if let Some(owner) = &self.owner {
             add_parts(owner, &mut report)?;
         }
@@ -458,6 +481,36 @@ impl RevisionAssembly {
             contains_streamed_sources: revision.contains_streamed_sources(),
         })
     }
+    /// Only after all revision/child values have returned to their existing
+    /// persistent destinations. These descriptors own sealed state slices and
+    /// canonical MIDI identities, not provider-defined destructors or PCM.
+    pub(crate) fn clear_descriptor_custody_on_control(&mut self) -> Result<(), Error> {
+        if self.descriptor_drop_pending
+            || self.owner.is_some()
+            || self.revision_value.is_some()
+            || self.arrangement.is_some()
+            || self.session.is_some()
+            || self.preview.is_some()
+            || self.arrangement_value.is_some()
+            || self.session_value.is_some()
+            || self.preview_value.is_some()
+        {
+            return Err(Error::UnknownStorage);
+        }
+        self.descriptor_drop_pending = true;
+        self.mutable_descriptors.clear();
+        self.mutable_descriptors = Vec::new();
+        self.descriptor_drop_pending = false;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn mutable_descriptors_for_test(
+        &mut self,
+        source: &mut Vec<PreparedMutableTrackRevision>,
+    ) {
+        assert!(self.mutable_descriptors.capacity() == 0);
+        self.mutable_descriptors = std::mem::take(source);
+    }
     #[cfg(test)]
     pub(crate) fn owner_for_test(&self) -> Option<&OwnedShared<PreparedRevision>> {
         self.owner.as_ref()
@@ -497,6 +550,7 @@ impl RevisionAssembly {
             session_value: _,
             preview_value: _,
             mutable_descriptors,
+            descriptor_drop_pending: _,
             handles,
             reserved_bytes: _,
             reserved: _,
@@ -507,7 +561,7 @@ impl RevisionAssembly {
             #[cfg(test)]
                 panic_after: _,
         } = self;
-        l.vec(mutable_descriptors)?;
+        super::descriptor_storage::visit(mutable_descriptors, l)?;
         if let Some(owner) = owner {
             l.shared(
                 owner.arc(),
@@ -530,7 +584,7 @@ impl RevisionAssembly {
                 mutable_track_revisions,
                 gain_recording_track: _,
             } = revision;
-            l.vec(mutable_track_revisions)?;
+            super::descriptor_storage::visit(mutable_track_revisions, l)?;
             l.shared(
                 arrangement.arc(),
                 arrangement.parts(),

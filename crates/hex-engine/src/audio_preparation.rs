@@ -1124,7 +1124,8 @@ impl AudioPreparationCustody {
     fn dispose_arrangement_clips_on_control(&mut self) -> bool {
         match catch_unwind(AssertUnwindSafe(|| {
             self.revision
-                .restore(&mut self.arrangement_clips, &mut self.assembly)
+                .restore(&mut self.arrangement_clips, &mut self.assembly)?;
+            self.revision.clear_descriptor_custody_on_control()
         })) {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {

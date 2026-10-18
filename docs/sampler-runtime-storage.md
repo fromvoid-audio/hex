@@ -184,3 +184,23 @@ compiler meter. The tempo return, fresh complete-compiler owner installation,
 aggregate preconstruction reservation, full native union and publication remain
 required. Public constructor validation still refuses MIDI graphs; this selected
 retirement capability does not enable the usable Sampler host.
+
+Mutable revision descriptors now have actual-field traversal too: outer rows,
+effect/source Vec capacities, instrument and effect canonical state fields and
+Arrangement MIDI source identities. Inline handles belong to their enclosing
+row backing once. Equal descriptors from two real compiler invocations retain
+independent backings and require every physical alias; neither equal content nor
+a descriptor ID substitutes for an owner. The revision capacity report includes
+these observed backings, not a preconstruction estimate of them.
+
+After all four revision/child values have returned to existing destinations,
+the existing control cleanup retires descriptor state/source aliases and empty
+backings. A pending flag precedes destruction and refuses retry/inspection after
+abnormal exit; the parent retains its existing failed custody. The descriptor
+types contain canonical state/MIDI metadata, not provider destructors or PCM.
+The regression moves actual descriptor output from two Mono/Stereo compilations,
+keeps real editor history, includes bypassed effects and spare capacities, and
+checks independent six-backing totals, omitted-owner refusal, repeated visits,
+exact/minus-one budgets and each normal control retirement. Other products are
+retired with the original bank held. This is selected descriptor inventory and
+cleanup, not the fresh complete compiler entry or aggregate peak proof.
