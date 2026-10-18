@@ -750,3 +750,22 @@ checks real PCM and zero total/net allocations/frees. This remains a source/DSP
 component: the functional panel, live parameter transitions, remaining modulation
 and Warp, actual admitted loading/registration and the complete musical workflow
 are still open; native listening/reference parity is not claimed.
+
+
+The private compiler Return-routing admission helper now borrows the actual
+canonical Project rather than reconstructing a snapshot and its model owners.
+It validates the combined audio graph (all sends, Return feeds, typed feeds and
+implicit Main edges) and the separate MIDI graph, including destination
+instruments. Canonical model ownership does not imply that a prepared batch left
+routing valid: both a combined audio cycle and removal of a MIDI destination
+instrument are explicit refusal regressions. The independent model batch fix is
+tracked separately as Pulse2790/PR396; this compiler helper does not change history.
+
+Its scratch consists only of fallibly reserved flat scalar vectors. Counts and a
+checked requested-byte quote precede construction; actual capacities are checked
+against that local reservation. A complete shuffled sixteen-Return DAG and a
+valid 4368-edge send/Main graph are covered, so the authored-route limit is not
+incorrectly imposed on the combined graph. The public untrusted snapshot validator
+and global model-ID checks remain unchanged. This local scratch quote is not a
+whole-compiler construction peak or a native admission permit; the closed entry
+must still reserve the aggregate retained/temporary overlap before construction.

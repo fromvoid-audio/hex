@@ -1,5 +1,6 @@
 //! Control-side plan for the admitted stereo, post-Return additive feed DAG.
 //! Existing track sends and Main summation remain owned by their old kernels.
+mod borrowed;
 pub(crate) mod persistent;
 use crate::{Frame, Invalid};
 
@@ -22,10 +23,10 @@ impl ReturnFeedPlan {
     }
 
     pub(crate) fn prepare(project: &hex_project::Project) -> Result<Self, Invalid> {
+        Self::validate_admission(project)?;
         if project.authored_routing().is_empty() {
             return Ok(Self::default());
         }
-        Self::validate_admission(project)?;
         let returns = project.return_tracks();
         let mut outgoing = vec![Vec::new(); returns.len()];
         let mut incoming = vec![0_usize; returns.len()];
@@ -64,12 +65,7 @@ impl ReturnFeedPlan {
         Ok(Self { order, outgoing })
     }
     pub(crate) fn validate_admission(project: &hex_project::Project) -> Result<(), Invalid> {
-        // Canonical empty-feed projects keep the legacy preparation path.
-        if !project.authored_routing().is_empty() {
-            hex_project::Project::validate_return_feed_snapshot(&project.snapshot())
-                .map_err(|error| Invalid(error.0))?;
-        }
-        Ok(())
+        borrowed::validate(project)
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.order.is_empty()
