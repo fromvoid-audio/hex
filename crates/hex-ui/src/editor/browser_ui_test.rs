@@ -4307,8 +4307,10 @@ fn place_icon_preferences_window(
                         recent.to_owned(),
                         directory.0.join("icon-theme.json"),
                     ),
-                    None,
-                    Some(home),
+                    crate::editor::test_environment::Inputs {
+                        home: Some(home),
+                        ..Default::default()
+                    },
                 )
             })
         })
@@ -4894,3 +4896,9 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
         assert!(view.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "editor_test_environment_ui_test.rs"]
+mod test_environment;
+
+#[path = "browser_picker_compact_ui_test.rs"]
+mod compact_picker;

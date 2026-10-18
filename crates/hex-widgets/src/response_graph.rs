@@ -18,6 +18,9 @@ pub fn bind_response_graph_keys(cx: &mut App) {
     ]);
 }
 
+mod axes;
+pub use axes::ResponseGraphAxes;
+
 const MAX_CURVE_POINTS: usize = 256;
 const MAX_NODES: usize = 64;
 const PLOT_INSET: f32 = 7.0;
@@ -124,6 +127,7 @@ pub struct ResponseGraph {
     model: ResponseGraphModel,
     style: ControlStyle,
     analyzer_style: Option<ResponseGraphAnalyzerStyle>,
+    axes: Option<ResponseGraphAxes>,
     bounds: Option<Bounds<Pixels>>,
     drag: Option<Drag>,
     press: Option<Press>,
@@ -166,6 +170,7 @@ impl ResponseGraph {
             model,
             style,
             analyzer_style: None,
+            axes: None,
             bounds: None,
             drag: None,
             press: None,
@@ -177,6 +182,28 @@ impl ResponseGraph {
             focus: cx.focus_handle(),
             focus_blur: None,
         }
+    }
+
+    /// Optional owner-authored normalized axes; all graphics and input share this plot.
+    pub fn set_axes(
+        &mut self,
+        axes: Option<ResponseGraphAxes>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if axes.as_ref().is_some_and(|axes| !axes.valid()) {
+            return Err("invalid response graph axes");
+        }
+        if self.axes != axes {
+            self.axes = axes;
+            cx.notify();
+        }
+        Ok(())
+    }
+
+    /// Actual normalized plot rectangle, excluding optional axis labels.
+    pub fn plot_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.bounds
+            .map(|bounds| axes::plot_bounds(bounds, self.axes.is_some()))
     }
 
     /// Allow blank plot presses to create one owner-defined point. Node hits
@@ -304,16 +331,18 @@ impl ResponseGraph {
     }
 
     fn normalized_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
-        let bounds = self.bounds?;
-        let inset = px(PLOT_INSET);
-        let width = f32::from(bounds.size.width - inset * 2.0);
-        let height = f32::from(bounds.size.height - inset * 2.0);
-        if width <= 0.0 || height <= 0.0 {
+        self.unclamped_position(position)
+            .map(|position| position.map(|value| value.clamp(0.0, 1.0)))
+    }
+
+    fn unclamped_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
+        let bounds = self.plot_bounds()?;
+        if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
             return None;
         }
         Some([
-            ((position.x - bounds.origin.x - inset) / px(width)).clamp(0.0, 1.0),
-            (1.0 - (position.y - bounds.origin.y - inset) / px(height)).clamp(0.0, 1.0),
+            (position.x - bounds.left()) / bounds.size.width,
+            1.0 - (position.y - bounds.top()) / bounds.size.height,
         ])
     }
 
@@ -321,26 +350,32 @@ impl ResponseGraph {
         if event.button != MouseButton::Left || self.drag.is_some() || self.press.is_some() {
             return;
         }
-        let Some(position) = self.normalized_position(event.position) else {
+        let Some(raw_position) = self.unclamped_position(event.position) else {
             return;
         };
-        let Some(bounds) = self.bounds else {
+        let position = raw_position.map(|value| value.clamp(0.0, 1.0));
+        let Some(bounds) = self.plot_bounds() else {
             return;
         };
-        let width = f32::from(bounds.size.width - px(PLOT_INSET * 2.0));
-        let height = f32::from(bounds.size.height - px(PLOT_INSET * 2.0));
+        let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
         let hit = self
             .model
             .nodes
             .iter()
             .filter_map(|node| {
-                let dx = (node.position[0] - position[0]) * width;
-                let dy = (node.position[1] - position[1]) * height;
+                let dx = (node.position[0] - raw_position[0]) * width;
+                let dy = (node.position[1] - raw_position[1]) * height;
                 let distance = dx.mul_add(dx, dy * dy);
                 (distance <= NODE_RADIUS * NODE_RADIUS).then_some((distance, node.id))
             })
             .min_by(|left, right| left.0.total_cmp(&right.0));
         let Some((_, node_id)) = hit else {
+            // Visible boundary markers retain their full bounded hit radius.
+            // Only blank axis margins are excluded from node creation.
+            if self.axes.is_some() && !bounds.contains(&event.position) {
+                return;
+            }
             if self.creation_enabled && event.click_count == 1 {
                 if self.creation_drag_enabled {
                     self.press = Some(Press {
@@ -429,11 +464,11 @@ impl ResponseGraph {
             let Some(press) = self.press else {
                 return false;
             };
-            let Some(bounds) = self.bounds else {
+            let Some(bounds) = self.plot_bounds() else {
                 return false;
             };
-            let width = f32::from(bounds.size.width - px(PLOT_INSET * 2.0));
-            let height = f32::from(bounds.size.height - px(PLOT_INSET * 2.0));
+            let width = f32::from(bounds.size.width);
+            let height = f32::from(bounds.size.height);
             let dx = (position[0] - press.pointer_origin[0]) * width;
             let dy = (position[1] - press.pointer_origin[1]) * height;
             if !drag_threshold_crossed(dx, dy) {
@@ -733,6 +768,11 @@ impl gpui::Render for ResponseGraph {
         });
         let nodes = self.model.nodes.clone();
         let style = self.style;
+        let axes = self.axes.clone();
+        let labels = self
+            .axes
+            .as_ref()
+            .map(|axes| axes.labels(&self.id, style, self.bounds, window));
         let bounds_entity = cx.entity();
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
@@ -762,9 +802,16 @@ impl gpui::Render for ResponseGraph {
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, app| {
-                        bounds_entity.update(app, |graph, _| graph.bounds = Some(bounds));
+                        bounds_entity.update(app, |graph, cx| {
+                            let changed = graph.bounds.is_none_or(|old| old.size != bounds.size);
+                            graph.bounds = Some(bounds);
+                            if changed && graph.axes.is_some() {
+                                cx.notify();
+                            }
+                        });
                         paint_graph(
                             bounds,
+                            axes.as_ref(),
                             &primary,
                             &secondary,
                             analyzer.as_deref(),
@@ -780,6 +827,7 @@ impl gpui::Render for ResponseGraph {
                 .inset_0()
                 .size_full(),
             )
+            .children(labels)
             .when(
                 self.focus.tab_stop && self.focus.is_focused(window),
                 |root| root.child(corner_markers(&self.id, style.focus_marker)),
@@ -793,6 +841,7 @@ impl gpui::Render for ResponseGraph {
 #[allow(clippy::too_many_arguments)]
 fn paint_graph(
     bounds: Bounds<Pixels>,
+    axes: Option<&ResponseGraphAxes>,
     primary: &[[f32; 2]],
     secondary: &[[f32; 2]],
     analyzer: Option<&[[f32; 2]]>,
@@ -802,23 +851,36 @@ fn paint_graph(
     style: ControlStyle,
     window: &mut Window,
 ) {
-    let inset = px(PLOT_INSET);
-    let width = bounds.size.width - inset * 2.0;
-    let height = bounds.size.height - inset * 2.0;
+    let bounds = axes::plot_bounds(bounds, axes.is_some());
+    let width = bounds.size.width;
+    let height = bounds.size.height;
     if width <= px(0.0) || height <= px(0.0) {
         return;
     }
-    let origin = point(bounds.origin.x + inset, bounds.origin.y + inset);
+    let origin = bounds.origin;
     let mut grid = PathBuilder::stroke(px(0.5));
-    for division in 1..4 {
-        let y = origin.y + height * division as f32 / 4.0;
-        grid.move_to(point(origin.x, y));
-        grid.line_to(point(origin.x + width, y));
-    }
-    for division in 1..8 {
-        let x = origin.x + width * division as f32 / 8.0;
-        grid.move_to(point(x, origin.y));
-        grid.line_to(point(x, origin.y + height));
+    if let Some(axes) = axes {
+        for (y, _) in &axes.vertical {
+            let y = origin.y + height * (1.0 - y);
+            grid.move_to(point(origin.x, y));
+            grid.line_to(point(origin.x + width, y));
+        }
+        for (x, _) in &axes.horizontal {
+            let x = origin.x + width * *x;
+            grid.move_to(point(x, origin.y));
+            grid.line_to(point(x, origin.y + height));
+        }
+    } else {
+        for division in 1..4 {
+            let y = origin.y + height * division as f32 / 4.0;
+            grid.move_to(point(origin.x, y));
+            grid.line_to(point(origin.x + width, y));
+        }
+        for division in 1..8 {
+            let x = origin.x + width * division as f32 / 8.0;
+            grid.move_to(point(x, origin.y));
+            grid.line_to(point(x, origin.y + height));
+        }
     }
     if let Ok(grid) = grid.build() {
         window.paint_path(grid, rgb(style.rail));

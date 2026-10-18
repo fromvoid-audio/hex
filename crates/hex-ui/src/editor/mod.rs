@@ -19,7 +19,10 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+#[cfg(test)]
+mod test_environment;
 
+pub(crate) mod changelog;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
@@ -340,6 +343,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
+    changelog::bind_keys(cx);
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     device_panel::bind_keyboard_keys(cx);
@@ -700,8 +704,11 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
+    #[cfg(test)]
+    test_environment: Arc<test_environment::Environment>,
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
+    changelog: changelog::State,
     theme_settings: theme_settings::ThemeSettingsState,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
@@ -739,15 +746,36 @@ impl EditorView {
         service: Service,
         output: Result<crate::EditorAudio, String>,
     ) -> Self {
-        Self::new_with_browser_preferences_path(
-            window,
-            cx,
-            service,
-            output,
-            browser::default_preferences_path(),
-            recent_projects::default_preferences_path(),
-            theme_settings::default_preferences_path(),
-        )
+        #[cfg(not(test))]
+        {
+            Self::new_with_browser_preferences_path(
+                window,
+                cx,
+                service,
+                output,
+                browser::default_preferences_path(),
+                recent_projects::default_preferences_path(),
+                theme_settings::default_preferences_path(),
+            )
+        }
+        #[cfg(test)]
+        {
+            Self::new_with_browser_paths(
+                window,
+                cx,
+                service,
+                output,
+                (
+                    std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
+                ),
+                test_environment::Inputs {
+                    defaults: [true; 3],
+                    ..Default::default()
+                },
+            )
+        }
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -759,14 +787,20 @@ impl EditorView {
         preferences_path: std::path::PathBuf,
         recent_projects_path: std::path::PathBuf,
     ) -> Self {
-        Self::new_with_browser_preferences_path(
+        Self::new_with_browser_paths(
             window,
             cx,
             service,
             output,
-            preferences_path,
-            recent_projects_path,
-            theme_settings::default_preferences_path(),
+            (
+                preferences_path,
+                recent_projects_path,
+                std::path::PathBuf::new(),
+            ),
+            test_environment::Inputs {
+                defaults: [false, false, true],
+                ..Default::default()
+            },
         )
     }
 
@@ -809,8 +843,10 @@ impl EditorView {
                 directory.join("recent-projects.json"),
                 directory.join("theme.json"),
             ),
-            Some(directory.join("samples")),
-            None,
+            test_environment::Inputs {
+                directory: Some(directory.join("samples")),
+                ..Default::default()
+            },
         )
     }
 
@@ -833,10 +869,8 @@ impl EditorView {
                 recent_projects_path,
                 theme_preferences_path,
             ),
-            #[cfg(all(test, feature = "ui-test-support"))]
-            None,
-            #[cfg(all(test, feature = "ui-test-support"))]
-            None,
+            #[cfg(test)]
+            test_environment::Inputs::default(),
         )
     }
 
@@ -846,13 +880,14 @@ impl EditorView {
         service: Service,
         output: Result<crate::EditorAudio, String>,
         paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
-        #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
-            std::path::PathBuf,
-        >,
-        #[cfg(all(test, feature = "ui-test-support"))] test_browser_home: Option<
-            std::path::PathBuf,
-        >,
+        #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
+        #[cfg(test)]
+        let test_environment = test_environment::Environment::new()
+            .expect("could not create private editor test environment; no ambient fallback");
+        #[cfg(test)]
+        let paths = test_environment.resolve_paths(paths, test_paths.defaults);
+
         let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
@@ -971,8 +1006,12 @@ impl EditorView {
         let browser = browser::BrowserState::new(
             cx,
             preferences_path,
-            #[cfg(all(test, feature = "ui-test-support"))]
-            test_browser_home,
+            #[cfg(test)]
+            Some(
+                test_paths
+                    .home
+                    .unwrap_or_else(|| test_environment.home.clone()),
+            ),
         );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let theme_settings =
@@ -1146,8 +1185,11 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
+            #[cfg(test)]
+            test_environment,
             browser,
             recent_projects,
+            changelog: changelog::State::new(cx),
             theme_settings,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
@@ -1160,8 +1202,8 @@ impl EditorView {
             pending_time_range_move: None,
             suppress_cursor_click: false,
         };
-        #[cfg(all(test, feature = "ui-test-support"))]
-        if let Some(directory) = test_browser_directory {
+        #[cfg(test)]
+        if let Some(directory) = test_paths.directory {
             view.browser.directory = directory.clone();
             view.browser.places = vec![directory];
         }

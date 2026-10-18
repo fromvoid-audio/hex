@@ -205,3 +205,24 @@ handlers run in their local browser scope; painting/workers never restore focus.
 Close returns focus to the editor. This is separate from the unresolved native
 field-click focus-loss report2794 and the future double-click refinement2817.
 Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
+
+## compact picker headings and resize capture — pulse2841 / PR444
+
+At the exact 23 px picker minimum, the section headings show small themed line
+marks centered on the existing icon column. Their original single-line text boxes
+remain reserved but do not paint; separators overlay those boxes. Collections,
+Library, Places and open-settings rows therefore keep every source icon's existing
+x/y position and row height. Expanded headings return in the same slots, and full
+heading names remain available through hover tooltips. Item names keep progressive
+single-line clipping; selectable Place icons and native path identities are unchanged.
+
+Pointer resizing captures the minimum within one existing 4 px divider width.
+Once captured, the same drag stays locked until it exceeds two divider widths
+above minimum, preventing chatter near the threshold. A new drag starting at
+minimum also uses this release band. Outside the band, ordinary pointer widths
+remain continuous (subject to GPUI's existing device-pixel paint rounding). Mouse
+release retains the captured minimum. The settings gear still expands deliberately
+when opening settings, and closing already-open compact settings does not widen it.
+This state is transient editor layout; no new persisted format or global width
+quantization is introduced. Native physical drag/hover and accessibility inspection
+remain coordinator-owned acceptance, separate from headless scene/input tests.

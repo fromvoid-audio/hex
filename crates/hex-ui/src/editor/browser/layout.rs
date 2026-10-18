@@ -12,6 +12,15 @@ const SECTIONS: [(BrowserSection, &str); 4] = [
 const PICKER_CONTROL_SIZE: f32 = 22.0;
 const PICKER_BORDER_WIDTH: f32 = 1.0;
 const PICKER_MIN_WIDTH: f32 = PICKER_CONTROL_SIZE + PICKER_BORDER_WIDTH;
+const PICKER_RESIZE_WIDTH: f32 = 4.0;
+// Capture within one divider width; an extra divider width of intentional
+// expansion releases the current gesture, avoiding threshold chatter.
+fn picker_resize_width(raw: f32, maximum: f32, locked: bool) -> (f32, bool) {
+    let width = raw.clamp(PICKER_MIN_WIDTH, maximum);
+    let band = PICKER_RESIZE_WIDTH * if locked { 2.0 } else { 1.0 };
+    let locked = width <= PICKER_MIN_WIDTH + band;
+    (if locked { PICKER_MIN_WIDTH } else { width }, locked)
+}
 
 const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
@@ -25,7 +34,7 @@ const TAG_GROUPS: [(&str, &[&str]); 6] = [
 
 pub(super) struct BrowserLayout {
     sidebar_width: f32,
-    pub(super) sidebar_drag: Option<(f32, f32)>,
+    pub(super) sidebar_drag: Option<(f32, f32, bool)>,
     tags_visible: bool,
     editor_visible: bool,
     settings_visible: bool,
@@ -129,6 +138,52 @@ fn picker_heading(value: &str) -> Div {
         .whitespace_nowrap()
 }
 
+// Keep the original heading's text line box laid out, but do not paint its
+// descendants at the exact icon-only minimum. The separator is an overlay, so
+// neither its height nor text length can move subsequent source rows.
+fn picker_group_heading(value: &'static str, compact: bool) -> gpui::Stateful<Div> {
+    div()
+        .id(gpui::SharedString::from(format!(
+            "browser-picker-heading-{value}"
+        )))
+        .debug_selector(move || format!("browser-picker-heading-{value}"))
+        .relative()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .when(compact, |line| line.invisible())
+                .child(
+                    picker_heading(value)
+                        .debug_selector(move || format!("browser-picker-heading-text-{value}")),
+                ),
+        )
+        .when(compact, |heading| {
+            heading.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(PICKER_CONTROL_SIZE))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w(px(PICKER_CONTROL_SIZE - 2.0 * PICKER_RESIZE_WIDTH))
+                            .h(px(PICKER_BORDER_WIDTH))
+                            .bg(rgb(theme::color(theme::PaletteRole::Muted)))
+                            .debug_selector(move || format!("browser-picker-heading-mark-{value}")),
+                    ),
+            )
+        })
+        .tooltip(move |_, cx| browser_label_tooltip(value, cx))
+}
+
 fn browser_heading(value: &str) -> Div {
     browser_caption(value)
         .overflow_hidden()
@@ -223,6 +278,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let width = self.browser.layout.sidebar_width(width);
+        let compact = width == PICKER_MIN_WIDTH;
         let mut sidebar = div()
             .id("browser-sidebar")
             .w(px(width))
@@ -234,7 +290,7 @@ impl EditorView {
             .border_r_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .debug_selector(|| "browser-sidebar".to_owned())
-            .child(picker_heading("collections"));
+            .child(picker_group_heading("collections", compact));
         for (index, name) in ["favorites", "inspiration", "recent finds"]
             .into_iter()
             .enumerate()
@@ -289,8 +345,8 @@ impl EditorView {
             );
         }
         sidebar = sidebar
-            .child(picker_heading("collections pending"))
-            .child(picker_heading("library"));
+            .child(picker_group_heading("collections pending", compact))
+            .child(picker_group_heading("library", compact));
         for (index, (section, name)) in SECTIONS.into_iter().enumerate() {
             if !self.browser.layout.visible[index] {
                 continue;
@@ -354,7 +410,7 @@ impl EditorView {
             cx,
         ));
         if self.browser.layout.settings_visible {
-            sidebar = sidebar.child(picker_heading("sections · session"));
+            sidebar = sidebar.child(picker_group_heading("sections · session", compact));
             for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
                 let visible = self.browser.layout.visible[index];
                 sidebar = sidebar.child(
@@ -420,7 +476,7 @@ impl EditorView {
                 );
             }
         }
-        sidebar = sidebar.child(picker_heading("places"));
+        sidebar = sidebar.child(picker_group_heading("places", compact));
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
             let path = place.clone();
             let icon_path = place.clone();
@@ -534,7 +590,7 @@ impl EditorView {
         div()
             .id("browser-sidebar-resize")
             .debug_selector(|| "browser-sidebar-resize".to_owned())
-            .w(px(4.0))
+            .w(px(PICKER_RESIZE_WIDTH))
             .h_full()
             .flex_shrink_0()
             .cursor_col_resize()
@@ -551,8 +607,11 @@ impl EditorView {
                                 && bounds.contains(&event.position)
                             {
                                 down_entity.update(cx, |view, _| {
-                                    view.browser.layout.sidebar_drag =
-                                        Some((f32::from(event.position.x), sidebar_width));
+                                    view.browser.layout.sidebar_drag = Some((
+                                        f32::from(event.position.x),
+                                        sidebar_width,
+                                        sidebar_width == PICKER_MIN_WIDTH,
+                                    ));
                                 });
                             }
                         });
@@ -564,14 +623,17 @@ impl EditorView {
                             move_entity.update(cx, |view, cx| {
                                 if !event.dragging() {
                                     view.browser.layout.sidebar_drag = None;
-                                } else if let Some((start, initial)) =
+                                } else if let Some((start, initial, locked)) =
                                     view.browser.layout.sidebar_drag
                                 {
-                                    view.browser.layout.sidebar_width =
-                                        (initial + f32::from(event.position.x) - start).clamp(
-                                            PICKER_MIN_WIDTH,
-                                            (width - 124.0).max(PICKER_MIN_WIDTH),
-                                        );
+                                    let (next, locked) = picker_resize_width(
+                                        initial + f32::from(event.position.x) - start,
+                                        (width - 124.0).max(PICKER_MIN_WIDTH),
+                                        locked,
+                                    );
+                                    view.browser.layout.sidebar_width = next;
+                                    view.browser.layout.sidebar_drag =
+                                        Some((start, initial, locked));
                                     cx.notify();
                                 }
                             });
