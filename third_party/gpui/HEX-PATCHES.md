@@ -176,3 +176,16 @@ Combined with existing painted border widths, ancestor mask and real separator
 bounds, this detects an occluding later row separator. It adds no production
 paint/layout/input behavior or native framebuffer claim. Original archive and
 source hashes remain verified; the cumulative patch is regenerated.
+
+19 October project picker directory: additive
+`App::prompt_for_paths_with_directory(options, Option<&Path>)` delegates through
+Platform with ordinary-picker default behavior on other platforms. macOS applies
+the optional NSOpenPanel directoryURL before opening; old Open calls retain their
+behavior. Save and Open share a filesystem-representation NSURL helper preserving
+native bytes and refusing NUL, replacing Save's lossy display conversion. No
+security, permission or directory-creation policy changes. TestPlatform records
+Open directory and Save directory/suggested-name arguments and supports injected
+cancel/error results; these are not native picker acceptance. A test-support Mac
+NSURL roundtrip helper shows/configures no panel. Original archive/file hashes,
+license and prior deltas remain; the cumulative patch is checked by applying it
+to the hash-verified original archive and comparing every patched/added byte.

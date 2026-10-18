@@ -1,3 +1,5 @@
+diff --git a/src/accessibility.rs b/src/accessibility.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/accessibility.rs
 @@ -0,0 +1,243 @@
@@ -244,12 +246,24 @@
 +    /// Typed payload, revalidated against current semantics.
 +    pub action: AccessibilityAction,
 +}
+diff --git a/src/app.rs b/src/app.rs
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1122,0 +1123,10 @@
++    /// Select paths, optionally starting in an exact native directory.
++    /// Platforms without a directory override retain their ordinary picker.
++    pub fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.platform.prompt_for_paths_with_directory(options, directory)
++    }
++
+diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -120,6 +120,18 @@
- }
-
- impl TestAppContext {
+@@ -122,0 +123,12 @@
 +    /// Verify private cached-scene replay against the retained legacy painter.
 +    /// Test support only; no window, native graphics or public scene API.
 +    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
@@ -262,13 +276,7 @@
 +        self.test_platform.cursor_style()
 +    }
 +
-     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
-     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
-         let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -305,6 +317,16 @@
-         self.test_platform.simulate_new_path_selection(select_path);
-     }
-
+@@ -307,0 +320,30 @@
 +    /// Whether the test platform has an outstanding Open picker request.
 +    pub fn did_prompt_for_paths(&self) -> bool {
 +        self.test_platform.did_prompt_for_paths()
@@ -279,13 +287,27 @@
 +        self.test_platform.simulate_paths_selection(paths);
 +    }
 +
-     /// Simulates clicking a button in an platform-level alert dialog.
-     #[track_caller]
-     pub fn simulate_prompt_answer(&self, button: &str) {
-@@ -675,6 +697,95 @@
- }
-
- impl VisualTestContext {
++    /// Arguments of the pending injected Open request; never a native panel probe.
++    pub fn pending_open_directory(&self) -> Option<Option<std::path::PathBuf>> {
++        self.test_platform.pending_open_directory()
++    }
++    /// Initial directory and suggested name of an injected Save request.
++    pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
++        self.test_platform.pending_save_options()
++    }
++    pub fn simulate_paths_error(&self, message: &str) {
++        self.test_platform.simulate_paths_error(message);
++    }
++    pub fn simulate_new_path_error(&self, message: &str) {
++        self.test_platform.simulate_new_path_error(message);
++    }
++    /// Pure NSURL roundtrip in the Mac dependency; no panel is shown or configured.
++    #[cfg(target_os = "macos")]
++    pub fn picker_directory_url_roundtrip(&self, directory: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
++        crate::platform::mac::MacPlatform::picker_directory_url_for_test(directory)
++    }
++
+@@ -677,0 +720,89 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -375,9 +397,7 @@
 +        })
 +    }
 +
-     /// Provides a `Window` and `App` for the duration of the closure.
-     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
-         self.cx
+diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
 @@ -35,0 +36,15 @@
@@ -423,6 +443,7 @@
 @@ -94 +114 @@
 -        let ordering = max_intersecting_ordering + 1;
 +        let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
+diff --git a/src/elements/div.rs b/src/elements/div.rs
 --- a/src/elements/div.rs
 +++ b/src/elements/div.rs
 @@ -1227,0 +1228 @@
@@ -470,11 +491,13 @@
 +    }
 +}
 +
+diff --git a/src/gpui.rs b/src/gpui.rs
 --- a/src/gpui.rs
 +++ b/src/gpui.rs
 @@ -8,0 +9,2 @@
 +mod accessibility;
 +pub use accessibility::*;
+diff --git a/src/interactive.rs b/src/interactive.rs
 --- a/src/interactive.rs
 +++ b/src/interactive.rs
 @@ -363,0 +364,4 @@
@@ -497,12 +520,21 @@
 +            ScrollDelta::Lines(delta) => ScrollDelta::Lines(point(-delta.x, -delta.y)),
 +        }
 +    }
+diff --git a/src/platform.rs b/src/platform.rs
 --- a/src/platform.rs
 +++ b/src/platform.rs
 @@ -0,0 +1,2 @@
 +#[cfg(any(target_os = "macos", test))]
 +mod accessibility_bridge;
-@@ -491,0 +494,8 @@
+@@ -221,0 +224,7 @@
++    fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        _directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.prompt_for_paths(options)
++    }
+@@ -491,0 +501,8 @@
 +    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
 +    /// Revoke before accepted close callbacks or UI-owned resources are released.
 +    fn revoke_accessibility(&self) {}
@@ -511,25 +543,27 @@
 +        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
 +    ) {
 +    }
-@@ -1228,0 +1239 @@
+@@ -1228,0 +1246 @@
 +                hide_native_window_controls: Default::default(),
-@@ -1257,0 +1269,4 @@
+@@ -1257,0 +1276,4 @@
 +
 +    /// Hide the standard macOS close, minimize, and zoom buttons.
 +    /// This does not change the native titlebar or window movement/resizing flags.
 +    pub hide_native_window_controls: bool,
-@@ -1411,0 +1427,4 @@
+@@ -1411,0 +1434,4 @@
 +    /// A persistent invisible cursor for a window-scoped pointer adjustment.
 +    /// macOS uses a transparent image, without changing NSCursor hide counts.
 +    Hidden,
 +
-@@ -1438,0 +1458,6 @@
+@@ -1438,0 +1465,6 @@
 +
 +    /// A bracket cursor for trimming an item from its left edge.
 +    ResizeLeftBracket,
 +
 +    /// A bracket cursor for trimming an item from its right edge.
 +    ResizeRightBracket,
+diff --git a/src/platform/accessibility_bridge.rs b/src/platform/accessibility_bridge.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/platform/accessibility_bridge.rs
 @@ -0,0 +1,288 @@
@@ -821,6 +855,7 @@
 +        assert!(!bridge.revoke());
 +    }
 +}
+diff --git a/src/platform/linux/platform.rs b/src/platform/linux/platform.rs
 --- a/src/platform/linux/platform.rs
 +++ b/src/platform/linux/platform.rs
 @@ -705 +705 @@
@@ -829,6 +864,7 @@
 @@ -712,0 +713,2 @@
 +            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
 +            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
+diff --git a/src/platform/linux/wayland.rs b/src/platform/linux/wayland.rs
 --- a/src/platform/linux/wayland.rs
 +++ b/src/platform/linux/wayland.rs
 @@ -17 +17 @@
@@ -837,16 +873,20 @@
 @@ -24,0 +25,2 @@
 +            CursorStyle::ResizeLeftBracket => Shape::WResize,
 +            CursorStyle::ResizeRightBracket => Shape::EResize,
+diff --git a/src/platform/linux/wayland/client.rs b/src/platform/linux/wayland/client.rs
 --- a/src/platform/linux/wayland/client.rs
 +++ b/src/platform/linux/wayland/client.rs
 @@ -1790,0 +1791 @@
 +                                direction_inverted_from_device: false,
 @@ -1802,0 +1804 @@
 +                            direction_inverted_from_device: false,
+diff --git a/src/platform/linux/x11/client.rs b/src/platform/linux/x11/client.rs
 --- a/src/platform/linux/x11/client.rs
 +++ b/src/platform/linux/x11/client.rs
 @@ -2217,0 +2218 @@
 +        direction_inverted_from_device: false,
+diff --git a/src/platform/mac/accessibility.rs b/src/platform/mac/accessibility.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/platform/mac/accessibility.rs
 @@ -0,0 +1,1000 @@
@@ -1850,6 +1890,7 @@
 +        send_sync::<ElementData>();
 +    }
 +}
+diff --git a/src/platform/mac/events.rs b/src/platform/mac/events.rs
 --- a/src/platform/mac/events.rs
 +++ b/src/platform/mac/events.rs
 @@ -235,0 +236,2 @@
@@ -1857,6 +1898,7 @@
 +                        msg_send![native_event, isDirectionInvertedFromDevice];
 @@ -236,0 +239 @@
 +                        direction_inverted_from_device: direction_inverted == YES,
+diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 --- a/src/platform/mac/platform.rs
 +++ b/src/platform/mac/platform.rs
 @@ -22 +22 @@
@@ -1869,6 +1911,9 @@
 +        NSSize, NSString, NSUInteger, NSURL,
 @@ -45,0 +46 @@
 +    rc::StrongPtr,
+@@ -53 +54 @@
+-    ffi::{CStr, OsStr, c_void},
++    ffi::{CStr, CString, OsStr, c_void},
 @@ -70,0 +72,89 @@
 +
 +/// A cached transparent cursor avoids NSCursor's process-wide hide count.
@@ -1963,17 +2008,59 @@
 +    hidden_cursor: Option<StrongPtr>,
 +    resize_left_bracket_cursor: Option<StrongPtr>,
 +    resize_right_bracket_cursor: Option<StrongPtr>,
-@@ -199,0 +293,5 @@
+@@ -188,0 +282,10 @@
++    #[cfg(any(test, feature = "test-support"))]
++    pub(crate) fn picker_directory_url_for_test(directory: &Path) -> Result<PathBuf> {
++        unsafe {
++            let pool = NSAutoreleasePool::new(nil);
++            let result = ns_directory_url(directory).and_then(|url| ns_url_to_path(url));
++            pool.drain();
++            result
++        }
++    }
++
+@@ -199,0 +303,5 @@
 +        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
 +            (None, None)
 +        } else {
 +            (make_bracket_cursor(true), make_bracket_cursor(false))
 +        };
-@@ -221,0 +320,3 @@
+@@ -221,0 +330,3 @@
 +            hidden_cursor: if headless { None } else { make_hidden_cursor() },
 +            resize_left_bracket_cursor,
 +            resize_right_bracket_cursor,
-@@ -973,2 +1074,17 @@
+@@ -713,0 +825,9 @@
++        self.prompt_for_paths_with_directory(options, None)
++    }
++
++    fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        let directory = directory.map(Path::to_owned);
+@@ -718,0 +839,9 @@
++                    if let Some(directory) = directory {
++                        match ns_directory_url(&directory) {
++                            Ok(url) => panel.setDirectoryURL(url),
++                            Err(error) => {
++                                let _ = done_tx.send(Err(error));
++                                return;
++                            }
++                        }
++                    }
+@@ -772,3 +901,7 @@
+-                    let path = ns_string(directory.to_string_lossy().as_ref());
+-                    let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
+-                    panel.setDirectoryURL(url);
++                    match ns_directory_url(&directory) {
++                        Ok(url) => panel.setDirectoryURL(url),
++                        Err(error) => {
++                            let _ = done_tx.send(Err(error));
++                            return;
++                        }
++                    }
+@@ -973,2 +1106,17 @@
 -            let new_cursor: id = match style {
 -                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
 +            let bracket_cursor = {
@@ -1993,12 +2080,26 @@
 +            };
 +            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
 +                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-@@ -983,0 +1100,2 @@
+@@ -983,0 +1132,2 @@
 +                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
 +                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
-@@ -1008 +1126 @@
+@@ -1008 +1158 @@
 -            };
 +            });
+@@ -1538,0 +1689,12 @@
++// NSURL copies the filesystem representation; no lossy display conversion.
++unsafe fn ns_directory_url(directory: &Path) -> Result<id> {
++    let bytes = CString::new(directory.as_os_str().as_bytes())
++        .context("picker directory contains a nul byte")?;
++    let url: id = unsafe {
++        msg_send![class!(NSURL), fileURLWithFileSystemRepresentation: bytes.as_ptr()
++            isDirectory: YES relativeToURL: nil]
++    };
++    anyhow::ensure!(url != nil, "could not represent picker directory as a file url");
++    Ok(url)
++}
++
+diff --git a/src/platform/mac/window.rs b/src/platform/mac/window.rs
 --- a/src/platform/mac/window.rs
 +++ b/src/platform/mac/window.rs
 @@ -0,0 +1,2 @@
@@ -2126,27 +2227,22 @@
 +        native_accessibility::detach(this);
 @@ -2058,0 +2167 @@
 +    native_accessibility::revoke_object(this);
+diff --git a/src/platform/test/platform.rs b/src/platform/test/platform.rs
 --- a/src/platform/test/platform.rs
 +++ b/src/platform/test/platform.rs
-@@ -88,9 +88,14 @@
- pub(crate) struct TestPrompts {
-     multiple_choice: VecDeque<TestPrompt>,
-     new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
-+    paths: VecDeque<oneshot::Sender<Result<Option<Vec<PathBuf>>>>>,
- }
-
- impl TestPlatform {
+@@ -90 +90,2 @@
+-    new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
++    new_path: VecDeque<(PathBuf, Option<String>, oneshot::Sender<Result<Option<PathBuf>>>)>,
++    paths: VecDeque<(Option<PathBuf>, oneshot::Sender<Result<Option<Vec<PathBuf>>>>)>,
+@@ -93,0 +95,4 @@
 +    pub(crate) fn cursor_style(&self) -> CursorStyle {
 +        *self.active_cursor.lock()
 +    }
 +
-     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
-         #[cfg(target_os = "windows")]
-         let bitmap_factory = unsafe {
-@@ -153,6 +158,21 @@
-             )
-         };
-         prompt.tx.send(ix).ok();
+@@ -130 +135 @@
+-        let (path, tx) = self
++        let (path, _, tx) = self
+@@ -155,0 +161,32 @@
 +    }
 +
 +    pub(crate) fn did_prompt_for_paths(&self) -> bool {
@@ -2154,7 +2250,7 @@
 +    }
 +
 +    pub(crate) fn simulate_paths_selection(&self, paths: Option<Vec<PathBuf>>) {
-+        let tx = self
++        let (_, tx) = self
 +            .prompts
 +            .borrow_mut()
 +            .paths
@@ -2162,33 +2258,60 @@
 +            .expect("no pending open paths prompt");
 +        self.background_executor().set_waiting_hint(None);
 +        tx.send(Ok(paths)).ok();
-     }
-
-     pub(crate) fn has_pending_prompt(&self) -> bool {
-@@ -335,7 +355,11 @@
-         &self,
-         _options: crate::PathPromptOptions,
-     ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
++    }
++
++    pub(crate) fn pending_open_directory(&self) -> Option<Option<PathBuf>> {
++        self.prompts.borrow().paths.front().map(|(directory, _)| directory.clone())
++    }
++    pub(crate) fn pending_save_options(&self) -> Option<(PathBuf, Option<String>)> {
++        self.prompts.borrow().new_path.front().map(|(directory, name, _)| (directory.clone(), name.clone()))
++    }
++    pub(crate) fn simulate_paths_error(&self, message: &str) {
++        let (_, tx) = self.prompts.borrow_mut().paths.pop_front().expect("pending open prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
++    }
++    pub(crate) fn simulate_new_path_error(&self, message: &str) {
++        let (_, _, tx) = self.prompts.borrow_mut().new_path.pop_front().expect("pending save prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
+@@ -335,0 +373,7 @@
++        options: crate::PathPromptOptions,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.prompt_for_paths_with_directory(options, None)
++    }
++
++    fn prompt_for_paths_with_directory(
++        &self,
+@@ -337,2 +381,6 @@
+-    ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
 -        unimplemented!()
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
 +        let (tx, rx) = oneshot::channel();
-+        self.background_executor()
-+            .set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
-+        self.prompts.borrow_mut().paths.push_back(tx);
++        self.background_executor().set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
++        self.prompts.borrow_mut().paths.push_back((directory.map(Path::to_owned), tx));
 +        rx
-     }
-
-     fn prompt_for_new_path(
+@@ -344 +392 @@
+-        _suggested_name: Option<&str>,
++        suggested_name: Option<&str>,
+@@ -352 +400 @@
+-            .push_back((directory.to_path_buf(), tx));
++            .push_back((directory.to_path_buf(), suggested_name.map(str::to_owned), tx));
+diff --git a/src/platform/windows/events.rs b/src/platform/windows/events.rs
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
 @@ -555,0 +556 @@
 +            direction_inverted_from_device: false,
 @@ -601,0 +603 @@
 +            direction_inverted_from_device: false,
+diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 --- a/src/platform/windows/util.rs
 +++ b/src/platform/windows/util.rs
 @@ -126,0 +127,2 @@
 +        | CursorStyle::ResizeLeftBracket
 +        | CursorStyle::ResizeRightBracket
+diff --git a/src/scene.rs b/src/scene.rs
 --- a/src/scene.rs
 +++ b/src/scene.rs
 @@ -68 +68 @@
@@ -2918,11 +3041,13 @@
 +        Ok(())
 +    }
 +}
+diff --git a/src/taffy.rs b/src/taffy.rs
 --- a/src/taffy.rs
 +++ b/src/taffy.rs
 @@ -312 +312 @@
 -            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
 +            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
+diff --git a/src/view.rs b/src/view.rs
 --- a/src/view.rs
 +++ b/src/view.rs
 @@ -25,0 +26 @@
@@ -2952,6 +3077,7 @@
 +                                epoch: self.cache_epoch,
 @@ -325,0 +341 @@
 +            cache_epoch: 0,
+diff --git a/src/window.rs b/src/window.rs
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -667,0 +668 @@
