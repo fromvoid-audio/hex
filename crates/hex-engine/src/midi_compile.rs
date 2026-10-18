@@ -1,6 +1,6 @@
 //! Bounded control-side compilation of MIDI edges and stateless note spans.
 use crate::Invalid;
-mod construction;
+pub(crate) mod construction;
 use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
 
