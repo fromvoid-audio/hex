@@ -203,7 +203,7 @@ pub(super) fn beats(
         };
         for frame in event.output..stop {
             if frame % 1_024 == 0 {
-                work.check(1_024 * 128)?;
+                work.check(1_024 * 64)?;
             }
             let age = (frame - event.output) as f64;
             let mut position = age * pitch;
@@ -216,6 +216,10 @@ pub(super) fn beats(
             {
                 let phase = (position - (length - overlap)).rem_euclid(tail_length - overlap);
                 if phase < overlap {
+                    // The regular block charge covers one reconstruction.
+                    // Charge the second only where an overlap really reads it;
+                    // Off and single-read spans retain their existing budget.
+                    work.check(64)?;
                     let outgoing = sample_at(length - overlap + phase);
                     let incoming = sample_at(tail_begin + phase);
                     let x = phase / overlap;

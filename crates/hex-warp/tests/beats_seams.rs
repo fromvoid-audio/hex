@@ -222,3 +222,54 @@ fn beats_tail_modes_keep_fractional_attack_times_and_stereo_schedule() {
         }
     }
 }
+
+#[test]
+fn beats_work_budget_charges_overlap_reads_without_doubling_stop_playback() {
+    let source = vec![[0.1; 2]; 4_000];
+    let map = TimeMap::new(
+        vec![MapSegment {
+            output_start: 0,
+            output_end: 8_000,
+            source_start_q32: 0,
+            source_end_q32: 4_000_i128 << 32,
+        }],
+        8_000,
+    )
+    .unwrap();
+    let prepare = |tail| {
+        render(
+            &Request {
+                input: Input {
+                    frames: &source,
+                    sample_rate: 48_000,
+                    region_start: 0,
+                    region_length: 4_000,
+                    phase: 0,
+                    looping: false,
+                    envelope: &[],
+                },
+                attacks: &[0],
+                map: &map,
+                output_frames: 8_000,
+                pitch_cents: 0,
+                mode: Mode::Beats {
+                    division_frames: None,
+                    tail,
+                    decay: 100,
+                },
+            },
+            &mut || false,
+        )
+        .unwrap()
+    };
+    let stop = prepare(Tail::Off);
+    let forward = prepare(Tail::Forward);
+    assert!(
+        forward.work_units > stop.work_units,
+        "the additional tail reads must be charged"
+    );
+    assert!(
+        forward.work_units < stop.work_units * 2,
+        "single-read playback must not pay for a second read on every frame"
+    );
+}
