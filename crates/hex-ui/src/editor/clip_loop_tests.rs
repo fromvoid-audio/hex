@@ -154,8 +154,9 @@ fn midi_loop_first_activation_captures_trimmed_source_and_real_repeats_without_n
         occurrences(looping, 4 * Q + Q / 2).is_empty(),
         "hidden source notes remain authored but outside cycle"
     );
-    let saved = hex_storage::encode(&after).unwrap();
-    assert_eq!(hex_storage::decode(&saved).unwrap(), after);
+    // UI deliberately has no storage dependency: validate its complete model snapshot.
+    // Byte save/reopen remains a Session/Storage integration check after gesture wiring.
+    assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
     assert!(editor.undo());
     assert_eq!(editor.project(), &before);
     assert!(editor.redo());
