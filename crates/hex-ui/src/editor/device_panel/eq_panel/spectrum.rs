@@ -264,7 +264,15 @@ pub(super) fn sync_selected(
             // or its selected EQ. Pending publication is not the old output's
             // setup/closed failure; retire only feedback owned by this analyzer.
             view.device_panel.spectrum_result = None;
-            clear_status(view);
+            if view
+                .device_panel
+                .eq_spectrum
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message != WAITING)
+            {
+                clear_status(view);
+            }
             return;
         }
         Err(error) => {

@@ -255,7 +255,8 @@ The recovery regressions reproduce both a stored setup failure and a real
 closed public control endpoint surviving after `recover_audio` removes the
 old output without changing the project generation or selected EQ. Pending
 context now retires only the analyzer-owned status and old spectrum pixels.
-A newer unrelated save/edit message remains intact. No new target is claimed
+A newer unrelated save/edit message and a current explicit-On waiting notice
+remain intact. No new target is claimed
 before the replacement endpoint's current project graph is published; repeated
 pending-publication renders cannot revive a retired endpoint's error.
 
