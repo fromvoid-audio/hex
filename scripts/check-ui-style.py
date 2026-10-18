@@ -14,6 +14,8 @@ widgets = (
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
+    # Waveform body wrappers contain view elements; preview titles normalize text.
+    'clip_waveform_body(', 'self.clip_name_preview_header(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -140,7 +142,13 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/display_error.rs'
             and suffix.startswith('self.display_text())')
         )
-        if not suffix.startswith(widgets) and not typed_error:
+        # This fixture canvas records paint bounds and emits no text. Keep the
+        # qualified call local rather than exempting its file or other canvases.
+        fixture_canvas = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/waveform_header_ui_test.rs'
+            and suffix.startswith('gpui::canvas(')
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
