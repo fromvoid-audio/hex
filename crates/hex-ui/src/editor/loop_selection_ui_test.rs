@@ -33,10 +33,21 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView>, ClipId, ClipId) {
+fn fixture(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    ClipId,
+    ClipId,
+    super::external_audio_drop_ui_test::BatchFiles,
+) {
     cx.update(super::bind_editor_keys);
     let files = super::external_audio_drop_ui_test::BatchFiles::new();
     let wav = files.wav("loop.wav", 48_000, 48_000);
+    // Own discovery and every preferences/cache path before constructor startup.
+    let directory = wav.parent().unwrap().to_path_buf();
+    std::fs::create_dir(directory.join("samples")).unwrap();
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav)).unwrap();
@@ -64,9 +75,11 @@ fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView
     let editor = cx
         .update_window(handle, |_, window, cx| {
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new(window, cx, service, Err("offline loop test".into()))
+                EditorView::new_for_test_with_browser_directory(window, cx, service, &directory)
             });
             editor.update(cx, |view, cx| {
+                assert_eq!(view.browser.directory, directory.join("samples"));
+                assert_eq!(view.browser.places, vec![directory.join("samples")]);
                 view.state = Some(event.state);
                 view.focus.focus(window);
                 cx.notify();
@@ -74,7 +87,7 @@ fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView
             editor
         })
         .unwrap();
-    (handle, editor, audio, midi)
+    (handle, editor, audio, midi, files)
 }
 fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
@@ -91,7 +104,7 @@ fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
 fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_history(
     cx: &mut TestAppContext,
 ) {
-    let (handle, editor, audio, midi) = fixture(cx);
+    let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     for (first, second, start, end) in [
@@ -156,7 +169,7 @@ fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_his
 }
 #[gpui::test]
 fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mut TestAppContext) {
-    let (handle, editor, audio, _) = fixture(cx);
+    let (handle, editor, audio, _, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     click(&mut visual, audio, false);
@@ -214,7 +227,7 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
 
 #[gpui::test]
 fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppContext) {
-    let (handle, editor, audio, midi) = fixture(cx);
+    let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     // No selection must not create a loop or toggle an existing one.
@@ -352,7 +365,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
 
 #[gpui::test]
 fn l_midi_end_uses_absolute_beat_endpoint_across_tempo_change(cx: &mut TestAppContext) {
-    let (handle, editor, _, midi) = fixture(cx);
+    let (handle, editor, _, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.update(&mut visual, |v, _| {
@@ -384,7 +397,7 @@ fn l_midi_end_uses_absolute_beat_endpoint_across_tempo_change(cx: &mut TestAppCo
 fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
     cx: &mut TestAppContext,
 ) {
-    let (handle, editor, audio, midi) = fixture(cx);
+    let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.update(&mut visual, |v, _| {
@@ -474,7 +487,7 @@ fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
 fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     cx: &mut TestAppContext,
 ) {
-    let (handle, editor, audio, _) = fixture(cx);
+    let (handle, editor, audio, _, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     click(&mut visual, audio, false);
@@ -660,7 +673,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
 fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
     cx: &mut TestAppContext,
 ) {
-    let (handle, editor, _, midi) = fixture(cx);
+    let (handle, editor, _, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::AddScene {
@@ -727,7 +740,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
         rc::Rc,
     };
     for native in [false, true] {
-        let (handle, editor, audio, _) = fixture(cx);
+        let (handle, editor, audio, _, _files) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         click(&mut visual, audio, false);
