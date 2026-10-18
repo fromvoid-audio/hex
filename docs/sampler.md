@@ -389,3 +389,21 @@ queries for the exact retained model, including an honest Empty state. It expose
 no Project, NativeDeviceState, source lease or owning waveform. This does not
 register the instrument, establish resource readiness, or finish the functional
 native panel, filters/modulation/warp, graph admission or musical-use acceptance.
+
+### Canonical Slice marker edit primitive
+
+The current control-side Slice edit helper inserts, moves and removes actual
+source-frame markers in one returned current-format state. The first marker is
+the existing start flag and uses the start control; other markers cannot cross
+neighbours, duplicate another marker or leave the region. Insertion/removal
+renumbers later MIDI slice keys and refuses beyond the actual 128-key/marker
+limit. Host resource binding, gain and other sound controls are retained.
+
+Four focused cloud tests cover refusal without source mutation, current-format
+roundtrip/metadata, exact mapped-key capacity and independent original-PCM note
+regions before/after a marker edit, including partitioned rendering. All 42
+Sampler regressions pass on this source. This is a control primitive for the
+pending waveform interaction overlay, not a wired native panel or an admitted
+registered device. Its caller must still use the existing canonical transaction
+and one completed Undo gesture; production loading/UI and full graph safeguards
+remain open. No automatic slice/transient detection or new media owner is added.

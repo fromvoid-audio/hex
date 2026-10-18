@@ -8,7 +8,9 @@ pub const STATE_VERSION: u32 = 1;
 pub const SOURCE_SLOT: u32 = 1;
 const PREFIX: usize = 96;
 mod read;
+mod slice_edit;
 pub use read::{DeviceStateRead, SamplerReadMode, SamplerStateRead};
+pub use slice_edit::{SliceEdit, edit_slice_on_control};
 
 /// Current device envelope. Empty is a real unbound instrument state, with no
 /// invented source length/peaks or resource reference. Loaded settings keep the

@@ -291,6 +291,18 @@ pub use hex_devices::sampler::state::{
     DeviceStateRead as SamplerDeviceStateRead, SamplerReadMode, SamplerStateRead,
 };
 
+/// Canonical marker edits for the upcoming source-region interaction overlay.
+/// These materialize state on control; the caller still uses one expected-state
+/// transaction/gesture, never a callback mutation or registry bypass.
+pub use hex_devices::sampler::state::SliceEdit as SamplerSliceEdit;
+pub fn edit_sampler_slice_on_control(
+    current: &hex_lattice_contract::NativeDeviceState,
+    edit: SamplerSliceEdit,
+) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    hex_devices::sampler::state::edit_slice_on_control(current, edit)
+        .map_err(|_| Invalid("sampler slice edit is outside its current source or key range"))
+}
+
 /// Validate current authored Sampler metadata before starting bounded worker
 /// I/O. This does not admit a source, resource graph or registry processing.
 pub fn validate_sampler_state_on_control(
