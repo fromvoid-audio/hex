@@ -7,17 +7,74 @@ use gpui::{
 
 gpui::actions!(hex_changelog, [OpenChangelog, CloseChangelog]);
 
+#[cfg(all(test, feature = "ui-test-support"))]
+type PaintSamples = std::rc::Rc<
+    std::cell::RefCell<std::collections::HashMap<String, (gpui::Hsla, gpui::SharedString)>>,
+>;
+
 pub(super) struct State {
     open: bool,
     focus: FocusHandle,
     close_focus: FocusHandle,
-    lines: Vec<String>,
+    document: Document,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    painted: PaintSamples,
     scroll: gpui::ScrollHandle,
 }
 
-fn notes(raw: &str) -> Result<Vec<String>, &'static str> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Category {
+    Features,
+    Improvements,
+    Fixes,
+}
+impl Category {
+    const ALL: [Self; 3] = [Self::Features, Self::Improvements, Self::Fixes];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Features => "features",
+            Self::Improvements => "improvements",
+            Self::Fixes => "fixes",
+        }
+    }
+    fn index(self) -> usize {
+        match self {
+            Self::Features => 0,
+            Self::Improvements => 1,
+            Self::Fixes => 2,
+        }
+    }
+    fn color(self) -> PaletteRole {
+        match self {
+            Self::Features => PaletteRole::Secondary,
+            Self::Improvements => PaletteRole::Text,
+            Self::Fixes => PaletteRole::Primary,
+        }
+    }
+}
+struct Batch {
+    version: String,
+    source: String,
+    details: String,
+    groups: [Vec<String>; 3],
+}
+struct Document {
+    batches: Vec<Batch>,
+    message: Option<String>,
+}
+impl Document {
+    fn message(message: impl Into<String>) -> Self {
+        Self {
+            batches: Vec::new(),
+            message: Some(message.into()),
+        }
+    }
+}
+
+// Preserve the existing input validation; only the display projection changes.
+fn notes(raw: &str) -> Result<Document, &'static str> {
     if raw.is_empty() {
-        return Ok(vec!["changelog unavailable for this build".into()]);
+        return Ok(Document::message("changelog unavailable for this build"));
     }
     let value: serde_json::Value =
         serde_json::from_str(raw).map_err(|_| "invalid changelog data")?;
@@ -27,7 +84,7 @@ fn notes(raw: &str) -> Result<Vec<String>, &'static str> {
     let batches = value["batches"]
         .as_array()
         .ok_or("invalid changelog history")?;
-    let mut lines = Vec::new();
+    let mut result = Vec::new();
     for batch in batches.iter().rev() {
         let version = batch["input"]["version"]
             .as_str()
@@ -36,17 +93,18 @@ fn notes(raw: &str) -> Result<Vec<String>, &'static str> {
             .as_str()
             .filter(|v| v.len() == 40 && v.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or("missing changelog coverage")?;
-        lines.push(format!("{version} · notes through {}", &source[..8]));
         let entries = batch["result"]["entries"]
             .as_array()
             .ok_or("invalid changelog entries")?;
-        if entries.is_empty() {
-            lines.push("no user-facing changes in this update".into());
-        }
+        let mut groups: [Vec<String>; 3] = Default::default();
         for entry in entries {
             let category = entry["category"]
                 .as_str()
-                .filter(|v| ["features", "fixes", "improvements"].contains(v))
+                .and_then(|v| {
+                    Category::ALL
+                        .into_iter()
+                        .find(|category| category.label() == v)
+                })
                 .ok_or("invalid changelog category")?;
             let text = entry["text"]
                 .as_str()
@@ -57,13 +115,36 @@ fn notes(raw: &str) -> Result<Vec<String>, &'static str> {
                         && !v.contains(['\n', '\r'])
                 })
                 .ok_or("invalid changelog entry")?;
-            lines.push(format!("{category} · {text}"));
+            groups[category.index()].push(text.to_owned());
         }
+        // Keep full original coverage/provenance available without repeating it
+        // before each note. These are display details, never regenerated claims.
+        let mut details = format!("version {version} · notes through {source}");
+        for (label, field) in [
+            ("coverage starts at", &batch["input"]["base"]),
+            ("generated", &batch["generated_at"]),
+            ("generator", &batch["generator"]),
+            ("origin", &batch["execution"]["origin"]),
+            ("evidence", &batch["execution"]["evidence_commit"]),
+        ] {
+            if let Some(value) = field.as_str() {
+                details.push_str(&format!(" · {label} {value}"));
+            }
+        }
+        result.push(Batch {
+            version: version.to_owned(),
+            source: source.to_owned(),
+            details,
+            groups,
+        });
     }
-    if lines.is_empty() {
-        lines.push("changelog unavailable for this build".into());
+    if result.is_empty() {
+        return Ok(Document::message("changelog unavailable for this build"));
     }
-    Ok(lines)
+    Ok(Document {
+        batches: result,
+        message: None,
+    })
 }
 
 impl State {
@@ -71,13 +152,15 @@ impl State {
         self.open
     }
     pub(super) fn new(cx: &mut Context<EditorView>) -> Self {
-        let lines = notes(include_str!(concat!(env!("OUT_DIR"), "/changelog.json")))
-            .unwrap_or_else(|error| vec![format!("changelog unavailable · {error}")]);
+        let document = notes(include_str!(concat!(env!("OUT_DIR"), "/changelog.json")))
+            .unwrap_or_else(|error| Document::message(format!("changelog unavailable · {error}")));
         Self {
             open: false,
             focus: cx.focus_handle(),
             close_focus: cx.focus_handle(),
-            lines,
+            document,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            painted: Default::default(),
             scroll: gpui::ScrollHandle::new(),
         }
     }
@@ -137,9 +220,178 @@ impl EditorView {
         }
     }
 
+    // Test-only paint observation reads the actual inherited text style during
+    // GPUI paint. It neither supplies hover state nor changes production input.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn changelog_paint_probe(&self, key: String) -> impl gpui::IntoElement {
+        let painted = std::rc::Rc::clone(&self.changelog.painted);
+        gpui::canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                let style = window.text_style();
+                painted
+                    .borrow_mut()
+                    .insert(key, (style.color, style.font_family));
+            },
+        )
+        .absolute()
+        .inset_0()
+    }
+
+    fn changelog_note(
+        &self,
+        batch: usize,
+        category: Category,
+        index: usize,
+        text: &str,
+    ) -> Stateful<Div> {
+        let key = format!("changelog-note-{batch}-{}-{index}", category.label());
+        let selector = key.clone();
+        let row = div()
+            .id(gpui::SharedString::from(key.clone()))
+            .debug_selector(move || selector.clone())
+            .relative()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .overflow_hidden()
+            .px_2()
+            .py_1()
+            .text_sm()
+            .line_height(gpui::relative(1.4))
+            .text_color(rgb(theme::color(PaletteRole::Text)))
+            .bg(rgb(theme::color(PaletteRole::Surface)))
+            .cursor(gpui::CursorStyle::Arrow)
+            .hover(|style| {
+                style
+                    .text_color(rgb(theme::color(PaletteRole::Secondary)))
+                    .bg(rgb(theme::color(PaletteRole::Hover)))
+            })
+            .child(theme::text(text));
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let row = row.child(self.changelog_paint_probe(key));
+        row
+    }
+
+    fn changelog_group(&self, batch: usize, category: Category, entries: &[String]) -> Div {
+        let key = format!("changelog-heading-{batch}-{}", category.label());
+        let selector = key.clone();
+        let heading = div()
+            .id(gpui::SharedString::from(key.clone()))
+            .debug_selector(move || selector.clone())
+            .relative()
+            .w_full()
+            .min_w_0()
+            .px_2()
+            .py_1()
+            .text_xs()
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_color(rgb(theme::color(category.color())))
+            .border_b_1()
+            .border_color(rgb(theme::color(PaletteRole::Border)))
+            .child(theme::text(category.label()));
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let heading = heading.child(self.changelog_paint_probe(key));
+        div()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(heading)
+            .children(
+                entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, text)| self.changelog_note(batch, category, index, text)),
+            )
+    }
+
     pub(super) fn changelog_overlay(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         if !self.changelog.open {
             return None;
+        }
+        let mut notes = div()
+            .id("changelog-notes")
+            .debug_selector(|| "changelog-notes".into())
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.changelog.scroll)
+            .flex()
+            .flex_col()
+            .gap_3();
+        if let Some(message) = &self.changelog.document.message {
+            notes = notes.child(
+                div()
+                    .debug_selector(|| "changelog-unavailable".into())
+                    .text_sm()
+                    .text_color(rgb(theme::color(PaletteRole::Muted)))
+                    .child(theme::text(message)),
+            );
+        }
+        for (batch_index, batch) in self.changelog.document.batches.iter().enumerate() {
+            let details = theme::text(&batch.details);
+            let mut body = div()
+                .id(("changelog-batch", batch_index))
+                .debug_selector(move || format!("changelog-batch-{batch_index}"))
+                .w_full()
+                .min_w_0()
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .id(("changelog-coverage", batch_index))
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .child(theme::text(&batch.version)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(theme::color(PaletteRole::Muted)))
+                                .child(theme::text(format!(
+                                    "notes through {}",
+                                    &batch.source[..8]
+                                ))),
+                        )
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| super::transport::MiniTooltip {
+                                description: details.clone(),
+                            })
+                            .into()
+                        }),
+                );
+            let mut count = 0;
+            for category in Category::ALL {
+                let entries = &batch.groups[category.index()];
+                count += entries.len();
+                if !entries.is_empty() {
+                    body = body.child(self.changelog_group(batch_index, category, entries));
+                }
+            }
+            if count == 0 {
+                body = body.child(
+                    div()
+                        .debug_selector(|| "changelog-empty".into())
+                        .px_2()
+                        .text_sm()
+                        .text_color(rgb(theme::color(PaletteRole::Muted)))
+                        .child(theme::text("no user-facing changes in this update")),
+                );
+            }
+            notes = notes.child(body);
         }
         Some(
             div()
@@ -155,8 +407,6 @@ impl EditorView {
                 .key_context("hex_changelog")
                 .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "tab" {
-                        // Exactly one control in this reader. Keep either Tab
-                        // direction inside the overlay, away from the editor.
                         view.changelog.close_focus.focus(window);
                         cx.notify();
                     }
@@ -165,19 +415,28 @@ impl EditorView {
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
                     div()
+                        .debug_selector(|| "changelog-reader".into())
                         .w_full()
-                        .max_w(px(720.0))
+                        .max_w(px(640.0))
+                        .min_w_0()
                         .h_full()
-                        .p_4()
+                        .px_3()
+                        .py_2()
                         .flex()
                         .flex_col()
-                        .gap_3()
+                        .gap_2()
                         .child(
                             div()
                                 .flex()
+                                .flex_shrink_0()
                                 .justify_between()
                                 .items_center()
-                                .child(theme::text("changelog"))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .child(theme::text("changelog")),
+                                )
                                 .child(
                                     div()
                                         .id("close-changelog")
@@ -198,30 +457,7 @@ impl EditorView {
                                         })),
                                 ),
                         )
-                        .child(
-                            div()
-                                .id("changelog-notes")
-                                .debug_selector(|| "changelog-notes".into())
-                                .flex_1()
-                                .min_h_0()
-                                .overflow_y_scroll()
-                                .track_scroll(&self.changelog.scroll)
-                                .flex()
-                                .flex_col()
-                                .gap_3()
-                                .children(self.changelog.lines.iter().enumerate().map(
-                                    |(index, line)| {
-                                        div()
-                                            .id(("changelog-line", index))
-                                            .debug_selector(move || {
-                                                format!("changelog-line-{index}")
-                                            })
-                                            .flex_shrink_0()
-                                            .text_sm()
-                                            .child(theme::text(line))
-                                    },
-                                )),
-                        ),
+                        .child(notes),
                 ),
         )
     }
@@ -233,20 +469,46 @@ mod tests {
 
     #[test]
     fn unavailable_and_malformed_notes_are_distinct_from_generated_empty_updates() {
-        assert_eq!(notes("").unwrap(), ["changelog unavailable for this build"]);
+        assert_eq!(
+            notes("").unwrap().message.as_deref(),
+            Some("changelog unavailable for this build")
+        );
         assert!(notes("not json").is_err());
         let raw = r#"{"format":1,"batches":[{"input":{"version":"0.1.0","source":"0123456789012345678901234567890123456789"},"result":{"entries":[]}}]}"#;
         let parsed = notes(raw).unwrap();
-        assert_eq!(parsed[1], "no user-facing changes in this update");
-        assert!(parsed[0].contains("notes through 01234567"));
+        assert!(parsed.batches[0].groups.iter().all(Vec::is_empty));
+        assert!(parsed.batches[0].details.contains("notes through 01234567"));
     }
 
     #[test]
     fn notes_show_user_text_and_honest_coverage_not_private_diff_or_commit_references() {
         let raw = r#"{"format":1,"batches":[{"input":{"version":"0.1.0","source":"0123456789012345678901234567890123456789"},"result":{"entries":[{"category":"fixes","text":"open projects in one step","commits":["private-ref"]}]}}]}"#;
-        assert_eq!(notes(raw).unwrap()[1], "fixes · open projects in one step");
+        assert_eq!(
+            notes(raw).unwrap().batches[0].groups[2],
+            ["open projects in one step"]
+        );
         assert!(notes(&raw.replace("open projects", "Open projects")).is_err());
         assert!(notes(&raw.replace("fixes", "internal")).is_err());
+    }
+    #[test]
+    fn category_projection_preserves_validation_and_group_order() {
+        let raw = r#"{"format":1,"batches":[{"input":{"version":"0.1.0","source":"0123456789012345678901234567890123456789"},"result":{"entries":[{"category":"fixes","text":"first fix"},{"category":"features","text":"first feature"},{"category":"fixes","text":"second fix"}]}}]}"#;
+        let parsed = notes(raw).unwrap();
+        assert_eq!(parsed.batches[0].groups[0], ["first feature"]);
+        assert!(parsed.batches[0].groups[1].is_empty());
+        assert_eq!(parsed.batches[0].groups[2], ["first fix", "second fix"]);
+        for value in [
+            raw.replace("first fix", ""),
+            raw.replace("first fix", "Uppercase"),
+            raw.replace("first fix", "line\\nbreak"),
+            raw.replace("first fix", &"x".repeat(321)),
+            raw.replace("fixes", "unknown"),
+            raw.replace("0123456789012345678901234567890123456789", "invalid"),
+            raw.replace("\"format\":1", "\"format\":2"),
+        ] {
+            assert!(notes(&value).is_err());
+        }
+        assert!(notes(&raw.replace("first fix", &"é".repeat(320))).is_ok());
     }
 }
 
@@ -313,10 +575,7 @@ mod ui_tests {
         assert!(button.origin.x >= log.origin.x + log.size.width);
         assert!(button.origin.x + button.size.width <= px(960.0));
         editor.update(&mut visual, |view, cx| {
-            view.changelog.lines = vec![
-                "0.1.0 · notes through 01234567".into(),
-                "fixes · project opening responds on the first click".into(),
-            ];
+            view.changelog.document = notes(r#"{"format":1,"batches":[{"input":{"version":"0.1.0","source":"0123456789012345678901234567890123456789"},"result":{"entries":[{"category":"fixes","text":"project opening responds on the first click"}]}}]}"#).unwrap();
             cx.notify();
         });
         click(&mut visual, "open-changelog");
@@ -337,18 +596,16 @@ mod ui_tests {
         editor.update_in(&mut visual, |view, window, _cx| view.focus.focus(window));
         visual.simulate_keystrokes("cmd-shift-l");
         visual.run_until_parked();
-        assert!(visual.debug_bounds("changelog-line-1").is_some());
+        assert!(visual.debug_bounds("changelog-note-0-features-0").is_some());
         editor.read_with(&visual, |view, _| {
             assert!(view.changelog.open);
-            assert!(view.changelog.lines.len() > 1);
-            assert!(view.changelog.lines[0].contains("notes through"));
+            assert!(!view.changelog.document.batches.is_empty());
             assert!(
-                !view
-                    .changelog
-                    .lines
-                    .iter()
-                    .any(|line| line.contains("unavailable"))
+                view.changelog.document.batches[0]
+                    .details
+                    .contains("notes through")
             );
+            assert!(view.changelog.document.message.is_none());
         });
         visual.simulate_keystrokes("escape");
         editor.read_with(&visual, |view, _| assert!(!view.changelog.open));
@@ -417,9 +674,15 @@ mod ui_tests {
     fn long_notes_scroll_panel_is_bounded_and_close_does_not_edit_project(cx: &mut TestAppContext) {
         let (_directory, mut visual, editor) = fixture(cx);
         editor.update(&mut visual, |view, cx| {
-            view.changelog.lines = (0..100)
-                .map(|n| format!("fixes · example user-facing fixture note {n}"))
-                .collect();
+            view.changelog.document =
+                notes(include_str!(concat!(env!("OUT_DIR"), "/changelog.json"))).unwrap();
+            view.changelog.document.batches[0].groups = [
+                Vec::new(),
+                Vec::new(),
+                (0..100)
+                    .map(|n| format!("example user-facing fixture note {n}"))
+                    .collect(),
+            ];
             cx.notify();
         });
         click(&mut visual, "open-changelog");
@@ -455,6 +718,309 @@ mod ui_tests {
             );
         });
         click(&mut visual, "close-changelog");
+        editor.read_with(&visual, |view, _| assert!(!view.changelog.open));
+    }
+    fn painted(editor: &Entity<EditorView>, visual: &VisualTestContext, key: &str) -> gpui::Hsla {
+        editor.read_with(visual, |view, _| {
+            let samples = view.changelog.painted.borrow();
+            let (color, family) = samples
+                .get(key)
+                .unwrap_or_else(|| panic!("no actual paint for {key}"));
+            assert_eq!(family.as_ref(), theme::FONT_FAMILY);
+            *color
+        })
+    }
+
+    #[gpui::test]
+    fn changelog_grouped_headings_render_once_and_rows_hover_independently(
+        cx: &mut TestAppContext,
+    ) {
+        let (_directory, mut visual, editor) = fixture(cx);
+        click(&mut visual, "open-changelog");
+        for (selector, role) in [
+            ("changelog-heading-0-features", PaletteRole::Secondary),
+            ("changelog-heading-0-improvements", PaletteRole::Text),
+            ("changelog-heading-0-fixes", PaletteRole::Primary),
+        ] {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "one real category heading"
+            );
+            assert_eq!(
+                painted(&editor, &visual, selector),
+                rgb(theme::color(role)).into()
+            );
+        }
+        // Original generated notes are complete and ordered within each category.
+        let original: serde_json::Value =
+            serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/changelog.json")))
+                .unwrap();
+        editor.read_with(&visual, |view, _| {
+            let batch = &view.changelog.document.batches[0];
+            assert_eq!(batch.groups.iter().map(Vec::len).sum::<usize>(), 7);
+            for category in Category::ALL {
+                let expected: Vec<_> = original["batches"][0]["result"]["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry["category"] == category.label())
+                    .map(|entry| entry["text"].as_str().unwrap())
+                    .collect();
+                assert_eq!(batch.groups[category.index()], expected);
+            }
+            assert!(
+                batch
+                    .details
+                    .contains("cdba26a815a2286ed43c2a6ed5089f5c9b88613f")
+            );
+            assert!(
+                batch
+                    .details
+                    .contains("cb8befc4f2dd19d0af1fd02932cb52941653b479")
+            );
+            assert!(batch.details.contains("configured mac codex cli"));
+        });
+        let first = visual.debug_bounds("changelog-note-0-features-0").unwrap();
+        let second = visual.debug_bounds("changelog-note-0-features-1").unwrap();
+        let header = visual.debug_bounds("changelog-heading-0-features").unwrap();
+        let scroll = editor.read_with(&visual, |view, _| view.changelog.scroll.offset());
+        // Hover the padded far edge below the first line, not merely a text glyph.
+        visual.simulate_mouse_move(
+            point(first.right() - px(2.0), first.bottom() - px(2.0)),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(
+            painted(&editor, &visual, "changelog-note-0-features-0"),
+            rgb(theme::color(PaletteRole::Secondary)).into()
+        );
+        assert_eq!(
+            painted(&editor, &visual, "changelog-note-0-features-1"),
+            rgb(theme::color(PaletteRole::Text)).into()
+        );
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::Arrow)
+        );
+        assert_eq!(
+            visual.rendered_background("changelog-note-0-features-0"),
+            Some(rgb(theme::color(PaletteRole::Hover)).into())
+        );
+        visual.simulate_mouse_move(second.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            painted(&editor, &visual, "changelog-note-0-features-0"),
+            rgb(theme::color(PaletteRole::Text)).into()
+        );
+        assert_eq!(
+            painted(&editor, &visual, "changelog-note-0-features-1"),
+            rgb(theme::color(PaletteRole::Secondary)).into()
+        );
+        visual.simulate_mouse_move(point(px(950.0), px(710.0)), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            painted(&editor, &visual, "changelog-note-0-features-1"),
+            rgb(theme::color(PaletteRole::Text)).into()
+        );
+        assert_eq!(
+            painted(&editor, &visual, "changelog-heading-0-features"),
+            rgb(theme::color(PaletteRole::Secondary)).into()
+        );
+        assert_eq!(
+            visual.debug_bounds("changelog-note-0-features-0"),
+            Some(first)
+        );
+        assert_eq!(
+            visual.debug_bounds("changelog-note-0-features-1"),
+            Some(second)
+        );
+        assert_eq!(
+            visual.debug_bounds("changelog-heading-0-features"),
+            Some(header)
+        );
+        assert_eq!(
+            editor.read_with(&visual, |view, _| view.changelog.scroll.offset()),
+            scroll
+        );
+    }
+    fn install(editor: &Entity<EditorView>, visual: &mut VisualTestContext, raw: &str) {
+        editor.update(visual, |view, cx| {
+            view.changelog.document = notes(raw).unwrap_or_else(|error| {
+                Document::message(format!("changelog unavailable · {error}"))
+            });
+            view.changelog.scroll.set_offset(point(px(0.0), px(0.0)));
+            cx.notify();
+        });
+        visual.run_until_parked();
+    }
+    fn raw_entries(entries: serde_json::Value) -> String {
+        serde_json::json!({"format":1,"batches":[{"input":{"version":"0.1.0","source":"0123456789012345678901234567890123456789"},"result":{"entries":entries}}]}).to_string()
+    }
+
+    #[gpui::test]
+    fn changelog_empty_groups_unavailable_and_malformed_render_truthfully(cx: &mut TestAppContext) {
+        let (_directory, mut visual, editor) = fixture(cx);
+        click(&mut visual, "open-changelog");
+        for raw in [
+            "".to_owned(),
+            "not json".to_owned(),
+            r#"{"format":1,"batches":[]}"#.to_owned(),
+        ] {
+            install(&editor, &mut visual, &raw);
+            assert!(visual.debug_bounds("changelog-unavailable").is_some());
+            assert!(
+                visual
+                    .debug_bounds("changelog-heading-0-features")
+                    .is_none()
+            );
+            assert!(visual.debug_bounds("changelog-empty").is_none());
+        }
+        install(&editor, &mut visual, &raw_entries(serde_json::json!([])));
+        assert!(visual.debug_bounds("changelog-empty").is_some());
+        assert!(visual.debug_bounds("changelog-unavailable").is_none());
+        install(
+            &editor,
+            &mut visual,
+            &raw_entries(serde_json::json!([{"category":"fixes","text":"one complete fix"}])),
+        );
+        assert!(visual.debug_bounds("changelog-heading-0-fixes").is_some());
+        assert!(
+            visual
+                .debug_bounds("changelog-heading-0-features")
+                .is_none()
+        );
+        assert!(
+            visual
+                .debug_bounds("changelog-heading-0-improvements")
+                .is_none()
+        );
+        visual.simulate_keystrokes("escape");
+        editor.update_in(&mut visual, |view, window, _| {
+            assert!(view.focus.is_focused(window))
+        });
+    }
+
+    #[gpui::test]
+    fn changelog_long_note_wraps_at_compact_and_normal_width_without_hover_reflow(
+        cx: &mut TestAppContext,
+    ) {
+        let (_directory, mut visual, editor) = fixture(cx);
+        click(&mut visual, "open-changelog");
+        let raw = raw_entries(
+            serde_json::json!([{"category":"fixes","text":"a readable long note ".repeat(15)},{"category":"fixes","text":"é".repeat(320)}]),
+        );
+        install(&editor, &mut visual, &raw);
+        for (width, height) in [(480.0, 360.0), (880.0, 540.0), (1280.0, 800.0)] {
+            visual.simulate_resize(size(px(width), px(height)));
+            visual.run_until_parked();
+            let reader = visual.debug_bounds("changelog-reader").unwrap();
+            let viewport = visual.debug_bounds("changelog-notes").unwrap();
+            let row = visual.debug_bounds("changelog-note-0-fixes-0").unwrap();
+            let second = visual.debug_bounds("changelog-note-0-fixes-1").unwrap();
+            let close = visual.debug_bounds("close-changelog").unwrap();
+            assert!(reader.size.width <= px(640.0) && reader.right() <= px(width));
+            assert!(viewport.size.height > px(100.0) && viewport.bottom() <= px(height));
+            assert!(row.left() >= viewport.left() && row.right() <= viewport.right());
+            assert!(second.left() >= viewport.left() && second.right() <= viewport.right());
+            assert!(row.size.height > px(30.0), "long text actually wraps");
+            assert!(close.right() <= reader.right() && close.bottom() <= viewport.top());
+            visual.simulate_mouse_move(
+                row.origin + point(px(4.0), px(4.0)),
+                None,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds("changelog-note-0-fixes-0"), Some(row));
+            assert_eq!(
+                visual.debug_bounds("changelog-note-0-fixes-1"),
+                Some(second)
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn changelog_scrolling_and_reused_rows_do_not_retain_old_item_hover(cx: &mut TestAppContext) {
+        let (_directory, mut visual, editor) = fixture(cx);
+        let entries:Vec<_>=(0..60).map(|n|serde_json::json!({"category":"fixes","text":format!("a complete short fixture note {n}")})).collect();
+        install(
+            &editor,
+            &mut visual,
+            &raw_entries(serde_json::json!(entries)),
+        );
+        click(&mut visual, "open-changelog");
+        let first = visual.debug_bounds("changelog-note-0-fixes-0").unwrap();
+        let pointer = first.center();
+        visual.simulate_mouse_move(pointer, None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            painted(&editor, &visual, "changelog-note-0-fixes-0"),
+            rgb(theme::color(PaletteRole::Secondary)).into()
+        );
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: pointer,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-150.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        assert!(editor.read_with(&visual, |view, _| view.changelog.scroll.offset().y) < px(0.0));
+        let mut hovered = None;
+        for n in 1..15 {
+            let selector: &'static str =
+                Box::leak(format!("changelog-note-0-fixes-{n}").into_boxed_str());
+            if visual
+                .debug_bounds(selector)
+                .is_some_and(|bounds| bounds.contains(&pointer))
+            {
+                hovered = Some(selector);
+                break;
+            }
+        }
+        let hovered = hovered.expect("another real row scrolled below stationary pointer");
+        assert_eq!(
+            painted(&editor, &visual, hovered),
+            rgb(theme::color(PaletteRole::Secondary)).into()
+        );
+        visual.simulate_mouse_move(point(px(950.0), px(710.0)), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            painted(&editor, &visual, hovered),
+            rgb(theme::color(PaletteRole::Text)).into()
+        );
+        // Reuse the same row ID for fresh content after leaving the viewport.
+        install(
+            &editor,
+            &mut visual,
+            &raw_entries(
+                serde_json::json!([{"category":"fixes","text":"replacement content at the same row identity"}]),
+            ),
+        );
+        assert_eq!(
+            painted(&editor, &visual, "changelog-note-0-fixes-0"),
+            rgb(theme::color(PaletteRole::Text)).into()
+        );
+        let row = visual.debug_bounds("changelog-note-0-fixes-0").unwrap();
+        let before = editor.read_with(&visual, |view, _| {
+            (
+                view.worker_requests_pending,
+                view.pending_requests.len(),
+                view.offline_cursor,
+            )
+        });
+        visual.simulate_click(row.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                (
+                    view.worker_requests_pending,
+                    view.pending_requests.len(),
+                    view.offline_cursor
+                ),
+                before
+            )
+        });
+        visual.simulate_keystrokes("tab enter");
+        visual.run_until_parked();
         editor.read_with(&visual, |view, _| assert!(!view.changelog.open));
     }
 }
