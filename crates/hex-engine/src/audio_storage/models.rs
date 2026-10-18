@@ -57,6 +57,50 @@ pub fn canonical_midi_storage_layout_supported() -> bool {
     native_layout_known()
 }
 impl<'a> AudioRootStorageLedger<'a> {
+    /// Actual asset-container backing and each live path backing only. The
+    /// inline container/path headers belong to their enclosing Project/entry.
+    /// This is not complete Project storage, custody or construction-peak proof.
+    pub fn borrow_project_asset_storage_on_control(
+        &mut self,
+        project: &'a hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| ledger.project_asset_storage(project))
+    }
+    fn project_asset_storage(
+        &mut self,
+        project: &'a hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        let entries = project.asset_entries_on_control();
+        self.allocation(
+            Owner::exclusive(entries),
+            Location("project-asset-entries", 0),
+            entries.capacity(),
+            std::mem::size_of::<(hex_project::AssetId, hex_project::Asset)>(),
+        )?;
+        for asset in entries.values() {
+            let path = asset.path_buffer_on_control();
+            self.bytes(
+                Owner::exclusive(path),
+                Location("project-asset-path", 0),
+                path.capacity(),
+            )?;
+        }
+        Ok(())
+    }
+    /// Borrow the actual current/Undo/Redo asset containers and paths, without
+    /// cloning snapshots or inventing owners. Candidate Projects join through
+    /// borrow_project_asset_storage_on_control while held by the caller.
+    pub fn borrow_editor_asset_storage_on_control(
+        &mut self,
+        editor: &'a hex_project::Editor,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            for project in editor.retained_projects_on_control() {
+                ledger.project_asset_storage(project)?;
+            }
+            Ok(())
+        })
+    }
     pub(crate) fn model_source_if_unvisited(
         &mut self,
         actual_field: &'a dyn Any,

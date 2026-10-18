@@ -12,6 +12,81 @@ fn reservation() -> AudioStorageLedgerReservation {
         max_construction_peak_bytes: 1_000_000,
     }
 }
+
+#[test]
+fn actual_asset_history_candidate_and_duplicate_visits_charge_capacity_and_paths_once() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    for name in ["first.wav", "second.wav"] {
+        editor
+            .execute(Command::AddAsset {
+                path: name.into(),
+                sample_rate: 48_000,
+                frames: 4,
+            })
+            .unwrap();
+    }
+    assert!(editor.undo());
+    assert!(editor.can_redo());
+    let candidate = editor.project().clone();
+    let expected_project = |project: &Project| {
+        project.asset_entries_on_control().capacity()
+            * std::mem::size_of::<(hex_project::AssetId, hex_project::Asset)>()
+            + project
+                .assets()
+                .map(|asset| asset.path_buffer_on_control().capacity())
+                .sum::<usize>()
+    };
+    let history: usize = editor
+        .retained_projects_on_control()
+        .map(expected_project)
+        .sum();
+    let expected = history + expected_project(&candidate);
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+    ledger
+        .borrow_editor_asset_storage_on_control(&editor)
+        .unwrap();
+    assert_eq!(ledger.summary().unwrap().data_bytes, history);
+    assert_ne!(history, expected); // omitting the actual pending candidate undercounts
+    ledger
+        .borrow_project_asset_storage_on_control(&candidate)
+        .unwrap();
+    assert_eq!(ledger.summary().unwrap().data_bytes, expected);
+    ledger
+        .borrow_project_asset_storage_on_control(&candidate)
+        .unwrap();
+    ledger
+        .borrow_editor_asset_storage_on_control(&editor)
+        .unwrap();
+    let full = ledger.summary().unwrap();
+    assert_eq!(full.data_bytes, expected);
+    assert_eq!(full.unknown_storage, 0); // selected fields only, never complete Project
+    let mut exact = reservation();
+    exact.max_retained_bytes = full.retained_bytes;
+    exact.max_construction_peak_bytes = full.construction_peak_bytes;
+    let mut accepted = AudioRootStorageLedger::try_new_on_control(exact).unwrap();
+    accepted
+        .borrow_editor_asset_storage_on_control(&editor)
+        .unwrap();
+    accepted
+        .borrow_project_asset_storage_on_control(&candidate)
+        .unwrap();
+    assert_eq!(
+        accepted.summary().unwrap().retained_bytes,
+        full.retained_bytes
+    );
+    exact.max_retained_bytes -= 1;
+    let mut refused = AudioRootStorageLedger::try_new_on_control(exact).unwrap();
+    refused
+        .borrow_editor_asset_storage_on_control(&editor)
+        .unwrap();
+    assert_eq!(
+        refused.borrow_project_asset_storage_on_control(&candidate),
+        Err(AudioStorageError::ReservationExceeded)
+    );
+    assert!(refused.summary().is_err());
+    assert_eq!(editor.project().assets().count(), 1);
+    assert!(editor.can_redo());
+}
 fn project() -> (Project, ClipId) {
     let mut project = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     let Created::Track(track) = project
