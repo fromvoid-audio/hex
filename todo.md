@@ -5013,3 +5013,14 @@ folder snapshots. Collection assignments remain explicitly pending; no tag/histo
 or neutral shared-library implementation is claimed. Source checks and native
 coordinator-only acceptance recorded separately; inline tree2728 follows this
 checked/reviewed foundation.
+
+## inline browser hierarchy — pulse2728 / PR341, 18 october2026
+
+Browse folders in place within the one active source, with bounded asynchronous
+child snapshots, disclosure/keyboard gestures, explicit cache/scan errors and
+stale-request refusal. Preserve indexed query mode, native path identities,
+filename-only sample labels, selection and existing preview/import/drag behavior.
+Source regression/check evidence belongs to Pulse/PR; native optimized interaction
+and actual installed-Live comparison remain open. Official Live12 documented
+gestures guide this change; the read-only reference attempt found Live closed
+and the Mac locked, so no gestures/parity were observed and no app was launched.

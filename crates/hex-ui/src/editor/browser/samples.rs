@@ -281,7 +281,7 @@ impl EditorView {
                 .child(self.browser_icon(
                     "↻",
                     "rescan sample folders",
-                    |view, _, cx| view.refresh_sample_catalog(cx),
+                    |view, _, cx| view.refresh_browser_tree(cx),
                     cx,
                 ))
                 .child(self.browser_icon(

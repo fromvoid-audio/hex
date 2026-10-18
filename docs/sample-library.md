@@ -6,14 +6,15 @@ Home remains a project-navigation shortcut and is not scanned implicitly. No new
 audio codec support is implied: audio decoding/import keeps its existing WAV
 validation. Discovery indexes filenames/paths, not decoded audio metadata or tags.
 
-The Samples section combines all discovered samples by default. Folder chips select
+The Samples section browses configured roots as an inline folder hierarchy. A
+nonempty query combines all discovered indexed samples. Folder chips select
 that Place as the single active source; its nonempty query narrows indexed matches
 to the root subtree. Whitespace-separated search terms all match case-insensitively
-against the full path. Rows show filename and parent path to distinguish duplicate
-names. Selection auto-audition, manual Play/Stop, waveform-position and right-arrow
+against the full path. Rows show filenames only; original native paths distinguish duplicate names
+internally and remain available in tooltips. Selection auto-audition, manual Play/Stop, waveform-position and right-arrow
 playback, explicit Enter import (sample double-click does not import) and existing
 waveform-aware Arrangement/Session drag paths remain shared.
-Projects retains its folder browser. Adding a folder persists the existing browser
+Projects retains its project filter within the inline hierarchy. Adding a folder persists the existing browser
 place and triggers a catalog scan without navigating away from Samples.
 
 Global Command-F/All search composes this catalog with the current bounded folder
@@ -65,7 +66,7 @@ search/source combinations, hidden files/symlink cycles, rename/delete/add
 reconciliation, offline roots, bounds, malformed cache and native-path roundtrips;
 the native browser fixture uses actual indexed samples for existing preview/drag
 regressions. Native macOS visual/listening/restart acceptance remains user-owned:
-add two folders with nested WAVs, select Samples/all folders, search/filter,
+add two folders with nested WAVs, select Samples/all folders, expand/collapse and search/filter,
 audition and drag, then add/remove a WAV and refresh; restart and confirm places
-and samples restore. Verify Projects still navigates folders. No exact Live parity
+and samples restore. Verify Projects expands folders inline. No exact Live parity
 or large-library interaction timing claim is made.
