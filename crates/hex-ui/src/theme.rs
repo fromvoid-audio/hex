@@ -6,8 +6,9 @@ mod device;
 // Native review examples include this module and use only a subset of its API.
 #[allow(unused_imports)]
 pub(crate) use device::{
-    DeviceActionRole, DeviceStyleRole, device_frame_style, device_header_action_style,
-    device_identity_style, device_segment_style, device_style, oscillator_identity_color,
+    DeviceActionRole, DeviceStyleRole, device_analyzer_style, device_frame_style,
+    device_header_action_style, device_identity_style, device_segment_style, device_style,
+    oscillator_identity_color,
 };
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -20,8 +21,6 @@ pub enum PaletteRole {
     Raised,
     Clip,
     ClipFill,
-    ClipSelected,
-    ClipHover,
     ClipText,
     SecondaryText,
     Hover,
@@ -39,10 +38,9 @@ pub enum PaletteRole {
 #[derive(Clone, Copy)]
 struct ThemeTokens {
     colors: hex_preferences::ThemePreferences,
+    elements: [ElementColors; 10],
     clip: u32,
     clip_fill: u32,
-    clip_selected: u32,
-    clip_hover: u32,
     clip_text: u32,
     secondary_text: u32,
     surface: u32,
@@ -61,10 +59,10 @@ impl ThemeTokens {
         let primary = colors.primary.packed();
         Self {
             colors,
+            elements: hex_project::ElementColor::ALL
+                .map(|identity| resolve_element_colors(identity, lighten(background, 5))),
             clip: mix(background, text, 0.15),
             clip_fill: mix(primary, text, 0.15),
-            clip_selected: lighten(primary, 30),
-            clip_hover: lighten(primary, 12),
             clip_text: contrast_text(mix(primary, text, 0.15), text),
             secondary_text: contrast_text(colors.secondary.packed(), text),
             surface: lighten(background, 5),
@@ -84,8 +82,6 @@ impl ThemeTokens {
             PaletteRole::Raised | PaletteRole::WaveBackground => self.raised,
             PaletteRole::Clip => self.clip,
             PaletteRole::ClipFill => self.clip_fill,
-            PaletteRole::ClipSelected => self.clip_selected,
-            PaletteRole::ClipHover => self.clip_hover,
             PaletteRole::ClipText => self.clip_text,
             PaletteRole::SecondaryText => self.secondary_text,
             PaletteRole::Hover | PaletteRole::Grid => self.hover,
@@ -221,6 +217,54 @@ pub fn text(value: impl AsRef<str>) -> SharedString {
     value.as_ref().to_lowercase().into()
 }
 
+/// Reusable element palette for tracks, collections and other semantic markers.
+/// Fixed, restrained hues are mixed with the active neutral surfaces.
+#[derive(Clone, Copy)]
+pub struct ElementColors {
+    pub muted: u32,
+    pub accent: u32,
+    pub muted_text: u32,
+    pub accent_text: u32,
+}
+pub fn element_colors(identity: hex_project::ElementColor) -> ElementColors {
+    ACTIVE_THEME.with(|theme| theme.get().elements[identity as usize])
+}
+fn resolve_element_colors(identity: hex_project::ElementColor, surface: u32) -> ElementColors {
+    use hex_project::ElementColor;
+    let hue = match identity {
+        ElementColor::Gray => 0xa4aaa8,
+        ElementColor::Red => 0xcf7773,
+        ElementColor::Orange => 0xd58d69,
+        ElementColor::Amber => 0xc5aa70,
+        ElementColor::Olive => 0xa3ad79,
+        ElementColor::Green => 0x7eae94,
+        ElementColor::Cyan => 0x77b6bb,
+        ElementColor::Blue => 0x809fca,
+        ElementColor::Violet => 0xa195c3,
+        ElementColor::Rose => 0xc18fa6,
+    };
+    let muted = mix(surface, hue, 0.82);
+    let accent = mix(surface, hue, 0.98);
+    ElementColors {
+        muted,
+        accent,
+        muted_text: contrast_text(muted, 0x000000),
+        accent_text: contrast_text(accent, 0x000000),
+    }
+}
+pub fn clip_fill(
+    color: hex_project::ElementColor,
+    flavor: hex_project::ClipFlavor,
+    selected: bool,
+) -> u32 {
+    let colors = element_colors(color);
+    let base = match flavor {
+        hex_project::ClipFlavor::Muted => colors.muted,
+        hex_project::ClipFlavor::Accent => colors.accent,
+    };
+    if selected { lighten(base, 22) } else { base }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +311,27 @@ mod tests {
         apply_preferences(before);
         assert_eq!(preferences(), before);
         assert_eq!(color(PaletteRole::Primary), before.primary.packed());
+    }
+}
+
+#[cfg(test)]
+mod element_palette_tests {
+    use super::*;
+    #[test]
+    fn both_flavors_keep_ink_legible_and_identities_distinct() {
+        let mut hues = std::collections::BTreeSet::new();
+        for identity in hex_project::ElementColor::ALL {
+            let colors = element_colors(identity);
+            assert!(hues.insert(colors.accent));
+            assert_ne!(colors.muted, colors.accent);
+            assert!(contrast_ratio(colors.muted, colors.muted_text) >= 4.5);
+            assert!(contrast_ratio(colors.accent, colors.accent_text) >= 4.5);
+            // Arrangement waveforms and note thumbnails use neutral black ink.
+            assert!(contrast_ratio(colors.muted, 0x000000) >= 4.5);
+            assert!(
+                contrast_ratio(resolve_element_colors(identity, 0x000000).muted, 0x000000) >= 4.5
+            );
+        }
+        assert_eq!(hues.len(), 10);
     }
 }

@@ -17,7 +17,7 @@ wrap this linear export.
 hex-engine and the Rust standard library, plus pinned rustix 1.1.5 safe filesystem
 operations on Linux/macOS for exclusive directory publication and file exchange.
 Tests may use canonical
-project/lattice contracts and the non-default `instrument-test-support` feature
+project/lattice/tuning contracts and the non-default `instrument-test-support` feature
 to verify mutable prepared rendering; this does not add production dependencies.
 
 ## Does not own
@@ -31,3 +31,8 @@ export after publication; ordinary success creates no backup. Unexpected races
 and cleanup failures report truthful exceptional recovery paths.
 See [the export contract](../../docs/export.md) for scopes, consent, race handling,
 platform limits and the remaining acceptance gates.
+
+Clip bounces also use the same create-new publication boundary for stereo float32
+WAV, retaining finite samples above full scale. `render_bounce_new` consumes an
+isolated prepared source and bounded control-side preroll; source isolation,
+media admission and canonical clip replacement belong to hex-session/project.

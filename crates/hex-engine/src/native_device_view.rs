@@ -51,6 +51,7 @@ pub struct NativeDeviceCatalogEntry {
 #[derive(Clone, Copy, Debug)]
 pub struct NativeDeviceParameterView {
     pub descriptor: ParameterDescriptor,
+    pub semantics: Option<hex_lattice_contract::ParameterSemantics>,
     pub value: ParameterValue,
     /// Whether the editor should enable this control for the current device state.
     pub enabled: bool,
@@ -94,6 +95,7 @@ fn catalog_entries<D: NativeDeviceMetadata + ?Sized>(
 ) -> Result<Vec<NativeDeviceCatalogEntry>, Invalid> {
     definitions
         .iter()
+        .filter(|definition| definition.type_id().as_str() != Ok("hex.eq8"))
         .map(|definition| {
             let type_id = definition.type_id();
             Ok(NativeDeviceCatalogEntry {
@@ -189,7 +191,14 @@ pub fn native_effect_frequency_response(
     let registry = hex_devices::native_registry()
         .map_err(|_| Invalid("invalid built-in native device registry"))?;
     let Some(processor) = registry
-        .prepare_processor(state, sample_rate)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .map_err(|_| Invalid("native device response is unavailable"))?
     else {
         return Ok(None);
@@ -263,10 +272,10 @@ fn build_view<D: NativeDeviceMetadata + ?Sized>(
     definition: &D,
     migrated: &NativeDeviceState,
 ) -> Result<NativeDeviceView, Invalid> {
-    let descriptors = hex_lattice_contract::validated_state_descriptors(definition, migrated)
+    let descriptors = hex_lattice_contract::validated_state_parameters(definition, migrated)
         .map_err(|_| Invalid("native device descriptors are invalid"))?;
     let mut parameters = Vec::with_capacity(descriptors.len());
-    for descriptor in descriptors {
+    for (descriptor, semantics) in descriptors {
         let value = definition
             .read_parameter(migrated, descriptor.id)
             .map_err(|_| Invalid("native device parameter is unavailable"))?;
@@ -275,9 +284,12 @@ fn build_view<D: NativeDeviceMetadata + ?Sized>(
             .map_err(|_| Invalid("native device parameter value is invalid"))?;
         let enabled = definition
             .parameter_enabled(migrated, descriptor.id)
-            .map_err(|_| Invalid("native device parameter availability is invalid"))?;
+            .map_err(|_| Invalid("native device parameter availability is invalid"))?
+            && !semantics
+                .is_some_and(|s| s.access == hex_lattice_contract::ParameterAccess::ReadOnly);
         parameters.push(NativeDeviceParameterView {
             descriptor,
+            semantics,
             value,
             enabled,
         });
@@ -461,7 +473,7 @@ mod tests {
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
         assert_eq!(effects.len(), 6);
         assert!(effects.iter().any(|entry| entry.name == "utility"));
-        assert!(effects.iter().any(|entry| entry.name == "eq eight"));
+        assert!(effects.iter().any(|entry| entry.name == "eq"));
         assert!(effects.iter().any(|entry| entry.name == "saturator"));
         assert!(effects.iter().any(|entry| entry.name == "compressor"));
         assert!(effects.iter().any(|entry| entry.name == "gate"));
@@ -666,3 +678,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "native_device_view/semantics_tests.rs"]
+mod semantics_tests;

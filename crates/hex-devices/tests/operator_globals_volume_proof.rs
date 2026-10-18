@@ -191,7 +191,16 @@ fn registered_operator_carrier_pcm_has_exact_neutral_identity_and_independent_ga
     let state = support::legacy_operator_state();
     let original = state.clone();
     for rate in [8_000, 48_000, 192_000] {
-        let instrument = OPERATOR_METADATA.prepare_instrument(&state, rate).unwrap();
+        let instrument = OPERATOR_METADATA
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap();
         let context = instrument
             .prepare_shared_analytic_context()
             .unwrap()
@@ -201,7 +210,7 @@ fn registered_operator_carrier_pcm_has_exact_neutral_identity_and_independent_ga
         let attenuated = Volume::new(prepared(-20.0, rate), 0);
         let mut audible = false;
         for age in 0..2048 {
-            let raw = context.sample(&note, age, 513);
+            let raw = context.sample(&note, age, 513, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             audible |= raw.iter().any(|sample| *sample != 0.0);
             assert_eq!(
                 neutral.apply(raw, age).unwrap().map(f32::to_bits),
@@ -235,7 +244,14 @@ fn mutable_factory(
             .unwrap();
     }
     OPERATOR_METADATA
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .prepare_mutable_runtime()
         .unwrap()
@@ -276,10 +292,12 @@ fn composition_does_not_change_actual_feedback_lfo_gate_or_release_history() {
             let mut raw = [[0.0; 2]; 128];
             let mut next = raw;
             for runtime in [&mut original, &mut composed] {
-                runtime.preflight_events(&events, 128).unwrap();
+                runtime
+                    .preflight_events(&events, 128, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                    .unwrap();
             }
-            original.process_block(&events, &mut raw);
-            composed.process_block(&events, &mut next);
+            original.process_block(&events, &mut raw, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            composed.process_block(&events, &mut next, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             assert_eq!(
                 raw, next,
                 "gain composition must not feed back into native history"
@@ -302,7 +320,14 @@ fn profile_original_carrier_and_volume_composition() {
     use std::{hint::black_box, time::Instant};
     let state = support::legacy_operator_state();
     let instrument = OPERATOR_METADATA
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap();
     let context = instrument
         .prepare_shared_analytic_context()
@@ -323,7 +348,12 @@ fn profile_original_carrier_and_volume_composition() {
                 }
                 for offset in 0..128 {
                     // Finite original authored gate, not a fabricated open-gate horizon.
-                    let raw = black_box(context.sample(&note, (frame + offset) % 128, 513));
+                    let raw = black_box(context.sample(
+                        &note,
+                        (frame + offset) % 128,
+                        513,
+                        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    ));
                     let output = if path == 0 {
                         raw
                     } else {

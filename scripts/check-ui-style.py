@@ -12,6 +12,8 @@ widgets = (
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Clip name components normalize labels or render a native text-input entity.
+    'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -34,6 +36,8 @@ widgets = (
     # Algorithm diagrams have no text; global controls normalize captions.
     'behavior.flex_1()', 'algorithms::selector(', 'global::controls(', 'global::expression_routing(', 'diagram(', 'control.w_full())', 'field)', 'line)',
     'hex_widgets::curve_plot(',
+    # Output meter labels are routed through theme::text in the component.
+    'crate::output_meter::render(',
     # Generic device layout components accept already-themed child elements.
     'hex_widgets::device_display(', 'hex_widgets::device_body(',
     'hex_widgets::device_section(', 'hex_widgets::device_layout(',
@@ -46,12 +50,27 @@ widgets = (
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
+    # Split browser components normalize every caption at their boundary.
+    'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
+    'picker_label(', 'picker_heading(',
+    # Audition row controls normalize labels; miniature waveform contains no text.
+    'self.browser_audition_row(', 'mini_waveform(',
+    'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
+    'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
+    'super::super::waveform::waveform_summary_view(',
     'self.browser_sections(', 'self.browser_places(', 'self.browser_instrument_row(',
+    # Sample source filters route labels through theme::text.
+    'self.sample_filters(', 'filters)',
+
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
     'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
+    # Beats controls compose themed buttons/labels, not direct text children.
+    'beats_controls(', 'choices)',
+    'super::musical_audio_controls::warp_header(', 'sample_bpm::field(',
     'super::waveform::prepared_waveform_view_cached(',
+    'super::waveform::timeline_waveform_view_cached(',
     'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
@@ -62,8 +81,8 @@ widgets = (
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
     'section_heading(', 'unavailable(',
-    'menu_message(', 'action_button(', 'action_button_sized(', 'entity.clone())', 'control.entity.clone())',
-    'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
+    'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'entity.clone())', 'control.entity.clone())',
+    'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
     'lights)', 'crate::build_info::label()', 'version_label()', 'debug_button()',
@@ -73,6 +92,8 @@ widgets = (
     'super::super::device_preset::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
+    # Track sizing composes non-text pointer handles and capture listeners.
+    'self.track_resize_events(', 'self.track_width_resize_handle(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
     'render_return_add_menu(',
@@ -81,7 +102,7 @@ widgets = (
     'output)', 'gain)', 'balance)', 'cutoff)', 'mute_dc)', 'mute)', 'dc)',
     # Saturator composition uses typed shared controls and a normalized plot;
     # its axis/error text is routed through theme::text at the panel boundary.
-    'plot)', 'chooser)', 'drive)', 'wet)',
+    'plot)', 'plot.id(', 'self.project_spectrum_panel(', 'self.project_spectrum_pointer_events(', 'chooser)', 'drive)', 'wet)',
     # Compressor composition uses shared typed numeric controls and normalized plot.
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
@@ -92,18 +113,44 @@ widgets = (
     'gain_meters::render(', 'super::gain_meters::render(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    # Audio-event editor components keep their text at the themed boundary.
+    'super::audio_event_editor::view(', 'waveform::button(',
+    'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
+    'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
+    # Fade pointer capture is a typed canvas listener with no rendered text.
+    'self.fade_pointer_events(',
+    # Tuning components normalize labels at their theme::text boundary.
+    'tuning_section(', 'self.tuning_control(', 'self.tuning_library_panel(', 'self.tuning_mts_controls(',
+    'pitch)', 'palette)', 'plots::lattice(', 'tuning_name_input.clone())',
+    'tuning_nodes)', 'tuning_slots)', 'tuning_reference)', 'settings)', 'right)',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()
     for match in re.finditer(r'\.child\(\s*', source):
         suffix = source[match.end():]
-        if not suffix.startswith(widgets):
+        # These two typed error components share fragment-normalized text. Keep
+        # the exception local: arbitrary self.display_text() is not a text bypass.
+        typed_error = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/render.rs'
+            and suffix.startswith('error.display_text())')
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/display_error.rs'
+            and suffix.startswith('self.display_text())')
+        )
+        if not suffix.startswith(widgets) and not typed_error:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
         if match.group(1).strip() != 'theme::FONT_FAMILY':
             errors.append(f'{path.relative_to(ROOT)}: use the required theme font')
+# A generic lowercase pass over either error surface would corrupt source paths.
+error_status = (ROOT / 'crates/hex-ui/src/editor/render.rs').read_text()
+error_tooltip = (ROOT / 'crates/hex-ui/src/editor/display_error.rs').read_text()
+if '.child(error.display_text())' not in error_status or 'ErrorTooltip(message.clone())' not in error_status:
+    errors.append('editor/render.rs: status and tooltip must use typed source-preserving error text')
+if '.child(self.display_text())' not in error_tooltip or 'self.0.display_text()' not in error_tooltip:
+    errors.append('editor/display_error.rs: error tooltip must share source-preserving status text')
 for root_view in ('app.rs', 'editor/render.rs'):
     app = (ROOT / 'crates/hex-ui/src' / root_view).read_text()
     if '.font_family(theme::FONT_FAMILY)' not in app:

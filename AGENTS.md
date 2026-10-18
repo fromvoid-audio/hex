@@ -6,6 +6,34 @@ Arrangement and Session workflows, audio/MIDI behavior, editing, recording,
 automation, routing, and project fidelity, while improving architecture,
 responsiveness, and measured performance.
 
+## Active alpha compatibility policy
+
+Hex is active alpha software. Feature completeness takes priority. Backward
+compatibility and migration support, including database/schema migrations, are
+explicitly out of scope until the user commits to release readiness and selects
+the release compatibility policy. Breaking API, source, model, schema, project-format
+and data changes are allowed during this phase. Fresh or recreated alpha databases
+are allowed when needed; legacy database conversion is not a prerequisite for
+feature work.
+
+Do not spend effort adding or maintaining historical-alpha migrations, project
+conversions, old readers, compatibility re-exports or old-client support. During
+future scoped feature/API/schema work, do not retain compatibility-only code solely
+to honor obsolete alpha formats or database layouts. This includes incompatible
+unpublished branch formats. This policy supersedes contradictory normative legacy
+schema, backward-compatibility and migration requirements in this file, repository
+documents and existing task descriptions. Historical evidence remains factual.
+Do not infer a compatibility freeze from an alpha version or schema number.
+
+Active features must coexist in one coherent current format. Preserve strict
+current-format validation, complete save/reopen round trips, explicit errors for
+unsupported formats, transaction/recovery correctness, runtime and real-time safety,
+and Undo/Redo integrity. Never silently delete or rewrite user projects, original
+media or other user files to accommodate a breaking change. Intentional alpha
+database recreation must be explicit; this policy does not itself initiate any
+reset, deletion or conversion. It does not request a blanket migration-code cleanup
+or unrelated source changes. PR, validation and delivery requirements remain in force.
+
 Frame design prototypes under `design/frame/` may use JSON, JavaScript and HTML
 for design tooling only. They must not become the shipped application runtime.
 
@@ -75,12 +103,13 @@ claim hosted CI or automatic enforcement is configured.
 Cargo.toml                   workspace configuration and safety/style lints
 Cargo.lock                   pinned resolved dependencies
 crates/
-  hex-lattice/               validated memoryless stereo DSP primitives
+  hex-dsp/                   host-independent stereo kernels and validated gain units
+  hex-lattice/               native registry/runtime contracts and stereo compatibility reexports
   hex-lattice-contract/      neutral native device metadata and versioned state
   hex-devices/               independently testable original instrument DSP
   hex-project/               canonical control-side IDs, edits, history and snapshots
   hex-media/                 bounded WAV decode, source-rate conversion and cached waveform peaks
-  hex-library/               bounded control-side folder and supported-file listings
+  hex-library/               bounded folder listings and persistent sample catalog
   hex-preferences/           versioned bounded application browser-place settings
   hex-stream/                verified source worker, bounded page cache and ownership queues
   hex-storage/               versioned metadata and recoverable create-new files
@@ -125,8 +154,9 @@ Current direction: `hex-lattice-contract` has no workspace dependency;
 `hex-project` depends only on its neutral device metadata/state contract, never
 DSP implementations. This deliberate shared-contract edge supports modular
 devices without per-device storage branches. `hex-lattice` depends on the contract
-and owns native processing/registration and stereo primitives; `hex-devices`
-owns registered algorithms and depends on lattice and its contract.
+and `hex-dsp`, and owns native processing/registration; `hex-dsp` owns
+host-independent mathematical kernels with no workspace dependencies; `hex-devices`
+owns registered algorithms and depends on lattice, its contract and hex-dsp.
 The native DSP system is named **lattice**; read
 `docs/lattice.md` for staged device integration and stateful lifecycle gates.
 `hex-engine` depends
@@ -138,9 +168,8 @@ application lifecycle; `hex-cli` uses project/engine/media/storage/export for
 headless workflows. Media depends on engine/project; storage depends on project
 and owns serialization. Session coordinates project/media/storage/export work
 through bounded control workers; UI uses read-only project views and controller
-commands, not its own editing model. Library owns bounded nonrecursive filesystem listings, preserving original paths;
-UI owns browser navigation, filtering and focus. Library does not decode audio,
-index recursively, edit projects or perform callback work. hex-preferences owns
+commands, not its own editing model. Library owns bounded filesystem listings and recursive WAV discovery with a persistent derived sample catalog, preserving original paths;
+UI owns browser navigation, filtering and focus. Library does not decode audio, edit projects or perform callback work. Catalog enumeration/cache I/O belongs on background control workers; see docs/sample-library.md. hex-preferences owns
 versioned bounded application browser-place serialization and recoverable file
 publication, independent of project storage/history. UI loads/saves it through
 bounded background work. Read docs/browser-places.md; preserve original paths
@@ -512,7 +541,7 @@ applies. Inspect checkout topology and status before editing. The workspace now 
 Git on `main` with the private `PORTALSURFER/hex` remote, created at user request on
 9 October 2026.
 
-## 8. Keeping projects and compatibility complete
+## 8. Keeping current projects complete
 
 Schema-13 hybrid-track audio/MIDI metadata persistence, independent canonical
 Session MIDI and unwarped audio one-shot sources/scenes/cells, finite Arrangement
@@ -536,8 +565,9 @@ changing the MIDI model, scheduler or runtime. Read `docs/musical-time.md` befor
 belongs on the control side and existing audio remains frame-anchored. Read `docs/clip-fades.md` for the fixed
 fade domain, split continuity and deliberate trim reanchoring contract. As it grows:
 
-- Version its schema and write explicit migrations/defaults; new model fields
-  require save/load and history review in the same change.
+- Identify the current schema explicitly; new model fields require current-format
+  save/load and history review in the same change. Historical alpha migrations
+  are not required under the active alpha policy above.
 - Round-trip complete project state, media references, automation, routing, device
   state, timing, and editor state that is promised to persist.
 - Use atomic/recoverable writes; do not overwrite a good project with a partial save.
@@ -600,8 +630,9 @@ paired track identities or cross-type move/import rejection. Arrangement owns
 both clip collections; Session owns one audio/MIDI/Stop cell per track/scene.
 Preserve frame-anchored audio and beat-anchored MIDI, current overlap policies,
 combined ID/count/admission limits, source-specific editing and safe release tails.
-Version persistence changes and migrate legacy typed tracks without losing IDs,
-source data or mixer state. Read docs/hybrid-tracks.md before extending this model.
+Identify current persistence changes explicitly and preserve current-format IDs,
+source data, mixer state and history integrity. Earlier alpha format migration is
+not required. Read docs/hybrid-tracks.md before extending this model.
 
 ## Shared Lattice device interface
 

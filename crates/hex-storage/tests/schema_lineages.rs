@@ -33,9 +33,10 @@ fn devices(project: &Project) -> Vec<(i32, i32)> {
 fn exact_published_lineages_migrate_edit_and_reopen_without_data_loss() {
     for original in std::iter::once(MAIN19).chain(FOUNDATION) {
         let project = decode(original).unwrap();
+        assert_eq!(project.tuning(), hex_tuning::ProjectTuning::default());
         let encoded = encode(&project).unwrap();
         let doc = value(&encoded);
-        assert_eq!(doc["version"], 25);
+        assert_eq!(doc["version"], 31);
         assert_eq!(decode(&encoded).unwrap(), project);
         assert_eq!(
             doc["tracks"][0]["devices"][0]["payload"],
@@ -63,6 +64,7 @@ fn exact_published_lineages_migrate_edit_and_reopen_without_data_loss() {
     assert!(main.import_provenance().is_none());
     for original in FOUNDATION {
         let project = decode(original).unwrap();
+        assert_eq!(project.tuning(), hex_tuning::ProjectTuning::default());
         assert_eq!(
             project.import_provenance().unwrap().original_bytes(),
             &[255, 0, 42]
@@ -79,6 +81,8 @@ fn main17_to19_defaults_are_preserved_and_hybrid_shapes_refuse() {
     for version in 17..=19 {
         let mut doc = value(MAIN19);
         doc["version"] = version.into();
+        doc.as_object_mut().unwrap().remove("track_colors");
+        doc.as_object_mut().unwrap().remove("accented_clips");
         assert_eq!(
             devices(&decode(&bytes(&doc)).unwrap()),
             [(3000, -9500), (-60000, 24000), (12000, -60000)]
@@ -111,6 +115,8 @@ fn main17_to19_defaults_are_preserved_and_hybrid_shapes_refuse() {
     // Legacy gain18 is a subset of the main gain lineage, never an ambiguity.
     let mut old = value(MAIN19);
     old["version"] = 18.into();
+    old.as_object_mut().unwrap().remove("track_colors");
+    old.as_object_mut().unwrap().remove("accented_clips");
     old["tracks"][0]["devices"][0]
         .as_object_mut()
         .unwrap()
@@ -124,6 +130,8 @@ fn branch23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields(
     // exercised separately by the host_gain unit regression.
     let mut base = value(FOUNDATION[3]);
     base["version"] = 23.into();
+    base.as_object_mut().unwrap().remove("track_colors");
+    base.as_object_mut().unwrap().remove("accented_clips");
     for track in base["tracks"].as_array_mut().unwrap() {
         for device in track["devices"].as_array_mut().unwrap() {
             device["input_gain_millidb"] = 0.into();
@@ -177,7 +185,7 @@ fn branch23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields(
     doc["tracks"][0]["devices"][0]["unknown"] = true.into();
     assert!(decode(&bytes(&doc)).is_err());
     let mut doc = base;
-    doc["version"] = 26.into();
+    doc["version"] = 31.into();
     assert!(decode(&bytes(&doc)).is_err());
     // Output-only22 must never silently accept input gains by widening its DTO.
     let mut doc = value(FOUNDATION[3]);

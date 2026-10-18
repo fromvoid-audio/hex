@@ -404,9 +404,7 @@ impl AudioBatchImport {
             })?;
             self.check(current)?;
             remaining = remaining
-                .checked_sub(u64::try_from(member.waveform.source_frames).map_err(|_| {
-                    SessionError::Invalid("decoded frame count exceeds project range")
-                })?)
+                .checked_sub(member.retained_pcm_frames()?)
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             prepared.push(member);
             self.control.publish(3, index + 1, index + 1);

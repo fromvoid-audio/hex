@@ -25,6 +25,7 @@ struct Domain {
     looping: bool,
     clock: Clock,
     pitch_cents: i16,
+    sample_micro_bpm: Option<u32>,
     warp_enabled: bool,
     warp: Option<Warp>,
     source_gain: Vec<GainPoint>,
@@ -125,6 +126,7 @@ impl From<AudioClipEdit> for AudioEditDto {
                     },
                 },
                 pitch_cents: d.pitch_cents,
+                sample_micro_bpm: d.sample_bpm.map(Tempo::micro_bpm),
                 warp_enabled: d.warp_enabled,
                 warp: d.warp.as_ref().map(|warp| Warp {
                     mode: match warp.mode {
@@ -292,6 +294,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
         });
         Ok(AudioClipEdit {
             domain: Arc::new(AudioClipDomain {
+                events: None,
                 source_offset: d.source_offset,
                 source_length: d.source_length,
                 source_phase: d.source_phase,
@@ -303,6 +306,11 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                     }
                 },
                 pitch_cents: d.pitch_cents,
+                sample_bpm: d
+                    .sample_micro_bpm
+                    .map(Tempo::new)
+                    .transpose()
+                    .map_err(|e| StorageError::Invalid(e.0))?,
                 warp_enabled: d.warp_enabled,
                 warp,
                 source_gain: d

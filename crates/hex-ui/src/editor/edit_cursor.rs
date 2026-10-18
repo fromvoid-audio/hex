@@ -208,7 +208,7 @@ impl EditorView {
                 .top_0()
                 .bottom_0()
                 .left_0()
-                .right(px(super::tracks::TRACK_HEADER_WIDTH))
+                .right(px(self.track_header_width()))
                 .debug_selector(|| "edit-cursor-layer".into())
                 .children([canvas(
                     |_, _, _| (),

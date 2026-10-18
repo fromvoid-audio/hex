@@ -87,7 +87,7 @@ fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
     });
 }
 
-fn audio_detail_fixture(
+pub(super) fn audio_detail_fixture(
     cx: &mut TestAppContext,
 ) -> (
     gpui::AnyWindowHandle,
@@ -147,7 +147,11 @@ fn audio_detail_fixture(
 fn selected_arrangement_audio_shows_left_controls_ruler_and_stereo_waveform(
     cx: &mut TestAppContext,
 ) {
-    let (handle, _, _, _) = audio_detail_fixture(cx);
+    let (handle, editor, _, _) = audio_detail_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.audio_event_editor.source_view = true;
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let controls = visual
@@ -231,10 +235,10 @@ fn explicit_clip_and_track_focus_switch_detail_without_changing_pane_visibility(
     });
     assert!(visual.debug_bounds("device-panel").is_some());
 
-    let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let clip_selector = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
     let clip_bounds = visual
         .debug_bounds(clip_selector)
-        .expect("arrangement clip");
+        .expect("arrangement clip header");
     let clip_point = point(clip_bounds.center().x, clip_bounds.center().y);
     visual.simulate_mouse_down(clip_point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(clip_point, MouseButton::Left, Modifiers::default());
@@ -247,7 +251,7 @@ fn explicit_clip_and_track_focus_switch_detail_without_changing_pane_visibility(
         assert!(view.clip_view_open, "clip focus keeps the pane open");
         assert_eq!(view.selected_clip, Some(clip));
     });
-    assert!(visual.debug_bounds("arrangement-audio-waveform").is_some());
+    assert!(visual.debug_bounds("audio-events-waveform").is_some());
 
     let toggle = visual
         .debug_bounds("clip-view-toggle")
@@ -439,6 +443,51 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         "the compact Utility panel keeps its final control visible in the fixed body viewport"
     );
 
+    // Reordering is title-drag-only after removing the header arrow buttons.
+    // Perform this before the recorder fixture queues other canonical edits;
+    // production drag refusal while a prior edit is pending remains enforced.
+    let second_title = visual
+        .debug_bounds(Box::leak(
+            format!("device-drag-title-{}", second_device_id.value()).into_boxed_str(),
+        ))
+        .expect("second draggable device title");
+    let first_target = visual
+        .debug_bounds(Box::leak(
+            format!("device-drop-card-{}", device_id.value()).into_boxed_str(),
+        ))
+        .expect("first device insertion target");
+    visual.simulate_mouse_down(
+        second_title.center(),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(
+        point(second_title.center().x + px(12.0), second_title.center().y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let landing = point(first_target.left() + px(8.0), first_target.center().y);
+    visual.simulate_mouse_move(landing, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let request = view
+            .last_enqueued_native_device_drop
+            .expect("title reorders the second device left");
+        assert_eq!(request.project_generation, view.project_generation);
+        assert_eq!(request.revision, view.state.as_ref().unwrap().revision);
+        assert_eq!(request.track, track);
+        assert_eq!(request.before, Some(device_id));
+        assert_eq!(request.replace, None);
+        assert!(
+            matches!(request.source, hex_session::service::NativeDeviceDropSource::Existing {
+            device, class: hex_engine::NativeDeviceClass::Effect, type_id,
+        } if device == second_device_id && type_id == entry.type_id)
+        );
+        assert!(view.active_native_device_drag.is_none());
+    });
+
     let panel_before_menu = visual.debug_bounds("device-panel").expect("device panel");
     let chain_before_menu = visual
         .debug_bounds("device-chain-scroll")
@@ -538,26 +587,6 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
                 device,
                 bypassed: true
             }) if device == device_id
-        ));
-    });
-
-    let second_up_selector =
-        Box::leak(format!("device-up-{}", second_device_id.value()).into_boxed_str());
-    let second_up = visual
-        .debug_bounds(second_up_selector)
-        .expect("move second device left");
-    let click_point = point(second_up.center().x, second_up.center().y);
-    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit,
-            Some(Command::MoveDevice {
-                device,
-                track: moved_track,
-                before: Some(before),
-            }) if device == second_device_id && moved_track == track && before == device_id
         ));
     });
 
@@ -768,4 +797,84 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+}
+
+#[gpui::test]
+fn conversion_control_dispatches_selected_clip_and_blocks_pending_edits(cx: &mut TestAppContext) {
+    let (handle, editor, track, clip) = audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("convert-clip")
+        .expect("audio conversion control");
+    let click = button.center();
+    editor.update(cx, |view, cx| {
+        view.worker_requests_pending = 1;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(view.last_enqueued_clip_conversion.is_none())
+    });
+    editor.update(cx, |view, cx| {
+        view.worker_requests_pending = 0;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let expected = editor.read_with(cx, |view, _| {
+        (
+            view.project_generation,
+            view.state.as_ref().unwrap().revision,
+            clip,
+            false,
+        )
+    });
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.last_enqueued_clip_conversion, Some(expected));
+        assert_eq!(view.selected_track, Some(track));
+    });
+
+    // The same selection changes its editor and conversion target after worker adoption.
+    editor.update(cx, |view, cx| {
+        let old = view.state.as_ref().unwrap();
+        let mut model = hex_project::Editor::new(old.project.as_ref().clone(), 4).unwrap();
+        model
+            .execute(Command::ConvertAudioClipToMidi(clip))
+            .unwrap();
+        let state = ViewState {
+            canonical_audio_source: None,
+            project: Arc::new(model.project().clone()),
+            waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: old.audio_clip_waveforms.clone(),
+            midi_preview: Arc::default(),
+            gain_preview: old.gain_preview.clone(),
+            timeline_frames: old.timeline_frames,
+            can_undo: true,
+            can_redo: false,
+            revision: old.revision + 1,
+            unsaved: true,
+            document_path: None,
+        };
+        view.state = Some(Arc::new(state));
+        view.worker_requests_pending = 0;
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.last_enqueued_clip_conversion = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("midi-note-roll").is_some());
+    let click = visual.debug_bounds("convert-clip").unwrap().center();
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.last_enqueued_clip_conversion
+                .is_some_and(|(_, _, id, to_audio)| id == clip && to_audio)
+        )
+    });
 }

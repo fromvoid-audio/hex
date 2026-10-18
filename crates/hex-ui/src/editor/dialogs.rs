@@ -55,7 +55,7 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase()),
+                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
                     _ => {}
                 }
                 cx.notify();
@@ -79,7 +79,11 @@ impl EditorView {
         };
         let project = &state.project;
         let has_content = !project.tracks().is_empty() || project.assets().next().is_some();
-        if has_content || state.can_undo || state.can_redo {
+        if has_content
+            || state.can_undo
+            || state.can_redo
+            || self.tuning.client.snapshot().is_some()
+        {
             if self.pending_open_path.as_ref() == Some(&path)
                 && self.pending_open_mode == Some(mode)
             {
@@ -123,6 +127,7 @@ impl EditorView {
                 || !state.project.tracks().is_empty()
                 || state.project.assets().next().is_some()
         });
+        let has_content = has_content || self.tuning.client.snapshot().is_some();
         if has_content && self.pending_new_mode != Some(mode) {
             self.pending_new_mode = Some(mode);
             self.status = "replace project · choose new project again to confirm".into();
@@ -210,7 +215,7 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase()),
+                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
                     _ => {}
                 }
                 cx.notify();
@@ -257,7 +262,7 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase()),
+                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
                     _ => {}
                 }
                 cx.notify();

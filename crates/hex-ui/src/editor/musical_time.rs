@@ -3,7 +3,7 @@
 use super::viewport::Viewport;
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
-use hex_project::{BeatTime, Command, Meter, MeterPosition, Project, Tempo};
+use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
 use hex_session::service::Request;
 
 const MAX_RULER_TICKS: usize = 64;
@@ -305,6 +305,7 @@ struct RulerCandidates {
 enum LandmarkDensity {
     Meter,
     Adaptive(f32, f32),
+    #[cfg(test)]
     Fixed(u64),
 }
 
@@ -343,6 +344,7 @@ fn ruler_candidates(
                         pixel_width,
                         spacing,
                     ),
+                    #[cfg(test)]
                     LandmarkDensity::Fixed(step) => step,
                     LandmarkDensity::Meter => meter_beat_length,
                 };
@@ -535,6 +537,7 @@ fn snap_to_meter_landmark(
                 adaptive_grid_spacing(pixel_width),
             ),
             SnapGrid::Off => return Some(beat),
+            #[cfg(test)]
             fixed => fixed.step_raw()?,
         }
         .max(1);
@@ -585,6 +588,8 @@ fn adjacent_landmark(
                 width,
                 adaptive_grid_spacing(width),
             ),
+            SnapGrid::Off => return None,
+            #[cfg(test)]
             fixed => fixed.step_raw()?,
         }
         .max(1);
@@ -647,19 +652,20 @@ pub(super) enum SnapGrid {
     Off,
     #[default]
     Adaptive,
+    // Fixed resolutions are retained only as musical-time regression fixtures.
+    #[cfg(test)]
     Quarter,
+    #[cfg(test)]
     Eighth,
+    #[cfg(test)]
     Sixteenth,
 }
 
 impl SnapGrid {
-    pub(super) const fn next(self) -> Self {
+    pub(super) const fn toggled(self) -> Self {
         match self {
-            Self::Adaptive => Self::Quarter,
-            Self::Quarter => Self::Eighth,
-            Self::Eighth => Self::Sixteenth,
-            Self::Sixteenth => Self::Off,
             Self::Off => Self::Adaptive,
+            _ => Self::Off,
         }
     }
 
@@ -667,14 +673,18 @@ impl SnapGrid {
         match self {
             Self::Off => "off",
             Self::Adaptive => "adaptive",
+            #[cfg(test)]
             Self::Quarter => "1/4",
+            #[cfg(test)]
             Self::Eighth => "1/8",
+            #[cfg(test)]
             Self::Sixteenth => "1/16",
         }
     }
 
     /// Q32.32 quarter-note interval; the canonical project map performs all
     /// frame conversion and nearest-grid tie handling.
+    #[cfg(test)]
     pub(super) const fn step_raw(self) -> Option<u64> {
         const QUARTER: u64 = 1_u64 << 32;
         match self {
@@ -692,18 +702,13 @@ impl SnapGrid {
             Self::Adaptive => {
                 LandmarkDensity::Adaptive(pixel_width, adaptive_grid_spacing(pixel_width))
             }
+            #[cfg(test)]
             fixed => LandmarkDensity::Fixed(fixed.step_raw().unwrap_or(1)),
         }
     }
 
     pub(super) const fn with_platform_modifier(self, held: bool) -> Self {
-        if !held {
-            return self;
-        }
-        match self {
-            Self::Off => Self::Adaptive,
-            Self::Adaptive | Self::Quarter | Self::Eighth | Self::Sixteenth => Self::Off,
-        }
+        if held { self.toggled() } else { self }
     }
 
     pub(super) fn adjacent_beat(
@@ -759,12 +764,12 @@ impl SnapGrid {
 }
 
 impl super::EditorView {
-    pub(super) fn cycle_snap_grid(&mut self) {
-        self.snap_grid = self.snap_grid.next();
-        self.status = format!("clip move · snap {}", self.snap_grid.label());
+    pub(super) fn toggle_snap_grid(&mut self) {
+        self.snap_grid = self.snap_grid.toggled();
+        self.status = format!("arranger · snap {}", self.snap_grid.label());
     }
 
-    fn cursor_beat(&self) -> Option<BeatTime> {
+    pub(super) fn cursor_beat(&self) -> Option<BeatTime> {
         let state = self.state.as_ref()?;
         let beat = state
             .project
@@ -779,31 +784,6 @@ impl super::EditorView {
             && !self.close_prompt_open
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
-    }
-
-    pub(super) fn adjust_tempo(&mut self, direction: i32) {
-        if !self.time_edit_admitted() {
-            self.error = Some("tempo edit waits for pending project work".into());
-            return;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(beat) = self.cursor_beat() else {
-            self.error = Some("tempo point unavailable at this cursor position".into());
-            return;
-        };
-        let current = state.project.tempo_map().tempo_at(beat);
-        let adjusted = i64::from(current.micro_bpm()) + i64::from(direction) * 1_000_000;
-        let Ok(micro_bpm) = u32::try_from(adjusted) else {
-            self.error = Some("tempo must stay within 1–1000 bpm".into());
-            return;
-        };
-        let Ok(tempo) = Tempo::new(micro_bpm) else {
-            self.error = Some("tempo must stay within 1–1000 bpm".into());
-            return;
-        };
-        self.enqueue(Request::Edit(Command::SetTempoPoint { beat, tempo }));
     }
 
     pub(super) fn cycle_meter(&mut self) {
@@ -834,19 +814,9 @@ impl super::EditorView {
 
     pub(super) fn time_controls(&self, cx: &mut Context<Self>) -> Div {
         let Some(state) = self.state.as_ref() else {
-            return div()
-                .w(px(super::tracks::TRACK_HEADER_WIDTH))
-                .flex_shrink_0();
+            return div().w(px(self.track_header_width())).flex_shrink_0();
         };
         let beat = self.cursor_beat();
-        let tempo_label = beat.map_or_else(
-            || "—".into(),
-            |beat| {
-                let micro = state.project.tempo_map().tempo_at(beat).micro_bpm();
-                let tenths = (micro + 50_000) / 100_000;
-                format!("{}.{:01}", tenths / 10, tenths % 10)
-            },
-        );
         let meter_label = beat.map_or_else(
             || "—".into(),
             |beat| {
@@ -856,37 +826,13 @@ impl super::EditorView {
         );
         let enabled = self.time_edit_admitted() && beat.is_some();
         div()
-            .w(px(super::tracks::TRACK_HEADER_WIDTH))
+            .w(px(self.track_header_width()))
             .h_full()
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_center()
             .gap(px(2.0))
-            .children([
-                self.time_button(
-                    "−",
-                    "decrease tempo at cursor quarter by 1 bpm",
-                    enabled,
-                    |view, _, _| view.adjust_tempo(-1),
-                    cx,
-                ),
-                self.time_readout(tempo_label, "tempo at cursor snapped quarter · bpm"),
-                self.time_button(
-                    "+",
-                    "increase tempo at cursor quarter by 1 bpm",
-                    enabled,
-                    |view, _, _| view.adjust_tempo(1),
-                    cx,
-                ),
-            ])
-            .child(
-                div()
-                    .w(px(1.0))
-                    .h(px(14.0))
-                    .mx_1()
-                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
-            )
             .children([self.time_button(
                 &meter_label,
                 "cycle meter at cursor snapped quarter · 4/4, 3/4, 6/8, 5/4",
@@ -894,26 +840,6 @@ impl super::EditorView {
                 |view, _, _| view.cycle_meter(),
                 cx,
             )])
-    }
-
-    fn time_readout(&self, label: String, description: &'static str) -> gpui::Stateful<Div> {
-        div()
-            .id(description)
-            .w(px(38.0))
-            .h(px(19.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .tooltip(move |_, cx| {
-                cx.new(|_| super::transport::MiniTooltip {
-                    description: description.into(),
-                })
-                .into()
-            })
-            .child(theme::text(label))
     }
 
     fn time_button(
@@ -1052,13 +978,10 @@ mod tests {
     }
 
     #[test]
-    fn snap_choice_is_local_opt_in_and_cycles_back_to_off() {
+    fn arranger_snap_toggles_between_adaptive_and_off() {
         assert_eq!(SnapGrid::default(), SnapGrid::Adaptive);
-        assert_eq!(SnapGrid::Adaptive.next(), SnapGrid::Quarter);
-        assert_eq!(SnapGrid::Quarter.next(), SnapGrid::Eighth);
-        assert_eq!(SnapGrid::Eighth.next(), SnapGrid::Sixteenth);
-        assert_eq!(SnapGrid::Sixteenth.next(), SnapGrid::Off);
-        assert_eq!(SnapGrid::Off.next(), SnapGrid::Adaptive);
+        assert_eq!(SnapGrid::Adaptive.toggled(), SnapGrid::Off);
+        assert_eq!(SnapGrid::Off.toggled(), SnapGrid::Adaptive);
         assert_eq!(SnapGrid::Off.step_raw(), None);
         assert_eq!(SnapGrid::Adaptive.step_raw(), None);
         assert_eq!(SnapGrid::Quarter.step_raw(), Some(1_u64 << 32));

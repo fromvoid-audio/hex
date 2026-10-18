@@ -1,5 +1,6 @@
 //! Control-owned immutable audio transformation, cache and retained PCM accounting.
 mod budget;
+mod events;
 mod mapping;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
@@ -426,32 +427,11 @@ impl AudioTransformPreparation {
                 cache.evict_oldest()?;
             }
         }
-        let reservation = loop {
-            match self.budget.reserve(bytes) {
-                Ok(reservation) => break reservation,
-                Err(error) => {
-                    let mut cache = self
-                        .cache
-                        .try_borrow_mut()
-                        .map_err(|_| Invalid("audio transform cache is already borrowed"))?;
-                    if !cache.entries.is_empty() {
-                        cache.evict_oldest()?;
-                        continue;
-                    }
-                    drop(cache);
-                    let mut pending = self
-                        .pending
-                        .try_borrow_mut()
-                        .map_err(|_| Invalid("audio pending cache is already borrowed"))?;
-                    if let Some(entries) = pending.as_mut()
-                        && !entries.is_empty()
-                    {
-                        entries.remove(0);
-                        continue;
-                    }
-                    return Err(error);
-                }
-            }
+        let reservation = self.reserve_with_eviction(bytes)?;
+        let scratch_reservation = if edit.domain.events.is_some() {
+            Some(self.reserve_with_eviction(bytes)?)
+        } else {
+            None
         };
         let (map, attacks) = mapping::prepare_map(edit, project.tempo_map(), &self.shutdown)?;
         let mut envelope = Vec::new();
@@ -521,6 +501,11 @@ impl AudioTransformPreparation {
         };
         let mut rendered =
             hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
+        if edit.domain.events.is_some() {
+            rendered.frames =
+                events::compose(&rendered.frames, edit, project.tempo_map(), &self.shutdown)?;
+        }
+        drop(scratch_reservation);
         mapping::apply_fade(
             &mut rendered.frames,
             edit,
@@ -542,6 +527,35 @@ impl AudioTransformPreparation {
         })?;
         Ok(audio)
     }
+    fn reserve_with_eviction(&self, bytes: usize) -> Result<Reservation, Invalid> {
+        loop {
+            match self.budget.reserve(bytes) {
+                Ok(reservation) => return Ok(reservation),
+                Err(error) => {
+                    let mut cache = self
+                        .cache
+                        .try_borrow_mut()
+                        .map_err(|_| Invalid("audio transform cache is already borrowed"))?;
+                    if !cache.entries.is_empty() {
+                        cache.evict_oldest()?;
+                        continue;
+                    }
+                    drop(cache);
+                    let mut pending = self
+                        .pending
+                        .try_borrow_mut()
+                        .map_err(|_| Invalid("audio pending cache is already borrowed"))?;
+                    if let Some(entries) = pending.as_mut()
+                        && !entries.is_empty()
+                    {
+                        entries.remove(0);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
     pub(crate) fn compile_clip(
         &self,
         project: &CanonicalProject,
@@ -555,11 +569,11 @@ impl AudioTransformPreparation {
         edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
         let (_, _, view_start, view_end) = edit.projected_domain(project.tempo_map())?;
         let domain = &edit.domain;
-        let direct = domain.pitch_cents == 0
+        let direct = domain.events.is_none()
+            && domain.pitch_cents == 0
             && !domain.warp_enabled
             && domain.source_gain.is_empty()
-            && domain.fade.fade_in() == 0
-            && domain.fade.fade_out() == 0;
+            && domain.fade.is_neutral();
         if direct && matches!(source, PreparedAudioSourceRef::Streamed(_)) {
             if !domain.looping && view_start >= domain.source_length {
                 return Ok(None);
@@ -605,7 +619,7 @@ impl AudioTransformPreparation {
         }
         let PreparedAudioSourceRef::Resident(source) = source else {
             return Err(Invalid(
-                "pitch, warp and source-envelope preparation currently requires resident audio; streamed source changes were not committed",
+                "audio events, pitch, warp, source-envelope and fade preparation currently require resident audio; streamed source changes were not committed",
             ));
         };
         let audio = self.prepare_audio(project, edit, asset, source)?;

@@ -15,6 +15,34 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Replace validated project tuning and audition settings in one history step.
+    SetTuning(hex_tuning::ProjectTuning),
+    /// Event IDs come from the clip/revision-scoped editable_audio_events view.
+    EditAudioEvents {
+        clip: ClipId,
+        operation: crate::AudioEventEdit,
+    },
+    /// Rename any Arrangement or Session clip by stable ID.
+    RenameClip {
+        clip: ClipId,
+        name: String,
+    },
+    SetTrackColor {
+        track: TrackId,
+        color: crate::ElementColor,
+    },
+    SetClipFlavor {
+        clip: ClipId,
+        flavor: crate::ClipFlavor,
+    },
+    /// Replace audio with an empty editable MIDI source, retaining clip identity.
+    ConvertAudioClipToMidi(ClipId),
+    /// Adopt a rendered project-rate WAV for a MIDI clip, retaining identity.
+    ConvertMidiClipToAudio {
+        clip: ClipId,
+        path: PathBuf,
+        frames: u64,
+    },
     /// One prepared history operation creates a normal hybrid track with a device.
     InsertTrackWithDevice {
         name: String,
@@ -106,6 +134,16 @@ pub enum Command {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Atomically replace opaque device state and reserve fresh identities.
+    /// Expected source and allocator cursor prevent stale UI edits overwriting
+    /// another edit; history preserves the allocator high-water mark on undo.
+    ReplaceDeviceStateWithIdentityReservation {
+        device: DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        state: hex_lattice_contract::NativeDeviceState,
+        expected_next_id: u64,
+        reserved_ids: u64,
+    },
     SetDeviceBypass {
         device: DeviceId,
         bypassed: bool,
@@ -148,6 +186,13 @@ pub enum Command {
         clipboard: std::sync::Arc<crate::RangeClipboard>,
         track: TrackId,
         frame: u64,
+    },
+    /// Paste complete clips, retaining relative timing and stable multi-track owners.
+    PasteClips {
+        clipboard: std::sync::Arc<crate::ClipClipboard>,
+        track: TrackId,
+        frame: u64,
+        insert: bool,
     },
     /// Keyboard paste that preserves original track IDs for multi-row clipboards.
     PasteTimeRangeOnSourceTracks {
@@ -248,6 +293,8 @@ pub enum Command {
         source_end: u64,
     },
     RemoveTrack(TrackId),
+    /// Remove explicit tracks through the existing cleanup as one history edit.
+    RemoveTracks(Vec<TrackId>),
     RenameTrack {
         track: TrackId,
         name: String,
@@ -323,6 +370,12 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
+    /// Resize an Arrangement audio clip with its lower fade endpoint as one edit.
+    TrimClipFadeEdge {
+        clip: ClipId,
+        edge: TrimEdge,
+        frame: u64,
+    },
     MoveClip {
         clip: ClipId,
         track: TrackId,
@@ -370,6 +423,11 @@ pub enum Command {
         fade_in: u64,
         fade_out: u64,
     },
+    /// Reanchor a complete fade envelope to the current Arrangement clip.
+    SetClipFadeEnvelope {
+        clip: ClipId,
+        fade: ClipFade,
+    },
     /// Set Arrangement or Session audio clip gain, in -60_000..=24_000 millidecibels.
     SetAudioClipGain {
         clip: ClipId,
@@ -383,6 +441,17 @@ pub enum Command {
     SetAudioClipMusical {
         clip: ClipId,
         enabled: bool,
+    },
+    /// Change the declared original sample tempo while Warp is active.
+    SetAudioClipSampleBpm {
+        clip: ClipId,
+        tempo: crate::Tempo,
+    },
+    /// Affine retiming of the retained source map; opposite visible edge stays fixed.
+    StretchAudioClipEdge {
+        clip: ClipId,
+        edge: TrimEdge,
+        frame: u64,
     },
     SetAudioClipWarp {
         clip: ClipId,
@@ -509,6 +578,12 @@ pub enum Command {
         name: String,
     },
     PlaceMidiClip {
+        track: TrackId,
+        start: crate::BeatTime,
+        length: crate::BeatTime,
+    },
+    /// Paint an empty MIDI clip, cutting existing audio/MIDI at its boundaries.
+    PlaceMidiClipWithOverwrite {
         track: TrackId,
         start: crate::BeatTime,
         length: crate::BeatTime,
@@ -689,6 +764,7 @@ pub(crate) fn insert_track_before(
     project.tracks.insert(
         index,
         Track {
+            color: crate::ElementColor::default(),
             gain_lane: crate::GainLane::default(),
             id,
             name,
@@ -869,16 +945,13 @@ pub(crate) fn preview_edge_trim(
         || source_length != clip.source_length
         || source_phase != clip.source_phase;
     let fade = if changed {
-        ClipFade::new(
-            duration,
-            0,
-            clip.fade.fade_in().min(duration),
-            clip.fade.fade_out().min(duration),
-        )?
+        clip.fade.reanchor(duration)?
     } else {
         clip.fade
     };
     Ok(Clip {
+        name: clip.name.clone(),
+        flavor: clip.flavor,
         gain: clip.gain,
         edit: clip.edit.clone(),
         id: clip.id,
@@ -950,6 +1023,8 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
+        name: original.name.clone(),
+        flavor: original.flavor,
         id: right_id,
         asset: original.asset,
         start: frame,
@@ -1144,6 +1219,20 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::SetTuning(tuning) => {
+                self.tuning = tuning;
+                Ok(Created::None)
+            }
+            Command::EditAudioEvents { clip, operation } => {
+                crate::audio_events::apply(self, clip, operation)?;
+                Ok(Created::None)
+            }
+            Command::ConvertAudioClipToMidi(clip) => {
+                crate::clip_conversion::audio_to_midi(self, clip)
+            }
+            Command::ConvertMidiClipToAudio { clip, path, frames } => {
+                crate::clip_conversion::midi_to_audio(self, clip, path, frames)
+            }
             Command::SpliceGainTouchBatch {
                 track,
                 expected_epoch,
@@ -1229,6 +1318,11 @@ impl Project {
                 lane.spans.clear();
                 Ok(Created::None)
             }
+            Command::SetTrackColor { track, color } => {
+                self.track_mut(track)?.color = color;
+                Ok(Created::None)
+            }
+            Command::SetClipFlavor { clip, flavor } => self.set_clip_flavor(clip, flavor),
             Command::SetRouting(edges) => self.adopt_routing(edges),
             Command::SetAudioFeed {
                 source,
@@ -1251,6 +1345,7 @@ impl Project {
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
+            | Command::ReplaceDeviceStateWithIdentityReservation { .. }
             | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
             return_command @ (Command::AddReturnTrack { .. }
             | Command::RemoveReturnTrack(_)
@@ -1293,6 +1388,7 @@ impl Project {
             } => crate::time_range::copy_range(self, &range, track, frame),
             midi_command @ (Command::AddMidiTrack { .. }
             | Command::PlaceMidiClip { .. }
+            | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
             | Command::TrimMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
@@ -1353,6 +1449,7 @@ impl Project {
                 let fade = original.fade;
                 let source_phase = original.source_phase;
                 let gain = original.gain;
+                let flavor = original.flavor;
                 let audio_edit = original.edit.clone();
                 let duplicate = self.apply(Command::PlaceClip {
                     track,
@@ -1367,6 +1464,7 @@ impl Project {
                     self.clip_mut(duplicate_id)?.fade = fade;
                     self.clip_mut(duplicate_id)?.source_phase = source_phase;
                     self.clip_mut(duplicate_id)?.gain = gain;
+                    self.clip_mut(duplicate_id)?.flavor = flavor;
                     let mut duplicated = self
                         .clip(duplicate_id)
                         .cloned()
@@ -1728,6 +1826,20 @@ impl Project {
                     source_end,
                 })
             }
+            Command::RemoveTracks(ids) => {
+                if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
+                    return Err(Invalid("track removal needs a bounded selection"));
+                }
+                for (index, id) in ids.iter().enumerate() {
+                    if ids[..index].contains(id) || self.track(*id).is_none() {
+                        return Err(Invalid("track removal selection is stale or duplicated"));
+                    }
+                }
+                for id in ids {
+                    self.apply(Command::RemoveTrack(id))?;
+                }
+                Ok(Created::None)
+            }
             Command::RemoveTrack(id) => {
                 let index = self
                     .tracks
@@ -1743,6 +1855,7 @@ impl Project {
                 self.session.cells.retain(|cell| cell.track != id);
                 Ok(Created::None)
             }
+            Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
                 self.track_mut(track)?.name = name;
@@ -1860,6 +1973,9 @@ impl Project {
                     .map(Created::Asset)
             }
             Command::RemoveAsset(id) => {
+                if self.device_uses_asset(id) {
+                    return Err(Invalid("media is still referenced by a device"));
+                }
                 if self
                     .tracks
                     .iter()
@@ -1898,6 +2014,8 @@ impl Project {
                 let id = ClipId(self.allocate_id()?);
                 let fade = ClipFade::neutral(duration)?;
                 self.audio_clips_mut(track)?.push(Clip {
+                    name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,
@@ -1980,6 +2098,12 @@ impl Project {
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
             }
+            Command::PasteClips {
+                clipboard,
+                track,
+                frame,
+                insert,
+            } => crate::clip_clipboard::paste(self, &clipboard, track, frame, insert),
             Command::CopyClipTo { clip, track, start } => {
                 crate::clip_copy::audio_to(self, clip, track, start)
             }
@@ -2018,12 +2142,7 @@ impl Project {
                 let old_fade = original.fade;
                 let old_source_offset = original.source_offset;
                 let old_source_length = original.source_length;
-                let fade = ClipFade::new(
-                    duration,
-                    0,
-                    old_fade.fade_in().min(duration),
-                    old_fade.fade_out().min(duration),
-                )?;
+                let fade = old_fade.reanchor(duration)?;
                 let target = self.clip_mut(clip)?;
                 target.start = start;
                 target.duration = duration;
@@ -2049,9 +2168,22 @@ impl Project {
                 *self.clip_mut(clip)? = trimmed;
                 Ok(Created::None)
             }
+            Command::TrimClipFadeEdge { clip, edge, frame } => {
+                let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+                let asset_frames = self
+                    .asset(original.asset)
+                    .ok_or(Invalid("media no longer exists"))?
+                    .playback_frames;
+                let trimmed =
+                    original.preview_fade_edge_trim(edge, frame, asset_frames, self.tempo_map())?;
+                *self.clip_mut(clip)? = trimmed;
+                Ok(Created::None)
+            }
             command @ (Command::SetAudioClipPitch { .. }
             | Command::SetAudioClipMusical { .. }
             | Command::SetAudioClipWarp { .. }
+            | Command::SetAudioClipSampleBpm { .. }
+            | Command::StretchAudioClipEdge { .. }
             | Command::SetAudioClipSourceGain { .. }) => crate::audio_edit::apply(self, command),
             Command::SetAudioClipGain { clip, millidb } => {
                 let gain = crate::ClipGain::new(millidb)?;
@@ -2072,6 +2204,17 @@ impl Project {
                         .ok_or(Invalid("audio clip no longer exists"))?;
                     target.gain = gain;
                 }
+                Ok(Created::None)
+            }
+            Command::SetClipFadeEnvelope { clip, fade } => {
+                let target = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+                if fade.span() != target.duration || fade.offset() != 0 {
+                    return Err(Invalid("edited fade must match the current clip"));
+                }
+                if target.edit.is_some() {
+                    return crate::audio_edit::set_fade_envelope(self, clip, fade);
+                }
+                self.clip_mut(clip)?.fade = fade;
                 Ok(Created::None)
             }
             Command::SetClipFades {
@@ -2225,6 +2368,8 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,
@@ -2286,6 +2431,8 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,
@@ -2323,3 +2470,7 @@ mod overwrite_tests {
         assert!(clips.iter().any(|candidate| candidate.id() == clip));
     }
 }
+
+#[cfg(test)]
+#[path = "track_remove_tests.rs"]
+mod track_remove_tests;

@@ -39,7 +39,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     if view.mode != super::EditorMode::Arrangement {
         return None;
     }
-    let state = view.state.as_ref()?;
+    let state = view.state.as_ref()?.clone();
     let (track, clip_id, position, length, source_start, source_length) =
         view.selected_clip_data()?;
     let clip = state.project.clip(clip_id)?;
@@ -98,6 +98,9 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(title)),
     );
+    controls = controls.child(super::musical_audio_controls::warp_header(
+        view, clip_id, cx,
+    ));
     controls = controls
         .child(field_row(
             cx,
@@ -164,6 +167,43 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .p(px(4.0))
         .gap(px(2.0))
         .debug_selector(|| "arrangement-audio-waveform-panel".into());
+    let source_view = view.audio_event_editor.source_view;
+    waveform_panel = waveform_panel.child(
+        div()
+            .h(px(20.0))
+            .flex_shrink_0()
+            .flex()
+            .gap_1()
+            .child(
+                super::waveform::button("events", "edit audio events", ("audio-events-tab", 0))
+                    .w(px(56.0))
+                    .debug_selector(|| "audio-events-tab".into())
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.audio_event_editor.source_view = false;
+                        view.audio_event_focus.focus(window);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                super::waveform::button(
+                    "source",
+                    "inspect original source and warp markers",
+                    ("audio-source-tab", 0),
+                )
+                .w(px(56.0))
+                .debug_selector(|| "audio-source-tab".into())
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.audio_event_editor.gesture = None;
+                    view.audio_event_editor.source_view = true;
+                    view.focus.focus(window);
+                    cx.notify();
+                })),
+            ),
+    );
+    if !source_view {
+        waveform_panel = waveform_panel.child(super::audio_event_editor::view(view, cx)?);
+        return Some(details.child(waveform_panel));
+    }
     if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
         waveform_panel = waveform_panel.child(div().h(px(52.0)).flex_shrink_0().child(
             super::waveform::prepared_waveform_view_cached(

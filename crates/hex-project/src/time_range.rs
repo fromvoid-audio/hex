@@ -86,6 +86,8 @@ impl RangeClipboard {
 }
 #[derive(Debug, Clone)]
 struct MidiFragment {
+    name: String,
+    flavor: crate::ClipFlavor,
     row: usize,
     start: u64,
     duration: u64,
@@ -224,6 +226,8 @@ impl Project {
                 }
                 reserve(&mut result.midi, 1)?;
                 result.midi.push(MidiFragment {
+                    name: clip.name().into(),
+                    flavor: clip.flavor,
                     row,
                     start: start - range.start,
                     duration: end - start,
@@ -440,6 +444,8 @@ pub(crate) fn paste_rows(
             notes,
         };
         let clip = MidiClip {
+            name: fragment.name.clone(),
+            flavor: fragment.flavor,
             id: ClipId(project.allocate_id()?),
             start,
             length,
@@ -481,4 +487,27 @@ pub(crate) fn copy_range(
     }
     let clipboard = project.capture_time_range(range)?;
     paste(project, &clipboard, track, frame)
+}
+
+/// Reuse canonical ripple insertion for a complete clip clipboard's projected span.
+pub(crate) fn insert_empty(
+    project: &mut Project,
+    tracks: Vec<TrackId>,
+    frame: u64,
+    duration: u64,
+) -> Result<Created, Invalid> {
+    let first = tracks
+        .first()
+        .copied()
+        .ok_or(Invalid("clip clipboard has no source tracks"))?;
+    let clipboard = RangeClipboard {
+        sample_rate: project.sample_rate(),
+        duration,
+        rows: tracks.len(),
+        source_tracks: tracks,
+        assets: Vec::new(),
+        audio: Vec::new(),
+        midi: Vec::new(),
+    };
+    insert_on_source_tracks(project, &clipboard, first, frame)
 }

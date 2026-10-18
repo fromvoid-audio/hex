@@ -85,6 +85,8 @@ fn inventory_shape(
             track.content = hex_project::TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
+                    name: "clip".into(),
+                    flavor: hex_project::ClipFlavor::default(),
                     id: next,
                     start_raw: 0,
                     length_raw: 8 << 32,
@@ -181,7 +183,7 @@ fn candidate_pool_charge_with_admitted_track_and_effect_inventory() {
     assert!(preflight + pool <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
     assert_eq!(
         std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>(),
-        344
+        352
     );
 }
 

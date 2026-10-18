@@ -108,8 +108,12 @@ impl NativeInstrumentDefinition for ProfileDefinition {
     fn prepare_instrument(
         &self,
         _: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if sample_rate != RATE {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -172,7 +176,13 @@ impl PreparedSharedAnalyticContext for ProfileContext {
         Ok(PreparedSharedAnalyticNote::new(payload, RELEASE_FRAMES))
     }
 
-    fn sample(&self, note: &PreparedSharedAnalyticNote, age: u64, gate: u64) -> StereoFrame {
+    fn sample(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> StereoFrame {
         sample_payload(
             note.payload()[0],
             note.payload()[1] as u8,
@@ -220,6 +230,7 @@ fn sample_inline(
     age: u64,
     gate: u64,
     release: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> StereoFrame {
     sample_payload(payload[0], payload[1] as u8, age, gate, release)
 }
@@ -254,6 +265,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -271,6 +283,8 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: clip_length,
@@ -286,6 +300,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
     }
 
     let project = Project::from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

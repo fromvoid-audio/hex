@@ -18,13 +18,21 @@ mod numeric;
 mod numeric_control;
 mod numeric_text;
 mod response_graph;
+mod spectrum_plot;
 mod style;
+mod text_case;
+pub use spectrum_plot::{
+    MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
+};
+pub use text_case::TextCase;
 
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
 };
 pub use curve::{curve_plot, transfer_plot};
-pub use dial::{DialLayout, MICRO_DIAL_DIAMETER, MICRO_DIAL_HEIGHT, MICRO_DIAL_WIDTH};
+pub use dial::{
+    DialLayout, MICRO_DIAL_DIAMETER, MICRO_DIAL_HEIGHT, MICRO_DIAL_WIDTH, WIDE_MICRO_DIAL_WIDTH,
+};
 pub use discrete::{
     DiscreteControlAppearance, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged,
     ToggleConfig, panel_tab,
@@ -35,7 +43,7 @@ pub use frame::{
     DEVICE_ROW_GUTTER, DEVICE_SECTION_INSET, DEVICE_SECTION_RADIUS, DeviceLayout,
     DeviceSectionSurface, device_body, device_compact_row, device_compact_section,
     device_dense_section, device_display, device_frame, device_grouped_row, device_header,
-    device_layout, device_rail, device_section, device_split,
+    device_layout, device_rail, device_section, device_split, device_windowed_body,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
@@ -44,7 +52,8 @@ pub use numeric_control::{
     bind_numeric_control_keys,
 };
 pub use response_graph::{
-    ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
+    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphEvent, ResponseGraphModel,
+    ResponseGraphNode, ResponseGraphPhase, bind_response_graph_keys,
 };
 pub use style::{
     CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceActionStyle, DeviceFrameStyle,

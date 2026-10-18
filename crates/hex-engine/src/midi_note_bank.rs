@@ -29,7 +29,7 @@ struct BankEntry {
 /// context index. The index is resolved against the current revision or the
 /// playback's retained-owner lease table at sample time.
 /// Keep this by-value so existing inline samplers do not allocate or add an
-/// indirect owner lookup; the large variant is the preserved 344-byte value.
+/// indirect owner lookup; the large variant is the 352-byte value including continuation authority.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PreparedMidiNote {
@@ -174,7 +174,11 @@ impl PreparedMidiNote {
         gate_frames: u64,
     ) -> Result<Frame, Invalid> {
         match self {
-            Self::Inline(note) => Ok(note.sample(age_frames, gate_frames)),
+            Self::Inline(note) => Ok(note.sample(
+                age_frames,
+                gate_frames,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )),
             Self::Shared {
                 context,
                 note,
@@ -209,10 +213,22 @@ impl PreparedMidiNote {
                             Invalid("shared analytic continuation parameters were refused")
                         })?;
                     provider
-                        .sample_with_parameters(target, &parameters, note, age_frames, gate_frames)
+                        .sample_with_parameters(
+                            target,
+                            &parameters,
+                            note,
+                            age_frames,
+                            gate_frames,
+                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        )
                         .map_err(|_| Invalid("shared analytic continuation sample was refused"))
                 } else {
-                    Ok(owner.context().sample(note, age_frames, gate_frames))
+                    Ok(owner.context().sample(
+                        note,
+                        age_frames,
+                        gate_frames,
+                        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    ))
                 }
             }
         }
@@ -256,6 +272,7 @@ fn silent_sample(
     _age_frames: u64,
     _gate_frames: u64,
     _release_frames: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> [f32; 2] {
     [0.0; 2]
 }
@@ -548,6 +565,7 @@ mod tests {
         _age: u64,
         _gate: u64,
         _release: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> [f32; 2] {
         [payload[0] as f32, (payload[1] + payload[2]) as f32]
     }
@@ -588,8 +606,14 @@ mod tests {
         let PreparedMidiNote::Inline(second_sampler) = second_sampler else {
             panic!("test instrument should use inline analytic notes");
         };
-        assert_eq!(first_sampler.sample(0, 1), [11.0, 160.0]);
-        assert_eq!(second_sampler.sample(0, 1), [29.0, 160.0]);
+        assert_eq!(
+            first_sampler.sample(0, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            [11.0, 160.0]
+        );
+        assert_eq!(
+            second_sampler.sample(0, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            [29.0, 160.0]
+        );
         assert!(!Arc::ptr_eq(&first, &second));
     }
 
@@ -628,8 +652,8 @@ mod tests {
 
     #[test]
     fn complete_revision_limit_accounts_wide_entries_all_owners_and_indices() {
-        assert_eq!(std::mem::size_of::<PreparedAnalyticNote>(), 344);
-        assert_eq!(std::mem::size_of::<BankEntry>(), 352);
+        assert_eq!(std::mem::size_of::<PreparedAnalyticNote>(), 352);
+        assert_eq!(std::mem::size_of::<BankEntry>(), 360);
         let (max_bank_bytes, max_indices) = complete_revision_limits().unwrap();
         assert!(
             PreparedMidiNoteBank::validate_complete_revision_budget(max_bank_bytes, max_indices,)
@@ -658,8 +682,9 @@ mod tests {
         let per_revision = max_bank_bytes
             .checked_add(max_indices * std::mem::size_of::<u16>())
             .unwrap();
-        assert_eq!(per_revision, 47_091_712);
-        assert_eq!(per_revision.checked_mul(2).unwrap(), 94_183_424);
+        // One static continuation authority pointer adds eight bytes per entry.
+        assert_eq!(per_revision, 48_140_288);
+        assert_eq!(per_revision.checked_mul(2).unwrap(), 96_280_576);
     }
 
     #[test]

@@ -77,9 +77,15 @@ pub enum NumericControlAppearance {
     CompactDial,
     MiniDial,
     MicroDial,
+    WideMicroDial,
     InlineValue,
+    /// A rail and editable readout for a compact mixer/header row.
+    CompactSlider,
     DeviceMeters,
 }
+
+#[cfg(test)]
+mod compact_slider_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericEventPhase {
@@ -172,6 +178,9 @@ struct Press {
 
 /// One reusable knob/slider and its independently editable numeric value.
 pub struct NumericControl {
+    accessibility_binding: Option<gpui::AccessibilityBinding>,
+    accessibility_pending: bool,
+    accessibility_lifetime: gpui::AccessibilityLifetime,
     id: SharedString,
     label: SharedString,
     kind: NumericControlKind,
@@ -201,6 +210,38 @@ pub struct NumericControl {
 }
 
 impl NumericControl {
+    /// Format an acknowledged value using this control's actual canonical codec.
+    pub fn accessibility_value(
+        &self,
+        value: f64,
+    ) -> Result<gpui::AccessibilityValue, NumericError> {
+        Ok(gpui::AccessibilityValue::Number {
+            value: self.spec.validate(value)?,
+            min: self.spec.bounds().0,
+            max: self.spec.bounds().1,
+            text: self.spec.format(value)?.into(),
+        })
+    }
+
+    /// Bind real acknowledged owner state without altering pointer/keyboard behavior.
+    pub fn set_accessibility_binding(
+        &mut self,
+        binding: gpui::AccessibilityBinding,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.accessibility_binding.as_ref().is_none_or(|old| {
+            old.name != binding.name
+                || old.revision != binding.revision
+                || old.value != binding.value
+                || old.pending != binding.pending
+        }) || self.accessibility_pending;
+        self.accessibility_pending = false;
+        self.accessibility_binding = Some(binding);
+        if changed {
+            cx.notify();
+        }
+    }
+
     pub fn new(
         cx: &mut Context<Self>,
         id: impl Into<SharedString>,
@@ -229,6 +270,9 @@ impl NumericControl {
             dial_layout,
         } = config;
         Self {
+            accessibility_binding: None,
+            accessibility_pending: false,
+            accessibility_lifetime: Default::default(),
             id,
             label,
             kind,
@@ -273,7 +317,7 @@ impl NumericControl {
         self.value
     }
 
-    /// Text currently shown in the editable value field.
+    /// Original editable draft, preserving parser and clipboard semantics.
     pub fn display_text(&self) -> &str {
         &self.text
     }
@@ -613,9 +657,16 @@ impl NumericControl {
         if !self.enabled || self.editing {
             return;
         }
-        if let Ok(value) = self.spec.step(self.draft, direction, fine)
-            && value != self.draft
-        {
+        if let Ok(value) = self.spec.step(self.draft, direction, fine) {
+            self.emit_accessible_value(value, cx);
+        }
+    }
+
+    fn emit_accessible_value(&mut self, value: f64, cx: &mut Context<Self>) -> bool {
+        if !self.enabled || self.editing || self.spec.validate(value).is_err() {
+            return false;
+        }
+        if value != self.draft {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: self.draft,
@@ -633,6 +684,47 @@ impl NumericControl {
             });
             cx.notify();
         }
+        true
+    }
+
+    fn accessibility_action(
+        &mut self,
+        action: &gpui::AccessibilityAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        use gpui::AccessibilityAction;
+        if !self.enabled {
+            return false;
+        }
+        if matches!(action, AccessibilityAction::Focus) {
+            self.focus.focus(window);
+            return true;
+        }
+        if self.is_interacting()
+            || self.accessibility_pending
+            || self
+                .accessibility_binding
+                .as_ref()
+                .is_some_and(|binding| binding.pending || !(binding.guard)(cx))
+        {
+            return false;
+        }
+        let value = match action {
+            AccessibilityAction::SetNumber(value) => Ok(*value),
+            AccessibilityAction::Increment => self.spec.step(self.draft, 1., false),
+            AccessibilityAction::Decrement => self.spec.step(self.draft, -1., false),
+            _ => return false,
+        };
+        value.is_ok_and(|value| {
+            let changed = value != self.draft;
+            let accepted = self.emit_accessible_value(value, cx);
+            if accepted && changed && self.accessibility_binding.is_some() {
+                self.accessibility_pending = true;
+                cx.notify();
+            }
+            accepted
+        })
     }
 
     fn enter(&mut self, _: &NumericEnter, _: &mut Window, cx: &mut Context<Self>) {
@@ -942,9 +1034,11 @@ impl NumericControl {
 
     pub(crate) fn value_string(&self) -> String {
         if self.editing {
-            self.text.clone()
+            self.style.text_case.present(&self.text)
         } else {
-            self.spec.format(self.draft).unwrap_or_default()
+            self.style
+                .text_case
+                .present(&self.spec.format(self.draft).unwrap_or_default())
         }
     }
 
@@ -1067,6 +1161,11 @@ impl gpui::Render for NumericControl {
                 }));
         }
 
+        let micro_dial_width = if self.appearance == NumericControlAppearance::WideMicroDial {
+            crate::WIDE_MICRO_DIAL_WIDTH
+        } else {
+            crate::MICRO_DIAL_WIDTH
+        };
         let mut root = match (self.kind, self.appearance) {
             (_, NumericControlAppearance::DeviceMeters) => div()
                 .id(self.id.clone())
@@ -1088,11 +1187,13 @@ impl gpui::Render for NumericControl {
                 ),
             (
                 NumericControlKind::Knob,
-                NumericControlAppearance::MicroDial | NumericControlAppearance::MiniDial,
+                NumericControlAppearance::MicroDial
+                | NumericControlAppearance::MiniDial
+                | NumericControlAppearance::WideMicroDial,
             ) => div()
                 .id(self.id.clone())
                 .relative()
-                .w(px(crate::MICRO_DIAL_WIDTH))
+                .w(px(micro_dial_width))
                 .h(px(crate::MICRO_DIAL_HEIGHT))
                 .track_focus(&self.focus)
                 .key_context(key_context)
@@ -1102,7 +1203,7 @@ impl gpui::Render for NumericControl {
                         .debug_selector(|| format!("{}-label", self.id))
                         .top(px(0.0))
                         .left(px(2.0))
-                        .w(px(crate::MICRO_DIAL_WIDTH - 4.0))
+                        .w(px(micro_dial_width - 4.0))
                         .h(px(9.0))
                         .text_size(px(8.0))
                         .text_color(rgb(if enabled { style.muted } else { style.border }))
@@ -1131,7 +1232,7 @@ impl gpui::Render for NumericControl {
                                     font_size: 8.0,
                                     ..style
                                 },
-                                width: px(crate::MICRO_DIAL_WIDTH - 13.0),
+                                width: px(micro_dial_width - 13.0),
                                 height: px(12.0),
                             },
                             self.value_mouse_down_listener(cx),
@@ -1230,6 +1331,40 @@ impl gpui::Render for NumericControl {
                     style,
                     self.value_mouse_down_listener(cx),
                 )),
+            (NumericControlKind::HorizontalSlider, NumericControlAppearance::CompactSlider) => {
+                div()
+                    .id(self.id.clone())
+                    .flex()
+                    .w_full()
+                    .min_w(px(86.0))
+                    .h(px(21.0))
+                    .gap(px(2.0))
+                    .items_center()
+                    .track_focus(&self.focus)
+                    .key_context(key_context)
+                    .child(slider_track(
+                        self.id.clone(),
+                        value,
+                        false,
+                        enabled,
+                        style,
+                        true,
+                        self.control_mouse_down_listener(cx),
+                    ))
+                    .child(value_field_sized(
+                        self.id.clone(),
+                        value_text,
+                        ValueFieldPresentation {
+                            invalid: self.invalid_text,
+                            editing: self.editing,
+                            enabled,
+                            style,
+                            width: px(46.0),
+                            height: px(18.0),
+                        },
+                        self.value_mouse_down_listener(cx),
+                    ))
+            }
             (NumericControlKind::HorizontalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1254,6 +1389,7 @@ impl gpui::Render for NumericControl {
                     false,
                     enabled,
                     style,
+                    false,
                     self.control_mouse_down_listener(cx),
                 ))
                 .child(value_field(
@@ -1291,6 +1427,7 @@ impl gpui::Render for NumericControl {
                     true,
                     enabled,
                     style,
+                    false,
                     self.control_mouse_down_listener(cx),
                 ))
                 .child(value_field(
@@ -1363,6 +1500,63 @@ impl gpui::Render for NumericControl {
                 view.emit_step(-1.0, true, cx)
             }));
 
+        let owner = entity.downgrade();
+        let descriptor = gpui::AccessibilityDescriptor {
+            id: gpui::AccessibilityId(entity.entity_id().as_u64()),
+            revision: self
+                .accessibility_binding
+                .as_ref()
+                .map_or(0, |binding| binding.revision),
+            lifetime: self.accessibility_lifetime.weak(),
+            name: self
+                .accessibility_binding
+                .as_ref()
+                .map_or_else(|| self.label.clone(), |binding| binding.name.clone()),
+            value: self
+                .accessibility_binding
+                .as_ref()
+                .map(|binding| binding.value.clone())
+                .unwrap_or(gpui::AccessibilityValue::Number {
+                    value: self.value,
+                    min: self.spec.bounds().0,
+                    max: self.spec.bounds().1,
+                    text: self.spec.format(self.value).unwrap_or_default().into(),
+                }),
+            enabled: self.enabled
+                && !self.is_interacting()
+                && !self.accessibility_pending
+                && self
+                    .accessibility_binding
+                    .as_ref()
+                    .is_none_or(|binding| !binding.pending && (binding.guard)(cx)),
+            focused: self.focus.is_focused(window),
+            status: if self.is_interacting() {
+                Some("local draft or gesture active".into())
+            } else if self.accessibility_pending
+                || self
+                    .accessibility_binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.pending)
+            {
+                Some("pending project edit".into())
+            } else {
+                None
+            },
+        };
+        root = root.accessibility(descriptor, move |request, window, cx| {
+            owner
+                .update(cx, |control, cx| {
+                    if control
+                        .accessibility_binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.revision != request.revision)
+                    {
+                        return false;
+                    }
+                    control.accessibility_action(&request.action, window, cx)
+                })
+                .unwrap_or(false)
+        });
         if self.press.is_some() {
             root.child(GestureCaptureElement {
                 move_entity: entity.clone(),
@@ -1555,10 +1749,13 @@ fn slider_track(
     vertical: bool,
     enabled: bool,
     style: ControlStyle,
+    contain_thumb: bool,
     on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let fill_color = if enabled { style.accent } else { style.muted };
+    let thumb_selector = format!("{id}-slider-thumb");
     let thumb = div()
+        .debug_selector(move || thumb_selector.clone())
         .absolute()
         .size(if vertical { px(12.0) } else { px(10.0) })
         .rounded(px(crate::CONTROL_CORNER_RADIUS))
@@ -1635,6 +1832,10 @@ fn slider_track(
                     .rounded_full()
                     .bg(rgb(fill_color)),
             )
-            .child(thumb.left(relative(normalized)))
+            .child(
+                thumb
+                    .left(relative(normalized))
+                    .when(contain_thumb, |thumb| thumb.ml(px(-10.0 * normalized))),
+            )
     }
 }

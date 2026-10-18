@@ -38,7 +38,11 @@ impl PreparedNativeProcessor for HoldDefinition {
 }
 
 impl NativeProcessorRuntime for HoldRuntime {
-    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             if *frame != [0.0; 2] {
                 self.remaining = 4;
@@ -105,7 +109,11 @@ impl PreparedNativeProcessor for ScaleDefinition {
 }
 
 impl NativeProcessorRuntime for ScaleRuntime {
-    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             frame[0] *= self.0;
             frame[1] *= self.0;
@@ -402,6 +410,8 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         }];
         snapshot.tracks[0].content = hex_project::TrackContentSnapshot::Hybrid {
             audio_clips: vec![hex_project::ClipSnapshot {
+                name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: 31,
@@ -680,7 +690,20 @@ fn removed_return_keeps_the_whole_old_chain_and_uses_current_master() {
     warm(&mut baseline);
     let mut actual = [[0.0; 2]; 8];
     let mut expected = actual;
-    candidate.render(&mut actual).unwrap();
+    let mut observed = actual;
+    let mut observations = 0;
+    candidate
+        .render_with_post_node_and_main_observers(
+            &mut actual,
+            None,
+            Some(&mut |frames: &[Frame]| {
+                observations += 1;
+                observed.copy_from_slice(frames);
+            }),
+        )
+        .unwrap();
+    assert_eq!(observations, 1);
+    assert_eq!(observed, actual);
     baseline.render(&mut expected).unwrap();
     for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
         let tail_active = index < 4;

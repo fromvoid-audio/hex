@@ -59,6 +59,7 @@ pub fn project_with_operators(
             });
         }
         track_snapshots.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -76,6 +77,8 @@ pub fn project_with_operators(
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: clip_length,
@@ -91,6 +94,7 @@ pub fn project_with_operators(
     }
 
     let project = Project::from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

@@ -6,7 +6,7 @@ use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
 impl EditorView {
-    pub(super) fn transport(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn transport(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
@@ -17,7 +17,18 @@ impl EditorView {
             "computer midi keyboard · m · base midi {} · velocity {} · z/x octave · c/v velocity",
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
+        let field = self.project_tempo_input(cx);
         let mut row = header::toolbar_row()
+            .child(field)
+            .child(
+                self.control_icon(
+                    "tuning",
+                    "project tuning · cmd+alt+t",
+                    |view, window, cx| view.open_tuning(window, cx),
+                    cx,
+                )
+                .w(px(58.0)),
+            )
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
             .child(self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx))
             .child(self.control_icon(
@@ -302,7 +313,8 @@ impl EditorView {
     fn snap_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
             .id("clip move snap grid")
-            .w(px(32.0))
+            .debug_selector(|| "arranger-snap-toggle".to_owned())
+            .w(px(68.0))
             .h(px(header::CONTROL_SIZE))
             .flex_shrink_0()
             .flex()
@@ -315,13 +327,12 @@ impl EditorView {
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(|_, cx| {
                 cx.new(|_| MiniTooltip {
-                    description: "clip move snap · click to cycle off, quarter, eighth, sixteenth"
-                        .into(),
+                    description: "arranger snap · click to toggle adaptive snapping".into(),
                 })
                 .into()
             })
             .on_click(cx.listener(|view, _, _, cx| {
-                view.cycle_snap_grid();
+                view.toggle_snap_grid();
                 cx.notify();
             }))
             .child(theme::text(self.snap_grid.label()))
