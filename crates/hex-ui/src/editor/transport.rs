@@ -18,6 +18,15 @@ impl EditorView {
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
         let mut row = header::toolbar_row()
+            .child(
+                self.control_icon(
+                    "tuning",
+                    "project tuning · cmd+alt+t",
+                    |view, window, cx| view.open_tuning(window, cx),
+                    cx,
+                )
+                .w(px(58.0)),
+            )
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
             .child(self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx))
             .child(self.control_icon(

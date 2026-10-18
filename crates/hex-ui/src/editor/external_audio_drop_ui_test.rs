@@ -150,9 +150,9 @@ fn external_audio_drop_in_empty_or_trailing_space_appends_one_track(cx: &mut Tes
     }
 }
 
-struct BatchFiles(std::path::PathBuf);
+pub(super) struct BatchFiles(std::path::PathBuf);
 impl BatchFiles {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
             "hex-batch-ui-{}-{}",
@@ -162,7 +162,7 @@ impl BatchFiles {
         std::fs::create_dir(&p).unwrap();
         Self(p)
     }
-    fn wav(&self, name: &str, rate: u32, count: u32) -> PathBuf {
+    pub(super) fn wav(&self, name: &str, rate: u32, count: u32) -> PathBuf {
         let n = count * 2;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"RIFF");

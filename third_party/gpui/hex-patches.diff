@@ -259,7 +259,7 @@
 +        self.test_platform.cursor_style()
 +    }
 +
-@@ -677,0 +690,45 @@
+@@ -677,0 +690,65 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -281,6 +281,26 @@
 +                .rev()
 +                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
 +                .map(|quad| quad.background)
++        })
++    }
++
++    /// Border color, widths and ancestor mask of the last matching scene quad.
++    /// Reads completed paint under test support without changing layout or input.
++    pub fn rendered_border(
++        &mut self,
++        selector: &'static str,
++    ) -> Option<(crate::Hsla, crate::Edges<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
++                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
 +        })
 +    }
 +

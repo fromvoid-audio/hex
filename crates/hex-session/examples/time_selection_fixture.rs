@@ -90,6 +90,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
         });
     }
     Ok(Project::from_snapshot(Snapshot {
+        tuning: Default::default(),
         sample_rate: 48_000,
         next_id,
         assets: vec![AssetSnapshot {

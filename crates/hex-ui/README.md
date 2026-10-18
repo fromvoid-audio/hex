@@ -7,7 +7,7 @@ Own GPUI views, display state, interactions, lowercase text, and bundled Ioskele
 ## Dependencies
 
 hex-project read-only metadata and commands; hex-session worker endpoints;
-hex-engine contracts; hex-audio and optional hex-midi service handles; GPUI. The backend is created and injected by hex-desktop.
+hex-mts safe publisher handle; hex-engine contracts; hex-audio and optional hex-midi service handles; GPUI. The backend is created and injected by hex-desktop.
 
 The optional controller input row selects a CoreMIDI endpoint/channel for the
 selected instrument and dispatches a generation-bound engine lease through the
@@ -270,3 +270,13 @@ in a disposable offline native profiling root. It injects input only into that
 window and reports scene-paint/following-frame timing, with isolated preferences
 and no recovery journal. Normal startup/editing is unchanged. See
 ../../docs/time-selection-profile.md for fixture shape and timing limitations.
+
+Persistent native scalar controls and their injected panel policies live in
+`editor/device_panel/bindings.rs`; numeric Session adaptation lives in
+`gesture_adapter.rs`. The host retains project/worker lifecycle and compound
+edits. See [native panel host bindings](../../docs/native-device-bindings.md)
+for captured identity, exact gesture ownership and the remaining independent
+embedding boundary.
+
+The test-only `hex-media` dependency constructs bounded verified-source limits for
+real worker/key-handler audition-refusal fixtures; production UI does not decode media.
