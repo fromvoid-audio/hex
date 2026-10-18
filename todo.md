@@ -1,3 +1,19 @@
+## prepared-batch final routing validation — pulse2790 / PR396, 18 october2026
+
+Public regressions reproduced two invalid commits before repair: adding a send
+T→R1 with existing R1→R2→T audio feeds, and removing an instrument while its
+incoming MIDI route remained. The batch now uses the existing playable-route
+validator after all commands and before history reservation/preparation/commit.
+No Engine borrowed-validator, Sampler/resource/compiler/custody or schema change.
+Focused public tests preserve speculative IDs and both history branches, keep
+valid final batches with transient invalid intermediate states, and exercise
+single-transition refusal, one-step Undo/Redo and no-op redo preservation.
+A Session integration fixture checks both refusals before compiler invocation,
+retains the exact prepared revision, and compares continuing nonsilent PCM with
+an uninterrupted oracle. Targeted/final exact-source CI results are recorded in
+Pulse; full final checks/review and native delivery remain pending at this edit.
+Physical/native UI/audio/listening acceptance is separate; no Mac/app actions.
+
 ## owned installer Finder cleanup — pulse2788 / PR394, 17 october2026
 
 A real source394 PhaseB publication verified the new signed app and deleted old
