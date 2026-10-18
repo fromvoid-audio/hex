@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 struct Entry {
     device_id: u64,
+    owner: ProcessorChainOwner,
     state: SharedDeclaration,
     processor: Option<SharedDeclaration>,
     meter: SharedDeclaration,
@@ -28,9 +29,14 @@ impl UtilityCustody {
     pub(super) fn prepare(
         &mut self,
         devices: &[hex_project::Device],
-        track: hex_project::TrackId,
+        owner: ProcessorChainOwner,
         rate: u32,
     ) -> Result<OwnedShared<[crate::PreparedEffectInstance]>, AudioStorageError> {
+        if match owner {
+            ProcessorChainOwner::Track(id) | ProcessorChainOwner::Return(id) => id == 0,
+        } {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         if !self.entries.is_empty() {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -106,6 +112,7 @@ impl UtilityCustody {
             let handles = [handle()?, handle()?, handle()?, handle()?];
             self.entries.push(Entry {
                 device_id: device.id().value(),
+                owner,
                 state,
                 processor: processor_declaration,
                 meter: meter_declaration,
@@ -115,7 +122,7 @@ impl UtilityCustody {
             prepared.push(crate::PreparedEffectInstance {
                 instance: PreparedRuntimeInstance {
                     meter,
-                    owner: ProcessorChainOwner::Track(track.value()),
+                    owner,
                     device_id: device.id().value(),
                     device_type: hex_devices::utility::UTILITY_TYPE_ID,
                     matrix,
@@ -141,7 +148,8 @@ impl UtilityCustody {
             if value.resources.is_some() {
                 return Err(AudioStorageError::UnknownStorage);
             }
-            if value.device_id != pair.device_id
+            if value.owner != pair.owner
+                || value.device_id != pair.device_id
                 || value.device_type != hex_devices::utility::UTILITY_TYPE_ID
                 || value.definition.is_some() != pair.processor.is_some()
             {
@@ -291,8 +299,101 @@ impl UtilityCustody {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    #[test]
+    fn paired_utility_constructor_preserves_track_and_return_owner_and_refuses_wrong_owner() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported paired Utility Track/Return owner construction");
+            return;
+        }
+        eprintln!("SUPPORTED paired Utility Track/Return owner construction actual births");
+        let (project, _bank) = crate::audio_preparation::tests::fixture(2);
+        let mut snapshot = project.snapshot();
+        let definition = &hex_devices::utility::UTILITY_DEFINITION;
+        let base = definition.default_state().unwrap();
+        for filtered in [false, true] {
+            for bypassed in [false, true] {
+                let state = definition
+                    .patch_parameter(
+                        &base,
+                        hex_devices::utility::parameter::DC_REMOVE,
+                        ParameterValue::Bool(filtered),
+                    )
+                    .unwrap()
+                    .with_input_gain_millidb(-6000)
+                    .unwrap()
+                    .with_output_gain_millidb(3000)
+                    .unwrap();
+                snapshot.tracks[0].devices.clear();
+                snapshot.tracks[0]
+                    .devices
+                    .push(hex_project::DeviceSnapshot {
+                        id: snapshot.next_id,
+                        bypassed,
+                        state,
+                    });
+                snapshot.next_id += 1;
+                let model = hex_project::Project::from_snapshot(snapshot.clone()).unwrap();
+                let track = &model.tracks()[0];
+                assert_eq!(track.devices()[0].state().input_gain_millidb(), -6000);
+                assert_eq!(track.devices()[0].state().output_gain_millidb(), 3000);
+                for owner in [
+                    ProcessorChainOwner::Track(track.id().value()),
+                    ProcessorChainOwner::Return(777),
+                ] {
+                    let mut custody = UtilityCustody::default();
+                    let chain = custody.prepare(track.devices(), owner, 48000).unwrap();
+                    assert!(chain.parts().is_some());
+                    assert_eq!(chain.len(), 1);
+                    assert_eq!(chain[0].owner, owner);
+                    assert_eq!(chain[0].device_id, track.devices()[0].id().value());
+                    assert_eq!(chain[0].bypassed, bypassed);
+                    assert_eq!(chain[0].definition.is_some(), filtered);
+                    let state = chain[0].configuration.as_ref().unwrap();
+                    assert_eq!(state.input_gain_millidb(), -6000);
+                    assert_eq!(state.output_gain_millidb(), 3000);
+                    custody.bytes(chain.arc()).unwrap();
+                    let (actual, birth) = chain.into_paired_parts_on_control();
+                    let pointer = actual.as_ptr();
+                    let entry = &custody.entries[0];
+                    let saved_owner = entry.owner;
+                    custody.entries[0].owner = match owner {
+                        ProcessorChainOwner::Track(id) => ProcessorChainOwner::Return(id),
+                        ProcessorChainOwner::Return(id) => ProcessorChainOwner::Track(id),
+                    };
+                    assert_eq!(
+                        custody.bytes(&actual),
+                        Err(AudioStorageError::SourceMismatch)
+                    );
+                    custody.entries[0].owner = saved_owner;
+                    assert!(birth.parts(&actual).is_some());
+                    assert_eq!(actual.as_ptr(), pointer);
+                    // Whole paired owner moves without replacing any child. No
+                    // public compiler result is adopted by this constructor test.
+                    let mut pending = Some(actual);
+                    let actual = pending.take().unwrap();
+                    assert!(pending.is_none());
+                    assert!(birth.parts(&actual).is_some());
+                    assert_eq!(actual.as_ptr(), pointer);
+                    custody.bytes(&actual).unwrap();
+                }
+            }
+        }
+        let mut empty = UtilityCustody::default();
+        let chain = empty
+            .prepare(&[], ProcessorChainOwner::Return(777), 48000)
+            .unwrap();
+        assert!(chain.is_empty());
+        assert!(chain.parts().is_some());
+        assert_eq!(empty.handles(), 0);
+        assert!(matches!(
+            UtilityCustody::default().prepare(&[], ProcessorChainOwner::Return(0), 48000),
+            Err(AudioStorageError::SourceMismatch)
+        ));
+    }
+
     #[test]
     fn sealed_utility_graph_matches_canonical_pcm_reports_nested_payload_and_recovers_original_bank()
      {
@@ -446,7 +547,7 @@ mod asset_refusal_tests {
             assert!(matches!(
                 custody.prepare(
                     editor.project().track(track).unwrap().devices(),
-                    track,
+                    ProcessorChainOwner::Track(track.value()),
                     48000
                 ),
                 Err(AudioStorageError::UnsupportedGraph)

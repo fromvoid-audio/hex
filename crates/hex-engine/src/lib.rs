@@ -1070,42 +1070,22 @@ impl Track {
         ordered_suffix: Option<hex_lattice::StereoMatrix>,
         device_chain: Vec<crate::PreparedEffectInstance>,
     ) -> Result<Self, Invalid> {
-        let stateful = !device_chain.is_empty();
-        let ordered = instrument_position != 0;
-        let segmented =
-            stateful || (ordered && (ordered_prefix.is_some() || ordered_suffix.is_some()));
-        let mix_effects = if segmented { None } else { effects };
-        let mix = PreparedTrackMix::with_effects(gain, balance, muted, mix_effects)?;
-        let source_mix = if segmented {
-            PreparedTrackMix::new(1.0, 0.0, false)?
-        } else {
-            mix
-        };
-        Ok(Self {
-            track_id: None,
-            clips,
-            mix,
-            source_mix,
-            gain_envelope: None,
-            instrument,
+        let plan = track_output::CompiledTrackMix::prepare(
+            gain,
+            muted,
+            balance,
             instrument_position,
+            effects,
             ordered_prefix,
             ordered_suffix,
-            device_chain: std::sync::Arc::from(device_chain),
-            sends: Vec::new(),
-            instrument_id: None,
-            instrument_state: None,
-            tuning_identity: Default::default(),
-            instrument_bypassed: false,
-            instrument_input_gain: 1.0,
-            instrument_output_gain: 1.0,
-            instrument_latency: Some(0),
-            instrument_runtime_latency: Some(0),
-            instrument_meter: Default::default(),
-            mutable_instrument: false,
-            mutable_looping_source: false,
-            midi_source_index: None,
-        })
+            !device_chain.is_empty(),
+        )?;
+        Ok(plan.assemble(
+            clips,
+            instrument,
+            std::sync::Arc::from(device_chain),
+            Default::default(),
+        ))
     }
 
     pub(crate) fn with_instrument_config(
@@ -3274,6 +3254,7 @@ pub mod compile;
 
 pub mod playback;
 mod project_output;
+mod track_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
     SharedMidiArrangementPreview, empty_midi_preview_on_control,

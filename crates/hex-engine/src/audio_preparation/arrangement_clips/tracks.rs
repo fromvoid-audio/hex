@@ -424,10 +424,11 @@ impl TrackAssembly {
                 .fill(t.gain_envelope(), project.tempo_map())
                 .map_err(gain_error)?;
             r.meter = Some(OwnedShared::new_owned(hex_lattice::DeviceMeter::default()));
-            r.chain = Some(
-                r.utility
-                    .prepare(t.devices(), t.id(), project.sample_rate())?,
-            );
+            r.chain = Some(r.utility.prepare(
+                t.devices(),
+                hex_lattice::ProcessorChainOwner::Track(t.id().value()),
+                project.sample_rate(),
+            )?);
             self.growth = self
                 .growth
                 .checked_add(r.utility.construction_overlap())

@@ -268,3 +268,21 @@ timing and caught disposal failure. Other compiler products remain separately
 rooted in this selected test. Nonempty track/factory teardown, aggregate
 before-first-owner reservation/private ingress, complete native conservation and
 publication remain open; the public MIDI constructor still refuses admission.
+
+The approved paired-child compiler branch reuses the existing musical Track
+layout rather than allocating a legacy Track and replacing its children. Scalar
+mix/ordering validation is factored from field assembly; the latter only moves
+supplied clips, instrument, chain and meter. The existing legacy compiler calls
+this same layout. This helper does not qualify its inputs or grant a storage
+permit: the private branch must retain actual birth declarations and aliases in
+its pre-reserved custody destinations before exposing any owner.
+
+The existing concrete Utility custody constructor now accepts typed Track or
+Return ownership and retains that tag with each actual paired child declaration.
+Validation rejects a mismatched owner even if device ID/type and layout match.
+Empty, bypassed, memoryless and stateful constructor tests retain original
+configuration gains and whole-owner moves. This is constructor plumbing only:
+Return assembly still rejects nonempty chains, and the complete private compiler
+selection, nonempty Track/Return inventory/retirement, aggregate preconstruction
+quote and native admission remain unfinished. No public compiler output or raw
+Arc is adopted, and no second chain/configuration is created to qualify the first.
