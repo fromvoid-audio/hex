@@ -5014,6 +5014,17 @@ or neutral shared-library implementation is claimed. Source checks and native
 coordinator-only acceptance recorded separately; inline tree2728 follows this
 checked/reviewed foundation.
 
+
+18 October 2026 — Pulse2732 / PR345: shared device header source places canonical
+bypass before name, removes movement buttons while retaining title drag reorder,
+orders Load↓/Save↑ before the far-right remove×, and uses the same leading-control
+frame API for Track/Return and specialized/descriptor panels. Rendered/header
+command/history regressions pass; the first full CI stopped on an older test
+expecting the removed movement button. That fixture now drives a real title drag
+and asserts its complete canonical drop request; fresh exact-source full CI is
+being run. Native
+Load dialog, glyph/input/compact layout acceptance remains coordinator-owned.
+
 ## command-d time range — pulse2759 / PR367, 18 october2026
 
 Arrangement Command-D uses existing atomic time-chunk copy at the range end,

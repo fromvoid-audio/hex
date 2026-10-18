@@ -49,10 +49,9 @@ pub(super) fn render_chain(
     for (index, device) in devices.iter().enumerate() {
         if chain_window::must_mount(view, device.id(), window, cx) {
             let focus = view.device_panel.chain_window.focus(device.id(), cx);
-            let rendered = super::return_view::render_return_effect(
-                view, window, cx, owner, devices, index, device,
-            )
-            .track_focus(&focus);
+            let rendered =
+                super::return_view::render_return_effect(view, window, cx, owner, device)
+                    .track_focus(&focus);
             chain = chain.child(render_return_drop_target(
                 view,
                 cx,
