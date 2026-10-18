@@ -221,7 +221,7 @@ impl EditorView {
 /// Use only the canonical model's applied portion of one timer step. Ordinary
 /// unconstrained movement stays constant-work. A source/minimum clamp finds
 /// its first saturating point; an invalid full step finds its last valid point.
-/// Each search halves a u64 interval: at most64 metadata-only iterations, never
+/// Each search halves a u64 interval: at most 64 metadata-only iterations, never
 /// per-frame retries, DSP work, grid quantization or relaxed model bounds.
 fn resize_pan_prefix<T: PartialEq>(
     current: Viewport,
@@ -1130,9 +1130,12 @@ impl EditorView {
         let lane = self.drag_lanes.get(&drag.source_track).copied()?;
         let delta = (*drag.grab_delta.borrow())?;
         let candidate = |viewport| {
-            let frame = corrected_edge_frame(frame_at_x(x, lane, viewport)?, delta);
+            let pointer_frame = frame_at_x(x, lane, viewport)?;
+            let requested = i128::from(pointer_frame) - delta;
+            let frame = corrected_edge_frame(pointer_frame, delta);
             let clip = preview_clip(drag, &state.project, frame).ok()?;
-            let unclamped = edge_frame(&clip, drag.edge)? == frame;
+            let unclamped =
+                requested == i128::from(frame) && edge_frame(&clip, drag.edge)? == frame;
             Some((clip, unclamped))
         };
         resize_pan_prefix(drag.viewport(), next, candidate)
@@ -1149,15 +1152,17 @@ impl EditorView {
         let delta = (*drag.grab_delta.borrow())?;
         let candidate = |viewport| {
             let beat = midi_pointer_beat(&state.project, x, lane, viewport)?;
-            let beat = BeatTime::from_raw(
-                (i128::from(beat.raw()) - delta).clamp(0, i128::from(u64::MAX)) as u64,
-            );
+            let requested = i128::from(beat.raw()) - delta;
+            let beat = BeatTime::from_raw(requested.clamp(0, i128::from(u64::MAX)) as u64);
             let clip = drag.clip.preview_edge_trim(drag.edge, beat).ok()?;
             let edge = match drag.edge {
                 TrimEdge::Left => clip.start().raw(),
                 TrimEdge::Right => clip.start().raw().checked_add(clip.length().raw())?,
             };
-            Some((clip, edge == beat.raw()))
+            Some((
+                clip,
+                requested == i128::from(beat.raw()) && edge == beat.raw(),
+            ))
         };
         resize_pan_prefix(drag.viewport(), next, candidate)
     }
