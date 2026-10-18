@@ -1,0 +1,9 @@
+{
+  "source": "20903b4766b1cf8d35c60b9621ac88aad01022f1",
+  "tree": "f8e6d8a9578c795a1c931878fc802e9f2193b8d6",
+  "scope": "Forward100 all Preserve schedules; bounded physical FFT+energy onset plan, NOT complete controls/performance/listening",
+  "audio": "80 fixed-gain synthetic WAVs; same original inputs/recipe as immutable9c1a before archive. Stop/Alternating remain old-path comparison controls, not new implementation. No actual listening or licensed commercial comparison.",
+  "checks": "physical onset1 +new grid/piecewise/pitch2 +legacy beats4 +changed seams6/dsp11/wsola3 +followup5 pass; actual Engine2 pass atversion5; strict Warp Clippy pass. No wholeCI or native packet.",
+  "failures": "First FFT novelty alone manufactured bass anchors and failed sustained residual: both raw logs retained. Sample innovation guard resolves without raising thresholds. First grid test incorrectly required zero before close attacks despite real preceding FIR tails; replaced with same-energy FUTURE-impulse sign intervention and exact identical prefixes. MSRV is_multiple_of rejected, changed to modulo. Old copier cost<2*Stop/absolute phase/exact f32 stereo properties do not describe WSOLA; changed to charged analysis/reconstruction, same residual threshold with independent phase/DC fit, 1e-6 rounding tolerance and source-max-slope bound over entire +-64 grid neighborhoods. Originalred evidence immutable. One combined command filtered new grid tests toZERO; rawlog retained, not qualified; actual2 then executed separately.",
+  "unfinished": "adaptive grain sizing/fullshortedges; Stop/Alternating/envelopes new core; variable mapping exhaustive musical corpus/cache/export/waveform/listening closure. Same limits, no owner/cache/public API change."
+}
