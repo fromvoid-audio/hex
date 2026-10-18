@@ -1,0 +1,87 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.68s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-06f3ca1078ca4914)
+
+running 65 tests
+test editor::browser::tests::browser_drag_ghost_position_uses_window_relative_pointer_coordinates ... ok
+test editor::browser::tests::browser_width_preserves_minimum_workspace_and_panel ... ok
+test editor::browser::audition::tests::waveform_hit_positions_map_to_bounded_decoded_frames ... ok
+test editor::browser::audition::tests::combined_waveform_keeps_opposite_phase_channel_peaks ... ok
+test editor::browser::tests::stale_directory_scan_results_are_not_current ... ok
+test editor::browser::samples::cache_tests::combined_results_reuse_cache_and_accept_republished_folder_contents ... ok
+test editor::browser::ui_test::arrangement_overview_shows_the_project_and_click_centers_a_clamped_viewport ... ok
+test editor::browser::ui_test::browser_audio_drag_rejects_changed_snap_or_viewport ... ok
+test editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate ... ok
+test editor::browser::ui_test::arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline ... ok
+test editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh ... ok
+test editor::browser::ui_test::browser_audio_drag_release_outside_arrangement_cancels_import ... ok
+test editor::browser::ui_test::browser_audio_drag_uses_command_override_live_and_at_mouse_up ... ok
+test editor::browser::ui_test::browser_audition_row_observes_pcm_completion_and_stop_without_project_transport ... ok
+test editor::browser::ui_test::browser_audition_strip_is_one_bounded_row ... ok
+test editor::browser::ui_test::browser_auto_navigation_auditions_new_selection_but_not_boundary_repeats ... ok
+test editor::browser::ui_test::browser_audition_toggle_keeps_manual_play_and_result_focus ... ok
+test editor::browser::ui_test::browser_new_selection_clears_completed_position_without_auto_audition ... ok
+test editor::browser::ui_test::browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel ... ok
+test editor::browser::ui_test::browser_click_and_right_request_preview_without_import_search_arrows_keep_caret ... ok
+test editor::browser::ui_test::browser_offline_and_removed_place_never_shows_stale_or_second_source ... ok
+test editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable ... ok
+test editor::browser::ui_test::browser_preferences_coalesce_background_saves_and_preserve_corrupt_files ... ok
+test editor::browser::ui_test::browser_project_open_preserves_dirty_work_until_same_item_is_confirmed ... ok
+test editor::browser::ui_test::browser_restores_missing_user_folder_without_touching_real_preferences ... ok
+test editor::browser::ui_test::browser_picker_resizes_to_icons_and_back_without_changing_browser_width ... ok
+test editor::browser::ui_test::browser_result_reset_cancels_preparing_and_playing_audition ... ok
+test editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing ... ok
+test editor::browser::ui_test::browser_right_opens_selected_folder_without_sample_or_project_commands ... ok
+test editor::browser::ui_test::browser_sample_drop_above_first_track_shows_line_and_inserts_before_it ... ok
+test editor::browser::ui_test::browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost ... ok
+test editor::browser::ui_test::browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snapped_start ... ok
+test editor::browser::ui_test::browser_sample_drop_in_empty_arrangement_creates_bottom_track ... ok
+test editor::browser::ui_test::browser_search_owns_typing_and_blocks_editor_shortcuts ... ok
+test editor::browser::ui_test::browser_sample_gap_target_uses_only_currently_painted_rows_after_scroll ... ok
+test editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope ... ok
+test editor::browser::ui_test::browser_waveform_click_is_manual_positioned_audition_and_retains_focus ... ok
+test editor::browser::ui_test::browser_waveform_position_observes_rendered_pcm_not_click_or_decode ... ok
+test editor::browser::ui_test::clip_and_sample_drags_clear_their_target_over_pinned_returns ... ok
+test editor::browser::ui_test::command_f_caret_movement_preserves_result_scroll ... ok
+test editor::browser::ui_test::command_f_category_switch_scrolls_first_result_into_view ... ok
+test editor::browser::ui_test::browser_source_groups_have_exactly_one_persistent_selected_row ... ok
+test editor::browser::ui_test::command_f_category_click_keeps_search_focus_in_session ... ok
+test editor::browser::ui_test::command_f_device_click_retains_browser_keys_in_session ... ok
+test editor::browser::ui_test::command_f_commits_clip_name_draft_then_routes_typing_to_browser ... ok
+test editor::browser::ui_test::command_f_device_highlight_waits_for_result_focus ... ok
+test editor::browser::ui_test::command_f_escape_empty_query_restores_text_mode ... ok
+test editor::browser::ui_test::device_browser_lists_registered_devices_and_drag_starts_without_track_focus ... ok
+test editor::browser::ui_test::command_f_scan_completion_preserves_selected_device ... ok
+test editor::browser::ui_test::command_f_replaces_entire_query_during_ime_composition ... ok
+test editor::browser::ui_test::dropping_browser_audio_on_pinned_main_cancels_import_and_track_creation ... ok
+test editor::browser::ui_test::physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta ... ok
+test editor::browser::ui_test::command_f_opens_all_search_and_replaces_query_from_editor_and_results ... ok
+test editor::browser::ui_test::empty_arrangement_keeps_the_grid_aligned_with_the_ruler ... ok
+test editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success ... ok
+test editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks ... ok
+test editor::browser_input::tests::supplementary_unicode_offsets_follow_utf16_selection_units ... ok
+test editor::browser_input::tests::unicode_case_expansion_keeps_ime_offsets_in_normalized_query ... ok
+
+thread 'editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search' (67453) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:2670:9:
+assertion `left == right` failed
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search ... FAILED
+test editor::browser::ui_test::middle_drag_pans_both_arrangement_axes_until_release ... ok
+test editor::device_panel::tests::browser_device_drop_uses_hovered_card_half_and_commits_before_target ... ok
+test editor::browser::ui_test::split_browser_keeps_results_between_sidebar_tags_and_preview ... ok
+test editor::device_panel::tests::fm4_browser_drop_admits_builtin_instrument_in_fixed_panel ... ok
+test editor::track_keyboard_ui_test::command_t_preserves_browser_and_clip_name_text_focus ... ok
+test editor::device_panel::tests::browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_old_ui ... ok
+
+failures:
+
+failures:
+    editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search
+
+test result: FAILED. 64 passed; 1 failed; 0 ignored; 0 measured; 664 filtered out; finished in 9.46s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

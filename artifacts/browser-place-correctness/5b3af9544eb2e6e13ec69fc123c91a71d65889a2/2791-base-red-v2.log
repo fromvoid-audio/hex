@@ -1,0 +1,48 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.79s
+     Running unittests src/lib.rs (target/debug/deps/hex_library-d17f02255c9f553f)
+
+running 1 test
+
+thread 'catalog::tests::place_correctness_listing_uses_indexed_terms_and_full_native_paths' (66141) panicked at crates/hex-library/src/catalog/tests.rs:285:9:
+assertion `left == right` failed: indexed and current-folder semantics differ for "kick drums"
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test catalog::tests::place_correctness_listing_uses_indexed_terms_and_full_native_paths ... FAILED
+
+failures:
+
+failures:
+    catalog::tests::place_correctness_listing_uses_indexed_terms_and_full_native_paths
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p hex-library --lib`
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-06f3ca1078ca4914)
+
+running 2 tests
+
+thread 'editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success' (66143) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:3527:9:
+assertion failed: view.browser_visible_entries(cx).is_empty()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks' (66144) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:3489:9:
+same-root reselect exposes retained offline listing before availability returns
+test editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks ... FAILED
+test editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success
+    editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 727 filtered out; finished in 0.32s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
+error: 2 targets failed:
+    `-p hex-library --lib`
+    `-p hex-ui --lib`

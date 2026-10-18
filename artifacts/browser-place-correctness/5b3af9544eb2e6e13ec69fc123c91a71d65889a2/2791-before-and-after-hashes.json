@@ -1,0 +1,38 @@
+{
+  "33119dbc34dcbe42b881c9fc00e2c50cb8ec12ed": {
+    "crates/hex-library/src/catalog.rs": "6977508c8110b4640800e298c3e60f701f5d00cf4127c34b25f1252d91b22689",
+    "crates/hex-library/src/catalog/tests.rs": "b2dd99f8cbb87f74510fff170170496430fb065a4a687f3701f7b9dd09dec3e3",
+    "crates/hex-ui/src/editor/browser.rs": "385953bb89764f02a090f86d4a22bf4cbacdb9c934614bcaf8c8cfeff60c9f53",
+    "crates/hex-ui/src/editor/browser/samples.rs": "8b2eca5116c3947af75f1776324febd1df6a3b912c0bd2abe1b3f89f942a05ca",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "42e8df0bd178240f2350f65c26ed6de0be3096c03d0f46f4deea670f1824f1ee",
+    "docs/sample-library.md": "c9d14587e949f6d9101f58e87b396c2f5f3f91f9475309526d2c01a7133ccb51",
+    "todo.md": "708c1ff490ce48c4796125744ec680d989cf603ad6312201da58824252161de1"
+  },
+  "dc70f5bebfbd68c530099885a430cebaa0d4ce23": {
+    "crates/hex-library/src/catalog.rs": "6977508c8110b4640800e298c3e60f701f5d00cf4127c34b25f1252d91b22689",
+    "crates/hex-library/src/catalog/tests.rs": "b2dd99f8cbb87f74510fff170170496430fb065a4a687f3701f7b9dd09dec3e3",
+    "crates/hex-ui/src/editor/browser.rs": "571067bb87cdcbafc99b8a535c7d78854c75464db0ee739d864239e1aedf9ac2",
+    "crates/hex-ui/src/editor/browser/samples.rs": "d229cc986728064945e4fa947b67159c34a9de3980962560e5d730187dbceae8",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "8fc541eb89245fa8b6560944e2f86e1037d79438ddb6e2d13e18b494a5f556f4",
+    "docs/sample-library.md": "08399f15ac39cd1cc1c7f2624b296a338914ea451da76855f4e827b8d8d69219",
+    "todo.md": "2fd8a88f3a29cfc5d54a2611207330599f8e91df35037a2d5df6dfeabbcbc806"
+  },
+  "cf410bc13d2f8c34c3fab7b3467ec4afd2e6539a": {
+    "crates/hex-library/src/catalog.rs": "6977508c8110b4640800e298c3e60f701f5d00cf4127c34b25f1252d91b22689",
+    "crates/hex-library/src/catalog/tests.rs": "b2dd99f8cbb87f74510fff170170496430fb065a4a687f3701f7b9dd09dec3e3",
+    "crates/hex-ui/src/editor/browser.rs": "571067bb87cdcbafc99b8a535c7d78854c75464db0ee739d864239e1aedf9ac2",
+    "crates/hex-ui/src/editor/browser/samples.rs": "d229cc986728064945e4fa947b67159c34a9de3980962560e5d730187dbceae8",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "8fc541eb89245fa8b6560944e2f86e1037d79438ddb6e2d13e18b494a5f556f4",
+    "docs/sample-library.md": "08399f15ac39cd1cc1c7f2624b296a338914ea451da76855f4e827b8d8d69219",
+    "todo.md": "643740520bca94ec40b874b6d8bd7296ff3aa034fa79e7d63bd01abf9167baa2"
+  },
+  "5b3af9544eb2e6e13ec69fc123c91a71d65889a2": {
+    "crates/hex-library/src/catalog.rs": "4a1bd5b9e88d2715bcf574634b1e62da3050c7289ad5dfaa5ecd1548580330e4",
+    "crates/hex-library/src/catalog/tests.rs": "72e83881f371cfb0c630fe7b4466eb39bc70b8f04393763b6229ea87b9651f78",
+    "crates/hex-ui/src/editor/browser.rs": "c5453d0e2ab0eb76b3548300b6d2108560203ac7b813413b1faef0d579f876f5",
+    "crates/hex-ui/src/editor/browser/samples.rs": "d0b51af7bffe0d20c49a16c381bce78cdea9247e878959027f4e01429aed41f5",
+    "crates/hex-ui/src/editor/browser_ui_test.rs": "df00d43269536febf2d353fe2ba6d8ef8eebccb507a1c477fba38556da41fcf5",
+    "docs/sample-library.md": "b6ed9860dcfab6e6778426568b1e8f95468aa5d4e10e4fea0a634ae54fcf9152",
+    "todo.md": "cde47f6ab31b74dfae9f5d5c5073a3bc0295adb75f9fa738c479e1a880b3fa8d"
+  }
+}

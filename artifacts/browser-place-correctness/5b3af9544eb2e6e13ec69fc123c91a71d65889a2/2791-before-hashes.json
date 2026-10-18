@@ -1,0 +1,14 @@
+{
+  "33119dbc34dcbe42b881c9fc00e2c50cb8ec12ed": {
+    "crates/hex-ui/src/editor/browser.rs": "385953bb89764f02a090f86d4a22bf4cbacdb9c934614bcaf8c8cfeff60c9f53",
+    "crates/hex-library/src/catalog.rs": "6977508c8110b4640800e298c3e60f701f5d00cf4127c34b25f1252d91b22689"
+  },
+  "dc70f5bebfbd68c530099885a430cebaa0d4ce23": {
+    "crates/hex-ui/src/editor/browser.rs": "571067bb87cdcbafc99b8a535c7d78854c75464db0ee739d864239e1aedf9ac2",
+    "crates/hex-library/src/catalog.rs": "6977508c8110b4640800e298c3e60f701f5d00cf4127c34b25f1252d91b22689"
+  },
+  "cf410bc13d2f8c34c3fab7b3467ec4afd2e6539a": {
+    "crates/hex-ui/src/editor/browser.rs": "571067bb87cdcbafc99b8a535c7d78854c75464db0ee739d864239e1aedf9ac2",
+    "crates/hex-library/src/catalog.rs": "6977508c8110b4640800e298c3e60f701f5d00cf4127c34b25f1252d91b22689"
+  }
+}

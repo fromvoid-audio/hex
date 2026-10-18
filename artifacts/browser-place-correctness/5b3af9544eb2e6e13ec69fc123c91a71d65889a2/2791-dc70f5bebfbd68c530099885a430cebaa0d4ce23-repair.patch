@@ -1,0 +1,386 @@
+diff --git a/crates/hex-library/src/catalog.rs b/crates/hex-library/src/catalog.rs
+index da38a114..0a912a89 100644
+--- a/crates/hex-library/src/catalog.rs
++++ b/crates/hex-library/src/catalog.rs
+@@ -62,6 +62,7 @@ impl SampleCatalog {
+         let mut entries = self.filtered(query, source);
+         if let Some(listing) = listing {
+             let query = query.to_lowercase();
++            let terms: Vec<_> = query.split_whitespace().collect();
+             let extra = {
+                 let mut seen = entries
+                     .iter()
+@@ -72,7 +73,13 @@ impl SampleCatalog {
+                     .iter()
+                     .take(MAX_RETAINED_ENTRIES)
+                     .filter(|entry| source.is_none_or(|root| entry.path.starts_with(root)))
+-                    .filter(|entry| entry.name.to_lowercase().contains(&query))
++                    .filter(|entry| {
++                        if source.is_some() {
++                            matches_path_terms(&entry.path, &terms)
++                        } else {
++                            entry.name.to_lowercase().contains(&query)
++                        }
++                    })
+                     .filter(|entry| seen.insert(entry.path.as_path()))
+                     .cloned()
+                     .collect::<Vec<_>>()
+@@ -101,17 +108,21 @@ impl SampleCatalog {
+                 if !source.is_none_or(|source| entry.path.starts_with(source)) {
+                     return false;
+                 }
+-                if terms.is_empty() {
+-                    return true;
+-                }
+-                let path = entry.path.to_string_lossy().to_lowercase();
+-                terms.iter().all(|term| path.contains(term))
++                matches_path_terms(&entry.path, &terms)
+             })
+             .cloned()
+             .collect()
+     }
+ }
+ 
++fn matches_path_terms(path: &Path, terms: &[&str]) -> bool {
++    if terms.is_empty() {
++        return true;
++    }
++    let path = path.to_string_lossy().to_lowercase();
++    terms.iter().all(|term| path.contains(term))
++}
++
+ /// Scan Music and explicitly added places, skipping hidden entries and directory
+ /// symlinks. Canonical directory identities prevent overlapping roots from repeating
+ /// work. The supplied paths, including non-UTF8 names, are preserved in results.
+diff --git a/crates/hex-library/src/catalog/tests.rs b/crates/hex-library/src/catalog/tests.rs
+index 93739049..8a9ec692 100644
+--- a/crates/hex-library/src/catalog/tests.rs
++++ b/crates/hex-library/src/catalog/tests.rs
+@@ -270,3 +270,33 @@ fn place_scoped_search_keeps_path_identity_and_excludes_other_roots_and_listings
+     assert!(all.iter().any(|entry| entry.path == a));
+     assert!(all.iter().any(|entry| entry.path == b));
+ }
++
++#[test]
++fn place_correctness_listing_uses_indexed_terms_and_full_native_paths() {
++    let fixture = Fixture::new();
++    let root = fixture.0.join("kick");
++    let wave = fixture.file("kick/drums.wav");
++    let project = fixture.file("kick/drums.hex");
++    let foreign = fixture.file("kick-other/drums.wav");
++    let catalog = scan_samples(std::slice::from_ref(&fixture.0)).catalog;
++    let listing = crate::scan_directory(&root).unwrap();
++    for query in ["kick drums", "DRUMS  KICK", "  kick\t drums  "] {
++        let scoped = catalog.search_with_listing_in(query, Some(&root), Some(&listing));
++        assert_eq!(
++            scoped.len(),
++            2,
++            "indexed and current-folder semantics differ for {query:?}"
++        );
++        assert!(scoped.iter().any(|entry| entry.path == wave));
++        assert!(scoped.iter().any(|entry| entry.path == project));
++        assert!(!scoped.iter().any(|entry| entry.path == foreign));
++        let all = catalog.search_with_listing(query, Some(&listing));
++        assert_eq!(
++            all.len(),
++            2,
++            "existing All index semantics must remain intact"
++        );
++        assert!(all.iter().any(|entry| entry.path == wave));
++        assert!(all.iter().any(|entry| entry.path == foreign));
++    }
++}
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index 4cda3c83..3a25f55c 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -168,6 +168,7 @@ pub(super) struct BrowserState {
+     tree: tree::Tree,
+     listing: Option<DirectoryListing>,
+     loading: bool,
++    pending_selection: Option<BrowserItemKey>,
+     scans: ScanCoordinator,
+     error: Option<String>,
+     resizing: bool,
+@@ -243,6 +244,7 @@ impl BrowserState {
+             tree: tree::Tree::default(),
+             listing: None,
+             loading: false,
++            pending_selection: None,
+             scans: ScanCoordinator::default(),
+             error: None,
+             resizing: false,
+@@ -565,6 +567,17 @@ impl EditorView {
+         if directory != self.browser.directory {
+             self.reset_browser_results();
+         }
++        if matches!(self.browser.section, BrowserSection::Place(_)) {
++            // Retain identity privately while unavailable rows are hidden. Query/source
++            // changes clear this snapshot through reset_browser_results.
++            if !self.browser.loading {
++                self.browser.pending_selection = self.browser_selected_item(cx);
++            }
++            if self.browser.playback_path.is_some() || self.browser.playback_pending.is_some() {
++                self.cancel_browser_sample_playback();
++                self.status = "sample preview stopped".into();
++            }
++        }
+         let start = self.browser.scans.request(directory.clone());
+         self.browser.directory = directory.clone();
+         self.browser.error = None;
+@@ -575,6 +588,7 @@ impl EditorView {
+     }
+ 
+     fn reset_browser_results(&mut self) {
++        self.browser.pending_selection = None;
+         if self.browser.playback_output.is_some() {
+             self.cancel_browser_sample_playback();
+             self.status = "sample preview stopped".into();
+@@ -599,6 +613,10 @@ impl EditorView {
+     }
+ 
+     fn play_browser_sample_from(&mut self, path: PathBuf, fraction: f64, cx: &mut Context<Self>) {
++        // Previously painted controls can retain a path across source validation.
++        if self.browser_place_unavailable() {
++            return;
++        }
+         let fraction = if fraction.is_finite() {
+             fraction.clamp(0.0, 1.0)
+         } else {
+@@ -1159,7 +1177,13 @@ impl EditorView {
+         let (is_current, pending) = self.browser.scans.complete(request.generation);
+         let mut next = pending;
+         if is_current {
+-            let selection = self.browser_selected_item(cx);
++            let selection = if self.browser.loading
++                && matches!(self.browser.section, BrowserSection::Place(_))
++            {
++                self.browser.pending_selection.take()
++            } else {
++                self.browser_selected_item(cx)
++            };
+             self.browser.samples.invalidate_listing();
+             match result {
+                 Ok(listing) => {
+@@ -1392,7 +1416,15 @@ impl EditorView {
+         }
+     }
+ 
++    fn browser_place_unavailable(&self) -> bool {
++        matches!(self.browser.section, BrowserSection::Place(_))
++            && (self.browser.loading || self.browser.error.is_some())
++    }
++
+     fn browser_visible_entries(&self, cx: &App) -> Arc<Vec<LibraryEntry>> {
++        if self.browser_place_unavailable() {
++            return Arc::new(Vec::new());
++        }
+         let query = self.browser.search.read(cx).content.to_lowercase();
+         let listing = self
+             .browser
+@@ -1404,7 +1436,6 @@ impl EditorView {
+                 self.browser.tree.roots(self.sample_roots())
+             }
+             BrowserSection::Samples => self.browser.samples.visible(&query),
+-            BrowserSection::Place(_) if self.browser.error.is_some() => Arc::new(Vec::new()),
+             BrowserSection::Place(root) if !query.is_empty() => self
+                 .browser
+                 .samples
+@@ -1716,11 +1747,12 @@ impl EditorView {
+             }
+             _ if row_count == 0
+                 && self.browser.loading
+-                && self
+-                    .browser
+-                    .listing
+-                    .as_ref()
+-                    .is_none_or(|listing| listing.directory != path) =>
++                && (matches!(self.browser.section, BrowserSection::Place(_))
++                    || self
++                        .browser
++                        .listing
++                        .as_ref()
++                        .is_none_or(|listing| listing.directory != path)) =>
+             {
+                 panel = panel.child(
+                     div()
+@@ -2002,6 +2034,10 @@ impl EditorView {
+             .on_mouse_down(
+                 MouseButton::Left,
+                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
++                    if view.browser_place_unavailable() {
++                        cx.stop_propagation();
++                        return;
++                    }
+                     view.browser.selected_index = index;
+                     view.browser.results_focused = true;
+                     view.browser
+@@ -2354,6 +2390,9 @@ impl EditorView {
+     }
+ 
+     fn import_browser_audio(&mut self, path: PathBuf) {
++        if self.browser_place_unavailable() {
++            return;
++        }
+         if self.mode == EditorMode::Session {
+             let target = self.selected_cell.filter(|(track, scene)| {
+                 self.state.as_ref().is_some_and(|state| {
+@@ -2395,6 +2434,9 @@ impl EditorView {
+     }
+ 
+     fn open_browser_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
++        if self.browser_place_unavailable() {
++            return;
++        }
+         self.choose_project(path, hex_session::DocumentAudioMode::Resident);
+         cx.notify();
+     }
+diff --git a/crates/hex-ui/src/editor/browser/samples.rs b/crates/hex-ui/src/editor/browser/samples.rs
+index c25a21f6..d4544c37 100644
+--- a/crates/hex-ui/src/editor/browser/samples.rs
++++ b/crates/hex-ui/src/editor/browser/samples.rs
+@@ -245,10 +245,11 @@ impl EditorView {
+     }
+ 
+     pub(super) fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
+-        let remap = matches!(
+-            self.browser.section,
+-            BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
+-        );
++        let remap = !self.browser_place_unavailable()
++            && matches!(
++                self.browser.section,
++                BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
++            );
+         let selection = remap.then(|| self.browser_selected_item(cx)).flatten();
+         if self.browser.samples.replace(catalog) && remap {
+             self.restore_browser_selection(selection, cx);
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index f9f6ca35..0244b7e5 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -2683,10 +2683,15 @@ fn samples_catalog_combines_roots_and_active_place_indexed_search(cx: &mut TestA
+             input.content = "DRUMS loop".into();
+             cx.notify();
+         });
++        assert!(view.browser_visible_entries(cx).is_empty());
++        assert!(view.browser.loading);
++        assert_eq!(view.browser.directory, second.0);
++    });
++    visual.run_until_parked();
++    editor.read_with(cx, |view, cx| {
+         let filtered = view.browser_visible_entries(cx);
+         assert_eq!(filtered.len(), 1);
+         assert_eq!(filtered[0].path, other);
+-        assert_eq!(view.browser.directory, second.0);
+     });
+     std::fs::remove_file(&other).unwrap();
+     editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
+@@ -3760,3 +3765,107 @@ fn browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels(
+         assert_ne!(entries[0].path, entries[1].path);
+     });
+ }
++
++#[gpui::test]
++fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, track, directory, path) = browser_drag_fixture(cx);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    editor.update(&mut visual, |view, cx| {
++        view.selected_track = Some(track);
++        view.browser.section = BrowserSection::Place(directory.0.clone());
++        view.browser.loading = false;
++        view.browser.error = None;
++        view.browser.scans = Default::default();
++        // Hold the worker lane so the fresh request remains deterministically pending.
++        let old = view.browser.scans.request(directory.0.clone()).unwrap();
++        std::fs::remove_file(&path).unwrap();
++        std::fs::remove_dir(&directory.0).unwrap();
++        view.select_browser_source(BrowserSection::Place(directory.0.clone()), cx);
++        assert!(view.browser.loading);
++        assert!(
++            view.browser_visible_entries(cx).is_empty(),
++            "same-root reselect exposes retained offline listing before availability returns"
++        );
++        view.browser
++            .search
++            .update(cx, |input, _| input.content = "loop".into());
++        assert!(
++            view.browser_visible_entries(cx).is_empty(),
++            "query exposes cached offline index before availability returns"
++        );
++        let generation = view.browser.playback_generation;
++        // A closure painted before reselect may still carry the former path.
++        view.play_browser_sample_from(path.clone(), 0.5, cx);
++        assert_eq!(
++            view.browser.playback_generation, generation,
++            "old waveform callback admitted stale preview"
++        );
++        view.import_browser_audio(path.clone());
++        assert!(
++            view.last_enqueued_import_to_track.is_none(),
++            "old result callback admitted stale import"
++        );
++        let (current, fresh) = view.browser.scans.complete(old.generation);
++        assert!(!current);
++        let fresh = fresh.unwrap();
++        view.browser_scan_finished(fresh, hex_library::scan_directory(&directory.0), cx);
++        assert!(!view.browser.loading);
++        assert!(view.browser.error.is_some());
++        assert!(view.browser_visible_entries(cx).is_empty());
++        let generation = view.browser.playback_generation;
++        view.play_browser_sample_from(path, 0.5, cx);
++        assert_eq!(view.browser.playback_generation, generation);
++        cx.notify();
++    });
++}
++
++#[gpui::test]
++fn place_correctness_refresh_retains_identity_only_after_current_success(cx: &mut TestAppContext) {
++    let (handle, editor, _, directory, path) = browser_drag_fixture(cx);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    editor.update(&mut visual, |view, cx| {
++        view.browser.section = BrowserSection::Place(directory.0.clone());
++        view.browser.loading = false;
++        view.browser.error = None;
++        view.browser
++            .search
++            .update(cx, |input, _| input.content = "loop".into());
++        view.browser.results_focused = true;
++        view.browser.selected_index = 0;
++        view.browser.scans = Default::default();
++        let old = view.browser.scans.request(directory.0.clone()).unwrap();
++        view.request_browser_scan(directory.0.clone(), cx);
++        assert!(view.browser_visible_entries(cx).is_empty());
++        // A concurrent catalog refresh must not discard the privately saved identity.
++        std::fs::write(directory.0.join("another.wav"), mono_pcm_wav(16)).unwrap();
++        view.apply_sample_catalog(
++            hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
++            cx,
++        );
++        // The superseded worker must not reauthorize rows.
++        let (current, fresh) = view.browser.scans.complete(old.generation);
++        assert!(!current);
++        assert!(view.browser_visible_entries(cx).is_empty());
++        view.browser_scan_finished(
++            fresh.unwrap(),
++            hex_library::scan_directory(&directory.0),
++            cx,
++        );
++        assert!(!view.browser.loading);
++        assert_eq!(view.browser_visible_entries(cx).len(), 1);
++        assert!(view.browser.results_focused);
++        assert_eq!(
++            view.browser_visible_entries(cx)[view.browser.selected_index].path,
++            path
++        );
++        // An available, freshly validated row still admits manual offset preview.
++        let generation = view.browser.playback_generation;
++        view.play_browser_sample_from(path, 0.5, cx);
++        assert_eq!(view.browser.playback_generation, generation + 1);
++        cx.notify();
++    });
++}

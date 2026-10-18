@@ -1,0 +1,27 @@
+   Compiling hex-library v0.1.0 (/workspace/hex/crates/hex-library)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.63s
+     Running unittests src/lib.rs (target/debug/deps/hex_library-d17f02255c9f553f)
+
+running 13 tests
+test catalog::tests::database_preserves_non_utf8_path_bytes_without_creating_that_sample_file ... ok
+test catalog::tests::combines_nested_overlapping_roots_and_filters_terms_and_sources ... ok
+test catalog::tests::database_round_trips_and_refuses_malformed_oversized_and_future_data ... ok
+test catalog::tests::global_search_unions_index_and_folder_without_duplicate_or_lost_wavs ... ok
+test catalog::tests::place_correctness_listing_uses_indexed_terms_and_full_native_paths ... ok
+test catalog::tests::place_scoped_search_keeps_path_identity_and_excludes_other_roots_and_listings ... ok
+test catalog::tests::preserves_native_path_bytes_and_skips_symlink_cycles_and_file_aliases ... ok
+test catalog::tests::rescans_reconcile_removed_renamed_and_new_files_and_report_offline_roots ... ok
+test catalog::tests::valid_native_path_scan_preserves_bytes_and_skips_symlink_cycles_and_aliases ... ok
+test tests::lists_case_preserved_wav_names_and_folders_first_in_stable_order ... ok
+test tests::reports_io_errors_and_limits_retained_entries ... ok
+test catalog::tests::bounded_depth_and_roots_are_visible_and_cache_excludes_removed_roots ... ok
+test tests::caps_enumeration_and_keeps_listing_bounds ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests hex_library
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

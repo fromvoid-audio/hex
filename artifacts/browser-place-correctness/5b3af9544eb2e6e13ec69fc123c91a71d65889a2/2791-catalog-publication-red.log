@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.93s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-06f3ca1078ca4914)
+
+running 1 test
+
+thread 'editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success' (67703) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:3568:9:
+assertion failed: view.browser.results_focused
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 728 filtered out; finished in 0.28s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
