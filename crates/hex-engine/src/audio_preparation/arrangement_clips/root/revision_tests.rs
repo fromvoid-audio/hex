@@ -129,7 +129,7 @@ fn four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity(
             &project,
             &sources,
             11,
-            Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap();

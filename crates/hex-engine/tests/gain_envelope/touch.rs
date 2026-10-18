@@ -316,7 +316,7 @@ fn detached_effect_tail_freezes_touch_gain_and_current_splice_preserves_history(
         PreparedRevision::prepare(
             &project,
             &BTreeMap::from([(f.asset, Audio::new(48000, samples).unwrap())]),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -403,7 +403,7 @@ fn armed_live_override_is_transient_absolute_and_transport_clears_it() {
         PreparedRevision::prepare_for_gain_recording(
             f.editor.project(),
             &media(&f),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             Some(normal.session()),
             f.track,
         )
@@ -496,7 +496,7 @@ fn clearing_live_override_resumes_saved_base_and_touch_law() {
         PreparedRevision::prepare_for_gain_recording(
             f.editor.project(),
             &media(&f),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
             f.track,
         )
@@ -534,7 +534,7 @@ fn armed_recording_clock_reports_actual_content_loop_pass() {
         PreparedRevision::prepare_for_gain_recording(
             f.editor.project(),
             &media(&f),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
             f.track,
         )
@@ -583,7 +583,7 @@ fn detached_effect_tail_freezes_live_override_instead_of_static_zero() {
         PreparedRevision::prepare_for_gain_recording(
             f.editor.project(),
             &media(&f),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
             f.track,
         )
@@ -603,7 +603,7 @@ fn detached_effect_tail_freezes_live_override_instead_of_static_zero() {
         PreparedRevision::prepare(
             &project,
             &BTreeMap::from([(f.asset, Audio::new(48000, samples).unwrap())]),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

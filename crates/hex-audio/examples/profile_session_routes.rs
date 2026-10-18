@@ -1,8 +1,6 @@
 //! Prepared callback control/snapshot benchmark; no CPAL stream or device.
 use hex_audio::prepared::{self, SESSION_ROUTE_CAPACITY, SessionRouteEntry, SessionRouteOwner};
-use hex_engine::{
-    LaunchQuantization, SessionPlayback, SessionPlaybackCommand, SineTable, playback::Playback,
-};
+use hex_engine::{LaunchQuantization, SessionPlayback, SessionPlaybackCommand, playback::Playback};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
 
@@ -58,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let revision = Arc::new(hex_engine::PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let mut oracle = SessionPlayback::new(Arc::clone(&revision))?;

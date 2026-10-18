@@ -2965,7 +2965,7 @@ mod tests {
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -3104,7 +3104,7 @@ mod tests {
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .expect("prepared track and Return chain"),
@@ -3226,7 +3226,7 @@ mod tests {
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .expect("prepared compressor track and Return chain"),
@@ -3360,7 +3360,7 @@ mod tests {
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .expect("prepared Gate track and Return chain"),
@@ -3431,7 +3431,7 @@ mod tests {
         let revision = hex_engine::PreparedRevision::prepare(
             &hex_project::Project::from_snapshot(project).unwrap(),
             &std::collections::BTreeMap::new(),
-            Arc::new(hex_engine::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap();
@@ -3661,7 +3661,7 @@ mod tests {
             let revision = hex_engine::PreparedRevision::prepare(
                 editor.project(),
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap();
@@ -5946,7 +5946,7 @@ mod tests {
                 hex_engine::PreparedRevision::prepare(
                     editor.project(),
                     &std::collections::BTreeMap::from([(asset, audio)]),
-                    Arc::new(hex_engine::SineTable::new()),
+                    hex_engine::SharedSineTable::new_on_control(),
                     None,
                 )
                 .unwrap(),
@@ -6166,7 +6166,7 @@ mod tests {
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -6603,7 +6603,7 @@ mod tests {
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &std::collections::BTreeMap::new(),
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -6773,7 +6773,7 @@ mod tests {
                 hex_engine::PreparedRevision::prepare(
                     editor.project(),
                     &std::collections::BTreeMap::new(),
-                    Arc::new(hex_engine::SineTable::new()),
+                    hex_engine::SharedSineTable::new_on_control(),
                     None,
                 )
                 .unwrap(),

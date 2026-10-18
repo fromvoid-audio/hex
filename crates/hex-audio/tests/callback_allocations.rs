@@ -13,7 +13,6 @@ use allocation_counter::{AllocationInfo, measure};
 use hex_audio::prepared::{self, PublicationPolicy, SessionRouteOwner};
 use hex_engine::{
     Audio, Frame, LaunchQuantization, PreparedRevision, Renderer, SessionPlaybackCommand,
-    SineTable,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice_contract::{
@@ -481,7 +480,7 @@ fn reused_candidate_rejection_is_allocation_free_and_keeps_the_active_graph()
     let revision = Arc::new(PreparedRevision::prepare(
         &project,
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let (mut control, mut callback) = prepared::channel(RATE)?;
@@ -534,7 +533,7 @@ fn conditional_fresh_runtime_publication_paths_are_callback_allocation_free()
     let revision = Arc::new(PreparedRevision::prepare(
         &project,
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let playback = || {
@@ -671,7 +670,7 @@ fn prepare_fixture(
     Ok(Arc::new(PreparedRevision::prepare(
         &workload.project,
         &workload.media,
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?))
 }
@@ -754,11 +753,11 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     })?;
     let first_project = editor.project().clone();
     let media = BTreeMap::new();
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let first = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         &first_project,
         &media,
-        Arc::clone(&table),
+        table.clone(),
         None,
         &registry,
     )?);
@@ -784,7 +783,7 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     let second = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &media,
-        Arc::clone(&table),
+        table.clone(),
         Some(first.session()),
         &registry,
     )?);
@@ -870,12 +869,12 @@ fn shared_analytic_context_release_survives_handoff_and_drops_on_control()
     };
 
     let media = BTreeMap::new();
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let mut first = Some(Arc::new(
         PreparedRevision::prepare_with_test_instrument_registry(
             editor.project(),
             &media,
-            Arc::clone(&table),
+            table.clone(),
             None,
             &registry,
         )?,
@@ -893,7 +892,7 @@ fn shared_analytic_context_release_survives_handoff_and_drops_on_control()
         PreparedRevision::prepare_with_test_instrument_registry(
             editor.project(),
             &media,
-            Arc::clone(&table),
+            table.clone(),
             None,
             &oracle_registry,
         )?,
@@ -930,7 +929,7 @@ fn shared_analytic_context_release_survives_handoff_and_drops_on_control()
         let candidate = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
             editor.project(),
             &media,
-            Arc::clone(&table),
+            table.clone(),
             Some(previous.session()),
             &registry,
         )?);
@@ -962,7 +961,7 @@ fn shared_analytic_context_release_survives_handoff_and_drops_on_control()
     let silent_slot = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &media,
-        Arc::clone(&table),
+        table.clone(),
         Some(previous.session()),
         &registry,
     )?);
@@ -1073,11 +1072,11 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
     })?;
     let initial_project = editor.project().clone();
     let media = BTreeMap::new();
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let initial_revision = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         &initial_project,
         &media,
-        Arc::clone(&table),
+        table.clone(),
         None,
         &registry,
     )?);
@@ -1100,7 +1099,7 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
     let renamed_revision = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &media,
-        Arc::clone(&table),
+        table.clone(),
         Some(initial_revision.session()),
         &registry,
     )?);
@@ -1139,7 +1138,7 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
     let changed_revision = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &media,
-        Arc::clone(&table),
+        table.clone(),
         Some(renamed_revision.session()),
         &registry,
     )?);
@@ -1241,7 +1240,7 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
     let revision = Arc::new(PreparedRevision::prepare(
         &project,
         &media,
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
 
@@ -1276,10 +1275,18 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
     midi_project_snapshot.tracks[0].gain = 1.0;
     midi_project_snapshot.tracks[0].balance = 0.0;
     let midi_project = Project::from_snapshot(midi_project_snapshot)?;
-    let audio_revision =
-        PreparedRevision::prepare(&audio_project, &media, Arc::new(SineTable::new()), None)?;
-    let midi_revision =
-        PreparedRevision::prepare(&midi_project, &media, Arc::new(SineTable::new()), None)?;
+    let audio_revision = PreparedRevision::prepare(
+        &audio_project,
+        &media,
+        hex_engine::SharedSineTable::new_on_control(),
+        None,
+    )?;
+    let midi_revision = PreparedRevision::prepare(
+        &midi_project,
+        &media,
+        hex_engine::SharedSineTable::new_on_control(),
+        None,
+    )?;
     let mut audio_oracle = [[0.0; 2]; BLOCK];
     let mut midi_oracle = [[0.0; 2]; BLOCK];
     let mut audio_renderer = Renderer::new(audio_revision.arrangement());
@@ -1378,7 +1385,7 @@ fn auto_pan_prepared_callback_and_parameter_handoff_are_allocation_free()
     let first_revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let mut oracle = Renderer::new(first_revision.arrangement());
@@ -1410,7 +1417,7 @@ fn auto_pan_prepared_callback_and_parameter_handoff_are_allocation_free()
     let second_revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         Some(first_revision.session()),
     )?);
     let replacement = Playback::try_from_prepared_with_session(Arc::clone(&second_revision))?;
@@ -1562,7 +1569,7 @@ fn shared_and_distinct_session_audio_callback_blocks_are_allocation_free()
 }
 
 fn edited_candidates(workload: &fixture::Fixture) -> Result<Vec<Candidate>, Box<dyn Error>> {
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let initial = prepare_fixture(workload)?;
     let mut editor = Editor::new(workload.project.clone(), 8)?;
     let mut candidates = vec![(Arc::clone(&initial), workload.project.clone())];
@@ -1574,7 +1581,7 @@ fn edited_candidates(workload: &fixture::Fixture) -> Result<Vec<Candidate>, Box<
     let gain = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &workload.media,
-        Arc::clone(&table),
+        table.clone(),
         Some(initial.session()),
     )?);
     candidates.push((Arc::clone(&gain), editor.project().clone()));
@@ -1593,7 +1600,7 @@ fn edited_candidates(workload: &fixture::Fixture) -> Result<Vec<Candidate>, Box<
     let source_revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &workload.media,
-        Arc::clone(&table),
+        table.clone(),
         Some(gain.session()),
     )?);
     candidates.push((Arc::clone(&source_revision), editor.project().clone()));
@@ -1776,7 +1783,7 @@ fn fresh_project_and_shutdown_reclaim_graph_and_pcm_only_on_control() -> Result<
     let fresh_revision = Arc::new(PreparedRevision::prepare(
         &fresh_project,
         &BTreeMap::<AssetId, Audio>::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let fresh_playback = Playback::try_from_prepared_with_session(Arc::clone(&fresh_revision))?;
@@ -1978,7 +1985,7 @@ fn sounding_midi_scene_switches_at_position(
     let revision = Arc::new(PreparedRevision::prepare(
         &project,
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let mut oracle = hex_engine::SessionPlayback::new(Arc::clone(&revision))?;
@@ -2138,11 +2145,11 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
                 .collect(),
         )?,
     )]);
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
@@ -2205,7 +2212,7 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
         let next_revision = Arc::new(PreparedRevision::prepare(
             editor.project(),
             &media,
-            Arc::clone(&table),
+            table.clone(),
             Some(revision.session()),
         )?);
         let mut replacement_oracle =
@@ -2240,7 +2247,7 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
         let next_revision = Arc::new(PreparedRevision::prepare(
             editor.project(),
             &media,
-            Arc::clone(&table),
+            table.clone(),
             Some(revision.session()),
         )?);
         let mut replacement_oracle =
@@ -2326,17 +2333,17 @@ fn stateful_utility_handoff_at_position(
     })?;
     let second_project = editor.project().clone();
     let media = BTreeMap::new();
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let first_revision = Arc::new(PreparedRevision::prepare(
         &first_project,
         &media,
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let second_revision = Arc::new(PreparedRevision::prepare(
         &second_project,
         &media,
-        Arc::clone(&table),
+        table.clone(),
         Some(first_revision.session()),
     )?);
 
@@ -2375,7 +2382,7 @@ fn stateful_utility_handoff_at_position(
         let third_revision = Arc::new(PreparedRevision::prepare(
             &third_project,
             &media,
-            Arc::clone(&table),
+            table.clone(),
             Some(second_revision.session()),
         )?);
         let reenabled = Playback::try_from_prepared_with_session(Arc::clone(&third_revision))?;
@@ -2459,11 +2466,11 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
     })?;
     let first_project = editor.project().clone();
     let media = BTreeMap::new();
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let first_revision = Arc::new(PreparedRevision::prepare(
         &first_project,
         &media,
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let playback = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
@@ -2499,7 +2506,7 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
     let changed_revision = Arc::new(PreparedRevision::prepare(
         &changed_project,
         &media,
-        Arc::clone(&table),
+        table.clone(),
         Some(first_revision.session()),
     )?);
     let mut changed_oracle =
@@ -2612,11 +2619,11 @@ fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dy
     })?;
 
     let media = BTreeMap::new();
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let first_revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let playback = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
@@ -2657,7 +2664,7 @@ fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dy
     let second_revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
-        Arc::clone(&table),
+        table.clone(),
         Some(first_revision.session()),
     )?);
     let mut changed_oracle =
@@ -2749,23 +2756,23 @@ fn arrangement_instrument_bypass_at_position(
         bypassed: true,
     })?;
     let bypassed_project = bypassed_editor.project().clone();
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let first_revision = Arc::new(PreparedRevision::prepare(
         &first_project,
         &BTreeMap::new(),
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let changed_revision = Arc::new(PreparedRevision::prepare(
         &changed_project,
         &BTreeMap::new(),
-        Arc::clone(&table),
+        table.clone(),
         Some(first_revision.session()),
     )?);
     let bypassed_revision = Arc::new(PreparedRevision::prepare(
         &bypassed_project,
         &BTreeMap::new(),
-        Arc::clone(&table),
+        table.clone(),
         Some(changed_revision.session()),
     )?);
 
@@ -3045,7 +3052,7 @@ fn mutable_session_source_loop_callback_is_allocation_and_deallocation_free()
     let graph = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &registry,
     )?);
@@ -3123,7 +3130,7 @@ fn mutable_arrangement_transport_loop_callback_is_allocation_and_deallocation_fr
     let graph = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &registry,
     )?);
@@ -3210,7 +3217,7 @@ fn mutable_arrangement_source_and_transport_loops_are_callback_allocation_free()
     let graph = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &registry,
     )?);

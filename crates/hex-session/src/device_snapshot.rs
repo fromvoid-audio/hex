@@ -30,7 +30,7 @@ impl Session {
                 media
                     .prepare(
                         candidate,
-                        Arc::clone(&table),
+                        table.clone(),
                         previous.map(|artifact| artifact.session().as_ref()),
                     )
                     .map(Arc::new)

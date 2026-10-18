@@ -3,7 +3,7 @@
 use allocation_counter::measure;
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
-    NativeDeviceClass, PreparedRevision, SineTable, computer_keyboard::ComputerKeyboardInput,
+    NativeDeviceClass, PreparedRevision, computer_keyboard::ComputerKeyboardInput,
     live_expression::LiveExpressionInput, playback::Playback,
 };
 use hex_lattice_contract::DeviceTypeId;
@@ -37,7 +37,7 @@ fn held_keyboard_controller_publication_note_off_and_retirement_have_zero_callba
     let revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let keys = Arc::new(ComputerKeyboardInput::default());

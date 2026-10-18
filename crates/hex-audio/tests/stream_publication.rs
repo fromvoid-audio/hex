@@ -1,8 +1,8 @@
 //! Native publication refuses streams until callback page ownership is integrated.
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
-    Audio, Clip, PreparedRevision, Project, SineTable, StreamSourceKey, StreamedSourceMetadata,
-    Track, compile::PreparedAudioSource, playback::Playback,
+    Audio, Clip, PreparedRevision, Project, StreamSourceKey, StreamedSourceMetadata, Track,
+    compile::PreparedAudioSource, playback::Playback,
 };
 use hex_project::{Command, Created, Editor, Project as CanonicalProject};
 use std::{
@@ -64,7 +64,7 @@ fn streamed_session_only() -> Arc<PreparedRevision> {
             editor.project(),
             &bank,
             77,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

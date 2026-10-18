@@ -60,7 +60,7 @@ fn prepare(
     crate::PreparedRevision::prepare_with_audio_transforms(
         editor.project(),
         media,
-        Arc::new(crate::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         context,
     )
@@ -199,7 +199,7 @@ fn reservation_covers_audible_owners_after_cache_eviction_and_releases_on_failur
         crate::PreparedRevision::prepare_with_audio_transforms(
             editor.project(),
             &media,
-            Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &context
         )
@@ -292,7 +292,7 @@ fn failed_preparation_transaction_does_not_cache_candidate_and_gain_reuses_pcm()
         crate::PreparedRevision::prepare_with_audio_transforms(
             editor.project(),
             &media,
-            Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &context
         )
@@ -343,7 +343,7 @@ fn injected_mid_render_cancellation_releases_candidate_reservation() {
     let result = crate::PreparedRevision::prepare_with_audio_transforms(
         editor.project(),
         &media,
-        Arc::new(crate::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         &context,
     );
@@ -944,7 +944,7 @@ fn event_scratch_reclaims_unused_committed_and_pending_cache() {
             let accepted = crate::PreparedRevision::prepare_with_audio_transforms(
                 next.project(),
                 &media,
-                Arc::new(crate::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
                 &context,
             )

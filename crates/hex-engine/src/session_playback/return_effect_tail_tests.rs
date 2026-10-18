@@ -372,7 +372,7 @@ fn prepared_matrix_return_project(master_gain: f32) -> Project {
 }
 
 fn playback(project: &Project) -> SessionPlayback {
-    let revision = super::tests::revision(project, Arc::new(hex_devices::SineTable::new()));
+    let revision = super::tests::revision(project, crate::SharedSineTable::new_on_control());
     SessionPlayback::new(revision).unwrap()
 }
 
@@ -435,9 +435,9 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         let source_project = super::tests::with_utility_filter_state(&source_project, true, false);
         let audio = crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap();
         let media = BTreeMap::from([(source_project.assets().next().unwrap().id(), audio)]);
-        let table = Arc::new(hex_devices::SineTable::new());
+        let table = crate::SharedSineTable::new_on_control();
         let prepare = |project: &Project| {
-            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+            Arc::new(PreparedRevision::prepare(project, &media, table.clone(), None).unwrap())
         };
         let mut old = SessionPlayback::new(prepare(&source_project)).unwrap();
         let track_id = old.routes[0].id;

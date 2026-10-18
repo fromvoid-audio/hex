@@ -4,7 +4,7 @@ use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{
     Audio, BorrowedMediaPage, Frame, MediaPages, PreparedRevision, SessionPlayback,
-    SessionPlaybackCommand, SineTable, StreamSourceKey,
+    SessionPlaybackCommand, StreamSourceKey,
     playback::{Playback, PlaybackCommand},
 };
 use hex_project::{Command, Created, Editor, Project};
@@ -115,10 +115,9 @@ fn assert_callback(automation: bool) {
             .unwrap();
     }
     let media = BTreeMap::from([(asset, Audio::new(48000, vec![[0.25, -0.5]; 2048]).unwrap())]);
-    let table = Arc::new(SineTable::new());
-    let revision = Arc::new(
-        PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
-    );
+    let table = hex_engine::SharedSineTable::new_on_control();
+    let revision =
+        Arc::new(PreparedRevision::prepare(editor.project(), &media, table.clone(), None).unwrap());
     let mut session = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     session.apply(SessionPlaybackCommand::Play).unwrap();
     let owners = Arc::strong_count(&revision);

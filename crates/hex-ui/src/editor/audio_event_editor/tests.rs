@@ -461,7 +461,7 @@ fn moved_and_pasted_waveform_positions_read_event_composed_pcm() {
     let prepared = hex_engine::PreparedRevision::prepare_with_audio_transforms(
         editor.project(),
         &media,
-        Arc::new(hex_engine::SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &hex_engine::audio_transform::AudioTransformPreparation::default(),
     )

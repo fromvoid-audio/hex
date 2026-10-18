@@ -4,7 +4,7 @@ mod fixture;
 
 use hex_engine::{
     LaunchQuantization, PlaybackAction, PlaybackCommand, PreparedRevision, Renderer,
-    SessionPlaybackCommand, SineTable, playback::Playback,
+    SessionPlaybackCommand, playback::Playback,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -25,8 +25,13 @@ fn check_fixture(loop_tempo: bool) {
     let project = fixture::project(loop_tempo).unwrap();
     let finite = fixture::finite_oracle(&project, loop_tempo).unwrap();
     let revision = Arc::new(
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
-            .unwrap(),
+        PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .unwrap(),
     );
     let frames = if loop_tempo { 260_000 } else { 160_000 };
     let mut expected = vec![[0.0; 2]; frames];

@@ -929,7 +929,7 @@ mod tests {
             PreparedRevision::prepare(
                 project,
                 &BTreeMap::new(),
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -1239,7 +1239,7 @@ mod integration_tests {
             PreparedRevision::prepare(
                 project,
                 &BTreeMap::new(),
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -1652,7 +1652,7 @@ mod pitch_domain_tests {
             crate::PreparedRevision::prepare(
                 editor.project(),
                 &std::collections::BTreeMap::new(),
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -1694,7 +1694,7 @@ mod pitch_domain_tests {
             crate::PreparedRevision::prepare(
                 source.project(),
                 &std::collections::BTreeMap::new(),
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),

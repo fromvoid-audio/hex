@@ -117,7 +117,7 @@ mod tests {
                     asset,
                     crate::Audio::new(48000, vec![[0.25, -0.5]; 1024]).unwrap(),
                 )]),
-                Arc::new(crate::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
                 track,
             )

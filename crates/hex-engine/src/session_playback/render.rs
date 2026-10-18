@@ -2127,7 +2127,7 @@ mod observed_page_tests {
             PreparedRevision::prepare(
                 &project,
                 &std::collections::BTreeMap::new(),
-                Arc::new(crate::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),

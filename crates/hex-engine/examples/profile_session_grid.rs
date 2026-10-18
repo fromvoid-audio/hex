@@ -1,7 +1,7 @@
 //! Offline scene-cell scaling probe; direct actions, no callback queue or device.
 use hex_engine::{
     Audio, Frame, LaunchQuantization, PlaybackAction, PreparedRevision, SessionPlaybackCommand,
-    SineTable, playback::Playback,
+    playback::Playback,
 };
 use hex_project::{
     AssetSnapshot, BeatTime, Meter, MeterPoint, Project, SceneId, SceneSnapshot,
@@ -120,7 +120,7 @@ fn fixture(
     let revision = Arc::new(PreparedRevision::prepare(
         &project,
         &media,
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     Ok((revision, first, last))

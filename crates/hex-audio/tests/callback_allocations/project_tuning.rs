@@ -52,7 +52,7 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
                     PreparedRevision::prepare_tuning_from(
                         &project,
                         &BTreeMap::new(),
-                        Arc::new(SineTable::new()),
+                        hex_engine::SharedSineTable::new_on_control(),
                         source,
                         old,
                     )
@@ -60,7 +60,7 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
                     PreparedRevision::prepare(
                         &project,
                         &BTreeMap::new(),
-                        Arc::new(SineTable::new()),
+                        hex_engine::SharedSineTable::new_on_control(),
                         None,
                     )
                 }
@@ -121,7 +121,7 @@ fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
         PreparedRevision::prepare(
             &source_project,
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -154,7 +154,7 @@ fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
             PreparedRevision::prepare_tuning_from(
                 &project,
                 &BTreeMap::new(),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 &old_project,
                 &old_revision,
             )
@@ -210,7 +210,7 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
             PreparedRevision::prepare(
                 editor.project(),
                 &BTreeMap::new(),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 previous.as_ref().map(|r| r.session().as_ref()),
             )
             .unwrap(),
@@ -252,7 +252,7 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
             PreparedRevision::prepare(
                 editor.project(),
                 &BTreeMap::new(),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 previous
                     .as_ref()
                     .map(|revision| revision.session().as_ref()),

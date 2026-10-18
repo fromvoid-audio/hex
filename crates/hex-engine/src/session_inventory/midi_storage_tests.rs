@@ -61,10 +61,9 @@ fn actual_cached_template_container_union_survives_old_revision_control_retireme
         return;
     }
     let project = project();
-    let table = Arc::new(SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let media = BTreeMap::new();
-    let first =
-        crate::PreparedRevision::prepare(&project, &media, Arc::clone(&table), None).unwrap();
+    let first = crate::PreparedRevision::prepare(&project, &media, table.clone(), None).unwrap();
     let second =
         crate::PreparedRevision::prepare(&project, &media, table, Some(first.session())).unwrap();
     let first_clip = &first.session().midi_clips[0];

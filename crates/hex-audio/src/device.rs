@@ -427,7 +427,7 @@ mod tests {
     use crate::gain_recording::{AbortReason, Receipt, Target};
     use crate::prepared;
     use cpal::{FromSample, SizedSample};
-    use hex_engine::{Audio, PlaybackCommand, PreparedRevision, SineTable, playback::Playback};
+    use hex_engine::{Audio, PlaybackCommand, PreparedRevision, playback::Playback};
     use std::{
         collections::BTreeMap,
         sync::{Arc, atomic::Ordering::Acquire},
@@ -592,7 +592,7 @@ mod tests {
             PreparedRevision::prepare_for_gain_recording(
                 editor.project(),
                 &BTreeMap::from([(asset, Audio::new(48_000, vec![[0.25, -0.5]; 4096]).unwrap())]),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
                 track,
             )

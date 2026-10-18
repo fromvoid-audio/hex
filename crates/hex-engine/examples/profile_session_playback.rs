@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let revision = Arc::new(PreparedRevision::prepare(
         &project,
         &BTreeMap::new(),
-        Arc::new(hex_engine::SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let mut whole = ProfileRuntime::new(Arc::clone(&revision), wrapper)?;

@@ -6760,10 +6760,12 @@ mod service_tests {
             .as_ref()
             .and_then(Playback::prepared_revision)
             .expect("opened playback retains prepared revision");
-        assert!(Arc::ptr_eq(
-            redone_artifact.session().sine_table(),
-            reopened_artifact.session().sine_table()
-        ));
+        assert!(
+            redone_artifact
+                .session()
+                .sine_table()
+                .shares_owner_with(reopened_artifact.session().sine_table())
+        );
         assert_eq!(
             reopened
                 .state

@@ -1272,7 +1272,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
 fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
     use hex_lattice_contract::DeviceTypeId;
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let make_playback = |looping: bool| {
         let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
         let state = crate::default_native_device_state_for_class(
@@ -1300,7 +1300,7 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
             ];
         }
         let project = legacy_project_from_snapshot(snapshot).unwrap();
-        let prepared = revision(&project, Arc::clone(&table));
+        let prepared = revision(&project, table.clone());
         let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
         playback.apply(PlaybackCommand::Play);
         playback
@@ -1381,7 +1381,7 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
     use hex_lattice_contract::DeviceTypeId;
     use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let eq8 = crate::default_native_device_state_for_class(
         crate::NativeDeviceClass::Effect,
         DeviceTypeId::from_static("hex.eq8"),
@@ -1416,8 +1416,7 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
     let render_return = |bypassed: bool| {
         let project = make_return_project(bypassed);
         let mut playback =
-            Playback::try_from_prepared_with_session(revision(&project, Arc::clone(&table)))
-                .unwrap();
+            Playback::try_from_prepared_with_session(revision(&project, table.clone())).unwrap();
         playback.apply(PlaybackCommand::Play);
         let mut output = [[0.0; 2]; 256];
         let mut calls = Vec::new();
@@ -1430,8 +1429,7 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
             )
             .unwrap();
         let mut paired =
-            Playback::try_from_prepared_with_session(revision(&project, Arc::clone(&table)))
-                .unwrap();
+            Playback::try_from_prepared_with_session(revision(&project, table.clone())).unwrap();
         paired.apply(PlaybackCommand::Play);
         let mut paired_output = [[0.0; 2]; 256];
         let mut signals = Vec::new();
@@ -1512,7 +1510,7 @@ fn removed_track_release_retains_its_original_device_matrix() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{Command, DeviceSnapshot, Editor};
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(0.5, 0, 8 << 32);
     let mut snapshot = base.snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
@@ -1531,7 +1529,7 @@ fn removed_track_release_retains_its_original_device_matrix() {
     });
     snapshot.next_id = 10;
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, table.clone())).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
@@ -1545,7 +1543,7 @@ fn removed_track_release_retains_its_original_device_matrix() {
     let mut editor = Editor::new(old_project, 8).unwrap();
     let track_id = editor.project().tracks()[0].id();
     editor.execute(Command::RemoveTrack(track_id)).unwrap();
-    let mut next = SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
+    let mut next = SessionPlayback::new(revision(editor.project(), table.clone())).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let mut tail = [[0.0; 2]; 64];
     next.render(&mut tail).unwrap();
@@ -1559,7 +1557,7 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::DeviceSnapshot;
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(0.5, 0, 8 << 32);
     let mut old_snapshot = base.snapshot();
     old_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
@@ -1578,7 +1576,7 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
     });
     old_snapshot.next_id = 10;
     let old_project = legacy_project_from_snapshot(old_snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, table.clone())).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
@@ -1599,7 +1597,7 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         )
         .unwrap();
     let new_project = legacy_project_from_snapshot(new_snapshot).unwrap();
-    let mut next = SessionPlayback::new(revision(&new_project, Arc::clone(&table))).unwrap();
+    let mut next = SessionPlayback::new(revision(&new_project, table.clone())).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let mut tail = [[0.0; 2]; 64];
     next.render(&mut tail).unwrap();
@@ -1613,7 +1611,7 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{Command, DeviceSnapshot, Editor};
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
     let prefix = UTILITY_DEFINITION
@@ -1645,7 +1643,7 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
     snapshot.tracks[0].instrument_position = Some(1);
     snapshot.next_id = 11;
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, table.clone())).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
@@ -1659,7 +1657,7 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
     let mut editor = Editor::new(old_project, 8).unwrap();
     let track_id = editor.project().tracks()[0].id();
     editor.execute(Command::RemoveTrack(track_id)).unwrap();
-    let mut next = SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
+    let mut next = SessionPlayback::new(revision(editor.project(), table.clone())).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let mut tail = [[0.0; 2]; 64];
     next.render(&mut tail).unwrap();
@@ -1679,7 +1677,7 @@ fn same_revision_session_release_enters_at_the_instrument_gap() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::DeviceSnapshot;
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
     let prefix = UTILITY_DEFINITION
@@ -1747,7 +1745,7 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
     let neutral = UTILITY_DEFINITION.default_state().unwrap();
@@ -1771,7 +1769,7 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
     // execute the captured old stateful processor after the instrument.
     snapshot.tracks[0].instrument_position = Some(1);
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
-    let old_revision = revision(&old_project, Arc::clone(&table));
+    let old_revision = revision(&old_project, table.clone());
     let clip = old_revision.session().midi_clips()[0].id;
 
     let render_old_tail = |new_project: &Project| {
@@ -1786,7 +1784,7 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
         let mut prefix = [[0.0; 2]; 64];
         previous.render(&mut prefix).unwrap();
 
-        let mut next = SessionPlayback::new(revision(new_project, Arc::clone(&table))).unwrap();
+        let mut next = SessionPlayback::new(revision(new_project, table.clone())).unwrap();
         next.try_inherit_state_from(&mut previous).unwrap();
         let mut tail = [[0.0; 2]; 64];
         next.render(&mut tail).unwrap();
@@ -1814,7 +1812,7 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
     let neutral = UTILITY_DEFINITION.default_state().unwrap();
     let dc_state = UTILITY_DEFINITION
@@ -1835,7 +1833,7 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
     snapshot.next_id += 2;
     snapshot.tracks[0].instrument_position = Some(1);
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
-    let old_revision = revision(&old_project, Arc::clone(&table));
+    let old_revision = revision(&old_project, table.clone());
 
     let render_old_tail = |new_project: &Project| {
         let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
@@ -1844,7 +1842,7 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
         previous.render(&mut prefix).unwrap();
         assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
 
-        let mut next = SessionPlayback::new(revision(new_project, Arc::clone(&table))).unwrap();
+        let mut next = SessionPlayback::new(revision(new_project, table.clone())).unwrap();
         assert!(!next.revision.arrangement().tracks()[0].instrument_enabled());
         assert!(
             !old_revision.arrangement().tracks()[0]
@@ -1885,7 +1883,7 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
 
 #[test]
 fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
         name: "clip".into(),
@@ -1922,7 +1920,7 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
         &crate::Audio::new(48_000, vec![[0.0, 0.0]; 32]).unwrap(),
     );
     let prepare = |project: &Project| {
-        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        Arc::new(PreparedRevision::prepare(project, &media, table.clone(), None).unwrap())
     };
     let old_revision = prepare(&old_project);
 
@@ -2010,7 +2008,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     use hex_lattice::NativeDeviceDefinition;
     use hex_lattice_contract::ParameterValue;
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let make_project = |gain_db: f32, q: f32, kind: u32| {
         let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
         let mut state = crate::default_native_device_state_for_class(
@@ -2041,11 +2039,11 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     let mut source_snapshot = project(0.5, 0, 8 << 32).snapshot();
     source_snapshot.master_gain = 1.0;
     let source_project = legacy_project_from_snapshot(source_snapshot).unwrap();
-    let mut source = SessionPlayback::new(revision(&source_project, Arc::clone(&table))).unwrap();
+    let mut source = SessionPlayback::new(revision(&source_project, table.clone())).unwrap();
     source.apply(SessionPlaybackCommand::Play).unwrap();
 
     let (old_project, old_state) = make_project(3.0, 1.0, 0);
-    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let old_prepared = hex_devices::eq8::EQ8_DEFINITION
         .prepare_processor(
@@ -2072,7 +2070,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     for (gain_db, q, kind) in [(6.0, 1.0, 0), (6.0, 2.0, 0), (6.0, 2.0, 1)] {
         let (candidate_project, candidate_state) = make_project(gain_db, q, kind);
         let mut candidate =
-            SessionPlayback::new(revision(&candidate_project, Arc::clone(&table))).unwrap();
+            SessionPlayback::new(revision(&candidate_project, table.clone())).unwrap();
         candidate.try_inherit_state_from(&mut old).unwrap();
         assert_eq!(candidate.tail_groups.iter().flatten().count(), 0);
         assert!(!candidate.device_chains[0].committed_range_is_quiescent(0..1));
@@ -2111,7 +2109,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
 
 #[test]
 fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
         name: "clip".into(),
@@ -2140,7 +2138,7 @@ fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
         asset_id,
         crate::Audio::new(48_000, vec![[0.3, -0.1]; 32]).unwrap(),
     );
-    let table_for_revision = Arc::clone(&table);
+    let table_for_revision = table.clone();
     let mut old = SessionPlayback::new(Arc::new(
         PreparedRevision::prepare(&project, &media, table_for_revision, None).unwrap(),
     ))
@@ -2224,7 +2222,7 @@ fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail
             snapshot.tracks[0].devices.push(device);
         }
         let project = legacy_project_from_snapshot(snapshot).unwrap();
-        let table = Arc::new(hex_devices::SineTable::new());
+        let table = crate::SharedSineTable::new_on_control();
         let asset = project
             .assets()
             .find(|asset| asset.id().value() == 4)
@@ -2235,7 +2233,7 @@ fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail
             crate::Audio::new(48_000, vec![[0.3, -0.1]; 32]).unwrap(),
         )]);
         let prepare = |project: &Project| {
-            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+            Arc::new(PreparedRevision::prepare(project, &media, table.clone(), None).unwrap())
         };
         let revision = prepare(&project);
         let clip = revision.session().audio_clips()[0].id;
@@ -2291,7 +2289,7 @@ fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::Command;
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     let instrument_state = hex_project::default_instrument_state().unwrap();
     let instrument_id = snapshot.next_id;
@@ -2325,9 +2323,8 @@ fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
         asset_id,
         crate::Audio::new(48_000, vec![[0.3, -0.1]; 32]).unwrap(),
     )]);
-    let old_revision = Arc::new(
-        PreparedRevision::prepare(&old_project, &media, Arc::clone(&table), None).unwrap(),
-    );
+    let old_revision =
+        Arc::new(PreparedRevision::prepare(&old_project, &media, table.clone(), None).unwrap());
     let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
     let clip = old_revision.session().audio_clips()[0].id;
     previous
@@ -2384,7 +2381,7 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
     let state = UTILITY_DEFINITION
         .patch_parameter(
@@ -2434,9 +2431,9 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
 
 #[test]
 fn active_tail_group_moves_with_its_unquiescent_suffix_across_revision() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_utility_filter_state(&project(0.5, 0, 8 << 32), true, false);
-    let base_revision = revision(&base, Arc::clone(&table));
+    let base_revision = revision(&base, table.clone());
     let mut previous = SessionPlayback::new(Arc::clone(&base_revision)).unwrap();
     let clip = previous.revision.session().midi_clips()[0].id;
     previous
@@ -2454,7 +2451,7 @@ fn active_tail_group_moves_with_its_unquiescent_suffix_across_revision() {
         true,
         false,
     );
-    let mut first = SessionPlayback::new(revision(&changed, Arc::clone(&table))).unwrap();
+    let mut first = SessionPlayback::new(revision(&changed, table.clone())).unwrap();
     first.try_inherit_state_from(&mut previous).unwrap();
     assert_eq!(first.tail_groups.iter().flatten().count(), 1);
 
@@ -2472,9 +2469,9 @@ fn active_tail_group_moves_with_its_unquiescent_suffix_across_revision() {
 
 #[test]
 fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_utility_filter_state(&project(0.5, 0, 8 << 32), true, false);
-    let base_revision = revision(&base, Arc::clone(&table));
+    let base_revision = revision(&base, table.clone());
     let changed = with_utility_filter_state(
         &project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap()),
         true,
@@ -2494,7 +2491,7 @@ fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
         let mut prefix = [[0.0; 2]; 64];
         previous.render(&mut prefix).unwrap();
 
-        let mut active = SessionPlayback::new(revision(&changed, Arc::clone(&table))).unwrap();
+        let mut active = SessionPlayback::new(revision(&changed, table.clone())).unwrap();
         active.try_inherit_state_from(&mut previous).unwrap();
         let mut next_prefix = [[0.0; 2]; 64];
         active.render(&mut next_prefix).unwrap();
@@ -2526,7 +2523,7 @@ fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
         SESSION_TAIL_GROUP_CAPACITY
     );
     let next_project = with_utility_filter_state(&base, true, false);
-    let mut candidate = SessionPlayback::new(revision(&next_project, Arc::clone(&table))).unwrap();
+    let mut candidate = SessionPlayback::new(revision(&next_project, table.clone())).unwrap();
     assert_eq!(
         candidate.try_inherit_state_from(&mut active),
         Err(SessionPlaybackError::ReleaseBankFull)
@@ -2546,7 +2543,7 @@ fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
 
 #[test]
 fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_across_loop() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut base_snapshot = project(0.5, 0, 8 << 32).snapshot();
     base_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
     let base = with_utility_filter_state(
@@ -2567,7 +2564,7 @@ fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_ac
         playback
     };
 
-    let prepared = revision(&base, Arc::clone(&table));
+    let prepared = revision(&base, table.clone());
     let clip = prepared.session().midi_clips()[0].id;
     let mut paused = start(Arc::clone(&prepared), clip);
     let mut prefix = [[0.0; 2]; 32];
@@ -2619,7 +2616,7 @@ fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_ac
     let mut loop_snapshot = base.snapshot();
     loop_snapshot.loop_region = Some(LoopRegion::new(0, 64, true).unwrap());
     let looped = legacy_project_from_snapshot(loop_snapshot).unwrap();
-    let mut with_loop = start(revision(&looped, Arc::clone(&table)), clip);
+    let mut with_loop = start(revision(&looped, table.clone()), clip);
     let mut without_loop = start(prepared, clip);
     let mut looped_output = [[0.0; 2]; 512];
     let mut plain_output = [[0.0; 2]; 512];
@@ -2630,7 +2627,7 @@ fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_ac
 
 #[test]
 fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_clock() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
@@ -2848,13 +2845,13 @@ fn with_test_instrument(
     legacy_project_from_snapshot(snapshot).unwrap()
 }
 
-fn revision(project: &Project, table: Arc<hex_devices::SineTable>) -> Arc<PreparedRevision> {
+fn revision(project: &Project, table: crate::SharedSineTable) -> Arc<PreparedRevision> {
     Arc::new(PreparedRevision::prepare(project, &BTreeMap::new(), table, None).unwrap())
 }
 
 fn revision_with_instrument_registry(
     project: &Project,
-    table: Arc<hex_devices::SineTable>,
+    table: crate::SharedSineTable,
     registry: &hex_lattice::NativeInstrumentRegistry<'_>,
 ) -> Arc<PreparedRevision> {
     Arc::new(
@@ -2880,7 +2877,7 @@ fn mutable_hundred_track_preroll_revision() -> Arc<PreparedRevision> {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0).snapshot();
     let mut next_id = snapshot.next_id;
     fn remap_midi_clips(clips: &mut [hex_project::MidiClipSnapshot], next_id: &mut u64) {
@@ -2943,7 +2940,7 @@ fn mutable_checkpoint_fixture(note_duration: u64) -> (Arc<PreparedRevision>, hex
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let project = with_test_instrument(&project(1.0, 0, note_duration), id, 0);
     let revision = revision_with_instrument_registry(&project, table, &registry);
     let track = revision.arrangement().tracks()[0]
@@ -3006,9 +3003,9 @@ fn shared_context_table_is_common_to_arrangement_session_and_reuses_exact_config
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
-    let original = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+    let original = revision_with_instrument_registry(&base, table.clone(), &registry);
     let arrangement_contexts = original.arrangement().shared_contexts();
     let session_contexts = original.session().shared_contexts();
     assert!(Arc::ptr_eq(arrangement_contexts, session_contexts));
@@ -3023,7 +3020,7 @@ fn shared_context_table_is_common_to_arrangement_session_and_reuses_exact_config
         PreparedRevision::prepare_with_instrument_registry(
             &base,
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(original.session()),
             &registry,
         )
@@ -3053,7 +3050,7 @@ fn shared_context_table_is_common_to_arrangement_session_and_reuses_exact_config
     let moved = PreparedRevision::prepare_with_instrument_registry(
         &moved,
         &BTreeMap::new(),
-        Arc::clone(&table),
+        table.clone(),
         Some(original.session()),
         &registry,
     )
@@ -3098,7 +3095,7 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 128).unwrap();
     for index in 0..hex_project::MAX_TRACKS {
         let track = match editor
@@ -3150,7 +3147,7 @@ fn shared_context_preparation_refuses_payload_above_per_context_limit() {
     let result = PreparedRevision::prepare_with_instrument_registry(
         &source,
         &BTreeMap::new(),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         &registry,
     );
@@ -3172,7 +3169,7 @@ fn registered_mutable_instrument_adds_feedback_audio_in_arrangement_and_session(
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
 
     for session_owner in [false, true] {
@@ -3181,7 +3178,7 @@ fn registered_mutable_instrument_adds_feedback_audio_in_arrangement_and_session(
         } else {
             base.clone()
         };
-        let revision = revision_with_instrument_registry(&source, Arc::clone(&table), &registry);
+        let revision = revision_with_instrument_registry(&source, table.clone(), &registry);
         let mut whole = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut partitioned = SessionPlayback::new(revision).unwrap();
         if session_owner {
@@ -3237,7 +3234,7 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let source = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
     let filter_state = UTILITY_DEFINITION
         .patch_parameter(
@@ -3287,7 +3284,7 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
         PreparedRevision::prepare_with_instrument_registry(
             editor.project(),
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             None,
             &registry,
         )
@@ -3316,7 +3313,7 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
             PreparedRevision::prepare_with_instrument_registry(
                 candidate,
                 &BTreeMap::new(),
-                Arc::clone(&table),
+                table.clone(),
                 Some(predecessor.session()),
                 &registry,
             )
@@ -3352,7 +3349,7 @@ fn unchanged_mutable_arrangement_and_session_owners_keep_history_across_editor_r
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
 
     for (session_owner, note_duration, recent_release) in [
         (false, 8 << 32, false),
@@ -3366,8 +3363,7 @@ fn unchanged_mutable_arrangement_and_session_owners_keep_history_across_editor_r
         } else {
             base
         };
-        let initial_revision =
-            revision_with_instrument_registry(&source, Arc::clone(&table), &registry);
+        let initial_revision = revision_with_instrument_registry(&source, table.clone(), &registry);
         let mut playback = SessionPlayback::new(Arc::clone(&initial_revision)).unwrap();
         let mut uninterrupted = SessionPlayback::new(initial_revision).unwrap();
         if session_owner {
@@ -3419,7 +3415,7 @@ fn unchanged_mutable_arrangement_and_session_owners_keep_history_across_editor_r
                     |candidate| {
                         Ok::<_, hex_project::Invalid>(revision_with_instrument_registry(
                             candidate,
-                            Arc::clone(&table),
+                            table.clone(),
                             &registry,
                         ))
                     },
@@ -3467,7 +3463,7 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
         .execute(Command::AddMidiTrack {
@@ -3545,7 +3541,7 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
     }
     let first_note = first_note.expect("first Session note was created");
     let original_revision =
-        revision_with_instrument_registry(editor.project(), Arc::clone(&table), &registry);
+        revision_with_instrument_registry(editor.project(), table.clone(), &registry);
     let mut previous = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
     let mut uninterrupted = SessionPlayback::new(original_revision).unwrap();
     for playback in [&mut previous, &mut uninterrupted] {
@@ -3642,7 +3638,7 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
         .execute(Command::AddMidiTrack {
@@ -3698,7 +3694,7 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
             .unwrap();
     }
     let original_revision =
-        revision_with_instrument_registry(editor.project(), Arc::clone(&table), &registry);
+        revision_with_instrument_registry(editor.project(), table.clone(), &registry);
     let mut playback = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
     let mut oracle = SessionPlayback::new(original_revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
@@ -3711,14 +3707,14 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
         .execute_prepared(Command::RemoveTrack(first_track), |candidate| {
             Ok::<_, hex_project::Invalid>(revision_with_instrument_registry(
                 candidate,
-                Arc::clone(&table),
+                table.clone(),
                 &registry,
             ))
         })
         .unwrap();
     let mut retained_oracle = SessionPlayback::new(revision_with_instrument_registry(
         editor.project(),
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -3762,12 +3758,12 @@ fn mutable_arrangement_source_change_does_not_take_the_exact_continuity_path() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let source = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
     let mut editor = Editor::new(source, 8).unwrap();
     let mut playback = SessionPlayback::new(revision_with_instrument_registry(
         editor.project(),
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -3790,7 +3786,7 @@ fn mutable_arrangement_source_change_does_not_take_the_exact_continuity_path() {
             |candidate| {
                 Ok::<_, hex_project::Invalid>(revision_with_instrument_registry(
                     candidate,
-                    Arc::clone(&table),
+                    table.clone(),
                     &registry,
                 ))
             },
@@ -3829,7 +3825,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
     let midi_clips = match std::mem::replace(
         &mut snapshot.tracks[0].content,
@@ -3907,7 +3903,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         PreparedRevision::prepare_with_instrument_registry(
             &bypassed,
             &media,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &registry,
         )
@@ -3949,9 +3945,9 @@ fn mutable_prefix_refusal_rolls_back_audio_transport_and_occurrence_ledger() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let project = with_test_instrument(&project(0.5, 0, 8 << 32), id, 0);
-    let prepared = revision_with_instrument_registry(&project, Arc::clone(&table), &registry);
+    let prepared = revision_with_instrument_registry(&project, table.clone(), &registry);
     let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let track = playback.routes[0].id;
     playback.routes[0].pending = Some(PendingRoute {
@@ -4010,7 +4006,7 @@ fn legacy_arrangement_renderers_refuse_enabled_mutable_instruments_atomically() 
     let source = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
     let revision = revision_with_instrument_registry(
         &source,
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         &registry,
     );
     let expected_output = [[0.25, -0.25]; 8];
@@ -4044,7 +4040,7 @@ fn mutable_short_note_releases_inside_query_and_matches_partitioned_render() {
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
     let source = with_test_instrument(&project(1.0, 0, 1 << 20), id, 0);
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let revision = revision_with_instrument_registry(&source, table, &registry);
     let mut whole = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     let mut partitioned = SessionPlayback::new(revision).unwrap();
@@ -4516,9 +4512,9 @@ fn mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
-    let prepared = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+    let prepared = revision_with_instrument_registry(&base, table.clone(), &registry);
     let clip = prepared.session().midi_clips()[0].id;
     let start = || {
         let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
@@ -4551,7 +4547,7 @@ fn mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet() {
     candidate_snapshot.session.cells.clear();
     let source_empty = legacy_project_from_snapshot(candidate_snapshot).unwrap();
     let source_empty_prepared =
-        revision_with_instrument_registry(&source_empty, Arc::clone(&table), &registry);
+        revision_with_instrument_registry(&source_empty, table.clone(), &registry);
     let mut candidate = SessionPlayback::new(source_empty_prepared).unwrap();
     candidate.try_inherit_state_from(&mut active).unwrap();
     assert!(active.mutable_instruments[0].is_none());
@@ -4602,7 +4598,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut source_snapshot = with_test_instrument(&project(0.5, 0, 1 << 32), id, 0).snapshot();
     let eq8_type = DeviceTypeId::from_static("hex.eq8");
     let mut eq8_state =
@@ -4627,11 +4623,11 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     source_snapshot.tracks[0].instrument_position = Some(0);
     let source_project = legacy_project_from_snapshot(source_snapshot).unwrap();
     let source_revision =
-        revision_with_instrument_registry(&source_project, Arc::clone(&table), &registry);
+        revision_with_instrument_registry(&source_project, table.clone(), &registry);
     let mut previous = SessionPlayback::new(source_revision).unwrap();
     let mut reference_previous = SessionPlayback::new(revision_with_instrument_registry(
         &source_project,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -4669,13 +4665,13 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     let candidate_project = legacy_project_from_snapshot(candidate_snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
         &candidate_project,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
     let mut reference_candidate = SessionPlayback::new(revision_with_instrument_registry(
         &candidate_project,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -4808,9 +4804,9 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let source = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
-    let old_revision = revision_with_instrument_registry(&source, Arc::clone(&table), &registry);
+    let old_revision = revision_with_instrument_registry(&source, table.clone(), &registry);
     let track = source.tracks()[0].id();
     let clip_id = source.tracks()[0].midi_clips()[0].id();
     let note = source.tracks()[0].midi_clips()[0].notes()[0].id();
@@ -4834,7 +4830,7 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
 
     let changed_source = with_test_instrument(&source, id, 1);
     let changed_revision =
-        revision_with_instrument_registry(&changed_source, Arc::clone(&table), &registry);
+        revision_with_instrument_registry(&changed_source, table.clone(), &registry);
     let mut candidate = SessionPlayback::new(Arc::clone(&changed_revision)).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
     let suppression = candidate
@@ -4891,7 +4887,7 @@ fn profile_mutable_occurrence_suppression_handoff() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut dense_snapshot = project(1.0, 0, 8 << 32).snapshot();
     let first_new_id = dense_snapshot.next_id;
     dense_snapshot.next_id += 63;
@@ -4917,7 +4913,7 @@ fn profile_mutable_occurrence_suppression_handoff() {
     let source = with_test_instrument(&dense_source, id, 0);
     let mut playback = SessionPlayback::new(revision_with_instrument_registry(
         &source,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -4937,7 +4933,7 @@ fn profile_mutable_occurrence_suppression_handoff() {
         let state = u8::try_from((sample + 1) % 2).unwrap();
         let candidate_source = with_test_instrument(&source, id, state);
         let revision =
-            revision_with_instrument_registry(&candidate_source, Arc::clone(&table), &registry);
+            revision_with_instrument_registry(&candidate_source, table.clone(), &registry);
         let mut candidate = SessionPlayback::new(revision).unwrap();
         let start = Instant::now();
         candidate
@@ -4994,7 +4990,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 2] = [&mutable, &analytic];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
 
     let mut source = with_test_instrument(&project(0.5, 0, 1 << 24), mutable_id, 0).snapshot();
     let neutral = UTILITY_DEFINITION.default_state().unwrap();
@@ -5059,7 +5055,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         asset_id,
         crate::Audio::new(48_000, vec![[0.1, 0.03]; 64]).unwrap(),
     )]);
-    let prepare = |project: &Project, table: Arc<hex_devices::SineTable>| {
+    let prepare = |project: &Project, table: crate::SharedSineTable| {
         Arc::new(
             PreparedRevision::prepare_with_instrument_registry(
                 project, &media, table, None, &registry,
@@ -5067,7 +5063,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
             .unwrap(),
         )
     };
-    let old_revision = prepare(&old_project, Arc::clone(&table));
+    let old_revision = prepare(&old_project, table.clone());
     let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
     let mut reference = SessionPlayback::new(old_revision).unwrap();
     for playback in [&mut previous, &mut reference] {
@@ -5084,7 +5080,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     // pre-cut occurrence alongside the retained mutable owner. Refuse it
     // atomically until mutable occurrence suppression is available.
     let changed_source = with_test_instrument(&old_project, analytic_id, 0);
-    let changed_revision = prepare(&changed_source, Arc::clone(&table));
+    let changed_revision = prepare(&changed_source, table.clone());
     let mut refused = SessionPlayback::new(changed_revision).unwrap();
     let previous_frame = previous.performance_frame();
     assert_eq!(
@@ -5111,8 +5107,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     }
     tail_snapshot.session.cells.clear();
     let tail_project = legacy_project_from_snapshot(tail_snapshot).unwrap();
-    let mut tail_candidate =
-        SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
+    let mut tail_candidate = SessionPlayback::new(prepare(&tail_project, table.clone())).unwrap();
     tail_candidate
         .try_inherit_state_from(&mut reference)
         .unwrap();
@@ -5126,7 +5121,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     candidate_snapshot.session.cells.clear();
     let candidate_source = legacy_project_from_snapshot(candidate_snapshot).unwrap();
     let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
-    let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
+    let empty_revision = prepare(&empty_analytic, table.clone());
     let mut candidate = SessionPlayback::new(empty_revision).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
     let mut actual = [[0.0; 2]; 16];
@@ -5134,8 +5129,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let mut new_audio_pcm = [[0.0; 2]; 16];
     candidate.render(&mut actual).unwrap();
     tail_candidate.render(&mut old_tail_pcm).unwrap();
-    let mut fresh_audio =
-        SessionPlayback::new(prepare(&candidate_source, Arc::clone(&table))).unwrap();
+    let mut fresh_audio = SessionPlayback::new(prepare(&candidate_source, table.clone())).unwrap();
     fresh_audio.apply(SessionPlaybackCommand::Seek(16)).unwrap();
     fresh_audio.apply(SessionPlaybackCommand::Play).unwrap();
     fresh_audio.render(&mut new_audio_pcm).unwrap();
@@ -5152,7 +5146,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     // A retained old mutable owner also fences a later candidate that would
     // reintroduce the still-sounding pre-cut occurrence.
     let later_active = with_test_instrument(&old_project, analytic_id, 0);
-    let later_revision = prepare(&later_active, Arc::clone(&table));
+    let later_revision = prepare(&later_active, table.clone());
     let mut retained_tail_chase = SessionPlayback::new(later_revision).unwrap();
     let tail_frame = candidate.performance_frame();
     assert_eq!(
@@ -5184,7 +5178,7 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
     let mut old_snapshot = base.snapshot();
     let neutral = UTILITY_DEFINITION.default_state().unwrap();
@@ -5207,8 +5201,7 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     old_snapshot.next_id += 2;
     old_snapshot.tracks[0].instrument_position = Some(1);
     let old_project = legacy_project_from_snapshot(old_snapshot).unwrap();
-    let old_revision =
-        revision_with_instrument_registry(&old_project, Arc::clone(&table), &registry);
+    let old_revision = revision_with_instrument_registry(&old_project, table.clone(), &registry);
     let clip = old_revision.session().midi_clips()[0].id;
     let start = || {
         let mut playback = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
@@ -5237,7 +5230,7 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     let candidate_project = legacy_project_from_snapshot(candidate_snapshot).unwrap();
     let candidate_project = with_utility_filter_state_at(&candidate_project, 1, false, true);
     let candidate_revision =
-        revision_with_instrument_registry(&candidate_project, Arc::clone(&table), &registry);
+        revision_with_instrument_registry(&candidate_project, table.clone(), &registry);
     let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
 
     // A full preallocated tail bank refuses before either graph is mutated.
@@ -5359,12 +5352,12 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
 
     // A held occurrence is cut at the handoff frame. Compare its first release
     // block to an independent instance of the original feedback law.
     let base = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
-    let old_revision = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+    let old_revision = revision_with_instrument_registry(&base, table.clone(), &registry);
     let clip = old_revision.session().midi_clips()[0].id;
     let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
     previous
@@ -5378,8 +5371,7 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
     previous.render(&mut prefix).unwrap();
 
     let disabled = with_instrument_bypassed(&base, true);
-    let disabled_revision =
-        revision_with_instrument_registry(&disabled, Arc::clone(&table), &registry);
+    let disabled_revision = revision_with_instrument_registry(&disabled, table.clone(), &registry);
     let mut candidate = SessionPlayback::new(disabled_revision).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
     let tail_index = candidate
@@ -5437,7 +5429,7 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
     // An occurrence already in its release phase has no pending ledger gate;
     // disabling the candidate must preserve that old in-flight state exactly.
     let short = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
-    let short_revision = revision_with_instrument_registry(&short, Arc::clone(&table), &registry);
+    let short_revision = revision_with_instrument_registry(&short, table.clone(), &registry);
     let short_clip = short_revision.session().midi_clips()[0].id;
     let mut old = SessionPlayback::new(Arc::clone(&short_revision)).unwrap();
     let mut reference = SessionPlayback::new(Arc::clone(&short_revision)).unwrap();
@@ -5462,7 +5454,7 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
     );
     let disabled_short = with_instrument_bypassed(&short, true);
     let disabled_short_revision =
-        revision_with_instrument_registry(&disabled_short, Arc::clone(&table), &registry);
+        revision_with_instrument_registry(&disabled_short, table.clone(), &registry);
     let mut next = SessionPlayback::new(disabled_short_revision).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let mut actual_release = [[0.0; 2]; 16];
@@ -5487,7 +5479,7 @@ fn mutable_session_route_switch_refuses_live_state_and_retries_after_quiet() {
     let source = with_test_instrument(&project(1.0, 0, 1 << 20), id, 0);
     let revision = revision_with_instrument_registry(
         &source,
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         &registry,
     );
     let clip = revision.session().midi_clips()[0].id;
@@ -5560,7 +5552,7 @@ fn mutable_back_to_arrangement_checks_destination_notes_after_quiet_session_tail
     let source = with_test_instrument(&source, id, 0);
     let revision = revision_with_instrument_registry(
         &source,
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         &registry,
     );
     let clip = revision.session().midi_clips()[0].id;
@@ -5626,7 +5618,7 @@ fn mutable_prepared_playback_admits_bounded_arrangement_transport_loops() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
 
     let mut arrangement_loop = project(0.5, 0, 1 << 24).snapshot();
     arrangement_loop.tracks[0]
@@ -5636,8 +5628,7 @@ fn mutable_prepared_playback_admits_bounded_arrangement_transport_loops() {
         .state = hex_lattice_contract::NativeDeviceState::new(id, 1, vec![0]).unwrap();
     arrangement_loop.loop_region = Some(LoopRegion::new(0, 48_000, true).unwrap());
     let arrangement_loop = legacy_project_from_snapshot(arrangement_loop).unwrap();
-    let prepared =
-        revision_with_instrument_registry(&arrangement_loop, Arc::clone(&table), &registry);
+    let prepared = revision_with_instrument_registry(&arrangement_loop, table.clone(), &registry);
     assert!(SessionPlayback::new(prepared).is_ok());
 
     let mut session_loop = session_only_project(&project(0.5, 0, 1 << 24)).snapshot();
@@ -5654,9 +5645,9 @@ fn mutable_prepared_playback_admits_bounded_arrangement_transport_loops() {
 
 #[test]
 fn changing_session_instrument_identity_carries_old_held_voice_once() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = session_only_project(&project(0.5, 0, 8 << 32));
-    let old_revision = revision(&original, Arc::clone(&table));
+    let old_revision = revision(&original, table.clone());
     let clip = old_revision.session().midi_clips()[0].id;
     let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
     let mut reference = SessionPlayback::new(old_revision).unwrap();
@@ -5693,9 +5684,9 @@ fn changing_session_instrument_identity_carries_old_held_voice_once() {
 
 #[test]
 fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = session_only_project(&project(0.5, 0, 8 << 32));
-    let old_revision = revision(&original, Arc::clone(&table));
+    let old_revision = revision(&original, table.clone());
     let clip = old_revision.session().midi_clips()[0].id;
     let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
     previous
@@ -5710,7 +5701,7 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
     assert!(prefix.iter().any(|frame| frame[0] != 0.0));
 
     let bypassed = with_instrument_bypassed(&original, true);
-    let mut muted_revision = SessionPlayback::new(revision(&bypassed, Arc::clone(&table))).unwrap();
+    let mut muted_revision = SessionPlayback::new(revision(&bypassed, table.clone())).unwrap();
     muted_revision
         .try_inherit_state_from(&mut previous)
         .unwrap();
@@ -5727,7 +5718,7 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
     assert!(tail[2_400..].iter().all(|frame| *frame == [0.0; 2]));
 
     let enabled = with_instrument_bypassed(&bypassed, false);
-    let mut reenabled = SessionPlayback::new(revision(&enabled, Arc::clone(&table))).unwrap();
+    let mut reenabled = SessionPlayback::new(revision(&enabled, table.clone())).unwrap();
     reenabled
         .try_inherit_state_from(&mut muted_revision)
         .unwrap();
@@ -5737,8 +5728,7 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
     assert!(reenabled.route_historical_floors[0].is_some());
 
     let removed = without_instrument_slot(&enabled);
-    let mut removed_playback =
-        SessionPlayback::new(revision(&removed, Arc::clone(&table))).unwrap();
+    let mut removed_playback = SessionPlayback::new(revision(&removed, table.clone())).unwrap();
     removed_playback
         .try_inherit_state_from(&mut reenabled)
         .unwrap();
@@ -5775,11 +5765,11 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
 
 #[test]
 fn reenable_floor_excludes_old_onsets_but_keeps_note_at_exact_cut() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let with_notes =
         with_session_note_at(&session_only_project(&project(0.5, 0, 8 << 32)), 1 << 32);
     let disabled = with_instrument_bypassed(&with_notes, true);
-    let mut previous = SessionPlayback::new(revision(&disabled, Arc::clone(&table))).unwrap();
+    let mut previous = SessionPlayback::new(revision(&disabled, table.clone())).unwrap();
     let clip = previous.revision.session().midi_clips()[0].id;
     previous
         .apply(SessionPlaybackCommand::LaunchClip {
@@ -5793,7 +5783,7 @@ fn reenable_floor_excludes_old_onsets_but_keeps_note_at_exact_cut() {
     assert!(silent_prefix.iter().all(|frame| *frame == [0.0; 2]));
 
     let enabled = with_instrument_bypassed(&with_notes, false);
-    let mut candidate = SessionPlayback::new(revision(&enabled, Arc::clone(&table))).unwrap();
+    let mut candidate = SessionPlayback::new(revision(&enabled, table.clone())).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
     assert_eq!(candidate.route_historical_floors[0], Some(BeatTime::ONE));
 
@@ -5825,7 +5815,7 @@ fn reenable_floor_excludes_old_onsets_but_keeps_note_at_exact_cut() {
 
 #[test]
 fn reenabled_loop_source_skips_old_occurrences_and_plays_future_iteration() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = session_only_project(&project(0.5, 0, 8 << 32));
     let mut snapshot = base.snapshot();
     let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content else {
@@ -5845,7 +5835,7 @@ fn reenabled_loop_source_skips_old_occurrences_and_plays_future_iteration() {
     }];
     let looping = legacy_project_from_snapshot(snapshot).unwrap();
     let disabled = with_instrument_bypassed(&looping, true);
-    let mut previous = SessionPlayback::new(revision(&disabled, Arc::clone(&table))).unwrap();
+    let mut previous = SessionPlayback::new(revision(&disabled, table.clone())).unwrap();
     let clip_id = previous.revision.session().midi_clips()[0].id;
     previous
         .apply(SessionPlaybackCommand::LaunchClip {
@@ -5876,9 +5866,9 @@ fn reenabled_loop_source_skips_old_occurrences_and_plays_future_iteration() {
 
 #[test]
 fn removing_session_instrument_releases_old_voice_without_candidate_suppression() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = session_only_project(&project(0.5, 0, 8 << 32));
-    let old_revision = revision(&original, Arc::clone(&table));
+    let old_revision = revision(&original, table.clone());
     let clip = old_revision.session().midi_clips()[0].id;
     let mut previous = SessionPlayback::new(old_revision).unwrap();
     previous
@@ -5892,7 +5882,7 @@ fn removing_session_instrument_releases_old_voice_without_candidate_suppression(
     previous.render(&mut prefix).unwrap();
 
     let removed = without_instrument_slot(&original);
-    let mut candidate = SessionPlayback::new(revision(&removed, Arc::clone(&table))).unwrap();
+    let mut candidate = SessionPlayback::new(revision(&removed, table.clone())).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
     assert!(candidate.suppressions.is_empty());
     assert!(
@@ -5908,9 +5898,9 @@ fn removing_session_instrument_releases_old_voice_without_candidate_suppression(
 
 #[test]
 fn session_instrument_change_at_note_onset_leaves_boundary_note_to_candidate() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = session_only_project(&project_at_tempo(0.5, 1 << 32, 8 << 32, Tempo::DEFAULT));
-    let old_revision = revision(&original, Arc::clone(&table));
+    let old_revision = revision(&original, table.clone());
     let clip = old_revision.session().midi_clips()[0].id;
     let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
     let mut reference = SessionPlayback::new(old_revision).unwrap();
@@ -5931,7 +5921,7 @@ fn session_instrument_change_at_note_onset_leaves_boundary_note_to_candidate() {
     assert!(before.iter().all(|frame| *frame == [0.0; 2]));
 
     let replaced = with_replaced_instrument_id(&original);
-    let mut candidate = SessionPlayback::new(revision(&replaced, Arc::clone(&table))).unwrap();
+    let mut candidate = SessionPlayback::new(revision(&replaced, table.clone())).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
     assert!(candidate.releases.is_empty());
     let mut expected = [[0.0; 2]; 2];
@@ -5958,7 +5948,7 @@ fn arrangement_instrument_edits_keep_old_occurrence_once_and_use_new_law_afterwa
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&left, &right];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_second_arrangement_note(&project(1.0, 0, 8 << 32));
 
     for (candidate_type, candidate_state, expected_onset, replace_id) in [
@@ -5969,7 +5959,7 @@ fn arrangement_instrument_edits_keep_old_occurrence_once_and_use_new_law_afterwa
     ] {
         let old_project = with_test_instrument(&base, left.id, 0);
         let old_revision =
-            revision_with_instrument_registry(&old_project, Arc::clone(&table), &registry);
+            revision_with_instrument_registry(&old_project, table.clone(), &registry);
         let mut previous = Playback::from_prepared(Arc::clone(&old_revision));
         let mut reference = Playback::from_prepared(old_revision);
         assert_eq!(
@@ -5992,7 +5982,7 @@ fn arrangement_instrument_edits_keep_old_occurrence_once_and_use_new_law_afterwa
             changed
         };
         let candidate_revision =
-            revision_with_instrument_registry(&changed, Arc::clone(&table), &registry);
+            revision_with_instrument_registry(&changed, table.clone(), &registry);
         let mut candidate = Playback::from_prepared(candidate_revision);
         candidate.try_inherit_runtime_from(&mut previous).unwrap();
 
@@ -6027,12 +6017,12 @@ fn arrangement_handoff_suppresses_through_candidate_release_end() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&old_definition, &new_definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(1.0, 0, 1 << 32);
     let old_project = with_test_instrument(&base, old_definition.id, 0);
     let mut previous = SessionPlayback::new(revision_with_instrument_registry(
         &old_project,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6102,11 +6092,11 @@ fn later_arrangement_handoffs_extend_suppression_after_old_voice_ends() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 3] = [&short, &medium, &long];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(1.0, 0, 1 << 32);
     let mut previous = SessionPlayback::new(revision_with_instrument_registry(
         &with_test_instrument(&base, short.id, 0),
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6116,7 +6106,7 @@ fn later_arrangement_handoffs_extend_suppression_after_old_voice_ends() {
 
     let mut medium_revision = SessionPlayback::new(revision_with_instrument_registry(
         &with_test_instrument(&base, medium.id, 0),
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6171,7 +6161,7 @@ fn reordered_multitrack_handoff_extends_carried_suppression_after_new_entry() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 3] = [&short, &medium, &long];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let make_project = |first_type, second_type, reverse_tracks| {
         let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
         let mut later_track = snapshot.tracks[0].clone();
@@ -6209,7 +6199,7 @@ fn reordered_multitrack_handoff_extends_carried_suppression_after_new_entry() {
     let initial = make_project(short.id, short.id, false);
     let mut previous = SessionPlayback::new(revision_with_instrument_registry(
         &initial,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6222,7 +6212,7 @@ fn reordered_multitrack_handoff_extends_carried_suppression_after_new_entry() {
     let first_edit = make_project(short.id, medium.id, false);
     let mut middle = SessionPlayback::new(revision_with_instrument_registry(
         &first_edit,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6277,11 +6267,11 @@ fn repeated_arrangement_instrument_edits_do_not_recapture_suppressed_occurrences
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&first, &second];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(1.0, 0, 8 << 32);
     let mut previous = SessionPlayback::new(revision_with_instrument_registry(
         &with_test_instrument(&base, first.id, 0),
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6291,7 +6281,7 @@ fn repeated_arrangement_instrument_edits_do_not_recapture_suppressed_occurrences
 
     let mut second_revision = SessionPlayback::new(revision_with_instrument_registry(
         &with_test_instrument(&base, second.id, 0),
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6333,11 +6323,11 @@ fn removing_track_after_arrangement_handoff_keeps_only_the_copied_voice() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&first, &second];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(1.0, 0, 8 << 32);
     let mut previous = SessionPlayback::new(revision_with_instrument_registry(
         &with_test_instrument(&base, first.id, 0),
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6348,7 +6338,7 @@ fn removing_track_after_arrangement_handoff_keeps_only_the_copied_voice() {
     let second_project = with_test_instrument(&base, second.id, 0);
     let mut intermediate = SessionPlayback::new(revision_with_instrument_registry(
         &second_project,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6386,11 +6376,11 @@ fn bypass_after_arrangement_handoff_does_not_recapture_the_old_occurrence() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&first, &second];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(1.0, 0, 8 << 32);
     let mut previous = SessionPlayback::new(revision_with_instrument_registry(
         &with_test_instrument(&base, first.id, 0),
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6401,7 +6391,7 @@ fn bypass_after_arrangement_handoff_does_not_recapture_the_old_occurrence() {
     let second_project = with_test_instrument(&base, second.id, 0);
     let mut intermediate = SessionPlayback::new(revision_with_instrument_registry(
         &second_project,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6432,12 +6422,11 @@ fn arrangement_instrument_handoff_uses_new_sampler_for_exact_cut_onset() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(1.0, 1 << 32, 1 << 32);
     let old_project = with_test_instrument(&base, definition.id, 0);
     let changed_project = with_test_instrument(&base, definition.id, 1);
-    let old_revision =
-        revision_with_instrument_registry(&old_project, Arc::clone(&table), &registry);
+    let old_revision = revision_with_instrument_registry(&old_project, table.clone(), &registry);
     let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     let mut to_cut = vec![[0.0; 2]; 24_000];
@@ -6472,9 +6461,9 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
     };
     let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(1.0, 1 << 32, 1 << 32);
-    let mut previous = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut previous = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     let mut prefix = [[0.0; 2]; 2];
     previous.render(&mut prefix).unwrap();
@@ -6572,7 +6561,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
     let sounding = make_candidate(0, 0);
     let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
         &sounding,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6619,9 +6608,9 @@ fn mutable_handoff_refuses_inherited_future_analytic_route_boundary() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(1.0, 1 << 32, 1 << 32);
-    let mut previous = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut previous = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let clip = previous.revision.session().midi_clips()[0].id;
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     let mut prefix = [[0.0; 2]; 1];
@@ -6638,7 +6627,7 @@ fn mutable_handoff_refuses_inherited_future_analytic_route_boundary() {
     let changed = with_test_instrument(&original, definition.metadata.id, 0);
     let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
         &changed,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6672,7 +6661,7 @@ fn arrangement_instrument_bypass_releases_old_voice_and_reenable_does_not_chase(
     };
     let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_second_arrangement_note(&project(1.0, 0, 8 << 32));
     let enabled = with_test_instrument(&base, definition.id, 0);
     let mut bypassed_snapshot = enabled.snapshot();
@@ -6683,14 +6672,13 @@ fn arrangement_instrument_bypass_releases_old_voice_and_reenable_does_not_chase(
         .bypassed = true;
     let bypassed = Project::from_snapshot(bypassed_snapshot).unwrap();
 
-    let old_revision = revision_with_instrument_registry(&enabled, Arc::clone(&table), &registry);
+    let old_revision = revision_with_instrument_registry(&enabled, table.clone(), &registry);
     let mut previous = Playback::from_prepared(old_revision);
     previous.apply(PlaybackCommand::Play);
     let mut audible_prefix = [[0.0; 2]; 64];
     previous.render(&mut audible_prefix).unwrap();
     assert_eq!(audible_prefix, [[0.2; 2]; 64]);
-    let candidate_revision =
-        revision_with_instrument_registry(&bypassed, Arc::clone(&table), &registry);
+    let candidate_revision = revision_with_instrument_registry(&bypassed, table.clone(), &registry);
     let mut candidate = Playback::from_prepared(candidate_revision);
     candidate.try_inherit_runtime_from(&mut previous).unwrap();
     let mut release = [[0.0; 2]; 10];
@@ -6698,8 +6686,7 @@ fn arrangement_instrument_bypass_releases_old_voice_and_reenable_does_not_chase(
     assert_eq!(&release[..8], &[[0.2; 2]; 8]);
     assert_eq!(&release[8..], &[[0.0; 2]; 2]);
 
-    let disabled_revision =
-        revision_with_instrument_registry(&bypassed, Arc::clone(&table), &registry);
+    let disabled_revision = revision_with_instrument_registry(&bypassed, table.clone(), &registry);
     let mut disabled = Playback::from_prepared(disabled_revision);
     disabled.apply(PlaybackCommand::Play);
     let mut silent_prefix = [[0.0; 2]; 64];
@@ -6732,20 +6719,20 @@ fn arrangement_instrument_release_capacity_refusal_is_atomic_and_retryable() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&left, &right];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = with_second_arrangement_note(&project(1.0, 0, 8 << 32));
     let old_project = with_test_instrument(&base, left.id, 0);
     let changed_project = with_test_instrument(&base, right.id, 0);
     let mut old = SessionPlayback::new(revision_with_instrument_registry(
         &old_project,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let mut old_reference = SessionPlayback::new(revision_with_instrument_registry(
         &old_project,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6757,7 +6744,7 @@ fn arrangement_instrument_release_capacity_refusal_is_atomic_and_retryable() {
     assert_eq!(prefix, reference_prefix);
 
     let changed_revision =
-        revision_with_instrument_registry(&changed_project, Arc::clone(&table), &registry);
+        revision_with_instrument_registry(&changed_project, table.clone(), &registry);
     let mut retry = SessionPlayback::new(Arc::clone(&changed_revision)).unwrap();
     let mut success = SessionPlayback::new(changed_revision).unwrap();
     retry.release_capacity = 0;
@@ -6800,7 +6787,7 @@ fn session_state_and_type_changes_keep_old_voice_law_and_use_new_law_for_later_o
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&left, &right];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
 
     for (candidate_type, candidate_state, expected_future) in
         [(left.id, 1, 0.3_f32), (right.id, 0, 0.45_f32)]
@@ -6808,7 +6795,7 @@ fn session_state_and_type_changes_keep_old_voice_law_and_use_new_law_for_later_o
         let base = with_second_session_note(&session_only_project(&project(0.5, 0, 8 << 32)));
         let old_project = with_test_instrument(&base, left.id, 0);
         let old_revision =
-            revision_with_instrument_registry(&old_project, Arc::clone(&table), &registry);
+            revision_with_instrument_registry(&old_project, table.clone(), &registry);
         let clip = old_revision.session().midi_clips()[0].id;
         let mut previous = SessionPlayback::new(old_revision).unwrap();
         previous
@@ -6825,7 +6812,7 @@ fn session_state_and_type_changes_keep_old_voice_law_and_use_new_law_for_later_o
         let changed = with_test_instrument(&base, candidate_type, candidate_state);
         let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
             &changed,
-            Arc::clone(&table),
+            table.clone(),
             &registry,
         ))
         .unwrap();
@@ -6866,10 +6853,10 @@ fn changed_instrument_does_not_rewrite_an_already_releasing_session_voice() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&left, &right];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original =
         with_test_instrument(&session_only_project(&project(0.5, 0, 1 << 32)), left.id, 0);
-    let old_revision = revision_with_instrument_registry(&original, Arc::clone(&table), &registry);
+    let old_revision = revision_with_instrument_registry(&original, table.clone(), &registry);
     let clip = old_revision.session().midi_clips()[0].id;
     let mut previous = SessionPlayback::new(old_revision).unwrap();
     previous
@@ -6885,7 +6872,7 @@ fn changed_instrument_does_not_rewrite_an_already_releasing_session_voice() {
     let changed = with_test_instrument(&original, right.id, 0);
     let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
         &changed,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -6922,7 +6909,7 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     };
     let definitions: [&dyn NativeInstrumentDefinition; 2] = [&left, &right];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first = match editor
         .execute(Command::AddMidiTrack {
@@ -6991,8 +6978,7 @@ fn instrument_edit_captures_only_the_changed_session_track() {
             .unwrap();
     }
     let old_project = editor.project().clone();
-    let old_revision =
-        revision_with_instrument_registry(&old_project, Arc::clone(&table), &registry);
+    let old_revision = revision_with_instrument_registry(&old_project, table.clone(), &registry);
     let first_clip = old_revision
         .session()
         .midi_clips()
@@ -7028,7 +7014,7 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     let changed = editor.project().clone();
     let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
         &changed,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -7099,13 +7085,13 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     let changed_source = legacy_project_from_snapshot(changed_source_snapshot).unwrap();
     let mut source_previous = SessionPlayback::new(revision_with_instrument_registry(
         &muted_source,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
     let mut source_reference = SessionPlayback::new(revision_with_instrument_registry(
         &muted_source,
-        Arc::clone(&table),
+        table.clone(),
         &registry,
     ))
     .unwrap();
@@ -7226,9 +7212,9 @@ fn without_session_cells(project: &Project) -> Project {
 
 #[test]
 fn gain_only_handoff_preserves_route_clock_and_active_audio() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip: old.revision.session().midi_clips()[0].id,
         quantization: LaunchQuantization::Immediate,
@@ -7256,9 +7242,9 @@ fn gain_only_handoff_preserves_route_clock_and_active_audio() {
 
 #[test]
 fn carried_voice_audio_is_partition_invariant_after_tempo_handoff() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
@@ -7270,7 +7256,7 @@ fn carried_voice_audio_is_partition_invariant_after_tempo_handoff() {
     old.render(&mut prefix).unwrap();
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
-    let next_revision = revision(&slower, Arc::clone(&table));
+    let next_revision = revision(&slower, table.clone());
     let mut whole = SessionPlayback::new(Arc::clone(&next_revision)).unwrap();
     let mut split = SessionPlayback::new(next_revision).unwrap();
     whole.try_inherit_state_from(&mut old).unwrap();
@@ -7295,7 +7281,7 @@ fn carried_voice_audio_is_partition_invariant_after_tempo_handoff() {
 
 #[test]
 fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(0.5, 0, 8 << 32);
     let mut snapshot = base.snapshot();
     if let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content {
@@ -7314,7 +7300,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
     }
     snapshot.next_id = 9;
     let original = legacy_project_from_snapshot(snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
@@ -7350,7 +7336,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
     let mut slower_snapshot = slower.snapshot();
     slower_snapshot.session = original.snapshot().session;
     let slower = legacy_project_from_snapshot(slower_snapshot).unwrap();
-    let next_revision = revision(&slower, Arc::clone(&table));
+    let next_revision = revision(&slower, table.clone());
     let mut whole = SessionPlayback::new(Arc::clone(&next_revision)).unwrap();
     let mut split = SessionPlayback::new(next_revision).unwrap();
     whole.try_inherit_state_from(&mut old).unwrap();
@@ -7376,9 +7362,9 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
 
 #[test]
 fn source_edit_at_exact_cut_remains_future_eligible() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 1 << 30);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip: old.revision.session().midi_clips()[0].id,
         quantization: LaunchQuantization::Immediate,
@@ -7402,9 +7388,9 @@ fn source_edit_at_exact_cut_remains_future_eligible() {
 
 #[test]
 fn inserted_strictly_historical_note_does_not_chase_after_handoff() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 1 << 30);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip: old.revision.session().midi_clips()[0].id,
         quantization: LaunchQuantization::Immediate,
@@ -7428,9 +7414,9 @@ fn inserted_strictly_historical_note_does_not_chase_after_handoff() {
 
 #[test]
 fn tempo_handoff_preserves_active_voice_phase_and_remaps_held_gate() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip: old.revision.session().midi_clips()[0].id,
         quantization: LaunchQuantization::Immediate,
@@ -7441,7 +7427,7 @@ fn tempo_handoff_preserves_active_voice_phase_and_remaps_held_gate() {
     old.render(&mut before).unwrap();
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
-    let mut next = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
+    let mut next = SessionPlayback::new(revision(&slower, table.clone())).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let mut actual = [[0.0; 2]; 32];
     next.render(&mut actual).unwrap();
@@ -7460,9 +7446,9 @@ fn tempo_handoff_preserves_active_voice_phase_and_remaps_held_gate() {
 
 #[test]
 fn tempo_handoff_keeps_already_releasing_voice_on_its_original_gate() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 1 << 30);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip: old.revision.session().midi_clips()[0].id,
         quantization: LaunchQuantization::Immediate,
@@ -7473,7 +7459,7 @@ fn tempo_handoff_keeps_already_releasing_voice_on_its_original_gate() {
     old.render(&mut before).unwrap();
 
     let slower = project_at_tempo(0.5, 0, 1 << 30, Tempo::new(60_000_000).unwrap());
-    let mut next = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
+    let mut next = SessionPlayback::new(revision(&slower, table.clone())).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let mut actual = [[0.0; 2]; 32];
     next.render(&mut actual).unwrap();
@@ -7494,9 +7480,9 @@ fn tempo_handoff_keeps_already_releasing_voice_on_its_original_gate() {
 
 #[test]
 fn stopping_after_handoff_cuts_carried_held_voice_without_requerying_history() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::Play).unwrap();
@@ -7534,9 +7520,9 @@ fn stopping_after_handoff_cuts_carried_held_voice_without_requerying_history() {
 
 #[test]
 fn seek_after_anchored_handoff_uses_base_clock_and_resets_history() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -7575,9 +7561,9 @@ fn seek_after_anchored_handoff_uses_base_clock_and_resets_history() {
 
 #[test]
 fn pause_and_stop_after_handoff_hold_then_reset_the_reanchored_clock() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -7616,9 +7602,9 @@ fn pause_and_stop_after_handoff_hold_then_reset_the_reanchored_clock() {
 
 #[test]
 fn failed_handoff_capacity_is_atomic_and_can_be_retried() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let mut block = [[0.0; 2]; 64];
@@ -7636,7 +7622,7 @@ fn failed_handoff_capacity_is_atomic_and_can_be_retried() {
     let old_release_count = old.release_voice_count();
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
-    let candidate_revision = revision(&slower, Arc::clone(&table));
+    let candidate_revision = revision(&slower, table.clone());
     let mut candidate = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     let mut twin = SessionPlayback::new(candidate_revision).unwrap();
     twin.try_inherit_state_from(&mut old).unwrap();
@@ -7663,11 +7649,11 @@ fn failed_handoff_capacity_is_atomic_and_can_be_retried() {
 
 #[test]
 fn failed_instrument_handoff_stages_route_floor_atomically_and_retries_pcm() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = session_only_project(&project(0.5, 0, 8 << 32));
     let replaced = with_replaced_instrument_id(&original);
-    let old_revision = revision(&original, Arc::clone(&table));
-    let candidate_revision = revision(&replaced, Arc::clone(&table));
+    let old_revision = revision(&original, table.clone());
+    let candidate_revision = revision(&replaced, table.clone());
     let clip = old_revision.session().midi_clips()[0].id;
 
     let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
@@ -7785,9 +7771,9 @@ fn failed_instrument_handoff_stages_route_floor_atomically_and_retries_pcm() {
 
 #[test]
 fn repeated_handoff_keeps_releasing_voice_when_new_gate_is_unrepresentable() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 1 << 30);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
@@ -7799,7 +7785,7 @@ fn repeated_handoff_keeps_releasing_voice_when_new_gate_is_unrepresentable() {
     old.render(&mut near_gate).unwrap(); // voice is already releasing
 
     let slower = project_at_tempo(0.5, 0, 1 << 30, Tempo::new(60_000_000).unwrap());
-    let mut middle = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
+    let mut middle = SessionPlayback::new(revision(&slower, table.clone())).unwrap();
     middle.try_inherit_state_from(&mut old).unwrap();
     let second_slower = project_at_tempo(0.5, 0, 1 << 30, Tempo::new(1_000_000).unwrap());
     let mut final_revision = SessionPlayback::new(revision(&second_slower, table)).unwrap();
@@ -7833,9 +7819,9 @@ fn repeated_handoff_keeps_releasing_voice_when_new_gate_is_unrepresentable() {
 
 #[test]
 fn quantized_same_clip_retrigger_after_handoff_clears_old_occurrence_suppression() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -7848,7 +7834,7 @@ fn quantized_same_clip_retrigger_after_handoff_clears_old_occurrence_suppression
     old.render(&mut first).unwrap();
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
-    let mut playback = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
+    let mut playback = SessionPlayback::new(revision(&slower, table.clone())).unwrap();
     playback.try_inherit_state_from(&mut old).unwrap();
     assert!(!playback.suppressions.is_empty());
     playback
@@ -7872,9 +7858,9 @@ fn quantized_same_clip_retrigger_after_handoff_clears_old_occurrence_suppression
 
 #[test]
 fn repeated_tempo_handoffs_keep_historical_voice_without_requerying_onset() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut first = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut first = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     first
         .apply(SessionPlaybackCommand::LaunchClip {
             clip: first.revision.session().midi_clips()[0].id,
@@ -7886,10 +7872,10 @@ fn repeated_tempo_handoffs_keep_historical_voice_without_requerying_onset() {
     first.render(&mut warm).unwrap();
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
-    let mut second = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
+    let mut second = SessionPlayback::new(revision(&slower, table.clone())).unwrap();
     second.try_inherit_state_from(&mut first).unwrap();
     let faster = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(180_000_000).unwrap());
-    let mut third = SessionPlayback::new(revision(&faster, Arc::clone(&table))).unwrap();
+    let mut third = SessionPlayback::new(revision(&faster, table.clone())).unwrap();
     third.try_inherit_state_from(&mut second).unwrap();
     let mut actual = [[0.0; 2]; 32];
     third.render(&mut actual).unwrap();
@@ -7906,9 +7892,9 @@ fn repeated_tempo_handoffs_keep_historical_voice_without_requerying_onset() {
 
 #[test]
 fn repeated_handoffs_suppress_an_occurrence_exactly_at_the_previous_cut() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let baseline = project(0.5, 0, 8 << 32);
-    let baseline_revision = revision(&baseline, Arc::clone(&table));
+    let baseline_revision = revision(&baseline, table.clone());
     let cut_beat = baseline_revision
         .session()
         .timing()
@@ -7923,7 +7909,7 @@ fn repeated_handoffs_suppress_an_occurrence_exactly_at_the_previous_cut() {
         64
     );
     let original = project(0.5, cut_beat.raw(), 8 << 32);
-    let mut first = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut first = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     first
         .apply(SessionPlaybackCommand::LaunchClip {
             clip: first.revision.session().midi_clips()[0].id,
@@ -7940,7 +7926,7 @@ fn repeated_handoffs_suppress_an_occurrence_exactly_at_the_previous_cut() {
         8 << 32,
         Tempo::new(60_000_000).unwrap(),
     );
-    let mut second = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
+    let mut second = SessionPlayback::new(revision(&slower, table.clone())).unwrap();
     second.try_inherit_state_from(&mut first).unwrap();
     let faster = project_at_tempo(
         0.5,
@@ -7948,7 +7934,7 @@ fn repeated_handoffs_suppress_an_occurrence_exactly_at_the_previous_cut() {
         8 << 32,
         Tempo::new(180_000_000).unwrap(),
     );
-    let mut third = SessionPlayback::new(revision(&faster, Arc::clone(&table))).unwrap();
+    let mut third = SessionPlayback::new(revision(&faster, table.clone())).unwrap();
     third.try_inherit_state_from(&mut second).unwrap();
     let mut actual = [[0.0; 2]; 32];
     third.render(&mut actual).unwrap();
@@ -7965,9 +7951,9 @@ fn repeated_handoffs_suppress_an_occurrence_exactly_at_the_previous_cut() {
 
 #[test]
 fn handoff_remaps_pending_quantized_target_by_beat_and_cancels_missing_clip() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let mut first = [[0.0; 2]; 64];
     old.render(&mut first).unwrap();
@@ -7980,7 +7966,7 @@ fn handoff_remaps_pending_quantized_target_by_beat_and_cancels_missing_clip() {
     .unwrap();
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
-    let mut next = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
+    let mut next = SessionPlayback::new(revision(&slower, table.clone())).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let target = next
         .timing_view()
@@ -7997,7 +7983,7 @@ fn handoff_remaps_pending_quantized_target_by_beat_and_cancels_missing_clip() {
         Some(SessionPlaybackOwner::Session { clip })
     );
 
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     old.render(&mut first).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
@@ -8020,9 +8006,9 @@ fn handoff_remaps_pending_quantized_target_by_beat_and_cancels_missing_clip() {
 
 #[test]
 fn pending_scene_launch_keeps_its_resolved_clip_when_scene_contents_change() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let mut first = [[0.0; 2]; 64];
     old.render(&mut first).unwrap();
@@ -8063,7 +8049,7 @@ fn pending_scene_launch_keeps_its_resolved_clip_when_scene_contents_change() {
 
 #[test]
 fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut old_snapshot = project(0.5, 0, 8 << 32).snapshot();
     old_snapshot.sample_rate = 48_000;
     let boundary = 4_u64 << 32;
@@ -8076,7 +8062,7 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
         ),
     ];
     let old_project = legacy_project_from_snapshot(old_snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, table.clone())).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::Seek(95_999)).unwrap();
@@ -8133,7 +8119,7 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
 
 #[test]
 fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twin() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project_at_tempo(0.5, 0, 1 << 30, Tempo::new(600_000_000).unwrap());
     let mut snapshot = base.snapshot();
     if let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content {
@@ -8156,7 +8142,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
     }
     snapshot.next_id = 14;
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, table.clone())).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -8174,7 +8160,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
         Tempo::new(500_000_000).unwrap(),
     )];
     let changed = legacy_project_from_snapshot(changed_snapshot).unwrap();
-    let candidate_revision = revision(&changed, Arc::clone(&table));
+    let candidate_revision = revision(&changed, table.clone());
     let mut failed = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     failed.release_capacity = 1;
     failed.try_inherit_state_from(&mut old).unwrap();
@@ -8241,7 +8227,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
 
 #[test]
 fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut original_snapshot = mixed_audio_midi_project(5, 18).snapshot();
     let original_note_id = original_snapshot.next_id;
     let Some(SessionCellContentSnapshot::Midi(original_clip)) = original_snapshot
@@ -8302,7 +8288,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
             &original,
             &make_sources(&original),
             71,
-            Arc::clone(&table),
+            table.clone(),
             None,
         )
         .unwrap(),
@@ -8377,7 +8363,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
             &changed,
             &make_sources(&changed),
             71,
-            Arc::clone(&table),
+            table.clone(),
             Some(old.revision.session()),
         )
         .unwrap(),
@@ -8436,9 +8422,9 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
 
 #[test]
 fn deleting_the_last_track_keeps_its_copied_session_voice_tail() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let mut before = [[0.0; 2]; 64];
     old.render(&mut before).unwrap();
@@ -8478,7 +8464,7 @@ fn deleting_the_last_track_keeps_its_copied_session_voice_tail() {
 
 #[test]
 fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(0.5, 0, 8 << 32);
     let mut snapshot = base.snapshot();
     snapshot.next_id = 15;
@@ -8521,7 +8507,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
         });
     }
     let original = legacy_project_from_snapshot(snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let mut before = [[0.0; 2]; 64];
     old.render(&mut before).unwrap();
@@ -8529,7 +8515,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     let mut edited = original.snapshot();
     edited.tracks = vec![edited.tracks[1].clone(), edited.tracks[0].clone()];
     let candidate_project = legacy_project_from_snapshot(edited).unwrap();
-    let candidate_revision = revision(&candidate_project, Arc::clone(&table));
+    let candidate_revision = revision(&candidate_project, table.clone());
     let mut candidate = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(candidate.routes[0].id.value(), 7);
@@ -8568,7 +8554,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
 
 #[test]
 fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_phase_key() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(0.5, 0, 8 << 32);
     let mut snapshot = base.snapshot();
     if let TrackContentSnapshot::Hybrid {
@@ -8625,7 +8611,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
     }
     snapshot.next_id = 16;
     let original = legacy_project_from_snapshot(snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
@@ -8667,9 +8653,9 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
 
 #[test]
 fn moving_selected_clip_to_another_track_releases_old_route() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&original, table.clone())).unwrap();
     let old_track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::Play).unwrap();
@@ -8716,7 +8702,7 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
 
 #[test]
 fn unrepresentable_matching_gate_remap_refuses_without_candidate_commit() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let base = project(0.5, 0, 8 << 32);
     let mut snapshot = base.snapshot();
     if let TrackContentSnapshot::Hybrid {
@@ -8734,7 +8720,7 @@ fn unrepresentable_matching_gate_remap_refuses_without_candidate_commit() {
         clip.source.notes[0].duration_raw = u64::MAX;
     }
     let long = legacy_project_from_snapshot(snapshot).unwrap();
-    let mut old = SessionPlayback::new(revision(&long, Arc::clone(&table))).unwrap();
+    let mut old = SessionPlayback::new(revision(&long, table.clone())).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -8773,7 +8759,7 @@ fn unrepresentable_matching_gate_remap_refuses_without_candidate_commit() {
 
 #[test]
 fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let project = project(0.5, 0, 8 << 32);
     let mut playback = SessionPlayback::new(revision(&project, table)).unwrap();
     let track = playback.routes[0].id;
@@ -8870,9 +8856,9 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
 
 #[test]
 fn route_status_generation_tracks_committed_commands_and_due_transitions() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let project = project(0.5, 0, 8 << 32);
-    let revision = revision(&project, Arc::clone(&table));
+    let revision = revision(&project, table.clone());
     let track = project.tracks()[0].id();
     let clip = match project.session_cells()[0].content() {
         hex_project::SessionCellContent::Midi(clip) => clip.id(),
@@ -8970,7 +8956,7 @@ fn session_audio_matches_direct_frame_oracle_over_irregular_blocks_and_ends_sile
         PreparedRevision::prepare(
             &project,
             &media,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -9018,7 +9004,7 @@ fn session_audio_seek_pause_stop_scene_stop_and_return_are_explicit_and_keep_mid
         PreparedRevision::prepare(
             &project,
             &media,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -9127,7 +9113,7 @@ fn session_audio_midi_and_arrangement_routes_mix_additively_against_independent_
             PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -9187,8 +9173,13 @@ fn session_audio_quantization_cancel_and_tempo_handoff_keep_frame_domain() {
     let base = audio_project(5, 18, 4);
     let media = audio_media(&base, &audio_a, &audio_b);
     let mut playback = SessionPlayback::new(Arc::new(
-        PreparedRevision::prepare(&base, &media, Arc::new(hex_devices::SineTable::new()), None)
-            .unwrap(),
+        PreparedRevision::prepare(
+            &base,
+            &media,
+            crate::SharedSineTable::new_on_control(),
+            None,
+        )
+        .unwrap(),
     ))
     .unwrap();
     let clip = playback.revision.session().audio_clips()[0].id;
@@ -9242,7 +9233,7 @@ fn session_audio_quantization_cancel_and_tempo_handoff_keep_frame_domain() {
         PreparedRevision::prepare(
             &replacement,
             &replacement_media,
-            Arc::clone(playback.revision.session().sine_table()),
+            playback.revision.session().sine_table().clone(),
             Some(playback.revision.session()),
         )
         .unwrap(),
@@ -9272,7 +9263,7 @@ fn session_audio_quantization_cancel_and_tempo_handoff_keep_frame_domain() {
         PreparedRevision::prepare(
             &short,
             &short_media,
-            Arc::clone(candidate.revision.session().sine_table()),
+            candidate.revision.session().sine_table().clone(),
             Some(candidate.revision.session()),
         )
         .unwrap(),
@@ -9301,7 +9292,7 @@ fn session_audio_quantized_launch_begins_on_the_due_performance_frame() {
         PreparedRevision::prepare(
             &project,
             &media,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -9366,14 +9357,14 @@ fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reus
     let first = PreparedSessionInventory::prepare_with_media(
         &project,
         &media,
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
     )
     .unwrap();
     let second = PreparedSessionInventory::prepare_with_media(
         &project,
         &media,
-        Arc::clone(first.sine_table()),
+        first.sine_table().clone(),
         Some(&first),
     )
     .unwrap();
@@ -9388,7 +9379,7 @@ fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reus
     let changed = PreparedSessionInventory::prepare_with_media(
         &project,
         &changed_media,
-        Arc::clone(first.sine_table()),
+        first.sine_table().clone(),
         Some(&first),
     )
     .unwrap();
@@ -9411,7 +9402,7 @@ fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reus
         PreparedSessionInventory::prepare_with_media(
             &project,
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None
         )
         .is_err()
@@ -9422,7 +9413,7 @@ fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reus
         PreparedSessionInventory::prepare_with_media(
             &project,
             &bad_media,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None
         )
         .is_err()
@@ -9433,7 +9424,7 @@ fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reus
         PreparedSessionInventory::prepare_with_media(
             &project,
             &bad_length,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None
         )
         .is_err()
@@ -9442,9 +9433,9 @@ fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reus
 
 #[test]
 fn used_or_accepted_session_runtime_cannot_be_admitted_as_a_fresh_candidate() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let project = project(0.5, 0, 8 << 32);
-    let prepared = revision(&project, Arc::clone(&table));
+    let prepared = revision(&project, table.clone());
     let mut predecessor = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
 
     let mut applied = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
@@ -9480,9 +9471,9 @@ fn used_or_accepted_session_runtime_cannot_be_admitted_as_a_fresh_candidate() {
 
 #[test]
 fn accepted_session_candidate_refuses_second_handoff_before_either_runtime_changes() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let project = project(0.5, 0, 8 << 32);
-    let prepared = revision(&project, Arc::clone(&table));
+    let prepared = revision(&project, table.clone());
     let clip = prepared.session().midi_clips()[0].id;
 
     let mut first_predecessor = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
@@ -9569,9 +9560,9 @@ fn accepted_session_candidate_refuses_second_handoff_before_either_runtime_chang
 
 #[test]
 fn release_bank_refusal_keeps_fresh_candidate_retryable_after_predecessor_drains() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project(0.5, 0, 8 << 32);
-    let original_revision = revision(&original, Arc::clone(&table));
+    let original_revision = revision(&original, table.clone());
     let mut previous = SessionPlayback::new(original_revision).unwrap();
     let track = previous.routes[0].id;
     let clip = previous.revision.session().midi_clips()[0].id;
@@ -9756,10 +9747,9 @@ fn interactive_preroll_session_command_is_available() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let source_project = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
-    let prepared =
-        revision_with_instrument_registry(&source_project, Arc::clone(&table), &registry);
+    let prepared = revision_with_instrument_registry(&source_project, table.clone(), &registry);
     let track = prepared.arrangement().tracks()[0]
         .canonical_track_id()
         .unwrap();
@@ -9810,10 +9800,9 @@ fn interactive_preroll_warmed_state_inherits_into_compiled_revision() {
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let source_project = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
-    let prepared =
-        revision_with_instrument_registry(&source_project, Arc::clone(&table), &registry);
+    let prepared = revision_with_instrument_registry(&source_project, table.clone(), &registry);
     let track = prepared.arrangement().tracks()[0]
         .canonical_track_id()
         .unwrap();
@@ -9835,7 +9824,7 @@ fn interactive_preroll_warmed_state_inherits_into_compiled_revision() {
             |candidate| {
                 Ok::<_, hex_project::Invalid>(revision_with_instrument_registry(
                     candidate,
-                    Arc::clone(&table),
+                    table.clone(),
                     &registry,
                 ))
             },
@@ -9870,17 +9859,14 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
-    let table = Arc::new(hex_devices::SineTable::new());
-    let sine = revision(&project(1.0, 0, 8 << 32), Arc::clone(&table));
+    let table = crate::SharedSineTable::new_on_control();
+    let sine = revision(&project(1.0, 0, 8 << 32), table.clone());
     assert!(!sine.arrangement_seek_requires_preroll());
 
     let operator_state = crate::operator_legacy_test::legacy_operator_state();
     let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
     snapshot.tracks[0].instrument.as_mut().unwrap().state = operator_state;
-    let operator = revision(
-        &Project::from_snapshot(snapshot).unwrap(),
-        Arc::clone(&table),
-    );
+    let operator = revision(&Project::from_snapshot(snapshot).unwrap(), table.clone());
     assert!(!operator.arrangement_seek_requires_preroll());
 
     let compare_analytic_seek = |prepared: Arc<PreparedRevision>| {
@@ -9926,7 +9912,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
     track_snapshot.next_id += 1;
     let stateful_track = revision(
         &Project::from_snapshot(track_snapshot).unwrap(),
-        Arc::clone(&table),
+        table.clone(),
     );
     assert!(stateful_track.arrangement_seek_requires_preroll());
 
@@ -9996,7 +9982,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
         session_route: bool,
         apply_intermediate: bool,
     ) -> Vec<crate::Frame> {
-        let table = Arc::new(hex_devices::SineTable::new());
+        let table = crate::SharedSineTable::new_on_control();
         let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
         snapshot.tracks[0].instrument.as_mut().unwrap().state = edited_state(0.15, 0.45, 0.3);
         let arrangement = match &mut snapshot.tracks[0].content {
@@ -10029,7 +10015,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
         snapshot.next_id = 10;
         let source_project = Project::from_snapshot(snapshot).unwrap();
         let old_revision = Arc::new(
-            PreparedRevision::prepare(&source_project, &BTreeMap::new(), Arc::clone(&table), None)
+            PreparedRevision::prepare(&source_project, &BTreeMap::new(), table.clone(), None)
                 .unwrap(),
         );
         let track_id = old_revision.arrangement().tracks()[0]
@@ -10055,7 +10041,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             PreparedRevision::prepare(
                 &intermediate_project,
                 &BTreeMap::new(),
-                Arc::clone(&table),
+                table.clone(),
                 Some(old_revision.session()),
             )
             .unwrap(),
@@ -10081,7 +10067,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             PreparedRevision::prepare(
                 final_editor.project(),
                 &BTreeMap::new(),
-                Arc::clone(&table),
+                table.clone(),
                 Some(intermediate_revision.session()),
             )
             .unwrap(),
@@ -10208,7 +10194,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
         source: &Project,
         instrument_id: hex_project::DeviceId,
         old_revision: &PreparedRevision,
-        table: Arc<hex_devices::SineTable>,
+        table: crate::SharedSineTable,
     ) -> Arc<PreparedRevision> {
         let mut state = source.tracks()[0].instrument().unwrap().state().clone();
         state = OPERATOR_METADATA
@@ -10245,17 +10231,16 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
         candidate
     }
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
 
     // A held voice prevents a same-source unsupported law change from being
     // detached into an outgoing tail.
     let source = source_project(1 << 32, false);
     let instrument_id = source.tracks()[0].instrument().unwrap().id();
     let old_revision = Arc::new(
-        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::clone(&table), None).unwrap(),
+        PreparedRevision::prepare(&source, &BTreeMap::new(), table.clone(), None).unwrap(),
     );
-    let candidate =
-        unsupported_candidate(&source, instrument_id, &old_revision, Arc::clone(&table));
+    let candidate = unsupported_candidate(&source, instrument_id, &old_revision, table.clone());
     let mut previous = SessionPlayback::new(old_revision).unwrap();
     let session_clip = previous.revision.session().midi_clips()[0].id;
     previous
@@ -10287,10 +10272,9 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
     let source = source_project(1 << 30, true);
     let instrument_id = source.tracks()[0].instrument().unwrap().id();
     let old_revision = Arc::new(
-        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::clone(&table), None).unwrap(),
+        PreparedRevision::prepare(&source, &BTreeMap::new(), table.clone(), None).unwrap(),
     );
-    let candidate =
-        unsupported_candidate(&source, instrument_id, &old_revision, Arc::clone(&table));
+    let candidate = unsupported_candidate(&source, instrument_id, &old_revision, table.clone());
     let mut previous = SessionPlayback::new(old_revision).unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     let mut released_prefix = vec![[0.0; 2]; 7_000];
@@ -10311,7 +10295,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
     let source = source_project(1 << 32, true);
     let instrument_id = source.tracks()[0].instrument().unwrap().id();
     let old_revision = Arc::new(
-        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::clone(&table), None).unwrap(),
+        PreparedRevision::prepare(&source, &BTreeMap::new(), table.clone(), None).unwrap(),
     );
     let candidate = unsupported_candidate(&source, instrument_id, &old_revision, table);
     let mut previous = SessionPlayback::new(old_revision).unwrap();
@@ -10324,7 +10308,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
     use hex_devices::operator_state::{OPERATOR_METADATA, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let source = {
         let mut state = crate::operator_legacy_test::legacy_operator_state();
         state = OPERATOR_METADATA
@@ -10363,7 +10347,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
     };
     let instrument_id = source.tracks()[0].instrument().unwrap().id();
     let old_revision = Arc::new(
-        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::clone(&table), None).unwrap(),
+        PreparedRevision::prepare(&source, &BTreeMap::new(), table.clone(), None).unwrap(),
     );
 
     let edit = |base: &Project, state: hex_lattice_contract::NativeDeviceState| {
@@ -10388,7 +10372,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
         PreparedRevision::prepare(
             &skipped_project,
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(old_revision.session()),
         )
         .unwrap(),
@@ -10405,7 +10389,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
         PreparedRevision::prepare(
             &final_project,
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(skipped_revision.session()),
         )
         .unwrap(),
@@ -10481,7 +10465,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let mut snapshot = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0).snapshot();
     let track_effect_id = snapshot.next_id;
     let return_id = track_effect_id + 1;
@@ -10662,7 +10646,7 @@ fn interactive_arrangement_preroll_accepts_loops_and_checks_cancellation() {
     let mut looped_snapshot = project(0.5, 0, 1 << 32).snapshot();
     looped_snapshot.loop_region = Some(LoopRegion::new(0, 1024, true).unwrap());
     let looped_project = Project::from_snapshot(looped_snapshot).unwrap();
-    let looped = revision(&looped_project, Arc::new(hex_devices::SineTable::new()));
+    let looped = revision(&looped_project, crate::SharedSineTable::new_on_control());
     const SEEK_STACK_BYTES: usize = 8 * 1024 * 1024;
     thread::Builder::new()
         .name("hex-engine-interactive-refusal-test".into())
@@ -10757,7 +10741,7 @@ fn assert_preroll_continuation(prepared: &Arc<PreparedRevision>, target: u64, in
 fn arrangement_preroll_checks_work_cancellation_loop_and_pause_contracts() {
     let prepared = revision(
         &project(0.5, 0, 1 << 32),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
     );
     let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let cancelled = AtomicBool::new(true);
@@ -10826,7 +10810,7 @@ fn arrangement_preroll_checks_work_cancellation_loop_and_pause_contracts() {
 fn arrangement_preroll_accepts_zero_frame_and_refuses_transport_loop() {
     let prepared = revision(
         &project(0.5, 0, 1 << 32),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
     );
     let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let zero = caller
@@ -10845,7 +10829,7 @@ fn arrangement_preroll_accepts_zero_frame_and_refuses_transport_loop() {
     let mut looped_snapshot = project(0.5, 0, 1 << 32).snapshot();
     looped_snapshot.loop_region = Some(LoopRegion::new(0, 1024, true).unwrap());
     let looped = Project::from_snapshot(looped_snapshot).unwrap();
-    let looped = revision(&looped, Arc::new(hex_devices::SineTable::new()));
+    let looped = revision(&looped, crate::SharedSineTable::new_on_control());
     let looped_caller = SessionPlayback::new(Arc::clone(&looped)).unwrap();
     assert_eq!(
         looped_caller
@@ -10858,7 +10842,7 @@ fn arrangement_preroll_accepts_zero_frame_and_refuses_transport_loop() {
 #[test]
 fn arrangement_preroll_empty_project_can_advance_beyond_content_end() {
     let empty_project = Project::new(48_000).unwrap();
-    let empty_revision = revision(&empty_project, Arc::new(hex_devices::SineTable::new()));
+    let empty_revision = revision(&empty_project, crate::SharedSineTable::new_on_control());
     let empty_caller = SessionPlayback::new(Arc::clone(&empty_revision)).unwrap();
     let mut candidate = empty_caller
         .prepare_arrangement_preroll(12_345, 12_345, true, &AtomicBool::new(false))
@@ -10917,7 +10901,7 @@ fn arrangement_preroll_storage_preflight_covers_constructed_runtime() {
 
 #[test]
 fn arrangement_preroll_returns_no_candidate_when_source_render_fails() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let source_project = session_audio_midi_arrangement_mix_project();
     let asset = source_project
         .assets()
@@ -11073,7 +11057,7 @@ fn mutable_checkpoint_refuses_uncommitted_wrong_revision_and_wrong_frame_atomica
     let changed_project = with_test_instrument(&project(1.0, 0, 8 << 32), instrument_id, 1);
     let changed_revision = revision_with_instrument_registry(
         &changed_project,
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         &registry,
     );
     let mut wrong_revision = SessionPlayback::new(changed_revision).unwrap();
@@ -11211,8 +11195,8 @@ mod analytic_continuation_tests;
 fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
     for input in [true, false] {
         let project = project(0.758_499_15, 0, 8 << 32);
-        let table = Arc::new(hex_devices::SineTable::new());
-        let prepared = revision(&project, Arc::clone(&table));
+        let table = crate::SharedSineTable::new_on_control();
+        let prepared = revision(&project, table.clone());
         let device = project.tracks()[0].instrument().unwrap().id();
         let meter = Arc::clone(prepared.arrangement().device_meter(device.value()).unwrap());
         let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();

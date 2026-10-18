@@ -217,7 +217,7 @@ mod tests {
         let prepared = hex_engine::PreparedRevision::prepare(
             &project,
             &std::collections::BTreeMap::new(),
-            Arc::new(hex_engine::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap();

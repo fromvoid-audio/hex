@@ -20,7 +20,7 @@ fn prepared_with_registry(
     prepared_with_registry_and_previous(
         project,
         registry,
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
     )
 }
@@ -28,7 +28,7 @@ fn prepared_with_registry(
 fn prepared_with_registry_and_previous(
     project: &Project,
     registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-    sine_table: Arc<hex_devices::SineTable>,
+    sine_table: crate::SharedSineTable,
     previous: Option<&PreparedSessionInventory>,
 ) -> Result<Arc<PreparedRevision>, crate::Invalid> {
     Ok(Arc::new(
@@ -247,12 +247,11 @@ fn cached_session_template_revalidates_a_lower_registered_event_capacity() {
     let definition = mutable_definition(id, 8);
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let sine_table = Arc::new(hex_devices::SineTable::new());
+    let sine_table = crate::SharedSineTable::new_on_control();
     MUTABLE_EVENT_CAPACITY_OVERRIDE.with(|limit| limit.set(Some(256)));
     MUTABLE_VOICE_CAPACITY_OVERRIDE.with(|limit| limit.set(Some(64)));
     let previous =
-        prepared_with_registry_and_previous(&project, &registry, Arc::clone(&sine_table), None)
-            .unwrap();
+        prepared_with_registry_and_previous(&project, &registry, sine_table.clone(), None).unwrap();
     let clip = previous
         .session()
         .midi_clips()
@@ -282,11 +281,11 @@ fn cached_session_template_recomputes_voice_proof_when_release_limit_changes() {
     let old_definition = mutable_definition(id, 8);
     let old_definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&old_definition];
     let old_registry = hex_lattice::NativeInstrumentRegistry::new(&old_definitions).unwrap();
-    let sine_table = Arc::new(hex_devices::SineTable::new());
+    let sine_table = crate::SharedSineTable::new_on_control();
     MUTABLE_EVENT_CAPACITY_OVERRIDE.with(|limit| limit.set(Some(256)));
     MUTABLE_VOICE_CAPACITY_OVERRIDE.with(|limit| limit.set(Some(1)));
     let previous =
-        prepared_with_registry_and_previous(&project, &old_registry, Arc::clone(&sine_table), None)
+        prepared_with_registry_and_previous(&project, &old_registry, sine_table.clone(), None)
             .unwrap();
     let old_clip = previous
         .session()

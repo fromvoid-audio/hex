@@ -261,7 +261,7 @@ fn prepared(project: &Project) -> Arc<PreparedRevision> {
     let definition = Definition;
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    revision_with_instrument_registry(project, Arc::new(hex_devices::SineTable::new()), &registry)
+    revision_with_instrument_registry(project, crate::SharedSineTable::new_on_control(), &registry)
 }
 
 fn playing(project: &Project, session: bool) -> SessionPlayback {

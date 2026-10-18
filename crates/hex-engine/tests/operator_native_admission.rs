@@ -1,6 +1,5 @@
 #[path = "../../hex-devices/tests/support/mod.rs"]
 mod support;
-use hex_devices::SineTable;
 use hex_engine::{PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
@@ -250,7 +249,7 @@ fn prepared(
         PreparedRevision::prepare(
             fixture.editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             previous,
         )
         .expect("built-in Operator compiles through shared contexts"),

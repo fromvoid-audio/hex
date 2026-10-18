@@ -4,7 +4,7 @@ mod session_audio_fixture;
 
 use hex_engine::{
     Audio, Frame, LaunchQuantization, PlaybackAction, PreparedRevision, SessionPlaybackCommand,
-    SineTable, playback::Playback,
+    playback::Playback,
 };
 use hex_project::{AssetId, BeatTime, Command, Editor, Project, SceneId, Tempo};
 use session_audio_fixture as fixture;
@@ -59,12 +59,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         workload.scene_a_clips[0],
     )?;
 
-    let sine_table = Arc::new(SineTable::new());
+    let sine_table = hex_engine::SharedSineTable::new_on_control();
     for _ in 0..COLD_WARMUPS {
         black_box(PreparedRevision::prepare(
             &workload.project,
             &workload.media,
-            Arc::clone(&sine_table),
+            sine_table.clone(),
             None,
         )?);
     }
@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let candidate = PreparedRevision::prepare(
             black_box(&workload.project),
             &workload.media,
-            Arc::clone(&sine_table),
+            sine_table.clone(),
             None,
         )?;
         let elapsed = started.elapsed().as_nanos();
@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let revision = Arc::new(PreparedRevision::prepare(
         &workload.project,
         &workload.media,
-        Arc::clone(&sine_table),
+        sine_table.clone(),
         None,
     )?);
     let revision = profile_control_edits(
@@ -118,7 +118,7 @@ fn prepare_edit(
     editor: &mut Editor,
     command: Command,
     media: &BTreeMap<AssetId, Audio>,
-    sine_table: &Arc<SineTable>,
+    sine_table: &hex_engine::SharedSineTable,
     previous: &Arc<PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
     let previous = Arc::clone(previous);
@@ -126,7 +126,7 @@ fn prepare_edit(
         Ok::<_, Box<dyn Error>>(PreparedRevision::prepare(
             project,
             media,
-            Arc::clone(sine_table),
+            sine_table.clone(),
             Some(previous.session()),
         )?)
     })?;
@@ -150,7 +150,7 @@ fn retained_audio_pcm(before: &PreparedRevision, after: &PreparedRevision) -> us
 fn profile_control_edits(
     project: &Project,
     media: &BTreeMap<AssetId, Audio>,
-    sine_table: &Arc<SineTable>,
+    sine_table: &hex_engine::SharedSineTable,
     mut revision: Arc<PreparedRevision>,
     track: hex_project::TrackId,
     source_clip: hex_project::ClipId,
@@ -468,11 +468,11 @@ fn verify_source_and_tempo_handoff(
     scene: SceneId,
     clip: hex_project::ClipId,
 ) -> Result<(), Box<dyn Error>> {
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let initial = Arc::new(PreparedRevision::prepare(
         project,
         media,
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let mut previous = launch_scene(Arc::clone(&initial), scene)?;
@@ -567,7 +567,7 @@ fn verify_fixture(
     media: &BTreeMap<AssetId, Audio>,
     scene: SceneId,
 ) -> Result<(), Box<dyn Error>> {
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let revision = Arc::new(PreparedRevision::prepare(project, media, table, None)?);
     let partitions = [1, 31, 127, 128, 129, 255, 256, 257, 1024, 2045, 257];
     let frames = partitions.iter().sum::<usize>();
@@ -601,7 +601,7 @@ fn verify_stop_and_arrangement(
     media: &BTreeMap<AssetId, Audio>,
     stop_scene: SceneId,
 ) -> Result<(), Box<dyn Error>> {
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let revision = Arc::new(PreparedRevision::prepare(project, media, table, None)?);
     let mut playback = launch_scene(Arc::clone(&revision), stop_scene)?;
     let stopped = fixture::render_partitions(&mut playback, &[127, 129])?;

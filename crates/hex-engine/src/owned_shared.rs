@@ -120,6 +120,17 @@ impl<T> OwnedShared<[T]> {
 /// constructor, Clone, raw adoption, or lifetime/handle completion authority.
 #[derive(Debug)]
 pub(crate) struct SharedDeclaration(usize);
+impl OwnedShared<crate::SineTable> {
+    pub(crate) fn from_native_sine_pair_on_control(
+        arc: Arc<crate::SineTable>,
+        receipt: SharedDeclaration,
+    ) -> Self {
+        Self {
+            arc,
+            receipt: receipt.0,
+        }
+    }
+}
 impl SharedDeclaration {
     pub(crate) fn parts<T: ?Sized>(&self, owner: &Arc<T>) -> Option<(usize, usize)> {
         self.0

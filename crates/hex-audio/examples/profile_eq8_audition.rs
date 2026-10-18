@@ -1,6 +1,6 @@
 //! Headless EQ8 audition lease timing and PCM oracles; no CPAL device or UI.
 use hex_audio::prepared;
-use hex_engine::{PreparedRevision, ProcessorAuditionSelection, SineTable, playback::Playback};
+use hex_engine::{PreparedRevision, ProcessorAuditionSelection, playback::Playback};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, DeviceId, Editor, Project};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
@@ -107,7 +107,7 @@ fn fixture() -> Result<(Arc<PreparedRevision>, u64, DeviceId), Box<dyn Error>> {
         Arc::new(PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )?),
         track.value(),

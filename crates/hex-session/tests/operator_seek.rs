@@ -1,4 +1,4 @@
-use hex_engine::{NativeDeviceClass, PlaybackCommand, PreparedRevision, SineTable};
+use hex_engine::{NativeDeviceClass, PlaybackCommand, PreparedRevision};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use hex_session::arrangement_seek::{
@@ -95,7 +95,7 @@ fn operator_preroll(lfo: Option<bool>) {
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("prepared feedback Operator"),

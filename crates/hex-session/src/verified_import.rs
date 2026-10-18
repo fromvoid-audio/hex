@@ -172,7 +172,7 @@ impl Session {
                     let prepared = prepare_with_waveforms(
                         candidate,
                         &bank,
-                        Arc::clone(&table),
+                        table.clone(),
                         previous.map(|p| p.session().as_ref()),
                         &self.audio_transforms,
                         &self.audio_clip_waveforms,
@@ -271,7 +271,7 @@ impl Session {
                     let prepared = Arc::new(prepare_with_waveforms(
                         candidate,
                         &bank,
-                        Arc::clone(&table),
+                        table.clone(),
                         previous.map(|p| p.session().as_ref()),
                         &self.audio_transforms,
                         &self.audio_clip_waveforms,

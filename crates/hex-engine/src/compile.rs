@@ -128,7 +128,7 @@ pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
     snapshot: &hex_project::Project,
     sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
     generation: u64,
-    sine_table: Option<Arc<hex_devices::SineTable>>,
+    sine_table: Option<crate::SharedSineTable>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     project_with_prepared_audio_sources_and_midi_preview_and_contexts(
         snapshot, sources, generation, sine_table, None, None,
@@ -139,7 +139,7 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
     snapshot: &hex_project::Project,
     sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
     generation: u64,
-    sine_table: Option<Arc<hex_devices::SineTable>>,
+    sine_table: Option<crate::SharedSineTable>,
     shared_contexts: Option<
         crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
     >,
@@ -179,7 +179,7 @@ pub fn project_with_midi_preview(
 pub fn project_with_midi_preview_and_table(
     snapshot: &hex_project::Project,
     media: &dyn crate::compile::MediaLookup<Audio>,
-    sine_table: Option<Arc<hex_devices::SineTable>>,
+    sine_table: Option<crate::SharedSineTable>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let registry = hex_devices::native_registry()
         .map_err(|_| Invalid("invalid built-in native device registry"))?;
@@ -197,7 +197,7 @@ pub fn project_with_midi_preview_and_table(
 pub(crate) fn project_with_midi_preview_and_table_and_instrument_registry(
     snapshot: &hex_project::Project,
     media: &dyn crate::compile::MediaLookup<Audio>,
-    sine_table: Option<Arc<hex_devices::SineTable>>,
+    sine_table: Option<crate::SharedSineTable>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
@@ -215,7 +215,7 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_registry(
 pub(crate) fn project_with_midi_preview_and_table_and_instrument_contexts(
     snapshot: &hex_project::Project,
     media: &dyn crate::compile::MediaLookup<Audio>,
-    sine_table: Option<Arc<hex_devices::SineTable>>,
+    sine_table: Option<crate::SharedSineTable>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<
@@ -238,7 +238,7 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_contexts(
 fn compile_with_midi_preview<'a>(
     snapshot: &'a hex_project::Project,
     resolver: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
-    sine_table: Option<Arc<hex_devices::SineTable>>,
+    sine_table: Option<crate::SharedSineTable>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<
@@ -281,7 +281,7 @@ fn compile_project<'a>(
     snapshot: &'a hex_project::Project,
     resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     previews: Option<&mut Vec<crate::MidiClipPreview>>,
-    _prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
+    _prepared_sine_table: Option<crate::SharedSineTable>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<
@@ -310,7 +310,7 @@ fn compile_project_inner<'a>(
     snapshot: &'a hex_project::Project,
     mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
-    _prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
+    _prepared_sine_table: Option<crate::SharedSineTable>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<

@@ -20,7 +20,7 @@ fn revision(project: &Project) -> Arc<PreparedRevision> {
         PreparedRevision::prepare(
             project,
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -35,7 +35,7 @@ fn next_revision(
         PreparedRevision::prepare_tuning_from(
             project,
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             old_project,
             old,
         )
@@ -192,7 +192,7 @@ fn ordinary_project_edits_and_fresh_opens_cannot_inherit_tuning_family() {
         PreparedRevision::prepare_tuning_from(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             &p0,
             &r0
         )

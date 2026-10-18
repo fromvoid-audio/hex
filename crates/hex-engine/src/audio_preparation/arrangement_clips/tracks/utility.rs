@@ -336,7 +336,7 @@ mod tests {
         let reference = crate::PreparedRevision::prepare(
             &project,
             &media,
-            std::sync::Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap();

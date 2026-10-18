@@ -263,18 +263,22 @@ impl SessionAssembly {
         if self.inventory.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
+        use crate::session_shared_preparation::InventorySineView;
         let (sine, contexts) = if let Some(i) = self.inventory.as_ref().or(external) {
-            if self.sine.is_some() || self.contexts.is_some() {
+            if self.sine.is_some() || self.contexts.is_some() || self.sine_declaration.is_some() {
                 return Err(AudioStorageError::SourceMismatch);
             }
-            (Some(&i.sine_table), Some(&i.shared_contexts))
+            (
+                Some(InventorySineView::Installed(&i.sine_table)),
+                Some(&i.shared_contexts),
+            )
         } else {
-            (self.sine.as_ref(), self.contexts.as_ref())
-        };
-        let sine = match (sine, self.sine_declaration.as_ref()) {
-            (Some(a), Some(d)) => Some((a, d)),
-            (None, None) => None,
-            _ => return Err(AudioStorageError::SourceMismatch),
+            let sine = match (self.sine.as_ref(), self.sine_declaration.as_ref()) {
+                (Some(owner), Some(receipt)) => Some(InventorySineView::Native(owner, receipt)),
+                (None, None) => None,
+                _ => return Err(AudioStorageError::SourceMismatch),
+            };
+            (sine, self.contexts.as_ref())
         };
         Ok(crate::session_shared_preparation::InventorySharedView { sine, contexts })
     }
@@ -594,11 +598,18 @@ impl SessionAssembly {
             return Err(AudioStorageError::UnknownStorage);
         }
         // No allocation/fallible helper after taking the first final owner.
-        if let (Some(timing), Some(sine_table), Some(shared_contexts), Some(meter_map)) = (
+        if let (
+            Some(timing),
+            Some(sine_table),
+            Some(shared_contexts),
+            Some(meter_map),
+            Some(sine_receipt),
+        ) = (
             self.timing.take(),
             self.sine.take(),
             self.contexts.take(),
             self.meter.take(),
+            self.sine_declaration.take(),
         ) {
             self.inventory = Some(PreparedSessionInventory {
                 meter_map,
@@ -608,7 +619,10 @@ impl SessionAssembly {
                 periodic_tempo: tempo.periodic,
                 periodic_tempo_error: tempo.periodic_error,
                 source_admission_max_micro_bpm: tempo.source_admission_max_micro_bpm,
-                sine_table,
+                sine_table: crate::SharedSineTable::from_native_paired_on_control(
+                    sine_table,
+                    sine_receipt,
+                ),
                 scenes: mem::take(&mut self.scenes),
                 cells: mem::take(&mut self.cells),
                 scene_cell_indices: mem::take(&mut self.indices),
@@ -763,9 +777,11 @@ impl SessionAssembly {
             return None;
         }
         let inventory = self.inventory.as_ref().or(external)?;
-        self.sine_declaration
-            .as_ref()?
-            .parts(&inventory.sine_table)?;
+        inventory
+            .sine_table
+            .metadata_on_control()
+            .paired_owner_on_control()
+            .parts()?;
         Some(SessionInventoryMetadata { inventory })
     }
 }

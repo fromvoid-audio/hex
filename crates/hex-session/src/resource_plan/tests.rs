@@ -75,6 +75,54 @@ fn fixture() -> Option<(Session, Vec<AssetId>)> {
 }
 
 #[test]
+fn cached_sine_actual_session_prepared_reuse_and_export_fields_share_one_body() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported cached sine owner; no positive alias proof");
+        return;
+    }
+    eprintln!("SUPPORTED actual Session cached/prepared/control-export sine fields");
+    let session = Session::new(48_000, 8, 1024).unwrap();
+    let prepared = session.compile_prepared_revision(None).unwrap();
+    let reused = session.compile_prepared_revision(Some(&prepared)).unwrap();
+    let exported = session.sine_table();
+    assert!(exported.shares_owner_with(prepared.session().sine_table()));
+    assert!(exported.shares_owner_with(reused.session().sine_table()));
+    let collect = |budget| -> Result<_, AudioStorageError> {
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(budget)?;
+        session.visit_cached_sine_storage_on_control(&mut ledger)?;
+        let one = ledger.summary()?;
+        assert!(
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .is_err()
+        );
+        prepared
+            .session()
+            .sine_table()
+            .visit_storage_on_control(&mut ledger)?;
+        reused
+            .session()
+            .sine_table()
+            .visit_storage_on_control(&mut ledger)?;
+        exported.visit_storage_on_control(&mut ledger)?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        let joined = ledger.summary()?;
+        assert_eq!(joined.data_bytes, one.data_bytes);
+        assert_eq!(joined.data_allocations, 1);
+        session.visit_cached_sine_storage_on_control(&mut ledger)?;
+        assert_eq!(ledger.summary()?, joined);
+        Ok(joined)
+    };
+    let summary = collect(ledger_limits()).unwrap();
+    let mut exact = ledger_limits();
+    exact.max_retained_bytes = summary.retained_bytes;
+    exact.max_construction_peak_bytes = summary.construction_peak_bytes;
+    assert_eq!(collect(exact).unwrap(), summary);
+    exact.max_retained_bytes -= 1;
+    assert!(collect(exact).is_err());
+}
+
+#[test]
 fn actual_worker_history_media_and_exported_aliases_join_one_scoped_ledger() {
     if !hex_engine::audio_storage_constructor_layout_supported()
         || !hex_engine::canonical_native_state_storage_layout_supported()

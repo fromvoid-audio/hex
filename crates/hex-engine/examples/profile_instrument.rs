@@ -314,7 +314,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             PreparedRevision::prepare(
                 &editable,
                 &BTreeMap::new(),
-                Arc::new(hex_devices::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .map(Arc::new)

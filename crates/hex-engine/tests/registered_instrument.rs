@@ -1,4 +1,3 @@
-use hex_devices::SineTable;
 use hex_engine::{PreparedSessionInventory, Renderer, compile};
 use hex_lattice::{
     NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument,
@@ -9,7 +8,7 @@ use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterValue,
 };
 use hex_project::{BeatTime, Command, Created, Editor, Project};
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 struct ConstantDefinition {
     id: DeviceTypeId,
@@ -259,7 +258,7 @@ fn two_registered_analytic_definitions_prepare_arrangement_and_session_notes() {
     let inventory = PreparedSessionInventory::prepare_with_media_and_instrument_registry(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &registry,
     )
@@ -307,7 +306,7 @@ fn two_registered_analytic_definitions_prepare_arrangement_and_session_notes() {
     let changed_type = PreparedSessionInventory::prepare_with_media_and_instrument_registry(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         Some(&inventory),
         &registry,
     )
@@ -352,7 +351,7 @@ fn two_registered_analytic_definitions_prepare_arrangement_and_session_notes() {
     let bypassed = PreparedSessionInventory::prepare_with_media_and_instrument_registry(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         Some(&changed_type),
         &registry,
     )

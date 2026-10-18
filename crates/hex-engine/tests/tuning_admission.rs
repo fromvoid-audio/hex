@@ -1,6 +1,6 @@
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use hex_tuning::{Audition, ProjectTuning};
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 #[test]
 fn neutral_enabled_tuning_admits_and_unsupported_pitch_refuses_transactionally() {
@@ -77,7 +77,7 @@ fn neutral_enabled_tuning_admits_and_unsupported_pitch_refuses_transactionally()
     assert!(
         hex_engine::PreparedSessionInventory::prepare(
             &invalid,
-            Arc::new(hex_devices::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None
         )
         .is_err()

@@ -428,10 +428,9 @@ fn actual_session_routed_and_cached_prepared_fields_are_all_required_then_retire
             source: Some(track),
         },
     );
-    let table = Arc::new(crate::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let media = std::collections::BTreeMap::new();
-    let first =
-        crate::PreparedRevision::prepare(&project, &media, Arc::clone(&table), None).unwrap();
+    let first = crate::PreparedRevision::prepare(&project, &media, table.clone(), None).unwrap();
     let second =
         crate::PreparedRevision::prepare(&project, &media, table, Some(first.session())).unwrap();
     let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
@@ -483,7 +482,7 @@ fn actual_mutable_arrangement_descriptor_requires_its_source_alias_and_retains_i
     let revision = crate::PreparedRevision::prepare(
         &project,
         &std::collections::BTreeMap::new(),
-        Arc::new(crate::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
     )
     .unwrap();

@@ -2,7 +2,7 @@
 #![cfg(feature = "allocation-probe")]
 use hex_audio::prepared;
 use hex_engine::{
-    LaunchQuantization, PlaybackCommand, PreparedRevision, SessionPlaybackCommand, SineTable,
+    LaunchQuantization, PlaybackCommand, PreparedRevision, SessionPlaybackCommand,
     playback::Playback,
 };
 use hex_project::{BeatTime, Command, Created, Editor, Project};
@@ -77,10 +77,9 @@ fn source_only_midi_fanout_launch_release_relaunch_and_handoff_have_no_callback_
             velocity: 100,
         })
         .unwrap();
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let revision = Arc::new(
-        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
-            .unwrap(),
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), table.clone(), None).unwrap(),
     );
     let (mut control, mut callback) = prepared::channel(48000).unwrap();
     control

@@ -18,6 +18,7 @@ impl SessionAssembly {
             || self.timing.is_some()
             || self.meter.is_some()
             || self.sine.is_some()
+            || self.sine_declaration.is_some()
             || self.contexts.is_some()
             || self.unused_midi.capacity() != 0
             || self.unused_mutable.capacity() != 0
@@ -61,7 +62,9 @@ impl SessionAssembly {
             self.unused_mutable = mutable_instruments;
             self.timing = Some(timing);
             self.meter = Some(meter_map);
+            let (sine_table, declaration) = sine_table.into_native_paired_on_control();
             self.sine = Some(sine_table);
+            self.sine_declaration = Some(declaration);
             self.contexts = Some(shared_contexts);
             self.scenes = scenes;
             self.cells = cells;

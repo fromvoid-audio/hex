@@ -75,7 +75,7 @@ fn prepare_audio(project: &Project) -> Arc<PreparedRevision> {
         PreparedRevision::prepare(
             project,
             &audio_media(project, &audio, &audio),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -94,7 +94,7 @@ fn metered_analytic_capture_applies_track_gain_once_and_preserves_main_pcm() {
     snapshot.tracks[0].balance = 0.4;
     snapshot.master_gain = 0.5;
     let project = Project::from_snapshot(snapshot).unwrap();
-    let prepared = revision(&project, Arc::new(hex_devices::SineTable::new()));
+    let prepared = revision(&project, crate::SharedSineTable::new_on_control());
     let mut reference = linear(Arc::clone(&prepared));
     let mut metered = linear(prepared);
     metered.set_device_metering(true);
@@ -426,7 +426,7 @@ fn late_chunk_refusal_invalidates_capture_and_retry_preserves_clock_and_history(
 #[test]
 fn interactive_capture_rechecks_arrangement_cut_after_launch_and_revision_loop_change() {
     let original = project(0.5, 0, 8 << 32);
-    let prepared = revision(&original, Arc::new(hex_devices::SineTable::new()));
+    let prepared = revision(&original, crate::SharedSineTable::new_on_control());
     let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     runtime.apply(SessionPlaybackCommand::Play).unwrap();
     let id = OutputCaptureId::Track(runtime.routes[0].id);
@@ -478,7 +478,7 @@ fn interactive_capture_rechecks_arrangement_cut_after_launch_and_revision_loop_c
     changed.loop_region = Some(LoopRegion::new(0, 1024, true).unwrap());
     let prepared_loop = revision(
         &Project::from_snapshot(changed).unwrap(),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
     );
     let mut looped = SessionPlayback::new(prepared_loop).unwrap();
     assert_eq!(
@@ -556,7 +556,7 @@ fn analytic_hybrid_metered_capture_is_partition_independent() {
             PreparedRevision::prepare_with_instrument_registry(
                 &project,
                 &media,
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
                 &registry,
             )
@@ -669,7 +669,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
             PreparedRevision::prepare_with_instrument_registry(
                 &routed,
                 &media,
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
                 &registry,
             )
@@ -742,7 +742,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             PreparedRevision::prepare_with_instrument_registry(
                 &project,
                 &media,
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
                 &registry,
             )
@@ -783,7 +783,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             PreparedRevision::prepare_with_instrument_registry(
                 &retarget_project,
                 &media,
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 Some(revision.session()),
                 &registry,
             )
@@ -823,7 +823,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             PreparedRevision::prepare_with_instrument_registry(
                 &removed,
                 &media,
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
                 &registry,
             )
@@ -1012,7 +1012,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
         PreparedRevision::prepare_with_registries(
             &project,
             &audio_media(&project, &samples, &samples),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &registry,
             &instruments,

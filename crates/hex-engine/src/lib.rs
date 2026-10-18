@@ -1,6 +1,7 @@
 //! Deterministic, sample-rate-locked stereo arrangement rendering.
 //! This is an original prototype, not a verified Live-compatible engine.
 pub use hex_devices::SineTable;
+mod shared_sine;
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
@@ -14,6 +15,7 @@ pub use hex_devices::saturator::{
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
+pub use shared_sine::SharedSineTable;
 pub mod compensation;
 mod effect_resources;
 pub(crate) use effect_resources::EffectRuntimeChain;

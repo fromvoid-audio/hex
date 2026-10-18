@@ -141,6 +141,15 @@ fn check(cancel: &AtomicBool) -> Result<(), ResourcePreparationError> {
     }
 }
 impl Session {
+    /// Actual cached DSP table field only; all external prepared/control aliases
+    /// must join too. This neither observes the rest of Session nor grants native
+    /// admission. Cloning a synthetic table cannot substitute for this field.
+    pub fn visit_cached_sine_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        self.sine_table.visit_storage_on_control(ledger)
+    }
     /// The scoped inventory/ledger cannot escape transaction preparation or
     /// retain a borrow across cache commit, eviction or canonical mutation.
     pub fn with_resident_pcm_inventory_on_control<T>(

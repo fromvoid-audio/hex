@@ -8,7 +8,7 @@ use hex_audio::prepared::{
     self, FreshRuntimeCancellationResult, PublicationPolicy, SessionPendingRoute,
     SessionRouteEntry, SessionRouteOwner, SessionRouteTarget,
 };
-use hex_engine::{NativeDeviceClass, PreparedRevision, SineTable, playback::Playback};
+use hex_engine::{NativeDeviceClass, PreparedRevision, playback::Playback};
 use hex_lattice_contract::ParameterValue;
 use hex_project::{Command, Editor, Project};
 use hex_session::{
@@ -73,8 +73,13 @@ fn stateful_project() -> Project {
 fn active_arrangement_control() -> (prepared::Control, prepared::Callback, Project, u64) {
     let project = one_track_project();
     let prepared = Arc::new(
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
-            .expect("prepared revision"),
+        PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("prepared revision"),
     );
     let playback =
         Playback::try_from_prepared_with_session(Arc::clone(&prepared)).expect("session playback");
@@ -158,8 +163,13 @@ fn faulted_or_shutdown_audio_cannot_admit_a_prepared_seek() {
 fn prepared_revision_selects_analytic_or_preroll_route() {
     let project = one_track_project();
     let prepared = Arc::new(
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
-            .expect("prepared revision"),
+        PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("prepared revision"),
     );
     assert_eq!(requires_preroll(Some(&prepared)), Some(false));
     assert_eq!(requires_preroll(None), None);
@@ -286,8 +296,13 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     snapshot.loop_region = Some(hex_project::LoopRegion::new(128, 512, true).expect("loop"));
     let project = Project::from_snapshot(snapshot).expect("stateful looping project");
     let prepared = Arc::new(
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
-            .expect("stateful prepared revision"),
+        PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("stateful prepared revision"),
     );
     assert!(prepared.arrangement_seek_requires_preroll());
     let (mut control, mut callback) = prepared::channel(48_000).expect("audio channel");
@@ -409,8 +424,13 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
 fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal() {
     let (mut control, mut callback, project, active_revision) = active_arrangement_control();
     let prepared = Arc::new(
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
-            .expect("prepared revision"),
+        PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("prepared revision"),
     );
     let fence = capture_arrangement_fence(&control, &project, active_revision)
         .expect("current Arrangement graph is seekable");

@@ -4,7 +4,7 @@
 //! deadline test. Run with:
 //! `cargo run --release -p hex-engine --features instrument-test-support --example profile_shared_context`
 use hex_engine::{
-    PreparedRevision, SineTable,
+    PreparedRevision,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice::{
@@ -328,7 +328,7 @@ fn prepare(
     let revision = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         project,
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &registry,
     )?);

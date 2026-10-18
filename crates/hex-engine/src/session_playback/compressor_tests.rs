@@ -55,7 +55,7 @@ fn render_project(project: &Project) -> Vec<[f32; 2]> {
 
 fn render_project_frames(project: &Project, frame_count: usize) -> Vec<[f32; 2]> {
     let mut playback =
-        SessionPlayback::new(revision(project, Arc::new(hex_devices::SineTable::new())))
+        SessionPlayback::new(revision(project, crate::SharedSineTable::new_on_control()))
             .expect("prepared playback");
     playback
         .apply(SessionPlaybackCommand::Play)
@@ -143,8 +143,8 @@ fn compressor_renders_on_track_and_return_in_send_order_and_bypass_is_transparen
 #[test]
 fn compressor_parameter_revisions_keep_detector_and_gain_history_live() {
     let original = project_with_compressors(-18.0, -18.0, false, false);
-    let table = Arc::new(hex_devices::SineTable::new());
-    let original_revision = revision(&original, Arc::clone(&table));
+    let table = crate::SharedSineTable::new_on_control();
+    let original_revision = revision(&original, table.clone());
     let mut previous = SessionPlayback::new(Arc::clone(&original_revision)).expect("previous");
     let mut reference = SessionPlayback::new(Arc::clone(&original_revision)).expect("reference");
     previous
@@ -218,7 +218,7 @@ fn compressor_parameter_revisions_keep_detector_and_gain_history_live() {
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(original_revision.session()),
         )
         .expect("prepare changed revision"),

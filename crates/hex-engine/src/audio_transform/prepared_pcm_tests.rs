@@ -198,7 +198,7 @@ fn actual_pending_and_committed_cache_fields_are_required_and_refused_transactio
         crate::PreparedRevision::prepare_with_audio_transforms(
             editor.project(),
             &media,
-            Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &context,
         )

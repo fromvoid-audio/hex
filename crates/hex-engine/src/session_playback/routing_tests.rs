@@ -143,7 +143,7 @@ fn prepare(f: &Fixture, previous: Option<&PreparedSessionInventory>) -> Arc<Prep
         PreparedRevision::prepare(
             f.editor.project(),
             &f.media,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             previous,
         )
         .unwrap(),
@@ -585,7 +585,7 @@ fn prepare_with_delay(f: &Fixture) -> Arc<PreparedRevision> {
         PreparedRevision::prepare_with_registries(
             f.editor.project(),
             &f.media,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &effects,
             &instruments,

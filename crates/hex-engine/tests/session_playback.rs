@@ -3,7 +3,7 @@ use hex_engine::playback::{Playback, PlaybackHandoffError};
 use hex_engine::{
     Audio, LaunchQuantization, MidiInstrumentRenderContext, MidiSpanBuffer, PlaybackAction,
     PlaybackActionError, PlaybackCommand, PreparedRevision, SessionCapability, SessionPlayback,
-    SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner, SineTable,
+    SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner,
 };
 use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{AssetId, BeatTime, Command, Created, Editor, Project, Tempo};
@@ -139,7 +139,7 @@ fn fixture_with_session_note_duration(
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("prepared revision"),
@@ -258,8 +258,13 @@ fn session_audio_and_midi_routes_use_the_prepared_track_device_matrix() {
         Audio::new(48_000, vec![[0.25, 0.25]; 256]).expect("audio source"),
     )]);
     let revision = Arc::new(
-        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
-            .expect("prepared revision"),
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("prepared revision"),
     );
     let mut playback = SessionPlayback::new(revision).expect("session playback");
     playback
@@ -371,8 +376,13 @@ fn one_hybrid_track_switches_audio_midi_audio_and_releases_the_midi_tail() {
         Audio::new(48_000, vec![[0.25, 0.25]; 4_096]).expect("resident source"),
     )]);
     let revision = Arc::new(
-        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
-            .expect("prepared hybrid revision"),
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("prepared hybrid revision"),
     );
 
     let mut playback = SessionPlayback::new(Arc::clone(&revision)).expect("playback");
@@ -784,7 +794,7 @@ fn inherited_tail_occupancy_does_not_block_another_tracks_pending_transition() {
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("two-track revision"),
@@ -895,7 +905,7 @@ fn outgoing_voice_order_remains_partition_exact_after_repeated_same_track_cuts()
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("two-voice revision"),
@@ -1134,7 +1144,7 @@ fn a_late_chunk_failure_rolls_back_a_due_pending_route_and_zeros_earlier_audio()
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("two-source revision"),
@@ -1354,7 +1364,7 @@ fn mixed_audio_session_midi_and_explicit_silence_match_independent_source_compos
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::from([(asset, audio)]),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("prepared revision"),
@@ -1511,7 +1521,7 @@ fn legacy_promotion_does_not_fence_an_already_disabled_instrument() {
         PreparedRevision::prepare(
             &muted_project,
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("disabled Arrangement revision"),
@@ -1791,7 +1801,7 @@ fn unrepresentable_session_loop_does_not_reject_arrangement_revision() {
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("Arrangement-only revision remains preparable"),

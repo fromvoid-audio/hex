@@ -137,7 +137,7 @@ fn prepare_session(project: &CanonicalProject) -> Arc<hex_engine::PreparedRevisi
         hex_engine::PreparedRevision::prepare(
             project,
             &BTreeMap::new(),
-            Arc::new(hex_engine::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

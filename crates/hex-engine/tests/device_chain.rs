@@ -574,7 +574,7 @@ fn utility_stateful_arrangement_renderer_and_session_playback_match() {
         PreparedRevision::prepare(
             editor.project(),
             &media,
-            Arc::new(hex_devices::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -773,7 +773,7 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
         PreparedRevision::prepare(
             editor.project(),
             &media,
-            Arc::new(hex_devices::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

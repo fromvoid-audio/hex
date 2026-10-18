@@ -1,7 +1,7 @@
 //! GPUI production-event regressions for project replacement and publication policy.
 use super::*;
 use gpui::TestAppContext;
-use hex_engine::{PreparedRevision, SineTable};
+use hex_engine::PreparedRevision;
 use hex_project::{Command, Editor, Project};
 use hex_session::service::{Request, Service, ViewState};
 use std::collections::BTreeMap;
@@ -9,8 +9,13 @@ use std::time::{Duration, Instant};
 
 fn event(project: hex_session::SharedProject, revision: u64, replaced: bool) -> Event {
     let prepared = Arc::new(
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
-            .expect("test revision"),
+        PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("test revision"),
     );
     Event {
         snapshot_reads: Default::default(),

@@ -51,6 +51,9 @@ pub struct SharedMetadata<T> {
     cache_identity: Option<SharedMetadataCacheIdentity>,
 }
 impl<T> SharedMetadata<T> {
+    pub(crate) fn paired_owner_on_control(&self) -> &OwnedShared<T> {
+        &self.owner
+    }
     /// Consume the fresh owned value once through the existing sized shared
     /// constructor. Unsupported layout remains Unknown when inventoried.
     /// Quote old/new/value-temporary overlap before constructing this owner.
@@ -69,6 +72,25 @@ impl<T> SharedMetadata<T> {
     /// Allocation equality for cache reuse only; never source provenance.
     pub fn shares_owner_with(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(self.owner.arc(), other.owner.arc())
+    }
+}
+impl SharedMetadata<crate::SineTable> {
+    pub(crate) fn into_native_sine_pair_on_control(
+        self,
+    ) -> (
+        std::sync::Arc<crate::SineTable>,
+        crate::owned_shared::SharedDeclaration,
+    ) {
+        self.owner.into_paired_parts_on_control()
+    }
+    pub(crate) fn from_native_sine_pair_on_control(
+        owner: std::sync::Arc<crate::SineTable>,
+        receipt: crate::owned_shared::SharedDeclaration,
+    ) -> Self {
+        Self {
+            owner: OwnedShared::from_native_sine_pair_on_control(owner, receipt),
+            cache_identity: None,
+        }
     }
 }
 // Preserve value equality semantics of the previous Arc<T> consumers.

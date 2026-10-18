@@ -55,7 +55,7 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
     let prepared = PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(hex_devices::SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )
     .unwrap();
@@ -179,7 +179,7 @@ fn activity_prepare(editor: &Editor) -> Arc<PreparedRevision> {
     PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(hex_devices::SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )
     .unwrap()

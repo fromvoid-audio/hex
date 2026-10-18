@@ -192,7 +192,7 @@ impl MediaBank {
     pub(crate) fn prepare(
         &self,
         project: &Project,
-        table: Arc<hex_engine::SineTable>,
+        table: hex_engine::SharedSineTable,
         previous: Option<&PreparedSessionInventory>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
         if self.verified.is_empty() {

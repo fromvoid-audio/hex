@@ -99,7 +99,8 @@ fn chain(entries: usize, bounds: &[u64]) -> crate::EffectRuntimeChain {
 }
 fn playback() -> SessionPlayback {
     let project = super::super::tests::project(0.5, 0, 8 << 32);
-    let revision = super::super::tests::revision(&project, Arc::new(hex_devices::SineTable::new()));
+    let revision =
+        super::super::tests::revision(&project, crate::SharedSineTable::new_on_control());
     let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     playback

@@ -4,7 +4,7 @@
 use allocation_counter::{AllocationInfo, measure};
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
-    PreparedRevision, SineTable,
+    PreparedRevision,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -30,7 +30,7 @@ fn prepare(editor: &Editor) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
     Ok(Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?))
 }

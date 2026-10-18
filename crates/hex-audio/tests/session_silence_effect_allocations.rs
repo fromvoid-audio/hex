@@ -4,7 +4,6 @@ use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{
     Audio, LaunchQuantization, PreparedRevision, SessionPlayback, SessionPlaybackCommand,
-    SineTable,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -73,8 +72,13 @@ fn stopped_session_audio_drains_live_filter_without_callback_allocation_or_drop(
         .unwrap();
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.3, -0.1]; 32]).unwrap())]);
     let revision = Arc::new(
-        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
-            .unwrap(),
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .unwrap(),
     );
     let mut oracle = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     let launch = SessionPlaybackCommand::LaunchClip {

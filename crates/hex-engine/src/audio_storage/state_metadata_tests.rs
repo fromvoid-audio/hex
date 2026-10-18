@@ -117,7 +117,7 @@ fn public_empty_session_inventory_does_not_nest_invalid_mutation_or_claim_retire
         crate::PreparedRevision::prepare(
             &project,
             &std::collections::BTreeMap::new(),
-            std::sync::Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

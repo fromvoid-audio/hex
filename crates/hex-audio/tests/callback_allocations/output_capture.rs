@@ -101,7 +101,7 @@ fn prepare(project: &Project) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
         PreparedRevision::prepare_with_test_instrument_registry(
             project,
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
             &registry,
         )?,

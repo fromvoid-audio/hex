@@ -201,7 +201,7 @@ pub struct Session {
     audio_clip_waveforms:
         std::cell::RefCell<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
-    sine_table: Arc<hex_engine::SineTable>,
+    sine_table: hex_engine::SharedSineTable,
     media: SortedEntries<AssetId, ResidentAsset>,
     verified_sources: SortedEntries<AssetId, VerifiedAudioFile>,
     semantic_source_epoch: u64,
@@ -227,7 +227,7 @@ impl Session {
             audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor: Editor::new(Project::new(sample_rate)?, history_capacity)?,
-            sine_table: Arc::new(hex_engine::SineTable::new()),
+            sine_table: hex_engine::SharedSineTable::new_on_control(),
             media: SortedEntries::new(),
             verified_sources: SortedEntries::new(),
             semantic_source_epoch: 0,
@@ -318,7 +318,7 @@ impl Session {
             history_capacity,
             max_resident_frames,
             prepared_assets,
-            Arc::new(hex_engine::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
         )
     }
 
@@ -329,7 +329,7 @@ impl Session {
         history_capacity: usize,
         max_resident_frames: u64,
         prepared_assets: Vec<(AssetId, PreparedImport)>,
-        sine_table: Arc<hex_engine::SineTable>,
+        sine_table: hex_engine::SharedSineTable,
     ) -> Result<Self, SessionError> {
         let asset_count = project.assets().count();
         let editor = Editor::new(project, history_capacity)?;
@@ -468,8 +468,8 @@ impl Session {
         Err(SessionError::Invalid("device no longer exists"))
     }
 
-    pub fn sine_table(&self) -> Arc<hex_engine::SineTable> {
-        Arc::clone(&self.sine_table)
+    pub fn sine_table(&self) -> hex_engine::SharedSineTable {
+        self.sine_table.clone()
     }
 
     /// Unique retained PCM buffer capacity, including original-rate sources.
@@ -644,7 +644,7 @@ impl Session {
                 let prepared = prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -675,7 +675,7 @@ impl Session {
                 prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&table),
+                    table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -722,7 +722,7 @@ impl Session {
                 prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&table),
+                    table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -780,7 +780,7 @@ impl Session {
                 prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&table),
+                    table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -882,7 +882,7 @@ impl Session {
                 prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -1029,7 +1029,7 @@ impl Session {
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -1155,7 +1155,7 @@ impl Session {
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -1251,7 +1251,7 @@ impl Session {
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -1320,7 +1320,7 @@ impl Session {
             let prepared = prepare_with_waveforms(
                 candidate,
                 &media,
-                Arc::clone(&sine_table),
+                sine_table.clone(),
                 previous.map(|artifact| artifact.session().as_ref()),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
@@ -1376,7 +1376,7 @@ impl Session {
             let prepared = prepare_with_waveforms(
                 candidate,
                 &media,
-                Arc::clone(&sine_table),
+                sine_table.clone(),
                 previous.map(|artifact| artifact.session().as_ref()),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
@@ -1518,7 +1518,7 @@ impl Session {
 fn prepare_with_waveforms(
     project: &Project,
     media: &MediaBank,
-    table: Arc<hex_engine::SineTable>,
+    table: hex_engine::SharedSineTable,
     previous: Option<&hex_engine::PreparedSessionInventory>,
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
     retained: &std::cell::RefCell<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>>,

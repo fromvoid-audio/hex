@@ -1,6 +1,6 @@
 //! Original prepared Operator hot-path measurement; no native deadline claim.
 use hex_engine::{
-    PreparedRevision, SineTable,
+    PreparedRevision,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -71,7 +71,7 @@ fn prepare(active: bool, sync: bool, feedback: bool) -> Result<Playback, Box<dyn
     let revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let mut playback = Playback::try_from_prepared_with_session(revision)?;

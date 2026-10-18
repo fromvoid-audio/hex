@@ -748,7 +748,7 @@ fn actual_prepared_revision_preserves_context_table_receipts_and_both_physical_h
     let revision = crate::PreparedRevision::prepare(
         editor.project(),
         &std::collections::BTreeMap::new(),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
     )
     .unwrap();
@@ -926,11 +926,10 @@ fn actual_cached_midi_template_keeps_its_original_table_receipt_across_revision_
             })
             .unwrap();
     }
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let media = std::collections::BTreeMap::new();
     let first =
-        crate::PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
-            .unwrap();
+        crate::PreparedRevision::prepare(editor.project(), &media, table.clone(), None).unwrap();
     let second =
         crate::PreparedRevision::prepare(editor.project(), &media, table, Some(first.session()))
             .unwrap();

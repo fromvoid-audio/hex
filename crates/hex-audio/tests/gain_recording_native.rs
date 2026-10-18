@@ -3,7 +3,7 @@ use hex_audio::{
     gain_recording::{AbortReason, Receipt, Target},
     prepared,
 };
-use hex_engine::{Audio, PlaybackCommand, PreparedRevision, SineTable, playback::Playback};
+use hex_engine::{Audio, PlaybackCommand, PreparedRevision, playback::Playback};
 use hex_project::{Command, Created, Editor, Project};
 use std::{
     collections::BTreeMap,
@@ -30,7 +30,7 @@ fn fixture() -> (prepared::Control, prepared::Callback, Target) {
         PreparedRevision::prepare_for_gain_recording(
             editor.project(),
             &BTreeMap::from([(asset, Audio::new(48000, vec![[0.25, -0.5]; 4096]).unwrap())]),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
             track,
         )
@@ -217,7 +217,7 @@ fn compensated_touch_waits_for_the_main_sample_and_preserves_release_to_read() {
     let revision = PreparedRevision::prepare_with_test_registries(
         editor.project(),
         &media,
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &effects,
         &instruments,

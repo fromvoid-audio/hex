@@ -3,7 +3,6 @@ use crate::{
     Invalid, MidiArrangementPreview, PreparedSessionInventory, Project as PlaybackProject,
     compile::PreparedAudioSource,
 };
-use hex_devices::SineTable;
 pub(crate) mod assembly;
 use hex_project::{
     Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity, Project,
@@ -120,7 +119,7 @@ impl PreparedRevision {
     pub fn prepare(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
         let instruments = hex_devices::native_instrument_registry()
@@ -145,7 +144,7 @@ impl PreparedRevision {
     pub fn prepare_tuning_from(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_project: &Project,
         previous_revision: &Self,
     ) -> Result<Self, Invalid> {
@@ -220,7 +219,7 @@ impl PreparedRevision {
     pub fn prepare_for_gain_recording(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
         track: TrackId,
     ) -> Result<Self, Invalid> {
@@ -231,7 +230,7 @@ impl PreparedRevision {
     pub fn prepare_for_gain_recording_with_audio_transforms(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
         track: TrackId,
         transforms: &crate::audio_transform::AudioTransformPreparation,
@@ -279,7 +278,7 @@ impl PreparedRevision {
     pub(crate) fn prepare_with_instrument_registry(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     ) -> Result<Self, Invalid> {
@@ -298,7 +297,7 @@ impl PreparedRevision {
     pub(crate) fn prepare_with_registries(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -318,7 +317,7 @@ impl PreparedRevision {
     pub fn prepare_with_audio_transforms(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
         transforms: &crate::audio_transform::AudioTransformPreparation,
     ) -> Result<Self, Invalid> {
@@ -340,7 +339,7 @@ impl PreparedRevision {
     fn prepare_with_registries_and_transforms(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -366,7 +365,7 @@ impl PreparedRevision {
                 crate::compile::project_with_midi_preview_and_table_and_instrument_contexts(
                     project,
                     media,
-                    Some(Arc::clone(&sine_table)),
+                    Some(sine_table.clone()),
                     effects,
                     instruments,
                     Some(shared_contexts.clone_on_control()),
@@ -418,7 +417,7 @@ impl PreparedRevision {
     pub fn prepare_with_test_instrument_registry(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     ) -> Result<Self, Invalid> {
@@ -437,7 +436,7 @@ impl PreparedRevision {
     pub fn prepare_with_test_registries(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<crate::Audio>,
-        table: Arc<SineTable>,
+        table: crate::SharedSineTable,
         previous: Option<&PreparedSessionInventory>,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -452,7 +451,7 @@ impl PreparedRevision {
         project: &Project,
         sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
         expected_generation: u64,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
         crate::gain_envelope::validate_project(project)?;
@@ -477,7 +476,7 @@ impl PreparedRevision {
                 project,
                 sources,
                 expected_generation,
-                Some(Arc::clone(&sine_table)),
+                Some(sine_table.clone()),
                 Some(shared_contexts.clone_on_control()),
                 None,
             )?;

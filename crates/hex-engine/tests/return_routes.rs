@@ -1,7 +1,4 @@
-use hex_devices::{
-    SineTable,
-    utility::{UTILITY_DEFINITION, parameter},
-};
+use hex_devices::utility::{UTILITY_DEFINITION, parameter};
 use hex_engine::{
     Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, compile,
 };
@@ -221,7 +218,7 @@ fn session_playback_routes_arrangement_audio_through_return_and_resets_on_seek_a
         PreparedRevision::prepare(
             fixture.editor.project(),
             &media(&fixture, &source),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -266,7 +263,7 @@ fn session_return_filter_history_continues_across_arrangement_loop_wrap() {
         PreparedRevision::prepare(
             fixture.editor.project(),
             &media(&fixture, &source),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -293,12 +290,12 @@ fn compatible_return_filter_history_survives_prepared_revision_handoff() {
         )
         .unwrap();
     add_return_device(&mut fixture, filter);
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let first_revision = Arc::new(
         PreparedRevision::prepare(
             fixture.editor.project(),
             &media(&fixture, &source),
-            Arc::clone(&table),
+            table.clone(),
             None,
         )
         .unwrap(),
@@ -344,11 +341,10 @@ fn removed_return_keeps_zero_fed_filter_residual_at_revision_boundary() {
         )
         .unwrap();
     add_return_device(&mut fixture, filter);
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let decoded = media(&fixture, &source);
     let mut previous = SessionPlayback::new(Arc::new(
-        PreparedRevision::prepare(fixture.editor.project(), &decoded, Arc::clone(&table), None)
-            .unwrap(),
+        PreparedRevision::prepare(fixture.editor.project(), &decoded, table.clone(), None).unwrap(),
     ))
     .unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
@@ -362,7 +358,7 @@ fn removed_return_keeps_zero_fed_filter_residual_at_revision_boundary() {
         PreparedRevision::prepare(
             fixture.editor.project(),
             &media(&fixture, &reference_source),
-            Arc::clone(&table),
+            table.clone(),
             None,
         )
         .unwrap(),
@@ -449,7 +445,7 @@ fn session_audio_clip_uses_the_same_post_fader_return_path() {
         PreparedRevision::prepare(
             fixture.editor.project(),
             &media(&fixture, &source),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -524,7 +520,7 @@ fn session(fixture: &Fixture, samples: &[[f32; 2]]) -> SessionPlayback {
         PreparedRevision::prepare(
             fixture.editor.project(),
             &media(fixture, samples),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -709,7 +705,7 @@ fn feed_gain_edit_retains_return_history_and_zero_removal_restores_legacy_pcm() 
         PreparedRevision::prepare(
             f.editor.project(),
             &media(&f, &source),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -778,7 +774,7 @@ fn removed_source_tail_is_main_only_and_never_replays_its_old_feed() {
         PreparedRevision::prepare(
             f.editor.project(),
             &media(&f, &source),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -826,7 +822,7 @@ fn return_feed_transport_wrap_keeps_history_and_linear_export_ignores_transport_
         PreparedRevision::prepare(
             f.editor.project(),
             &media(&f, &source),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -898,7 +894,7 @@ fn feed_removal_keeps_destination_history_and_changed_source_tail_cannot_feed_de
             PreparedRevision::prepare(
                 f.editor.project(),
                 &media(&f, &source),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -949,8 +945,13 @@ fn main_observation_is_post_master_asymmetric_and_pcm_identical() {
         }
     }
     let prepared = Arc::new(
-        PreparedRevision::prepare(f.editor.project(), &bank, Arc::new(SineTable::new()), None)
-            .unwrap(),
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &bank,
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .unwrap(),
     );
     let mut actual = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let mut plain = SessionPlayback::new(prepared).unwrap();

@@ -2,7 +2,7 @@
 use hex_engine::{
     Audio, BorrowedMediaPage, DeviceTypeId, Frame, LaunchQuantization, MediaPages,
     NativeDeviceClass, PostNodeIdentity, PreparedRevision, SessionPlayback, SessionPlaybackCommand,
-    SineTable, StreamSourceKey, StreamedSourceMetadata,
+    StreamSourceKey, StreamedSourceMetadata,
     compile::PreparedAudioSource,
     playback::{Playback, PlaybackCommand},
 };
@@ -194,13 +194,13 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
             PreparedAudioSource::Resident(Audio::new(48000, vec![[0.125; 2]; 1024]).unwrap()),
         ),
     ]);
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let resident = Arc::new(
         PreparedRevision::prepare_with_prepared_audio_sources(
             &project,
             &bank,
             7,
-            Arc::clone(&table),
+            table.clone(),
             None,
         )
         .unwrap(),

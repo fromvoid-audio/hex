@@ -2,7 +2,7 @@
 
 use hex_engine::{
     Audio, LaunchQuantization, NativeDeviceClass, PreparedRevision, SessionPlayback,
-    SessionPlaybackCommand, SessionPlaybackError, SineTable, default_native_device_state_for_class,
+    SessionPlaybackCommand, SessionPlaybackError, default_native_device_state_for_class,
     native_device_catalog_for_class, patch_native_device_parameter_for_class,
 };
 use hex_lattice::{
@@ -465,7 +465,7 @@ fn prepared_hybrid(
     let revision = PreparedRevision::prepare_with_test_instrument_registry(
         &project,
         &media,
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &instruments,
     )
@@ -622,8 +622,13 @@ fn nonmutable_prepared_export_keeps_nonzero_range_support() {
         .expect("midi note");
     let project = editor.project().clone();
     let revision = Arc::new(
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
-            .expect("prepared revision"),
+        PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("prepared revision"),
     );
     assert!(!revision.has_arrangement_mutable_instruments());
     hex_export::render_prepared_new(&full_path, Arc::clone(&revision), 0, 64)

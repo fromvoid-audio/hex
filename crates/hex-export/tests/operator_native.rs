@@ -1,5 +1,5 @@
 use hex_engine::{
-    NativeDeviceClass, PreparedRevision, SineTable, default_native_device_state_for_class,
+    NativeDeviceClass, PreparedRevision, default_native_device_state_for_class,
     patch_native_device_parameter_for_class,
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -142,7 +142,7 @@ fn operator_revision_with_tuning(
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("prepared registered Operator"),

@@ -225,7 +225,7 @@ mod shared_midi_storage_tests {
         crate::PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap()

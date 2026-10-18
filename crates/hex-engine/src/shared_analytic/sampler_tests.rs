@@ -469,7 +469,7 @@ fn actual_arrangement_and_session_sampler_preparation_retains_factory_and_refuse
     let session = crate::PreparedSessionInventory::prepare_with_media_and_shared_contexts(
         editor.project(),
         &std::collections::BTreeMap::new(),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         &registry,
         contexts.clone_on_control(),
@@ -558,7 +558,7 @@ fn actual_arrangement_and_session_sampler_preparation_retains_factory_and_refuse
         crate::PreparedSessionInventory::prepare_with_media_and_shared_contexts(
             editor.project(),
             &std::collections::BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &registry,
             contexts,
@@ -656,7 +656,7 @@ fn actual_empty_sampler_context_has_no_resource_owner_and_prepares_silent_clip_h
     let session = crate::PreparedSessionInventory::prepare_with_media_and_shared_contexts(
         editor.project(),
         &std::collections::BTreeMap::new(),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         &registry,
         contexts.clone_on_control(),

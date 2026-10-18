@@ -57,7 +57,7 @@ fn action_revision(looped: bool) -> Arc<PreparedRevision> {
             &project,
             &media,
             23,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

@@ -580,3 +580,37 @@ registrations while preserving existing jobs and cancellation of unregistered
 slots. The worker's exit guard marks failure; a late spawn receipt cannot revive
 it. Injected startup/exit tests use the same configure/reserve/register facade
 functions as the public entrypoints, not only a preconstructed table fixture.
+
+## cached sine owner boundary
+
+`SharedSineTable` now carries the existing `SharedMetadata<SineTable>` paired
+owner through Session, prepared inventories, control exports and their retained
+copies. Fresh construction consumes one concrete fixed-array table; control
+clones preserve its receipt. Borrowing DSP consumers receive `&SineTable`.
+There is no public raw Arc adoption or owning Arc export. `shares_owner_with`
+serves the existing reuse optimization only, not provenance or custody.
+
+The native assembly still constructs its separate qualified sine allocation.
+Installation moves its existing private owner/receipt pair into the facade;
+persistent cleanup moves the same pair back without cloning, copying or
+allocating a table. Actual installed facade fields are inspected rather than
+inventing pre-install aliases. Cached and native tables coexisting are distinct
+physical allocations and both must join the ledger. The fixed-array leaf audit
+is separate from wrapper/header and physical handle accounting.
+
+The fresh allocation quote covers this single requested shared allocation only.
+Its bounded constructor refuses before preparing the table when that component
+reservation is insufficient. It does not establish complete old/new/input/value
+construction peak, native publication, or whole Session admission. Those remain
+obligations under the unchanged joint ceiling. Selected tests cover actual
+Session/prepared/control-export fields, missing aliases, independent tables,
+exact/minus-one retained budgets, native installation/cleanup coexistence and
+borrowed sine playback. Runtime execution evidence must name its exact source.
+
+Shutdown remains unqualified: the UI-owned Service field cannot be visited by
+inventing a worker borrow or paired clone. Its external cancellation route,
+startup overlap, durable failure/retirement and long transform borrow are covered by
+the separate approved contract in Pulse2783 note22292, following note22280.
+That route is not implemented by this sine change. Loading/publication, Sampler
+registration and the functional waveform-first panel remain open on the full
+musical-use critical path in Pulse2789 note22195.

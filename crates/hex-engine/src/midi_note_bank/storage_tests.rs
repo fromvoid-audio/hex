@@ -166,10 +166,9 @@ fn actual_cached_bank_union_survives_older_revision_retirement_without_rebuildin
         return;
     }
     let project = midi_project();
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let media = std::collections::BTreeMap::new();
-    let first =
-        crate::PreparedRevision::prepare(&project, &media, Arc::clone(&table), None).unwrap();
+    let first = crate::PreparedRevision::prepare(&project, &media, table.clone(), None).unwrap();
     let second =
         crate::PreparedRevision::prepare(&project, &media, table, Some(first.session())).unwrap();
     let first_bank = first.session().midi_clips()[0]

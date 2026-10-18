@@ -288,7 +288,7 @@ pub struct PreparedSessionInventory {
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     periodic_tempo_error: Option<PreparedTempoError>,
     source_admission_max_micro_bpm: u64,
-    sine_table: Arc<SineTable>,
+    sine_table: crate::SharedSineTable,
     scenes: Vec<PreparedSessionScene>,
     cells: Vec<PreparedSessionCell>,
     scene_cell_indices: Vec<usize>,
@@ -367,7 +367,7 @@ impl PreparedSessionInventory {
     }
     pub fn prepare(
         project: &Project,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous: Option<&Self>,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_media(project, &BTreeMap::new(), sine_table, previous)
@@ -376,7 +376,7 @@ impl PreparedSessionInventory {
     pub fn prepare_with_media(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous: Option<&Self>,
     ) -> Result<Self, crate::Invalid> {
         let instruments = hex_devices::native_instrument_registry()
@@ -396,7 +396,7 @@ impl PreparedSessionInventory {
     pub fn prepare_with_media_and_instrument_registry(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     ) -> Result<Self, crate::Invalid> {
@@ -413,7 +413,7 @@ impl PreparedSessionInventory {
     pub(crate) fn prepare_with_media_and_shared_contexts(
         project: &Project,
         media: &dyn crate::compile::MediaLookup<Audio>,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         shared_contexts: crate::owned_shared::OwnedShared<
@@ -434,7 +434,7 @@ impl PreparedSessionInventory {
         project: &Project,
         sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
         expected_generation: u64,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous: Option<&Self>,
     ) -> Result<Self, crate::Invalid> {
         if expected_generation == 0 {
@@ -458,7 +458,7 @@ impl PreparedSessionInventory {
         project: &Project,
         sources: &dyn crate::compile::MediaLookup<PreparedAudioSource>,
         expected_generation: u64,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         shared_contexts: crate::owned_shared::OwnedShared<
@@ -482,7 +482,7 @@ impl PreparedSessionInventory {
 
     fn prepare_with_resolver<'a>(
         project: &'a Project,
-        sine_table: Arc<SineTable>,
+        sine_table: crate::SharedSineTable,
         previous: Option<&Self>,
         instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
         shared_contexts: Option<
@@ -613,7 +613,7 @@ impl PreparedSessionInventory {
             instrument_track_indices.insert(track.id(), instrument_configs.len() - 1);
         }
         let can_reuse = previous.is_some_and(|old| {
-            Arc::ptr_eq(&old.sine_table, &sine_table)
+            old.sine_table.shares_owner_with(&sine_table)
                 && old.timing.matches_canonical(project.tempo_map())
                 && old.timing.sample_rate() == project.sample_rate()
                 && old.source_admission_max_micro_bpm == source_admission_max_micro_bpm
@@ -1183,7 +1183,7 @@ impl PreparedSessionInventory {
         self.periodic_tempo_error
     }
 
-    pub fn sine_table(&self) -> &Arc<SineTable> {
+    pub fn sine_table(&self) -> &crate::SharedSineTable {
         &self.sine_table
     }
 
@@ -1510,9 +1510,12 @@ mod tests {
         let mut snapshot = editor.project().snapshot();
         snapshot.session.scenes.reverse();
         let reordered = Project::from_snapshot(snapshot).expect("reordered scene fixture");
-        let inventory =
-            PreparedSessionInventory::prepare(&reordered, Arc::new(SineTable::new()), None)
-                .expect("prepare inventory");
+        let inventory = PreparedSessionInventory::prepare(
+            &reordered,
+            crate::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("prepare inventory");
 
         assert_eq!(
             inventory
@@ -1599,8 +1602,8 @@ mod tests {
             })
             .expect("set stop cell");
 
-        let table = Arc::new(SineTable::new());
-        let initial = PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), None)
+        let table = crate::SharedSineTable::new_on_control();
+        let initial = PreparedSessionInventory::prepare(editor.project(), table.clone(), None)
             .expect("prepare inventory");
         assert_eq!(
             initial
@@ -1695,7 +1698,7 @@ mod tests {
             })
             .expect("edit track mix");
         let reused =
-            PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), Some(&initial))
+            PreparedSessionInventory::prepare(editor.project(), table.clone(), Some(&initial))
                 .expect("reuse unchanged source");
         let reused_template = reused
             .midi_clip(first)
@@ -1709,7 +1712,7 @@ mod tests {
 
         add_note(&mut editor, first, 70);
         let detached =
-            PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), Some(&reused))
+            PreparedSessionInventory::prepare(editor.project(), table.clone(), Some(&reused))
                 .expect("prepare changed source");
         let changed_template = detached
             .midi_clip(first)
@@ -1727,19 +1730,16 @@ mod tests {
                 tempo: Tempo::new(90_000_000).expect("tempo"),
             })
             .expect("tempo change");
-        let changed_timing = PreparedSessionInventory::prepare(
-            editor.project(),
-            Arc::clone(&table),
-            Some(&detached),
-        )
-        .expect("prepare changed timing");
+        let changed_timing =
+            PreparedSessionInventory::prepare(editor.project(), table.clone(), Some(&detached))
+                .expect("prepare changed timing");
         assert!(!std::ptr::eq(
             changed_template,
             changed_timing.midi_clip(first).unwrap().source_template()
         ));
         let different_kernel = PreparedSessionInventory::prepare(
             editor.project(),
-            Arc::new(SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             Some(&changed_timing),
         )
         .expect("prepare new kernel");

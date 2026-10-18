@@ -225,7 +225,7 @@ fn freshly_prepared_clip_pcm_renders_and_seeks_without_callback_allocation_or_fr
     let revision = hex_engine::PreparedRevision::prepare_with_audio_transforms(
         editor.project(),
         &media,
-        Arc::new(hex_engine::SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &transforms,
     )

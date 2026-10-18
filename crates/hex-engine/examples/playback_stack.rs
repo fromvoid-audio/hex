@@ -270,7 +270,7 @@ fn render_preroll(revision: Arc<PreparedRevision>, target: u64) -> Result<u64, S
 
 fn prepare_fixture(fixture: Fixture) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
     let (project, definition) = project_fixture(fixture)?;
-    let sine_table = Arc::new(SineTable::new());
+    let sine_table = hex_engine::SharedSineTable::new_on_control();
     let revision = match definition {
         Some(definition) => {
             let definitions: [&dyn NativeInstrumentDefinition; 1] = [definition];
