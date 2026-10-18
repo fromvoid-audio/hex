@@ -1,0 +1,10 @@
+{
+  "file": "hex-project-2790-final-evidence-v2.tar.gz",
+  "bytes": 1078006,
+  "sha256": "ac2e9e10be39b4a137dcf63bd34c645d128ff1110e546db029cf6ca398b92a4c",
+  "payloads": 123,
+  "candidate": "756f7f25c92ed1dca84676e7bb9424497ab03509",
+  "tree": "448f74556fcf5b348f6105a9cab920e544afda7f",
+  "original_summary_sha256": "da563a09ff2f3550a3bf24f631b44facf7bd57706f8cdda22c90da6ceccbb0f1",
+  "warning": "Evidence-only; never checkout/build/merge this ref. CODE and original reports remain separately identified. Native original bytes Mac-local; Pulse report references only in packet."
+}
