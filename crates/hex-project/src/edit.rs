@@ -293,6 +293,8 @@ pub enum Command {
         source_end: u64,
     },
     RemoveTrack(TrackId),
+    /// Remove explicit tracks through the existing cleanup as one history edit.
+    RemoveTracks(Vec<TrackId>),
     RenameTrack {
         track: TrackId,
         name: String,
@@ -576,6 +578,12 @@ pub enum Command {
         name: String,
     },
     PlaceMidiClip {
+        track: TrackId,
+        start: crate::BeatTime,
+        length: crate::BeatTime,
+    },
+    /// Paint an empty MIDI clip, cutting existing audio/MIDI at its boundaries.
+    PlaceMidiClipWithOverwrite {
         track: TrackId,
         start: crate::BeatTime,
         length: crate::BeatTime,
@@ -1380,6 +1388,7 @@ impl Project {
             } => crate::time_range::copy_range(self, &range, track, frame),
             midi_command @ (Command::AddMidiTrack { .. }
             | Command::PlaceMidiClip { .. }
+            | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
             | Command::TrimMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
@@ -1816,6 +1825,20 @@ impl Project {
                     source_start,
                     source_end,
                 })
+            }
+            Command::RemoveTracks(ids) => {
+                if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
+                    return Err(Invalid("track removal needs a bounded selection"));
+                }
+                for (index, id) in ids.iter().enumerate() {
+                    if ids[..index].contains(id) || self.track(*id).is_none() {
+                        return Err(Invalid("track removal selection is stale or duplicated"));
+                    }
+                }
+                for id in ids {
+                    self.apply(Command::RemoveTrack(id))?;
+                }
+                Ok(Created::None)
             }
             Command::RemoveTrack(id) => {
                 let index = self
@@ -2447,3 +2470,7 @@ mod overwrite_tests {
         assert!(clips.iter().any(|candidate| candidate.id() == clip));
     }
 }
+
+#[cfg(test)]
+#[path = "track_remove_tests.rs"]
+mod track_remove_tests;

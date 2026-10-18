@@ -121,6 +121,9 @@ fn browser_drag_fixture_with_tracks(
                 view.browser.scans.generation = view.browser.scans.generation.saturating_add(1);
                 view.browser.places = vec![directory.0.clone()];
                 view.browser.directory = directory.0.clone();
+                // This fixture installs a validated snapshot, replacing startup work.
+                view.browser.loading = false;
+                view.browser.error = None;
                 view.browser.listing = Some(DirectoryListing {
                     directory: directory.0.clone(),
                     entries: vec![LibraryEntry {
@@ -134,7 +137,7 @@ fn browser_drag_fixture_with_tracks(
                 view.browser.samples.replace(
                     hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
                 );
-                view.browser.section = BrowserSection::Samples;
+                view.browser.section = BrowserSection::Place(directory.0.clone());
                 cx.notify();
             });
             editor
@@ -394,7 +397,9 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
-    visual.simulate_keystrokes("cmd-f down");
+    visual.simulate_keystrokes("cmd-f down right");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("down");
     let generation = editor.read_with(visual, |view, _| {
         assert!(view.browser.results_focused);
         assert_eq!(
@@ -532,6 +537,11 @@ fn command_f_category_switch_scrolls_first_result_into_view(cx: &mut TestAppCont
     let samples = visual.debug_bounds("browser-section-samples").unwrap();
     visual.simulate_mouse_down(samples.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(samples.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let root = visual.debug_bounds("browser-disclosure-0").unwrap();
+    visual.simulate_mouse_down(root.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(root.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
     editor.update(visual, |view, cx| {
         view.browser
             .scroll
@@ -2512,6 +2522,8 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
     let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
     let folder = directory.0.join("folder");
     std::fs::create_dir(&folder).unwrap();
+    let child = folder.join("project.hex");
+    std::fs::write(&child, []).unwrap();
     let visual = &mut VisualTestContext::from_window(handle, cx);
     editor.update(visual, |view, cx| {
         view.browser.section = BrowserSection::Projects;
@@ -2526,8 +2538,11 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
     visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("right");
-    editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser.directory, folder);
+    visual.run_until_parked();
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.directory, directory.0);
+        assert_eq!(view.browser.tree.icon(&folder), "▾");
+        assert_eq!(view.browser_visible_entries(cx)[1].path, child);
         assert_eq!(view.browser.playback_generation, 0);
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
@@ -2646,6 +2661,11 @@ fn samples_catalog_combines_roots_and_active_place_indexed_search(cx: &mut TestA
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
         view.browser.places = vec![first.0.clone(), second.0.clone()];
+        view.browser.section = BrowserSection::Samples;
+        view.browser.search.update(cx, |input, cx| {
+            input.content = "loop".into();
+            cx.notify();
+        });
         view.refresh_sample_catalog(cx);
         // Rapid refreshes must coalesce; the latest roots must win.
         view.refresh_sample_catalog(cx);
@@ -2666,10 +2686,15 @@ fn samples_catalog_combines_roots_and_active_place_indexed_search(cx: &mut TestA
             input.content = "DRUMS loop".into();
             cx.notify();
         });
+        assert!(view.browser_visible_entries(cx).is_empty());
+        assert!(view.browser.loading);
+        assert_eq!(view.browser.directory, second.0);
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
         let filtered = view.browser_visible_entries(cx);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].path, other);
-        assert_eq!(view.browser.directory, second.0);
     });
     std::fs::remove_file(&other).unwrap();
     editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
@@ -3038,7 +3063,7 @@ fn browser_auto_navigation_auditions_new_selection_but_not_boundary_repeats(
     let mut visual = VisualTestContext::from_window(handle, cx);
     std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(&mut visual, |view, cx| {
-        view.refresh_sample_catalog(cx);
+        view.refresh_browser_tree(cx);
         cx.notify();
     });
     visual.run_until_parked();
@@ -3118,6 +3143,8 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, cx| {
         view.browser.auto_audition = false;
+        view.browser.listing = Some(hex_library::scan_directory(&directory.0).unwrap());
+        view.browser.samples.invalidate_listing();
         view.apply_sample_catalog(
             hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
             cx,
@@ -3466,5 +3493,440 @@ fn browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_sco
     editor.read_with(&visual, |view, cx| {
         assert_eq!(view.browser.section, BrowserSection::All);
         assert_eq!(view.browser.search.read(cx).content, "loop");
+    });
+}
+
+#[gpui::test]
+fn browser_folder_double_click_expands_inline_without_replacing_surrounding_rows(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, directory, original) = browser_drag_fixture(cx);
+    let folder = directory.0.join("a");
+    std::fs::create_dir(&folder).unwrap();
+    let child = folder.join("kick.wav");
+    std::fs::write(&child, mono_pcm_wav(24)).unwrap();
+    let sibling = directory.0.join("b");
+    std::fs::create_dir(&sibling).unwrap();
+    editor.update(cx, |view, cx| {
+        view.browser.section = BrowserSection::Place(directory.0.clone());
+        view.browser.auto_audition = false;
+        view.request_browser_scan(directory.0.clone(), cx);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let before = visual.debug_bounds(lane).expect("arrangement lane");
+    let row = visual.debug_bounds("browser-entry-0").unwrap();
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: row.center(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+        modifiers: Modifiers::default(),
+    });
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.browser.directory, directory.0,
+            "disclosure must not navigate to another page"
+        );
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(
+            entries.iter().map(|entry| &entry.path).collect::<Vec<_>>(),
+            vec![&folder, &child, &sibling, &original]
+        );
+        assert!(view.pending_requests.is_empty());
+        assert!(view.last_enqueued_import_to_track.is_none());
+    });
+    assert_eq!(
+        before,
+        visual
+            .debug_bounds(lane)
+            .expect("retained arrangement lane")
+    );
+}
+
+#[gpui::test]
+fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let folder = directory.0.join("a");
+    let nested = folder.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let sample = nested.join("kick.wav");
+    std::fs::write(&sample, mono_pcm_wav(32)).unwrap();
+    editor.update(cx, |view, cx| {
+        view.browser.auto_audition = false;
+        view.request_browser_scan(directory.0.clone(), cx);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let disclosure = visual.debug_bounds("browser-disclosure-0").unwrap();
+    visual.simulate_mouse_down(disclosure.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(disclosure.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    // Click the nested folder label, then actual Right/Left actions in result focus.
+    let row = visual.debug_bounds("browser-entry-1").unwrap();
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    let (requests, entries, state) = editor.read_with(&visual, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries[2].path, sample);
+        assert_eq!(view.browser.tree.depth(&sample), 2);
+        assert_eq!(view.browser.selected_index, 1);
+        (
+            view.browser.tree.requests_started,
+            entries,
+            view.state.clone().unwrap(),
+        )
+    });
+    let sample_bounds = visual.debug_bounds("browser-entry-2").unwrap();
+    for x in [0.2, 0.6, 0.9, 0.4] {
+        visual.simulate_mouse_move(
+            point(
+                sample_bounds.left() + sample_bounds.size.width * x,
+                sample_bounds.center().y,
+            ),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+    }
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.browser.tree.requests_started, requests,
+            "hover never re-enumerates folders"
+        );
+        assert!(
+            Arc::ptr_eq(&entries, &view.browser_visible_entries(cx)),
+            "unchanged rows retain their snapshot"
+        );
+        assert!(Arc::ptr_eq(&state, view.state.as_ref().unwrap()));
+    });
+    visual.simulate_keystrokes("down");
+    let added = nested.join("after.wav");
+    std::fs::write(&added, mono_pcm_wav(64)).unwrap();
+    editor.update(&mut visual, |view, cx| view.refresh_browser_tree(cx));
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(
+            entries[view.browser.selected_index].path, sample,
+            "refresh retains selected native path despite inserted row"
+        );
+        assert!(entries.iter().any(|entry| entry.path == added));
+        assert_eq!(view.browser.directory, directory.0);
+    });
+    visual.simulate_keystrokes("left");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.browser_visible_entries(cx)[view.browser.selected_index].path,
+            nested
+        )
+    });
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes("down");
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(
+            view.browser_visible_entries(cx)[view.browser.selected_index].path,
+            sample
+        );
+        view.browser.playback_generation = 10;
+        view.browser.playback_path = Some(sample.clone());
+        view.browser.playback_output = Some((1, 1));
+        view.browser.playback_phase = hex_audio::sample_preview::Phase::Preparing;
+        view.browser.playback_pending = Some(super::PlaybackPreviewRequest {
+            generation: 10,
+            output_generation: 1,
+            output_identity: 1,
+            start_fraction: 0.5,
+            path: sample.clone(),
+            sample_rate: 48_000,
+        });
+    });
+    let disclosure = visual.debug_bounds("browser-disclosure-1").unwrap();
+    visual.simulate_mouse_down(disclosure.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(disclosure.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert!(
+            !view
+                .browser_visible_entries(cx)
+                .iter()
+                .any(|entry| entry.path == sample)
+        );
+        assert_eq!(
+            view.browser_visible_entries(cx)[view.browser.selected_index].path,
+            nested
+        );
+        assert_eq!(view.browser.playback_generation, 11);
+        assert!(view.browser.playback_pending.is_none());
+        assert!(view.browser.playback_output.is_none());
+        assert_eq!(
+            view.browser.playback_phase,
+            hex_audio::sample_preview::Phase::Idle
+        );
+    });
+    visual.simulate_keystrokes("left");
+    visual.simulate_keystrokes("left");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert!(
+            !view
+                .browser_visible_entries(cx)
+                .iter()
+                .any(|entry| entry.path == nested)
+        )
+    });
+}
+
+#[gpui::test]
+fn browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let a = directory.0.join("a");
+    let b = directory.0.join("b");
+    std::fs::create_dir(&a).unwrap();
+    std::fs::create_dir(&b).unwrap();
+    let first = a.join("kick.wav");
+    let second = b.join("kick.wav");
+    std::fs::write(&first, mono_pcm_wav(32)).unwrap();
+    std::fs::write(&second, mono_pcm_wav(64)).unwrap();
+    editor.update(cx, |view, cx| {
+        view.browser.auto_audition = false;
+        view.browser.width = 220.0;
+        view.request_browser_scan(directory.0.clone(), cx);
+        view.refresh_sample_catalog(cx);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (index, keep) in [(0, false), (2, true)] {
+        let selector = Box::leak(format!("browser-disclosure-{index}").into_boxed_str());
+        let disclosure = visual.debug_bounds(selector).unwrap();
+        let modifiers = Modifiers {
+            platform: keep,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(disclosure.center(), MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(disclosure.center(), MouseButton::Left, modifiers);
+        visual.run_until_parked();
+    }
+    for (index, path, frames) in [(1, first, 32), (3, second, 64)] {
+        let selector = Box::leak(format!("browser-entry-{index}").into_boxed_str());
+        let label_selector = Box::leak(format!("browser-entry-label-{index}").into_boxed_str());
+        let row = visual.debug_bounds(selector).unwrap();
+        let label = visual.debug_bounds(label_selector).unwrap();
+        assert!(label.left() >= row.left() && label.right() <= row.right());
+        assert!(label.size.height <= row.size.height);
+        visual.simulate_mouse_down(label.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(label.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert_eq!(view.browser.playback_path.as_ref(), Some(&path));
+            let entries = view.browser_visible_entries(cx);
+            assert_eq!(entries[index].name, "kick.wav");
+            assert_eq!(entries[index].path, path);
+            let key = super::PreviewKey {
+                path: path.clone(),
+                sample_rate: 48_000,
+            };
+            assert_eq!(
+                view.browser.preview_cache[&key]
+                    .metadata
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .playback_frames,
+                frames
+            );
+            assert!(view.last_enqueued_import_to_track.is_none());
+        });
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.select_browser_source(BrowserSection::Samples, cx);
+        view.browser.search.update(cx, |input, cx| {
+            input.content = "kick".into();
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(
+            entries.len(),
+            2,
+            "indexed Samples search retains both native paths"
+        );
+        assert_eq!(entries[0].name, entries[1].name);
+        assert_ne!(entries[0].path, entries[1].path);
+    });
+}
+
+#[gpui::test]
+fn browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let first = PreferencesTestDirectory::new();
+    let second = PreferencesTestDirectory::new();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.browser.places = vec![first.0.clone(), second.0.clone()];
+        view.browser.directory = first.0.clone();
+        view.browser.section = BrowserSection::Samples;
+        view.browser
+            .search
+            .update(cx, |input, _| input.content.clear());
+        view.browser.samples.replace(Default::default());
+        view.browser.tree.source_changed();
+        assert_eq!(view.browser_visible_entries(cx).len(), 2);
+        assert_eq!(view.sample_results_count_text(cx), "2 items");
+        cx.notify();
+    });
+    let nested = first.0.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("kick.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.expand_browser_folder(first.0.clone(), cx)
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries.len(), 3);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.kind == EntryKind::Directory)
+        );
+        assert_eq!(view.sample_results_count_text(cx), "3 items");
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.browser.search.update(cx, |input, cx| {
+            input.content = "kick".into();
+            cx.notify();
+        });
+        view.refresh_sample_catalog(cx);
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser_visible_entries(cx).len(), 1);
+        assert_eq!(view.sample_results_count_text(cx), "1 samples");
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.browser
+            .search
+            .update(cx, |input, _| input.content = "missing".into());
+        assert!(view.browser_visible_entries(cx).is_empty());
+        assert_eq!(view.sample_results_count_text(cx), "0 samples");
+    });
+}
+
+#[gpui::test]
+fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, directory, path) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.browser.section = BrowserSection::Place(directory.0.clone());
+        view.browser.loading = false;
+        view.browser.error = None;
+        view.browser.scans = Default::default();
+        // Hold the worker lane so the fresh request remains deterministically pending.
+        let old = view.browser.scans.request(directory.0.clone()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&directory.0).unwrap();
+        view.select_browser_source(BrowserSection::Place(directory.0.clone()), cx);
+        assert!(view.browser.loading);
+        assert!(
+            view.browser_visible_entries(cx).is_empty(),
+            "same-root reselect exposes retained offline listing before availability returns"
+        );
+        view.browser
+            .search
+            .update(cx, |input, _| input.content = "loop".into());
+        assert!(
+            view.browser_visible_entries(cx).is_empty(),
+            "query exposes cached offline index before availability returns"
+        );
+        let generation = view.browser.playback_generation;
+        // A closure painted before reselect may still carry the former path.
+        view.play_browser_sample_from(path.clone(), 0.5, cx);
+        assert_eq!(
+            view.browser.playback_generation, generation,
+            "old waveform callback admitted stale preview"
+        );
+        view.import_browser_audio(path.clone());
+        assert!(
+            view.last_enqueued_import_to_track.is_none(),
+            "old result callback admitted stale import"
+        );
+        let (current, fresh) = view.browser.scans.complete(old.generation);
+        assert!(!current);
+        let fresh = fresh.unwrap();
+        view.browser_scan_finished(fresh, hex_library::scan_directory(&directory.0), cx);
+        assert!(!view.browser.loading);
+        assert!(view.browser.error.is_some());
+        assert!(view.browser_visible_entries(cx).is_empty());
+        let generation = view.browser.playback_generation;
+        view.play_browser_sample_from(path, 0.5, cx);
+        assert_eq!(view.browser.playback_generation, generation);
+        cx.notify();
+    });
+}
+
+#[gpui::test]
+fn place_correctness_refresh_retains_identity_only_after_current_success(cx: &mut TestAppContext) {
+    let (handle, editor, _, directory, path) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.browser.section = BrowserSection::Place(directory.0.clone());
+        view.browser.loading = false;
+        view.browser.error = None;
+        view.browser
+            .search
+            .update(cx, |input, _| input.content = "loop".into());
+        view.browser.results_focused = true;
+        view.browser.selected_index = 0;
+        view.browser.scans = Default::default();
+        let old = view.browser.scans.request(directory.0.clone()).unwrap();
+        view.request_browser_scan(directory.0.clone(), cx);
+        assert!(view.browser_visible_entries(cx).is_empty());
+        // A concurrent catalog refresh must not discard the privately saved identity.
+        std::fs::write(directory.0.join("another.wav"), mono_pcm_wav(16)).unwrap();
+        view.apply_sample_catalog(
+            hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
+            cx,
+        );
+        // The superseded worker must not reauthorize rows.
+        let (current, fresh) = view.browser.scans.complete(old.generation);
+        assert!(!current);
+        assert!(view.browser_visible_entries(cx).is_empty());
+        view.browser_scan_finished(
+            fresh.unwrap(),
+            hex_library::scan_directory(&directory.0),
+            cx,
+        );
+        assert!(!view.browser.loading);
+        assert_eq!(view.browser_visible_entries(cx).len(), 1);
+        assert!(view.browser.results_focused);
+        assert_eq!(
+            view.browser_visible_entries(cx)[view.browser.selected_index].path,
+            path
+        );
+        // An available, freshly validated row still admits manual offset preview.
+        let generation = view.browser.playback_generation;
+        view.play_browser_sample_from(path, 0.5, cx);
+        assert_eq!(view.browser.playback_generation, generation + 1);
+        cx.notify();
     });
 }

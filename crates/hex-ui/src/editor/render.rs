@@ -581,6 +581,11 @@ impl Render for EditorView {
                     view.browser_preview_selected(window, cx);
                 }),
             )
+            .on_action(
+                cx.listener(|view, _: &super::BrowserCollapseFolder, window, cx| {
+                    view.browser_collapse_folder(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::BrowserActivate, window, cx| {
                 view.browser_activate(window, cx);
             }))
@@ -1134,6 +1139,12 @@ impl Render for EditorView {
                 view.remove_track(cx);
                 cx.notify();
             }))
+            .on_action(
+                cx.listener(|view, _: &super::RemoveHeaderTracks, window, cx| {
+                    view.remove_header_tracks(window, cx);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &Quit, window, cx| {
                 view.request_quit(window, cx);
             }))

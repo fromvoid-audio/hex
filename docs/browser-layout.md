@@ -128,8 +128,8 @@ pending instead of showing another source's contents.
 A Place owns its root even while navigating a child folder; only that Place is
 highlighted. Without a query it shows its bounded supported folder contents.
 With a query it combines indexed WAV matches within that root and supported
-current-folder matches, with original-path deduplication. Samples remains the
-all-roots indexed catalog; its folder chips select the corresponding Place rather
+current-folder matches, with original-path deduplication. Samples retains
+all-roots indexed search; its folder chips select the corresponding Place rather
 than retaining an independent filter. Command-F chooses All and preserves indexed
 global sample/device/folder search. Adding a root from Samples still indexes it
 without changing the active source. Plain folder snapshots are cached and invalidated
@@ -143,3 +143,57 @@ existing bounded persistence; no user files are changed by source selection.
 Inline hierarchy, collections/tag editing and navigation history remain their
 separate owning issues. Native normal/icon picker, focus and offline-source
 acceptance is coordinator-owned and pending.
+
+## Inline source hierarchy — Pulse2728 / PR341
+
+Source browsing uses one virtualized inline list. Samples shows the configured
+sample roots as collapsed folders; All shows the configured roots/current folder
+and registered devices. Place and Projects show the selected root's immediate
+children. Samples filters children to folders/WAVs, Projects to folders/Hex
+projects, and Places/All retain both supported file kinds. Folder disclosure inserts indented descendants without changing the
+source/root or replacing surrounding rows. Original native path bytes identify
+rows; sample labels show only their filename, including identical filenames in
+different folders. The full path remains available in the tooltip and for
+preview, selection, explicit import and drag/drop.
+
+A nonempty query keeps indexed Samples/global search and scoped Place search.
+These are flat indexed matches, augmented by matching children of any explicitly
+expanded matching folder. Clearing the query returns to the source hierarchy;
+source and expansion state remain distinct. No recursive project search, tag
+membership or shared-library service is introduced. Device rows retain their
+registered selection/drag behavior.
+
+The interaction contract is documentation-derived from the official [Live12
+browser manual](https://www.ableton.com/en/live-manual/12/working-with-the-browser/#navigating-in-the-browser):
+Right opens a selected folder (or enters an open folder), Left closes it or
+selects its visible parent, and Up/Down selects visible rows. Disclosure and
+folder double-click/Enter expand/collapse. Opening a different branch closes
+other branches by default; Cmd-disclosure retains siblings. Closing a branch
+releases its descendant expansion/cache state. Manual sample Right/Play/Stop
+and waveform-position audition remain independent of auto-audition; sample
+double-click still cannot import. These explicit Hex behaviors take precedence
+over other Live import/preview defaults.
+
+One background child worker and a bounded queue load only requested folders.
+Existing root-folder and sample-index workers remain separate. Child snapshots
+retain at most 64 folders, 8192 entries, 4MiB of entry-path bytes, 16KiB per path and
+64 visible nested levels, in addition to the existing bounded root listing and
+sample catalog. Cache/queue/depth limits are visible. Hidden children and
+symlinks retain the existing scanner's exclusion, so folder links cannot create
+recursive cycles. Unreadable/offline children show a disclosure error with no
+stale descendants; other branches remain usable. Refresh preserves existing
+rows while real work runs, then reconciles paths/selection and removes deleted
+children. Epoch and per-request serial checks discard superseded results,
+including rapid collapse/reopen. No filesystem access runs on UI/audio threads.
+Unchanged renders/hover reuse the row snapshot and cannot queue another scan.
+
+Native optimized hierarchy/keyboard/scroll/width/reference acceptance is open.
+The coordinator's finite reference availability check found no running Live and
+a locked Mac; no gestures were observed and no app was launched. This implements
+the documented contract, not an observed claim of exact installed-Live parity.
+
+Samples count labels follow the listing model: the inline hierarchy reports visible
+items (folders plus files), while flat indexed query results report sample matches.
+Expanding a folder can change the item count without discovering another WAV. The
+label does not enumerate collapsed folders or imply a total sample count. Pulse2728
+counter follow-up; optimized native acceptance remains open.
