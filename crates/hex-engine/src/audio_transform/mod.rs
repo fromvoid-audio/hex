@@ -220,6 +220,9 @@ impl AudioTransformPreparation {
             completed: false,
         };
         let result = prepare();
+        // An inner compiler panic may have been caught by the public outer
+        // closure. Never take/commit its abandoned pending owners in that case.
+        self.require_usable()?;
         let entries = self
             .pending
             .try_borrow_mut()
@@ -245,7 +248,14 @@ impl AudioTransformPreparation {
             .map_err(|_| Invalid("audio preparation is already borrowed"))?
             .is_some();
         if active {
-            prepare()
+            let mut failure = TransactionFailure {
+                failed: &self.failed,
+                completed: false,
+            };
+            let result = prepare();
+            self.require_usable()?;
+            failure.completed = true;
+            result
         } else {
             self.transaction(prepare)
         }

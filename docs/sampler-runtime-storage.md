@@ -97,6 +97,12 @@ settle their pending entries and permit the existing healthy retry behavior.
 Tests cover empty and real 64,000-byte pending derived PCM, retained charge,
 repeated non-entry and explicit control teardown. This is failure-state handling,
 not a whole compiler peak bound or permission for automatic input recovery.
+Nested active compiler entry has the same abnormal-exit guard. The public outer
+transaction rechecks the sticky failure after its closure returns and before
+taking/committing pending entries. A panic swallowed inside that closure still
+forces outer refusal. The nested-catch regression exercises actual pending PCM
+both with and without repeated re-entry attempts; no outer success or cache
+commit is inferred from a caller returning `Ok` after a nested fault.
 
 The complete Arrangement compiler now reserves a single per-track audio clip
 Vec from the canonical clip count before compiling its first child. It pushes

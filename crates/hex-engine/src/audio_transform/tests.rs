@@ -413,6 +413,74 @@ fn unwound_transform_transaction_retains_pending_charge_and_refuses_compiler_ree
 }
 
 #[test]
+fn caught_nested_transform_failure_refuses_outer_commit_and_retains_actual_pending_pcm() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    for check_reentry in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        let context = isolated(256_000, 256_000, 2);
+        let budget = context.budget.clone();
+        let asset = editor
+            .project()
+            .asset(editor.project().clip(clip).unwrap().asset())
+            .unwrap();
+        let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+        let calls = Cell::new(0);
+        let outer: Result<(), Invalid> = context.transaction(|| {
+            let nested = catch_unwind(AssertUnwindSafe(|| {
+                let _: Result<(), Invalid> = context.compile_transaction(|| {
+                    let _candidate = context.prepare_audio(
+                        editor.project(),
+                        edit,
+                        asset,
+                        &media[&asset.id()],
+                    )?;
+                    panic!("injected nested compiler failure caught inside outer transaction");
+                });
+            }));
+            assert!(nested.is_err());
+            if check_reentry {
+                for _ in 0..2 {
+                    assert!(
+                        context
+                            .compile_transaction(|| {
+                                calls.set(calls.get() + 1);
+                                Ok(())
+                            })
+                            .is_err()
+                    );
+                }
+            }
+            // Swallowing the panic and returning Ok must NOT authorize the
+            // public outer transaction to take/commit the pending owners.
+            Ok(())
+        });
+        assert!(outer.is_err());
+        assert!(context.failed_incomplete_on_control());
+        assert_eq!(calls.get(), 0);
+        assert_eq!(context.retained_pcm_bytes(), 64_000);
+        assert_eq!(context.cached_pcm_bytes().unwrap(), 0);
+        assert_eq!(context.pending.borrow().as_ref().unwrap().len(), 1);
+        assert!(
+            context
+                .transaction(|| {
+                    calls.set(1);
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(calls.get(), 0);
+        drop(context);
+        assert_eq!(budget.used(), 0);
+        eprintln!(
+            "actual caught nested transform failure check_reentry={check_reentry}: outer refused, pending64000 retained until explicit control teardown"
+        );
+    }
+}
+
+#[test]
 fn accepted_audio_sidecar_survives_tiny_cache_and_preserves_split_crop_identity() {
     let (mut editor, clip, media) = fixture(false);
     editor
