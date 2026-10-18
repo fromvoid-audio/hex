@@ -543,7 +543,36 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
     });
+    editor.update(&mut visual, |v, _| {
+        v.time_selection = None;
+        v.selected_clip = None;
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "empty selection no-op"
+        )
+    });
     click(&mut visual, audio, false);
+    editor.update(&mut visual, |v, _| {
+        v.worker_requests_pending = 1;
+    });
+    visual.simulate_keystrokes("cmd-l");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "pending edit refuses Command-L"
+        );
+        assert!(v.pending_requests.is_empty(), "no deferred selection write");
+    });
+    editor.update(&mut visual, |v, _| {
+        v.worker_requests_pending = 0;
+    });
+
     visual
         .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
     visual.run_until_parked();
