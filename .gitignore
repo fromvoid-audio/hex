@@ -1,8 +1,0 @@
-/target/
-/artifacts/
-/research/private/
-.DS_Store
-
-# local interpreter caches
-__pycache__/
-*.py[cod]
