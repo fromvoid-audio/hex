@@ -119,6 +119,28 @@ fn command(f: &Fixture, anchor: ClipId, track: TrackId, position: ClipGroupPosit
 fn mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step() {
     for midi_anchor in [false, true] {
         let mut f = fixture();
+        f.editor
+            .execute(Command::SetAudioClipWarp {
+                clip: f.audio,
+                settings: Some(crate::WarpSettings {
+                    mode: crate::WarpMode::RePitch,
+                    markers: vec![
+                        crate::WarpMarker {
+                            source_frame: 0,
+                            beat: BeatTime::ZERO,
+                        },
+                        crate::WarpMarker {
+                            source_frame: 48_000,
+                            beat: BeatTime::ONE,
+                        },
+                        crate::WarpMarker {
+                            source_frame: 96_000,
+                            beat: BeatTime::from_quarters(4).unwrap(),
+                        },
+                    ],
+                }),
+            })
+            .unwrap();
         let before = f.editor.project().clone();
         let (anchor, target, position) = if midi_anchor {
             (
@@ -149,6 +171,31 @@ fn mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step
             after.midi_clip(f.midi).unwrap().start(),
             BeatTime::from_quarters(12).unwrap()
         );
+        let old_audio = before.clip(f.audio).unwrap();
+        let new_audio = after.clip(f.audio).unwrap();
+        assert_eq!(new_audio.asset(), old_audio.asset());
+        assert_eq!(new_audio.duration(), old_audio.duration());
+        assert_eq!(new_audio.source_offset(), old_audio.source_offset());
+        assert_eq!(new_audio.source_length(), old_audio.source_length());
+        assert_eq!(new_audio.source_phase(), old_audio.source_phase());
+        assert_eq!(new_audio.looping(), old_audio.looping());
+        assert_eq!(new_audio.fade(), old_audio.fade());
+        assert_eq!(new_audio.gain(), old_audio.gain());
+        assert_eq!(new_audio.name(), old_audio.name());
+        assert_eq!(new_audio.flavor(), old_audio.flavor());
+        assert_eq!(
+            new_audio.audio_edit().unwrap().domain.warp,
+            old_audio.audio_edit().unwrap().domain.warp
+        );
+        let old_midi = before.midi_clip(f.midi).unwrap();
+        let new_midi = after.midi_clip(f.midi).unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&old_midi.source, &new_midi.source),
+            "immutable authored notes/expressions are shared, not rewritten"
+        );
+        assert_eq!(new_midi.length(), old_midi.length());
+        assert_eq!(new_midi.name(), old_midi.name());
+        assert_eq!(new_midi.flavor(), old_midi.flavor());
         assert_eq!(
             after.assets().collect::<Vec<_>>(),
             before.assets().collect::<Vec<_>>()
