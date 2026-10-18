@@ -247,3 +247,23 @@ setup/rate/pending variants and all six New/Open variants. Do not repeat old
 layout/font19, already qualified407six or436four absent a relevant source change.
 Actual backend setup/OS device failure, physical UI/pixels/listening/optimized
 app acceptance remains coordinator/user-owned and is not simulated as accepted.
+
+
+### same-project audio recovery status
+
+The recovery regressions reproduce both a stored setup failure and a real
+closed public control endpoint surviving after `recover_audio` removes the
+old output without changing the project generation or selected EQ. Pending
+context now retires only the analyzer-owned status and old spectrum pixels.
+A newer unrelated save/edit message remains intact. No new target is claimed
+before the replacement endpoint's current project graph is published; repeated
+pending-publication renders cannot revive a retired endpoint's error.
+
+Two private status tests exercise actual recovery, then a replacement guarded
+headless endpoint pending publication, each with and without newer save feedback.
+All four variants retain the project, selected EQ and enabled intent. They use
+fresh app/font contexts and the existing serialized headless lease, not an OS
+audio adapter or rendered callback. Native follow-up, if scheduled, needs only
+`eq_status_recovery_` (two unique positives and all four completed variants),
+not a repeat of unchanged layout, gesture, spectrum or earlier status suites.
+Physical audio recovery, visual quality and listening remain unaccepted here.

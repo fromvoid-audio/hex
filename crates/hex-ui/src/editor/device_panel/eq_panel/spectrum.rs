@@ -259,7 +259,14 @@ pub(super) fn sync_selected(
     }
     let (floor, rate) = match context(view) {
         Ok(Some(context)) => context,
-        Ok(None) => return,
+        Ok(None) => {
+            // Recovery can retire this endpoint without replacing the project
+            // or its selected EQ. Pending publication is not the old output's
+            // setup/closed failure; retire only feedback owned by this analyzer.
+            view.device_panel.spectrum_result = None;
+            clear_status(view);
+            return;
+        }
         Err(error) => {
             view.device_panel.spectrum_result = None;
             report_status(view, error);

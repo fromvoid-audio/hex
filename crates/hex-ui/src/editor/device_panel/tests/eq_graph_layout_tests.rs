@@ -1648,7 +1648,7 @@ fn recovery_retires_endpoint_status(cx: &mut TestAppContext, setup_failure: bool
             view.device_panel.selected_device = Some(device);
             cx.notify();
         });
-        let mut visual = VisualTestContext::from_window(handle, cx);
+        let visual = VisualTestContext::from_window(handle, cx);
         visual.simulate_resize(size(px(1500.0), px(650.0)));
         visual.run_until_parked();
         let expected = if setup_failure {
