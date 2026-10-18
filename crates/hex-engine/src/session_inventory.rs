@@ -159,7 +159,17 @@ fn visit_midi_rows<'a>(
     role: crate::AudioStorageRole,
 ) -> Result<(), crate::AudioStorageError> {
     ledger.vec(rows)?;
-    for PreparedSessionMidiClip {
+    for row in rows {
+        visit_midi_row(row, ledger, role)?;
+    }
+    Ok(())
+}
+fn visit_midi_row<'a>(
+    row: &'a PreparedSessionMidiClip,
+    ledger: &mut crate::AudioRootStorageLedger<'a>,
+    role: crate::AudioStorageRole,
+) -> Result<(), crate::AudioStorageError> {
+    let PreparedSessionMidiClip {
         id,
         track,
         scene,
@@ -173,25 +183,23 @@ fn visit_midi_rows<'a>(
         instrument_enabled,
         mutable_limits,
         work,
-    } in rows
-    {
-        fn copy_leaf<T: Copy>(_: &T) {}
-        copy_leaf(id);
-        copy_leaf(track);
-        copy_leaf(scene);
-        copy_leaf(instrument_id);
-        copy_leaf(tuning_identity);
-        copy_leaf(instrument_enabled);
-        copy_leaf(mutable_limits);
-        copy_leaf(work);
-        ledger.string(name)?;
-        ledger.model_source_if_unvisited(source_identity)?;
-        if let Some(state) = instrument_state {
-            ledger.borrow_canonical_native_state_on_control(state)?;
-        }
-        crate::midi_template::storage::visit_source(source, ledger, role)?;
-        crate::midi_template::storage::visit_instrument(instrument, ledger, role)?;
+    } = row;
+    fn copy_leaf<T: Copy>(_: &T) {}
+    copy_leaf(id);
+    copy_leaf(track);
+    copy_leaf(scene);
+    copy_leaf(instrument_id);
+    copy_leaf(tuning_identity);
+    copy_leaf(instrument_enabled);
+    copy_leaf(mutable_limits);
+    copy_leaf(work);
+    ledger.string(name)?;
+    ledger.model_source_if_unvisited(source_identity)?;
+    if let Some(state) = instrument_state {
+        ledger.borrow_canonical_native_state_on_control(state)?;
     }
+    crate::midi_template::storage::visit_source(source, ledger, role)?;
+    crate::midi_template::storage::visit_instrument(instrument, ledger, role)?;
     Ok(())
 }
 

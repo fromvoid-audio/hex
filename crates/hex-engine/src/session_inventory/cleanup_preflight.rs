@@ -8,9 +8,22 @@ impl PreparedSessionInventory {
             row.instrument.refuse_opaque_control_drop()?;
         }
         for row in &self.mutable_instruments {
-            if matches!(row.factory, PreparedTrackRuntimeFactory::Opaque(_))
-                || row.history_retarget_target.is_some()
-            {
+            let PreparedMutableTrackInstrument {
+                track,
+                factory,
+                history_retarget_target,
+                history_retarget_requires_quiescence,
+            } = row;
+            fn scalar<T: Copy>(_: &T) {}
+            scalar(track);
+            scalar(history_retarget_requires_quiescence);
+            match factory {
+                PreparedTrackRuntimeFactory::Opaque(_) => {
+                    return Err(crate::AudioStorageError::UnknownStorage);
+                }
+                PreparedTrackRuntimeFactory::Sampler(_) => {}
+            }
+            if history_retarget_target.is_some() {
                 return Err(crate::AudioStorageError::UnknownStorage);
             }
         }

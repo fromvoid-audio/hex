@@ -13,6 +13,8 @@ use crate::{
 };
 use std::mem;
 mod cleanup;
+#[cfg(test)]
+mod midi_cleanup_tests;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionAssemblyCapacity {
@@ -23,6 +25,10 @@ pub struct SessionAssemblyCapacity {
     pub range_bytes: usize,
     pub audio_bytes: usize,
     pub pair_bytes: usize,
+    pub midi_bytes: usize,
+    pub routed_midi_bytes: usize,
+    pub midi_source_root_bytes: usize,
+    pub mutable_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub meter_copy_bytes: usize,
     pub meter_bytes: usize,
@@ -38,6 +44,10 @@ impl SessionAssemblyCapacity {
             self.range_bytes,
             self.audio_bytes,
             self.pair_bytes,
+            self.midi_bytes,
+            self.routed_midi_bytes,
+            self.midi_source_root_bytes,
+            self.mutable_bytes,
             self.meter_copy_bytes,
             self.meter_bytes,
         ]
@@ -178,7 +188,13 @@ pub(crate) struct SessionAssembly {
     phase: AssemblyPhase,
     growth: usize,
     unused_midi: Vec<PreparedSessionMidiClip>,
+    unused_routed_midi: Vec<PreparedSessionMidiClip>,
+    unused_midi_source_roots: Vec<(TrackId, TrackId)>,
     unused_mutable: Vec<PreparedMutableTrackInstrument>,
+    pending_midi: Option<PreparedSessionMidiClip>,
+    pending_mutable: Option<PreparedMutableTrackInstrument>,
+    midi_drop_pending: bool,
+    mutable_drop_pending: bool,
     name_pending: bool,
     scene_cursor: usize,
     track_cursor: usize,
@@ -240,7 +256,13 @@ impl SessionAssembly {
             && self.sine.is_none()
             && self.contexts.is_none()
             && self.unused_midi.capacity() == 0
+            && self.unused_routed_midi.capacity() == 0
+            && self.unused_midi_source_roots.capacity() == 0
             && self.unused_mutable.capacity() == 0
+            && self.pending_midi.is_none()
+            && self.pending_mutable.is_none()
+            && !self.midi_drop_pending
+            && !self.mutable_drop_pending
             && self.pending_source.is_none()
             && self.pending_name.is_none()
             && self.pending_pair.is_none()
@@ -287,7 +309,7 @@ impl SessionAssembly {
         include_growth: bool,
         external: Option<&PreparedSessionInventory>,
     ) -> Result<SessionAssemblyCapacity, AudioStorageError> {
-        // Exhaustive ownership inventory: seven charged Vec backings; names,
+        // Actual scalar/audio/MIDI/factory Vec backings; names,
         // referenced source allocations, tempo and fixed shared data stay in
         // their parent charge groups while their exact paired owning locations
         // move. Optional inventory contains those SAME vectors, never duplicates.
@@ -296,6 +318,7 @@ impl SessionAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         if let Some(i) = self.inventory.as_ref().or(external) {
+            i.refuse_opaque_control_drop()?;
             if self.scenes.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.cells.capacity() != 0
@@ -310,21 +333,17 @@ impl SessionAssembly {
                 || self.pending_pair.is_some()
                 || self.name_pending
                 || self.meter.is_some()
-                || i.routed_midi_clips.capacity() != 0
-                || i.midi_source_roots.capacity() != 0
-                || !i.midi_clips.is_empty()
-                || i.midi_clips.capacity() != 0
-                || !i.mutable_instruments.is_empty()
-                || i.mutable_instruments.capacity() != 0
-                || i.mutable_history_retarget_storage_bytes != 0
-                || i.midi_note_bank_storage_bytes != 0
-                || i.midi_note_bank_reference_count != 0
-                || i.work != SessionWorkEnvelope::default()
+                || self.unused_midi.capacity() != 0
+                || self.unused_routed_midi.capacity() != 0
+                || self.unused_midi_source_roots.capacity() != 0
+                || self.unused_mutable.capacity() != 0
+                || self.pending_midi.is_some()
+                || self.pending_mutable.is_some()
             {
                 return Err(AudioStorageError::UnknownStorage);
             }
         }
-        if self.unused_midi.capacity() != 0 || self.unused_mutable.capacity() != 0 {
+        if self.midi_drop_pending || self.mutable_drop_pending {
             return Err(AudioStorageError::UnknownStorage);
         }
         let copy_meter = self.meter_copy.capacity();
@@ -381,6 +400,30 @@ impl SessionAssembly {
             range_bytes: bytes(ranges)?,
             audio_bytes: bytes(audio)?,
             pair_bytes: bytes(&self.pairs)?,
+            midi_bytes: bytes(
+                self.inventory
+                    .as_ref()
+                    .or(external)
+                    .map_or(&self.unused_midi, |i| &i.midi_clips),
+            )?,
+            routed_midi_bytes: bytes(
+                self.inventory
+                    .as_ref()
+                    .or(external)
+                    .map_or(&self.unused_routed_midi, |i| &i.routed_midi_clips),
+            )?,
+            midi_source_root_bytes: bytes(
+                self.inventory
+                    .as_ref()
+                    .or(external)
+                    .map_or(&self.unused_midi_source_roots, |i| &i.midi_source_roots),
+            )?,
+            mutable_bytes: bytes(
+                self.inventory
+                    .as_ref()
+                    .or(external)
+                    .map_or(&self.unused_mutable, |i| &i.mutable_instruments),
+            )?,
             previous_growth_backing_bytes: if include_growth {
                 self.growth
                     .checked_add(copy_meter.previous_growth_backing_bytes)
@@ -415,7 +458,13 @@ impl SessionAssembly {
             || self.track_cursor != 0
             || self.name_pending
             || self.unused_midi.capacity() != 0
+            || self.unused_routed_midi.capacity() != 0
+            || self.unused_midi_source_roots.capacity() != 0
             || self.unused_mutable.capacity() != 0
+            || self.pending_midi.is_some()
+            || self.pending_mutable.is_some()
+            || self.midi_drop_pending
+            || self.mutable_drop_pending
             || self.sine_declaration.is_some()
             || self.sine.is_some()
             || self.contexts.is_some()
@@ -859,7 +908,13 @@ impl SessionAssembly {
             phase: _,
             growth,
             unused_midi,
+            unused_routed_midi,
+            unused_midi_source_roots,
             unused_mutable,
+            pending_midi,
+            pending_mutable,
+            midi_drop_pending: _,
+            mutable_drop_pending: _,
             name_pending: _,
             scene_cursor: _,
             track_cursor: _,
@@ -886,8 +941,19 @@ impl SessionAssembly {
         l.vec(ranges)?;
         l.vec(audio)?;
         l.vec(pairs)?;
-        l.vec(unused_midi)?;
+        visit_midi_rows(unused_midi, l, role)?;
+        visit_midi_rows(unused_routed_midi, l, role)?;
+        l.vec(unused_midi_source_roots)?;
         l.vec(unused_mutable)?;
+        for instrument in unused_mutable.iter().chain(pending_mutable.iter()) {
+            if instrument.history_retarget_target.is_some() {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            instrument.factory.visit_storage(l)?;
+        }
+        if let Some(row) = pending_midi {
+            visit_midi_row(row, l, role)?;
+        }
         for scene in scenes {
             l.string(&scene.name)?;
         }
@@ -957,9 +1023,8 @@ impl SessionAssembly {
             l.vec(scene_cell_indices)?;
             l.vec(scene_cell_ranges)?;
             l.vec(tracks)?;
-            // Complete actual row fields are ready for the closed compiler
-            // path; capacity_at still refuses nonempty construction until
-            // persistent teardown/preconstruction admission is completed.
+            // Actual closed row fields. Public constructor admission remains
+            // separate from this selected inventory/retirement capability.
             visit_midi_rows(midi_clips, l, role)?;
             visit_midi_rows(routed_midi_clips, l, role)?;
             l.vec(midi_source_roots)?;

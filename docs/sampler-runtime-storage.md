@@ -166,6 +166,21 @@ factory, an independently retained opaque context and a paired Sampler context;
 the old-template negative still refuses with an empty current table. This is
 only an opaque-destructor preflight, not certification of concrete child
 destructors, original-source final-drop custody or the whole construction peak.
-Persistent nonempty retirement destinations/cursors, matching storage and
-restore, aggregate preconstruction reservation and the private compiler entry
-remain required before enabling the usable Sampler host.
+The existing Session capsule now also retains direct/routed MIDI rows, scalar
+source-routing pairs and concrete mutable factories during retirement. A popped
+row or factory first moves into a persistent pending field; inspection visits
+that actual field before the later explicit drop. Pending-drop flags refuse
+retry after abnormal exit. Row/factory Vec capacities remain charged throughout
+retirement; only their empty backings are released on control at final clearing,
+leaving vacant destinations for later preparation. Aggregate transfer/restore
+still moves the same owned inventory, without cloning its children.
+
+The selected retirement regression runs both direct and routed Sampler paths
+with the original resource bank retained. It checks actual current/Undo/Redo
+aliases, independent backing capacities, every pending destination and omitted
+pending-field refusal through each cleanup step. Its meter uses the existing
+copy-custody transfer; it does not certify teardown of an unrelated fresh
+compiler meter. The tempo return, fresh complete-compiler owner installation,
+aggregate preconstruction reservation, full native union and publication remain
+required. Public constructor validation still refuses MIDI graphs; this selected
+retirement capability does not enable the usable Sampler host.
