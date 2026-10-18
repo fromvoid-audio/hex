@@ -409,7 +409,7 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
 
 #[test]
 fn moved_and_pasted_waveform_positions_read_event_composed_pcm() {
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::collections::BTreeMap;
     let mut editor =
         hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
     let hex_project::Created::Imported { clip, asset, .. } = editor

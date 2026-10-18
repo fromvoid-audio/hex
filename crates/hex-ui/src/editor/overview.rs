@@ -283,7 +283,7 @@ mod tests {
     };
     use hex_project::{BeatTime, Command, Created, Editor, IDENTITY_CONVERSION, Project, Tempo};
     use hex_session::service::ViewState;
-    use std::{path::PathBuf, rc::Rc, sync::Arc};
+    use std::{path::PathBuf, rc::Rc};
 
     fn overview_project() -> Project {
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");
