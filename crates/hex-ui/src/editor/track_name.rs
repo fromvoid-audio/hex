@@ -438,3 +438,6 @@ mod tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod delete_tests;
