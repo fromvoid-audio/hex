@@ -61,6 +61,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             selected: 0,
             focus,
@@ -141,6 +142,7 @@ impl EditorView {
         window.focus(&focus);
         let target = flavor.toggled();
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             selected: 0,
             focus,
@@ -196,6 +198,7 @@ impl EditorView {
             ("switch to mid/side", true)
         };
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             items: vec![MenuItem {
                 label,

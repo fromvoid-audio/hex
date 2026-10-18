@@ -102,6 +102,7 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
@@ -541,6 +542,7 @@ pub(super) struct EditorView {
     gain_lane: gain_lane::GainLane,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
+    track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
@@ -657,6 +659,7 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
@@ -992,6 +995,7 @@ impl EditorView {
             gain_lane: gain_lane::GainLane::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
+            track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
@@ -1110,6 +1114,7 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
             active_midi_trim_drag: None,
@@ -1359,6 +1364,8 @@ impl EditorView {
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        // Only a current resize owner may extend the transient display extent.
+        let horizon = horizon.max(self.trim_display_end().unwrap_or(0));
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)

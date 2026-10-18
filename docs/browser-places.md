@@ -64,8 +64,9 @@ case-insensitively; indexed samples use the sample library's multi-term path mat
 All ignores the Samples source-folder filter and deduplicates original WAV paths
 across the catalog and folder, retaining folder WAVs outside indexed roots. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
-Escape clears it and restores text mode even if the query was already empty.
-Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
+Escape clears the query while retaining its current text or navigation owner;
+it never re-enters text editing from results. Category clicks retain the query
+and move actual focus to browser navigation, including in Session. Active IME composition is unmarked before selecting the whole
 query. Moving the caret or text selection leaves the result viewport unchanged;
 only a changed query resets it. Clicking the search field from another control selects the entire query so the
 next typed text replaces it. Once already focused, clicks place the caret and
@@ -83,7 +84,7 @@ numeric drafts pass through the existing finalization barrier: valid values comm
 before focus moves; invalid values preserve their draft and focus for repair.
 Device rows retain drag-to-track/rail behavior; Enter on an
 all-view device displays that instruction rather than importing a file. Clicking a
-device keeps browser keyboard focus in Session too. The first arrow key selects
+device keeps browser navigation focus in Session too. The first arrow key selects
 the first match; subsequent arrows move through results. Query/category changes
 reveal the first row. Accepted background scans preserve the selected file path
 or device identity when new files change row offsets.
@@ -109,9 +110,10 @@ Right-click an added Place to choose folder, samples, devices, projects,
 collection, waveform or search from Hex's existing browser glyph collection.
 The same Ioskeley Mono glyphs and shared 22 px picker slot are used expanded and
 icon-only; original folder-name hover tooltips and left-click source selection
-remain. Icons may be reused. The folder choice clears the assignment. Home and
+remain. Icons may be reused. Default Icon clears the assignment; folder is also
+an explicit bundled choice. Home and
 Music retain their default folder icons. The existing editor context menu owns
-focus, pointer occlusion, Up/Down, Enter, Escape and outside-click dismissal;
+focus, pointer occlusion, arrow navigation, Enter, Escape and outside-click dismissal;
 choosing an icon does not select/import/audition a sample or create project history.
 
 The bundled font's existing provenance is in
@@ -168,3 +170,38 @@ Select All, missing drag selection and splitting a combining grapheme. This is
 new source selection behavior, not proof of resolution or native acceptance for
 separate mouse-focus issue #2794 / draft PR #400. Native mouse/clipboard/IME and
 shortcut checks remain coordinator-owned; no app replacement occurs in cloud.
+
+## row-anchored icon menu — pulse2826 / PR430
+
+The added Place row's right-click menu anchors to the row's lower-left corner
+(clamped inside the window), regardless of the pointer's position in the row.
+Default Icon resets the assignment above a compact four-column grid of the seven
+existing bundled glyphs. Current choice has a persistent theme accent outline;
+hover and keyboard selection have separate feedback, and each glyph has its
+original named tooltip. Left/Right move one choice, Up/Down move grid rows (or
+Default), Enter chooses, Escape/outside-click dismiss and restore prior focus.
+Assignments still capture the clicked native path, never the active row index or
+previously selected source. No preview/import/query requests are emitted.
+
+This follows the supplied screenshot's reset/grid composition using Hex's own
+assets. Additional Places are customizable; built-in Home/Music, Library categories
+and Collections do not have a persisted custom-icon identity in the current
+model. No new all-source identity/persistence format is claimed here. Existing
+Place context actions are icon choices; no Rename/Remove/Show in Finder commands
+are invented. Source input tests cover two same-named paths, reset, expanded/compact
+rows, anchor geometry, actual mouse and keyboard choices, focus/dismissal and
+actual preference-save/editor-reopen. Physical native appearance, accessibility
+announcement and app close/reopen acceptance remain coordinator-owned and open.
+
+## explicit search entry — pulse2820 / PR426
+
+Only the search field itself and Command-F enter query editing. Sources, Places,
+folders, disclosures, sample/device rows, blank browser space, toolbar, preview
+controls and resize handles use a distinct non-text navigation focus owner.
+Down/Up from query results transfer to that owner; returning to the field selects
+the query on entry and retains ordinary focused caret/drag selection thereafter.
+Selection/highlight state is independent of the actual input handle. Pointer
+handlers run in their local browser scope; painting/workers never restore focus.
+Close returns focus to the editor. This is separate from the unresolved native
+field-click focus-loss report2794 and the future double-click refinement2817.
+Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.

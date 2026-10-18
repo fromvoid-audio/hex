@@ -22,6 +22,8 @@ pub struct ControlStyle {
     pub dial_rail: u32,
     pub hover: u32,
     pub font_size: f32,
+    /// Presentation only; source drafts, parser inputs and clipboard stay unchanged.
+    pub text_case: crate::TextCase,
 }
 
 impl ControlStyle {
