@@ -1,4 +1,5 @@
-//! Actual audio-only preview owner, retained in the existing preparation root.
+//! Actual preview owner, retained in the existing preparation root.
+//! Nonempty observation/restore/cleanup is separate from closed constructor admission.
 //! Constructor/layout observations leave its allocation/handle obligation OPEN.
 use super::{MidiArrangementPreview, MidiClipPreview};
 use crate::{AudioStorageError as Error, owned_shared::OwnedShared};
@@ -7,6 +8,7 @@ use crate::{AudioStorageError as Error, owned_shared::OwnedShared};
 pub struct AudioPreviewCapacity {
     pub clips_payload_bytes: usize,
     pub clips_declared_overhead_bytes: usize,
+    pub samples_backing_bytes: usize,
     pub reserved_handle_destinations: usize,
     pub independent_handle_obligations: usize,
     pub unresolved_allocations: usize,
@@ -15,6 +17,7 @@ impl AudioPreviewCapacity {
     pub(crate) fn bytes(self) -> Result<usize, Error> {
         self.clips_payload_bytes
             .checked_add(self.clips_declared_overhead_bytes)
+            .and_then(|bytes| bytes.checked_add(self.samples_backing_bytes))
             .ok_or(Error::Overflow)
     }
 }
@@ -96,7 +99,7 @@ impl PreviewCustody {
             ..Default::default()
         };
         if let Some(owner) = owner {
-            if self.handle == 0 || !owner.is_empty() {
+            if self.handle == 0 {
                 return Err(Error::UnknownStorage);
             }
             let (payload, overhead) = owner.parts().ok_or(Error::UnsupportedConstructor)?;
@@ -104,6 +107,21 @@ impl PreviewCustody {
             report.clips_declared_overhead_bytes = overhead;
             report.independent_handle_obligations = 1;
             report.unresolved_allocations = 1;
+            for clip in owner.iter() {
+                let bytes = clip
+                    .samples
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<super::MidiPreviewSample>())
+                    .ok_or(Error::Overflow)?;
+                report.samples_backing_bytes = report
+                    .samples_backing_bytes
+                    .checked_add(bytes)
+                    .ok_or(Error::Overflow)?;
+                report.unresolved_allocations = report
+                    .unresolved_allocations
+                    .checked_add(usize::from(bytes != 0))
+                    .ok_or(Error::Overflow)?;
+            }
         }
         report.bytes()?;
         Ok(report)
@@ -197,6 +215,10 @@ impl PreviewCustody {
         }
         self.capacity()?;
         self.disposal = Disposal::Pending;
+        // The exhaustive typed storage visitor audits this closed payload: scalar clip
+        // metadata plus Vec<scalar sample>. No provider/PCM/custom destructor
+        // or callback is reachable. The actual shared slice stays in this
+        // persistent slot until this control-only terminal operation.
         drop(self.clips.take());
         #[cfg(test)]
         drop(self.probe.take());
@@ -268,13 +290,46 @@ impl PreviewCustody {
                 .map(|MidiArrangementPreview { clips }| clips)
         });
         if let Some(owner) = owner {
-            l.shared(
-                owner.arc(),
-                owner.parts(),
-                Owner::exclusive(owner),
-                *handle,
-                None,
-            )?;
+            // Re-visiting this actual physical field is not another owning
+            // alias. Keep shared()'s standalone duplicate-root refusal intact.
+            if !l.contains_shared_field(owner) {
+                l.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(owner),
+                    *handle,
+                    None,
+                )?;
+            }
+            for super::MidiClipPreview {
+                clip_id,
+                frame_start,
+                frame_end,
+                authored_note_count,
+                occurrence_count,
+                samples,
+            } in owner.iter()
+            {
+                // Copy is part of the closed scalar-ID leaf contract: an
+                // owning/non-Copy replacement must force this audit to change.
+                let _: hex_project::ClipId = *clip_id;
+                let _: (&hex_project::ClipId, &u64, &u64, &usize, &usize) = (
+                    clip_id,
+                    frame_start,
+                    frame_end,
+                    authored_note_count,
+                    occurrence_count,
+                );
+                for super::MidiPreviewSample {
+                    frame_start,
+                    frame_gate_end,
+                    pitch,
+                } in samples
+                {
+                    let _: (&u64, &u64, &u8) = (frame_start, frame_gate_end, pitch);
+                }
+                l.vec(samples)?;
+            }
         }
         Ok(())
     }
@@ -329,3 +384,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod nonempty_tests;

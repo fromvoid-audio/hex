@@ -786,3 +786,19 @@ The bound is a possible-backing reservation, not the number of live transformed
 children; actual child fields and capacities still determine retained inventory.
 Split/crop/cache identity and unchanged Sampler host PCM are covered. Aggregate
 compiler peak reservation and native publication remain separate obligations.
+
+The existing persistent MIDI-preview capsule can now inventory, transfer,
+restore and dispose nonempty scalar previews. Its report includes actual nested
+sample-vector capacities (including empty reserved backings) in addition to the
+qualified shared slice's payload/header. Typed visits distinguish physical outer
+aliases from repeated visits to one field; direct duplicate-root registration
+still refuses. Unknown/default outer owners are not upgraded. The payload audit
+is exhaustive scalar clip/sample metadata and Vec backing, with control-only
+terminal disposal through the existing pending/complete protocol.
+
+The new tests place an actual compiler-produced preview into the existing
+capsule to exercise that storage/lifecycle seam; they do not qualify the future
+constructor ingress. The production constructor still refuses MIDI models until
+the aggregate prequoted closed entry exists. Exact/minus-one storage, actual
+aliases, producer retirement, transfer/restore and disposal are component proof;
+nonempty Session/descriptors, whole construction peak and publication remain open.
