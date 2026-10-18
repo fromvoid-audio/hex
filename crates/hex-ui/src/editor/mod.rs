@@ -659,6 +659,7 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
@@ -1113,6 +1114,7 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
             active_midi_trim_drag: None,
@@ -1362,6 +1364,8 @@ impl EditorView {
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        // Only a current resize owner may extend the transient display extent.
+        let horizon = horizon.max(self.trim_display_end().unwrap_or(0));
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)

@@ -12,7 +12,7 @@ pub(super) enum Action {
     Fluctuation(i8),
     Seed,
     Preserve,
-    Tail,
+    SelectTail(BeatsTail),
     Decay(i8),
     Formants(i8),
     Resolution(i16),
@@ -224,13 +224,11 @@ pub(super) fn command(
                 };
             }
         }
-        Action::Tail => {
+        Action::SelectTail(selected) => {
             if let WarpMode::Beats { tail, .. } = &mut settings.mode {
-                *tail = match tail {
-                    BeatsTail::Off => BeatsTail::Forward,
-                    BeatsTail::Forward => BeatsTail::Alternating,
-                    BeatsTail::Alternating => BeatsTail::Off,
-                };
+                *tail = selected;
+            } else {
+                return Err(Invalid("select beats to edit transient looping"));
             }
         }
         Action::Decay(delta) => {
