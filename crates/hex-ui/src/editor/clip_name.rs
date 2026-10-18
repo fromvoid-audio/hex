@@ -175,6 +175,16 @@ impl EditorView {
         name: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let fill = self
+            .state
+            .as_ref()
+            .and_then(|state| {
+                let color = state.project.track(track)?.color();
+                let flavor = state.project.clip_flavor(clip)?;
+                Some(theme::clip_fill(color, flavor, self.clip_is_selected(clip)))
+            })
+            .unwrap_or_else(|| theme::color(theme::PaletteRole::Raised));
+        let text = theme::readable_text(fill, theme::color(theme::PaletteRole::Text));
         div()
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
@@ -187,8 +197,8 @@ impl EditorView {
             .overflow_hidden()
             .text_xs()
             .line_height(px(14.0))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            .bg(rgb(fill))
+            .text_color(rgb(text))
             .cursor_pointer()
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {

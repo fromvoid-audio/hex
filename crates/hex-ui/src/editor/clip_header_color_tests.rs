@@ -186,6 +186,12 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                 });
                 visual.run_until_parked();
             }
+            visual.simulate_mouse_move(
+                gpui::point(gpui::px(0.0), gpui::px(0.0)),
+                None,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
             for (i, (clip, flavor, prefix)) in [
                 (f.audio, ClipFlavor::Muted, "clip-visual"),
                 (f.midi, ClipFlavor::Accent, "midi-clip-visual"),
