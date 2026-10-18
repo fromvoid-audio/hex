@@ -1,0 +1,36 @@
+{
+  "source": "5e2bbdaff6834f8d472aaa356b2097f2d2f50366",
+  "tree": "678f438aa70d8c4a001e7dd4ea027ed290fefd7f",
+  "filename": "hex-sampler-5e2bbdaf-bootstrap-foundation-evidence.tar.gz",
+  "bytes": 61705,
+  "sha256": "46353920b8b5f1e05df9ed226c29ed17e19da22f1f9aa6a9a264bc9ef3622d72",
+  "members": 18,
+  "payloads": 17,
+  "files": [
+    {
+      "path": "crates/hex-engine/src/audio_storage.rs",
+      "before": "f5b9c073f09c18026040aa6757bb9a1b2a1fc14f83da6af7db3578e31cf3363d",
+      "after": "fd502924e9fa7189472f396f9aa07be3cebfa5a4ac1ea15fba02cacab37a9f3e"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/construction_tests.rs",
+      "before": null,
+      "after": "34323eba353f515a5477043a152d8249ba74dd8009ef6f17514f9a2c95f742d0"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/control_storage_tests.rs",
+      "before": "cba162f3ed864d4339d67ea5102055577081569585b63d9088c9dde850f2994c",
+      "after": "2e5fb6ac309b368f70c8727b4bc301e5a5bb492ff39523816bbd2bebee172c7a"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/pcm_inventory.rs",
+      "before": "e0f9a7c1c85312387c5d5dd9844dbbe1d0e20624d7b0057c13941a8148c1c139",
+      "after": "a026e7735ae0afceb0a0a75061f9b31a0800764771bada58a536789e68bb6490"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "b36b15900003aceb0979b2163403cd999e18be2fc7847384b8380f0c7579a071",
+      "after": "76cc2274cffac6a2f4371da8a3ced06738a33c521feb948e8a2cb90a91ecc188"
+    }
+  ]
+}
