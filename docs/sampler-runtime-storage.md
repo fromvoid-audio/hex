@@ -131,3 +131,21 @@ limits are unchanged. Ordinary allocation refusal returns through the existing
 transaction rather than adding a panic path. The existing boundary/density and
 real Sampler revision-host tests cover this change; allocator requested capacity
 still needs validation inside the eventual whole construction allowance.
+
+The two MIDI stable sorts now use allocation-free unstable sorting with the
+same complete keys. This preserves order because those keys are unique:
+canonical clip/note IDs distinguish simultaneous notes, and the source iterator
+uses iteration0 only for the initial occurrence and distinct positive indices
+for repeats. A per-track span key includes start/clip/note/iteration; a global
+edge key additionally includes kind and track order. Coincident on/off edges
+therefore remain distinct, with off before on. This removes sort heap scratch
+without dropping ordering fields or modifying musical timing. The full MIDI
+integration suite covers independent tempo/loop/gate/preview PCM, interval
+queries, voice limits and the exact maximum edge count.
+
+Track sends, compensation feed rows and MIDI-route metadata also reserve one
+backing from their actual canonical counts before filling. Existing ordering,
+gain resolution, missing-target refusal and signal-graph preparation stay in
+place. These changes bound specific compiler helpers; snapshot-based routing
+revalidation and other complete-compiler owners still need the private-entry
+allowance and audit.

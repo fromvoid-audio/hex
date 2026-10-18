@@ -79,7 +79,10 @@ pub fn midi_events(project: &Project) -> Result<Vec<CompiledMidiEvent>, Invalid>
             append_clip(project, track_index, track.id(), clip, &mut ordered)?;
         }
     }
-    ordered.sort_by_key(|(track_index, event)| {
+    // Canonical clip/note IDs and occurrence iteration identify each edge;
+    // kind distinguishes a coincident on/off pair. There are no equal keys,
+    // so unstable sorting preserves the full order without heap scratch.
+    ordered.sort_unstable_by_key(|(track_index, event)| {
         (
             event.frame,
             if event.kind == MidiEventKind::NoteOff {
@@ -404,7 +407,9 @@ pub(crate) fn compile_instrument_track(
             });
         }
     }
-    spans.sort_by_key(|span| {
+    // One span per canonical clip/note/iteration in this track. The complete
+    // key is unique even for simultaneous notes or clipped loop occurrences.
+    spans.sort_unstable_by_key(|span| {
         (
             span.start,
             span.clip.value(),

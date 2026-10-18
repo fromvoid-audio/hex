@@ -587,21 +587,21 @@ fn compile_project_inner<'a>(
                 }
             }
         }
-        let sends = track
-            .sends()
-            .iter()
-            .map(|send| {
-                let return_index = snapshot
-                    .return_tracks()
-                    .iter()
-                    .position(|candidate| candidate.id() == send.return_track())
-                    .ok_or(Invalid("send return target is missing during compile"))?;
-                Ok(crate::CompiledSend {
-                    return_index,
-                    gain: send.gain(),
-                })
-            })
-            .collect::<Result<Vec<_>, Invalid>>()?;
+        let mut sends = Vec::new();
+        sends
+            .try_reserve_exact(track.sends().len())
+            .map_err(|_| Invalid("could not reserve compiled track sends"))?;
+        for send in track.sends() {
+            let return_index = snapshot
+                .return_tracks()
+                .iter()
+                .position(|candidate| candidate.id() == send.return_track())
+                .ok_or(Invalid("send return target is missing during compile"))?;
+            sends.push(crate::CompiledSend {
+                return_index,
+                gain: send.gain(),
+            });
+        }
         tracks.push(
             Track::with_audio_instrument_and_effects(
                 clips,
@@ -681,29 +681,34 @@ fn compile_project_inner<'a>(
     )?;
     project.audio_clip_views = audio_clip_views;
     project.return_feed_plan = return_feed_plan;
-    let feeds = snapshot
-        .authored_routing()
-        .iter()
-        .map(|feed| {
-            let source = snapshot
-                .return_tracks()
-                .iter()
-                .position(|bus| bus.id() == feed.source())
-                .ok_or(Invalid("compensation feed source is missing"))?;
-            let target = snapshot
-                .return_tracks()
-                .iter()
-                .position(|bus| bus.id() == feed.destination())
-                .ok_or(Invalid("compensation feed target is missing"))?;
-            Ok((source, target, feed.gain()))
-        })
-        .collect::<Result<Vec<_>, Invalid>>()?;
+    let mut feeds = Vec::new();
+    feeds
+        .try_reserve_exact(snapshot.authored_routing().len())
+        .map_err(|_| Invalid("could not reserve compiled return feeds"))?;
+    for feed in snapshot.authored_routing() {
+        let source = snapshot
+            .return_tracks()
+            .iter()
+            .position(|bus| bus.id() == feed.source())
+            .ok_or(Invalid("compensation feed source is missing"))?;
+        let target = snapshot
+            .return_tracks()
+            .iter()
+            .position(|bus| bus.id() == feed.destination())
+            .ok_or(Invalid("compensation feed target is missing"))?;
+        feeds.push((source, target, feed.gain()));
+    }
     project.tempo_map = Some(snapshot.tempo_map().clone());
-    project.midi_routing = snapshot
-        .midi_routes()
-        .iter()
-        .map(|route| (route.source(), route.destination()))
-        .collect();
+    project
+        .midi_routing
+        .try_reserve_exact(snapshot.midi_routes().len())
+        .map_err(|_| Invalid("could not reserve compiled midi routing"))?;
+    project.midi_routing.extend(
+        snapshot
+            .midi_routes()
+            .iter()
+            .map(|route| (route.source(), route.destination())),
+    );
     project.midi_routing.sort_unstable();
     project.signal_graph = crate::signal_graph::SignalGraph::prepare(&project, &feeds, snapshot)?;
     if project.signal_graph.is_some() {
