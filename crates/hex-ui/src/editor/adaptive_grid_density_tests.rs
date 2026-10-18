@@ -276,3 +276,108 @@ fn adaptive_review_offscreen_meter_history_does_not_allocate_paint_lists_for_sna
         assert!(lines.iter().any(|line| line.frame == next));
     }
 }
+
+#[test]
+fn adaptive_review_meter_origins_do_not_consume_a_second_landmark_quota() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    for index in 1..100 {
+        editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_quarters(index * 64).unwrap(),
+                meter: Meter::new(if index % 2 == 0 { 4 } else { 3 }, 4).unwrap(),
+            })
+            .unwrap();
+    }
+    let project = editor.project();
+    let length = project
+        .tempo_map()
+        .beat_to_frame(BeatTime::from_quarters(6_400).unwrap())
+        .unwrap();
+    for density in AdaptiveGridDensity::ALL {
+        let grid = SnapGrid::Adaptive.with_density(density);
+        for start in [0, 1, 3_000] {
+            let viewport = Viewport { start, length };
+            let lines = grid_lines(project, viewport, 100_000.0, grid);
+            assert!(
+                lines.len() >= 199 && lines.len() <= MAX_GRID_LINES,
+                "100 long sections have room for two regular landmarks each; origins already share meter markers: {density:?} start={start} lines={}",
+                lines.len()
+            );
+            assert!(lines.windows(2).all(|pair| pair[0].frame < pair[1].frame));
+            for pair in lines.windows(2).step_by(17) {
+                let candidate = pair[0].frame + 1;
+                let snapped = grid
+                    .snap_frame(project, candidate, viewport, 100_000.0)
+                    .unwrap();
+                assert!(
+                    lines.iter().any(|line| line.frame == snapped),
+                    "snap must remain painted"
+                );
+                assert_eq!(
+                    grid.adjacent_frame(project, pair[0].frame, viewport, 100_000.0, true),
+                    Some(pair[1].frame)
+                );
+                assert_eq!(
+                    grid.with_platform_modifier(true)
+                        .snap_frame(project, candidate, viewport, 100_000.0),
+                    Some(candidate)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn adaptive_review_frame_quantized_edge_markers_remain_painted_snap_targets() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let viewport = Viewport {
+        start: 1,
+        length: 1_000,
+    };
+    let first = editor.project().tempo_map().frame_to_beat(1).unwrap();
+    let last = editor.project().tempo_map().frame_to_beat(1_000).unwrap();
+    for (beat, numerator) in [
+        (BeatTime::from_raw(first.raw() - 1), 3),
+        (BeatTime::from_raw(last.raw() + 1), 4),
+    ] {
+        editor
+            .execute(Command::SetMeterPoint {
+                beat,
+                meter: Meter::new(numerator, 4).unwrap(),
+            })
+            .unwrap();
+    }
+    let project = editor.project();
+    assert_eq!(
+        project
+            .tempo_map()
+            .beat_to_frame(BeatTime::from_raw(first.raw() - 1))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        project
+            .tempo_map()
+            .beat_to_frame(BeatTime::from_raw(last.raw() + 1))
+            .unwrap(),
+        1_000
+    );
+    for density in AdaptiveGridDensity::ALL {
+        let grid = SnapGrid::Adaptive.with_density(density);
+        let lines = grid_lines(project, viewport, 100_000.0, grid);
+        assert_eq!(
+            lines.iter().map(|line| line.frame).collect::<Vec<_>>(),
+            vec![1, 1_000]
+        );
+        for candidate in [2, 500, 999] {
+            let snapped = grid
+                .snap_frame(project, candidate, viewport, 100_000.0)
+                .unwrap();
+            assert!(lines.iter().any(|line| line.frame == snapped));
+        }
+        assert_eq!(
+            grid.adjacent_frame(project, 1, viewport, 100_000.0, true),
+            Some(1_000)
+        );
+    }
+}

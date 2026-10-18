@@ -570,10 +570,25 @@ fn adaptive_grid_step(
             .saturating_sub(1);
         let last_section = points.partition_point(|point| point.beat() <= last);
         let sections = last_section.saturating_sub(first_section).max(1);
-        // Reserve one marker per section. Larger-than-paint-budget meter maps
-        // additionally share the final bounded landmark set below.
+        // An internal meter marker is the section's zero landmark: reserving
+        // it twice can discard half the usable subdivision budget. Only frame
+        // quantization at either viewport edge can admit a marker whose beat
+        // lies outside the regular landmark span. Binary searches above bound
+        // those exceptions to the first/next origins (one frame at each edge).
+        let extra_markers = usize::from(points.get(first_section).is_some_and(|point| {
+            point.beat() < first
+                && tempo_map
+                    .beat_to_frame(point.beat())
+                    .is_ok_and(|frame| frame >= viewport.start)
+        })) + usize::from(points.get(last_section).is_some_and(|point| {
+            tempo_map
+                .beat_to_frame(point.beat())
+                .is_ok_and(|frame| viewport.end().is_some_and(|end| frame < end))
+        }));
+        // Larger-than-paint-budget maps still share the final bounded painted
+        // identities for snapping; no hidden extra subdivision is introduced.
         let quota = MAX_GRID_LINES
-            .saturating_sub(sections)
+            .saturating_sub(extra_markers)
             .checked_div(sections)
             .unwrap_or(1)
             .max(1) as u64;

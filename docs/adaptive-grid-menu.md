@@ -97,3 +97,24 @@ Later, while the user is present in the qualified optimized app:
 Physical UI/paint/audio acceptance and optimized app delivery remain open/root
 owned. Cloud work performs no Mac/app operations. No listening, sample-access,
 MTS or unrelated suite acceptance is inferred.
+
+## returned meter-origin quota repair
+
+A later independent review found a separate early quota omission:100 long visible
+meter sections reserved100 marker slots even though their origins were also the
+regular section landmarks. The actual frozen83138-derived regression produced
+only100 painted lines with a256-line budget. The repair shares those identities;
+only frame-quantized viewport-edge markers outside the regular beat span need
+extra reserved slots. The existing binary searches bound that check to two edge
+origins, with no cache, allocation or whole-history scan added to snapping.
+
+Bounded tests cover100 sections/all three densities/three pan phases, enough
+remaining regular landmarks, paint/snap/directional matching and temporary bypass;
+separate one-frame rounding cases keep both edge markers reachable. All earlier
+phase-independent count, dense256 sampling and offscreen-history no-paint-list
+regressions remain. The9 actual menu/input/discoverability cases are unchanged.
+Original red/green receipts and earlier immutable archives retain their source
+identities. Final candidate integration/full20 and inherited333 qualification
+remain the dedicated merger's responsibility; no old report qualifies another
+tree. The production menu is still available only after actual merge/delivery;
+no installed-app or native visual/input acceptance is inferred.
