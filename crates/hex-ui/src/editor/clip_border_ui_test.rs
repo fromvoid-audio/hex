@@ -439,31 +439,31 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                     ),
                 ];
                 for (edge, (left, top, right, bottom)) in edges.iter().enumerate() {
-                    let x0 = f32::from(*left);
-                    let x1 = f32::from(*right);
-                    let y0 = f32::from(*top);
-                    let y1 = f32::from(*bottom);
+                    let x0 = f64::from(*left);
+                    let x1 = f64::from(*right);
+                    let y0 = f64::from(*top);
+                    let y1 = f64::from(*bottom);
                     for x in (x0.floor() as i32)..(x1.ceil() as i32) {
                         for y in (y0.floor() as i32)..(y1.ceil() as i32) {
-                            let x = x as f32 + 0.5;
-                            let y = y as f32 + 0.5;
+                            let x = x as f64 + 0.5;
+                            let y = y as f64 + 0.5;
                             if x < x0 || x >= x1 || y < y0 || y >= y1 {
                                 continue;
                             }
                             let contains = |mask: &gpui::Bounds<gpui::ScaledPixels>| {
-                                x >= f32::from(mask.left())
-                                    && x < f32::from(mask.right())
-                                    && y >= f32::from(mask.top())
-                                    && y < f32::from(mask.bottom())
+                                x >= f64::from(mask.left())
+                                    && x < f64::from(mask.right())
+                                    && y >= f64::from(mask.top())
+                                    && y < f64::from(mask.bottom())
                             };
                             let order = layers.iter().filter(|(_, mask)| contains(mask))
                                 .map(|(order, _)| *order).max()
                                 .unwrap_or_else(|| panic!("missing edge {edge} at {x},{y}: bounds={scaled:?} last_mask={mask:?} layers={layers:?}"));
                             let sep = separator.scale(scale);
-                            if x >= f32::from(sep.left())
-                                && x < f32::from(sep.right())
-                                && y >= f32::from(sep.top())
-                                && y < f32::from(sep.bottom())
+                            if x >= f64::from(sep.left())
+                                && x < f64::from(sep.right())
+                                && y >= f64::from(sep.top())
+                                && y < f64::from(sep.bottom())
                             {
                                 for (separator_order, mask) in &separator_layers {
                                     if contains(mask) {
