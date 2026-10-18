@@ -372,3 +372,63 @@ impl MutableInstrumentRuntime for SamplerRuntime {
 
 #[cfg(test)]
 mod tests;
+
+// Loaded native adapter only. Registration/resource publication remain the
+// host's separate admission boundary; this implementation retains no PCM.
+impl hex_lattice::NativeInstrumentDefinition for super::metadata::SamplerMetadata {
+    fn prepare_instrument(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<
+        Box<dyn hex_lattice::PreparedNativeInstrument>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        use hex_lattice_contract::DeviceContractError as Error;
+        if matches!(
+            super::state::DeviceState::from_native(state)?,
+            super::state::DeviceState::Empty
+        ) {
+            return Err(Error::AssetResourcesUnavailable);
+        }
+        context.validate_for(state)?;
+        // Matches the existing native host's 256 authored events plus three
+        // boundary events. This does not increase its query or voice ceilings.
+        let prepared = super::state::prepare_runtime_on_control(state, context, 259)?;
+        Ok(Box::new(prepared))
+    }
+}
+impl hex_lattice::PreparedNativeInstrument for PreparedSamplerRuntime {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn prepare_note(
+        &self,
+        _pitch: u8,
+        _velocity: u8,
+    ) -> Result<hex_lattice::PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
+        // Mutable sample playback must never silently fall back to an analytic
+        // oscillator or sample an unretained source through an invented token.
+        Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn validate_event_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        if pitch > 127 || velocity > 127 {
+            return Err(hex_lattice_contract::DeviceContractError::InvalidParameterValue);
+        }
+        // Unmapped Slice keys and zero velocity are valid silent/no-onset
+        // events under the actual runtime law, never fallback sample regions.
+        Ok(())
+    }
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<
+        Option<Box<dyn PreparedMutableInstrumentRuntime>>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        Ok(Some(Box::new(self.clone())))
+    }
+}

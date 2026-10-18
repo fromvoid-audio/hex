@@ -127,6 +127,16 @@ capacity, refuses missing/raw/opaque owners and preserves PCM after source/model
 retirement. Normal referenced registry processing and the audio-only assembly's
 unsupported MIDI/whole-graph guards remain closed pending complete admission.
 
+The existing Sampler metadata now also implements the native instrument adapter
+for a loaded source. Its prepared instrument selects the fixed mutable runtime,
+reports zero buffering latency, validates MIDI ranges and explicitly refuses
+analytic-note fallback. Source preparation checks actual slot/asset/rate/layout
+facts; the adapter retains coefficients only. Empty or missing/mismatched sources
+refuse rather than creating fake PCM. The native registry remains unchanged and
+still refuses referenced processing. This adapter does not qualify the host graph
+or complete the empty-device loading workflow. Independent Mono/Stereo event PCM
+oracles and the complete sampler kernel tests exercise this source boundary.
+
 This is still an unregistered runtime slice. Voice stealing/retrigger/glide,
 filter/LFO/modulation, high-quality resampling and warp, authored state/loading,
 the functional panel and full graph publication/retirement remain unfinished.

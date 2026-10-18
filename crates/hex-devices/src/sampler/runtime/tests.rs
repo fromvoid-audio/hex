@@ -325,3 +325,116 @@ fn concert_reference_retunes_assigned_root_instead_of_canceling_with_it() {
     process(&mut runtime, &[on(0, 1, 60)], &mut output, &resources);
     assert_eq!(output, [[1.0; 2], [5.0; 2], [9.0; 2], [0.0; 2], [0.0; 2]]);
 }
+
+#[test]
+fn native_loaded_adapter_uses_mutable_original_pcm_and_keeps_registry_gate_closed() {
+    use hex_lattice::{NativeInstrumentDefinition, PreparedNativeInstrument};
+    use hex_lattice_contract::{DeviceAssetReference, DeviceContractError as ContractError};
+    let mono = [0.25, 0.5, -0.25, 1.0];
+    let stereo = mono.map(|sample| [sample, -sample]);
+    for pcm in [
+        DeviceResourcePcm::Mono(&mono),
+        DeviceResourcePcm::Stereo(&stereo),
+    ] {
+        let mut source = view(&mono);
+        source.pcm = pcm;
+        let views = [source];
+        let resources = BorrowedDeviceResources(&views);
+        let state = super::super::state::SamplerState::for_source_frames(4)
+            .unwrap()
+            .to_native()
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: source.slot,
+                asset: source.identity.asset,
+            }])
+            .unwrap();
+        let context = hex_lattice::DevicePreparationContext {
+            sample_rate: 8_000,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &resources,
+        };
+        let prepared = super::super::metadata::METADATA
+            .prepare_instrument(&state, &context)
+            .unwrap();
+        assert_eq!(prepared.algorithmic_latency_frames(), Some(0));
+        assert!(matches!(
+            prepared.prepare_note(60, 127),
+            Err(ContractError::UnsupportedProcessingClass)
+        ));
+        assert!(prepared.validate_event_note(128, 127).is_err());
+        assert!(prepared.validate_event_note(60, 128).is_err());
+        assert!(prepared.validate_event_note(0, 0).is_ok());
+        let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+        assert_eq!(factory.max_events_per_block(), 259);
+        let mut pair = NativeInstrumentRuntimePair::new(
+            factory.as_ref(),
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: 2 * 1024 * 1024,
+                max_events_per_block: 259,
+                max_active_occurrences: 32,
+                max_tail_frames: 8_000 * 600,
+            },
+        )
+        .unwrap();
+        let mut output = [[0.0; 2]; 6];
+        process(&mut pair, &[on(0, 1, 60)], &mut output, &resources);
+        let expected = match pcm {
+            DeviceResourcePcm::Mono(_) => mono.map(|sample| [sample; 2]),
+            DeviceResourcePcm::Stereo(_) => stereo,
+        };
+        assert_eq!(&output[..4], &expected);
+        assert_eq!(&output[4..], &[[0.0; 2]; 2]);
+        // The fixed concrete factory route remains available to the actual
+        // engine owner enum; trait-object preparation supplies no lease proof.
+        let concrete =
+            super::super::state::prepare_runtime_on_control(&state, &context, 259).unwrap();
+        assert_eq!(
+            std::mem::size_of_val(&concrete),
+            std::mem::size_of::<PreparedSamplerRuntime>()
+        );
+        assert!(PreparedNativeInstrument::validate_event_note(&concrete, 127, 127).is_ok());
+        let registry = crate::native_instrument_registry().unwrap();
+        assert!(registry.definition(super::super::state::TYPE_ID).is_none());
+        assert!(registry.prepare_instrument(&state, &context).is_err());
+    }
+}
+
+#[test]
+fn native_loaded_adapter_refuses_empty_missing_and_mismatched_sources() {
+    use hex_lattice::NativeInstrumentDefinition;
+    use hex_lattice_contract::{DeviceAssetReference, NativeDeviceMetadata};
+    let pcm = [1.0; 4];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 8_000,
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &resources,
+    };
+    let empty = super::super::metadata::METADATA.default_state().unwrap();
+    assert!(matches!(
+        super::super::metadata::METADATA.prepare_instrument(&empty, &context),
+        Err(hex_lattice_contract::DeviceContractError::AssetResourcesUnavailable)
+    ));
+    let unbound = super::super::state::SamplerState::for_source_frames(4)
+        .unwrap()
+        .to_native()
+        .unwrap();
+    assert!(
+        super::super::metadata::METADATA
+            .prepare_instrument(&unbound, &context)
+            .is_err()
+    );
+    let wrong = unbound
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: views[0].slot,
+            asset: DeviceAssetKey::new(7).unwrap(),
+        }])
+        .unwrap();
+    assert!(
+        super::super::metadata::METADATA
+            .prepare_instrument(&wrong, &context)
+            .is_err()
+    );
+}
