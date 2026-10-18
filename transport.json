@@ -1,0 +1,9 @@
+{
+  "archive": "resident-volume-review-339d-v1.tar.gz",
+  "bytes": 117880,
+  "sha256": "9de662d46387307185b1265d146e339624f42c8f40286757d8a962b244a3a1cf",
+  "payloads": 26,
+  "source": "339d5a4227888ba4a75dcd229317b5eb0325f594",
+  "readiness_sha256": "2e0f7af067d6f2e28224b032f03a6c0002aef6ecfe92cf9e67fc59421e1b8555",
+  "evidence_only": true
+}
