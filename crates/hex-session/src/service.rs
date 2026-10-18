@@ -23,6 +23,9 @@ mod audio_sink;
 mod canonical_audio_source;
 pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
+mod worker_roots;
+use worker_roots::WorkerDispatchState;
+pub use worker_roots::{WorkerRootChildInventory, WorkerRootDispatch, WorkerRootView};
 mod worker_startup;
 use worker_startup::{ServiceStop, WorkerStartup};
 pub mod preset;
@@ -1298,6 +1301,11 @@ struct WorkerRunContext<'a> {
     recovery: Option<PathBuf>,
     control: Option<&'a crate::snapshot_exports::SnapshotWorkerControl>,
 }
+enum ArrangementClipboard {
+    Range(Arc<hex_project::RangeClipboard>),
+    Clips(Arc<hex_project::ClipClipboard>),
+}
+
 fn run_worker(
     mut session: Session,
     requests: Receiver<Request>,
@@ -1309,14 +1317,10 @@ fn run_worker(
     let WorkerRunContext {
         history_capacity,
         recovery,
-        control: _worker_control,
+        control: worker_control,
     } = context;
     let mut revision = 0_u64;
     let mut unsaved = false;
-    enum ArrangementClipboard {
-        Range(Arc<hex_project::RangeClipboard>),
-        Clips(Arc<hex_project::ClipClipboard>),
-    }
     let mut range_clipboard: Option<ArrangementClipboard> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
@@ -1426,11 +1430,39 @@ fn run_worker(
     if audio_error.is_some() && initial.error.is_none() {
         initial.error = audio_error;
     }
-    if !events.send(initial) {
+    // Private input references only. The public inspection view is rebuilt
+    // inside each synchronous sink call and ends before any queue operation.
+    macro_rules! dispatch_state {
+        ($export_job:expr, $export_completion:expr) => {
+            WorkerDispatchState {
+                session: &session,
+                current: &state,
+                compiled: &compiled,
+                midi_preview: &midi_preview,
+                generation: project_generation,
+                revision,
+                control: worker_control,
+                clipboard: &range_clipboard,
+                media_base: &media_base,
+                recovery: &recovery,
+                document: &document,
+                journal: &journal,
+                keyboard: &keyboard_activation,
+                keyboard_hint: &keyboard_tuning_hint,
+                audition: &audition_activation,
+                expression: &live_expression,
+                device_gesture: &device_gesture,
+                tuning_gesture: &tuning_gesture,
+                export_job: $export_job,
+                export_completion: $export_completion,
+            }
+        };
+    }
+    if !events.send(initial, &dispatch_state!(None, None)) {
         return;
     }
 
-    while let Some(request) = events.next_request(&requests) {
+    while let Some(request) = events.next_request(&requests, &dispatch_state!(None, None)) {
         let mut computer_keyboard_complete = None;
         let mut tuning_audition_complete = None;
         let mut live_expression_complete = None;
@@ -2932,7 +2964,7 @@ fn run_worker(
             project_generation = project_generation.saturating_add(1);
         }
         let canonical_changed = replacement_revision.is_some();
-        let canonical_prepared = if let Some(prepared) = replacement_revision {
+        let mut canonical_prepared = if let Some(prepared) = replacement_revision {
             revision = revision.saturating_add(1);
             midi_preview = prepared.midi_preview_on_control();
             state = view_state(
@@ -3061,13 +3093,13 @@ fn run_worker(
         let mut playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
             None
         } else if computer_keyboard_playback.is_some() && !prefer_rebased_preview {
-            computer_keyboard_playback
-        } else if let Some(prepared) = preview_prepared {
+            computer_keyboard_playback.take()
+        } else if let Some(prepared) = preview_prepared.take() {
             Some(native_playback(prepared))
-        } else if let Some(prepared) = canonical_prepared {
+        } else if let Some(prepared) = canonical_prepared.take() {
             Some(native_playback(prepared))
         } else {
-            restore_prepared.map(native_playback)
+            restore_prepared.take().map(native_playback)
         };
         if let (Some(candidate), Some(input)) = (
             playback.as_mut(),
@@ -3114,36 +3146,48 @@ fn run_worker(
                 }
             }
         }
-        if !events.send(Event {
-            snapshot_reads: Default::default(),
-            state: Arc::clone(&state),
-            playback,
-            status,
-            error,
-            request_complete: true,
-            computer_keyboard_complete,
-            tuning_audition_complete,
-            live_expression_complete,
-            audio_batch_complete,
-            audio_batch_failure,
-            save_complete,
-            open_complete,
-            project_replaced,
-            stopped_playback_restore_complete,
-            created,
-            duplicate_complete,
-            restore_complete,
-            device_preview,
-            gesture_ack,
-            gesture_protocol_ack,
-            gesture_request,
-            active_device_gesture: device_gesture.snapshot(),
-            tuning_preview,
-            tuning_gesture_ack,
-            tuning_gesture_request,
-            active_tuning_gesture: tuning_gesture.snapshot(),
-            tuning_library,
-        }) {
+        // End unused preparation aliases before final synchronous inspection;
+        // selected playback/preview owners now reside in the actual Event.
+        drop((
+            computer_keyboard_playback,
+            preview_prepared,
+            canonical_prepared,
+            restore_prepared,
+            preview_project,
+        ));
+        if !events.send(
+            Event {
+                snapshot_reads: Default::default(),
+                state: Arc::clone(&state),
+                playback,
+                status,
+                error,
+                request_complete: true,
+                computer_keyboard_complete,
+                tuning_audition_complete,
+                live_expression_complete,
+                audio_batch_complete,
+                audio_batch_failure,
+                save_complete,
+                open_complete,
+                project_replaced,
+                stopped_playback_restore_complete,
+                created,
+                duplicate_complete,
+                restore_complete,
+                device_preview,
+                gesture_ack,
+                gesture_protocol_ack,
+                gesture_request,
+                active_device_gesture: device_gesture.snapshot(),
+                tuning_preview,
+                tuning_gesture_ack,
+                tuning_gesture_request,
+                active_tuning_gesture: tuning_gesture.snapshot(),
+                tuning_library,
+            },
+            &dispatch_state!(export_job.as_ref(), export_completion.as_ref()),
+        ) {
             return;
         }
         if let Some(job) = export_job {

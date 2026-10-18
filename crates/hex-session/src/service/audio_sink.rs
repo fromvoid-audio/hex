@@ -18,6 +18,13 @@ pub trait WorkerAudioSink: Send {
     fn canonical_changed(&mut self, source: SharedCanonicalAudioSource);
     /// Advance bounded preparation/return work; no UI polling is required.
     fn poll(&mut self);
+    /// Fresh actual same-worker roots for this synchronous call only. The
+    /// default preserves existing asset-free adapters; it grants no admission.
+    /// Implementations must retain final ledger/guards through their commit,
+    /// never cache this borrow or turn selected totals into a saved permit.
+    fn poll_with_worker_roots(&mut self, _roots: &WorkerRootView<'_>) {
+        self.poll();
+    }
     /// Start a correlated reopen on the existing lifecycle lane. Implementations
     /// must relinquish the old output before returning; readiness is reported
     /// separately without waiting for a Client or UI event delivery.
@@ -86,12 +93,18 @@ impl WorkerEvents {
             .ok_or_else(|| "audio adapter unavailable".to_owned())?
             .restart_audio(project_generation, request_id)
     }
-    fn poll(&mut self) {
+    fn poll(
+        &mut self,
+        state: &WorkerDispatchState<'_>,
+        event: Option<&Event>,
+        dispatch: WorkerRootDispatch,
+    ) {
         if let Some(audio) = self.audio.as_mut() {
-            audio.poll();
+            let roots = WorkerRootView::new(state, &self.shutdown, event, dispatch);
+            audio.poll_with_worker_roots(&roots);
         }
     }
-    pub(super) fn send(&mut self, mut event: Event) -> bool {
+    pub(super) fn send(&mut self, mut event: Event, state: &WorkerDispatchState<'_>) -> bool {
         if let Some(source) = &event.state.canonical_audio_source {
             if self.last_context != Some(source.context()) {
                 if let Some(audio) = self.audio.as_mut() {
@@ -100,11 +113,15 @@ impl WorkerEvents {
                 self.last_context = Some(source.context());
             }
         }
+        let mut dispatch = WorkerRootDispatch::ChangedEvent;
         loop {
             if self.cancelled() {
                 return false;
             }
-            self.poll();
+            // This exact Event is borrowed only during the call, then moved.
+            // Full returns ownership and the next iteration makes a fresh view.
+            self.poll(state, Some(&event), dispatch);
+            dispatch = WorkerRootDispatch::PendingEvent;
             match self.sender.try_send(event) {
                 Ok(()) => return true,
                 Err(TrySendError::Disconnected(_)) => return false,
@@ -115,7 +132,11 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    pub(super) fn next_request(&mut self, requests: &Receiver<Request>) -> Option<Request> {
+    pub(super) fn next_request(
+        &mut self,
+        requests: &Receiver<Request>,
+        state: &WorkerDispatchState<'_>,
+    ) -> Option<Request> {
         if self.audio.is_none() {
             return requests.recv().ok();
         }
@@ -123,7 +144,7 @@ impl WorkerEvents {
             if self.cancelled() {
                 return None;
             }
-            self.poll();
+            self.poll(state, None, WorkerRootDispatch::Idle);
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => return Some(request),
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
@@ -317,5 +338,224 @@ mod tests {
         assert!(edited.state.unsaved);
         drop(service);
         wait(|| observed.closed.lock().unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+mod root_dispatch_tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    #[derive(Clone, Copy, Debug)]
+    struct Read {
+        context: hex_engine::AudioSourceContext,
+        dispatch: WorkerRootDispatch,
+        event_revision: Option<u64>,
+        old_source_refused: bool,
+        pending_export: bool,
+    }
+    #[derive(Default)]
+    struct Observed {
+        reads: Mutex<Vec<Read>>,
+        closed: AtomicBool,
+    }
+    struct RootSink {
+        observed: Arc<Observed>,
+        latest: Option<SharedCanonicalAudioSource>,
+        first: Option<SharedCanonicalAudioSource>,
+        independent: Option<SharedCanonicalAudioSource>,
+    }
+    impl WorkerAudioSink for RootSink {
+        fn initialize(&mut self, _: &dyn hex_engine::CancellationQuery) -> Result<u32, String> {
+            Ok(44100)
+        }
+        fn canonical_changed(&mut self, source: SharedCanonicalAudioSource) {
+            if self.first.is_none() {
+                self.first = Some(source.clone());
+            }
+            let context = source.context();
+            let independent_session = Session::new(source.sample_rate(), 8, 0).unwrap();
+            self.independent = Some(SharedCanonicalAudioSource::new_on_control(
+                CanonicalAudioSourceSnapshot::capture(
+                    source.project_owner_on_control(),
+                    context.project_generation,
+                    context.editor_revision,
+                    &independent_session,
+                ),
+            ));
+            self.latest = Some(source);
+        }
+        fn poll(&mut self) {
+            panic!("worker must dispatch actual roots, including idle and full-queue polls");
+        }
+        fn poll_with_worker_roots(&mut self, roots: &WorkerRootView<'_>) {
+            // Notification must happen before the first inspection/send. These
+            // intentionally retained test aliases do not claim whole-root fit.
+            let latest = self.latest.as_ref().unwrap();
+            assert!(roots.matches_current_source_on_control(latest));
+            assert_eq!(roots.context(), latest.context());
+            // Equal counters and shared Project do not substitute for the
+            // actual current physical snapshot allocation.
+            let independent = self.independent.as_ref().unwrap();
+            assert_eq!(independent.context(), latest.context());
+            assert!(
+                independent
+                    .project_owner_on_control()
+                    .shares_owner_with(latest.project_owner_on_control())
+            );
+            assert!(!roots.matches_current_source_on_control(independent));
+            let first = self.first.as_ref().unwrap();
+            let old_source_refused = first.context() != roots.context();
+            if old_source_refused {
+                assert!(!roots.matches_current_source_on_control(first));
+            }
+            assert_eq!(
+                roots.with_original_child_inventory_on_control(|inventory| {
+                    inventory.require_complete_root_storage_on_control()
+                }),
+                Err(hex_engine::AudioStorageError::UnknownStorage),
+            );
+            self.observed.reads.lock().unwrap().push(Read {
+                context: roots.context(),
+                dispatch: roots.dispatch(),
+                event_revision: roots.pending_event_revision(),
+                old_source_refused,
+                pending_export: roots.has_pending_export(),
+            });
+        }
+        fn close(&mut self) {
+            self.observed.closed.store(true, Ordering::Release);
+        }
+    }
+    fn wait(mut ready: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(3);
+        while !ready() {
+            assert!(Instant::now() < until, "worker dispatch did not progress");
+            thread::yield_now();
+        }
+    }
+    #[test]
+    fn fresh_worker_root_dispatch_tracks_actual_edit_idle_and_full_event_retry_without_saved_authority()
+     {
+        let observed = Arc::new(Observed::default());
+        let service = Service::with_audio_sink(
+            16,
+            0,
+            None,
+            Box::new(RootSink {
+                observed: observed.clone(),
+                latest: None,
+                first: None,
+                independent: None,
+            }),
+        )
+        .unwrap();
+        for name in ["one", "two"] {
+            service
+                .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+                .unwrap();
+        }
+        // Initial and first edit fill both slots. Revision two is retained as
+        // an exact local Event and inspected again on each Full retry.
+        wait(|| {
+            observed
+                .reads
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|read| {
+                    read.dispatch == WorkerRootDispatch::PendingEvent
+                        && read.event_revision == Some(2)
+                })
+                .count()
+                >= 2
+        });
+        {
+            let reads = observed.reads.lock().unwrap();
+            for revision in 0..=2 {
+                assert!(
+                    reads
+                        .iter()
+                        .any(|read| read.dispatch == WorkerRootDispatch::ChangedEvent
+                            && read.context.project_generation == 0
+                            && read.context.editor_revision == revision
+                            && read.event_revision == Some(revision))
+                );
+            }
+            assert!(
+                reads
+                    .iter()
+                    .filter(|read| read.context.editor_revision == 2)
+                    .all(|read| read.old_source_refused)
+            );
+        }
+        for revision in 0..=2 {
+            assert_eq!(
+                service
+                    .events
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .state
+                    .revision,
+                revision
+            );
+        }
+        wait(|| {
+            observed.reads.lock().unwrap().iter().any(|read| {
+                read.dispatch == WorkerRootDispatch::Idle
+                    && read.context.editor_revision == 2
+                    && read.event_revision.is_none()
+            })
+        });
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            service
+                .events
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .state
+                .revision,
+            3
+        );
+        wait(|| {
+            observed.reads.lock().unwrap().iter().any(|read| {
+                read.context.editor_revision == 3
+                    && read.old_source_refused
+                    && read.event_revision == Some(3)
+            })
+        });
+        // A refused export still has an ACTUAL pending completion path on
+        // the worker stack until the canonical Event has been delivered.
+        service
+            .submit(Request::Export(PathBuf::from(
+                "sampler-root-empty-export.wav",
+            )))
+            .unwrap();
+        let event = service.events.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(event.request_complete);
+        assert_eq!(event.state.revision, 3);
+        let completion = service
+            .export_events
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(completion.result.unwrap_err(), "nothing to export");
+        wait(|| {
+            observed
+                .reads
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|read| read.event_revision == Some(3) && read.pending_export)
+        });
+        wait(|| {
+            observed.reads.lock().unwrap().last().is_some_and(|read| {
+                read.dispatch == WorkerRootDispatch::Idle && !read.pending_export
+            })
+        });
+        // Close is independent of UI collection and no inspection guard is
+        // carried through the receive/sleep loop or destructor.
+        drop(service);
+        wait(|| observed.closed.load(Ordering::Acquire));
     }
 }

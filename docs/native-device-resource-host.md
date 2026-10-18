@@ -692,3 +692,32 @@ own cancellation field. All other physical owners must still join under the
 approved family guards: base worker/Event/native/current/candidate/outgoing and
 pending/unreclaimed roots. Enclosing storage, preconstruction old/new/temporary
 quotes, publication linearization and saturated retirement remain open.
+
+## fresh same-worker dispatch roots
+
+`WorkerAudioSink::poll_with_worker_roots` now receives a sealed, non-clonable
+borrow built from the actual worker Session, current view, compiled revision,
+MIDI preview, gesture/input/control locals and pending export job/completion.
+The exact pending Event is borrowed during each synchronous call. That view ends
+before `try_send`, is rebuilt after `Full(returned)`, and is absent during sleep
+or asynchronous preparation. Idle polling carries no Event. Canonical source
+notification still precedes potentially blocked UI delivery. Unused preparation
+aliases now end before inspection; selected playback and previews reside in the
+Event. Export locals remain explicitly borrowed until their later handoff.
+
+Correlation checks require the current snapshot allocation as well as generation,
+revision and rate. Equal counters and a shared Project in a different snapshot do
+not qualify. Selected typed child traversal joins the actual Session/history,
+current/pending/preview view children, worker MIDI and cancellation fields, plus
+actual retained PathBuf capacities. Its enclosing raw view/Event parents, prepared
+and gesture/input owners, channel custody and native adapter owners remain
+incomplete: complete-root inspection explicitly refuses UnknownStorage.
+
+This is the approved root-dispatch A integration boundary, not an admission
+permit. The native adapter still needs its actual root inventory, including any
+taken preparation/output locals, construction reservation and final ledger held
+through recheck/commit under the publication barrier last. Existing asset-free
+adapters retain their default polling behavior. Referenced registry processing,
+production registered startup, atomic sample replacement and the full functional
+Sampler panel/workflow remain open. No source identity or selected byte total is
+cached as publication authority.
