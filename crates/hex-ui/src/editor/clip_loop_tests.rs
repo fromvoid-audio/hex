@@ -1,6 +1,6 @@
 //! PR445 capability checkpoint: existing MIDI commands, not shipped gesture wiring.
 //! The scalar planner below is deliberately private until the common audio/gesture seam is settled.
-use super::midi_source_controls::{SourceValues, edit_command};
+use super::midi_source_controls::SourceValues;
 use hex_project::{
     BeatTime, ClipId, Command, Created, Editor, Invalid, MidiClip, MidiSourcePlayback, Project,
 };
@@ -107,8 +107,19 @@ fn fixture(source_start: u64, length: u64, looping: bool) -> (Editor, ClipId) {
         .unwrap();
     (editor, clip)
 }
+fn overwrite_command(clip: ClipId, next: SourceValues) -> Command {
+    Command::SetMidiClipSource {
+        clip,
+        source_length: beat(next.source_length),
+        source_start: beat(next.source_start),
+        loop_start: beat(next.loop_start),
+        loop_end: beat(next.loop_end),
+        looping: next.looping,
+        length: beat(next.arrangement_length),
+    }
+}
 fn apply(editor: &mut Editor, clip: ClipId, next: SourceValues) {
-    let command = edit_command(editor.project(), clip, next).unwrap();
+    let command = overwrite_command(clip, next);
     editor.execute(command).unwrap();
 }
 fn occurrences(clip: &MidiClip, note_start: u64) -> Vec<u64> {
@@ -254,7 +265,7 @@ fn midi_loop_invalid_and_prepare_refusal_keep_project_ids_history_and_redo() {
     assert!(values(original, Gesture::FirstBoundary, beat(11 * Q)).is_err());
     let next = values(original, Gesture::Outer, beat(18 * Q)).unwrap();
     let mut prepares = 0;
-    let command = edit_command(editor.project(), clip, next).unwrap();
+    let command = overwrite_command(clip, next);
     let result: Result<_, Invalid> = editor.execute_prepared(command, |candidate| {
         prepares += 1;
         assert_eq!(candidate.midi_clip(clip).unwrap().length(), beat(8 * Q));
@@ -267,7 +278,7 @@ fn midi_loop_invalid_and_prepare_refusal_keep_project_ids_history_and_redo() {
     let mut invalid = next;
     invalid.arrangement_length = 0;
     let result: Result<_, Invalid> =
-        editor.execute_prepared(edit_command(&before, clip, invalid).unwrap(), |_| {
+        editor.execute_prepared(overwrite_command(clip, invalid), |_| {
             prepares += 1;
             Ok(())
         });
@@ -311,4 +322,225 @@ fn midi_loop_noop_preserves_redo_and_boundary_overflow_refuses() {
         .unwrap();
     let high_source = editor.project().midi_clip(clip).unwrap();
     assert!(values(high_source, Gesture::FirstBoundary, beat(u64::MAX)).is_err());
+}
+
+fn with_audio_neighbor(
+    editor: &mut Editor,
+    track: hex_project::TrackId,
+    start: u64,
+    end: u64,
+) -> ClipId {
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: std::path::PathBuf::from("model-only-loop-neighbor.wav"),
+            sample_rate: 48_000,
+            frames: 1_000_000,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let first = editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(beat(start))
+        .unwrap();
+    let last = editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(beat(end))
+        .unwrap();
+    let Created::Clip(id) = editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: first,
+            duration: last - first,
+            source_offset: 100,
+            source_length: last - first,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("audio neighbor");
+    };
+    id
+}
+
+#[test]
+fn midi_single_loop_growth_carves_audio_and_midi_neighbors_at_final_capacity_in_one_undo() {
+    for at_capacity in [false, true] {
+        let (mut editor, clip) = fixture(2 * Q, 2 * Q, false);
+        let track = editor.project().tracks()[0].id();
+        let Created::Clip(victim) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: beat(12 * Q),
+                length: beat(Q),
+            })
+            .unwrap()
+        else {
+            panic!("midi neighbor");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip: victim,
+                start: beat(Q / 4),
+                duration: beat(Q / 4),
+                pitch: 72,
+                channel: 0,
+                velocity: 80,
+            })
+            .unwrap();
+        let audio = with_audio_neighbor(&mut editor, track, 13 * Q, 17 * Q);
+        let mut project = editor.project().clone();
+        if at_capacity {
+            let mut snapshot = project.snapshot();
+            let mut filler = match &snapshot.tracks[0].content {
+                hex_project::TrackContentSnapshot::Hybrid { midi_clips, .. } => {
+                    midi_clips[0].clone()
+                }
+                _ => panic!("hybrid"),
+            };
+            filler.notes.clear();
+            filler.length_raw = Q;
+            filler.source_length_raw = Q;
+            filler.source_start_raw = 0;
+            filler.loop_start_raw = 0;
+            filler.loop_end_raw = Q;
+            filler.looping = false;
+            let mut fillers = Vec::new();
+            for i in 0..hex_project::MAX_CLIPS - 3 {
+                let mut item = filler.clone();
+                item.id = snapshot.next_id;
+                snapshot.next_id += 1;
+                item.start_raw = (100 + i as u64 * 2) * Q;
+                fillers.push(item);
+            }
+            let hex_project::TrackContentSnapshot::Hybrid { midi_clips, .. } =
+                &mut snapshot.tracks[0].content
+            else {
+                panic!("hybrid");
+            };
+            midi_clips.extend(fillers);
+            project = Project::from_snapshot(snapshot).unwrap();
+        }
+        editor = Editor::new(project, 8).unwrap();
+        let before = editor.project().clone();
+        let incoming = before.midi_clip(clip).unwrap();
+        let old_audio = before.clip(audio).unwrap();
+        let next = values(incoming, Gesture::Outer, beat(15 * Q)).unwrap();
+        let mut prepares = 0;
+        editor
+            .execute_prepared(overwrite_command(clip, next), |candidate| {
+                prepares += 1;
+                assert!(candidate.midi_clip(victim).is_none());
+                let tail = candidate.clip(audio).unwrap();
+                let new_start = candidate.tempo_map().beat_to_frame(beat(15 * Q)).unwrap();
+                assert_eq!(tail.start(), new_start);
+                assert_eq!(
+                    tail.source_offset(),
+                    old_audio.source_offset() + new_start - old_audio.start()
+                );
+                assert_eq!(
+                    tail.start() + tail.duration(),
+                    old_audio.start() + old_audio.duration()
+                );
+                assert_eq!(tail.asset(), old_audio.asset());
+                assert_eq!(candidate.midi_clip(clip).unwrap().notes(), incoming.notes());
+                assert_eq!(
+                    Project::from_snapshot(candidate.snapshot()).unwrap(),
+                    *candidate
+                );
+                Ok::<(), Invalid>(())
+            })
+            .unwrap();
+        assert_eq!(prepares, 1);
+        let after = editor.project().clone();
+        let count = |project: &Project| {
+            project
+                .tracks()
+                .iter()
+                .map(|t| t.clips().len() + t.midi_clips().len())
+                .sum::<usize>()
+        };
+        assert_eq!(count(&after), count(&before) - 1);
+        if at_capacity {
+            assert_eq!(count(&before), hex_project::MAX_CLIPS);
+        }
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(!editor.can_undo());
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+    }
+}
+
+#[test]
+fn midi_single_loop_growth_late_midi_fragment_refusal_restores_prior_audio_and_redo() {
+    let (mut editor, clip) = fixture(2 * Q, 2 * Q, false);
+    let track = editor.project().tracks()[0].id();
+    let audio = with_audio_neighbor(&mut editor, track, 13 * Q, 14 * Q);
+    let Created::Clip(victim) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: beat(14 * Q),
+            length: beat(4096 * Q),
+        })
+        .unwrap()
+    else {
+        panic!("dense loop");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: victim,
+            start: beat(0),
+            duration: beat(Q / 64),
+            pitch: 72,
+            channel: 0,
+            velocity: 80,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip: victim,
+            source_length: beat(Q),
+            source_start: beat(0),
+            loop_start: beat(0),
+            loop_end: beat(Q / 32),
+            looping: true,
+            length: beat(4096 * Q),
+        })
+        .unwrap();
+    editor
+        .execute(Command::RenameClip {
+            clip,
+            name: "redo remains".into(),
+        })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().clone();
+    let next = values(
+        before.midi_clip(clip).unwrap(),
+        Gesture::Outer,
+        beat(15 * Q),
+    )
+    .unwrap();
+    let mut prepares = 0;
+    let failure = editor
+        .execute_prepared(overwrite_command(clip, next), |_| {
+            prepares += 1;
+            Ok::<(), Invalid>(())
+        })
+        .unwrap_err();
+    assert_eq!(
+        failure,
+        Invalid("midi overwrite note expansion exceeds project limit")
+    );
+    assert_eq!(prepares, 0);
+    assert_eq!(editor.project(), &before);
+    assert_eq!(editor.project().clip(audio), before.clip(audio));
+    assert!(editor.can_redo());
+    assert!(editor.redo());
+    assert_eq!(editor.project().clip_name(clip), Some("redo remains"));
 }
