@@ -246,11 +246,52 @@ fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestA
         };
         assert_ne!(painted, clip);
         assert!(canonical.project().midi_clip(painted).is_some());
+        let result = canonical.project().track(track).unwrap();
+        let tempo = canonical.project().tempo_map();
+        let mut bounds: Vec<_> = result
+            .audio_clips()
+            .iter()
+            .map(|clip| (clip.start(), clip.start() + clip.duration(), clip.id()))
+            .chain(result.midi_clips().iter().map(|clip| {
+                (
+                    tempo.beat_to_frame(clip.start()).unwrap(),
+                    tempo
+                        .beat_to_frame(BeatTime::from_raw(clip.start().raw() + clip.length().raw()))
+                        .unwrap(),
+                    clip.id(),
+                )
+            }))
+            .collect();
+        bounds.sort_by_key(|bound| bound.0);
+        assert_eq!(
+            bounds.len(),
+            3,
+            "interior paint must cut before/middle/after instead of layering over a full original"
+        );
+        assert_eq!(bounds[1].2, painted);
+        assert_eq!(bounds[0].1, bounds[1].0);
+        assert_eq!(bounds[1].1, bounds[2].0);
+        let after = canonical.project().tracks().to_vec();
+        // All three canonical fragments expose independent real header targets.
+        let (result_handle, result_editor) =
+            editor_window(cx, canonical.project().clone(), Arc::default());
+        let mut result_visual = VisualTestContext::from_window(result_handle, cx);
+        result_visual.run_until_parked();
+        for (_, _, id) in bounds {
+            let header = result_visual
+                .debug_bounds(Box::leak(
+                    format!("clip-drag-surface-{}", id.value()).into_boxed_str(),
+                ))
+                .expect("independent fragment header");
+            result_visual.simulate_click(header.center(), Modifiers::default());
+            result_editor.read_with(cx, |view, _| assert_eq!(view.selected_clip(), Some(id)));
+        }
         assert!(canonical.undo());
         assert!(canonical.project().midi_clip(painted).is_none());
         assert_eq!(canonical.project().tracks(), before.tracks());
         assert!(canonical.redo());
         assert!(canonical.project().midi_clip(painted).is_some());
+        assert_eq!(canonical.project().tracks(), after);
     }
 }
 
