@@ -51,6 +51,20 @@ impl<T> Clone for RetainedFamilyId<T> {
     }
 }
 
+/// Nonowning cancellation correlation. It intentionally survives job disposal;
+/// requesting cancellation never reports physical cleanup or releases charges.
+#[derive(Clone, Copy, Debug)]
+pub struct RetainedFamilyCancellationEndpoint {
+    table: u64,
+    index: usize,
+    route: hex_engine::RetainedControlJobRoute,
+}
+impl RetainedFamilyCancellationEndpoint {
+    pub fn cancel(&self) -> Result<(), RetainedFamilyError> {
+        persistent_table(&TABLE)?.cancel_worker(*self)
+    }
+}
+
 enum Phase {
     Vacant,
     Reserved,
@@ -65,10 +79,14 @@ struct Slot {
     // Constructor component reservation survives a consumed final-Drop fault.
     // It is not a claim about partially freed physical bytes/payload children.
     body_reservation_bytes: usize,
+    // Explicit producer-completion protocol, never inferred from Arc counts.
+    worker_route: Option<hex_engine::RetainedControlJobRoute>,
+    job_disposed: bool,
 }
 /// Hint bytes live in the same capacity-accounted slot backing, outside its
 /// guard solely for bounded selection. A hint never validates the actual job.
 struct SlotCell {
+    cancellation: hex_engine::RetainedControlCancellationSignal,
     hint: hex_engine::RetainedControlJobRouteHint,
     slot: RwLock<Slot>,
 }
@@ -91,11 +109,17 @@ impl RetainedFamilies {
         if limits.family_slots == 0 {
             return Err(RetainedFamilyError::Reservation);
         }
+        let signal = hex_engine::RetainedControlCancellationSignal::allocation_quote_on_control()
+            .map_err(|_| RetainedFamilyError::Reservation)?;
         std::mem::size_of::<Self>()
             .checked_add(
                 limits
                     .family_slots
-                    .checked_mul(std::mem::size_of::<SlotCell>())
+                    .checked_mul(
+                        std::mem::size_of::<SlotCell>()
+                            .checked_add(signal)
+                            .ok_or(RetainedFamilyError::Reservation)?,
+                    )
                     .ok_or(RetainedFamilyError::Reservation)?,
             )
             .filter(|n| *n <= limits.max_table_bytes)
@@ -107,6 +131,8 @@ impl RetainedFamilies {
         slots
             .try_reserve_exact(limits.family_slots)
             .map_err(|_| RetainedFamilyError::Allocation)?;
+        let signal = hex_engine::RetainedControlCancellationSignal::allocation_quote_on_control()
+            .map_err(|_| RetainedFamilyError::Reservation)?;
         let actual = std::mem::size_of::<Self>()
             .checked_add(
                 slots
@@ -114,20 +140,34 @@ impl RetainedFamilies {
                     .checked_mul(std::mem::size_of::<SlotCell>())
                     .ok_or(RetainedFamilyError::Reservation)?,
             )
+            .and_then(|bytes| {
+                limits
+                    .family_slots
+                    .checked_mul(signal)
+                    .and_then(|signals| bytes.checked_add(signals))
+            })
             .ok_or(RetainedFamilyError::Reservation)?;
         if actual > limits.max_table_bytes {
             return Err(RetainedFamilyError::Reservation);
         }
-        slots.resize_with(limits.family_slots, || SlotCell {
-            hint: hex_engine::RetainedControlJobRouteHint::new(),
-            slot: RwLock::new(Slot {
-                generation: 0,
-                phase: Phase::Vacant,
-                job: None,
-                first_panic: None,
-                body_reservation_bytes: 0,
-            }),
-        });
+        for _ in 0..limits.family_slots {
+            let cancellation =
+                hex_engine::RetainedControlCancellationSignal::try_new_on_control(signal)
+                    .map_err(|_| RetainedFamilyError::Allocation)?;
+            slots.push(SlotCell {
+                cancellation,
+                hint: hex_engine::RetainedControlJobRouteHint::new(),
+                slot: RwLock::new(Slot {
+                    generation: 0,
+                    phase: Phase::Vacant,
+                    job: None,
+                    first_panic: None,
+                    body_reservation_bytes: 0,
+                    worker_route: None,
+                    job_disposed: false,
+                }),
+            });
+        }
         let identity = NEXT_TABLE
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| RetainedFamilyError::Exhausted)?;
@@ -275,6 +315,98 @@ impl RetainedFamilies {
         job.inspect_payload::<T, _>(|_| job.route())
             .ok_or(RetainedFamilyError::Stale)
     }
+    fn bind_worker<T: Send + Sync + 'static>(
+        &self,
+        id: RetainedFamilyId<T>,
+    ) -> Result<
+        (
+            hex_engine::RetainedControlCancellation,
+            RetainedFamilyCancellationEndpoint,
+        ),
+        RetainedFamilyError,
+    > {
+        let token = RetainedFamilySlot {
+            table: id.table,
+            index: id.index,
+            generation: id.generation,
+        };
+        let mut slot = self
+            .slot(&token)?
+            .try_write()
+            .map_err(|_| RetainedFamilyError::Busy)?;
+        if slot.generation != id.generation || !matches!(slot.phase, Phase::Active) {
+            return Err(RetainedFamilyError::Stale);
+        }
+        if slot.job_disposed {
+            return Err(RetainedFamilyError::Stale);
+        }
+        if slot.worker_route.is_some() {
+            return Err(RetainedFamilyError::Reservation);
+        }
+        let job = slot.job.as_ref().ok_or(RetainedFamilyError::Failed)?;
+        let route = job
+            .inspect_payload::<T, _>(|_| job.route())
+            .ok_or(RetainedFamilyError::Stale)?;
+        let worker = self.slots[id.index]
+            .cancellation
+            .bind_worker_on_control(route);
+        slot.worker_route = Some(route);
+        Ok((
+            worker,
+            RetainedFamilyCancellationEndpoint {
+                table: self.identity,
+                index: id.index,
+                route,
+            },
+        ))
+    }
+    fn cancel_worker(
+        &self,
+        endpoint: RetainedFamilyCancellationEndpoint,
+    ) -> Result<(), RetainedFamilyError> {
+        if endpoint.table != self.identity {
+            return Err(RetainedFamilyError::Stale);
+        }
+        let cell = self
+            .slots
+            .get(endpoint.index)
+            .ok_or(RetainedFamilyError::Stale)?;
+        // NO slot guard, hint lookup, readiness, native barrier or cleanup wait.
+        cell.cancellation.cancel(endpoint.route);
+        Ok(())
+    }
+    fn finish_worker<T>(
+        &self,
+        id: RetainedFamilyId<T>,
+        worker: &mut Option<hex_engine::RetainedControlCancellation>,
+    ) -> Result<(), RetainedFamilyError> {
+        let token = RetainedFamilySlot {
+            table: id.table,
+            index: id.index,
+            generation: id.generation,
+        };
+        let mut slot = self
+            .slot(&token)?
+            .try_write()
+            .map_err(|_| RetainedFamilyError::Busy)?;
+        if slot.generation != id.generation {
+            return Err(RetainedFamilyError::Stale);
+        }
+        let route = slot.worker_route.ok_or(RetainedFamilyError::Stale)?;
+        let handle = worker.as_ref().ok_or(RetainedFamilyError::Stale)?;
+        if !self.slots[id.index]
+            .cancellation
+            .matches_worker_on_control(handle, route)
+        {
+            return Err(RetainedFamilyError::Stale);
+        }
+        // Audited caller must first finish transient work and retire Session,
+        // transform/startup/Event owning fields. This is an explicit protocol
+        // operation, NOT proof inferred from Arc counts or this single handle.
+        drop(worker.take());
+        slot.worker_route = None;
+        Ok(())
+    }
     fn read_route<T: Send + Sync + 'static, R>(
         &self,
         route: hex_engine::RetainedControlJobRoute,
@@ -408,18 +540,32 @@ impl RetainedFamilies {
         if !matches!(slot.phase, Phase::Active) {
             return;
         }
+        if slot.job_disposed && slot.worker_route.is_some() {
+            return;
+        }
+        let already_disposed = slot.job_disposed;
         let Some(job) = slot.job.as_mut() else {
             slot.phase = Phase::Failed;
             return;
         };
-        match catch_unwind(AssertUnwindSafe(|| job.step_on_control())) {
+        let result = if already_disposed {
+            Ok(Ok(RetainedFamilyProgress::Disposed))
+        } else {
+            catch_unwind(AssertUnwindSafe(|| job.step_on_control()))
+        };
+        match result {
             Ok(Ok(RetainedFamilyProgress::Pending)) => {}
             Ok(Ok(RetainedFamilyProgress::Disposed)) => {
+                slot.job_disposed = true;
+                if slot.worker_route.is_some() {
+                    return;
+                }
                 slot.phase = Phase::Failed;
                 let job = slot.job.take();
                 match catch_unwind(AssertUnwindSafe(|| drop(job))) {
                     Ok(()) => {
                         slot.body_reservation_bytes = 0;
+                        slot.job_disposed = false;
                         slot.phase = Phase::Vacant;
                         self.slots[index].hint.clear();
                     }
@@ -569,6 +715,27 @@ pub fn retained_family_route_on_control<T: Send + Sync + 'static>(
 ) -> Result<hex_engine::RetainedControlJobRoute, RetainedFamilyError> {
     persistent_table(&TABLE)?.registered_route(id)
 }
+/// Bind BEFORE worker startup/Service escape, under the actual typed job guard.
+/// This generic primitive is not a production adapter or admission permission.
+pub fn bind_retained_family_worker_on_control<T: Send + Sync + 'static>(
+    id: RetainedFamilyId<T>,
+) -> Result<
+    (
+        hex_engine::RetainedControlCancellation,
+        RetainedFamilyCancellationEndpoint,
+    ),
+    RetainedFamilyError,
+> {
+    persistent_table(&TABLE)?.bind_worker(id)
+}
+/// Call only after actual worker child owners/transient work have been retired.
+/// Busy/refusal retains both handle and slot charge; failed jobs stay failed.
+pub fn finish_retained_family_worker_on_control<T>(
+    id: RetainedFamilyId<T>,
+    worker: &mut Option<hex_engine::RetainedControlCancellation>,
+) -> Result<(), RetainedFamilyError> {
+    persistent_table(&TABLE)?.finish_worker(id, worker)
+}
 /// Neutral lookup hook only; the concrete adapter must validate Session
 /// incarnations and expose restricted queries. Generic callbacks grant no
 /// resource/admission authority. No service-wide/native barrier is held.
@@ -628,7 +795,11 @@ pub fn visit_retained_family_table_backing_on_control<'a>(
 ) -> Result<(), hex_engine::AudioStorageError> {
     let table =
         persistent_table(&TABLE).map_err(|_| hex_engine::AudioStorageError::UnknownStorage)?;
-    ledger.borrow_metadata_vec_backing_on_control(&table.slots)
+    ledger.borrow_metadata_vec_backing_on_control(&table.slots)?;
+    for cell in &table.slots {
+        cell.cancellation.visit_storage_on_control(ledger)?;
+    }
+    Ok(())
 }
 pub(super) fn advance_registered_family_on_control() {
     if let Ok(table) = persistent_table(&TABLE) {

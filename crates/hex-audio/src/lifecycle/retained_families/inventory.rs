@@ -57,7 +57,7 @@ impl<'a> RetainedFamilyInventorySlot<'a> {
     /// Structural phase check ONLY. Active payload/children still require the
     /// concrete closed adapter. Reserved/failed/panic/consumed states REFUSE.
     pub fn validate_intact_custody_on_control(&self) -> Result<(), RetainedFamilyError> {
-        if self.has_panic_owner() {
+        if self.has_panic_owner() || self.slot.job_disposed {
             return Err(RetainedFamilyError::Failed);
         }
         match self.slot.phase {
@@ -146,7 +146,11 @@ impl RetainedFamilyInventory {
         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
     ) -> Result<(), hex_engine::AudioStorageError> {
         ledger.borrow_metadata_vec_backing_on_control(&self.table.slots)?;
-        ledger.borrow_metadata_vec_backing_on_control(&self.guards)
+        ledger.borrow_metadata_vec_backing_on_control(&self.guards)?;
+        for cell in &self.table.slots {
+            cell.cancellation.visit_storage_on_control(ledger)?;
+        }
+        Ok(())
     }
 }
 /// max_scratch_bytes is a component reservation from EXISTING retained/peak

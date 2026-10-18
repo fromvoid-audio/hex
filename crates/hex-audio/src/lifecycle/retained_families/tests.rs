@@ -699,3 +699,156 @@ fn neutral_route_ack_uses_shared_guard_without_worker_readiness_and_failed_jobs_
     assert!(table.slots[slot.index].read().unwrap().job.is_some());
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn slot_cancellation_ignores_writer_poison_and_consumed_job_without_losing_newer_cancel() {
+    use hex_engine::CancellationQuery;
+    let table = table();
+    eprintln!(
+        "SUPPORTED actual slot signal slot_cancellation_ignores_writer_poison_and_consumed_job_without_losing_newer_cancel"
+    );
+    let token = table.reserve().unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let id = table
+        .register(&token, &mut source(&drops), usize::MAX, step)
+        .unwrap();
+    let (worker, endpoint) = table.bind_worker(id).unwrap();
+    {
+        let writer = table.slots[token.index].write().unwrap();
+        std::thread::scope(|scope| {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let table = &table;
+            scope.spawn(move || {
+                sender.send(table.cancel_worker(endpoint)).unwrap();
+            });
+            let completed = receiver.recv_timeout(std::time::Duration::from_secs(2));
+            // Always release before asserting/joining: regression fails boundedly.
+            drop(writer);
+            assert_eq!(completed.unwrap(), Ok(()));
+        });
+        assert!(worker.is_cancelled());
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let mut writer = table.slots[token.index].write().unwrap();
+        writer.phase = Phase::Failed;
+        let _consumed = writer.job.take();
+        panic!("injected poisoned/consumed holder");
+    }));
+    table.cancel_worker(endpoint).unwrap();
+    assert!(worker.is_cancelled());
+    assert!(table.slots[token.index].read().is_err());
+    // Poison/failure retains custody and blocks reuse, not cancellation.
+    assert!(table.reserve().is_ok()); // unrelated remaining slot progresses
+}
+
+#[test]
+fn slot_worker_completion_gates_only_final_drop_and_keeps_signal_across_reuse() {
+    use hex_engine::CancellationQuery;
+    let table = table();
+    eprintln!(
+        "SUPPORTED actual slot signal slot_worker_completion_gates_only_final_drop_and_keeps_signal_across_reuse"
+    );
+    let token = table.reserve().unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let id = table
+        .register(&token, &mut source(&drops), usize::MAX, step)
+        .unwrap();
+    let (worker, old_endpoint) = table.bind_worker(id).unwrap();
+    let mut worker = Some(worker);
+    table
+        .read(id, |payload| payload.ready.store(true, Ordering::Release))
+        .unwrap();
+    table.advance_one(); // payload step can complete even while worker exists
+    assert!(table.slots[token.index].read().unwrap().job_disposed);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    table.cancel_worker(old_endpoint).unwrap();
+    assert!(worker.as_ref().unwrap().is_cancelled());
+    table.finish_worker(id, &mut worker).unwrap();
+    assert!(worker.is_none());
+    for _ in 0..table.slots.len() {
+        table.advance_one();
+    }
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    let next = table.reserve().unwrap();
+    assert_eq!(next.index, token.index);
+    let id2 = table
+        .register(&next, &mut source(&drops), usize::MAX, step)
+        .unwrap();
+    let (later, endpoint) = table.bind_worker(id2).unwrap();
+    assert!(!later.is_cancelled());
+    table.cancel_worker(old_endpoint).unwrap();
+    assert!(!later.is_cancelled());
+    table.cancel_worker(endpoint).unwrap();
+    table.cancel_worker(old_endpoint).unwrap();
+    assert!(later.is_cancelled());
+}
+
+#[test]
+fn slot_signal_table_quote_charges_all_vacant_allocations_and_actual_worker_field() {
+    let limits = RetainedFamilyReservation {
+        family_slots: 2,
+        max_table_bytes: usize::MAX,
+    };
+    let quote = RetainedFamilies::quote(limits).unwrap();
+    assert!(matches!(
+        RetainedFamilies::new(RetainedFamilyReservation {
+            max_table_bytes: quote - 1,
+            ..limits
+        }),
+        Err(RetainedFamilyError::Reservation)
+    ));
+    let table = RetainedFamilies::new(RetainedFamilyReservation {
+        max_table_bytes: quote,
+        ..limits
+    })
+    .unwrap();
+    eprintln!("SUPPORTED all fixed slot signals and actual bound worker field");
+    let token = table.reserve().unwrap();
+    let id = table
+        .register(&token, &mut Some(1_u64), usize::MAX, |_: &mut u64| {
+            Ok(RetainedFamilyProgress::Pending)
+        })
+        .unwrap();
+    let (worker, _) = table.bind_worker(id).unwrap();
+    let reservation = hex_engine::AudioStorageLedgerReservation {
+        data_rows: 32,
+        handle_rows: 32,
+        root_rows: 8,
+        max_retained_bytes: 65_536,
+        max_construction_peak_bytes: 65_536,
+    };
+    let collect = |reservation| -> Result<_, hex_engine::AudioStorageError> {
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(reservation)?;
+        ledger.borrow_metadata_vec_backing_on_control(&table.slots)?;
+        for cell in &table.slots {
+            cell.cancellation.visit_storage_on_control(&mut ledger)?;
+        }
+        assert!(
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .is_err()
+        );
+        worker.visit_storage_on_control(&mut ledger)?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        let measured = ledger.summary()?;
+        assert_eq!(measured.data_allocations, 3); // actual backing plus BOTH fixed signals
+        let signals =
+            2 * hex_engine::RetainedControlCancellationSignal::allocation_quote_on_control()?;
+        assert_eq!(
+            measured.data_bytes,
+            table.slots.capacity() * std::mem::size_of::<SlotCell>() + signals
+        );
+        for cell in &table.slots {
+            cell.cancellation.visit_storage_on_control(&mut ledger)?;
+        }
+        assert_eq!(ledger.summary()?, measured);
+        Ok(measured)
+    };
+    let measured = collect(reservation).unwrap();
+    let mut exact = reservation;
+    exact.max_retained_bytes = measured.retained_bytes;
+    exact.max_construction_peak_bytes = measured.construction_peak_bytes;
+    assert_eq!(collect(exact).unwrap(), measured);
+    exact.max_retained_bytes -= 1;
+    assert!(collect(exact).is_err());
+}

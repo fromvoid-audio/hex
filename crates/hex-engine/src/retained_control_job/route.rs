@@ -15,6 +15,9 @@ pub(super) static NEXT_ROUTE: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RetainedControlJobRoute(NonZeroU64);
 impl RetainedControlJobRoute {
+    pub(super) fn cancellation_ordinal(self) -> u64 {
+        self.0.get()
+    }
     pub(super) fn mint(counter: &AtomicU64) -> Result<Self, RetainedControlJobBuildError> {
         let value = counter
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {

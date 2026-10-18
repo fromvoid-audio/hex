@@ -614,3 +614,39 @@ the separate approved contract in Pulse2783 note22292, following note22280.
 That route is not implemented by this sine change. Loading/publication, Sampler
 registration and the functional waveform-first panel remain open on the full
 musical-use critical path in Pulse2789 note22195.
+
+## fixed slot cancellation (production startup still unwired)
+
+The approved Pulse2783 note22292 route uses one paired fixed atomic watermark
+per existing SlotCell, beside its RwLock. The table quote reserves every signal
+allocation, even for vacant slots, and actual capacity checks include its enlarged
+slot backing. Guarded/table inventory visits the actual fixed owner fields.
+Worker clones carry the existing metadata receipt and a checked job route.
+There is no raw atomic/Arc access, numeric route constructor, reset or separate
+cancellation allowance. Direct release `fetch_max` and acquire queries preserve
+newer cancellation against a delayed old request. Long borrowed mapping/event/
+fade scans accept a nonallocating query interface rather than holding a family
+lookup guard. Legacy AtomicBool inputs remain explicitly unqualified owners.
+
+Binding validates the actual typed job and incarnation under its writer before
+returning a paired worker handle and a nonowning endpoint. The endpoint advances
+the fixed signal without any slot lock, hint lookup, readiness or native barrier,
+including when the holder is failed, poisoned or consumed. Retired endpoints do
+not claim cleanup or budget release. Explicit worker completion consumes the
+returned worker handle only after the audited caller has finished transient work
+and retired its actual Session/transform/startup/Event handle fields; it is not a
+strong-count inference or proof about arbitrary remaining clones.
+
+Incremental payload cleanup can progress while that worker binding exists. If
+the payload reports Disposed, the actual Box/reservation remains rooted until
+explicit completion; it is not stepped again. Final Drop and vacancy occur only
+after completion. Disposed-but-bound jobs refuse intact-custody validation.
+Failure preserves the slot charge and cancellation remains available.
+
+These primitives are not yet the production Service startup/worker route. Its
+pre-escape family registration, neutral Session/Desktop endpoint adapter, direct
+worker construction, startup-failure disposal, complete actual handle inventory,
+long-transform cancellation and all-worker completion must still be integrated
+and tested. The actual entire old/new/input/temporary startup peak and frozen
+atomic publication remain separate. Neither these component tests nor a paired
+worker handle permits referenced processing or completes the Sampler workflow.

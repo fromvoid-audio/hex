@@ -437,7 +437,8 @@ impl AudioTransformPreparation {
         } else {
             None
         };
-        let (map, attacks) = mapping::prepare_map(edit, project.tempo_map(), &self.shutdown)?;
+        let (map, attacks) =
+            mapping::prepare_map(edit, project.tempo_map(), self.shutdown.as_ref())?;
         let mut envelope = Vec::new();
         envelope
             .try_reserve_exact(edit.domain.source_gain.len())
@@ -506,15 +507,19 @@ impl AudioTransformPreparation {
         let mut rendered =
             hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
         if edit.domain.events.is_some() {
-            rendered.frames =
-                events::compose(&rendered.frames, edit, project.tempo_map(), &self.shutdown)?;
+            rendered.frames = events::compose(
+                &rendered.frames,
+                edit,
+                project.tempo_map(),
+                self.shutdown.as_ref(),
+            )?;
         }
         drop(scratch_reservation);
         mapping::apply_fade(
             &mut rendered.frames,
             edit,
             project.tempo_map(),
-            &self.shutdown,
+            self.shutdown.as_ref(),
         )?;
         let audio =
             Audio::from_prepared_derived(source.sample_rate(), rendered.frames, reservation)?;

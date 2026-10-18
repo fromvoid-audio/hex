@@ -7,7 +7,7 @@
 //! Failed small-stack trials run in child processes: a Rust stack overflow aborts
 //! its process, so it must never take down the invoking shell or test runner.
 
-use hex_devices::{SINE_INSTRUMENT_TYPE_ID, SineTable, utility::UTILITY_DEFINITION};
+use hex_devices::{SINE_INSTRUMENT_TYPE_ID, utility::UTILITY_DEFINITION};
 use hex_engine::{PreparedRevision, SessionPlayback};
 use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentRegistry};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterValue};

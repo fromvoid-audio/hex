@@ -14,7 +14,7 @@ fn push(points: &mut Vec<u64>, point: u64) -> Result<(), Invalid> {
 pub(super) fn prepare_map(
     edit: &AudioClipEdit,
     tempo: &hex_project::TempoMap,
-    cancel: &AtomicBool,
+    cancel: &dyn crate::CancellationQuery,
 ) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
     let (first, length, _, _) = edit.projected_domain(tempo)?;
     let length_usize = usize::try_from(length)
@@ -65,7 +65,7 @@ pub(super) fn prepare_map(
     push(&mut boundaries, 0)?;
     push(&mut boundaries, span.raw())?;
     for cycle in 0..cycles {
-        if cancel.load(Ordering::Acquire) {
+        if cancel.is_cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
         for marker in &warp.markers {
@@ -154,7 +154,7 @@ pub(super) fn apply_fade(
     frames: &mut [crate::Frame],
     edit: &AudioClipEdit,
     tempo: &hex_project::TempoMap,
-    cancel: &AtomicBool,
+    cancel: &dyn crate::CancellationQuery,
 ) -> Result<(), Invalid> {
     let domain = &edit.domain;
     if domain.fade.is_neutral() {
@@ -162,7 +162,7 @@ pub(super) fn apply_fade(
     }
     let projected = edit.projected_fade(tempo)?;
     for (index, frame) in frames.iter_mut().enumerate() {
-        if index % 1_024 == 0 && cancel.load(Ordering::Acquire) {
+        if index % 1_024 == 0 && cancel.is_cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
         let gain = projected.gain_at(index as u64)?;

@@ -3,11 +3,12 @@ mod render_fault;
 pub mod sample_preview;
 pub use device::{PreparedOutput, WorkerPreparedOutput};
 pub use lifecycle::retained_families::{
-    RetainedFamilyError, RetainedFamilyId, RetainedFamilyInventory,
-    RetainedFamilyInventoryIncarnation, RetainedFamilyInventoryPhase, RetainedFamilyInventorySlot,
-    RetainedFamilyProgress, RetainedFamilyReservation, RetainedFamilySlot,
-    acknowledge_retained_family, acknowledge_retained_family_route,
-    cancel_retained_family_slot_on_control, inspect_retained_family_on_control,
+    RetainedFamilyCancellationEndpoint, RetainedFamilyError, RetainedFamilyId,
+    RetainedFamilyInventory, RetainedFamilyInventoryIncarnation, RetainedFamilyInventoryPhase,
+    RetainedFamilyInventorySlot, RetainedFamilyProgress, RetainedFamilyReservation,
+    RetainedFamilySlot, acknowledge_retained_family, acknowledge_retained_family_route,
+    bind_retained_family_worker_on_control, cancel_retained_family_slot_on_control,
+    finish_retained_family_worker_on_control, inspect_retained_family_on_control,
     read_retained_family, read_retained_family_route, register_retained_family_on_control,
     reserve_retained_families_on_control, reserve_retained_family_slot_on_control,
     retained_family_inventory_reservation_quote_on_control, retained_family_job_body_quote,

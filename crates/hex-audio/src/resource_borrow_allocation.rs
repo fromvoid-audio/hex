@@ -182,7 +182,7 @@ fn freshly_prepared_clip_pcm_renders_and_seeks_without_callback_allocation_or_fr
         AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole, OwnedAudioSource,
     };
     use hex_project::{Command, Created, Editor, Project};
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::collections::BTreeMap;
     if !hex_engine::audio_storage_constructor_layout_supported() {
         eprintln!("unsupported constructor; no native prepared clip proof");
         return;

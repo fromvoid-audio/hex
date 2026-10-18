@@ -90,6 +90,7 @@ pub use shared_analytic::inline_fixture::{
 mod owned_shared;
 mod retained_control_job;
 pub use retained_control_job::{
+    CancellationQuery, RetainedControlCancellation, RetainedControlCancellationSignal,
     RetainedControlJob, RetainedControlJobBuildError, RetainedControlJobFault,
     RetainedControlJobProgress, RetainedControlJobRoute, RetainedControlJobRouteHint,
     retained_control_job_box_layout_supported,

@@ -1,7 +1,11 @@
 //! The one sealed fresh Box constructor used by lifecycle retained-control jobs.
 //! Outer layout qualification never declares the payload's children known.
 use std::{alloc::Layout, any::Any};
+mod cancellation;
 mod route;
+pub use cancellation::{
+    CancellationQuery, RetainedControlCancellation, RetainedControlCancellationSignal,
+};
 pub use route::{RetainedControlJobRoute, RetainedControlJobRouteHint};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
