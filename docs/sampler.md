@@ -1036,3 +1036,33 @@ constructors for the entire common compiler or certify its partial locals.
 The empty qualified-chain identity/alias test and the affected nonempty Utility
 Return custody/PCM regressions distinguish those limits. Sampler registration,
 Service loading, aggregate preconstruction and the functional panel remain open.
+
+The same compiler now has a private borrowed correlation route over actual
+installed Track/Return rows and their original bank. Before context transfer or
+source lookup it verifies the physical original owners, canonical clip/asset
+mapping, row freshness and actual Return configurations. Equal content in a
+separately allocated bank refuses before starting an attempt. The public legacy
+wrapper continues without this optional route.
+
+Each actual resolver result must match the retained original allocation before
+transformation. Copy-only row outcomes distinguish original resident/streamed,
+transformed and omitted clips, including the resulting output index. Per-clip
+outcomes remain provisional until the whole Track enters the actual retained
+Project; first or mid-Track errors and panics never mark it complete. Attempts
+latch before the first lookup and cannot be silently retried. Return observations
+compare the actual owner tag, device/state, bypass, rate and host gains without
+moving old declarations onto fresh legacy output. Existing paired birth safety
+comes from private constructor and conserved ownership, not content equality or
+an address-checking receipt.
+
+Focused tests include resident/streamed failures and caught panics, omitted and
+transformed clips, independent-bank refusal before input transfer, untouched
+canonical history with Undo/Redo, and retained original PCM after model/custody
+retirement. A Return fixture covers memoryless/stateful Utility and bypass while
+keeping old paired owners distinct from new unqualified output. The affected
+Track/Return inventory and retirement tests and retained-destination regressions
+also pass. This is correlation only: provisional compiler locals, fresh paired
+child selection, aggregate reservation before the first owner, failed-parent
+custody, actual Service binding and the final native publication remain open.
+No resource admission, registration, functional panel or delivered Sampler is
+claimed by this checkpoint.

@@ -50,6 +50,7 @@ fn retained_compiler_target_keeps_completed_fields_after_later_resolution_error(
             &mut contexts,
             &transforms,
             &mut destination,
+            None,
         )
     });
     assert!(matches!(
@@ -99,6 +100,7 @@ fn retained_compiler_target_success_matches_public_pcm_and_occupied_refusal_pres
                 &mut contexts,
                 &transforms,
                 &mut destination,
+                None,
             )
         })
         .unwrap();
@@ -139,6 +141,7 @@ fn retained_compiler_target_success_matches_public_pcm_and_occupied_refusal_pres
             &mut contexts,
             &transforms,
             &mut destination,
+            None,
         )
     });
     assert!(matches!(
@@ -209,6 +212,7 @@ fn retained_compiler_target_keeps_return_plan_before_resolution_error_or_unwind(
                     &mut contexts,
                     &transforms,
                     &mut destination,
+                    None,
                 )
             })
         }));

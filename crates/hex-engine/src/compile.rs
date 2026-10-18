@@ -310,6 +310,7 @@ fn compile_project<'a>(
             &mut shared_contexts,
             transforms,
             &mut destination,
+            None,
         )
     })?;
     let project = destination
@@ -334,10 +335,20 @@ pub(crate) fn compile_project_into<'a>(
     >,
     transforms: &crate::audio_transform::AudioTransformPreparation,
     destination: &mut Option<Project>,
+    compiler_bindings: Option<(
+        &mut crate::audio_preparation::ArrangementClips,
+        &crate::OwnedAudioInputs,
+    )>,
 ) -> Result<(), Invalid> {
     if destination.is_some() || previews.as_ref().is_some_and(|clips| !clips.is_empty()) {
         return Err(Invalid("compiler destination is not vacant"));
     }
+    // Private optional correlation only: actual installed rows plus actual bank,
+    // never a caller-authored provenance flag or output-adoption permit.
+    let mut compiler_bindings = compiler_bindings
+        .map(|(rows, bank)| rows.compiler_bindings_on_control(snapshot, bank))
+        .transpose()
+        .map_err(|_| Invalid("compiler source bindings are stale or mismatched"))?;
     let scalars = crate::project_output::CompiledProjectScalars::prepare(
         snapshot.sample_rate(),
         snapshot.master_gain(),
@@ -530,12 +541,18 @@ pub(crate) fn compile_project_into<'a>(
         clips
             .try_reserve_exact(track.clips().len())
             .map_err(|_| Invalid("could not reserve compiled audio clips"))?;
-        for clip in track.clips() {
+        for (clip_index, clip) in track.clips().iter().enumerate() {
             let asset = snapshot
                 .asset(clip.asset())
                 .ok_or(Invalid("project asset missing"))?;
             let source = resolve_source(asset, snapshot.sample_rate())?;
-            if let Some(compiled) = transforms.compile_clip(snapshot, clip, asset, source)? {
+            if let Some(bindings) = &mut compiler_bindings {
+                bindings
+                    .resolved(track_index, clip_index, &source)
+                    .map_err(|_| Invalid("compiler resolved source differs from retained bank"))?;
+            }
+            let compiled = transforms.compile_clip(snapshot, clip, asset, source)?;
+            if let Some(compiled) = compiled {
                 if let Some(audio) = &compiled.audio
                     && audio.frames._derived.is_some()
                 {
@@ -552,7 +569,22 @@ pub(crate) fn compile_project_into<'a>(
                         length: compiled.end - compiled.start,
                     });
                 }
+                let output_index = clips.len();
                 clips.push(compiled);
+                if let Some(bindings) = &mut compiler_bindings {
+                    bindings
+                        .produced(
+                            track_index,
+                            clip_index,
+                            output_index,
+                            Some(&clips[output_index]),
+                        )
+                        .map_err(|_| Invalid("compiler clip output correlation is inconsistent"))?;
+                }
+            } else if let Some(bindings) = &mut compiler_bindings {
+                bindings
+                    .produced(track_index, clip_index, clips.len(), None)
+                    .map_err(|_| Invalid("compiler omitted clip correlation is inconsistent"))?;
             }
         }
         let muted = track.muted() || (any_soloed && !track.soloed());
@@ -682,12 +714,17 @@ pub(crate) fn compile_project_into<'a>(
                 .with_mutable_instrument(mutable_instrument, mutable_looping_source)
                 .with_sends(sends),
         );
+        if let Some(bindings) = &mut compiler_bindings {
+            bindings
+                .finish_track(track_index, &project.tracks[track_index])
+                .map_err(|_| Invalid("compiler track source correlations are incomplete"))?;
+        }
     }
     project
         .return_buses
         .try_reserve_exact(snapshot.return_tracks().len())
         .map_err(|_| Invalid("could not reserve compiled return tracks"))?;
-    for return_track in snapshot.return_tracks() {
+    for (return_index, return_track) in snapshot.return_tracks().iter().enumerate() {
         let effect_plan = compile_effect_devices(
             return_track.devices(),
             hex_lattice::ProcessorChainOwner::Return(return_track.id().value()),
@@ -716,15 +753,24 @@ pub(crate) fn compile_project_into<'a>(
                 }
             }
         }
-        project
-            .return_buses
-            .push(crate::ReturnBus::from_compiled_fields(
-                return_track.id(),
-                return_track.gain(),
-                return_track.muted(),
-                effect_plan.fused,
-                std::sync::Arc::from(effect_plan.device_chain),
-            ));
+        let bus = crate::ReturnBus::from_compiled_fields(
+            return_track.id(),
+            return_track.gain(),
+            return_track.muted(),
+            effect_plan.fused,
+            std::sync::Arc::from(effect_plan.device_chain),
+        );
+        project.return_buses.push(bus);
+        if let Some(bindings) = &mut compiler_bindings {
+            bindings
+                .returned(
+                    return_index,
+                    return_track,
+                    &project.return_buses[return_index],
+                    snapshot.sample_rate(),
+                )
+                .map_err(|_| Invalid("compiler return owner correlation is inconsistent"))?;
+        }
     }
     project.finalize_compiled_tracks_on_control()?;
     let mut feeds = Vec::new();

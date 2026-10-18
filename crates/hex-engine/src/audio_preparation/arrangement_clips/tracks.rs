@@ -1,4 +1,5 @@
 //! Sealed control-owned Track targets; no Track/Arc/Clone escape.
+mod compiler_bindings;
 mod instrument;
 pub(super) mod utility;
 use super::*;
@@ -60,6 +61,7 @@ struct ClipDestination {
     source: usize,
     origin: Binding,
     owner: Option<PairedClipBinding>,
+    compiled: compiler_bindings::CompilerClipOutcome,
 }
 #[derive(Default)]
 struct Row {
@@ -86,6 +88,9 @@ struct Row {
     root_index: Option<usize>,
     meter_disposal: Disposal,
     chain_disposal: Disposal,
+    compiler_cursor: usize,
+    compiler_output: usize,
+    compiler_complete: bool,
 }
 #[derive(Default)]
 pub(super) struct TrackAssembly {
@@ -95,6 +100,7 @@ pub(super) struct TrackAssembly {
     phase: Phase,
     growth: usize,
     cursor: usize,
+    compiler_started: bool,
     #[cfg(test)]
     pub(super) fail_after: Option<usize>,
     #[cfg(test)]
@@ -337,6 +343,7 @@ impl TrackAssembly {
         pairs: &[Pair],
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
+            || self.compiler_started
             || self.rows.iter().any(|r| {
                 r.id.is_some()
                     || r.root_index.is_some()
@@ -378,6 +385,9 @@ impl TrackAssembly {
         let solo = project.tracks().iter().any(|t| t.soloed());
         // Reserve ALL target backing before any gain fill or owned constructor.
         for (ordinal, (r, t)) in self.rows.iter_mut().zip(project.tracks()).enumerate() {
+            r.compiler_cursor = 0;
+            r.compiler_output = 0;
+            r.compiler_complete = false;
             r.ordinal = ordinal;
             r.installed_ordinal = None;
             r.id = Some(t.id());
@@ -410,6 +420,7 @@ impl TrackAssembly {
                     source,
                     origin: pairs[source].binding,
                     owner: None,
+                    compiled: compiler_bindings::CompilerClipOutcome::Unseen,
                 });
             }
             for s in t.sends() {
@@ -763,6 +774,9 @@ impl TrackAssembly {
         r.gain.clear_on_control().map_err(gain_error)?;
         r.sends.clear();
         r.pairs.clear();
+        r.compiler_cursor = 0;
+        r.compiler_output = 0;
+        r.compiler_complete = false;
         r.id = None;
         r.mix = None;
         r.source_mix = None;
@@ -797,6 +811,7 @@ impl TrackAssembly {
         self.cursor = 0;
         self.active = 0;
         self.phase = Phase::Vacant;
+        self.compiler_started = false;
         Ok(())
     }
     pub(super) fn validate_root_sources(
@@ -962,6 +977,7 @@ impl TrackAssembly {
             phase: _,
             growth,
             cursor: _,
+            compiler_started: _,
             #[cfg(test)]
                 fail_after: _,
             #[cfg(test)]
@@ -1001,10 +1017,18 @@ impl TrackAssembly {
                 root_index: _,
                 meter_disposal: _,
                 chain_disposal: _,
+                compiler_cursor: _,
+                compiler_output: _,
+                compiler_complete: _,
             } = r;
             utility.visit_metadata(l)?;
             l.vec(clips)?;
             l.vec(pairs)?;
+            // Nonowning correlation records must remain Copy-only leaves.
+            fn scalar<T: Copy>(_: T) {}
+            for pair in pairs.iter() {
+                scalar(pair.compiled);
+            }
             l.vec(sends)?;
             gain.visit_audio_storage(l)?;
             if let Some(gain) = prepared_gain {
@@ -1133,5 +1157,20 @@ impl TrackAssembly {
             }
         }
         Ok(())
+    }
+}
+
+impl super::ArrangementClips {
+    pub(crate) fn compiler_bindings_on_control<'a>(
+        &'a mut self,
+        project: &'a hex_project::Project,
+        bank: &'a OwnedAudioInputs,
+    ) -> Result<compiler_bindings::CompilerSourceBindings<'a>, AudioStorageError> {
+        compiler_bindings::CompilerSourceBindings::new(
+            &mut self.tracks,
+            &mut self.returns,
+            project,
+            bank,
+        )
     }
 }

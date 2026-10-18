@@ -36,6 +36,7 @@ struct Row {
     bus: Option<ReturnBus>,
     root_index: Option<usize>,
     disposal: Disposal,
+    compiler_observed: bool,
 }
 #[derive(Default)]
 pub(super) struct ReturnAssembly {
@@ -276,6 +277,7 @@ impl ReturnAssembly {
             r.gain = b.gain();
             r.muted = b.muted();
             r.disposal = Disposal::Unstarted;
+            r.compiler_observed = false;
         }
         // Every active destination has a cleanup state before even scalar
         // handle exhaustion can interrupt acquisition. No owner is created yet.
@@ -419,6 +421,7 @@ impl ReturnAssembly {
         r.handle = 0;
         r.id = None;
         r.declaration = None;
+        r.compiler_observed = false;
         self.cursor += 1;
         Ok(())
     }
@@ -541,6 +544,7 @@ impl ReturnAssembly {
                 bus: _,
                 root_index: _,
                 disposal: _,
+                compiler_observed: _,
             } = r;
             utility.visit_metadata(l)?;
             if let Some(bus) = r.actual(root)? {
@@ -584,4 +588,101 @@ impl ReturnAssembly {
         }
         Ok(())
     }
+}
+
+impl ReturnAssembly {
+    pub(super) fn compiler_preflight(
+        &self,
+        project: &hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        if !matches!(self.phase, Phase::Reserved | Phase::Installed)
+            || self.active != project.return_tracks().len()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        for (index, (row, source)) in self.rows[..self.active]
+            .iter()
+            .zip(project.return_tracks())
+            .enumerate()
+        {
+            if row.ordinal != index
+                || row.id != Some(source.id())
+                || row.gain != source.gain()
+                || row.muted != source.muted()
+                || row.compiler_observed
+                || row.root_index.is_some()
+                || row.disposal != Disposal::Unstarted
+            {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            let chain = if let Some(owner) = &row.chain {
+                owner.arc().as_ref()
+            } else if let Some(owner) = &row.bare {
+                owner.as_ref()
+            } else if let Some(bus) = &row.bus {
+                bus.device_chain.as_ref()
+            } else {
+                return Err(AudioStorageError::SourceMismatch);
+            };
+            row.utility.bytes(chain)?;
+            if !compiler_return_source_matches(chain, source, project.sample_rate()) {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn compiler_observe(
+        &mut self,
+        index: usize,
+        source: &hex_project::ReturnTrack,
+        output: &ReturnBus,
+        rate: u32,
+    ) -> Result<(), AudioStorageError> {
+        let row = self
+            .rows
+            .get_mut(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if row.ordinal != index
+            || row.id != Some(source.id())
+            || row.compiler_observed
+            || output.id != source.id()
+            || output.gain != source.gain()
+            || output.muted != source.muted()
+            || output.device_chain.len() != source.devices().len()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if !compiler_return_source_matches(&output.device_chain, source, rate) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        // Nonowning source correlation ONLY. The fresh common-compiler chain
+        // does not acquire the old row's declarations by matching these IDs.
+        row.compiler_observed = true;
+        Ok(())
+    }
+}
+
+fn compiler_return_source_matches(
+    chain: &[crate::PreparedEffectInstance],
+    source: &hex_project::ReturnTrack,
+    rate: u32,
+) -> bool {
+    chain.len() == source.devices().len()
+        && chain
+            .iter()
+            .zip(source.devices())
+            .all(|(prepared, authored)| {
+                prepared.owner == hex_lattice::ProcessorChainOwner::Return(source.id().value())
+                    && prepared.device_id == authored.id().value()
+                    && prepared.device_type == authored.state().type_id()
+                    && prepared.bypassed == authored.bypassed()
+                    && prepared.sample_rate == rate
+                    && prepared.configuration.as_ref().is_some_and(|state| {
+                        state.as_ref().type_id() == authored.state().type_id()
+                            && state.state_version() == authored.state().state_version()
+                            && state.payload() == authored.state().payload()
+                            && state.input_gain_millidb() == authored.state().input_gain_millidb()
+                            && state.output_gain_millidb() == authored.state().output_gain_millidb()
+                    })
+            })
 }

@@ -584,3 +584,580 @@ fn mismatched_track_pair_preflight_keeps_all_actual_clips_in_original_persistent
         "hex preparation evidence: arrangement_tracks_preflight; supported-controls=completed; originals=retained"
     );
 }
+
+#[test]
+fn compiler_source_rows_correlate_actual_originals_and_refuse_wrong_or_repeated_sources() {
+    use crate::compile::PreparedAudioSourceRef;
+    use compiler_bindings::CompilerClipOutcome as Outcome;
+    if !supported("compiler_source_rows_originals") {
+        return;
+    }
+    for streamed in [false, true] {
+        for fault in 0..4 {
+            eprintln!("SUPPORTED compiler_source_rows streamed={streamed} fault={fault}");
+            let (p, bank, _) = fixture(streamed, false, false, 2);
+            let mut editor = Editor::new(p, 8).unwrap();
+            let original_model = editor.project().snapshot();
+            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+            let _token = custody
+                .begin_input_on_control(
+                    AudioArrangementInput::new(editor.project(), 11, bank)
+                        .with_audio_return_inventory(),
+                )
+                .ok()
+                .unwrap();
+            let source_capacity = custody.bank.as_ref().unwrap().sources.capacity();
+            let source_pointer = custody.bank.as_ref().unwrap().sources.as_ptr();
+            let asset = editor.project().assets().next().unwrap().id();
+            let wrong_audio = crate::Audio::new(48_000, vec![[0.25; 2]; 8]).unwrap();
+            let wrong_stream = Arc::new(
+                crate::StreamedSourceMetadata::new(
+                    crate::StreamSourceKey::new(11, asset),
+                    48_000,
+                    48_000,
+                    8,
+                    8,
+                    hex_project::IDENTITY_CONVERSION,
+                    [9; 32],
+                )
+                .unwrap(),
+            );
+            let effects = hex_devices::native_registry().unwrap();
+            let instruments = hex_devices::native_instrument_registry().unwrap();
+            let transforms = crate::audio_transform::AudioTransformPreparation::default();
+            let mut contexts = None;
+            let mut destination = None;
+            let mut calls = 0;
+            let bank = custody.bank.as_ref().unwrap();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                transforms.compile_transaction(|| {
+                    crate::compile::compile_project_into(
+                        editor.project(),
+                        |asset, _| {
+                            calls += 1;
+                            if calls == 3 {
+                                if fault == 1 {
+                                    return Err(crate::Invalid("injected source refusal"));
+                                }
+                                assert_ne!(fault, 3, "injected source resolver panic");
+                                if fault == 2 {
+                                    return Ok(if streamed {
+                                        PreparedAudioSourceRef::Streamed(&wrong_stream)
+                                    } else {
+                                        PreparedAudioSourceRef::Resident(&wrong_audio)
+                                    });
+                                }
+                            }
+                            let source = bank
+                                .sources
+                                .iter()
+                                .find(|(id, _)| *id == asset.id())
+                                .unwrap();
+                            Ok(match &source.1.kind {
+                                SourceKind::Resident(audio) => {
+                                    PreparedAudioSourceRef::Resident(audio)
+                                }
+                                SourceKind::Streamed(stream) => {
+                                    PreparedAudioSourceRef::Streamed(stream.arc())
+                                }
+                                _ => panic!("no mono frame-copy route"),
+                            })
+                        },
+                        None,
+                        &effects,
+                        &instruments,
+                        &mut contexts,
+                        &transforms,
+                        &mut destination,
+                        Some((&mut custody.arrangement_clips, bank)),
+                    )
+                })
+            }));
+            match fault {
+                0 => assert!(result.unwrap().is_ok()),
+                1 => assert!(matches!(
+                    result.unwrap(),
+                    Err(crate::Invalid("injected source refusal"))
+                )),
+                2 => assert!(matches!(
+                    result.unwrap(),
+                    Err(crate::Invalid(
+                        "compiler resolved source differs from retained bank"
+                    ))
+                )),
+                3 => assert!(result.is_err()),
+                _ => unreachable!(),
+            }
+            assert_eq!(calls, 3);
+            let retained = destination.as_ref().unwrap();
+            assert_eq!(retained.tracks.len(), if fault == 0 { 2 } else { 1 });
+            let first = &custody.arrangement_clips.tracks.rows[0];
+            assert!(first.compiler_complete);
+            for (index, pair) in first.pairs.iter().enumerate() {
+                assert_eq!(
+                    pair.compiled,
+                    if streamed {
+                        Outcome::StreamedOriginal(index)
+                    } else {
+                        Outcome::ResidentOriginal(index)
+                    }
+                );
+            }
+            let second = &custody.arrangement_clips.tracks.rows[1];
+            assert_eq!(second.compiler_complete, fault == 0);
+            assert_eq!(
+                second.pairs[0].compiled,
+                if fault == 0 {
+                    if streamed {
+                        Outcome::StreamedOriginal(0)
+                    } else {
+                        Outcome::ResidentOriginal(0)
+                    }
+                } else {
+                    Outcome::Unseen
+                }
+            );
+            assert_eq!(
+                custody.bank.as_ref().unwrap().sources.as_ptr(),
+                source_pointer
+            );
+            assert_eq!(
+                custody.bank.as_ref().unwrap().sources.capacity(),
+                source_capacity
+            );
+            let actual_clip = &retained.tracks[0].clips[0];
+            match &custody.bank.as_ref().unwrap().sources[0].1.kind {
+                SourceKind::Resident(original) => {
+                    assert!(original.shares_pcm_with(actual_clip.audio.as_ref().unwrap()))
+                }
+                SourceKind::Streamed(original) => assert!(Arc::ptr_eq(
+                    original.arc(),
+                    actual_clip
+                        .metadata
+                        .as_ref()
+                        .unwrap()
+                        .streamed
+                        .as_ref()
+                        .unwrap()
+                )),
+                _ => unreachable!(),
+            }
+            // Correlation cannot be reused as an adoption permit or silently
+            // reset after failure. Refusal occurs before resolver or input take.
+            let mut another = None;
+            let mut input = Some(crate::owned_shared::OwnedShared::new_owned(
+                crate::shared_analytic::SharedAnalyticContextTable::default(),
+            ));
+            let input_pointer = Arc::as_ptr(input.as_ref().unwrap().arc());
+            let refusal = crate::compile::compile_project_into(
+                editor.project(),
+                |_, _| panic!("repeated bindings must refuse before lookup"),
+                None,
+                &effects,
+                &instruments,
+                &mut input,
+                &transforms,
+                &mut another,
+                Some((
+                    &mut custody.arrangement_clips,
+                    custody.bank.as_ref().unwrap(),
+                )),
+            );
+            assert!(matches!(
+                refusal,
+                Err(crate::Invalid(
+                    "compiler source bindings are stale or mismatched"
+                ))
+            ));
+            assert!(another.is_none());
+            assert_eq!(Arc::as_ptr(input.as_ref().unwrap().arc()), input_pointer);
+            assert_eq!(editor.project().snapshot(), original_model);
+            let track = editor.project().tracks()[0].id();
+            editor.execute(Command::Gain { track, gain: 0.25 }).unwrap();
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), original_model);
+            assert!(editor.redo());
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), original_model);
+            drop(editor);
+            drop(custody);
+            // Already completed actual source aliases survive model/history and
+            // original preparation retirement; partial projects are not played.
+            if !streamed {
+                assert_eq!(
+                    destination.as_ref().unwrap().tracks[0].clips[0]
+                        .audio
+                        .as_ref()
+                        .unwrap()
+                        .frames(),
+                    &[[0.25; 2]; 8]
+                );
+            } else {
+                assert_eq!(
+                    destination.as_ref().unwrap().tracks[0].clips[0]
+                        .metadata
+                        .as_ref()
+                        .unwrap()
+                        .streamed
+                        .as_ref()
+                        .unwrap()
+                        .key(),
+                    crate::StreamSourceKey::new(11, asset)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn compiler_source_rows_record_transformed_and_omitted_outputs_without_original_adoption() {
+    use crate::compile::PreparedAudioSourceRef;
+    use compiler_bindings::CompilerClipOutcome as Outcome;
+    if !supported("compiler_source_rows_transform_omit") {
+        return;
+    }
+    for streamed in [false, true] {
+        eprintln!("SUPPORTED compiler_source_rows_transform_omit streamed={streamed}");
+        let (p, bank, _) = fixture(streamed, false, false, 3);
+        let mut editor = Editor::new(p, 16).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let clips = editor.project().tracks()[0]
+            .clips()
+            .iter()
+            .map(|c| c.id())
+            .collect::<Vec<_>>();
+        for (clip, start) in [(clips[1], 64), (clips[2], 128)] {
+            editor
+                .execute(Command::MoveClip { clip, track, start })
+                .unwrap();
+        }
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        let _token = custody
+            .begin_input_on_control(
+                AudioArrangementInput::new(editor.project(), 11, bank)
+                    .with_audio_return_inventory(),
+            )
+            .ok()
+            .unwrap();
+        let original = editor.project().snapshot();
+        if streamed {
+            // An actual direct streamed crop wholly beyond the nonlooping
+            // source is omitted by the existing compiler. A following original
+            // clip must keep its own ID while occupying the compressed index1.
+            editor
+                .execute(Command::TrimClip {
+                    clip: clips[1],
+                    start: 64,
+                    duration: 32,
+                    source_offset: 0,
+                    source_length: 8,
+                })
+                .unwrap();
+            // Pointer-edge trimming clamps to source extent; explicit TrimClip
+            // above authors a valid longer view with a silent nonlooping tail.
+            // Retain that real processing domain before cropping its view;
+            // returning pitch to zero keeps this domain without processing it.
+            editor
+                .execute(Command::SetAudioClipPitch {
+                    clip: clips[1],
+                    cents: 137,
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipPitch {
+                    clip: clips[1],
+                    cents: 0,
+                })
+                .unwrap();
+            editor
+                .execute(Command::TrimClipEdge {
+                    clip: clips[1],
+                    edge: hex_project::TrimEdge::Left,
+                    frame: 80,
+                })
+                .unwrap();
+        } else {
+            editor
+                .execute(Command::SetAudioClipPitch {
+                    clip: clips[1],
+                    cents: 137,
+                })
+                .unwrap();
+        }
+        if streamed {
+            let edit = editor
+                .project()
+                .clip(clips[1])
+                .unwrap()
+                .audio_edit()
+                .unwrap();
+            let (_, _, start, _) = edit.projected_domain(editor.project().tempo_map()).unwrap();
+            assert!(!edit.domain.looping);
+            assert_eq!(edit.domain.pitch_cents, 0);
+            assert!(!edit.domain.warp_enabled);
+            assert!(start >= edit.domain.source_length);
+        }
+        let effects = hex_devices::native_registry().unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let mut contexts = None;
+        let mut destination = None;
+        let bank = custody.bank.as_ref().unwrap();
+        transforms
+            .compile_transaction(|| {
+                crate::compile::compile_project_into(
+                    editor.project(),
+                    |asset, _| {
+                        let source = bank
+                            .sources
+                            .iter()
+                            .find(|(id, _)| *id == asset.id())
+                            .unwrap();
+                        Ok(match &source.1.kind {
+                            SourceKind::Resident(audio) => PreparedAudioSourceRef::Resident(audio),
+                            SourceKind::Streamed(stream) => {
+                                PreparedAudioSourceRef::Streamed(stream.arc())
+                            }
+                            _ => panic!("no mono frame-copy route"),
+                        })
+                    },
+                    None,
+                    &effects,
+                    &instruments,
+                    &mut contexts,
+                    &transforms,
+                    &mut destination,
+                    Some((&mut custody.arrangement_clips, bank)),
+                )
+            })
+            .unwrap();
+        let row = &custody.arrangement_clips.tracks.rows[0];
+        assert!(row.compiler_complete);
+        assert_eq!(
+            row.pairs.iter().map(|p| p.origin.clip).collect::<Vec<_>>(),
+            clips
+        );
+        if streamed {
+            assert_eq!(
+                row.pairs.iter().map(|p| p.compiled).collect::<Vec<_>>(),
+                vec![
+                    Outcome::StreamedOriginal(0),
+                    Outcome::Omitted,
+                    Outcome::StreamedOriginal(1)
+                ]
+            );
+            assert_eq!(destination.as_ref().unwrap().tracks[0].clips.len(), 2);
+            assert_eq!(destination.as_ref().unwrap().tracks[0].clips[1].start, 128);
+        } else {
+            assert_eq!(
+                row.pairs.iter().map(|p| p.compiled).collect::<Vec<_>>(),
+                vec![
+                    Outcome::ResidentOriginal(0),
+                    Outcome::Transformed(1),
+                    Outcome::ResidentOriginal(2)
+                ]
+            );
+            let output = &destination.as_ref().unwrap().tracks[0].clips[1];
+            let SourceKind::Resident(original) = &custody.bank.as_ref().unwrap().sources[0].1.kind
+            else {
+                unreachable!()
+            };
+            assert!(!original.shares_pcm_with(output.audio.as_ref().unwrap()));
+            assert!(output.audio.as_ref().unwrap().frames._derived.is_some());
+            assert_eq!(destination.as_ref().unwrap().audio_clip_views.len(), 1);
+        }
+        // Actual edits/history can return to the same originals; these scalar
+        // correlations never transplant their old declarations to new outputs.
+        assert!(editor.undo());
+        if streamed {
+            for _ in 0..3 {
+                assert!(editor.undo());
+            }
+        }
+        assert_eq!(editor.project().snapshot(), original);
+        assert!(row.pairs.iter().all(|p| p.owner.is_some()));
+        assert!(row.track.is_some());
+    }
+}
+
+#[test]
+fn compiler_source_rows_latch_first_and_mid_track_failure_or_panic() {
+    if !supported("compiler_source_rows_first_lookup") {
+        return;
+    }
+    for (panic, fail_at) in [(false, 1), (true, 1), (false, 2), (true, 2)] {
+        eprintln!("SUPPORTED compiler_source_rows_first_lookup panic={panic} fail_at={fail_at}");
+        let (project, bank, _) = fixture(false, false, false, 2);
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        let _token = custody
+            .begin_input_on_control(
+                AudioArrangementInput::new(&project, 11, bank).with_audio_return_inventory(),
+            )
+            .ok()
+            .unwrap();
+        let effects = hex_devices::native_registry().unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let mut contexts = None;
+        let mut destination = None;
+        let mut calls = 0;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            transforms.compile_transaction(|| {
+                crate::compile::compile_project_into(
+                    &project,
+                    |_, _| {
+                        calls += 1;
+                        if calls == fail_at {
+                            assert!(!panic, "injected selected lookup panic");
+                            return Err(crate::Invalid("first lookup refusal"));
+                        }
+                        let SourceKind::Resident(audio) =
+                            &custody.bank.as_ref().unwrap().sources[0].1.kind
+                        else {
+                            unreachable!()
+                        };
+                        Ok(crate::compile::PreparedAudioSourceRef::Resident(audio))
+                    },
+                    None,
+                    &effects,
+                    &instruments,
+                    &mut contexts,
+                    &transforms,
+                    &mut destination,
+                    Some((
+                        &mut custody.arrangement_clips,
+                        custody.bank.as_ref().unwrap(),
+                    )),
+                )
+            })
+        }));
+        if panic {
+            assert!(result.is_err());
+        } else {
+            assert!(matches!(
+                result.unwrap(),
+                Err(crate::Invalid("first lookup refusal"))
+            ));
+        }
+        assert_eq!(calls, fail_at);
+        assert!(destination.as_ref().unwrap().tracks.is_empty());
+        assert!(custody.arrangement_clips.tracks.compiler_started);
+        for (index, row) in custody.arrangement_clips.tracks.rows.iter().enumerate() {
+            assert!(!row.compiler_complete);
+            assert_eq!(
+                row.compiler_cursor,
+                if index == 0 { fail_at - 1 } else { 0 }
+            );
+            for (clip, pair) in row.pairs.iter().enumerate() {
+                assert_eq!(
+                    pair.compiled,
+                    if index == 0 && clip < fail_at - 1 {
+                        compiler_bindings::CompilerClipOutcome::ResidentOriginal(clip)
+                    } else {
+                        compiler_bindings::CompilerClipOutcome::Unseen
+                    }
+                );
+            }
+        }
+        let mut second = None;
+        let mut contexts = Some(crate::owned_shared::OwnedShared::new_owned(
+            crate::shared_analytic::SharedAnalyticContextTable::default(),
+        ));
+        let pointer = Arc::as_ptr(contexts.as_ref().unwrap().arc());
+        assert!(matches!(
+            crate::compile::compile_project_into(
+                &project,
+                |_, _| panic!("attempt must refuse before repeated lookup"),
+                None,
+                &effects,
+                &instruments,
+                &mut contexts,
+                &transforms,
+                &mut second,
+                Some((
+                    &mut custody.arrangement_clips,
+                    custody.bank.as_ref().unwrap()
+                )),
+            ),
+            Err(crate::Invalid(
+                "compiler source bindings are stale or mismatched"
+            ))
+        ));
+        assert!(second.is_none());
+        assert_eq!(Arc::as_ptr(contexts.as_ref().unwrap().arc()), pointer);
+        let SourceKind::Resident(original) = &custody.bank.as_ref().unwrap().sources[0].1.kind
+        else {
+            unreachable!()
+        };
+        assert_eq!(original.frames(), &[[0.25; 2]; 8]);
+        assert!(!custody.arrangement_clips.can_transfer_revision());
+    }
+}
+
+#[test]
+fn compiler_source_rows_refuse_equal_independent_bank_before_attempt() {
+    if !supported("compiler_source_rows_independent_bank") {
+        return;
+    }
+    for streamed in [false, true] {
+        eprintln!("SUPPORTED compiler_source_rows_independent_bank streamed={streamed}");
+        let (project, original, _) = fixture(streamed, false, false, 2);
+        let (equal_project, independent, _) = fixture(streamed, false, false, 2);
+        assert_eq!(project.snapshot(), equal_project.snapshot());
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        let _token = custody
+            .begin_input_on_control(
+                AudioArrangementInput::new(&project, 11, original).with_audio_return_inventory(),
+            )
+            .ok()
+            .unwrap();
+        let source_pointer = custody.bank.as_ref().unwrap().sources.as_ptr();
+        let effects = hex_devices::native_registry().unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let mut contexts = Some(crate::owned_shared::OwnedShared::new_owned(
+            crate::shared_analytic::SharedAnalyticContextTable::default(),
+        ));
+        let context_pointer = Arc::as_ptr(contexts.as_ref().unwrap().arc());
+        let mut destination = None;
+        assert!(matches!(
+            crate::compile::compile_project_into(
+                &project,
+                |_, _| panic!("independent bank must refuse before lookup"),
+                None,
+                &effects,
+                &instruments,
+                &mut contexts,
+                &transforms,
+                &mut destination,
+                Some((&mut custody.arrangement_clips, &independent)),
+            ),
+            Err(crate::Invalid(
+                "compiler source bindings are stale or mismatched"
+            ))
+        ));
+        assert!(destination.is_none());
+        assert_eq!(
+            Arc::as_ptr(contexts.as_ref().unwrap().arc()),
+            context_pointer
+        );
+        assert!(!custody.arrangement_clips.tracks.compiler_started);
+        assert_eq!(
+            custody.bank.as_ref().unwrap().sources.as_ptr(),
+            source_pointer
+        );
+        custody
+            .arrangement_clips
+            .tracks
+            .validate_root_sources(&[], custody.bank.as_ref().unwrap())
+            .unwrap();
+        assert!(custody.arrangement_clips.tracks.rows.iter().all(|row| {
+            row.compiler_cursor == 0
+                && !row.compiler_complete
+                && row
+                    .pairs
+                    .iter()
+                    .all(|pair| pair.compiled == compiler_bindings::CompilerClipOutcome::Unseen)
+        }));
+    }
+}
