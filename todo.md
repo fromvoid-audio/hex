@@ -5076,3 +5076,13 @@ input acceptance remain pending; no installed app changes.
   full local CI is recorded in PR336/Pulse2720, not inferred from focused tests.
 - Native optimized physical input, listening and current-format save/reopen remain
   open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.
+
+### inline-tree count label correction — pulse2728 / PR341
+
+Two empty roots previously displayed “2 samples”. Hierarchy rows now count as items;
+flat indexed queries retain sample counts, including zero matches. Row construction
+and labels share an explicit Samples result mode; no new traversal or WAV-total scan.
+A focused rendered-model regression covers empty roots, expansion with only directory
+rows, and flat search. Source fix is handed to the dedicated merger separately from
+Place correctness2791/397; final combined full CI and optimized native checks remain
+open.

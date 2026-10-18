@@ -191,3 +191,9 @@ Native optimized hierarchy/keyboard/scroll/width/reference acceptance is open.
 The coordinator's finite reference availability check found no running Live and
 a locked Mac; no gestures were observed and no app was launched. This implements
 the documented contract, not an observed claim of exact installed-Live parity.
+
+Samples count labels follow the listing model: the inline hierarchy reports visible
+items (folders plus files), while flat indexed query results report sample matches.
+Expanding a folder can change the item count without discovering another WAV. The
+label does not enumerate collapsed folders or imply a total sample count. Pulse2728
+counter follow-up; optimized native acceptance remains open.

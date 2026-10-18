@@ -1400,7 +1400,9 @@ impl EditorView {
             .as_ref()
             .filter(|listing| listing.directory == self.browser.directory);
         let base = match &self.browser.section {
-            BrowserSection::Samples if query.is_empty() => {
+            BrowserSection::Samples
+                if samples::ResultsMode::for_query(&query) == samples::ResultsMode::Hierarchy =>
+            {
                 self.browser.tree.roots(self.sample_roots())
             }
             BrowserSection::Samples => self.browser.samples.visible(&query),
