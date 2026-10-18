@@ -5013,3 +5013,13 @@ input acceptance remain pending; no installed app changes.
   rendered key/real-worker regressions added; exact-source validation is recorded
   in PR337. Native optimized physical header/clip/text/numeric acceptance remains
   open through the coordinator; no installed-app change is implied.
+
+## project bpm input — pulse2720 / pr336
+
+- Implemented compact top-left shared numeric tempo entry in both project modes;
+  removed canonical BPM +/- while preserving meter and SetTempoPoint semantics.
+- Six focused range/input/layout/lifecycle/blur regressions cover the control;
+  final source validation is recorded in PR336/Pulse2720. Required exact-source
+  full local CI is recorded in PR336/Pulse2720, not inferred from focused tests.
+- Native optimized physical input, listening and current-format save/reopen remain
+  open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.
