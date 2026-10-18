@@ -131,6 +131,7 @@ impl PreparedAnalyticContinuation for PreparedOperatorContext {
         note: &PreparedSharedAnalyticNote,
         age_frames: u64,
         gate_frames: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<StereoFrame, AnalyticContinuationError> {
         let levels = self.continuation_levels(target, parameters)?;
         let note = self.continuation_note(note)?;

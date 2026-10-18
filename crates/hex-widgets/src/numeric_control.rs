@@ -77,6 +77,7 @@ pub enum NumericControlAppearance {
     CompactDial,
     MiniDial,
     MicroDial,
+    WideMicroDial,
     InlineValue,
     DeviceMeters,
 }
@@ -1153,6 +1154,11 @@ impl gpui::Render for NumericControl {
                 }));
         }
 
+        let micro_dial_width = if self.appearance == NumericControlAppearance::WideMicroDial {
+            crate::WIDE_MICRO_DIAL_WIDTH
+        } else {
+            crate::MICRO_DIAL_WIDTH
+        };
         let mut root = match (self.kind, self.appearance) {
             (_, NumericControlAppearance::DeviceMeters) => div()
                 .id(self.id.clone())
@@ -1174,11 +1180,13 @@ impl gpui::Render for NumericControl {
                 ),
             (
                 NumericControlKind::Knob,
-                NumericControlAppearance::MicroDial | NumericControlAppearance::MiniDial,
+                NumericControlAppearance::MicroDial
+                | NumericControlAppearance::MiniDial
+                | NumericControlAppearance::WideMicroDial,
             ) => div()
                 .id(self.id.clone())
                 .relative()
-                .w(px(crate::MICRO_DIAL_WIDTH))
+                .w(px(micro_dial_width))
                 .h(px(crate::MICRO_DIAL_HEIGHT))
                 .track_focus(&self.focus)
                 .key_context(key_context)
@@ -1188,7 +1196,7 @@ impl gpui::Render for NumericControl {
                         .debug_selector(|| format!("{}-label", self.id))
                         .top(px(0.0))
                         .left(px(2.0))
-                        .w(px(crate::MICRO_DIAL_WIDTH - 4.0))
+                        .w(px(micro_dial_width - 4.0))
                         .h(px(9.0))
                         .text_size(px(8.0))
                         .text_color(rgb(if enabled { style.muted } else { style.border }))
@@ -1217,7 +1225,7 @@ impl gpui::Render for NumericControl {
                                     font_size: 8.0,
                                     ..style
                                 },
-                                width: px(crate::MICRO_DIAL_WIDTH - 13.0),
+                                width: px(micro_dial_width - 13.0),
                                 height: px(12.0),
                             },
                             self.value_mouse_down_listener(cx),

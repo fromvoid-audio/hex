@@ -770,3 +770,25 @@ rate refusal/cancel, stopped/playing/paused/Stop mixing, background decode error
 and rate conversion, actual GPUI click/right/search-caret/up-down/Enter routing,
 and zero allocation/deallocation for callback replacement/end/shutdown fixtures.
 Native listening, focus and actual output-device timing remain user checks.
+
+Pulse2766 / PR374 adds callback-derived preview lifecycle snapshots. The request
+generation is Preparing until PCM is actually mixed, Playing while frames remain,
+and Finished after the final frame; completion does not wait for PCM retirement.
+Cancel invalidates the generation and reports Idle immediately, including while
+decode or input publication is pending. The existing output faults/shutdown mask
+the state as Unavailable. Two fixed atomic generation acknowledgements preserve
+newest-request isolation; no callback allocation, lock, PCM disposal or project
+transport change is added. The original backend is already a finite one-shot;
+these observations do not establish that the user's apparent endless audition
+was a backend audio loop. Browser UI integration remains Pulse2664 / PR280.
+
+
+Browser waveform-position audition (Pulse2779 / PR385) moves the existing finite
+PCM owner with a validated starting cursor, resolved on the background/control
+side against the actual output-rate decoded length. Start at exact end completes
+silently. Callback mixing remains the same bounded slice sum; it publishes one
+scalar absolute position after rendering alongside generation-scoped start/end.
+One additional constructor atomic is included in channel memory accounting. UI
+snapshots use real rendered progress, not elapsed wall time; no callback buffer
+copy/slicing allocation, locks, IO, new stream or project transport seek is added.
+Stop/new selection/new request retain the existing generation invalidation.

@@ -211,12 +211,12 @@ pub(super) fn handoff(shape: &Shape) -> Result<SessionPlayback, crate::SessionPl
             previous
                 .device_chains
                 .iter()
-                .map(|chain| 2 * chain.declared_runtime_bytes())
+                .map(|chain| chain.declared_pair_bytes())
                 .sum::<usize>(),
             previous
                 .return_chains
                 .iter()
-                .map(|chain| 2 * chain.declared_runtime_bytes())
+                .map(|chain| chain.declared_pair_bytes())
                 .sum::<usize>(),
             previous
                 .mutable_instruments
@@ -357,9 +357,7 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
         .clone()
         .map(|chain| chain.stateful_count())
         .sum();
-    let active_effect_bytes = active_chains
-        .map(|chain| 2 * chain.declared_runtime_bytes())
-        .sum();
+    let active_effect_bytes = active_chains.map(|chain| chain.declared_pair_bytes()).sum();
     let retained_chains = runtime.tail_groups.iter().flatten().chain(
         runtime
             .return_effect_tails
@@ -373,7 +371,7 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
         .map(|chain| chain.stateful_count())
         .sum();
     let retained_effect_bytes = retained_chains
-        .map(|chain| 2 * chain.declared_runtime_bytes())
+        .map(|chain| chain.declared_pair_bytes())
         .sum();
     let suffixes = runtime
         .tail_groups

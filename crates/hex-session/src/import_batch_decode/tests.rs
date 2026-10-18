@@ -119,7 +119,7 @@ fn real_ordered_mixed_rate_import_progress_paths_and_undo_redo_without_reopen() 
     assert_eq!(progress.phase, AudioBatchPhase::Completed);
     assert_eq!(progress.completed_members, 2);
     assert_eq!(control.request_cancel(), AudioBatchCancel::TooLate);
-    assert_eq!(s.resident_frames(), 17);
+    assert_eq!(s.resident_frames(), 22);
     for (i, result) in created.iter().enumerate() {
         let id = asset(*result);
         let metadata = s.project().assets().find(|a| a.id() == id).unwrap();

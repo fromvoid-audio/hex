@@ -711,6 +711,26 @@ impl VisualTestContext {
         })
     }
 
+    /// Border color, widths and ancestor mask of the last matching scene quad.
+    /// Reads completed paint under test support without changing layout or input.
+    pub fn rendered_border(
+        &mut self,
+        selector: &'static str,
+    ) -> Option<(crate::Hsla, crate::Edges<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
+        self.update(|window, _| {
+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
+            let scaled = bounds.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .rev()
+                .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
+                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
+        })
+    }
+
     /// Rounded geometry and ancestor mask of the last filled scene quad matching
     /// an element's debug bounds, in scaled pixels. This is scene evidence, not
     /// GPU framebuffer or native display readback.

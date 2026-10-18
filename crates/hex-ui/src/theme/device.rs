@@ -237,3 +237,11 @@ mod action_tests {
         super::super::apply_preferences(previous);
     }
 }
+
+/// Input remains subdued; output uses readable foreground behind the EQ curve.
+pub(crate) fn device_analyzer_style() -> hex_widgets::ResponseGraphAnalyzerStyle {
+    hex_widgets::ResponseGraphAnalyzerStyle {
+        input: color(PaletteRole::Muted),
+        output: readable_text(color(PaletteRole::Raised), color(PaletteRole::Text)),
+    }
+}
