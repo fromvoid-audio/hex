@@ -5146,6 +5146,13 @@ events during preflight. Its focused regression passes; the same joint strict
 Clippy command now passes. The negative compiler log is retained. This repairs
 a verification fixture and adds no sampler/controller playback behavior.
 
+18 October 2026 — Pulse #2805 / canonical PR #411: browser search selects its
+query on mouse focus entry and Command-F, retains normal focused caret/partial
+mouse/keyboard selection, and keeps deliberate initial held-drag selection across
+release and async/layout updates. Unicode grapheme boundaries reuse the locked
+segmentation package. Source selection work is separate from unresolved #2794
+native focus diagnostics. Dedicated merger owns integration/full CI/merge;
+root owns native optimized acceptance and the current app remains untouched.
 ## collapsed browser picker geometry — pulse2706 / PR322, 18 october 2026
 
 Collections, Library and Places share a 22 px icon/control column. Picker width
