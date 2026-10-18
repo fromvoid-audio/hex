@@ -30,6 +30,22 @@ struct ClipGhostDecor {
     waveform_visual: Option<Div>,
 }
 
+/// Body-only clipping leaves the title and outer selection/rounded mask intact.
+pub(super) fn clip_waveform_body(content: Div) -> Div {
+    waveform_body_below(content, super::clip_name::CLIP_NAME_HEIGHT)
+}
+fn waveform_body_below(content: Div, header_height: f32) -> Div {
+    div()
+        .absolute()
+        .top(px(header_height))
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .min_h_0()
+        .overflow_hidden()
+        .child(content)
+}
+
 fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipGhostDecor) -> Div {
     let ClipGhostGeometry {
         left,
@@ -59,9 +75,12 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         ghost = ghost.children([clip_grid_layer(&lines, start, end)]);
     }
     if let Some(waveform) = waveform_visual {
-        ghost = ghost.children([waveform]);
+        ghost = ghost.children([waveform_body_below(waveform, 10.0)]);
     } else if let Some(waveform) = &payload.ghost_waveform {
-        ghost = ghost.children([waveform_summary_view(std::sync::Arc::clone(waveform))]);
+        ghost = ghost.children([waveform_body_below(
+            waveform_summary_view(std::sync::Arc::clone(waveform)),
+            10.0,
+        )]);
     } else {
         ghost = ghost.child(
             div()
@@ -434,8 +453,14 @@ impl EditorView {
                         std::rc::Rc::clone(&self.waveform_geometry_cache),
                         self.waveform_grid(track_id, viewport, scale_factor),
                     ) {
-                        preview = preview.child(waveform);
+                        preview = preview.child(clip_waveform_body(waveform));
                     }
+                    preview = preview.child(self.clip_name_preview_header(
+                        track_id,
+                        original_clip.id(),
+                        original_clip.name(),
+                        cx,
+                    ));
                     clip_area = clip_area.children([preview]);
                 }
             }
@@ -1318,6 +1343,7 @@ impl EditorView {
         }));
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
+            let mut body = div().absolute().inset_0();
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
                 // The immutable prepared peaks cover the retained root. Cropping
                 // changes its visible offset, never its processing/source origin.
@@ -1332,7 +1358,7 @@ impl EditorView {
                     Some(preview)
                 });
                 let prepared = preview.as_ref().unwrap_or(prepared);
-                content = content.child(super::waveform::timeline_waveform_view_cached(
+                body = body.child(super::waveform::timeline_waveform_view_cached(
                     std::sync::Arc::clone(&prepared.waveform),
                     super::waveform_geometry::WaveformMapping::Prepared {
                         timeline_origin: clip.start(),
@@ -1345,7 +1371,7 @@ impl EditorView {
                     self.waveform_grid(track, viewport, scale_factor),
                 ));
             } else if clip.audio_edit().is_some() {
-                content = content.child(
+                body = body.child(
                     div()
                         .text_xs()
                         .child(theme::text("prepared waveform unavailable")),
@@ -1353,7 +1379,7 @@ impl EditorView {
             } else {
                 match waveform {
                     Some(waveform) => {
-                        content = content.child(super::waveform::timeline_waveform_view_cached(
+                        body = body.child(super::waveform::timeline_waveform_view_cached(
                             std::sync::Arc::clone(waveform),
                             super::waveform_geometry::WaveformMapping::Clip {
                                 clip: clip.clone(),
@@ -1366,7 +1392,7 @@ impl EditorView {
                         ));
                     }
                     None => {
-                        content = content.child(
+                        body = body.child(
                             div()
                                 .absolute()
                                 .inset_0()
@@ -1380,6 +1406,7 @@ impl EditorView {
                     }
                 }
             }
+            content = content.child(clip_waveform_body(body));
         }
         let fade_preview = self.fade_preview(clip.id());
         let fade = fade_preview.unwrap_or(clip.retained_fade());

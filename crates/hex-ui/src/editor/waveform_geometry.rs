@@ -22,6 +22,8 @@ const MAX_CACHED_WAVEFORM_COLUMNS: usize = 65_536;
 pub(super) struct WaveformGeometryCache {
     entries: VecDeque<WaveformGeometryEntry>,
     columns: usize,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    painted: VecDeque<WaveformPaintSample>,
 }
 
 struct WaveformGeometryEntry {
@@ -91,6 +93,14 @@ pub(super) struct RenderedWaveformSample {
     pub(super) spans: [f32; 2],
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WaveformPaintSample {
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) mask: Bounds<Pixels>,
+    pub(super) ordinates: [(f32, f32); 2],
+}
+
 impl WaveformGeometryCache {
     fn get(
         &mut self,
@@ -150,6 +160,38 @@ impl WaveformGeometryCache {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.columns = 0;
+        #[cfg(all(test, feature = "ui-test-support"))]
+        self.painted.clear();
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn record_paint(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        mask: Bounds<Pixels>,
+        geometry: &WaveformGeometry,
+    ) {
+        if self.painted.len() == MAX_CACHED_WAVEFORM_ENTRIES {
+            self.painted.pop_front();
+        }
+        self.painted.push_back(WaveformPaintSample {
+            bounds,
+            mask,
+            ordinates: std::array::from_fn(|channel| {
+                geometry.channels[channel]
+                    .outline
+                    .iter()
+                    .map(|p| f32::from(p.y))
+                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| {
+                        (lo.min(y), hi.max(y))
+                    })
+            }),
+        });
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn painted_waveforms(&self) -> &VecDeque<WaveformPaintSample> {
+        &self.painted
     }
 
     /// Actual immutable source, mapping and path-builder ordinates painted by the cache.
