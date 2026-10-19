@@ -394,6 +394,8 @@ impl Render for EditorView {
             .child(workspace_content.flex_1().min_w_0());
         let modifier_entity = cx.entity();
         let console_drag_entity = cx.entity();
+        let trim_pointer_entity = cx.entity();
+        let midi_trim_pointer_entity = cx.entity();
         div()
             .size_full()
             .relative()
@@ -425,6 +427,26 @@ impl Render for EditorView {
                 "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
+            })
+            // The canonical source handle may leave the viewport while its
+            // resize preview remains active. Keep the same captured payload's
+            // latest pointer on this stable root, not a virtualized child.
+            .on_drag_move::<super::trim::TrimDrag>(move |event, _, cx| {
+                if let Some(drag) = event.dragged_item().downcast_ref::<super::trim::TrimDrag>() {
+                    trim_pointer_entity.update(cx, |view, cx| {
+                        view.refresh_trim_pointer(drag, &event.event, cx);
+                    });
+                }
+            })
+            .on_drag_move::<super::trim::MidiTrimDrag>(move |event, _, cx| {
+                if let Some(drag) = event
+                    .dragged_item()
+                    .downcast_ref::<super::trim::MidiTrimDrag>()
+                {
+                    midi_trim_pointer_entity.update(cx, |view, cx| {
+                        view.refresh_midi_trim_pointer(drag, &event.event, cx);
+                    });
+                }
             })
             .on_drag_move::<super::drag::BrowserAudioDrag>(move |_, _, cx| {
                 console_drag_entity.update(cx, |view, cx| {
