@@ -250,7 +250,7 @@ fn attach_actual_output(
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        pump_output(&editor, cx, &mut output, &mut backend);
+        pump_output(editor, cx, &mut output, &mut backend);
         visual.run_until_parked();
         if editor.read_with(cx, |view, _| {
             view.audible_playback.is_some()
@@ -333,6 +333,19 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
                 "actual preview did not apply"
             );
         }
+        let expected_source = editor.read_with(cx, |view, _| {
+            EqState::decode(
+                view.audible_playback
+                    .as_ref()
+                    .unwrap()
+                    .state
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+            )
+            .unwrap()
+        });
         let key = editor.read_with(cx, |view, _| {
             view.device_gesture.snapshot().map(|snapshot| snapshot.key)
         });
@@ -359,6 +372,15 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
                 view.device_gesture.snapshot().map(|snapshot| snapshot.key),
                 key
             )
+        });
+        editor.read_with(cx, |view, _| {
+            let audible = view.audible_playback.as_ref().unwrap();
+            assert_eq!(
+                EqState::decode(audible.state.project.device(device).unwrap().state()).unwrap(),
+                expected_source,
+                "seek must retain the actual preview source, not canonical parameter metadata"
+            );
+            assert_eq!(audible.device_preview_identity.is_some(), moving);
         });
         graph.read_with(cx, |graph, _| assert_eq!(graph.is_dragging(), moving));
         visual.simulate_keystrokes("space");
@@ -433,7 +455,7 @@ fn pump_actual_until(
         assert!(
             std::time::Instant::now() < deadline,
             "actual output/worker did not settle: {}",
-            editor.read_with(cx, |view, _| format!("{:?}", view.error))
+            editor.read_with(cx, |view, _| format!("error={:?} generation={} requests={} deferred={} gesture={:?} seek={:?} latched={} pending_playback={} publication={} candidates={} audio={} tracks={}", view.error, view.project_generation, view.worker_requests_pending, view.pending_requests.len(), view.device_gesture.snapshot().map(|s|s.key), view.prepared_seek.as_ref().map(|s|(s.stage,s.cancelled)), view.latched_seek_intent.is_some(), view.pending_playback.is_some(), view.pending_resident_publication.is_some(), view.playback_candidates.len(), view.audio.is_some(), view.state.as_ref().map_or(0,|s|s.project.tracks().len())))
         );
     }
 }
@@ -446,7 +468,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
     use std::sync::atomic::Ordering::Acquire;
     let _output_guard = graph_layout_tests::status_fixture_guard();
     for published in [false, true] {
-        for action in ["sequence", "cancel", "commit", "project", "pause"] {
+        for action in ["sequence", "cancel", "commit", "project", "device", "pause"] {
             eprintln!("ACTUAL_HELD_SEEK_RACE published={published} action={action}");
             let (handle, editor, _environment, device) = held_node_window(cx);
             let mut visual = VisualTestContext::from_window(handle, cx);
@@ -532,6 +554,9 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                         reservation: None
                     }));
                 }),
+                "device" => editor.update(cx, |view, _| {
+                    assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device))));
+                }),
                 "pause" => visual.simulate_keystrokes("space"),
                 _ => unreachable!(),
             }
@@ -566,6 +591,12 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                         (snapshot.key, snapshot.sequence)
                     );
                     assert_ne!(current.sequence, identity.sequence);
+                    assert_ne!(
+                        EqState::decode(audible.state.project.device(device).unwrap().state())
+                            .unwrap(),
+                        before,
+                        "preview source metadata must not become canonical"
+                    );
                     assert_eq!(
                         read(view, device),
                         before,
@@ -582,10 +613,14 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 &mut output,
                 &mut backend,
                 |view| {
-                    settled(view)
+                    (settled(view) || (action == "pause"
+                        && view.worker_requests_pending == 0 && view.pending_requests.is_empty()))
                         && view.prepared_seek.is_none()
                         && view.latched_seek_intent.is_none()
-                        && view.pending_playback.is_none()
+                        // Replacement deliberately closes the old output. The
+                        // new canonical graph may wait for a NEW output; it is
+                        // not an old seek and must not be discarded by this test.
+                        && (action == "project" || view.pending_playback.is_none())
                         && view.pending_resident_publication.is_none()
                         && view.playback_candidates.is_empty()
                         && (action != "project" || view.project_generation > generation)
@@ -610,7 +645,27 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 );
                 if action == "commit" {
                     assert_ne!(read(view, device), before);
-                } else if action != "project" && action != "pause" {
+                } else if action == "project" {
+                    assert!(view.audio.is_none());
+                    assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
+                    if let Some(pending) = view.pending_playback.as_ref() {
+                        assert_eq!(pending.project_generation, view.project_generation);
+                        assert!(pending.seek_request_id.is_none());
+                        assert!(pending.device_preview_identity.is_none());
+                    }
+                } else if action == "device" {
+                    assert!(
+                        view.state
+                            .as_ref()
+                            .unwrap()
+                            .project
+                            .device(device)
+                            .is_none()
+                    );
+                } else if action == "pause" {
+                    assert_eq!(view.device_gesture.snapshot().unwrap().key, identity.key);
+                    assert_eq!(read(view, device), before);
+                } else {
                     assert_eq!(
                         format!("{:?}", view.state.as_ref().unwrap().project),
                         before_project

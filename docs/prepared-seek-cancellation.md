@@ -90,3 +90,42 @@ exact rejection revision arrives.
 The GPUI interaction and actual-device behavior still require a human check in
 the combined native build. No UI launch or physical audio device is part of the
 headless test evidence.
+
+## held device previews (pulse2881 / pr483)
+
+A stateful Arrangement play request can use the currently applied device preview
+without ending the held parameter gesture. The private seek intent and pending
+seek retain its existing `DevicePreviewIdentity`, prepared revision Arc and exact
+preview view metadata. The resulting pending playback and callback observation
+retain the same identity; a preview-derived runtime never becomes a canonical
+candidate merely because a seek installed it. Canonical seeks exclude device
+and tuning preview sources. Tuning-preview seeking is not added here.
+
+Admission requires the matching applied output, project generation/revision,
+gesture key/sequence and prepared Arc, no pending terminal/edit/recovery, and the
+existing coherent Arrangement route/fresh-runtime fence. Preparation result,
+publication and callback reconciliation recheck the source. A newer sequence of
+the same held gesture retains only the user's latest play intent while waiting
+for the matching preview to settle. Terminal commit/cancel, another gesture,
+project replacement or device removal invalidates the old intent. Pause cancels
+pending play without releasing the parameter gesture. A runtime already handed
+to the existing publication worker retains its token until the response supplies
+its cancellable revision; ownership still retires through the existing path.
+
+Headless tests deliver actual pointer/key events, real Service preparation,
+publication and callback blocks. They cover stationary/dragged play and pause,
+sequence replacement before and after publication, cancel/commit, replacement,
+device removal, retained preview metadata and ordinary canonical seeking. The
+node-position test additionally checks 48 tick/repaint cycles and actual Undo/
+Redo. These are not a native framebuffer flicker disproof or physical audio
+qualification. The original report's node-versus-held-keyboard-note meaning
+remains subject to user clarification.
+
+Finite native follow-up, owned by the coordinator: in a qualified build with a
+real output, hold and drag an EQ node while pressing Space to play/pause, move
+again during preparation, then commit and Undo/Redo. Repeat Escape, device/project
+replacement and numeric text editing (Space stays text); observe curve/control
+stability during sustained drag. Check the originally reported flicker separately
+and retain its actual source/build and interpretation rather than declaring it
+fixed from these headless receipts. No app operation is performed by this source
+unit.

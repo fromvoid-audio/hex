@@ -312,6 +312,8 @@ impl EditorView {
         preview: Option<DevicePreviewIdentity>,
     ) -> bool {
         self.seek_context_is_current(generation, revision)
+            && self.worker_requests_pending == 0
+            && self.pending_requests.is_empty()
             && match preview {
                 Some(identity) => self.active_seek_preview() == Some(identity),
                 None => {
@@ -574,6 +576,7 @@ impl EditorView {
             || audible.tuning_preview_identity.is_some()
             || !self.pending_audio_commands.is_empty()
             || self.pending_playback.is_some()
+            || self.pending_resident_publication.is_some()
             || !self.playback_candidates.is_empty()
         {
             return None;
@@ -665,7 +668,13 @@ impl EditorView {
             self.retire_seek_result(result);
             return true;
         }
-        let Some(state) = self.state.as_ref().map(Arc::clone) else {
+        // The admitted runtime may derive from an uncommitted device preview.
+        // Retain its exact view metadata as well as its prepared Arc/identity.
+        let Some(state) = self
+            .audible_playback
+            .as_ref()
+            .map(|audible| Arc::clone(&audible.state))
+        else {
             self.prepared_seek = None;
             self.retire_seek_result(result);
             return true;
@@ -781,7 +790,9 @@ impl EditorView {
             && audible.device_preview_identity == pending.device_preview_identity
             && audible.tuning_preview_identity.is_none()
             && (allow_candidate
-                || (self.pending_playback.is_none() && self.playback_candidates.is_empty()))
+                || (self.pending_playback.is_none()
+                    && self.pending_resident_publication.is_none()
+                    && self.playback_candidates.is_empty()))
     }
 
     fn retire_seek_result(&mut self, result: ArrangementSeekResult) {

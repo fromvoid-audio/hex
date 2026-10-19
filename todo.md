@@ -5820,3 +5820,20 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - No warning suppression, lint weakening, unfinished-feature deletion, native
   Audio-owner edit, full21 merge claim or application operation. Native/release
   qualification and source-specific final integration remain explicitly separate.
+
+## 19 october 2026 — pulse2881 / pr483 held eq playback
+
+- Actual Service/publication/callback diagnostic reproduced Space refusing a
+  dragged EQ node even after its exact preview key/sequence was applied; stationary
+  hold and keyboard routing alone passed. Preserve the original negative and
+  setup-only diagnostics separately.
+- Private seeks retain existing device-preview identity, prepared Arc and exact
+  preview view metadata through publication/observation. New sequences wait for
+  the matching preview, terminal/source changes retire old candidates, and Pause
+  does not commit or release the held edit. Canonical seeks reject preview sources;
+  no Session/Engine/audio public API or callback policy changes.
+- Actual pointer/worker/callback tests cover preparation/published races for new
+  sequences, cancel, commit, project/device replacement and Pause, alongside
+  ordinary canonical play and parameter Undo/Redo. Exact final receipts stay
+  source-bound in Pulse. Native flicker and the original node-versus-keyboard-note
+  interpretation remain open; source success is not physical/user acceptance.
