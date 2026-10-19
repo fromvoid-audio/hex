@@ -1209,7 +1209,6 @@ impl EditorView {
         }
         let scene_column = div()
             .id(("session-scene", scene_id.value()))
-            .debug_selector(move || format!("console-scene-menu-{}", scene_id.value()))
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -1238,6 +1237,7 @@ impl EditorView {
             .child(
                 div()
                     .id(("session-scene-select", scene_id.value()))
+                    .debug_selector(move || format!("console-scene-menu-{}", scene_id.value()))
                     .min_w_0()
                     .flex_1()
                     .truncate()

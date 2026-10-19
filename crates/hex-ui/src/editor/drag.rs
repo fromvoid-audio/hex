@@ -927,6 +927,12 @@ impl super::EditorView {
             drag.insertion_line_y.set(None);
             return (None, false);
         }
+        if self.mode == super::EditorMode::Session {
+            // Console receivers own their stable cell/scene target. Browser
+            // row moves must not project into retained Arrangement geometry.
+            drag.insertion_line_y.set(None);
+            return (None, false);
+        }
         let Some(state) = self.state.as_ref() else {
             drag.destination.set(None);
             drag.insertion_line_y.set(None);

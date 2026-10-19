@@ -172,9 +172,10 @@ fn console_browser_drop_real_empty_cell_retires_ghost_and_imports_audio(cx: &mut
 }
 
 fn bounds(visual: &mut VisualTestContext, name: String) -> gpui::Bounds<gpui::Pixels> {
+    let selector = Box::leak(name.into_boxed_str());
     visual
-        .debug_bounds(Box::leak(name.into_boxed_str()))
-        .expect("actual Console hit surface")
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("actual Console hit surface: {selector}"))
 }
 fn begin_browser(
     visual: &mut VisualTestContext,
@@ -213,6 +214,29 @@ fn assert_retired(drag: &super::super::drag::BrowserAudioDrag) {
     assert!(!drag.lane_hovered.get());
     assert!(drag.scroll.get().viewport.is_none());
 }
+// Canonical Undo deliberately retains next_id at its committed high-water
+// mark (history.rs), while every authored field must restore exactly.
+fn restored(actual: &hex_project::Project, expected: &hex_project::Project, frontier: u64) {
+    assert_eq!(actual.next_identity(), frontier);
+    assert_eq!(actual.sample_rate(), expected.sample_rate());
+    assert_eq!(actual.tuning(), expected.tuning());
+    assert_eq!(actual.authored_routing(), expected.authored_routing());
+    assert_eq!(actual.audio_feeds(), expected.audio_feeds());
+    assert_eq!(actual.midi_routes(), expected.midi_routes());
+    assert_eq!(actual.import_provenance(), expected.import_provenance());
+    assert_eq!(
+        actual.assets().collect::<Vec<_>>(),
+        expected.assets().collect::<Vec<_>>()
+    );
+    assert_eq!(actual.tracks(), expected.tracks());
+    assert_eq!(actual.return_tracks(), expected.return_tracks());
+    assert_eq!(actual.session(), expected.session());
+    assert_eq!(actual.loop_region(), expected.loop_region());
+    assert_eq!(actual.master_gain(), expected.master_gain());
+    assert_eq!(actual.tempo_map(), expected.tempo_map());
+    assert_eq!(actual.meter_map(), expected.meter_map());
+}
+
 fn history(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, request: Request) {
     editor.update(cx, |view, _| assert!(view.enqueue(request)));
     receive_worker(editor, cx);
@@ -230,7 +254,17 @@ fn console_browser_between_and_bottom_are_actual_atomic_scene_targets(cx: &mut T
     )
     .center();
     let drag = begin_browser(&mut visual, &editor);
-    release(&mut visual, at);
+    visual.simulate_mouse_move(at, MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        drag.destination.get(),
+        Some(super::super::drag::BrowserDropDestination::Console(
+            hex_session::import_batch::ConsoleDestination::InsertScene {
+                track,
+                before: Some(scene)
+            }
+        ))
+    );
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     assert_retired(&drag);
     receive_worker(&editor, cx);
     let inserted = project(&editor, cx);
@@ -241,11 +275,7 @@ fn console_browser_between_and_bottom_are_actual_atomic_scene_targets(cx: &mut T
         Some(hex_project::SessionCellContent::Audio(_))
     ));
     history(&editor, cx, Request::Undo);
-    assert_eq!(
-        *project(&editor, cx),
-        *before,
-        "ONE Undo includes scene and media clip"
-    );
+    restored(&project(&editor, cx), &before, inserted.next_identity());
     history(&editor, cx, Request::Redo);
     assert_eq!(*project(&editor, cx), *inserted);
     visual.run_until_parked();
@@ -266,7 +296,7 @@ fn console_browser_between_and_bottom_are_actual_atomic_scene_targets(cx: &mut T
         Some(hex_project::SessionCellContent::Audio(_))
     ));
     history(&editor, cx, Request::Undo);
-    assert_eq!(*project(&editor, cx), *inserted);
+    restored(&project(&editor, cx), &inserted, bottom.next_identity());
     history(&editor, cx, Request::Redo);
     assert_eq!(*project(&editor, cx), *bottom);
 }
@@ -309,7 +339,7 @@ fn console_occupied_failure_then_replace_preserves_old_and_one_undo(cx: &mut Tes
     assert_eq!(after.scenes(), before.scenes());
     assert_eq!(after.session_cells().len(), before.session_cells().len());
     history(&editor, cx, Request::Undo);
-    assert_eq!(*project(&editor, cx), *before);
+    restored(&project(&editor, cx), &before, after.next_identity());
     history(&editor, cx, Request::Redo);
     assert_eq!(*project(&editor, cx), *after);
 }
@@ -342,7 +372,7 @@ fn console_scene_context_actual_row_empty_list_focus_and_history(cx: &mut TestAp
         "actual right-clicked row is the before anchor"
     );
     history(&editor, cx, Request::Undo);
-    assert_eq!(*project(&editor, cx), *before);
+    restored(&project(&editor, cx), &before, inserted.next_identity());
     // Empty projects still expose explicit Add Scene without a track or drag.
     editor.update(cx, |view, _| {
         view.begin_open_request(Request::NewWithAudioMode {
@@ -360,9 +390,10 @@ fn console_scene_context_actual_row_empty_list_focus_and_history(cx: &mut TestAp
     visual.run_until_parked();
     visual.simulate_keystrokes("enter");
     receive_worker(&editor, cx);
-    assert_eq!(project(&editor, cx).scenes().len(), 1);
+    let one = project(&editor, cx);
+    assert_eq!(one.scenes().len(), 1);
     history(&editor, cx, Request::Undo);
-    assert_eq!(*project(&editor, cx), *empty);
+    restored(&project(&editor, cx), &empty, one.next_identity());
 }
 
 #[gpui::test]
@@ -468,4 +499,85 @@ fn console_browser_view_project_and_deleted_target_changes_reject_late_drop(
             "late case {case} cannot apply to changed document/target"
         );
     }
+}
+
+#[gpui::test]
+fn console_actual_verified_worker_drop_uses_typed_session_clip_and_file_source(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, scene, path) = fixture(cx);
+    history(
+        &editor,
+        cx,
+        Request::Edit(Command::RemoveInstrument { track }),
+    );
+    let saved = editor.read_with(cx, |view, _| {
+        view.test_environment.home.join("streaming.hex")
+    });
+    history(&editor, cx, Request::SaveNew(saved.clone()));
+    let reservation = hex_session::SourcePlanReservation {
+        reader: hex_media::VerifiedWavReaderLimits {
+            reader: hex_media::WavReaderLimits {
+                max_file_bytes: 64 * 1024 * 1024,
+                max_source_frames: 8_000_000,
+                max_header_count: 32,
+                max_window_frames: 4096,
+            },
+            max_manifest_bytes: 1024 * 1024,
+        },
+        max_retained_sources: 16,
+        max_path_bytes: 1024 * 1024,
+        max_manifest_bytes: 4 * 1024 * 1024,
+    };
+    editor.update(cx, |view, _| {
+        view.begin_open_request(Request::OpenWithAudioMode {
+            source: hex_session::service::ProjectSource::Saved(saved),
+            relinks: Default::default(),
+            mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation),
+        })
+    });
+    receive_worker(&editor, cx);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.document_audio_mode,
+            hex_session::DocumentAudioMode::VerifiedStreaming
+        )
+    });
+    let before = project(&editor, cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let target = bounds(
+        &mut visual,
+        format!("console-cell-{}-{}", track.value(), scene.value()),
+    )
+    .center();
+    let drag = begin_browser(&mut visual, &editor);
+    release(&mut visual, target);
+    assert_retired(&drag);
+    receive_worker(&editor, cx);
+    let after = project(&editor, cx);
+    let Some(hex_project::SessionCellContent::Audio(clip)) = after.session_cell(track, scene)
+    else {
+        panic!("real verified Session import");
+    };
+    assert_eq!(after.asset(clip.asset()).unwrap().path(), path);
+    editor.read_with(cx, |view, _| {
+        let source = view
+            .state
+            .as_ref()
+            .unwrap()
+            .canonical_audio_source
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            source.audio_mode(),
+            hex_session::DocumentAudioMode::VerifiedStreaming
+        );
+        assert!(source.verified_file(clip.asset()).is_some());
+    });
+    history(&editor, cx, Request::Undo);
+    restored(&project(&editor, cx), &before, after.next_identity());
+    history(&editor, cx, Request::Redo);
+    assert_eq!(*project(&editor, cx), *after);
 }
