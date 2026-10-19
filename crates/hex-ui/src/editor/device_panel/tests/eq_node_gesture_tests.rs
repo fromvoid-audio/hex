@@ -1305,3 +1305,75 @@ fn eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_s
         });
     }
 }
+
+#[gpui::test]
+fn four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let right = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(right, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 2
+    });
+    let before = editor.read_with(cx, |view, _| read(view, device));
+    let left = plot(&mut visual, device, 0.02, 0.5);
+    let right = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        left,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    // Submit the actual first-node Begin to the real Service; retain its actual
+    // acknowledgement instead of calling tick/receive. Virtual time is unadvanced.
+    editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
+    let held = editor.read_with(cx, |view, _| receive_service_event(&view.service));
+    assert!(held.error.is_none());
+    assert!(held.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    assert!(editor.read_with(cx, |view, _| view.worker_requests_pending > 0));
+    wheel(
+        &mut visual,
+        right,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    end_wheel(&mut visual, right);
+    eprintln!(
+        "before releasing actual first ACK: {:?}",
+        editor.read_with(cx, |view, _| view.device_panel.message.clone())
+    );
+    editor.update(cx, |view, _| {
+        view.receive(held);
+    });
+    pump_until(&editor, cx, settled);
+    let after = editor.read_with(cx, |view, _| read(view, device));
+    eprintln!(
+        "two-cut slopes before={:?} after={:?}",
+        before.nodes.iter().map(|n| n.slope).collect::<Vec<_>>(),
+        after.nodes.iter().map(|n| n.slope).collect::<Vec<_>>()
+    );
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 1;
+    expected.nodes[1].slope = 1;
+    assert_eq!(
+        after, expected,
+        "a consumed second-node burst must reach its own canonical parameter"
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes[1].slope == 0
+    });
+    assert_eq!(
+        editor.read_with(cx, |view, _| read(view, device).nodes[0].slope),
+        1
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == before
+    });
+}

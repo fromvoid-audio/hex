@@ -326,3 +326,85 @@ fn terminal_observer_does_not_late_commit_cancel_blur_missing_or_new_token(
         f.graph.update(cx, |g, cx| g.cancel(cx));
     }
 }
+
+#[gpui::test]
+fn four_review_unfocused_fractional_end_retires_metadata_before_unphased_input(
+    cx: &mut TestAppContext,
+) {
+    let (handle, f) = fixture(cx);
+    let mut v = VisualTestContext::from_window(handle, cx);
+    v.run_until_parked();
+    let inside = v.debug_bounds("terminal-graph").unwrap().center();
+    let other = v.debug_bounds("terminal-other").unwrap().center();
+    v.update(|window, app| assert!(!f.graph.read(app).focus.is_focused(window)));
+    send(&mut v, inside, TouchPhase::Started, 0.25, false);
+    assert!(f.events.borrow().is_empty());
+    assert!(
+        f.graph
+            .read_with(cx, |g, _| g.scroll.gesture.is_some_and(|s| !s.begun))
+    );
+    send(&mut v, other, TouchPhase::Ended, 0.0, false);
+    eprintln!(
+        "fractional outside Ended: active={} phased={}",
+        f.graph.read_with(cx, |g, _| g.scroll.active()),
+        f.graph.read_with(cx, |g, _| g.scroll.phased)
+    );
+    assert!(
+        !f.graph.read_with(cx, |g, _| g.scroll.active()),
+        "unbegun token must retire without taking focus"
+    );
+    assert!(!f.graph.read_with(cx, |g, _| g.scroll.phased));
+    assert!(f.events.borrow().is_empty());
+    send(&mut v, inside, TouchPhase::Moved, 1.0, false);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    v.run_until_parked();
+    assert_eq!(commits(&f), 1);
+    assert!(!f.graph.read_with(cx, |g, _| g.scroll.active()));
+}
+
+#[gpui::test]
+fn four_review_mac_cancelled_mapped_as_moved_cannot_deliver_terminal(cx: &mut TestAppContext) {
+    let (handle, f) = fixture(cx);
+    let mut v = VisualTestContext::from_window(handle, cx);
+    v.run_until_parked();
+    let inside = v.debug_bounds("terminal-graph").unwrap().center();
+    send(&mut v, inside, TouchPhase::Started, 1.0, false);
+    // Exact current Mac adapter representation of NSEventPhaseCancelled.
+    // This is a source-backed adapter-output simulation, NOT native Mac input.
+    send(&mut v, inside, TouchPhase::Moved, 0.0, false);
+    cx.executor().advance_clock(Duration::from_secs(1));
+    v.run_until_parked();
+    eprintln!(
+        "mapped cancellation: active={} commits={} events={:?}",
+        f.graph.read_with(cx, |g, _| g.scroll.active()),
+        commits(&f),
+        f.events.borrow()
+    );
+    assert!(
+        !f.graph.read_with(cx, |g, _| g.scroll.active()),
+        "a cancelled native stream needs a terminal representation"
+    );
+}
+
+#[gpui::test]
+fn four_review_linux_discrete_content_lines_are_not_one_parameter_step(cx: &mut TestAppContext) {
+    let (handle, f) = fixture(cx);
+    let mut v = VisualTestContext::from_window(handle, cx);
+    v.run_until_parked();
+    let inside = v.debug_bounds("terminal-graph").unwrap().center();
+    // Current Wayland axis_discrete=1 and X11 Up produce SCROLL_LINES=3.
+    // Windows WHEEL_DELTA with wheel_scroll_lines=3 has the same output.
+    send(&mut v, inside, TouchPhase::Moved, 3.0, false);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    v.run_until_parked();
+    assert_eq!(commits(&f), 1);
+    eprintln!(
+        "one physical tick's adapter output: {:?}",
+        f.events.borrow()
+    );
+    assert_eq!(
+        f.events.borrow().last().unwrap().steps,
+        1,
+        "one physical detent should advance one slope choice, independent of content-line preference"
+    );
+}
