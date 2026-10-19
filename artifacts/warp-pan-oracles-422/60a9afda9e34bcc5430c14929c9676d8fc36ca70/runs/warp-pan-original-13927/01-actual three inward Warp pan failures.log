@@ -1,0 +1,51 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 48.91s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 4 tests
+inward held midi=true before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95272, length: 192000 }
+inward held midi=false before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95273, length: 192000 }
+
+thread 'editor::drag_autoscroll::resize_pan_tests::inward_shift_resize_consumes_last_valid_stationary_pan_step' (165779) panicked at crates/hex-ui/src/editor/resize_pan_tests.rs:624:13:
+assertion `left == right` failed: last legal positive stretch interval
+  left: 12023
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::drag_autoscroll::resize_pan_tests::inward_shift_resize_consumes_last_valid_stationary_pan_step ... FAILED
+inward held midi=false before=Viewport { start: 0, length: 188000 } after=Viewport { start: 4761, length: 188000 }
+
+thread 'editor::drag_autoscroll::resize_pan_tests::inward_left_shift_resize_consumes_last_valid_stationary_pan_step' (165776) panicked at crates/hex-ui/src/editor/resize_pan_tests.rs:624:13:
+assertion `left == right` failed: last legal positive stretch interval
+  left: 12010
+ right: 1
+test editor::drag_autoscroll::resize_pan_tests::inward_left_shift_resize_consumes_last_valid_stationary_pan_step ... FAILED
+inward held midi=false before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95273, length: 192000 }
+
+thread 'editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes' (165778) panicked at crates/hex-ui/src/editor/resize_pan_tests.rs:624:13:
+assertion `left == right` failed: last legal positive stretch interval
+  left: 12023
+ right: 1
+test editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes ... FAILED
+inward release midi=true left=false supported=false error=None submitted=Some(TrimMidiClipEdge { clip: ClipId(3), edge: Right, beat: BeatTime(17179869184) })
+test editor::drag_autoscroll::resize_pan_tests::inward_midi_resize_keeps_positive_extent_at_stationary_pan_limit ... ok
+
+failures:
+
+failures:
+    editor::drag_autoscroll::resize_pan_tests::inward_left_shift_resize_consumes_last_valid_stationary_pan_step
+    editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes
+    editor::drag_autoscroll::resize_pan_tests::inward_shift_resize_consumes_last_valid_stationary_pan_step
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 943 filtered out; finished in 0.58s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

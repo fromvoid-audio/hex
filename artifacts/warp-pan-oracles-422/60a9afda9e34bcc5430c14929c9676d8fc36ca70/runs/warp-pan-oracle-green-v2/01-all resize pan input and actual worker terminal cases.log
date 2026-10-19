@@ -1,0 +1,57 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.47s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 17 tests
+retired pan midi=false stale=false original=Viewport { start: 0, length: 384000 } held=Viewport { start: 28800, length: 384000 } stored_after_cancel=Some(Viewport { start: 0, length: 384000 }) grown_visible=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::audio_event_outside_release_only_owns_focus_during_its_actual_gesture ... ok
+terminal pan midi=false refuse=false held=Viewport { start: 28800, length: 384000 } raw=Some(Viewport { start: 0, length: 384000 }) horizon=384000 settled=Viewport { start: 0, length: 384000 } error=None
+terminal later growth midi=false refuse=false settled=Viewport { start: 0, length: 384000 } grown=Viewport { start: 0, length: 384000 }
+
+thread 'editor::drag_autoscroll::resize_pan_tests::asynchronous_refused_resize_normalizes_its_hidden_pan_before_later_growth' (166440) panicked at crates/hex-ui/src/editor/resize_pan_tests.rs:862:13:
+own accepted command retains PendingTrim until its actual worker terminal
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::drag_autoscroll::resize_pan_tests::asynchronous_refused_resize_normalizes_its_hidden_pan_before_later_growth ... FAILED
+retired pan midi=true stale=false original=Viewport { start: 0, length: 384000 } held=Viewport { start: 28800, length: 384000 } stored_after_cancel=Some(Viewport { start: 0, length: 384000 }) grown_visible=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::canceled_fitted_resize_does_not_resurrect_hidden_pan_after_project_growth ... ok
+terminal pan midi=true refuse=false held=Viewport { start: 28800, length: 384000 } raw=Some(Viewport { start: 0, length: 384000 }) horizon=384000 settled=Viewport { start: 0, length: 384000 } error=None
+terminal later growth midi=true refuse=false settled=Viewport { start: 0, length: 384000 } grown=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::accepted_edge_short_of_view_end_does_not_reveal_raw_pan_on_later_growth ... ok
+inward held midi=false before=Viewport { start: 0, length: 188000 } after=Viewport { start: 4761, length: 188000 }
+test editor::drag_autoscroll::resize_pan_tests::held_resize_can_pan_right_beyond_original_fitted_display_extent ... ok
+test editor::drag_autoscroll::resize_pan_tests::fitted_resize_release_keeps_accepted_pan_horizon_until_exact_worker_terminal ... ok
+inward release midi=false left=true supported=false error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 179990 })
+inward held midi=true before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95272, length: 192000 }
+test editor::drag_autoscroll::resize_pan_tests::inward_left_shift_resize_consumes_last_valid_stationary_pan_step ... ok
+inward release midi=true left=false supported=false error=None submitted=Some(TrimMidiClipEdge { clip: ClipId(3), edge: Right, beat: BeatTime(17179869184) })
+test editor::drag_autoscroll::resize_pan_tests::inward_midi_resize_keeps_positive_extent_at_stationary_pan_limit ... ok
+inward held midi=false before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95273, length: 192000 }
+inward held midi=false before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95273, length: 192000 }
+inward release midi=false left=false supported=true error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 120270 })
+partial clamped actual midi=false before=187867 after=192000 viewport=Viewport { start: 0, length: 188000 }->Viewport { start: 4133, length: 188000 } applied=4133 pan=4133 requested=14100
+inward release midi=false left=false supported=false error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 108023 })
+test editor::drag_autoscroll::resize_pan_tests::inward_shift_resize_consumes_last_valid_stationary_pan_step ... ok
+test editor::drag_autoscroll::resize_pan_tests::partial_clamped_audio_source_pan_does_not_overshoot_applied_edge ... ok
+inward held midi=false before=Viewport { start: 0, length: 188000 } after=Viewport { start: 4761, length: 188000 }
+partial clamped actual midi=true before=100728 after=96000 viewport=Viewport { start: 100000, length: 192000 }->Viewport { start: 95272, length: 192000 } applied=4728 pan=4728 requested=14400
+test editor::drag_autoscroll::resize_pan_tests::partial_clamped_midi_minimum_pan_does_not_overshoot_applied_edge ... ok
+inward release midi=false left=true supported=true error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 167685 })
+test editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes ... ok
+test editor::drag_autoscroll::resize_pan_tests::held_resize_edges_pan_both_directions_stop_and_commit_one_history_edit ... ok
+test editor::drag_autoscroll::resize_pan_tests::resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan ... ok
+retired pan midi=false stale=true original=Viewport { start: 0, length: 384000 } held=Viewport { start: 28800, length: 384000 } stored_after_cancel=Some(Viewport { start: 0, length: 384000 }) grown_visible=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_cancel_and_stale_owners_cannot_scroll_or_commit ... ok
+retired pan midi=true stale=true original=Viewport { start: 0, length: 384000 } held=Viewport { start: 28800, length: 384000 } stored_after_cancel=Some(Viewport { start: 0, length: 384000 }) grown_visible=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::stale_fitted_resize_does_not_resurrect_hidden_pan_after_project_growth ... ok
+test editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release ... ok
+
+failures:
+
+failures:
+    editor::drag_autoscroll::resize_pan_tests::asynchronous_refused_resize_normalizes_its_hidden_pan_before_later_growth
+
+test result: FAILED. 16 passed; 1 failed; 0 ignored; 0 measured; 930 filtered out; finished in 10.81s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

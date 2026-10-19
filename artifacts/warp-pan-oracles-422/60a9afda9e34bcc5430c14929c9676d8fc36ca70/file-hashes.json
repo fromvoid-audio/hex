@@ -1,0 +1,12 @@
+{
+  "crates/hex-ui/src/editor/resize_pan_tests.rs": {
+    "before_sha256": "b6d620803a6755d5e3ec698f6ede3463e08f08bf77232e1113522b49ab3921da",
+    "after_sha256": "3a3089b7616c4e1bb3ccf28298e83f2caa42f522d6a4e91c4e91756fa2481b4f",
+    "after_bytes": 47786
+  },
+  "crates/hex-ui/src/editor/trim.rs": {
+    "before_sha256": "dbf126db42f033dbfbf565af540435cf8cff5986388bb51d892ce314ddf76b2a",
+    "after_sha256": "4a458731ffb3a70b6fb4eb65c527377bba3403d1bf9e404b589108bc0c6473b1",
+    "after_bytes": 69440
+  }
+}

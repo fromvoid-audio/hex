@@ -1,0 +1,125 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.14s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 51 tests
+terminal pan midi=false refuse=false held=Viewport { start: 28800, length: 384000 } raw=Some(Viewport { start: 0, length: 384000 }) horizon=384000 settled=Viewport { start: 0, length: 384000 } error=None
+terminal later growth midi=false refuse=false settled=Viewport { start: 0, length: 384000 } grown=Viewport { start: 0, length: 384000 }
+terminal pan midi=false refuse=true held=Viewport { start: 518400, length: 384000 } raw=Some(Viewport { start: 0, length: 384000 }) horizon=384000 settled=Viewport { start: 0, length: 384000 } error=Some(DisplayError { message: "playback compile failed: audio events, pitch, warp, source-envelope and fade preparation currently require resident audio; streamed source changes were not committed", batch_member: None })
+terminal later growth midi=false refuse=true settled=Viewport { start: 0, length: 384000 } grown=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::asynchronous_refused_resize_normalizes_its_hidden_pan_before_later_growth ... ok
+terminal pan midi=true refuse=false held=Viewport { start: 28800, length: 384000 } raw=Some(Viewport { start: 0, length: 384000 }) horizon=384000 settled=Viewport { start: 0, length: 384000 } error=None
+test editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit ... ok
+terminal later growth midi=true refuse=false settled=Viewport { start: 0, length: 384000 } grown=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::accepted_edge_short_of_view_end_does_not_reveal_raw_pan_on_later_growth ... ok
+test editor::clip_drag_ui_test::shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit ... ok
+test editor::drag_autoscroll::resize_pan_tests::audio_event_outside_release_only_owns_focus_during_its_actual_gesture ... ok
+retired pan midi=false stale=false original=Viewport { start: 0, length: 384000 } held=Viewport { start: 28800, length: 384000 } stored_after_cancel=Some(Viewport { start: 0, length: 384000 }) grown_visible=Viewport { start: 0, length: 384000 }
+retired pan midi=true stale=false original=Viewport { start: 0, length: 384000 } held=Viewport { start: 28800, length: 384000 } stored_after_cancel=Some(Viewport { start: 0, length: 384000 }) grown_visible=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::canceled_fitted_resize_does_not_resurrect_hidden_pan_after_project_growth ... ok
+test editor::drag_autoscroll::resize_pan_tests::held_resize_can_pan_right_beyond_original_fitted_display_extent ... ok
+test editor::drag_autoscroll::resize_pan_tests::fitted_resize_release_keeps_accepted_pan_horizon_until_exact_worker_terminal ... ok
+inward held midi=false before=Viewport { start: 0, length: 188000 } after=Viewport { start: 4761, length: 188000 }
+inward held midi=true before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95272, length: 192000 }
+inward held midi=false before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95273, length: 192000 }
+inward release midi=true left=false supported=false error=None submitted=Some(TrimMidiClipEdge { clip: ClipId(3), edge: Right, beat: BeatTime(17179869184) })
+test editor::drag_autoscroll::resize_pan_tests::inward_midi_resize_keeps_positive_extent_at_stationary_pan_limit ... ok
+inward release midi=false left=true supported=false error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 179990 })
+test editor::drag_autoscroll::resize_pan_tests::inward_left_shift_resize_consumes_last_valid_stationary_pan_step ... ok
+inward held midi=false before=Viewport { start: 100000, length: 192000 } after=Viewport { start: 95273, length: 192000 }
+inward release midi=false left=false supported=true error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 120270 })
+inward release midi=false left=false supported=false error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 108023 })
+test editor::drag_autoscroll::resize_pan_tests::inward_shift_resize_consumes_last_valid_stationary_pan_step ... ok
+partial clamped actual midi=false before=187867 after=192000 viewport=Viewport { start: 0, length: 188000 }->Viewport { start: 4133, length: 188000 } applied=4133 pan=4133 requested=14100
+inward held midi=false before=Viewport { start: 0, length: 188000 } after=Viewport { start: 4761, length: 188000 }
+partial clamped actual midi=true before=100728 after=96000 viewport=Viewport { start: 100000, length: 192000 }->Viewport { start: 95272, length: 192000 } applied=4728 pan=4728 requested=14400
+test editor::drag_autoscroll::resize_pan_tests::partial_clamped_audio_source_pan_does_not_overshoot_applied_edge ... ok
+test editor::drag_autoscroll::resize_pan_tests::partial_clamped_midi_minimum_pan_does_not_overshoot_applied_edge ... ok
+inward release midi=false left=true supported=true error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 167685 })
+test editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes ... ok
+test editor::drag_autoscroll::resize_pan_tests::held_resize_edges_pan_both_directions_stop_and_commit_one_history_edit ... ok
+test editor::drag_autoscroll::resize_pan_tests::resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan ... ok
+retired pan midi=false stale=true original=Viewport { start: 0, length: 384000 } held=Viewport { start: 28800, length: 384000 } stored_after_cancel=Some(Viewport { start: 0, length: 384000 }) grown_visible=Viewport { start: 0, length: 384000 }
+browser release edge=Right stretch=false child=browser-section-samples moved=true held=96000..176750 entry=Some((96000, 80750)) actual=Some((96000, 80750)) command=Some(TrimClipEdge { clip: ClipId(4), edge: Right, frame: 176750 })
+retired pan midi=true stale=true original=Viewport { start: 0, length: 384000 } held=Viewport { start: 28800, length: 384000 } stored_after_cancel=Some(Viewport { start: 0, length: 384000 }) grown_visible=Viewport { start: 0, length: 384000 }
+test editor::drag_autoscroll::resize_pan_tests::stale_fitted_resize_does_not_resurrect_hidden_pan_after_project_growth ... ok
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_cancel_and_stale_owners_cannot_scroll_or_commit ... ok
+browser release edge=Left stretch=false child=browser-audition-waveform moved=true held=111250..192000 entry=Some((111250, 80750)) actual=Some((111250, 80750)) command=Some(TrimClipEdge { clip: ClipId(4), edge: Left, frame: 111250 })
+resize review release midi=false outside=true point=Point { x: 1114px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+browser midi release edge=Right child=browser-section-samples accepted=BeatTime(4294967296)..BeatTime(14177687044) source=BeatTime(0)
+resize review release midi=true outside=true point=Point { x: 1114px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::browser_release_review_generic_outside_still_cancels_audio_and_midi ... ok
+browser midi release edge=Left child=browser-section-samples accepted=BeatTime(7297149436)..BeatTime(14177687044) source=BeatTime(3002182140)
+browser release edge=Right stretch=true child=browser-audition-waveform moved=false held=96000..207250 entry=Some((96000, 111250)) actual=Some((96000, 111250)) command=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 207250 })
+browser midi release edge=Right child=browser-audition-waveform accepted=BeatTime(4294967296)..BeatTime(14177687044) source=BeatTime(0)
+test editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release ... ok
+test editor::trim::resize_release_tests::browser_release_review_midi_edge_admits_existing_detail_or_browser_focus ... ok
+original browser point=Point { x: 464px, y: 214px } actual region=Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } } midi=false: one accepted resize
+browser release edge=Left stretch=true child=browser-section-samples moved=true held=111250..192000 entry=Some((111250, 80750)) actual=Some((111250, 80750)) command=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 111250 })
+resize review release midi=false outside=false point=Point { x: 1072px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+browser midi release edge=Left child=browser-audition-waveform accepted=BeatTime(7297149436)..BeatTime(14177687044) source=BeatTime(3002182140)
+test editor::trim::resize_release_tests::browser_release_review_other_audio_track_cancels_without_edit ... ok
+test editor::trim::resize_release_tests::browser_release_commits_last_shown_midi_resize_with_one_history_step ... ok
+test editor::trim::resize_release_tests::browser_release_commits_last_shown_audio_resize_after_actual_child_routing ... ok
+browser release cancellation case=0: no command or pending owner
+resize review release midi=true outside=false point=Point { x: 835.5px, y: 344px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::browser_release_review_other_midi_track_cancels_without_edit ... ok
+original browser point=Point { x: 464px, y: 214px } actual region=Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } } midi=true: one accepted resize
+browser stationary modifier stretch=false command_on_release=false accepted_duration=84000
+test editor::trim::resize_release_tests::browser_release_review_original_labeled_outside_point_commits_audio_and_midi ... ok
+browser release cancellation case=1: no command or pending owner
+release edge=Right queued=1 desired=96000..172785 releasedwidth=251.5 heldwidth=251.5 accepted=96000..172785 command=Some(TrimClipEdge { clip: ClipId(4), edge: Right, frame: 172785 })
+browser release cancellation case=2: no command or pending owner
+browser stationary modifier stretch=false command_on_release=true accepted_duration=82671
+release edge=Left queued=1 desired=115215..192000 releasedwidth=252 heldwidth=252 accepted=115215..192000 command=Some(TrimClipEdge { clip: ClipId(4), edge: Left, frame: 115215 })
+browser release cancellation case=3: no command or pending owner
+test editor::trim::resize_release_tests::browser_resize_release_still_cancels_escape_stale_generation_and_foreign_focus ... ok
+test editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack ... ok
+test editor::trim::resize_release_tests::midi_resize_keeps_released_geometry_until_actual_worker_ack_and_one_history_step ... ok
+browser stationary modifier stretch=true command_on_release=false accepted_duration=84000
+test editor::trim::resize_release_tests::release_audit_fast_audio_mouseup_uses_final_position_and_reverse ... ok
+test editor::trim::resize_release_tests::release_audit_fast_enabled_warp_trim_uses_final_position_and_reverse ... ok
+browser stationary modifier stretch=true command_on_release=true accepted_duration=82671
+test editor::trim::resize_release_tests::browser_resize_stationary_command_preview_and_release_use_the_last_timeline_point ... ok
+test editor::trim::resize_release_tests::pending_resize_correlates_real_fifo_acceptance_failure_and_deferred_submission ... ok
+test editor::trim::resize_release_tests::release_audit_fast_midi_mouseup_uses_final_position_and_reverse ... ok
+restart offline earlier completion: counted=2 resize_ordinal=Some(2) owner_retained=true
+browser release cancellation case=0: no command or pending owner
+test editor::trim::resize_terminal_tests::restart_offline_completion_cannot_retire_a_later_resize_ordinal ... ok
+browser release cancellation case=1: no command or pending owner
+test editor::trim::resize_terminal_tests::restart_offline_pending_work_blocks_actual_resize_capture_until_completion ... ok
+browser release cancellation case=2: no command or pending owner
+terminal deferred matching/real three-event receive batch: no hidden pan resurrection
+release edge=Right queued=1 desired=96000..211215 releasedwidth=377.5 heldwidth=377.5 accepted=96000..211215 command=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 211215 })
+test editor::trim::resize_release_tests::release_audit_fast_shift_mouseup_uses_final_position_and_reverse ... ok
+test editor::trim::resize_terminal_tests::terminal_deferred_match_normalizes_before_later_growth_in_one_receive_batch ... ok
+browser release cancellation case=3: no command or pending owner
+test editor::trim::resize_release_tests::resize_escape_stale_generation_pending_refusal_and_no_motion_do_not_retain_a_commit ... ok
+terminal FIFO real kind=0: earlier retained, own terminal normalized
+terminal FIFO real kind=1: earlier retained, own terminal normalized
+test editor::trim::resize_terminal_tests::terminal_deferred_owner_survives_full_ui_queue_and_failure_retirement_is_idempotent ... ok
+terminal explicit navigation=0 preserved None
+terminal FIFO real kind=2: earlier retained, own terminal normalized
+test editor::trim::resize_terminal_tests::terminal_local_retirement_does_not_clobber_a_new_actual_pointer_capture ... ok
+terminal explicit navigation=1 preserved Some(Viewport { start: 0, length: 192000 })
+terminal explicit navigation=2 preserved Some(Viewport { start: 96000, length: 192000 })
+release edge=Left queued=1 desired=115215..192000 releasedwidth=252 heldwidth=252 accepted=115215..192000 command=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 115215 })
+test editor::trim::resize_terminal_tests::terminal_project_replacement_and_generation_cannot_normalize_another_document ... ok
+terminal preserves actual display extent gain=false horizon=576000
+test editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack ... ok
+terminal preserves actual display extent gain=true horizon=384000
+test editor::trim::resize_terminal_tests::terminal_fifo_counts_real_ordinary_device_and_tuning_completions ... ok
+test editor::trim::resize_terminal_tests::terminal_preserves_explicit_fit_zoom_and_pan ... ok
+capability edge=Left desired=179960..192000 actual=Some((179960, 12040)) error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 179960 })
+test editor::trim::resize_terminal_tests::terminal_uses_current_loop_and_open_gain_lane_display_extent ... ok
+test editor::trim::stretch_limit_tests::shift_left_preview_boundary_is_accepted_by_actual_worker ... ok
+test editor::trim::stretch_preview::tests::distant_valid_island_is_accepted_and_identical_requests_do_no_metadata_work ... ok
+capability edge=Right desired=96000..108160 actual=Some((96000, 12160)) error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 108160 })
+test editor::trim::stretch_limit_tests::shift_right_preview_boundary_is_accepted_by_actual_worker ... ok
+test editor::trim::stretch_limit_tests::validated_reversal_and_final_mouseup_commit_exact_command_across_pitch_and_modes ... ok
+test editor::trim::stretch_limit_tests::large_invalid_expansion_releases_last_validated_frame_both_edges ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 896 filtered out; finished in 38.59s
+

@@ -1,0 +1,249 @@
+diff --git a/crates/hex-ui/src/editor/resize_pan_tests.rs b/crates/hex-ui/src/editor/resize_pan_tests.rs
+index 2719a144..dd60b7cf 100644
+--- a/crates/hex-ui/src/editor/resize_pan_tests.rs
++++ b/crates/hex-ui/src/editor/resize_pan_tests.rs
+@@ -45,6 +45,20 @@ fn fixture(
+     TrackId,
+     ClipId,
+     super::super::external_audio_drop_ui_test::BatchFiles,
++) {
++    fixture_with_streamed_source(cx, midi, viewport, false)
++}
++fn fixture_with_streamed_source(
++    cx: &mut TestAppContext,
++    midi: bool,
++    viewport: Option<Viewport>,
++    streamed_source: bool,
++) -> (
++    gpui::AnyWindowHandle,
++    Entity<EditorView>,
++    TrackId,
++    ClipId,
++    super::super::external_audio_drop_ui_test::BatchFiles,
+ ) {
+     cx.update(super::super::bind_editor_keys);
+     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
+@@ -53,6 +67,33 @@ fn fixture(
+     std::fs::create_dir(directory.join("samples")).unwrap();
+     let service = Service::new(48_000, 32, 8_000_000).unwrap();
+     next(&service);
++    let replacement = if streamed_source {
++        assert!(!midi);
++        service
++            .submit(Request::NewWithAudioMode {
++                mode: hex_session::DocumentAudioMode::VerifiedStreaming,
++                reservation: Some(hex_session::SourcePlanReservation {
++                    reader: hex_media::VerifiedWavReaderLimits {
++                        reader: hex_media::WavReaderLimits {
++                            max_file_bytes: 64 * 1024 * 1024,
++                            max_source_frames: 8_000_000,
++                            max_header_count: 32,
++                            max_window_frames: 4096,
++                        },
++                        max_manifest_bytes: 1024 * 1024,
++                    },
++                    max_retained_sources: 1,
++                    max_path_bytes: 1024 * 1024,
++                    max_manifest_bytes: 4 * 1024 * 1024,
++                }),
++            })
++            .unwrap();
++        let event = next(&service);
++        assert!(event.project_replaced);
++        Some(event)
++    } else {
++        None
++    };
+     let (event, track, clip) = if midi {
+         service
+             .submit(Request::Edit(Command::AddMidiTrack {
+@@ -116,6 +157,9 @@ fn fixture(
+             editor.update(cx, |v, cx| {
+                 assert_eq!(v.browser.directory, directory.join("samples"));
+                 assert_eq!(v.browser.places, vec![directory.join("samples")]);
++                if let Some(replacement) = replacement {
++                    v.receive(replacement);
++                }
+                 v.state = Some(event.state);
+                 v.viewport = viewport;
+                 v.snap_grid = SnapGrid::default().with_platform_modifier(true);
+@@ -621,11 +665,14 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
+             assert!(d.preview.borrow().as_ref().unwrap().length().raw() > 0);
+         } else {
+             let d = v.active_trim_drag.as_ref().unwrap();
+-            assert_eq!(
+-                d.preview.borrow().as_ref().unwrap().clip.duration(),
+-                1,
+-                "last legal positive stretch interval"
+-            );
++            let preview = d.preview.borrow();
++            let preview = preview.as_ref().unwrap();
++            assert!(preview.clip.duration() > 0);
++            hex_engine::audio_transform::validate_clip_warp_preview(
++                &preview.clip,
++                v.state.as_ref().unwrap().project.tempo_map(),
++            )
++            .expect("last displayed extent is admitted, not merely model-positive");
+         }
+         after
+     });
+@@ -655,11 +702,23 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
+         edge
+     };
+     let desired = editor.read_with(&visual, |v, _| {
+-        v.active_trim_drag
+-            .as_ref()
+-            .and_then(|d| d.preview.borrow().as_ref().map(|p| p.clip.clone()))
++        v.active_trim_drag.as_ref().and_then(|d| {
++            d.preview
++                .borrow()
++                .as_ref()
++                .map(|p| (p.clip.clone(), p.command_frame_for_test()))
++        })
+     });
+     visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
++    if let Some((_, frame)) = &desired {
++        editor.read_with(&visual, |v, _| {
++            let expected_edge = if left { hex_project::TrimEdge::Left } else { hex_project::TrimEdge::Right };
++            assert!(matches!(v.last_enqueued_edit.as_ref(),
++                Some(Command::StretchAudioClipEdge { clip: submitted, edge, frame: submitted_frame })
++                if *submitted == clip && *edge == expected_edge && *submitted_frame == *frame
++            ), "release must submit the exact retained command frame: {:?}", v.last_enqueued_edit);
++        });
++    }
+     pump(&editor, &mut visual);
+     editor.read_with(&visual, |v, _| {
+         eprintln!("inward release midi={midi} left={left} supported={supported} error={:?} submitted={:?}", v.error, v.last_enqueued_edit);
+@@ -668,18 +727,16 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
+         if midi {
+             assert!(v.error.is_none(), "{:?}", v.error);
+             assert!(p.midi_clip(clip).unwrap().length().raw() > 0);
+-        } else if supported {
+-            assert!(v.error.is_none(), "{:?}", v.error);
+-            assert_eq!(p.clip(clip), desired.as_ref());
+-            assert!((12_000..=96_000).contains(&p.clip(clip).unwrap().duration()));
+         } else {
+-            // Model-positive is not a waiver of the separate prepared warp
+-            // capability. A 96000:1 transform must refuse atomically, visibly.
+-            assert!(v.error.as_ref().is_some_and(|e| e.contains("warp stretch including pitch compensation must be within 1/8..8")));
+-            assert_eq!(p.snapshot(), before_project);
++            assert!(v.error.is_none(), "{:?}", v.error);
++            assert_eq!(p.clip(clip), desired.as_ref().map(|(clip, _)| clip));
++            hex_engine::audio_transform::validate_clip_warp_preview(
++                p.clip(clip).unwrap(), p.tempo_map(),
++            ).expect("real worker accepted the displayed supported extent");
++            assert!(v.pending_trim.is_none());
+         }
+     });
+-    if supported {
++    if !midi {
+         let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+         visual.simulate_keystrokes("cmd-z");
+         pump(&editor, &mut visual);
+@@ -709,10 +766,22 @@ fn accepted_edge_short_of_view_end_does_not_reveal_raw_pan_on_later_growth(
+     }
+ }
+ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse: bool) {
+-    let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
++    // Verified streamed originals deliberately lack resident transform PCM.
++    // Geometry admission is valid; the real worker must refuse preparation.
++    let (handle, editor, track, clip, _files) =
++        fixture_with_streamed_source(cx, midi, None, refuse);
+     let mut visual = VisualTestContext::from_window(handle, cx);
+     visual.update(|window, _| window.activate_window());
+     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++    let before_history = editor.read_with(&visual, |v, _| {
++        let state = v.state.as_ref().unwrap();
++        (
++            state.revision,
++            state.can_undo,
++            state.can_redo,
++            state.unsaved,
++        )
++    });
+     let down = capture(&mut visual, clip, midi, false);
+     let edge = editor.read_with(&visual, |v, _| {
+         let lane = v.drag_lanes[&track];
+@@ -739,18 +808,15 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
+                 && viewport.end().unwrap() > v.state.as_ref().unwrap().timeline_frames
+         );
+         if refuse {
+-            assert!(
+-                v.active_trim_drag
+-                    .as_ref()
+-                    .unwrap()
+-                    .preview
+-                    .borrow()
+-                    .as_ref()
+-                    .unwrap()
+-                    .clip
+-                    .duration()
+-                    > 96_000 * 8
+-            );
++            let drag = v.active_trim_drag.as_ref().unwrap();
++            let preview = drag.preview.borrow();
++            let preview = preview.as_ref().unwrap();
++            assert!(preview.clip.duration() > 0);
++            hex_engine::audio_transform::validate_clip_warp_preview(
++                &preview.clip,
++                v.state.as_ref().unwrap().project.tempo_map(),
++            )
++            .expect("refusal fixture must display supported Warp geometry");
+         }
+         viewport
+     });
+@@ -773,7 +839,27 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
+         visual.run_until_parked();
+         inside
+     };
++    let retained_command_frame = refuse.then(|| {
++        editor.read_with(&visual, |v, _| {
++            let drag = v.active_trim_drag.as_ref().unwrap();
++            drag.preview
++                .borrow()
++                .as_ref()
++                .unwrap()
++                .command_frame_for_test()
++        })
++    });
+     visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
++    if let Some(frame) = retained_command_frame {
++        editor.read_with(&visual, |v, _| {
++            assert!(matches!(v.last_enqueued_edit.as_ref(),
++                Some(Command::StretchAudioClipEdge { clip: submitted, edge: hex_project::TrimEdge::Right, frame: submitted_frame })
++                if *submitted == clip && *submitted_frame == frame
++            ));
++            assert!(v.pending_trim.is_some(), "own accepted command retains PendingTrim until its actual worker terminal");
++            assert_eq!(v.worker_requests_pending, 1, "actual own FIFO submission");
++        });
++    }
+     visual.run_until_parked();
+     editor.read_with(&visual, |v, _| {
+         assert!(
+@@ -784,7 +870,7 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
+     pump(&editor, &mut visual);
+     let settled = editor.read_with(&visual, |v,_| {
+         let state=v.state.as_ref().unwrap();
+-        if refuse { assert!(v.error.is_some(), "real worker must refuse unsupported transform");assert_eq!(state.project.snapshot(),before); }
++        if refuse { assert!(v.error.as_ref().is_some_and(|error| error.contains("preparation currently require resident audio; streamed source changes were not committed")), "actual streamed preparation refusal, not range validation: {:?}", v.error);assert_eq!(state.project.snapshot(),before);assert_eq!((state.revision, state.can_undo, state.can_redo, state.unsaved),before_history);assert!(v.pending_trim.is_none()); }
+         else { assert!(v.error.is_none(),"{:?}",v.error);assert_ne!(state.project.snapshot(),before); }
+         assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+         let visible=v.visible_viewport(state.timeline_frames);
+diff --git a/crates/hex-ui/src/editor/trim.rs b/crates/hex-ui/src/editor/trim.rs
+index 17e131c7..9c9c7bbb 100644
+--- a/crates/hex-ui/src/editor/trim.rs
++++ b/crates/hex-ui/src/editor/trim.rs
+@@ -21,6 +21,13 @@ pub(super) struct TrimPreviewState {
+     stretch: bool,
+ }
+ 
++#[cfg(all(test, feature = "ui-test-support"))]
++impl TrimPreviewState {
++    pub(super) fn command_frame_for_test(&self) -> u64 {
++        self.command_frame
++    }
++}
++
+ fn replace_audio_trim_preview(
+     preview: &RefCell<Option<TrimPreviewState>>,
+     next: Option<TrimPreviewState>,

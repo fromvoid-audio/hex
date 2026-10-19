@@ -1,0 +1,140 @@
+{
+  "kind": "evidence-only-never-build-merge",
+  "source": "60a9afda9e34bcc5430c14929c9676d8fc36ca70",
+  "tree": "3323c4087007d4670ca3fdab88ee92f8346c0721",
+  "parent": "13927e8654328cb52f631dc5cb1cc878d87d151e",
+  "payloads": {
+    "HANDOFF.md": {
+      "bytes": 5632,
+      "sha256": "42f80a076cea10d70e518ee611be858cf60e0cf3b4eca33e36f865383270d26c"
+    },
+    "component-runner.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "file-hashes.json": {
+      "bytes": 509,
+      "sha256": "2fff928a34433528593b62577b318ce1939127ff5eb0f9cdc29ae3125ed3f2df"
+    },
+    "owner.patch": {
+      "bytes": 11659,
+      "sha256": "2b73ea505c22e3827fc4a820c0a2ef1d65d9bb5c8068f6567a0cde8cb496ef29"
+    },
+    "runs/warp-pan-actual-refusal-v3/01-actual admitted streamed Warp worker refusal and pan normalization.log": {
+      "bytes": 1137,
+      "sha256": "f263a076c8bda22446ab173fe0e824a1edde691f931a65221095c3e8624a4fbd"
+    },
+    "runs/warp-pan-actual-refusal-v3/summary.json": {
+      "bytes": 10340,
+      "sha256": "517633f726c85c22addb39e1b2faeffcb8f9ea99fadf6e779ed7d203c54bc54d"
+    },
+    "runs/warp-pan-clean-final/01-all pan and release FIFO Warp point admission regressions.log": {
+      "bytes": 15759,
+      "sha256": "8dc834cb26d4788d7c49acbb1662a6bbb85dcc3809a072714c5fb2f407569f50"
+    },
+    "runs/warp-pan-clean-final/02-strict default UI Clippy.log": {
+      "bytes": 1017,
+      "sha256": "35f710413d92cccc92f580fb33480086dbedcfbebf9c3317815c75aba333811f"
+    },
+    "runs/warp-pan-clean-final/03-strict UI feature Clippy.log": {
+      "bytes": 494,
+      "sha256": "78a270cb85703482725c0f139ecd09c88f149a8b2c94120138f0f82b06b5ee5f"
+    },
+    "runs/warp-pan-clean-final/04-architecture guard.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/warp-pan-clean-final/05-GPUI guard.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/warp-pan-clean-final/06-dependency guard.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/warp-pan-clean-final/07-UI style guard.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/warp-pan-clean-final/08-device layout guard.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/warp-pan-clean-final/09-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/warp-pan-clean-final/10-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/warp-pan-clean-final/summary.json": {
+      "bytes": 14456,
+      "sha256": "5e6f6ae21058e076d4884a391859ef5102ddc6eff8af7827ac91ed10fde8158f"
+    },
+    "runs/warp-pan-oracle-green/01-all resize pan input and actual worker terminal cases.log": {
+      "bytes": 1284,
+      "sha256": "824178ffb852531c3b79d923f2bf1fb5ded3bd0ac45c1f89350fd65c1bdd3aa1"
+    },
+    "runs/warp-pan-oracle-green/summary.json": {
+      "bytes": 10178,
+      "sha256": "e1fe110d68a52898fb0466aaa00825823a268bfc3f5e334ba6bebe978db7c0d0"
+    },
+    "runs/warp-pan-oracle-green-v2/01-all resize pan input and actual worker terminal cases.log": {
+      "bytes": 6490,
+      "sha256": "ab53fff5077f80895b24ac0dfa7cb8192a6263c0236508334f1c186e64190acc"
+    },
+    "runs/warp-pan-oracle-green-v2/summary.json": {
+      "bytes": 10187,
+      "sha256": "56e52d2ac6f5901c092d47b18f28f42d6ae2a7b015ee64378426c10eab7ab7bc"
+    },
+    "runs/warp-pan-original-13927/01-actual three inward Warp pan failures.log": {
+      "bytes": 3453,
+      "sha256": "1757501ff52e3413fe399214dd7482ac3684da681b66593bdcbd4cbd794f999d"
+    },
+    "runs/warp-pan-original-13927/summary.json": {
+      "bytes": 10439,
+      "sha256": "948d12061069c7aa931bedb9c931a7294c85ffcd0346f367f05523428cf05cca"
+    },
+    "runs/warp-pan-refusal-original-13927/01-actual async refused pan failure.log": {
+      "bytes": 1188,
+      "sha256": "9c59677bab83aafb54a6f26252cafdab93d8d3fdd95a907db9b958f3d7bab451"
+    },
+    "runs/warp-pan-refusal-original-13927/summary.json": {
+      "bytes": 9841,
+      "sha256": "4e2ce1fc9a58503f3bf6e26990ae053b962d20c5ff81aa8387e907175deaffdc"
+    },
+    "source/crates/hex-ui/src/editor/resize_pan_tests.rs": {
+      "bytes": 47786,
+      "sha256": "3a3089b7616c4e1bb3ccf28298e83f2caa42f522d6a4e91c4e91756fa2481b4f"
+    },
+    "source/crates/hex-ui/src/editor/trim.rs": {
+      "bytes": 69440,
+      "sha256": "4a458731ffb3a70b6fb4eb65c527377bba3403d1bf9e404b589108bc0c6473b1"
+    },
+    "warp-pan-actual-refusal-v3.stdout": {
+      "bytes": 280,
+      "sha256": "564e58bc004a1eaa631fec69f8d2c9b3b363990d70cfde2cae1205b21154abcc"
+    },
+    "warp-pan-clean-final.stdout": {
+      "bytes": 827,
+      "sha256": "f3aa5e7d88e0d268fb6cec8b849262cbd086cdaa856dbc0ee9fe29b825e27b71"
+    },
+    "warp-pan-oracle-green-v2.stdout": {
+      "bytes": 252,
+      "sha256": "5b784c310ac5aa08522fb83d613cbf60fee013f9a5c3d21087fa8122ae7f80eb"
+    },
+    "warp-pan-oracle-green.stdout": {
+      "bytes": 249,
+      "sha256": "0bb748db438be7cbd411ba764009eb41ef4086147feacba1998afea39f733c22"
+    },
+    "warp-pan-original-13927.stdout": {
+      "bytes": 219,
+      "sha256": "5400cdbb7c6561f0cacc0dc8a759f01a63fc5fef384bf70d6ac25b596f2fb2de"
+    },
+    "warp-pan-refusal-original-13927.stdout": {
+      "bytes": 217,
+      "sha256": "c1c8916446b576d9542587cd231db1feaac34f3dbae86aa32f535c5ab2cfe820"
+    }
+  }
+}
