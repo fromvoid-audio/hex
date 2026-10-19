@@ -112,7 +112,7 @@ impl EditorView {
                 div()
                     .w(px(1.0))
                     .h(px(20.0))
-                    .mx_1()
+                    .mx(px(1.0))
                     .bg(rgb(theme::color(theme::PaletteRole::Border))),
             )
             .child(self.control_icon(
@@ -185,7 +185,12 @@ impl EditorView {
             )
             .child(
                 div()
-                    .w(px(82.0))
+                    // Size the short readout to its text; retain the existing
+                    // upper bound for unusually long project positions.
+                    .max_w(px(82.0))
+                    .flex_shrink_0()
+                    .line_clamp(1)
+                    .text_ellipsis()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text(self.position_label())),
@@ -201,7 +206,9 @@ impl EditorView {
                 div()
                     .id("audio output status")
                     .debug_selector(|| "audio output status".into())
-                    .flex_1()
+                    // Status takes available width before the empty spacer;
+                    // a zero flex basis could collapse it at minimum width.
+                    .w(px(230.0))
                     .max_w(px(230.0))
                     .min_w_0()
                     // Keep a definite wrap width during GPUI's second layout
