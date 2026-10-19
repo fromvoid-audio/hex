@@ -513,9 +513,11 @@ bug, improvement, documentation, maintenance or testing tags.
 
 Keep ticket states accurate: `todo`, `in_progress`, `blocked`,
 `ready_for_review`, `in_review`, `done` or `cancelled`. Move active work to
-`in_progress`; use `ready_for_review` after implementation and source checks are
-complete but review or native/user acceptance remains, and `in_review` while
-review is underway. Explain blockers in the description. Before every update,
+`in_progress`. For Hex, keep unmerged and merge-queued work `in_progress`;
+use `ready_for_review` only after the owning canonical PR's merge is
+authenticated, with native/user acceptance still open, and `in_review` while
+that acceptance review is underway. A source merge does not imply deployment
+or completed acceptance. Explain blockers in the description. Before every update,
 call `get_ticket` and pass its current revision as `expected_revision`; on
 conflict, re-read and reconsider. Update fields selectively, preserving
 descriptions, tags and source context. Mark `done` only when acceptance criteria

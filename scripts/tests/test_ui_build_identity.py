@@ -1,5 +1,6 @@
 """Exercise the actual UI build script using a tiny real Cargo consumer."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -71,6 +72,23 @@ class UiBuildIdentityTests(unittest.TestCase):
                 artifact = next(e for e in events if e.get("reason") == "compiler-artifact" and e.get("executable"))
                 self.assertEqual(command(artifact["executable"], "--font"), font.read_text())
                 return artifact["fresh"], command(artifact["executable"])
+            def assert_dirty_optimized_refused():
+                # The actual optimized receiver requires clean source, so a
+                # same-HEAD dirty baseline must refuse before touching READY or
+                # its compiled artifact, rather than pretend it was rebuilt.
+                runner = delivery.ci.LocalCiRunner(root, env={**env,
+                    "CARGO_TARGET_DIR": str(root / "release-target")}, min_free_bytes=0)
+                _, dev_owner = delivery.ci.target_state_paths(root / "release-target", runner.target_state_dir)
+                owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
+                owner_before = owner.read_bytes()
+                def artifacts():
+                    return {str(p.relative_to(root)): (hashlib.sha256(p.read_bytes()).hexdigest(),
+                            p.stat().st_mtime_ns) for p in (root / "release-target").rglob("*") if p.is_file()}
+                before = artifacts()
+                with self.assertRaisesRegex(delivery.ci.TargetCacheError, "requires exact clean source"):
+                    build(optimized=True)
+                self.assertEqual(owner.read_bytes(), owner_before)
+                self.assertEqual(artifacts(), before)
             fresh, output = build()
             self.assertFalse(fresh)
             self.assertEqual(output, command("git", "rev-parse", "--short=8", "HEAD") + "|")
@@ -82,6 +100,8 @@ class UiBuildIdentityTests(unittest.TestCase):
             self.assertFalse(fresh)
             self.assertIn(" dirty|", output)
             self.assertTrue(build()[0])
+            dirty_head = command("git", "rev-parse", "HEAD")
+            assert_dirty_optimized_refused()
             # Dirty->dirty, same HEAD and restored mtime: the production
             # full-content token still reruns actual build.rs and Rust embedding.
             stamp = font.stat()
@@ -89,6 +109,8 @@ class UiBuildIdentityTests(unittest.TestCase):
             os.utime(font, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             self.assertFalse(build()[0])
             self.assertEqual(cleanup, "not_needed")
+            self.assertEqual(command("git", "rev-parse", "HEAD"), dirty_head)
+            assert_dirty_optimized_refused()
             (root / "changelog/generated.json").write_text('{"batches":[]}')
             fresh, output = build()
             self.assertFalse(fresh)
@@ -108,11 +130,12 @@ class UiBuildIdentityTests(unittest.TestCase):
             os.utime(notes, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             self.assertTrue(build()[1].endswith('|{"batches": []}'))
             self.assertEqual(cleanup, "not_needed")
+            assert_dirty_optimized_refused()
             command("git", "add", ".")
             command("git", "commit", "-qm", "notes changed with retained mtime")
             self.assertTrue(build(optimized=True)[1].endswith('|{"batches": []}'))
             self.assertEqual(cleanup, "not_needed")
-            print("ACTUAL_UNOWNED_INPUTS font_and_notes_current=True dev_and_optimized=True cleanup_not_needed=True")
+            print("ACTUAL_UNOWNED_INPUTS dev_same_head_dirty_current=True optimized_clean_commits_current=True dirty_optimized_refused_owner_artifacts_unchanged=True cleanup_not_needed=True")
             # Raw Cargo still refreshes truthfully, including untracked dirt.
             (root / "another-input").write_text("dirty")
             self.assertIn(" dirty|", build(raw=True)[1])

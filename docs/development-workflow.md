@@ -130,7 +130,10 @@ raise a controlled delivery refusal before they can qualify a build.
 
 The actual UI build script observes the complete guarded source token. Real
 Cargo consumer controls verify retained-mtime out-of-crate font/changelog bytes
-are refreshed in development and optimized artifacts, including dirty-to-dirty
-changes, without an extra cleanup. These specific existing inputs therefore do
+are refreshed across same-HEAD dirty development edits and clean optimized
+commits, without an extra cleanup. Optimized preparation refuses dirty source
+before building: the same-HEAD dirty font/notes controls verify that refusal
+preserves the READY owner and existing artifacts. They do not claim a dirty
+optimized rebuild. These specific existing inputs therefore do
 not require duplicate invalidation. This is compiled-consumer evidence, not
 native font rendering or general attestation of arbitrary build-script inputs.
