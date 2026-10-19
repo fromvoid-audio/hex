@@ -1004,10 +1004,29 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
 fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack(
     cx: &mut TestAppContext,
 ) {
+    comparison_callback_fixture(cx, false);
+}
+
+#[gpui::test]
+fn device_comparison_metadata_recovery_error_preserves_real_pending_and_applied_correlation(
+    cx: &mut TestAppContext,
+) {
+    comparison_callback_fixture(cx, true);
+}
+
+fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     use crate::editor::audio_admission::{AdmissionState, ProjectRevision};
     use std::sync::atomic::Ordering::Acquire;
     let directory = Directory::new();
-    let service = Service::new(48_000, 32, 0).unwrap();
+    let service = if recovery_error {
+        // A real worker-owned checkpoint failure, after a successful model edit.
+        // No fabricated Event.error, proof, callback ACK or preparation outcome.
+        let parent = directory.0.join("not-a-recovery-directory");
+        std::fs::write(&parent, b"owned fixture obstruction").unwrap();
+        Service::with_recovery(48_000, 32, 0, parent.join("untitled.hexjournal")).unwrap()
+    } else {
+        Service::new(48_000, 32, 0).unwrap()
+    };
     receive_service_event(&service);
     service
         .submit(Request::Edit(Command::AddMidiTrack {
@@ -1101,6 +1120,33 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
                 device_preview_identity: None,
                 tuning_preview_identity: None,
             });
+        if recovery_error {
+            view.service
+                .submit(Request::CompareDevice {
+                    owner: hex_session::service::preset::Owner {
+                        project_generation: 0,
+                        revision: state.revision,
+                        device,
+                        class: hex_engine::NativeDeviceClass::Instrument,
+                        type_id: state.project.device(device).unwrap().state().type_id(),
+                    },
+                    expected: DeviceVariant::B, // Actual A: refusal, not a commit.
+                    action: hex_project::DeviceComparisonAction::Switch,
+                })
+                .unwrap();
+            let refused = receive_service_event(&view.service);
+            assert!(refused.error.is_some());
+            assert!(refused.state.comparison_audio.is_none());
+            assert_eq!(refused.state.revision, state.revision);
+            assert!(refused.playback.is_none());
+            view.receive(refused);
+            assert_eq!(view.playback_candidates[0].state.revision, state.revision);
+            assert_eq!(
+                view.audio_admission.current().unwrap().state,
+                AdmissionState::Pending
+            );
+            assert_eq!(view.applied_project_revision(), None);
+        }
         view.service
             .submit(Request::CompareDevice {
                 owner: hex_session::service::preset::Owner {
@@ -1116,7 +1162,63 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
             .unwrap();
         let event = receive_service_event(&view.service);
         assert!(event.playback.is_none());
+        if recovery_error {
+            assert_eq!(
+                event.error.as_deref(),
+                Some("automatic recovery: recovery directory must be a real directory")
+            );
+            assert_eq!(event.state.revision, state.revision + 1);
+            assert!(event.state.comparison_audio.as_ref().unwrap().follows(
+                &state,
+                &event.state,
+                0
+            ));
+            assert_eq!(
+                event.state.project.device(device).unwrap().active_variant(),
+                DeviceVariant::B
+            );
+            assert!(event.state.can_undo && event.state.unsaved);
+            // A synthetic wrong-generation delivery of an ACTUAL proof cannot
+            // change candidates, inputs or authoring. The valid event follows.
+            view.service
+                .submit(Request::CompareDevice {
+                    owner: hex_session::service::preset::Owner {
+                        project_generation: 0,
+                        revision: event.state.revision,
+                        device,
+                        class: hex_engine::NativeDeviceClass::Instrument,
+                        type_id: event
+                            .state
+                            .project
+                            .device(device)
+                            .unwrap()
+                            .state()
+                            .type_id(),
+                    },
+                    expected: DeviceVariant::A,
+                    action: hex_project::DeviceComparisonAction::Switch,
+                })
+                .unwrap();
+            let invalid = receive_service_event(&view.service);
+            assert!(invalid.error.is_some()); // Wrong active slot: no new commit.
+            assert_eq!(invalid.state.revision, event.state.revision);
+            view.project_generation = 1;
+            view.receive(invalid);
+            view.project_generation = 0;
+            assert_eq!(view.state.as_ref().unwrap().revision, state.revision);
+            assert_eq!(view.playback_candidates[0].state.revision, state.revision);
+            assert_eq!(
+                view.computer_keyboard.target,
+                Some((0, state.revision, track))
+            );
+        }
         view.receive(event);
+        if recovery_error {
+            assert_eq!(
+                view.error.as_deref(),
+                Some("automatic recovery: recovery directory must be a real directory")
+            );
+        }
         let next = view.state.as_ref().unwrap();
         assert_eq!(next.revision, state.revision + 1);
         assert!(Arc::ptr_eq(
@@ -1181,7 +1283,18 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
             .unwrap();
         let event = receive_service_event(&view.service);
         let next = event.state.clone();
+        if recovery_error {
+            assert_eq!(event.error.as_deref(), Some("automatic recovery: recovery directory must be a real directory"));
+            assert!(event.playback.is_none());
+            assert!(next.comparison_audio.as_ref().unwrap().follows(&current, &next, 0));
+        }
         view.receive(event);
+        if recovery_error {
+            assert_eq!(view.error.as_deref(), Some("automatic recovery: recovery directory must be a real directory"));
+            assert_eq!(view.computer_keyboard.target, Some((0, next.revision, track)));
+            assert!(!keyboard.is_cancelled());
+            assert!(Arc::ptr_eq(next.canonical_audio_source.as_ref().unwrap(), &source));
+        }
         assert_eq!(view.applied_project_revision(), Some(next.revision));
         assert_eq!(
             view.audio_admission.current().unwrap().state,
