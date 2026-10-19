@@ -1,0 +1,28 @@
+[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS file 2 local dependency changed while hashing: /tmp/tmpowh3wvti/external-vendor/a.rs
+.[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS entry 2 local dependency changed while hashing: /tmp/tmpup7i44ue/external-vendor
+.[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS link 2 local dependency changed while hashing: /tmp/tmpvovucd7n/external-vendor/a.rs
+.[1/1] build: running
+[1/1] build: passed
+local dependency contains a directory symlink: /tmp/tmpeybihczj/repo/third_party/vendor/generated-alias
+ACTUAL_DIRECTORY_TARGET_SYMLINK 1
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.[1/1] build: running
+[1/1] build: passed
+ACTUAL_FINAL_HASH_SIGNAL 2 {'code': 130, 'escaped': False, 'lock_retained': False, 'handlers_restored': True, 'summary_exit': 130, 'ended_at': '2026-10-19T14:23:37Z'}
+.[1/1] build: running
+[1/1] build: passed
+ACTUAL_FINAL_HASH_SIGNAL 15 {'code': 130, 'escaped': False, 'lock_retained': False, 'handlers_restored': True, 'summary_exit': 130, 'ended_at': '2026-10-19T14:23:37Z'}
+.
+----------------------------------------------------------------------
+Ran 7 tests in 0.153s
+
+OK

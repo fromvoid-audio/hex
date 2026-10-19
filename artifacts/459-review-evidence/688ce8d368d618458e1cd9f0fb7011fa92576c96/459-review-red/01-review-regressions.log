@@ -1,0 +1,104 @@
+/workspace/hex/scripts/tests/test_local_ci.py:35: SyntaxWarning: invalid escape sequence '\ '
+  git\ rev-parse*) echo deadbeef; exit 0 ;;
+[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS file 0 None
+F[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS entry 0 None
+F[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS link 0 None
+F[1/1] build: running
+[1/1] build: passed
+E[1/1] build: running
+[1/1] build: passed
+E[1/1] build: running
+[1/1] build: passed
+ACTUAL_FINAL_HASH_SIGNAL 2 {'code': None, 'escaped': True, 'lock_retained': True, 'handlers_restored': False, 'summary_exit': None, 'ended_at': None}
+F[1/1] build: running
+[1/1] build: passed
+ACTUAL_FINAL_HASH_SIGNAL 15 {'code': None, 'escaped': True, 'lock_retained': True, 'handlers_restored': False, 'summary_exit': None, 'ended_at': None}
+F
+======================================================================
+ERROR: test_dependency_directory_symlink_to_target_refuses_before_owner_mutation (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_directory_symlink_to_target_refuses_before_owner_mutation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1166, in test_dependency_directory_symlink_to_target_refuses_before_owner_mutation
+    sentinel.write_bytes(b"preserve actual target")
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1036, in write_bytes
+    with self.open(mode='wb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmp_afzz3dq/repo/cargo-target/release-sentinel'
+
+======================================================================
+ERROR: test_dependency_actual_target_directory_is_excluded_and_unchanged_reuses (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_actual_target_directory_is_excluded_and_unchanged_reuses)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1186, in test_dependency_actual_target_directory_is_excluded_and_unchanged_reuses
+    generated.write_bytes(b"not a dependency input")
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1036, in write_bytes
+    with self.open(mode='wb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmpm2zi5ic4/repo/third_party/vendor/actual-target/generated'
+
+======================================================================
+FAIL: test_dependency_final_pass_revalidates_earlier_file (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_final_pass_revalidates_earlier_file)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1149, in test_dependency_final_pass_revalidates_earlier_file
+    self.dependency_final_pass_race("file")
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1144, in dependency_final_pass_race
+    self.assertNotEqual(code, 0, "an already-hashed external input changed during the final traversal")
+AssertionError: 0 == 0 : an already-hashed external input changed during the final traversal
+
+======================================================================
+FAIL: test_dependency_final_pass_revalidates_earlier_directory_inventory (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_final_pass_revalidates_earlier_directory_inventory)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1152, in test_dependency_final_pass_revalidates_earlier_directory_inventory
+    self.dependency_final_pass_race("entry")
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1144, in dependency_final_pass_race
+    self.assertNotEqual(code, 0, "an already-hashed external input changed during the final traversal")
+AssertionError: 0 == 0 : an already-hashed external input changed during the final traversal
+
+======================================================================
+FAIL: test_dependency_final_pass_revalidates_file_symlink_target (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_final_pass_revalidates_file_symlink_target)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1155, in test_dependency_final_pass_revalidates_file_symlink_target
+    self.dependency_final_pass_race("link")
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1144, in dependency_final_pass_race
+    self.assertNotEqual(code, 0, "an already-hashed external input changed during the final traversal")
+AssertionError: 0 == 0 : an already-hashed external input changed during the final traversal
+
+======================================================================
+FAIL: test_dependency_final_hash_sigint_finishes_cleanup (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_final_hash_sigint_finishes_cleanup)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1238, in test_dependency_final_hash_sigint_finishes_cleanup
+    self.final_hash_signal(local_ci.signal.SIGINT)
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1219, in final_hash_signal
+    self.assertEqual(code, 130)
+AssertionError: None != 130
+
+======================================================================
+FAIL: test_dependency_final_hash_sigterm_finishes_cleanup (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_final_hash_sigterm_finishes_cleanup)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1241, in test_dependency_final_hash_sigterm_finishes_cleanup
+    self.final_hash_signal(local_ci.signal.SIGTERM)
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1219, in final_hash_signal
+    self.assertEqual(code, 130)
+AssertionError: None != 130
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.109s
+
+FAILED (failures=5, errors=2)

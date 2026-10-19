@@ -1,0 +1,15 @@
+commit 688ce8d368d618458e1cd9f0fb7011fa92576c96
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:25:13 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:25:13 2026 +0000
+
+    fix: revalidate dependency inventories and finalize interrupted checks
+
+commit a4e7c8521efcd3e6deb3f90075507dc61292fa7f
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:22:28 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:22:28 2026 +0000
+
+    test: reproduce dependency end-pass races and final-hash interrupts
