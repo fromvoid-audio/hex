@@ -176,8 +176,7 @@ pub(super) fn scroll_nodes(
     };
     let editing = view.device_panel.controls.values().any(|control| matches!(control,
         ParameterControl::Float {entity,..} if entity.read(cx).is_editing() || entity.read(cx).is_interacting()));
-    if editing || panel.automation.is_some() || panel.creation.is_some() || panel.preview.is_some()
-    {
+    if editing || panel.creation.is_some() {
         return Vec::new();
     }
     state
