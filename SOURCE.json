@@ -1,0 +1,107 @@
+{
+  "canonical_pr": 395,
+  "branch": "pulse/task-2789-g1-ffdf4fa9c769",
+  "head": "dd997584b7407eb1cf50fb00420c36644587e53c",
+  "tree": "e82f58be11104d0414bd30be3f331275623feafa",
+  "parent": "3e3ba77f2e080994e18f0ed5cfa563da28fc86f6",
+  "files": [
+    {
+      "path": "crates/hex-desktop/src/native_audio.rs",
+      "mode": "0o600",
+      "bytes": 31276,
+      "sha256": "4777b601839d32116aa0fd2ec828ba3590eda3b2998f6e9b8a113133eeb62db3",
+      "before_sha256": "0ed00c00f4134000864ecdcd9dcd822fe082052f8e3af5dae2f5cce862378ceb"
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport.rs",
+      "mode": "0o600",
+      "bytes": 7504,
+      "sha256": "56b467a0dc4ec9e59bcd792fe26b1ac9db2558f08fbce620ad80a05ad161fd0d",
+      "before_sha256": "4612ec6909b137fbf9a045d7aff69568214e80202ca378e15730ab300a69f7a0"
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/worker_control.rs",
+      "mode": "0o600",
+      "bytes": 27058,
+      "sha256": "7658df250dc67f9bc935a1f909a62af62d814ce38aa582a50af04ee3a5a5be0f",
+      "before_sha256": "25874b940fef3f619b5ba10c31d18de77109c45c187d4a51b19b2986eff9a675"
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/worker_startup.rs",
+      "mode": "0o600",
+      "bytes": 4657,
+      "sha256": "29fadd20abb17c61b46772361f1eed4cf405545312dcbc01b0def8c58815e120",
+      "before_sha256": null
+    },
+    {
+      "path": "crates/hex-session/src/service.rs",
+      "mode": "0o600",
+      "bytes": 303705,
+      "sha256": "33d770fb0f138179ef93b252301077fa2a445b637fd2a9da6145f18dfcad5758",
+      "before_sha256": "13b16ee80a67224626bfe69984a298ade7c40fc18d84aabc5299523a4a712c79"
+    },
+    {
+      "path": "crates/hex-session/src/service/audio_sink.rs",
+      "mode": "0o600",
+      "bytes": 26005,
+      "sha256": "b7d0507bf83c190d207d16ed0595707ceaa0b77b6d200dcb5f215c693aeaec88",
+      "before_sha256": "79f664a7af8c89431b17dab57a925b4b9b33709d672b56416b38733cd1960852"
+    },
+    {
+      "path": "crates/hex-session/src/service/request_transport.rs",
+      "mode": "0o600",
+      "bytes": 2275,
+      "sha256": "9fe7810e6f6e7ba15e87c7b346762f9d58559e748b3a554e68bddbee32b43979",
+      "before_sha256": null
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports.rs",
+      "mode": "0o600",
+      "bytes": 19460,
+      "sha256": "c2bd6f3dd35e2d090abf2f6c28bf4437fc0b57356df77201c18b729573b523fe",
+      "before_sha256": "dfc417da8837393f8273533b51c5eb28e559f18b878725e52907ef630551cc38"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/family.rs",
+      "mode": "0o600",
+      "bytes": 35109,
+      "sha256": "145132f3161a970f99196d1c07b7f91004371b5f3a69afecc2e1adbb320d7aa2",
+      "before_sha256": "d5a5711b4fd94f4496315d9c536719b243297c35ba8e41089b7cf8d674017f9a"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_requests.rs",
+      "mode": "0o600",
+      "bytes": 20272,
+      "sha256": "0dfafa5f98212c68f9ef5537cfe4990ed38dcb76ca56800602a7599741c9c7ef",
+      "before_sha256": null
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/storage.rs",
+      "mode": "0o600",
+      "bytes": 12969,
+      "sha256": "959ccd195906c9c768686ece73b37222b7fa6fe7c1c8130630dc6698cff22706",
+      "before_sha256": "89f7a710bc7df81fa40b1461201a50f74eb7789144573c3bdf5383ec500365cd"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/worker_control.rs",
+      "mode": "0o600",
+      "bytes": 8555,
+      "sha256": "6415f89b7dee8247612c3bbe4b3957e54cfec8ae56987a092e00d093d5b2d340",
+      "before_sha256": "a5ae5582740dae36d6947e246d3ef466c994812d7a46a8b05b98ff6ab61037f9"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/worker_requests.rs",
+      "mode": "0o600",
+      "bytes": 3955,
+      "sha256": "c39c8445e5956ca1ef6dae2402dc32d0ba3cc5748a775dfd8988d2e210a4577c",
+      "before_sha256": null
+    },
+    {
+      "path": "docs/sampler.md",
+      "mode": "0o600",
+      "bytes": 105901,
+      "sha256": "da420cb2ab0e67468c1fb8508d500d834fb042a7f9ad5f94fdd6680fcee8f11c",
+      "before_sha256": "60dedc8f0e97c00659d97daf4883ae51f4ea755f96afcb149ce3a0dedce6475b"
+    }
+  ]
+}

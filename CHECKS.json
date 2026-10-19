@@ -1,0 +1,52 @@
+{
+  "source_head": "dd997584b7407eb1cf50fb00420c36644587e53c",
+  "source_tree": "e82f58be11104d0414bd30be3f331275623feafa",
+  "targeted_checks_run_before_commit_on_same_final_source": true,
+  "full_required_ci_run": false,
+  "session": {
+    "command": "cargo test -p hex-session --locked",
+    "unit_pass": 193,
+    "integration_pass": 69,
+    "doc_pass": 18,
+    "failed": 0,
+    "ignored": 0,
+    "log": "logs/hex395-request-session-final-green.log"
+  },
+  "desktop": {
+    "command": "cargo test -p hex-desktop --locked",
+    "pass": 12,
+    "failed": 0,
+    "ignored": 0,
+    "log": "logs/hex395-request-desktop-final.log"
+  },
+  "budget_diagnostic": {
+    "command": "cargo test -p hex-session --locked native_request_family_budget -- --nocapture",
+    "pass": 1,
+    "included_in_session_unit_count": true,
+    "exact_bytes": 27800,
+    "minus_one_before_request_backing": true,
+    "base_family_already_exists": true
+  },
+  "strict": {
+    "command": "cargo clippy -p hex-session -p hex-desktop --all-targets --locked -- -D warnings",
+    "exit_code": 0,
+    "log": "logs/hex395-request-strict-sealed.log",
+    "platform_layout_warnings": "existing clippy wrapper layout classification remains Unknown; no native aggregate acceptance"
+  },
+  "quick": {
+    "run_id": "20261019T063148Z-20e9a2e2",
+    "passed": 6,
+    "mode": "quick",
+    "status": "partial",
+    "exit_code": 0,
+    "stale": false,
+    "clean_start_end": true,
+    "digest": "14314e065fe2d1fa780fe20ee1cd876b3b2274bb160472777f835b6ff85d57f4"
+  },
+  "cloud_environment": {
+    "rust": "1.94.0",
+    "jobs": 4,
+    "RUST_MIN_STACK": 16777216,
+    "native_mac_or_default_stack_claim": false
+  }
+}

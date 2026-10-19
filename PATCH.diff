@@ -1,0 +1,1894 @@
+diff --git a/crates/hex-desktop/src/native_audio.rs b/crates/hex-desktop/src/native_audio.rs
+index 84cc715e..146455ae 100644
+--- a/crates/hex-desktop/src/native_audio.rs
++++ b/crates/hex-desktop/src/native_audio.rs
+@@ -788,11 +788,16 @@ pub(super) fn backend() -> Result<EditorBackend, String> {
+     let source_reservation = AudioPolicy::source_reservation();
+     let (events, audio_events) = mpsc::sync_channel(4);
+     let recovery = hex_session::service::untitled_recovery_path()?;
+-    let service = Service::with_audio_sink(
++    crate::snapshot_transport::configure_native_table_on_control()
++        .map_err(|error| format!("native worker storage unavailable: {error:?}"))?;
++    let (_, control) = crate::snapshot_transport::worker_from_existing_table_on_control()
++        .map_err(|error| format!("native worker binding unavailable: {error:?}"))?;
++    let service = Service::with_audio_sink_and_worker_control(
+         32,
+         MAX_RESIDENT_FRAMES,
+         Some(recovery),
+         Box::new(NativeAudioSink::new(events)),
++        control,
+     )
+     .map_err(|e| e.to_string())?;
+     Ok(EditorBackend {
+diff --git a/crates/hex-desktop/src/snapshot_transport.rs b/crates/hex-desktop/src/snapshot_transport.rs
+index 789e0e8b..448db3fc 100644
+--- a/crates/hex-desktop/src/snapshot_transport.rs
++++ b/crates/hex-desktop/src/snapshot_transport.rs
+@@ -176,4 +176,8 @@ pub use inventory::{
+ };
+ 
+ mod worker_control;
++mod worker_startup;
+ pub use worker_control::bind_registered_worker_on_control;
++pub(super) use worker_startup::{
++    configure_native_table_on_control, worker_from_existing_table_on_control,
++};
+diff --git a/crates/hex-desktop/src/snapshot_transport/worker_control.rs b/crates/hex-desktop/src/snapshot_transport/worker_control.rs
+index a4e50dc2..0948fee8 100644
+--- a/crates/hex-desktop/src/snapshot_transport/worker_control.rs
++++ b/crates/hex-desktop/src/snapshot_transport/worker_control.rs
+@@ -2,7 +2,8 @@
+ use super::*;
+ use hex_engine::{RetainedControlCancellation as Worker, RetainedControlJobRoute as Route};
+ use hex_session::snapshot_exports::{
+-    SnapshotProducerKey, SnapshotWorkerControl, SnapshotWorkerOperations,
++    NativeRequestDelivery, NativeRequestStamp, NativeRequestSubmission, SnapshotProducerKey,
++    SnapshotRequestOperations, SnapshotWorkerControl, SnapshotWorkerOperations,
+ };
+ static WORKER_FAILURES: AtomicUsize = AtomicUsize::new(0);
+ static WORKER_OPERATIONS: SnapshotWorkerOperations = SnapshotWorkerOperations::new_unqualified(
+@@ -10,7 +11,50 @@ static WORKER_OPERATIONS: SnapshotWorkerOperations = SnapshotWorkerOperations::n
+     cancel_worker,
+     finish_worker,
+     report_worker,
++)
++.with_native_requests(&REQUEST_OPERATIONS);
++static REQUEST_OPERATIONS: SnapshotRequestOperations = SnapshotRequestOperations::new_unqualified(
++    prepare_requests,
++    submit_request,
++    receive_request,
++    complete_request,
+ );
++fn prepare_requests(route: Route) -> Result<(), Error> {
++    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
++        family.prepare_requests_on_control().map_err(record_error)
++    })
++    .map_err(family_error)?
++}
++fn submit_request(route: Route, submission: &mut NativeRequestSubmission) {
++    // Borrow the pending producer; a failed outer lookup invokes NO callback
++    // and cannot drop its actual Request. Only family insertion can consume it.
++    if let Err(error) =
++        hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
++            submission.dispatch_on_control(family)
++        })
++    {
++        submission.refuse_lookup_on_control(family_error(error));
++    }
++}
++fn receive_request(
++    route: Route,
++    destination: &mut Option<NativeRequestDelivery>,
++) -> Result<(), Error> {
++    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
++        family
++            .receive_request_on_control(destination)
++            .map_err(record_error)
++    })
++    .map_err(family_error)?
++}
++fn complete_request(route: Route, stamp: NativeRequestStamp) -> Result<(), Error> {
++    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
++        family
++            .complete_request_on_control(stamp)
++            .map_err(record_error)
++    })
++    .map_err(family_error)?
++}
+ fn validate_worker(worker: &Worker, producer: &SnapshotProducerKey) -> Result<(), Error> {
+     hex_audio::validate_retained_family_worker_on_control::<SessionExportFamily>(worker)
+         .map_err(family_error)?;
+@@ -69,23 +113,49 @@ mod tests {
+     use hex_engine::CancellationQuery;
+     use hex_session::snapshot_exports::SnapshotExportReservation;
+     use std::time::{Duration, Instant};
++    fn retry_busy<T, E: std::fmt::Debug + PartialEq>(
++        mut operation: impl FnMut() -> Result<T, E>,
++        busy: E,
++    ) -> T {
++        let deadline = Instant::now() + Duration::from_secs(2);
++        loop {
++            match operation() {
++                Ok(value) => return value,
++                Err(error) if error == busy && Instant::now() < deadline => {
++                    std::thread::sleep(Duration::from_millis(1))
++                }
++                Err(error) => {
++                    panic!("actual setup refused while original pending fields retained: {error:?}")
++                }
++            }
++        }
++    }
+     fn family() -> (
+         RetainedFamilyId<SessionExportFamily>,
+         Option<SnapshotProducerKey>,
+     ) {
+-        let slot = hex_audio::reserve_retained_family_slot_on_control().unwrap();
++        let slot = retry_busy(
++            hex_audio::reserve_retained_family_slot_on_control,
++            RetainedFamilyError::Busy,
++        );
+         let (family, key) = SessionExportFamily::try_new_on_control(SnapshotExportReservation {
+             snapshot_records: 2,
+             read_records: 4,
+             max_bookkeeping_bytes: 65_536,
+         })
+         .unwrap();
+-        let id = register_family_on_control(
+-            &slot,
+-            &mut Some(family),
+-            hex_audio::retained_family_job_body_quote::<SessionExportFamily>(),
+-        )
+-        .unwrap();
++        let mut pending = Some(family);
++        let id = retry_busy(
++            || {
++                register_family_on_control(
++                    &slot,
++                    &mut pending,
++                    hex_audio::retained_family_job_body_quote::<SessionExportFamily>(),
++                )
++            },
++            RetainedFamilyError::Busy,
++        );
++        assert!(pending.is_none());
+         (id, Some(key))
+     }
+     static FINISHED_SIGNAL_CLOSURES: AtomicUsize = AtomicUsize::new(0);
+@@ -95,7 +165,8 @@ mod tests {
+             cancel_worker,
+             inspect_finished_children,
+             report_worker,
+-        );
++        )
++        .with_native_requests(&REQUEST_OPERATIONS);
+     fn inspect_finished_children(
+         route: Route,
+         key: &SnapshotProducerKey,
+@@ -131,13 +202,22 @@ mod tests {
+     }
+     fn inspected_control() -> (RetainedFamilyId<SessionExportFamily>, SnapshotWorkerControl) {
+         let (id, mut key) = family();
+-        let (worker, _) = hex_audio::bind_retained_family_worker_on_control(id).unwrap();
+-        let control = SnapshotWorkerControl::try_bind_on_control(
+-            &mut Some(worker),
+-            &mut key,
+-            &INSPECTED_OPERATIONS,
+-        )
+-        .unwrap();
++        let (worker, _) = retry_busy(
++            || hex_audio::bind_retained_family_worker_on_control(id),
++            RetainedFamilyError::Busy,
++        );
++        let mut pending_worker = Some(worker);
++        let control = retry_busy(
++            || {
++                SnapshotWorkerControl::try_bind_on_control(
++                    &mut pending_worker,
++                    &mut key,
++                    &INSPECTED_OPERATIONS,
++                )
++            },
++            Error::Busy,
++        );
++        assert!(pending_worker.is_none() && key.is_none());
+         (id, control)
+     }
+     struct ObservedStartup {
+@@ -285,9 +365,15 @@ mod tests {
+         super::super::tests::initialize_test_table();
+         eprintln!("SUPPORTED actual registered Session worker neutral stop/completion route");
+         let (id, mut producer) = family();
+-        let (worker, _) = hex_audio::bind_retained_family_worker_on_control(id).unwrap();
++        let (worker, _) = retry_busy(
++            || hex_audio::bind_retained_family_worker_on_control(id),
++            RetainedFamilyError::Busy,
++        );
+         let mut source = Some(worker);
+-        let control = bind_registered_worker_on_control(&mut source, &mut producer).unwrap();
++        let control = retry_busy(
++            || bind_registered_worker_on_control(&mut source, &mut producer),
++            Error::Busy,
++        );
+         assert!(source.is_none() && producer.is_none());
+         let stop = control.stop_endpoint();
+         let query = control.worker_on_control().unwrap().clone();
+@@ -305,9 +391,15 @@ mod tests {
+             }
+         }
+         let (next, mut key) = family();
+-        let (worker, _) = hex_audio::bind_retained_family_worker_on_control(next).unwrap();
++        let (worker, _) = retry_busy(
++            || hex_audio::bind_retained_family_worker_on_control(next),
++            RetainedFamilyError::Busy,
++        );
+         let mut worker = Some(worker);
+-        let next = bind_registered_worker_on_control(&mut worker, &mut key).unwrap();
++        let next = retry_busy(
++            || bind_registered_worker_on_control(&mut worker, &mut key),
++            Error::Busy,
++        );
+         assert!(matches!(stop.request_cancel(), Err(Error::Stale)));
+         assert!(!next.worker_on_control().unwrap().is_cancelled());
+         let next_stop = next.stop_endpoint();
+@@ -322,7 +414,10 @@ mod tests {
+             "SUPPORTED actual neutral worker constructor refuses mismatched physical signal/key"
+         );
+         let (id, mut key) = family();
+-        let (worker, _) = hex_audio::bind_retained_family_worker_on_control(id).unwrap();
++        let (worker, _) = retry_busy(
++            || hex_audio::bind_retained_family_worker_on_control(id),
++            RetainedFamilyError::Busy,
++        );
+         let other_signal =
+             hex_engine::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+         let mut fake = Some(other_signal.bind_worker_on_control(worker.route_on_control()));
+@@ -344,9 +439,218 @@ mod tests {
+             Err(Error::Stale)
+         ));
+         assert!(actual.is_some() && wrong_key.is_some());
+-        let control = bind_registered_worker_on_control(&mut actual, &mut key).unwrap();
++        let control = retry_busy(
++            || bind_registered_worker_on_control(&mut actual, &mut key),
++            Error::Busy,
++        );
+         let stop = control.stop_endpoint();
+         control.finish_on_control().unwrap();
+         wait_retired(stop);
+     }
++    #[test]
++    fn registered_service_request_full32_returns_exact_inline_terminal_and_cancels_queued_payloads()
++    {
++        use hex_session::{
++            device_gesture::{
++                DeviceParameterSnapshot, GestureKey, GestureRequest, ParameterId, ParameterValue,
++            },
++            service::{Request, SubmitError},
++        };
++        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
++        super::super::tests::initialize_test_table();
++        let (_id, control) = inspected_control();
++        let stop = control.stop_endpoint();
++        let (observed, closed, sink) = observed_sink(true);
++        let service = hex_session::service::Service::with_audio_sink_and_worker_control(
++            8, 1024, None, sink, control,
++        )
++        .unwrap();
++        wait_until(|| observed.initialized.load(Ordering::Acquire) == 1);
++        let terminal = GestureRequest::CommitSnapshot {
++            key: GestureKey {
++                generation: 3,
++                token: 9,
++            },
++            sequence: 17,
++            snapshot: DeviceParameterSnapshot::new(&[(
++                ParameterId::from_static(1),
++                ParameterValue::Float(0.5),
++            )])
++            .unwrap(),
++        };
++        for _ in 0..32 {
++            service.submit(Request::DeviceGesture(terminal)).unwrap();
++        }
++        let Err(SubmitError::Full(Request::DeviceGesture(retry))) =
++            service.submit(Request::DeviceGesture(terminal))
++        else {
++            panic!("actual registered request32 must preserve terminal");
++        };
++        assert_eq!(retry, terminal);
++        drop(service);
++        closed.recv_timeout(Duration::from_secs(2)).unwrap();
++        wait_retired(stop);
++        eprintln!(
++            "SUPPORTED ACTUAL registered Service request transport:32 inline terminal slots/full exact retry/cancel during initialize/control completion; fake output only"
++        );
++    }
++    #[test]
++    fn registered_service_requests_reach_actual_editor_and_history_without_request_mpsc() {
++        use hex_session::service::Request;
++        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
++        super::super::tests::initialize_test_table();
++        let (_id, control) =
++            super::super::worker_startup::worker_from_existing_table_on_control().unwrap();
++        let stop = control.stop_endpoint();
++        let (_observed, closed, sink) = observed_sink(false);
++        let service = hex_session::service::Service::with_audio_sink_and_worker_control(
++            8, 1024, None, sink, control,
++        )
++        .unwrap();
++        let initial = super::super::tests::receive(&service);
++        assert_eq!(initial.state.project.tracks().len(), 0);
++        service
++            .submit(Request::Edit(hex_project::Command::AddTrack {
++                name: "request fifo".into(),
++            }))
++            .unwrap();
++        let added = super::super::tests::receive(&service);
++        assert!(added.error.is_none());
++        assert_eq!(added.state.project.tracks().len(), 1);
++        service.submit(Request::Undo).unwrap();
++        let undone = super::super::tests::receive(&service);
++        assert!(undone.error.is_none());
++        assert_eq!(undone.state.project.tracks().len(), 0);
++        service.submit(Request::Redo).unwrap();
++        let redone = super::super::tests::receive(&service);
++        assert!(redone.error.is_none());
++        assert_eq!(redone.state.project.tracks().len(), 1);
++        drop((initial, added, undone, redone));
++        drop(service);
++        closed.recv_timeout(Duration::from_secs(2)).unwrap();
++        wait_retired(stop);
++        eprintln!(
++            "SUPPORTED ACTUAL registered Service request consumer:Edit/AddTrack->Undo->Redo real canonical worker/history/ACK; legacy Event/compiled remaining UNQUALIFIED"
++        );
++    }
++    static PAUSE_OUTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++    static OUTER_ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++    fn paused_family_step(
++        family: &mut SessionExportFamily,
++    ) -> Result<hex_audio::RetainedFamilyProgress, RetainedFamilyError> {
++        if PAUSE_OUTER.load(Ordering::Acquire) {
++            OUTER_ENTERED.store(true, Ordering::Release);
++            let deadline = Instant::now() + Duration::from_secs(5);
++            while PAUSE_OUTER.load(Ordering::Acquire) && Instant::now() < deadline {
++                std::thread::sleep(Duration::from_millis(1));
++            }
++        }
++        family
++            .cleanup_one_on_control()
++            .map(|p| match p {
++                hex_session::snapshot_exports::SnapshotFamilyCleanup::Pending => {
++                    hex_audio::RetainedFamilyProgress::Pending
++                }
++                hex_session::snapshot_exports::SnapshotFamilyCleanup::Disposed => {
++                    hex_audio::RetainedFamilyProgress::Disposed
++                }
++            })
++            .map_err(|_| RetainedFamilyError::Failed)
++    }
++    #[test]
++    fn registered_service_outer_lookup_busy_preserves_the_actual_retry_request() {
++        use hex_session::{
++            device_gesture::{
++                DeviceParameterSnapshot, GestureKey, GestureRequest, ParameterId, ParameterValue,
++            },
++            service::{Request, SubmitError},
++        };
++        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
++        super::super::tests::initialize_test_table();
++        struct Reset;
++        impl Drop for Reset {
++            fn drop(&mut self) {
++                PAUSE_OUTER.store(false, Ordering::Release);
++            }
++        }
++        let _reset = Reset;
++        let slot = retry_busy(
++            hex_audio::reserve_retained_family_slot_on_control,
++            RetainedFamilyError::Busy,
++        );
++        let (family, key) = SessionExportFamily::try_new_on_control(SnapshotExportReservation {
++            snapshot_records: 2,
++            read_records: 4,
++            max_bookkeeping_bytes: 65_536,
++        })
++        .unwrap();
++        let mut pending = Some(family);
++        let id = retry_busy(
++            || {
++                hex_audio::register_retained_family_on_control(
++                    &slot,
++                    &mut pending,
++                    hex_audio::retained_family_job_body_quote::<SessionExportFamily>(),
++                    paused_family_step,
++                )
++            },
++            RetainedFamilyError::Busy,
++        );
++        let (worker, _) = retry_busy(
++            || hex_audio::bind_retained_family_worker_on_control(id),
++            RetainedFamilyError::Busy,
++        );
++        let mut worker = Some(worker);
++        let mut key = Some(key);
++        let control = retry_busy(
++            || bind_registered_worker_on_control(&mut worker, &mut key),
++            Error::Busy,
++        );
++        let stop = control.stop_endpoint();
++        let (observed, closed, sink) = observed_sink(true);
++        let service = hex_session::service::Service::with_audio_sink_and_worker_control(
++            8, 1024, None, sink, control,
++        )
++        .unwrap();
++        wait_until(|| observed.initialized.load(Ordering::Acquire) == 1);
++        OUTER_ENTERED.store(false, Ordering::Release);
++        PAUSE_OUTER.store(true, Ordering::Release);
++        wait_until(|| OUTER_ENTERED.load(Ordering::Acquire));
++        let terminal = GestureRequest::CommitSnapshot {
++            key: GestureKey {
++                generation: 8,
++                token: 101,
++            },
++            sequence: 23,
++            snapshot: DeviceParameterSnapshot::new(&[(
++                ParameterId::from_static(1),
++                ParameterValue::Float(0.75),
++            )])
++            .unwrap(),
++        };
++        let result = service.submit(Request::DeviceGesture(terminal));
++        PAUSE_OUTER.store(false, Ordering::Release);
++        let Err(SubmitError::Busy(Request::DeviceGesture(actual))) = result else {
++            panic!("outer busy must return the exact producer request");
++        };
++        assert_eq!(actual, terminal);
++        let mut retry = Request::DeviceGesture(actual);
++        let deadline = Instant::now() + Duration::from_secs(2);
++        loop {
++            match service.submit(retry) {
++                Ok(()) => break,
++                Err(SubmitError::Busy(returned)) if Instant::now() < deadline => {
++                    retry = returned;
++                    std::thread::sleep(Duration::from_millis(1));
++                }
++                other => panic!("original retry refused: {other:?}"),
++            }
++        }
++        drop(service);
++        closed.recv_timeout(Duration::from_secs(2)).unwrap();
++        wait_retired(stop);
++        eprintln!(
++            "SUPPORTED actual registered outer-slot writer Busy BEFORE callback: original inline request returned, retry succeeds, no new Audio input API/owning closure/dummy request"
++        );
++    }
+ }
+diff --git a/crates/hex-desktop/src/snapshot_transport/worker_startup.rs b/crates/hex-desktop/src/snapshot_transport/worker_startup.rs
+new file mode 100644
+index 00000000..43b98904
+--- /dev/null
++++ b/crates/hex-desktop/src/snapshot_transport/worker_startup.rs
+@@ -0,0 +1,110 @@
++//! Actual desktop startup on the existing family table, before Service escape.
++//! No new registry/queue/device or origin/admission certificate is created.
++use super::*;
++use hex_engine::RetainedControlCancellation;
++use hex_session::snapshot_exports::{
++    SnapshotExportReservation, SnapshotProducerKey, SnapshotWorkerControl,
++};
++use std::time::{Duration, Instant};
++
++pub(crate) fn configure_native_table_on_control() -> Result<(), Error> {
++    // One backend is constructed at the sole production main() callsite. The
++    // same Service/family survives New/Open/project replacement. Exhaustion or
++    // prior incompatible configuration refuses; it never enlarges the table.
++    let limits = hex_audio::RetainedFamilyReservation {
++        family_slots: 1,
++        max_table_bytes: 16_384,
++    };
++    hex_audio::retained_family_table_reservation_quote(limits).map_err(family_error)?;
++    hex_audio::reserve_retained_families_on_control(limits).map_err(family_error)
++}
++fn retry_busy<T>(mut operation: impl FnMut() -> Result<T, Error>) -> Result<T, Error> {
++    let deadline = Instant::now() + Duration::from_secs(2);
++    loop {
++        match operation() {
++            Err(Error::Busy) if Instant::now() < deadline => {
++                std::thread::sleep(Duration::from_millis(1))
++            }
++            result => return result,
++        }
++    }
++}
++// Only existing owners, kept together through fallible metadata/register/bind
++// steps. If no Service escaped, there are NO Session/native/worker children to
++// dispose before this constructor's real base-worker completion.
++#[derive(Default)]
++struct PendingStartup {
++    slot: Option<hex_audio::RetainedFamilySlot>,
++    family: Option<SessionExportFamily>,
++    key: Option<SnapshotProducerKey>,
++    registered: Option<RetainedFamilyId<SessionExportFamily>>,
++    worker: Option<RetainedControlCancellation>,
++    cancel: Option<hex_audio::RetainedFamilyCancellationEndpoint>,
++}
++impl Drop for PendingStartup {
++    fn drop(&mut self) {
++        if let Some(cancel) = self.cancel {
++            let _ = cancel.cancel();
++        }
++        if let (Some(id), Some(key)) = (self.registered, self.key.as_ref()) {
++            // Durable shared acknowledgement, outside every inner guard. Failed
++            // cleanup remains in the existing persistent failed/charged slot.
++            let _ = hex_audio::acknowledge_retained_family(id, |family| {
++                family
++                    .abandon_on_control(key)
++                    .map_err(|_| RetainedFamilyError::Failed)
++            });
++            if self.worker.is_some() {
++                let _ = retry_busy(|| {
++                    hex_audio::finish_retained_family_worker_on_control(id, &mut self.worker)
++                        .map_err(family_error)
++                });
++            }
++        }
++        if let Some(slot) = &self.slot {
++            let _ = hex_audio::cancel_retained_family_slot_on_control(slot);
++        }
++    }
++}
++/// This exact constructor is shared by the real native backend and headless
++/// fixture. Test callers supply an already initialized private table; production
++/// configures its single application family before calling it.
++pub(crate) fn worker_from_existing_table_on_control()
++-> Result<(RetainedFamilyId<SessionExportFamily>, SnapshotWorkerControl), Error> {
++    let mut pending = PendingStartup::default();
++    let (family, key) = SessionExportFamily::try_new_native_on_control(SnapshotExportReservation {
++        snapshot_records: 4,
++        read_records: 16,
++        max_bookkeeping_bytes: 65_536,
++    })
++    .map_err(record_error)?;
++    pending.family = Some(family);
++    pending.key = Some(key);
++    pending.slot = Some(retry_busy(|| {
++        hex_audio::reserve_retained_family_slot_on_control().map_err(family_error)
++    })?);
++    let slot = pending.slot.as_ref().ok_or(Error::Protocol)?;
++    let id = retry_busy(|| {
++        register_family_on_control(
++            slot,
++            &mut pending.family,
++            hex_audio::retained_family_job_body_quote::<SessionExportFamily>(),
++        )
++        .map_err(family_error)
++    })?;
++    pending.registered = Some(id);
++    pending.slot = None; // actual typed job now owns the family, not the reservation
++    let (worker, cancel) =
++        retry_busy(|| hex_audio::bind_retained_family_worker_on_control(id).map_err(family_error))?;
++    pending.worker = Some(worker);
++    pending.cancel = Some(cancel);
++    let control = retry_busy(|| {
++        super::worker_control::bind_registered_worker_on_control(
++            &mut pending.worker,
++            &mut pending.key,
++        )
++    })?;
++    pending.cancel = None;
++    pending.registered = None;
++    Ok((id, control))
++}
+diff --git a/crates/hex-session/src/service.rs b/crates/hex-session/src/service.rs
+index 20d33f54..69fbf42f 100644
+--- a/crates/hex-session/src/service.rs
++++ b/crates/hex-session/src/service.rs
+@@ -20,6 +20,8 @@ use hex_tuning::ProjectTuning;
+ #[cfg(test)]
+ mod audio_batch_tests;
+ mod audio_sink;
++mod request_transport;
++use request_transport::{RequestReceiver, RequestSender};
+ mod canonical_audio_source;
+ pub use audio_sink::WorkerAudioSink;
+ use audio_sink::WorkerEvents;
+@@ -591,7 +593,7 @@ impl std::error::Error for ServiceError {
+ 
+ /// UI-owned endpoints. Dropping both channels detaches the worker without joining it.
+ pub struct Service {
+-    requests: SyncSender<Request>,
++    requests: RequestSender,
+     events: Receiver<Event>,
+     export_events: Receiver<ExportEvent>,
+     export_busy: AtomicBool,
+@@ -797,8 +799,27 @@ impl Service {
+             None
+         };
+         let mut startup = WorkerStartup::new(session, control, worker_shutdown);
++        let (request_tx, request_rx) = match startup.control() {
++            Some(control) => {
++                let endpoint = control.prepare_requests_on_control().map_err(|_| {
++                    ServiceError::Session(SessionError::Invalid(
++                        "registered request storage is unavailable",
++                    ))
++                })?;
++                (
++                    RequestSender::Registered(endpoint),
++                    RequestReceiver::Registered(endpoint),
++                )
++            }
++            None => {
++                let (sender, receiver) = mpsc::sync_channel(REQUEST_CAPACITY);
++                (
++                    RequestSender::Unqualified(sender),
++                    RequestReceiver::Unqualified(receiver),
++                )
++            }
++        };
+         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
+-        let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
+         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
+         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
+         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
+@@ -886,7 +907,7 @@ impl Service {
+             {
+                 return Err(SubmitError::Busy(request));
+             }
+-            match try_submit(&self.requests, request) {
++            match self.requests.submit(request) {
+                 Ok(()) => Ok(()),
+                 Err(error) => {
+                     self.export_busy.store(false, Ordering::Release);
+@@ -894,7 +915,7 @@ impl Service {
+                 }
+             }
+         } else {
+-            try_submit(&self.requests, request)
++            self.requests.submit(request)
+         }
+     }
+ 
+@@ -1308,7 +1329,7 @@ enum ArrangementClipboard {
+ 
+ fn run_worker(
+     mut session: Session,
+-    requests: Receiver<Request>,
++    requests: RequestReceiver,
+     mut events: WorkerEvents,
+     export_work: SyncSender<ExportWork>,
+     export_events: SyncSender<ExportEvent>,
+@@ -1462,7 +1483,11 @@ fn run_worker(
+         return;
+     }
+ 
+-    while let Some(request) = events.next_request(&requests, &dispatch_state!(None, None)) {
++    while let Some(delivery) = events.next_request(&requests, &dispatch_state!(None, None)) {
++        let crate::snapshot_exports::NativeRequestDelivery {
++            request,
++            stamp: request_stamp,
++        } = delivery;
+         let mut computer_keyboard_complete = None;
+         let mut tuning_audition_complete = None;
+         let mut live_expression_complete = None;
+@@ -3155,6 +3180,9 @@ fn run_worker(
+             restore_prepared,
+             preview_project,
+         ));
++        if !events.complete_request(&requests, request_stamp) {
++            return;
++        }
+         if !events.send(
+             Event {
+                 snapshot_reads: Default::default(),
+@@ -6563,7 +6591,7 @@ mod service_tests {
+         let (_event_sender, events) = mpsc::sync_channel(1);
+         let (_export_sender, export_events) = mpsc::sync_channel(1);
+         let service = Service {
+-            requests,
++            requests: requests.into(),
+             events,
+             export_events,
+             export_busy: AtomicBool::new(false),
+diff --git a/crates/hex-session/src/service/audio_sink.rs b/crates/hex-session/src/service/audio_sink.rs
+index 98b7b27a..1d859268 100644
+--- a/crates/hex-session/src/service/audio_sink.rs
++++ b/crates/hex-session/src/service/audio_sink.rs
+@@ -140,20 +140,45 @@ impl WorkerEvents {
+             thread::sleep(Duration::from_millis(5));
+         }
+     }
++    pub(super) fn complete_request(
++        &mut self,
++        requests: &RequestReceiver,
++        stamp: Option<crate::snapshot_exports::NativeRequestStamp>,
++    ) -> bool {
++        loop {
++            match requests.complete(stamp) {
++                Ok(()) => return true,
++                Err(crate::snapshot_exports::SnapshotTransportError::Busy) => {
++                    if self.cancelled() {
++                        if let Some(audio) = self.audio.as_mut() {
++                            audio.close();
++                        }
++                    }
++                    thread::sleep(Duration::from_millis(1));
++                }
++                Err(_) => return false,
++            }
++        }
++    }
+     pub(super) fn next_request(
+         &mut self,
+-        requests: &Receiver<Request>,
++        requests: &RequestReceiver,
+         state: &WorkerDispatchState<'_>,
+-    ) -> Option<Request> {
+-        if self.audio.is_none() {
+-            return requests.recv().ok();
++    ) -> Option<crate::snapshot_exports::NativeRequestDelivery> {
++        if self.audio.is_none()
++            && let Some(receiver) = requests.unqualified()
++        {
++            return receiver
++                .recv()
++                .ok()
++                .map(crate::snapshot_exports::NativeRequestDelivery::unqualified);
+         }
+         loop {
+             if self.cancelled() {
+                 return None;
+             }
+             self.poll(state, None, WorkerRootDispatch::Idle);
+-            match requests.recv_timeout(Duration::from_millis(5)) {
++            match requests.receive_timeout(Duration::from_millis(5)) {
+                 Ok(request) => return Some(request),
+                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+                 Err(mpsc::RecvTimeoutError::Timeout) => {}
+diff --git a/crates/hex-session/src/service/request_transport.rs b/crates/hex-session/src/service/request_transport.rs
+new file mode 100644
+index 00000000..0d2fe141
+--- /dev/null
++++ b/crates/hex-session/src/service/request_transport.rs
+@@ -0,0 +1,63 @@
++//! Registered native request consumers. The unregistered headless adapter
++//! remains an explicitly unqualified legacy channel, never a native fallback.
++use super::*;
++use crate::snapshot_exports::{
++    NativeRequestDelivery, NativeRequestStamp, SnapshotRequestEndpoint, SnapshotTransportError,
++};
++pub(super) enum RequestSender {
++    Unqualified(SyncSender<Request>),
++    Registered(SnapshotRequestEndpoint),
++}
++pub(super) enum RequestReceiver {
++    Unqualified(Receiver<Request>),
++    Registered(SnapshotRequestEndpoint),
++}
++impl From<SyncSender<Request>> for RequestSender {
++    fn from(sender: SyncSender<Request>) -> Self {
++        Self::Unqualified(sender)
++    }
++}
++impl RequestSender {
++    #[allow(clippy::result_large_err)]
++    pub(super) fn submit(&self, request: Request) -> Result<(), SubmitError> {
++        match self {
++            Self::Unqualified(sender) => try_submit(sender, request),
++            Self::Registered(endpoint) => endpoint.submit(request),
++        }
++    }
++}
++impl RequestReceiver {
++    pub(super) fn unqualified(&self) -> Option<&Receiver<Request>> {
++        match self {
++            Self::Unqualified(receiver) => Some(receiver),
++            Self::Registered(_) => None,
++        }
++    }
++    pub(super) fn receive_timeout(
++        &self,
++        duration: std::time::Duration,
++    ) -> Result<NativeRequestDelivery, mpsc::RecvTimeoutError> {
++        match self {
++            Self::Unqualified(receiver) => receiver
++                .recv_timeout(duration)
++                .map(NativeRequestDelivery::unqualified),
++            Self::Registered(endpoint) => endpoint.receive().map_err(|error| match error {
++                SnapshotTransportError::Busy | SnapshotTransportError::Reservation => {
++                    thread::sleep(duration);
++                    mpsc::RecvTimeoutError::Timeout
++                }
++                _ => mpsc::RecvTimeoutError::Disconnected,
++            }),
++        }
++    }
++    pub(super) fn complete(
++        &self,
++        stamp: Option<NativeRequestStamp>,
++    ) -> Result<(), SnapshotTransportError> {
++        match (self, stamp) {
++            (_, None) => Ok(()),
++            (Self::Registered(endpoint), Some(stamp)) => endpoint.complete(stamp),
++            _ => Err(SnapshotTransportError::Protocol),
++        }
++    }
++}
+diff --git a/crates/hex-session/src/snapshot_exports.rs b/crates/hex-session/src/snapshot_exports.rs
+index 82f40c50..0c662d18 100644
+--- a/crates/hex-session/src/snapshot_exports.rs
++++ b/crates/hex-session/src/snapshot_exports.rs
+@@ -10,15 +10,18 @@ mod event;
+ mod family;
+ // Record transitions are independent of the platform exclusion primitive. The
+ // existing family supplies structural exclusion; Service wiring is in progress.
++mod native_requests;
+ #[cfg_attr(
+     not(test),
+     expect(dead_code, reason = "native Service transport integration in progress")
+ )]
+ mod native_transport;
++pub use native_requests::{NativeRequestDelivery, NativeRequestStamp};
+ pub use native_transport::CompiledStamp as NativeCompiledStamp;
+ mod storage;
+ mod transport;
+ mod worker_control;
++mod worker_requests;
+ pub use family::{
+     SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyInventoryGuard,
+     SnapshotFamilyQueries, SnapshotProducerKey,
+@@ -28,6 +31,8 @@ pub use transport::{
+     SnapshotTransportError,
+ };
+ pub use worker_control::{SnapshotWorkerControl, SnapshotWorkerOperations, SnapshotWorkerStop};
++pub(crate) use worker_requests::SnapshotRequestEndpoint;
++pub use worker_requests::{NativeRequestSubmission, SnapshotRequestOperations};
+ 
+ /// Component limits, taken from the same document/control reservation. They
+ /// neither grant a new DATA allowance nor quote snapshot children/whole peak.
+@@ -98,6 +103,8 @@ pub struct SnapshotExportRecords {
+     snapshots: Vec<SnapshotRecord>,
+     reads: Vec<ReadRecord>,
+     native_compiled: Option<native_transport::NativeCompiledRecords>,
++    native_requests: native_requests::NativeRequests,
++    max_bookkeeping_bytes: usize,
+ }
+ /// A scoped read surface; even the underlying ViewState cannot be extracted.
+ /// Copies are only borrowed queries, not registered readers or owners.
+@@ -266,6 +273,8 @@ impl SnapshotExportRecords {
+             snapshots,
+             reads,
+             native_compiled: None,
++            native_requests: Default::default(),
++            max_bookkeeping_bytes: limits.max_bookkeeping_bytes,
+         })
+     }
+     pub fn inventory_revision(&self) -> u64 {
+diff --git a/crates/hex-session/src/snapshot_exports/family.rs b/crates/hex-session/src/snapshot_exports/family.rs
+index 164be90d..edb8db45 100644
+--- a/crates/hex-session/src/snapshot_exports/family.rs
++++ b/crates/hex-session/src/snapshot_exports/family.rs
+@@ -22,6 +22,7 @@ pub struct SessionExportFamily {
+     records: RwLock<SnapshotExportRecords>,
+     abandoned: AtomicBool,
+     retiring_compiled: native_transport::CompiledRetirement,
++    retiring_request: native_requests::RequestRetirement,
+ }
+ /// Control-only structural inventory guard. No records, model, waveform owner
+ /// or mutable payload escapes. Atomics for ACK/derive/abandon are NOT frozen.
+@@ -44,6 +45,7 @@ pub struct SessionExportFamily {
+ pub struct SnapshotFamilyInventoryGuard<'a> {
+     records: RwLockReadGuard<'a, SnapshotExportRecords>,
+     retiring_compiled: &'a native_transport::CompiledRetirement,
++    retiring_request: &'a native_requests::RequestRetirement,
+ }
+ impl SnapshotFamilyInventoryGuard<'_> {
+     pub fn inventory_revision(&self) -> u64 {
+@@ -61,7 +63,8 @@ impl SnapshotFamilyInventoryGuard<'_> {
+         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+     ) -> Result<(), hex_engine::AudioStorageError> {
+         self.records.visit_selected_storage_on_control(ledger)?;
+-        self.retiring_compiled.visit(ledger)
++        self.retiring_compiled.visit(ledger)?;
++        self.retiring_request.visit()
+     }
+ }
+ impl SessionExportFamily {
+@@ -96,6 +99,7 @@ impl SessionExportFamily {
+             records,
+             abandoned,
+             retiring_compiled,
++            retiring_request,
+         } = self;
+         let _: (&u64, &AtomicBool) = (identity, abandoned);
+         let records = records.try_read().map_err(|error| match error {
+@@ -105,6 +109,7 @@ impl SessionExportFamily {
+         Ok(SnapshotFamilyInventoryGuard {
+             records,
+             retiring_compiled,
++            retiring_request,
+         })
+     }
+     pub fn try_new_on_control(
+@@ -128,6 +133,7 @@ impl SessionExportFamily {
+                 records: RwLock::new(records),
+                 abandoned: AtomicBool::new(false),
+                 retiring_compiled: native_transport::CompiledRetirement::default(),
++                retiring_request: Default::default(),
+             },
+             key,
+         ))
+@@ -236,6 +242,76 @@ impl SessionExportFamily {
+             .borrowed(stamp)?
+             .metadata())
+     }
++    /// Reserve actual native request backing before a bound Service can escape.
++    pub fn prepare_requests_on_control(&self) -> Result<(), ExportRecordError> {
++        let mut records = self
++            .records
++            .try_write()
++            .map_err(|_| ExportRecordError::Busy)?;
++        if self.abandoned.load(Ordering::Acquire) {
++            return Err(ExportRecordError::Closed);
++        }
++        let existing = std::mem::size_of::<SnapshotExportRecords>()
++            .checked_add(
++                records
++                    .snapshots
++                    .capacity()
++                    .checked_mul(std::mem::size_of::<SnapshotRecord>())
++                    .ok_or(ExportRecordError::Reservation)?,
++            )
++            .and_then(|n| {
++                n.checked_add(
++                    records
++                        .reads
++                        .capacity()
++                        .checked_mul(std::mem::size_of::<ReadRecord>())?,
++                )
++            })
++            .ok_or(ExportRecordError::Reservation)?;
++        let remaining = records
++            .max_bookkeeping_bytes
++            .checked_sub(existing)
++            .ok_or(ExportRecordError::Reservation)?;
++        records.native_requests.prepare(remaining)
++    }
++    pub fn send_request_on_control(
++        &self,
++        source: &mut Option<crate::service::Request>,
++    ) -> Result<(), ExportRecordError> {
++        let mut records = self
++            .records
++            .try_write()
++            .map_err(|_| ExportRecordError::Busy)?;
++        if self.abandoned.load(Ordering::Acquire) {
++            return Err(ExportRecordError::Closed);
++        }
++        records.native_requests.send(source)
++    }
++    pub fn receive_request_on_control(
++        &self,
++        destination: &mut Option<NativeRequestDelivery>,
++    ) -> Result<(), ExportRecordError> {
++        let mut records = self
++            .records
++            .try_write()
++            .map_err(|_| ExportRecordError::Busy)?;
++        if self.abandoned.load(Ordering::Acquire) {
++            return Err(ExportRecordError::Closed);
++        }
++        let family = records.family;
++        records.native_requests.receive(family, destination)
++    }
++    /// Shared-lock durable ACK destroys no owner, and cannot certify children.
++    pub fn complete_request_on_control(
++        &self,
++        stamp: NativeRequestStamp,
++    ) -> Result<(), ExportRecordError> {
++        let records = self
++            .records
++            .try_read()
++            .map_err(|_| ExportRecordError::Busy)?;
++        records.native_requests.complete(records.family, stamp)
++    }
+     pub fn insert_on_control(
+         &self,
+         key: &SnapshotProducerKey,
+@@ -375,6 +451,7 @@ impl SessionExportFamily {
+         Ok(read(SnapshotFamilyQueries {
+             records: &records,
+             retiring_compiled: &self.retiring_compiled,
++            retiring_request: &self.retiring_request,
+         }))
+     }
+     /// Called only by the already-registered persistent control adapter. One
+@@ -390,6 +467,29 @@ impl SessionExportFamily {
+         if self.abandoned.load(Ordering::Acquire) {
+             records.close_on_control()?;
+         }
++        if !self.retiring_request.vacant() {
++            return Err(ExportRecordError::Stale);
++        }
++        if self.abandoned.load(Ordering::Acquire) {
++            records.native_requests.close();
++        }
++        let family = records.family;
++        if self.abandoned.load(Ordering::Acquire)
++            && records
++                .native_requests
++                .begin_cleanup(family, &mut self.retiring_request)?
++        {
++            drop(records);
++            self.retiring_request.release();
++            let records = self
++                .records
++                .get_mut()
++                .map_err(|_| ExportRecordError::Stale)?;
++            records
++                .native_requests
++                .finish_cleanup(family, &mut self.retiring_request)?;
++            return Ok(SnapshotFamilyCleanup::Pending);
++        }
+         if !self.retiring_compiled.vacant() {
+             return Err(ExportRecordError::Stale);
+         }
+@@ -437,7 +537,9 @@ impl SessionExportFamily {
+             drop(records.snapshots[index].snapshot.take());
+             records.snapshots[index].cleanup_started = false;
+         }
+-        if self.retiring_compiled.vacant()
++        if self.retiring_request.vacant()
++            && records.native_requests.disposed()
++            && self.retiring_compiled.vacant()
+             && records
+                 .native_compiled
+                 .as_ref()
+@@ -462,6 +564,7 @@ impl SessionExportFamily {
+ pub struct SnapshotFamilyQueries<'a> {
+     records: &'a SnapshotExportRecords,
+     retiring_compiled: &'a native_transport::CompiledRetirement,
++    retiring_request: &'a native_requests::RequestRetirement,
+ }
+ impl SnapshotFamilyQueries<'_> {
+     /// Actual nested records while the enclosing family read guard stays held.
+@@ -472,7 +575,8 @@ impl SnapshotFamilyQueries<'_> {
+         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+     ) -> Result<(), hex_engine::AudioStorageError> {
+         self.records.visit_selected_storage_on_control(ledger)?;
+-        self.retiring_compiled.visit(ledger)
++        self.retiring_compiled.visit(ledger)?;
++        self.retiring_request.visit()
+     }
+ 
+     pub fn inventory_revision(&self) -> u64 {
+@@ -744,3 +848,45 @@ mod nonstatic_vec_tests {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod request_budget_tests {
++    use super::super::native_requests::NativeRequests;
++    use super::*;
++    type Error = ExportRecordError;
++    #[test]
++    fn native_request_family_budget_includes_both_existing_backings_before_request_allocation() {
++        let base = std::mem::size_of::<SessionExportFamily>()
++            + 2 * std::mem::size_of::<SnapshotRecord>()
++            + 2 * std::mem::size_of::<ReadRecord>();
++        let request_bytes = NativeRequests::requested_backing().unwrap();
++        let exact = base.checked_add(request_bytes).unwrap();
++        for (limit, expected) in [(exact - 1, Err(Error::Reservation)), (exact, Ok(()))] {
++            let (mut family, key) =
++                SessionExportFamily::try_new_native_on_control(SnapshotExportReservation {
++                    snapshot_records: 2,
++                    read_records: 2,
++                    max_bookkeeping_bytes: limit,
++                })
++                .unwrap();
++            assert_eq!(family.prepare_requests_on_control(), expected);
++            {
++                let records = family.records.read().unwrap();
++                assert_eq!(records.snapshots.capacity(), 2);
++                assert_eq!(records.reads.capacity(), 2);
++                assert_eq!(records.native_requests.ready(), expected.is_ok());
++            }
++            if expected.is_ok() {
++                assert_eq!(family.prepare_requests_on_control(), Err(Error::Stale));
++            }
++            family.abandon_on_control(&key).unwrap();
++            assert_eq!(
++                family.cleanup_one_on_control(),
++                Ok(SnapshotFamilyCleanup::Disposed)
++            );
++        }
++        eprintln!(
++            "SUPPORTED actual native family inline body+snapshot/read backings+request backing exact={exact}; minus1 refuses before request allocation (base family already exists)"
++        );
++    }
++}
+diff --git a/crates/hex-session/src/snapshot_exports/native_requests.rs b/crates/hex-session/src/snapshot_exports/native_requests.rs
+new file mode 100644
+index 00000000..fd64383b
+--- /dev/null
++++ b/crates/hex-session/src/snapshot_exports/native_requests.rs
+@@ -0,0 +1,526 @@
++//! Concrete registered Service request storage, under the existing family lock.
++//! A queued or claimed payload never becomes an admission/completeness flag.
++use super::{ExportRecordError as Error, *};
++use crate::service::Request;
++
++pub(crate) const CAPACITY: usize = 32;
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum Phase {
++    Vacant,
++    Queued,
++    Claimed,
++    Retiring,
++}
++struct Record {
++    generation: u64,
++    sequence: u64,
++    phase: Phase,
++    payload: Option<Request>,
++    completed: AtomicBool,
++    cleanup_pending: bool,
++}
++/// Correlation of an actual claimed field. Not a source/cleanup permit.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct NativeRequestStamp {
++    family: u64,
++    index: usize,
++    generation: u64,
++}
++/// Actual worker-local destination of the guarded fixed transfer. Its private
++/// stamp stays paired with the payload until Service destructures the request.
++pub struct NativeRequestDelivery {
++    pub(crate) request: Request,
++    pub(crate) stamp: Option<NativeRequestStamp>,
++}
++impl NativeRequestDelivery {
++    pub(crate) fn unqualified(request: Request) -> Self {
++        Self {
++            request,
++            stamp: None,
++        }
++    }
++}
++#[derive(Default)]
++pub(super) struct NativeRequests {
++    records: Vec<Record>,
++    sequence: u64,
++    closed: bool,
++}
++impl NativeRequests {
++    pub(super) fn requested_backing() -> Result<usize, Error> {
++        CAPACITY
++            .checked_mul(std::mem::size_of::<Record>())
++            .ok_or(Error::Reservation)
++    }
++    pub(super) fn prepare(&mut self, remaining: usize) -> Result<(), Error> {
++        if self.closed || !self.records.is_empty() {
++            return Err(Error::Stale);
++        }
++        let bytes = Self::requested_backing()?;
++        if bytes > remaining || self.records.capacity() != 0 {
++            return Err(Error::Reservation);
++        }
++        self.records
++            .try_reserve_exact(CAPACITY)
++            .map_err(|_| Error::Allocation)?;
++        // Pinned Global/Vec requested layout is quoted above. Any unexpected
++        // actual capacity refuses before a request/worker can escape.
++        if self.records.capacity() != CAPACITY {
++            return Err(Error::Reservation);
++        }
++        self.records.resize_with(CAPACITY, || Record {
++            generation: 0,
++            sequence: 0,
++            phase: Phase::Vacant,
++            payload: None,
++            completed: AtomicBool::new(false),
++            cleanup_pending: false,
++        });
++        Ok(())
++    }
++    pub(super) fn ready(&self) -> bool {
++        !self.closed && self.records.len() == CAPACITY
++    }
++    fn collect_completed(&mut self) -> Result<(), Error> {
++        for record in &mut self.records {
++            if record.completed.load(Ordering::Acquire) {
++                if record.phase != Phase::Claimed
++                    || record.payload.is_some()
++                    || record.cleanup_pending
++                {
++                    return Err(Error::Stale);
++                }
++                record.phase = Phase::Vacant;
++                record.completed.store(false, Ordering::Relaxed);
++            }
++        }
++        Ok(())
++    }
++    fn send_destination(&mut self) -> Result<(usize, u64, u64), Error> {
++        if !self.ready() {
++            return Err(Error::Closed);
++        }
++        self.collect_completed()?;
++        let (index, record) = self
++            .records
++            .iter()
++            .enumerate()
++            .find(|(_, r)| r.phase == Phase::Vacant)
++            .ok_or(Error::Reservation)?;
++        if record.payload.is_some() || record.cleanup_pending {
++            return Err(Error::Stale);
++        }
++        Ok((
++            index,
++            record.generation.checked_add(1).ok_or(Error::Exhausted)?,
++            self.sequence.checked_add(1).ok_or(Error::Exhausted)?,
++        ))
++    }
++    fn install(&mut self, index: usize, generation: u64, sequence: u64, request: Request) {
++        let record = &mut self.records[index];
++        record.payload = Some(request);
++        record.generation = generation;
++        record.sequence = sequence;
++        record.phase = Phase::Queued;
++        self.sequence = sequence;
++    }
++    pub(super) fn send(&mut self, source: &mut Option<Request>) -> Result<(), Error> {
++        if source.is_none() {
++            return Err(Error::Stale);
++        }
++        let (index, generation, sequence) = self.send_destination()?;
++        if let Some(request) = source.take() {
++            self.install(index, generation, sequence, request);
++        }
++        Ok(())
++    }
++    pub(super) fn receive(
++        &mut self,
++        family: u64,
++        destination: &mut Option<NativeRequestDelivery>,
++    ) -> Result<(), Error> {
++        if !self.ready() {
++            return Err(Error::Closed);
++        }
++        if destination.is_some() {
++            return Err(Error::Stale);
++        }
++        self.collect_completed()?;
++        let (index, record) = self
++            .records
++            .iter_mut()
++            .enumerate()
++            .filter(|(_, r)| r.phase == Phase::Queued)
++            .min_by_key(|(_, r)| r.sequence)
++            .ok_or(Error::Reservation)?;
++        if record.cleanup_pending || record.payload.is_none() {
++            return Err(Error::Stale);
++        }
++        let stamp = NativeRequestStamp {
++            family,
++            index,
++            generation: record.generation,
++        };
++        // All fallible validation ends before actual fixed movement. A claimed
++        // slot remains occupied until the actual worker's explicit completion.
++        if let Some(request) = record.payload.take() {
++            *destination = Some(NativeRequestDelivery {
++                request,
++                stamp: Some(stamp),
++            });
++            record.phase = Phase::Claimed;
++        }
++        Ok(())
++    }
++    pub(super) fn complete(&self, family: u64, stamp: NativeRequestStamp) -> Result<(), Error> {
++        if family != stamp.family {
++            return Err(Error::Stale);
++        }
++        let record = self.records.get(stamp.index).ok_or(Error::Stale)?;
++        if record.generation != stamp.generation
++            || record.phase != Phase::Claimed
++            || record.payload.is_some()
++            || record.cleanup_pending
++        {
++            return Err(Error::Stale);
++        }
++        // Durable nonowning completion, like the existing snapshot-read ACK.
++        // It destroys no payload/owner and grants no publication authority.
++        record
++            .completed
++            .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
++            .map_err(|_| Error::Stale)?;
++        Ok(())
++    }
++    pub(super) fn close(&mut self) {
++        self.closed = true;
++    }
++    pub(super) fn begin_cleanup(
++        &mut self,
++        family: u64,
++        destination: &mut RequestRetirement,
++    ) -> Result<bool, Error> {
++        if !destination.vacant() {
++            return Err(Error::Stale);
++        }
++        self.collect_completed()?;
++        let Some((index, record)) = self
++            .records
++            .iter_mut()
++            .enumerate()
++            .find(|(_, r)| r.phase == Phase::Queued)
++        else {
++            return Ok(false);
++        };
++        if record.cleanup_pending || record.payload.is_none() {
++            return Err(Error::Stale);
++        }
++        destination.stamp = Some(NativeRequestStamp {
++            family,
++            index,
++            generation: record.generation,
++        });
++        destination.payload = record.payload.take();
++        record.phase = Phase::Retiring;
++        record.cleanup_pending = true;
++        Ok(true)
++    }
++    pub(super) fn finish_cleanup(
++        &mut self,
++        family: u64,
++        destination: &mut RequestRetirement,
++    ) -> Result<(), Error> {
++        if destination.pending || destination.payload.is_some() {
++            return Err(Error::Stale);
++        }
++        let stamp = destination.stamp.ok_or(Error::Stale)?;
++        if family != stamp.family {
++            return Err(Error::Stale);
++        }
++        let record = self.records.get_mut(stamp.index).ok_or(Error::Stale)?;
++        if record.generation != stamp.generation
++            || record.phase != Phase::Retiring
++            || !record.cleanup_pending
++            || record.payload.is_some()
++        {
++            return Err(Error::Stale);
++        }
++        record.phase = Phase::Vacant;
++        record.cleanup_pending = false;
++        destination.stamp = None;
++        Ok(())
++    }
++    pub(super) fn disposed(&self) -> bool {
++        self.records
++            .iter()
++            .all(|r| r.phase == Phase::Vacant && r.payload.is_none() && !r.cleanup_pending)
++    }
++    pub(super) fn visit<'a>(
++        &'a self,
++        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
++    ) -> Result<(), hex_engine::AudioStorageError> {
++        ledger.borrow_metadata_vec_backing_on_control(&self.records)?;
++        for record in &self.records {
++            if record.cleanup_pending {
++                return Err(hex_engine::AudioStorageError::UnknownStorage);
++            }
++            match (record.phase, &record.payload) {
++                (Phase::Vacant, None) => {}
++                (Phase::Claimed, None) if record.completed.load(Ordering::Acquire) => {}
++                (Phase::Queued, Some(request)) => visit_request(request, ledger)?,
++                // A still-claimed worker local is NOT an empty root. Actual
++                // dispatch fields must own its products before explicit ACK.
++                _ => return Err(hex_engine::AudioStorageError::UnknownStorage),
++            }
++        }
++        Ok(())
++    }
++}
++fn visit_request<'a>(
++    request: &'a Request,
++    ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
++) -> Result<(), hex_engine::AudioStorageError> {
++    use hex_engine::AudioStorageError::UnknownStorage;
++    match request {
++        // These exact enum variants have only inline scalar/Copy fields. The
++        // parent request Vec already charges every byte, including spare slots.
++        Request::Undo
++        | Request::Redo
++        | Request::SaveCurrent
++        | Request::RestoreStoppedPlayback
++        | Request::RestartAudio { .. }
++        | Request::ArmGainRecording { .. }
++        | Request::DropBrowserDeviceOnArrangement { .. }
++        | Request::DropNativeDevice { .. }
++        | Request::SetDeviceParameter { .. }
++        | Request::ConvertClip { .. }
++        | Request::CopyTimeRange(_)
++        | Request::CutTimeRange(_)
++        | Request::PasteTimeRange { .. }
++        | Request::InsertTimeRange { .. }
++        | Request::RestorePlayback { .. }
++        | Request::NewWithAudioMode { .. }
++        | Request::DeviceGesture(_)
++        | Request::TuningGesture(_) => Ok(()),
++        Request::SaveDevicePreset { path, .. }
++        | Request::LoadDevicePreset { path, .. }
++        | Request::Import(path)
++        | Request::Open(path)
++        | Request::SaveNew(path)
++        | Request::Export(path)
++        | Request::ImportToTrack { path, .. }
++        | Request::ImportToTrackWithOverwrite { path, .. }
++        | Request::ImportToNewTrack { path, .. }
++        | Request::ImportToSession { path, .. } => {
++            ledger.borrow_metadata_path_backing_on_control(path)
++        }
++        Request::CopyClips(ids) => ledger.borrow_metadata_vec_backing_on_control(ids),
++        // No type/phase/counter upgrades raw input Arcs, opaque model commands,
++        // boxed device IDs, relink BTreeMaps or export controls. Their actual
++        // owning producer modules still need constructor/buffer visitors.
++        Request::PrepareTuningAudition { .. }
++        | Request::PrepareLiveExpression { .. }
++        | Request::PrepareComputerKeyboard { .. }
++        | Request::GainLane { .. }
++        | Request::TuningLibrary { .. }
++        | Request::AddNativeDevice { .. }
++        | Request::ReplaceNativeDevice { .. }
++        | Request::ImportAudioBatch { .. }
++        | Request::OpenWithAudioMode { .. }
++        | Request::OpenWith { .. }
++        | Request::Edit(_)
++        | Request::ExportRange { .. } => Err(UnknownStorage),
++    }
++}
++
++#[derive(Default)]
++pub(super) struct RequestRetirement {
++    stamp: Option<NativeRequestStamp>,
++    payload: Option<Request>,
++    pending: bool,
++}
++impl RequestRetirement {
++    pub(super) fn vacant(&self) -> bool {
++        self.stamp.is_none() && self.payload.is_none() && !self.pending
++    }
++    pub(super) fn release(&mut self) {
++        self.pending = true;
++        drop(self.payload.take());
++        self.pending = false;
++    }
++    pub(super) fn visit(&self) -> Result<(), hex_engine::AudioStorageError> {
++        if !self.vacant() {
++            Err(hex_engine::AudioStorageError::UnknownStorage)
++        } else {
++            Ok(())
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::device_gesture::{
++        DeviceParameterSnapshot, GestureKey, GestureRequest, ParameterId, ParameterValue,
++    };
++    fn terminal() -> GestureRequest {
++        GestureRequest::CommitSnapshot {
++            key: GestureKey {
++                generation: 3,
++                token: 9,
++            },
++            sequence: 17,
++            snapshot: DeviceParameterSnapshot::new(&[(
++                ParameterId::from_static(1),
++                ParameterValue::Float(0.5),
++            )])
++            .unwrap(),
++        }
++    }
++    #[test]
++    fn native_request_actual_32_slots_keep_inline_terminal_and_fifo_through_claim_ack() {
++        fn sync<T: Send + Sync>() {}
++        sync::<NativeRequests>();
++        let mut queue = NativeRequests::default();
++        let bytes = NativeRequests::requested_backing().unwrap();
++        assert_eq!(queue.prepare(bytes - 1), Err(Error::Reservation));
++        assert_eq!(queue.records.capacity(), 0);
++        queue.prepare(bytes).unwrap();
++        assert_eq!(queue.records.capacity(), 32);
++        let terminal = terminal();
++        for _ in 0..32 {
++            let mut source = Some(Request::DeviceGesture(terminal));
++            queue.send(&mut source).unwrap();
++            assert!(source.is_none());
++        }
++        let mut source = Some(Request::DeviceGesture(terminal));
++        assert_eq!(queue.send(&mut source), Err(Error::Reservation));
++        assert!(matches!(source,Some(Request::DeviceGesture(value)) if value==terminal));
++        let mut delivery = None;
++        queue.receive(7, &mut delivery).unwrap();
++        let NativeRequestDelivery { request, stamp } = delivery.take().unwrap();
++        assert!(matches!(request,Request::DeviceGesture(value) if value==terminal));
++        let stamp = stamp.unwrap();
++        assert_eq!(stamp.index, 0);
++        assert_eq!(queue.send(&mut source), Err(Error::Reservation)); // claimed is NOT vacant
++        queue.complete(7, stamp).unwrap();
++        assert_eq!(queue.complete(7, stamp), Err(Error::Stale));
++        queue.send(&mut source).unwrap();
++        assert!(source.is_none());
++        assert_eq!(queue.complete(7, stamp), Err(Error::Stale)); // generation reuse
++        for index in 1..32 {
++            queue.receive(7, &mut delivery).unwrap();
++            let NativeRequestDelivery { request, stamp } = delivery.take().unwrap();
++            assert!(matches!(request,Request::DeviceGesture(value) if value==terminal));
++            let stamp = stamp.unwrap();
++            assert_eq!(stamp.index, index);
++            queue.complete(7, stamp).unwrap();
++        }
++        queue.receive(7, &mut delivery).unwrap();
++        let NativeRequestDelivery { request, stamp } = delivery.take().unwrap();
++        assert!(matches!(request,Request::DeviceGesture(value) if value==terminal));
++        assert_eq!(stamp.unwrap().index, 0);
++        queue.complete(7, stamp.unwrap()).unwrap();
++        assert_eq!(queue.receive(7, &mut delivery), Err(Error::Reservation));
++        assert!(queue.disposed());
++        eprintln!(
++            "SUPPORTED actual native request32 inline terminal/FIFO/claimed-full/durableACK/stale generation; backing exact={bytes} minus1 capacity0"
++        );
++    }
++    #[test]
++    fn native_request_claim_unknown_and_cancelled_queue_cleanup_keep_real_payloads() {
++        let mut queue = NativeRequests::default();
++        queue
++            .prepare(NativeRequests::requested_backing().unwrap())
++            .unwrap();
++        for _ in 0..2 {
++            queue.send(&mut Some(Request::Undo)).unwrap();
++        }
++        let mut destination = None;
++        queue.receive(11, &mut destination).unwrap();
++        let NativeRequestDelivery { request, stamp } = destination.take().unwrap();
++        assert!(matches!(request, Request::Undo));
++        assert_eq!(queue.complete(12, stamp.unwrap()), Err(Error::Stale));
++        let budget = hex_engine::AudioStorageLedgerReservation {
++            data_rows: 16,
++            handle_rows: 16,
++            root_rows: 4,
++            max_retained_bytes: 1_000_000,
++            max_construction_peak_bytes: 1_000_000,
++        };
++        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(budget).unwrap();
++        assert_eq!(
++            queue.visit(&mut ledger),
++            Err(hex_engine::AudioStorageError::UnknownStorage)
++        );
++        drop(ledger);
++        queue.close();
++        let mut producer = Some(Request::Redo);
++        assert_eq!(queue.send(&mut producer), Err(Error::Closed));
++        assert!(matches!(producer, Some(Request::Redo)));
++        let mut retirement = RequestRetirement::default();
++        assert!(queue.begin_cleanup(11, &mut retirement).unwrap());
++        assert!(matches!(retirement.payload, Some(Request::Undo)));
++        retirement.release();
++        queue.finish_cleanup(11, &mut retirement).unwrap();
++        assert!(!queue.disposed()); // actual claimed worker has NOT completed
++        assert!(!queue.begin_cleanup(11, &mut retirement).unwrap());
++        queue.complete(11, stamp.unwrap()).unwrap();
++        queue.collect_completed().unwrap();
++        assert!(queue.disposed());
++        eprintln!(
++            "SUPPORTED request claimed destination/queued payload are not empty roots; wrong family refuses; cancel retains producer; actual queued cleanup separate from worker ACK"
++        );
++    }
++    #[test]
++    fn native_request_existing_family_guard_refuses_send_and_accounts_actual_backing() {
++        let (mut family, key) =
++            SessionExportFamily::try_new_on_control(SnapshotExportReservation {
++                snapshot_records: 2,
++                read_records: 2,
++                max_bookkeeping_bytes: 65_536,
++            })
++            .unwrap();
++        family.prepare_requests_on_control().unwrap();
++        let guard = family.try_inventory_guard_on_control().unwrap();
++        let mut source = Some(Request::Undo);
++        assert_eq!(
++            family.send_request_on_control(&mut source),
++            Err(Error::Busy)
++        );
++        assert!(source.is_some());
++        let budget = hex_engine::AudioStorageLedgerReservation {
++            data_rows: 16,
++            handle_rows: 16,
++            root_rows: 4,
++            max_retained_bytes: 1_000_000,
++            max_construction_peak_bytes: 1_000_000,
++        };
++        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(budget).unwrap();
++        guard
++            .visit_selected_storage_on_control(&mut ledger)
++            .unwrap();
++        let empty = ledger.summary().unwrap();
++        assert!(empty.data_bytes >= NativeRequests::requested_backing().unwrap());
++        drop(ledger);
++        drop(guard);
++        family.send_request_on_control(&mut source).unwrap();
++        assert!(source.is_none());
++        let mut delivery = None;
++        family.receive_request_on_control(&mut delivery).unwrap();
++        let NativeRequestDelivery { request, stamp } = delivery.take().unwrap();
++        assert!(matches!(request, Request::Undo));
++        // Durable ACK coexists with the held shared guard (no new lock).
++        let guard = family.try_inventory_guard_on_control().unwrap();
++        family.complete_request_on_control(stamp.unwrap()).unwrap();
++        drop(guard);
++        family.abandon_on_control(&key).unwrap();
++        assert_eq!(
++            family.cleanup_one_on_control(),
++            Ok(SnapshotFamilyCleanup::Disposed)
++        );
++        eprintln!(
++            "SUPPORTED actual registered-family request backing + shared guard Busy/preserved producer/ACK; no owning native playback admission claimed"
++        );
++    }
++}
+diff --git a/crates/hex-session/src/snapshot_exports/storage.rs b/crates/hex-session/src/snapshot_exports/storage.rs
+index da1d561a..e13e0eb9 100644
+--- a/crates/hex-session/src/snapshot_exports/storage.rs
++++ b/crates/hex-session/src/snapshot_exports/storage.rs
+@@ -56,9 +56,12 @@ impl SnapshotExportRecords {
+             snapshots,
+             reads,
+             native_compiled,
++            native_requests,
++            max_bookkeeping_bytes: _,
+         } = self;
+         let _: (&u64, &u64, &bool) = (family, revision, closed);
+         self.visit_backings_on_control(ledger)?;
++        native_requests.visit(ledger)?;
+         if let Some(records) = native_compiled {
+             records.visit(ledger)?;
+         }
+diff --git a/crates/hex-session/src/snapshot_exports/worker_control.rs b/crates/hex-session/src/snapshot_exports/worker_control.rs
+index c78e0e7a..2923c191 100644
+--- a/crates/hex-session/src/snapshot_exports/worker_control.rs
++++ b/crates/hex-session/src/snapshot_exports/worker_control.rs
+@@ -16,6 +16,7 @@ pub struct SnapshotWorkerOperations {
+     cancel: Cancel,
+     finish: Finish,
+     report: Report,
++    requests: Option<&'static super::SnapshotRequestOperations>,
+ }
+ impl SnapshotWorkerOperations {
+     pub const fn new_unqualified(
+@@ -29,8 +30,16 @@ impl SnapshotWorkerOperations {
+             cancel,
+             finish,
+             report,
++            requests: None,
+         }
+     }
++    pub const fn with_native_requests(
++        mut self,
++        requests: &'static super::SnapshotRequestOperations,
++    ) -> Self {
++        self.requests = Some(requests);
++        self
++    }
+ }
+ /// UI correlation only. Copying it cannot retain a signal, family, PCM or job.
+ #[derive(Clone, Copy)]
+@@ -91,6 +100,12 @@ impl SnapshotWorkerControl {
+             }
+         }
+     }
++    pub(crate) fn prepare_requests_on_control(
++        &self,
++    ) -> Result<super::SnapshotRequestEndpoint, Error> {
++        let operations = self.stop.operations.requests.ok_or(Error::Protocol)?;
++        super::SnapshotRequestEndpoint::prepare(self.stop.route, operations)
++    }
+     pub fn stop_endpoint(&self) -> SnapshotWorkerStop {
+         self.stop
+     }
+diff --git a/crates/hex-session/src/snapshot_exports/worker_requests.rs b/crates/hex-session/src/snapshot_exports/worker_requests.rs
+new file mode 100644
+index 00000000..dacaddc1
+--- /dev/null
++++ b/crates/hex-session/src/snapshot_exports/worker_requests.rs
+@@ -0,0 +1,106 @@
++//! Purpose-specific request operations on the existing bound worker family.
++//! The producer's actual request survives a refused outer lookup; no new owner
++//! family/registry, generic transport, captured owning closure or lock.
++use super::{
++    NativeRequestDelivery, NativeRequestStamp, SessionExportFamily, SnapshotTransportError as Error,
++};
++use crate::service::{Request, SubmitError};
++use hex_engine::RetainedControlJobRoute as Route;
++
++/// Exact submit-local pending field. Public adapters may dispatch it only into
++/// an actual family or report lookup refusal. They cannot take/replace/export
++/// its payload or fabricate an accepted state.
++pub struct NativeRequestSubmission {
++    pending: Option<Request>,
++    refusal: Error,
++}
++impl NativeRequestSubmission {
++    fn new(request: Request) -> Self {
++        Self {
++            pending: Some(request),
++            refusal: Error::Protocol,
++        }
++    }
++    pub fn dispatch_on_control(&mut self, family: &SessionExportFamily) {
++        if let Err(error) = family.send_request_on_control(&mut self.pending) {
++            self.refusal = match error {
++                super::ExportRecordError::Reservation => Error::Reservation,
++                super::ExportRecordError::Busy => Error::Busy,
++                _ => Error::Stale,
++            };
++        }
++    }
++    pub fn refuse_lookup_on_control(&mut self, error: Error) {
++        self.refusal = error;
++    }
++    #[allow(clippy::result_large_err)]
++    fn finish(self) -> Result<(), SubmitError> {
++        match self.pending {
++            None => Ok(()), // only actual fixed family insertion can take this field
++            Some(request) => Err(match self.refusal {
++                Error::Reservation => SubmitError::Full(request),
++                Error::Busy => SubmitError::Busy(request),
++                _ => SubmitError::Closed(request),
++            }),
++        }
++    }
++}
++type Prepare = fn(Route) -> Result<(), Error>;
++type Submit = fn(Route, &mut NativeRequestSubmission);
++type Receive = fn(Route, &mut Option<NativeRequestDelivery>) -> Result<(), Error>;
++type Complete = fn(Route, NativeRequestStamp) -> Result<(), Error>;
++/// Static audited adapter only. Uses the SAME registered family route. No
++/// owning closure or neutral API declaration qualifies native publication.
++pub struct SnapshotRequestOperations {
++    prepare: Prepare,
++    submit: Submit,
++    receive: Receive,
++    complete: Complete,
++}
++impl SnapshotRequestOperations {
++    pub const fn new_unqualified(
++        prepare: Prepare,
++        submit: Submit,
++        receive: Receive,
++        complete: Complete,
++    ) -> Self {
++        Self {
++            prepare,
++            submit,
++            receive,
++            complete,
++        }
++    }
++}
++#[derive(Clone, Copy)]
++pub(crate) struct SnapshotRequestEndpoint {
++    route: Route,
++    operations: &'static SnapshotRequestOperations,
++}
++impl SnapshotRequestEndpoint {
++    pub(super) fn prepare(
++        route: Route,
++        operations: &'static SnapshotRequestOperations,
++    ) -> Result<Self, Error> {
++        (operations.prepare)(route)?;
++        Ok(Self { route, operations })
++    }
++    #[allow(clippy::result_large_err)]
++    pub(crate) fn submit(&self, request: Request) -> Result<(), SubmitError> {
++        let mut submission = NativeRequestSubmission::new(request);
++        // Only a borrow escapes; an outer lookup error cannot drop Request.
++        (self.operations.submit)(self.route, &mut submission);
++        submission.finish()
++    }
++    pub(crate) fn receive(&self) -> Result<NativeRequestDelivery, Error> {
++        let mut destination = None;
++        let result = (self.operations.receive)(self.route, &mut destination);
++        match destination {
++            Some(delivery) => Ok(delivery),
++            None => Err(result.err().unwrap_or(Error::Protocol)),
++        }
++    }
++    pub(crate) fn complete(&self, stamp: NativeRequestStamp) -> Result<(), Error> {
++        (self.operations.complete)(self.route, stamp)
++    }
++}
+diff --git a/docs/sampler.md b/docs/sampler.md
+index a343672f..f0d2dc57 100644
+--- a/docs/sampler.md
++++ b/docs/sampler.md
+@@ -1470,10 +1470,11 @@ native preparation slot retaining its incarnation and full reservation until
+ release. This additional allocation changes current root-layout costs; historical
+ source-bound byte boundaries above are not relabeled for this increment.
+ 
+-This is an intermediate Engine/native-custody component. Startup still uses the
+-legacy compiled/Event path, all four opaque Service mpsc queues remain in use,
+-and the resource-aware complete candidate bridge and final joint publication
+-frontier remain closed. The next work replaces admitted native transport with
++At the reader checkpoint, startup still used the legacy compiled/Event path
++and all four opaque Service mpsc queues remained in use. The Request increment
++below replaces one of those queues; the resource-aware complete candidate bridge
++and final joint publication frontier remain closed. The reader checkpoint did
++not qualify the Service path. The next work replaces admitted native transport with
+ purpose-specific fixed-capacity records in the same registered Session family,
+ including compiled, export, seek and real input ownership. Registered startup,
+ exact captured-source/current-history inventory, original-rate loading and
+@@ -1506,9 +1507,57 @@ repeat its destructive action; the next inventory/cleanup refuses. This is not a
+ new mutex certificate: the accepted existing family exclusion and thread costs
+ remain required, and no all-blocking-paths allocation claim is made.
+ 
+-These concrete records are not yet the four native Service queues. Legacy
+-Service startup/Event Playback, request/event/export/seek payloads, source
+-association, complete original-bank compiler bridge and joint publication are
+-still separate unfinished parts of the same playable Sampler deliverable. The
++At this compiled-slot checkpoint the four native Service queues were still
++separate. The Request increment below now consumes its actual registered slots.
++Legacy Service startup/Event Playback, event/export/seek payloads, source
++association, the complete original-bank compiler bridge and joint publication
++remain unfinished parts of the same playable Sampler deliverable. The
+ current component tests use a real existing nonempty compiled audio-clip owner;
+ they do not claim loaded Sampler PCM or native Service admission.
++
++
++### Registered Request transport: actual Service consumer, incomplete vertical
++
++The actual Desktop backend now creates one bounded family in the existing
++retained-family table and starts Service through
++`with_audio_sink_and_worker_control`. Its Request channel uses 32 initialized
++slots under that family's existing record RwLock, with no new per-record lock,
++registry or Request mpsc backing. The unregistered headless adapter retains an
++explicitly unqualified channel; failed registered preparation does not fall back.
++The existing event, export-work and export-result channels remain unqualified.
++
++The family's inline fields, persistent request-retirement destination, existing
++snapshot/read vector capacities and requested Request backing share the existing
++bookkeeping ceiling. Preparation checks remaining capacity before requesting the
++backing and refuses unexpected actual capacity before Service/thread escape.
++The exact/minus-one test covers this metadata composition before Request backing
++allocation; the already constructed base family is not described as unborn.
++This is not a whole Service retained/peak or allocator-platform qualification.
++
++A producer-local submission retains its actual Request through outer route Busy,
++inner writer Busy and full refusal. Only the fixed successful family insertion
++can consume it: no captured owning closure, dummy request or accepted flag is
++used. Generation and FIFO sequence are checked before transfer. The worker takes
++one payload into its actual local delivery; that claimed slot remains occupied
++and inventory refuses it until the worker has consumed the request and explicitly
++ACKed completion. ACK is a durable nonowning correlation, not a child-storage,
++publication or cleanup certificate. Known inline/path/vector variants have actual
++visitors; opaque commands, input Arcs and other unsupported variants still refuse.
++
++Cancellation closes submission, and queued payloads move into the actual
++persistent enclosing retirement field. The inner writer is released before
++payload destruction, with pending set before take/drop. Interrupted disposal
++cannot become vacant or repeat cleanup. An unacknowledged claim is not silently
++freed. Failed startup retains its actual family/key/worker fields through bounded
++Busy retries and uses the existing registered cancellation/completion path.
++
++Component fixtures execute real Service AddTrack/Undo/Redo, full 32-slot terminal
++backpressure, actual outer-lock Busy with unchanged retry request, cancellation,
++full Event queue shutdown and child-before-base completion. They share the real
++startup factory but use a fake audio sink and a private test table. They neither
++open an OS backend nor prove first qualified compiled startup, a complete worker
++root union, loaded Sampler PCM, native ACK/publication or musical acceptance.
++Event/UI borrowed consumption, original-rate Mono/Stereo loading, complete
++Arrangement/Session/runtime construction, joint publication/replacement/retirement
++and export/seek remain required for the same playable Service vertical. Mutable
++Send-only export/seek runtimes have no new Sync/lock workaround in this increment.
