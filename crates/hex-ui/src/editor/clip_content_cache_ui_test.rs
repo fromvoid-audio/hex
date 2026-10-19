@@ -75,7 +75,14 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
         visual.rendered_background(selector),
         Some(
             gpui::rgb(theme::clip_fill(
-                hex_project::ElementColor::Gray,
+                editor.read_with(cx, |view, _| view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(source)
+                    .unwrap()
+                    .color()),
                 hex_project::ClipFlavor::Muted,
                 false
             ))
@@ -554,7 +561,14 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
         visual.rendered_background(selector),
         Some(
             gpui::rgb(theme::clip_fill(
-                hex_project::ElementColor::Gray,
+                editor.read_with(cx, |view, _| view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(source)
+                    .unwrap()
+                    .color()),
                 hex_project::ClipFlavor::Muted,
                 true
             ))
