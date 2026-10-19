@@ -1,0 +1,19 @@
+[1/9] all-script-tests: running
+[1/9] all-script-tests: passed
+[2/9] python39-source-contract: running
+[2/9] python39-source-contract: passed
+[3/9] architecture: running
+[3/9] architecture: passed
+[4/9] gpui-patch: running
+[4/9] gpui-patch: passed
+[5/9] dependency-patches: running
+[5/9] dependency-patches: passed
+[6/9] ui-style: running
+[6/9] ui-style: passed
+[7/9] device-layout: running
+[7/9] device-layout: passed
+[8/9] fmt: running
+[8/9] fmt: passed
+[9/9] diff: running
+[9/9] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-459-final2/summary.json

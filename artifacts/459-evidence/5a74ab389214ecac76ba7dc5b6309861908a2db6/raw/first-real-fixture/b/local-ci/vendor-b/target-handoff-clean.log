@@ -1,0 +1,5 @@
+warning: version qualifier in `-p path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-api#0.1.0` is ignored, cleaning all versions of `fixture-api` found
+warning: url qualifier in `-p path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-api#0.1.0` ignored, cleaning all versions of `fixture-api` found
+warning: version qualifier in `-p path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-app#0.1.0` is ignored, cleaning all versions of `fixture-app` found
+warning: url qualifier in `-p path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-app#0.1.0` ignored, cleaning all versions of `fixture-app` found
+     Removed 17 files, 7.6MiB total

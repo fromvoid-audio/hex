@@ -1,0 +1,177 @@
+{
+  "cargo_identity": {
+    "configured_target_value": "/tmp/tmp__wzn2dw/vendored-cargo-target",
+    "lock_path": "/tmp/tmp__wzn2dw/vendored-target-owner/4e69eb91b35922e6d70c7d6e3a14ce4d5e6acf2fdbddb15458a8470b7348d965.lock",
+    "manifest_path": "/tmp/tmp__wzn2dw/vendored-worktree-b/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/tmp/tmp__wzn2dw/vendored-worktree-b/Cargo.toml"
+    ],
+    "owner_path": "/tmp/tmp__wzn2dw/vendored-target-owner/4e69eb91b35922e6d70c7d6e3a14ce4d5e6acf2fdbddb15458a8470b7348d965.owner.json",
+    "target_directory": "/tmp/tmp__wzn2dw/vendored-cargo-target",
+    "target_source": "environment",
+    "workspace_packages": [
+      {
+        "id": "path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-api#0.1.0",
+        "name": "fixture-api",
+        "spec": "path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-api#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-app#0.1.0",
+        "name": "fixture-app",
+        "spec": "path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-app#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/tmp/tmp__wzn2dw/vendored-worktree-b"
+  },
+  "commit": "cc76eba6f929d32746ee86cdc73195d8cb3cb321",
+  "dirty": false,
+  "dirty_files": [],
+  "disk_headroom": {
+    "checked_at": "2026-10-19T12:19:36Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 9400266752,
+        "probed_path": "/tmp/tmp__wzn2dw/vendored-worktree-b",
+        "requested_path": "/tmp/tmp__wzn2dw/vendored-worktree-b",
+        "role": "workspace",
+        "total_bytes": 9441337344
+      },
+      {
+        "free_bytes": 9400266752,
+        "probed_path": "/tmp/tmp__wzn2dw/vendored-cargo-target",
+        "requested_path": "/tmp/tmp__wzn2dw/vendored-cargo-target",
+        "role": "target",
+        "total_bytes": 9441337344
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 0.108,
+  "end_tree": {
+    "commit": "cc76eba6f929d32746ee86cdc73195d8cb3cb321",
+    "content_sha256": "c2afad876939a22e78698c17c397d278c8d146efa3b140b6c996ceadadd9b9ce",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "ended_at": "2026-10-19T12:19:36Z",
+  "exit_code": 1,
+  "invocation_argv": [
+    "python3 -m unittest",
+    "scripts.tests.test_local_ci.LocalCiRunnerTests.test_real_cargo_vendored_api_change_with_older_mtime_rebuilds",
+    "-v"
+  ],
+  "mode": "full",
+  "repo_root": "/tmp/tmp__wzn2dw/vendored-worktree-b",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "vendor-b",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "cc76eba6f929d32746ee86cdc73195d8cb3cb321",
+    "content_sha256": "c2afad876939a22e78698c17c397d278c8d146efa3b140b6c996ceadadd9b9ce",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/tmp/tmp__wzn2dw/vendored-workspace/.git",
+    "workspace_root": "/tmp/tmp__wzn2dw/vendored-worktree-b"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "cc76eba6f929d32746ee86cdc73195d8cb3cb321",
+    "content_sha256": "c2afad876939a22e78698c17c397d278c8d146efa3b140b6c996ceadadd9b9ce",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "started_at": "2026-10-19T12:19:36Z",
+  "status": "failed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked"
+      ],
+      "ended_at": "2026-10-19T12:19:36Z",
+      "error": null,
+      "exit_code": 101,
+      "log": "artifacts/local-ci/vendor-b/01-debug-build.log",
+      "started_at": "2026-10-19T12:19:36Z",
+      "status": "failed",
+      "step_id": "debug-build"
+    }
+  ],
+  "target_cache": {
+    "action": "worktree-handoff",
+    "cleanup_argv": [
+      "cargo",
+      "clean",
+      "--profile",
+      "dev",
+      "--target-dir",
+      "/tmp/tmp__wzn2dw/vendored-cargo-target",
+      "--manifest-path",
+      "/tmp/tmp__wzn2dw/vendored-worktree-b/Cargo.toml",
+      "--package",
+      "path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-api#0.1.0",
+      "--package",
+      "path+file:///tmp/tmp__wzn2dw/vendored-worktree-b/crates/fixture-app#0.1.0"
+    ],
+    "cleanup_exit_code": 0,
+    "cleanup_log": "artifacts/local-ci/vendor-b/target-handoff-clean.log",
+    "cleanup_status": "passed",
+    "current_workspace_owner": {
+      "git_common_dir": "/tmp/tmp__wzn2dw/vendored-workspace/.git",
+      "workspace_root": "/tmp/tmp__wzn2dw/vendored-worktree-b"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/tmp__wzn2dw/vendored-target-owner/4e69eb91b35922e6d70c7d6e3a14ce4d5e6acf2fdbddb15458a8470b7348d965.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/tmp/tmp__wzn2dw/vendored-workspace/.git",
+      "workspace_root": "/tmp/tmp__wzn2dw/vendored-workspace"
+    },
+    "target_identity_before": {
+      "device": 33,
+      "inode": 221700
+    }
+  },
+  "verification_status": "failed"
+}

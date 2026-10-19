@@ -1,0 +1,13 @@
+test_real_cargo_vendored_api_change_with_older_mtime_rebuilds (scripts.tests.test_local_ci.LocalCiRunnerTests.test_real_cargo_vendored_api_change_with_older_mtime_rebuilds)
+A changed vendored struct must not reuse metadata from an older checkout. ... [1/2] debug-build: running
+[1/2] debug-build: passed
+[2/2] release-build: running
+[2/2] release-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: passed
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.899s
+
+OK

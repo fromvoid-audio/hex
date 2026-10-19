@@ -1,0 +1,14 @@
+{
+  "scripts/local-ci.py": {
+    "before_sha256": "864bf57008c9f4d333db395e374557bb5cf52218eda4cf34ac087867120f7587",
+    "after_sha256": "d0d22bb07c1cbf46fbb0ee136f5991519bf5f5ecba1392054f860f7de188b27d"
+  },
+  "scripts/tests/test_local_ci.py": {
+    "before_sha256": "67f1521f768d2d3adeefd5d628417940c0ab40bc2784d03b2b614bf300a0b683",
+    "after_sha256": "4747ef1cf25d7f4ebaa8ada84498ac8ce6a86e58c0f1f6dc7346fd6f51e8ad4f"
+  },
+  "docs/local-ci.md": {
+    "before_sha256": "e884919ab379f8d4429b61c29f3dbdc94ff2640c7a8c942ebdd63b9c68f2a1f1",
+    "after_sha256": "0683cfcb18d8393c2aa9511fe80d65d10ef76c578fdd32ddae79c35e9b3d26dc"
+  }
+}

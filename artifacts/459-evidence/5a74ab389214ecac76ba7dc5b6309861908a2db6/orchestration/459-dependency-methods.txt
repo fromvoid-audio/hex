@@ -1,0 +1,78 @@
+    @staticmethod
+    def _dependency_content(root: Path, target: Path) -> dict[str, object]:
+        """Hash package checkout bytes, not mtimes or worktree-specific path spellings."""
+        digest = hashlib.sha256()
+        file_count = byte_count = 0
+        for directory, directories, filenames in os.walk(root, followlinks=False):
+            current = Path(directory)
+            directories[:] = sorted(name for name in directories if name != ".git"
+                                    and (current / name).resolve() != target)
+            for name in directories:
+                if (current / name).is_symlink():
+                    raise TargetCacheError(f"local dependency contains a directory symlink: {current / name}")
+            for name in sorted(filenames):
+                if name == ".git":
+                    continue
+                path = current / name
+                relative = os.fsencode(str(path.relative_to(root)))
+                before = path.lstat()
+                if not stat.S_ISREG(before.st_mode) and not stat.S_ISLNK(before.st_mode):
+                    raise TargetCacheError(f"local dependency input is not a regular file: {path}")
+                digest.update(len(relative).to_bytes(8, "big"))
+                digest.update(relative)
+                digest.update(str(before.st_mode & 0o111).encode("ascii") + b"\0")
+                if path.is_symlink():
+                    digest.update(b"symlink\0" + os.fsencode(os.readlink(path)) + b"\0")
+                with path.open("rb") as source:
+                    source_before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(source_before.st_mode):
+                        raise TargetCacheError(f"local dependency input is not a regular file: {path}")
+                    digest.update(source_before.st_size.to_bytes(8, "big"))
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                        byte_count += len(chunk)
+                    if os.fstat(source.fileno()) != source_before:
+                        raise TargetCacheError(f"local dependency changed while hashing: {path}")
+                if path.lstat() != before or path.stat() != source_before:
+                    raise TargetCacheError(f"local dependency changed while hashing: {path}")
+                file_count += 1
+        return {"sha256": digest.hexdigest(), "files": file_count, "bytes": byte_count}
+
+    def _resolve_path_dependencies(self, target: Path) -> list[dict[str, object]]:
+        """Resolve excluded/patch path packages only after target ownership is established."""
+        command = ["cargo", "metadata", "--format-version", "1", "--locked",
+                   "--manifest-path", str(self.root / "Cargo.toml")]
+        result = command_output(command, self.root, self.env)
+        if result.returncode:
+            raise TargetCacheError(f"local dependency metadata failed: {result.stderr.strip()}")
+        try:
+            metadata = json.loads(result.stdout)
+            if (Path(metadata["target_directory"]).resolve() != target
+                    or Path(metadata["workspace_root"]).resolve() != self.root
+                    or set(metadata["workspace_members"]) != {
+                        package["spec"] for package in self.cargo_identity["workspace_packages"]
+                    }):
+                raise ValueError("workspace/target identity changed during dependency resolution")
+            members = set(metadata["workspace_members"])
+            packages = metadata["packages"]
+            dependencies = []
+            for package in packages:
+                if package["id"] in members or package.get("source") is not None:
+                    continue
+                if not all(isinstance(package.get(field), str) and package[field]
+                           for field in ("id", "name", "version", "manifest_path")):
+                    raise ValueError("local package fields are invalid")
+                root = Path(package["manifest_path"]).resolve().parent
+                relative = root.relative_to(self.root).as_posix() if root.is_relative_to(self.root) else str(root)
+                key = f'{relative}#{package["name"]}@{package["version"]}'
+                dependencies.append({"key": key, "spec": package["id"], "name": package["name"],
+                                     "root": str(root), **self._dependency_content(root, target)})
+            if len({package["key"] for package in dependencies}) != len(dependencies):
+                raise ValueError("duplicate local dependency identity")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise TargetCacheError(f"unsafe local dependency metadata: {error}") from error
+        self.summary["path_dependency_metadata_command"] = command
+        self.summary["path_dependencies"] = dependencies
+        self._path_dependency_packages = packages
+        return dependencies
+

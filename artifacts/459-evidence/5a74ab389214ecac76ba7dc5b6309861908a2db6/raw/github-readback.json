@@ -1,0 +1,110 @@
+[
+  {
+    "status": "fulfilled",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Action completed."
+        }
+      ],
+      "structuredContent": {
+        "url": "https://github.com/PORTALSURFER/hex/pull/459",
+        "number": 459,
+        "state": "open",
+        "merged": false,
+        "mergeable": true,
+        "draft": true,
+        "body": "pulse task #2857 · generation 1.\n\n<!-- pulse-operation:92e99ea6b269ced0c251ecdf3144ec58 -->\n\nassigned to @PORTALSURFER. the frozen task plan is retained in pulse and copied below.\n\n# Pulse task #2857: Invalidate stale vendored GPUI metadata on shared-target worktree handoff\n\nOperation: 92e99ea6b269ced0c251ecdf3144ec58\nAssignee: PORTALSURFER (Pulse #1, GitHub ID 41680373)\n\nObserved during EQ PR407 exact candidate bd819941891101d024e293833fd22d402136bd09 focused compilation, independently of the EQ semantic changes. Pulse2801 note28095 records session13014/PID1002710 terminal101: hex-widgets E0609/E0560 for ScrollWheelEvent.is_momentum even though current third_party/gpui source declares the field (interactive.rs SHA256 e72427052aa9bdf43015f24612d1f721816f372ddcfade4ec9ee3168353158ee). GPUI was not recompiled; checked-out source mtime1792371975 preceded reused old GPUI fingerprint1792399113. The merger preserved negative log and full fingerprint/source/timestamp inventory at artifacts/integration/407-bd819941-stale-gpui-negative.json, then after the job was terminal cleared only gpui development artifacts (66files/359.9MiB) and rebuilt exact unchanged source. Rebuild result remains separate; no product DSP failure or passing retry claimed here.\n\nRelated historical issue2144 (PR60, merged20e8f611...) implemented cooperative target ownership and workspace-package invalidation while deliberately preserving dependency caches. Do not reopen or relabel its accepted finite scope. This follow-up covers vendored/path dependency provenance, specifically GPUI, across source worktrees whose timestamps can predate cached metadata. Inspect current runner's actual target/worktree ownership path and Cargo fingerprints before choosing implementation; source changes in the EQ PR are not the repair.\n\nAcceptance: a real isolated Cargo fixture with two worktrees and a vendored path dependency API/field change, including older checkout mtimes, cannot silently reuse incompatible dependency metadata. Invalidate/rebuild the affected vendored dependency and any necessary dependents under the existing exclusive target lock, or demonstrate another bounded strategy. Record source/target/dependency identity and exact negative→positive evidence. Preserve unrelated external dependency artifacts, release artifacts, logs, historical bundles and active target owners; refuse lock contention or unknown ownership before mutation. No whole-target cleaning, hidden source touching, assertion weakening, new workflow authority or hosted CI. Run repository-owned local checks on the exact candidate. Keep one canonical PR, assign/review PORTALSURFER per project rules. This is queued maintenance; no extra worker or concurrent implementation is authorized by this record.\n\ncreated by pulse shared PR intake/start task. builds, checks and merging follow the repository's own instructions.",
+        "title": "Pulse task #2857: Invalidate stale vendored GPUI metadata on shared-target worktree handoff",
+        "base": "main",
+        "base_sha": "f9201561eb409bea2a111d7337b7e7a73e4832b1",
+        "head": "pulse/task-2857-g1-92e99ea6b269",
+        "head_sha": "5b4b73e9fff468dd5ac89425c4f5c33202f9279c",
+        "head_repo_id": 1411367674,
+        "head_repo_full_name": "PORTALSURFER/hex",
+        "merge_commit_sha": "78180bf81a6b6de6f50da6779421e2101c45280c",
+        "user": {
+          "login": "pulse-iocore-portalsurfer[bot]",
+          "name": "pulse-iocore-portalsurfer[bot]",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 340736319
+        },
+        "requested_reviewers": [
+          {
+            "login": "PORTALSURFER",
+            "name": "PORTALSURFER",
+            "email": null,
+            "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+            "id": 41680373
+          }
+        ],
+        "requested_team_reviewers": null,
+        "diff": null,
+        "comments": null,
+        "created_at": "2026-10-19T09:40:32Z",
+        "updated_at": "2026-10-19T12:28:32Z",
+        "closed_at": null,
+        "merged_at": null,
+        "commits": 1,
+        "changed_files": 0,
+        "additions": 0,
+        "deletions": 0,
+        "display_url": "https://github.com/PORTALSURFER/hex/pull/459",
+        "display_title": "Pulse task #2857: Invalidate stale vendored GPUI metadata on shared-target worktree handoff"
+      },
+      "isError": false
+    }
+  },
+  {
+    "status": "fulfilled",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Action completed."
+        }
+      ],
+      "structuredContent": {
+        "issue": {
+          "url": "https://github.com/PORTALSURFER/hex/pull/459",
+          "title": "Pulse task #2857: Invalidate stale vendored GPUI metadata on shared-target worktree handoff",
+          "issue_number": 459,
+          "body": "pulse task #2857 · generation 1.\n\n<!-- pulse-operation:92e99ea6b269ced0c251ecdf3144ec58 -->\n\nassigned to @PORTALSURFER. the frozen task plan is retained in pulse and copied below.\n\n# Pulse task #2857: Invalidate stale vendored GPUI metadata on shared-target worktree handoff\n\nOperation: 92e99ea6b269ced0c251ecdf3144ec58\nAssignee: PORTALSURFER (Pulse #1, GitHub ID 41680373)\n\nObserved during EQ PR407 exact candidate bd819941891101d024e293833fd22d402136bd09 focused compilation, independently of the EQ semantic changes. Pulse2801 note28095 records session13014/PID1002710 terminal101: hex-widgets E0609/E0560 for ScrollWheelEvent.is_momentum even though current third_party/gpui source declares the field (interactive.rs SHA256 e72427052aa9bdf43015f24612d1f721816f372ddcfade4ec9ee3168353158ee). GPUI was not recompiled; checked-out source mtime1792371975 preceded reused old GPUI fingerprint1792399113. The merger preserved negative log and full fingerprint/source/timestamp inventory at artifacts/integration/407-bd819941-stale-gpui-negative.json, then after the job was terminal cleared only gpui development artifacts (66files/359.9MiB) and rebuilt exact unchanged source. Rebuild result remains separate; no product DSP failure or passing retry claimed here.\n\nRelated historical issue2144 (PR60, merged20e8f611...) implemented cooperative target ownership and workspace-package invalidation while deliberately preserving dependency caches. Do not reopen or relabel its accepted finite scope. This follow-up covers vendored/path dependency provenance, specifically GPUI, across source worktrees whose timestamps can predate cached metadata. Inspect current runner's actual target/worktree ownership path and Cargo fingerprints before choosing implementation; source changes in the EQ PR are not the repair.\n\nAcceptance: a real isolated Cargo fixture with two worktrees and a vendored path dependency API/field change, including older checkout mtimes, cannot silently reuse incompatible dependency metadata. Invalidate/rebuild the affected vendored dependency and any necessary dependents under the existing exclusive target lock, or demonstrate another bounded strategy. Record source/target/dependency identity and exact negative→positive evidence. Preserve unrelated external dependency artifacts, release artifacts, logs, historical bundles and active target owners; refuse lock contention or unknown ownership before mutation. No whole-target cleaning, hidden source touching, assertion weakening, new workflow authority or hosted CI. Run repository-owned local checks on the exact candidate. Keep one canonical PR, assign/review PORTALSURFER per project rules. This is queued maintenance; no extra worker or concurrent implementation is authorized by this record.\n\ncreated by pulse shared PR intake/start task. builds, checks and merging follow the repository's own instructions.",
+          "state": "open",
+          "user": {
+            "login": "pulse-iocore-portalsurfer[bot]",
+            "name": "pulse-iocore-portalsurfer[bot]",
+            "email": null,
+            "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+            "id": 340736319
+          },
+          "assignees": [
+            {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+              "id": 41680373
+            }
+          ],
+          "labels": null,
+          "milestone": null,
+          "state_reason": null,
+          "comments": 0,
+          "created_at": "2026-10-19T09:40:32Z",
+          "updated_at": "2026-10-19T12:28:32Z",
+          "closed_at": null,
+          "display_url": "https://github.com/PORTALSURFER/hex/pull/459",
+          "display_title": "Pulse task #2857: Invalidate stale vendored GPUI metadata on shared-target worktree handoff"
+        },
+        "url": "https://github.com/PORTALSURFER/hex/pull/459",
+        "title": "Pulse task #2857: Invalidate stale vendored GPUI metadata on shared-target worktree handoff",
+        "display_url": "https://github.com/PORTALSURFER/hex/pull/459",
+        "display_title": "Pulse task #2857: Invalidate stale vendored GPUI metadata on shared-target worktree handoff"
+      },
+      "isError": false
+    }
+  }
+]

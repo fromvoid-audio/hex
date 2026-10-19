@@ -1,0 +1,220 @@
+{
+  "cargo_identity": {
+    "configured_target_value": "/tmp/tmpoha3gdn3/vendored-cargo-target",
+    "lock_path": "/tmp/tmpoha3gdn3/vendored-target-owner/18dff6282489459b6d08bce9b834f0fdc3277fa8332e2ff0ce06f2585da4ba51.lock",
+    "manifest_path": "/tmp/tmpoha3gdn3/vendored-worktree-b/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/tmp/tmpoha3gdn3/vendored-worktree-b/Cargo.toml"
+    ],
+    "owner_path": "/tmp/tmpoha3gdn3/vendored-target-owner/18dff6282489459b6d08bce9b834f0fdc3277fa8332e2ff0ce06f2585da4ba51.owner.json",
+    "target_directory": "/tmp/tmpoha3gdn3/vendored-cargo-target",
+    "target_source": "environment",
+    "workspace_packages": [
+      {
+        "id": "path+file:///tmp/tmpoha3gdn3/vendored-worktree-b/crates/fixture-api#0.1.0",
+        "name": "fixture-api",
+        "spec": "path+file:///tmp/tmpoha3gdn3/vendored-worktree-b/crates/fixture-api#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///tmp/tmpoha3gdn3/vendored-worktree-b/crates/fixture-app#0.1.0",
+        "name": "fixture-app",
+        "spec": "path+file:///tmp/tmpoha3gdn3/vendored-worktree-b/crates/fixture-app#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/tmp/tmpoha3gdn3/vendored-worktree-b"
+  },
+  "commit": "572180e418800c8c051b9ffdecd888b9a7156fa0",
+  "dirty": true,
+  "dirty_files": [
+    " M crates/fixture-api/src/lib.rs",
+    " M crates/fixture-app/src/main.rs",
+    " M third_party/vendor-api/src/lib.rs"
+  ],
+  "disk_headroom": {
+    "checked_at": "2026-10-19T12:22:41Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 9400225792,
+        "probed_path": "/tmp/tmpoha3gdn3/vendored-worktree-b",
+        "requested_path": "/tmp/tmpoha3gdn3/vendored-worktree-b",
+        "role": "workspace",
+        "total_bytes": 9441337344
+      },
+      {
+        "free_bytes": 9400225792,
+        "probed_path": "/tmp/tmpoha3gdn3/vendored-cargo-target",
+        "requested_path": "/tmp/tmpoha3gdn3/vendored-cargo-target",
+        "role": "target",
+        "total_bytes": 9441337344
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 0.071,
+  "end_path_dependencies": {
+    "external-helper#external-helper@0.1.0": {
+      "bytes": 93,
+      "files": 2,
+      "sha256": "3620ddd8a3f0aa1c4c02ef9b0fb27011acf2f3ed692acefd5a21c6c03c1e6baa"
+    },
+    "third_party/vendor-api#vendor-api@0.1.0": {
+      "bytes": 102,
+      "files": 2,
+      "sha256": "2e332943c7138bc3c371f37db0fceb86dbc1d3435b9ed878de9bb084dff484c8"
+    }
+  },
+  "end_tree": {
+    "commit": "572180e418800c8c051b9ffdecd888b9a7156fa0",
+    "content_sha256": "09a8d95a3dda4c722889f7568bb48dc5c95cb13b269c40a8eb58badab192cf44",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/fixture-api/src/lib.rs",
+      " M crates/fixture-app/src/main.rs",
+      " M third_party/vendor-api/src/lib.rs"
+    ]
+  },
+  "ended_at": "2026-10-19T12:22:41Z",
+  "exit_code": 0,
+  "invocation_argv": [
+    "python3 -m unittest",
+    "scripts.tests.test_local_ci",
+    "-v"
+  ],
+  "mode": "full",
+  "path_dependencies": [
+    {
+      "bytes": 93,
+      "files": 2,
+      "key": "external-helper#external-helper@0.1.0",
+      "name": "external-helper",
+      "root": "/tmp/tmpoha3gdn3/vendored-worktree-b/external-helper",
+      "sha256": "3620ddd8a3f0aa1c4c02ef9b0fb27011acf2f3ed692acefd5a21c6c03c1e6baa",
+      "spec": "path+file:///tmp/tmpoha3gdn3/vendored-worktree-b/external-helper#0.1.0"
+    },
+    {
+      "bytes": 102,
+      "files": 2,
+      "key": "third_party/vendor-api#vendor-api@0.1.0",
+      "name": "vendor-api",
+      "root": "/tmp/tmpoha3gdn3/vendored-worktree-b/third_party/vendor-api",
+      "sha256": "2e332943c7138bc3c371f37db0fceb86dbc1d3435b9ed878de9bb084dff484c8",
+      "spec": "path+file:///tmp/tmpoha3gdn3/vendored-worktree-b/third_party/vendor-api#0.1.0"
+    }
+  ],
+  "path_dependency_metadata_command": [
+    "cargo",
+    "metadata",
+    "--format-version",
+    "1",
+    "--locked",
+    "--manifest-path",
+    "/tmp/tmpoha3gdn3/vendored-worktree-b/Cargo.toml"
+  ],
+  "repo_root": "/tmp/tmpoha3gdn3/vendored-worktree-b",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "vendor-d",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "572180e418800c8c051b9ffdecd888b9a7156fa0",
+    "content_sha256": "09a8d95a3dda4c722889f7568bb48dc5c95cb13b269c40a8eb58badab192cf44",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/fixture-api/src/lib.rs",
+      " M crates/fixture-app/src/main.rs",
+      " M third_party/vendor-api/src/lib.rs"
+    ],
+    "git_common_dir": "/tmp/tmpoha3gdn3/vendored-workspace/.git",
+    "workspace_root": "/tmp/tmpoha3gdn3/vendored-worktree-b"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "572180e418800c8c051b9ffdecd888b9a7156fa0",
+    "content_sha256": "09a8d95a3dda4c722889f7568bb48dc5c95cb13b269c40a8eb58badab192cf44",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/fixture-api/src/lib.rs",
+      " M crates/fixture-app/src/main.rs",
+      " M third_party/vendor-api/src/lib.rs"
+    ]
+  },
+  "started_at": "2026-10-19T12:22:41Z",
+  "status": "passed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked"
+      ],
+      "ended_at": "2026-10-19T12:22:41Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/vendor-d/01-debug-build.log",
+      "started_at": "2026-10-19T12:22:41Z",
+      "status": "passed",
+      "step_id": "debug-build"
+    }
+  ],
+  "target_cache": {
+    "action": "reuse",
+    "changed_path_dependencies": [],
+    "cleanup_argv": null,
+    "cleanup_status": "not_needed",
+    "current_workspace_owner": {
+      "git_common_dir": "/tmp/tmpoha3gdn3/vendored-workspace/.git",
+      "workspace_root": "/tmp/tmpoha3gdn3/vendored-worktree-b"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/tmpoha3gdn3/vendored-target-owner/18dff6282489459b6d08bce9b834f0fdc3277fa8332e2ff0ce06f2585da4ba51.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/tmp/tmpoha3gdn3/vendored-workspace/.git",
+      "workspace_root": "/tmp/tmpoha3gdn3/vendored-worktree-b"
+    },
+    "target_identity_before": {
+      "device": 33,
+      "inode": 223699
+    }
+  },
+  "verification_status": "passed"
+}

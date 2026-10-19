@@ -1,0 +1,3 @@
+864bf57008c9f4d333db395e374557bb5cf52218eda4cf34ac087867120f7587  scripts/local-ci.py
+67f1521f768d2d3adeefd5d628417940c0ab40bc2784d03b2b614bf300a0b683  scripts/tests/test_local_ci.py
+e884919ab379f8d4429b61c29f3dbdc94ff2640c7a8c942ebdd63b9c68f2a1f1  docs/local-ci.md

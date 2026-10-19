@@ -1,0 +1,13 @@
+{
+  "recorded_at": "2026-10-19T12:19:36Z",
+  "schema_version": 1,
+  "target_directory": "/tmp/tmp__wzn2dw/vendored-cargo-target",
+  "target_identity": {
+    "device": 33,
+    "inode": 221700
+  },
+  "workspace_owner": {
+    "git_common_dir": "/tmp/tmp__wzn2dw/vendored-workspace/.git",
+    "workspace_root": "/tmp/tmp__wzn2dw/vendored-worktree-b"
+  }
+}

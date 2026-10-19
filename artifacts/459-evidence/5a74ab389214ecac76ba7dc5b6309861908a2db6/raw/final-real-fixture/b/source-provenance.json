@@ -1,0 +1,10 @@
+{
+  "source_sha256": "13cedd351cc386bbf04aea230f60e80174fb861b70ab1fd396efb1103cd78221",
+  "source_mtime_ns": 1792412772280069380,
+  "old_artifact_mtime_ns": {
+    "libvendor_api-693e9b1a98d59e57.rlib": 1792412782280069380
+  },
+  "base_commit": "b69c599c468dc25885d4595d2d9d4978b0a21168",
+  "changed_commit": "43250b93e08f9fee63b90621758f9356e4a45a36",
+  "target": "/tmp/tmp01zn7u5x/vendored-cargo-target"
+}

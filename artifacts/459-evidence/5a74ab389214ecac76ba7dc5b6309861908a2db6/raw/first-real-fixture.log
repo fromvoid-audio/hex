@@ -1,0 +1,24 @@
+/workspace/hex/scripts/tests/test_local_ci.py:35: SyntaxWarning: invalid escape sequence '\ '
+  git\ rev-parse*) echo deadbeef; exit 0 ;;
+test_real_cargo_vendored_api_change_with_older_mtime_rebuilds (scripts.tests.test_local_ci.LocalCiRunnerTests.test_real_cargo_vendored_api_change_with_older_mtime_rebuilds)
+A changed vendored struct must not reuse metadata from an older checkout. ... [1/2] debug-build: running
+[1/2] debug-build: passed
+[2/2] release-build: running
+[2/2] release-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: failed
+FAIL
+
+======================================================================
+FAIL: test_real_cargo_vendored_api_change_with_older_mtime_rebuilds (scripts.tests.test_local_ci.LocalCiRunnerTests.test_real_cargo_vendored_api_change_with_older_mtime_rebuilds)
+A changed vendored struct must not reuse metadata from an older checkout.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 941, in test_real_cargo_vendored_api_change_with_older_mtime_rebuilds
+    self.assertEqual(result_b, 0, "real Cargo rejected changed vendored struct; inspect vendor-b log")
+AssertionError: 1 != 0 : real Cargo rejected changed vendored struct; inspect vendor-b log
+
+----------------------------------------------------------------------
+Ran 1 test in 0.646s
+
+FAILED (failures=1)

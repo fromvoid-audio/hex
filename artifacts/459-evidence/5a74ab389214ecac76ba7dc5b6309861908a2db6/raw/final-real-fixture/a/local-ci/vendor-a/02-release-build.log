@@ -1,0 +1,5 @@
+   Compiling vendor-api v0.1.0 (/tmp/tmp01zn7u5x/vendored-workspace/third_party/vendor-api)
+   Compiling external-helper v0.1.0 (/tmp/tmp01zn7u5x/vendored-workspace/external-helper)
+   Compiling fixture-api v0.1.0 (/tmp/tmp01zn7u5x/vendored-workspace/crates/fixture-api)
+   Compiling fixture-app v0.1.0 (/tmp/tmp01zn7u5x/vendored-workspace/crates/fixture-app)
+    Finished `release` profile [optimized] target(s) in 0.12s

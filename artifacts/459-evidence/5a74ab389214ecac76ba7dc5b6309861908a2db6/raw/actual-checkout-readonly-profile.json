@@ -1,0 +1,52 @@
+{
+  "read_only": true,
+  "claimed_target": false,
+  "packages": [
+    {
+      "key": "third_party/block#block@0.1.6",
+      "spec": "path+file:///workspace/hex/third_party/block#0.1.6",
+      "name": "block",
+      "root": "/workspace/hex/third_party/block",
+      "sha256": "26e58d414a9c022f3a962c30550578bc0ee1332d2b9ec3f82f79869c22b9c02a",
+      "files": 7,
+      "bytes": 17057
+    },
+    {
+      "key": "third_party/gpui#gpui@0.2.2",
+      "spec": "path+file:///workspace/hex/third_party/gpui#0.2.2",
+      "name": "gpui",
+      "root": "/workspace/hex/third_party/gpui",
+      "sha256": "55fb89987dbb40e6f0147564d7d17fc6f55dcc60efe0292dc3027aea4c78d115",
+      "files": 189,
+      "bytes": 8236647
+    },
+    {
+      "key": "third_party/mts-esp-master#mts-esp-master-adapter@0.1.0",
+      "spec": "path+file:///workspace/hex/third_party/mts-esp-master#mts-esp-master-adapter@0.1.0",
+      "name": "mts-esp-master-adapter",
+      "root": "/workspace/hex/third_party/mts-esp-master",
+      "sha256": "625a4f0eb54eb61c8802debd8361d57da505e28fece8e9509b9972808742f9a5",
+      "files": 6,
+      "bytes": 31208
+    },
+    {
+      "key": "third_party/proc-macro-error2#proc-macro-error2@2.0.1",
+      "spec": "path+file:///workspace/hex/third_party/proc-macro-error2#2.0.1",
+      "name": "proc-macro-error2",
+      "root": "/workspace/hex/third_party/proc-macro-error2",
+      "sha256": "3dbbc703b5e0f82440f9aa79c521b375540d5b6c1cec50709ee48fd329d7921f",
+      "files": 50,
+      "bytes": 91854
+    },
+    {
+      "key": "third_party/xattr#xattr@0.2.3",
+      "spec": "path+file:///workspace/hex/third_party/xattr#0.2.3",
+      "name": "xattr",
+      "root": "/workspace/hex/third_party/xattr",
+      "sha256": "8dee25ed99f7418010b9c07611d44ffb60e8c525bf2a6b4507eabbad0e1ba31c",
+      "files": 22,
+      "bytes": 50972
+    }
+  ],
+  "seconds": 4.027954
+}

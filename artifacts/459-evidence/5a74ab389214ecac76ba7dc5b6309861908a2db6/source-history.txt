@@ -1,0 +1,23 @@
+commit 5a74ab389214ecac76ba7dc5b6309861908a2db6
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 12:27:28 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 12:27:28 2026 +0000
+
+    test(ci): refuse invalid dependency inventory without mutating ownership
+
+commit a36ae42bf0c0db52d592e0d6ad366a0f70977339
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 12:25:50 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 12:25:50 2026 +0000
+
+    fix(ci): invalidate changed local dependency metadata under target lock
+
+commit e2a8805d829162ac992ca6043916c645d01509ea
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 12:20:42 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 12:20:42 2026 +0000
+
+    test(ci): reproduce stale vendored struct metadata with older mtimes

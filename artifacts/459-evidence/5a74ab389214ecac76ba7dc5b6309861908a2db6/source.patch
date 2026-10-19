@@ -1,0 +1,550 @@
+diff --git a/docs/local-ci.md b/docs/local-ci.md
+index a1cce9f8..a217946b 100644
+--- a/docs/local-ci.md
++++ b/docs/local-ci.md
+@@ -133,13 +133,43 @@ When the same Git repository is used from a different worktree, the runner
+ performs a handoff while holding the lock. It invokes Cargo clean with the
+ resolved target and `--profile dev`, naming every workspace package by its full
+ package ID from the locked metadata rather than an ambiguous name/version
+-selector. It does not clean the whole target. Cargo's external dependency
+-artifacts and release profile are preserved. The actual alternate-worktree
+-regression fixture in `scripts/tests/test_local_ci.py` changes a workspace API,
+-asserts the old API artifact is gone before the second worktree rebuilds, and
+-verifies that an external path dependency artifact and release binary remain
+-unchanged. Unknown caches require explicit adoption rather than a guessed
+-workspace-package cleanup.
++selector. It does not clean the whole target. Unchanged dependency artifacts
++and the release profile are preserved. The original alternate-worktree regression
++fixture changes a workspace API and verifies selective workspace cleanup.
++
++While holding the same lock, after validating target/repository ownership and
++before cleanup or compilation, full locked Cargo metadata identifies local path
++packages outside the workspace membership, including vendored registry patches.
++Their content identities include relative filenames, executable bits and file
++bytes, including manifests, build scripts and assets; mtimes are not identities.
++Checkout-relative package keys survive worktree changes. External package keys
++retain their actual absolute path. The marker and summary record hashes and
++file/byte counts; hashing streams one file at a time. Only `.git` metadata and the
++resolved Cargo target directory are excluded. Directory symlinks, special files,
++unreadable inputs or inputs changing during hashing refuse before cleanup rather
++than silently omitting source. Regular-file symlinks include link spelling and
++target content. This is package checkout provenance, not a sandbox for arbitrary
++build scripts reading files outside their package or external environment state.
++
++Changed or previously unrecorded local packages are added to the selective **dev**
++cleanup. Cargo then rebuilds their necessary dependents; unchanged local packages
++and registry dependencies are not selected. Same-worktree changes receive the same
++check even when checkout mtimes predate cached metadata. Package-name collisions
++refuse before cleanup because Cargo clean does not honor ID qualifiers fully.
++Existing valid dev markers lacking dependency identities require this local-package
++invalidation once; they do not authorize adoption of unknown/foreign targets.
++Failed cleanup preserves the prior marker. End-of-run content checks mark changing
++local inputs stale, including inputs outside the main Git inventory. The marker
++retains the initial identity so the next run invalidates any changed inputs.
++Release ownership and optimized artifact qualification remain separate.
++
++The real vendored fixture uses two Git worktrees and older source mtimes to change
++a public struct field. Before this repair the actual compiler reports E0560 from
++reused dependency metadata. The repaired runner builds and runs the changed API,
++then verifies another older-mtime change in the same worktree and unchanged reuse.
++Unrelated external-helper artifacts and the release binary remain byte-identical.
++All fixture Cargo targets and ownership state are disposable and private. Unknown
++caches still require explicit adoption rather than guessed cleanup.
+ 
+ The ownership protocol coordinates concurrent invocations of this runner only.
+ It cannot detect a direct `cargo build`, a separate local-CI implementation, or
+diff --git a/scripts/local-ci.py b/scripts/local-ci.py
+index bcfca6ad..669e33d6 100644
+--- a/scripts/local-ci.py
++++ b/scripts/local-ci.py
+@@ -288,6 +288,7 @@ class LocalCiRunner:
+         self.target_lock: CargoTargetLock | None = None
+         self.target_owner_path: Path | None = None
+         self.target_owner_claimed = False
++        self.path_dependencies: list[dict[str, object]] | None = None
+ 
+     def _write_summary(self) -> None:
+         temporary = self.summary_path.with_suffix(".json.tmp")
+@@ -535,6 +536,14 @@ class LocalCiRunner:
+                 )
+             ):
+                 raise ValueError("owner fields have invalid types")
++            dependencies = value.get("path_dependencies")
++            if dependencies is not None and (
++                not isinstance(dependencies, dict)
++                or any(not isinstance(key, str) or not isinstance(digest, str)
++                       or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
++                       for key, digest in dependencies.items())
++            ):
++                raise ValueError("local dependency identities are malformed")
+             return value
+         except (OSError, json.JSONDecodeError, ValueError) as error:
+             raise TargetCacheError(
+@@ -554,11 +563,110 @@ class LocalCiRunner:
+             "target_identity": self._directory_identity(
+                 Path(str(self.cargo_identity["target_directory"]))
+             ) if self.cargo_identity else None,
++            "path_dependencies": {p["key"]: p["sha256"] for p in (self.path_dependencies or [])},
+             "recorded_at": utc_now(),
+         }
+         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+         temporary.replace(path)
+ 
++    @staticmethod
++    def _dependency_content(root: Path, target: Path) -> dict[str, object]:
++        """Hash package checkout bytes, not mtimes or worktree-specific path spellings."""
++        digest = hashlib.sha256()
++        file_count = byte_count = 0
++        if not root.is_dir() or not (root / "Cargo.toml").is_file():
++            raise TargetCacheError(f"local dependency package is missing: {root}")
++        def walk_error(error: OSError) -> None:
++            raise error
++        def stamp(status):
++            return (status.st_dev, status.st_ino, status.st_mode, status.st_size,
++                    status.st_mtime_ns, status.st_ctime_ns)
++        for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
++            current = Path(directory)
++            directories[:] = sorted(name for name in directories if name != ".git"
++                                    and (current / name).resolve() != target)
++            for name in directories:
++                if (current / name).is_symlink():
++                    raise TargetCacheError(f"local dependency contains a directory symlink: {current / name}")
++            for name in sorted(filenames):
++                if name == ".git":
++                    continue
++                path = current / name
++                relative = os.fsencode(str(path.relative_to(root)))
++                before = path.lstat()
++                if not stat.S_ISREG(before.st_mode) and not stat.S_ISLNK(before.st_mode):
++                    raise TargetCacheError(f"local dependency input is not a regular file: {path}")
++                digest.update(len(relative).to_bytes(8, "big"))
++                digest.update(relative)
++                digest.update(str(before.st_mode & 0o111).encode("ascii") + b"\0")
++                if path.is_symlink():
++                    digest.update(b"symlink\0" + os.fsencode(os.readlink(path)) + b"\0")
++                if not path.is_file():
++                    raise TargetCacheError(f"local dependency input is not a regular file: {path}")
++                with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as source:
++                    source_before = os.fstat(source.fileno())
++                    if not stat.S_ISREG(source_before.st_mode):
++                        raise TargetCacheError(f"local dependency input is not a regular file: {path}")
++                    digest.update(source_before.st_size.to_bytes(8, "big"))
++                    while chunk := source.read(1024 * 1024):
++                        digest.update(chunk)
++                        byte_count += len(chunk)
++                    if stamp(os.fstat(source.fileno())) != stamp(source_before):
++                        raise TargetCacheError(f"local dependency changed while hashing: {path}")
++                if stamp(path.lstat()) != stamp(before) or stamp(path.stat()) != stamp(source_before):
++                    raise TargetCacheError(f"local dependency changed while hashing: {path}")
++                file_count += 1
++        return {"sha256": digest.hexdigest(), "files": file_count, "bytes": byte_count}
++
++    def _resolve_path_dependencies(self, target: Path) -> list[dict[str, object]]:
++        """Resolve excluded/patch path packages only after target ownership is established."""
++        command = ["cargo", "metadata", "--format-version", "1", "--locked",
++                   "--manifest-path", str(self.root / "Cargo.toml")]
++        started = time.monotonic()
++        result = command_output(command, self.root, self.env)
++        if result.returncode:
++            raise TargetCacheError(f"local dependency metadata failed: {result.stderr.strip()}")
++        try:
++            metadata = json.loads(result.stdout)
++            if (Path(metadata["target_directory"]).resolve() != target
++                    or Path(metadata["workspace_root"]).resolve() != self.root
++                    or set(metadata["workspace_members"]) != {
++                        package["spec"] for package in self.cargo_identity["workspace_packages"]
++                    }):
++                raise ValueError("workspace/target identity changed during dependency resolution")
++            members = set(metadata["workspace_members"])
++            packages = metadata["packages"]
++            if (not isinstance(packages, list)
++                    or any(not isinstance(package, dict)
++                           or not all(isinstance(package.get(field), str) and package[field]
++                                      for field in ("id", "name", "version"))
++                           or (package.get("source") is not None
++                               and not isinstance(package["source"], str))
++                           for package in packages)
++                    or not members.issubset({package["id"] for package in packages})):
++                raise ValueError("dependency package inventory is incomplete or invalid")
++            dependencies = []
++            for package in packages:
++                if package["id"] in members or package.get("source") is not None:
++                    continue
++                if not all(isinstance(package.get(field), str) and package[field]
++                           for field in ("id", "name", "version", "manifest_path")):
++                    raise ValueError("local package fields are invalid")
++                root = Path(package["manifest_path"]).resolve().parent
++                relative = root.relative_to(self.root).as_posix() if root.is_relative_to(self.root) else str(root)
++                key = f'{relative}#{package["name"]}@{package["version"]}'
++                dependencies.append({"key": key, "spec": package["id"], "name": package["name"],
++                                     "root": str(root), **self._dependency_content(root, target)})
++            if len({package["key"] for package in dependencies}) != len(dependencies):
++                raise ValueError("duplicate local dependency identity")
++        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
++            raise TargetCacheError(f"unsafe local dependency metadata: {error}") from error
++        self.summary["path_dependency_identity_seconds"] = round(time.monotonic() - started, 6)
++        self.summary["path_dependency_metadata_command"] = command
++        self.summary["path_dependencies"] = dependencies
++        self._path_dependency_packages = packages
++        return dependencies
++
+     def _prepare_target_cache(self) -> bool:
+         if self.cargo_identity is None or self.git_identity is None:
+             self.summary["target_cache_error"] = "Cargo or Git identity is unavailable"
+@@ -636,7 +744,26 @@ class LocalCiRunner:
+                     ownership_action = "worktree-handoff"
+                     cleanup_argv = self._workspace_clean_argv(target)
+ 
++            self.path_dependencies = self._resolve_path_dependencies(target)
++            previous_dependencies = owner_record.get("path_dependencies", {}) if owner_record else {}
++            changed = [package for package in self.path_dependencies
++                       if previous_dependencies.get(package["key"]) != package["sha256"]]
++            # A newly claimed EMPTY target has no stale artifacts to invalidate.
++            if ownership_action == "claim-empty":
++                changed = []
++            if changed:
++                names = {package["name"] for package in changed}
++                selected_ids = {package["spec"] for package in changed}
++                if any(package["name"] in names and package["id"] not in selected_ids
++                       for package in self._path_dependency_packages):
++                    raise TargetCacheError("local dependency clean names overlap other packages")
++                if cleanup_argv is None:
++                    cleanup_argv = self._workspace_clean_argv(target, packages=[])
++                for package in changed:
++                    cleanup_argv.extend(("--package", package["spec"]))
++
+             self.summary["target_cache"] = {
++                "changed_path_dependencies": [package["key"] for package in changed],
+                 "action": ownership_action,
+                 "previous_workspace_owner": previous_workspace,
+                 "current_workspace_owner": current_workspace,
+@@ -666,11 +793,12 @@ class LocalCiRunner:
+             self.target_lock = None
+             return False
+ 
+-    def _workspace_clean_argv(self, target: Path) -> list[str]:
++    def _workspace_clean_argv(self, target: Path, *, packages: list | None = None) -> list[str]:
+         if self.cargo_identity is None:
+             raise TargetCacheError("workspace package metadata is unavailable")
+-        packages = self.cargo_identity["workspace_packages"]
+-        if not isinstance(packages, list) or not packages:
++        if packages is None:
++            packages = self.cargo_identity["workspace_packages"]
++        if not isinstance(packages, list):
+             raise TargetCacheError("workspace package list is unavailable")
+         argv = [
+             "cargo",
+@@ -1103,6 +1231,19 @@ class LocalCiRunner:
+                         entry["ended_at"] = utc_now()
+                         entry["error"] = "pipeline interrupted"
+         finally:
++            if self.path_dependencies is not None:
++                try:
++                    target = Path(str(self.cargo_identity["target_directory"]))
++                    end_dependencies = {p["key"]: self._dependency_content(Path(p["root"]), target)
++                                        for p in self.path_dependencies}
++                    self.summary["end_path_dependencies"] = end_dependencies
++                    if any(end_dependencies[p["key"]]["sha256"] != p["sha256"]
++                           for p in self.path_dependencies):
++                        self.summary["path_dependencies_stale"] = True
++                except (OSError, TargetCacheError) as error:
++                    self.summary["path_dependency_check_error"] = str(error)
++                    self.summary["status"] = "incomplete"
++                    self.summary["exit_code"] = 2
+             if self.target_lock is not None:
+                 if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
+                     try:
+@@ -1121,7 +1262,7 @@ class LocalCiRunner:
+                 if self._capture_repository_state("end_tree"):
+                     start_tree = self.summary["start_tree"]
+                     end_tree = self.summary["end_tree"]
+-                    stale = start_tree != end_tree
++                    stale = start_tree != end_tree or bool(self.summary.get("path_dependencies_stale"))
+                     self.summary["stale"] = stale
+                     if stale:
+                         self.summary["verification_status"] = self.summary.get("status")
+diff --git a/scripts/tests/test_local_ci.py b/scripts/tests/test_local_ci.py
+index a8621e70..39b799ce 100644
+--- a/scripts/tests/test_local_ci.py
++++ b/scripts/tests/test_local_ci.py
+@@ -833,5 +833,280 @@ runpy.run_path(sys.argv[1], run_name='__main__')
+         )
+ 
+ 
++    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
++    def test_real_cargo_vendored_api_change_with_older_mtime_rebuilds(self) -> None:
++        """A changed vendored struct must not reuse metadata from an older checkout."""
++        root = self.base / "vendored-workspace"
++        vendor = root / "third_party/vendor-api"
++        api = root / "crates/fixture-api"
++        app = root / "crates/fixture-app"
++        helper = root / "external-helper"
++        for directory in (vendor, api, app, helper):
++            (directory / "src").mkdir(parents=True)
++        (root / "Cargo.toml").write_text(
++            '[workspace]\nmembers=["crates/*"]\n'
++            'exclude=["external-helper", "third_party/vendor-api"]\nresolver="2"\n'
++        )
++        (root / ".gitignore").write_text("/artifacts/\n")
++        for directory, name in ((vendor, "vendor-api"), (api, "fixture-api"),
++                                (app, "fixture-app"), (helper, "external-helper")):
++            (directory / "Cargo.toml").write_text(
++                f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2021"\n'
++            )
++        with (api / "Cargo.toml").open("a") as manifest:
++            manifest.write('[dependencies]\nvendor-api={path="../../third_party/vendor-api"}\n')
++        with (app / "Cargo.toml").open("a") as manifest:
++            manifest.write('[dependencies]\nfixture-api={path="../fixture-api"}\n'
++                           'external-helper={path="../../external-helper"}\n')
++        (vendor / "src/lib.rs").write_text("pub struct Sample { pub old_field: u32 }\n")
++        (api / "src/lib.rs").write_text(
++            "pub fn value() -> vendor_api::Sample { vendor_api::Sample { old_field: 7 } }\n"
++        )
++        (app / "src/main.rs").write_text(
++            'fn main() { println!("{}", fixture_api::value().old_field + external_helper::helper()); }\n'
++        )
++        (helper / "src/lib.rs").write_text("pub fn helper() -> u32 { 1 }\n")
++
++        def command(argv, cwd=root):
++            result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
++            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++            return result.stdout.strip()
++
++        command(["git", "init", "-q"])
++        command(["git", "config", "user.email", "local-ci-test@example.invalid"])
++        command(["git", "config", "user.name", "local ci fixture"])
++        command(["cargo", "generate-lockfile", "--offline"])
++        command(["git", "add", "."])
++        command(["git", "commit", "-qm", "vendored fixture base"])
++        worktree_b = self.base / "vendored-worktree-b"
++        command(["git", "worktree", "add", "-qb", "vendored-b", str(worktree_b)])
++        target = self.base / "vendored-cargo-target"
++        state = self.base / "vendored-target-owner"
++        env = {**os.environ, "CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "0"}
++        steps = (
++            local_ci.Step("debug-build", ("cargo", "build", "--offline", "--locked")),
++            local_ci.Step("release-build", ("cargo", "build", "--offline", "--locked", "--release")),
++        )
++        # Preserve raw runner logs before TemporaryDirectory teardown, including on failure.
++        evidence_dir = os.environ.get("HEX_PRIVATE_CARGO_EVIDENCE")
++        try:
++            runner_a = local_ci.LocalCiRunner(
++                root, run_id="vendor-a", env=env, steps=steps,
++                min_free_bytes=0, target_state_dir=state,
++            )
++            self.assertEqual(runner_a.run(), 0)
++            self.assertEqual(command([str(target / "debug/fixture-app")]), "8")
++            release = target / "release/fixture-app"
++            release_hash = hashlib.sha256(release.read_bytes()).hexdigest()
++            helper_hashes = {
++                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
++                for path in (target / "debug/deps").glob("libexternal_helper-*.rlib")
++            }
++            self.assertTrue(helper_hashes)
++            vendor_artifacts = list((target / "debug/deps").glob("libvendor_api-*.rlib"))
++            self.assertTrue(vendor_artifacts)
++            old_timestamp = min(path.stat().st_mtime_ns for path in vendor_artifacts) - 10_000_000_000
++            vendor_b = worktree_b / "third_party/vendor-api/src/lib.rs"
++            vendor_b.write_text("pub struct Sample { pub new_field: u32 }\n")
++            (worktree_b / "crates/fixture-api/src/lib.rs").write_text(
++                "pub fn value() -> vendor_api::Sample { vendor_api::Sample { new_field: 17 } }\n"
++            )
++            (worktree_b / "crates/fixture-app/src/main.rs").write_text(
++                'fn main() { println!("{}", fixture_api::value().new_field + external_helper::helper()); }\n'
++            )
++            command(["git", "add", "."], cwd=worktree_b)
++            command(["git", "commit", "-qm", "change vendored struct field"], cwd=worktree_b)
++            os.utime(vendor_b, ns=(old_timestamp, old_timestamp))
++            self.assertLess(vendor_b.stat().st_mtime_ns, min(path.stat().st_mtime_ns for path in vendor_artifacts))
++            provenance = {
++                "source_sha256": hashlib.sha256(vendor_b.read_bytes()).hexdigest(),
++                "source_mtime_ns": vendor_b.stat().st_mtime_ns,
++                "old_artifact_mtime_ns": {path.name: path.stat().st_mtime_ns for path in vendor_artifacts},
++                "base_commit": command(["git", "rev-parse", "HEAD"]),
++                "changed_commit": command(["git", "rev-parse", "HEAD"], cwd=worktree_b),
++                "target": str(target),
++            }
++            (worktree_b / "artifacts").mkdir(exist_ok=True)
++            (worktree_b / "artifacts/source-provenance.json").write_text(json.dumps(provenance, indent=2))
++            runner_b = local_ci.LocalCiRunner(
++                worktree_b, run_id="vendor-b", env=env, steps=(steps[0],),
++                min_free_bytes=0, target_state_dir=state,
++            )
++            result_b = runner_b.run()
++            self.assertEqual(hashlib.sha256(release.read_bytes()).hexdigest(), release_hash)
++            self.assertEqual({
++                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
++                for path in (target / "debug/deps").glob("libexternal_helper-*.rlib")
++            }, helper_hashes, "unrelated external dependency changed")
++            self.assertEqual(result_b, 0, "real Cargo rejected changed vendored struct; inspect vendor-b log")
++            self.assertEqual(command([str(target / "debug/fixture-app")]), "18")
++            # Same-worktree checkout changes are equally unsafe with old mtimes.
++            vendor_b.write_text("pub struct Sample { pub third_field: u32 }\n")
++            (worktree_b / "crates/fixture-api/src/lib.rs").write_text(
++                "pub fn value() -> vendor_api::Sample { vendor_api::Sample { third_field: 27 } }\n"
++            )
++            (worktree_b / "crates/fixture-app/src/main.rs").write_text(
++                'fn main() { println!("{}", fixture_api::value().third_field + external_helper::helper()); }\n'
++            )
++            os.utime(vendor_b, ns=(old_timestamp, old_timestamp))
++            runner_c = local_ci.LocalCiRunner(
++                worktree_b, run_id="vendor-c", env=env, steps=(steps[0],),
++                min_free_bytes=0, target_state_dir=state,
++            )
++            self.assertEqual(runner_c.run(), 0)
++            self.assertEqual(command([str(target / "debug/fixture-app")]), "28")
++            self.assertEqual(runner_c.summary["target_cache"]["action"], "reuse")
++            self.assertEqual(len(runner_c.summary["target_cache"]["changed_path_dependencies"]), 1)
++            runner_d = local_ci.LocalCiRunner(
++                worktree_b, run_id="vendor-d", env=env, steps=(steps[0],),
++                min_free_bytes=0, target_state_dir=state,
++            )
++            self.assertEqual(runner_d.run(), 0)
++            self.assertEqual(runner_d.summary["target_cache"]["changed_path_dependencies"], [])
++            self.assertIsNone(runner_d.summary["target_cache"]["cleanup_argv"])
++            self.assertEqual(hashlib.sha256(release.read_bytes()).hexdigest(), release_hash)
++            self.assertEqual({
++                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
++                for path in (target / "debug/deps").glob("libexternal_helper-*.rlib")
++            }, helper_hashes)
++        finally:
++            if evidence_dir:
++                destination = Path(evidence_dir)
++                destination.mkdir(parents=True, exist_ok=True)
++                for label, checkout in (("a", root), ("b", worktree_b)):
++                    if (checkout / "artifacts").exists():
++                        shutil.copytree(checkout / "artifacts", destination / label, dirs_exist_ok=True)
++                if state.exists():
++                    shutil.copytree(state, destination / "ownership", dirs_exist_ok=True)
++                fingerprints = target / "debug/.fingerprint"
++                if fingerprints.exists():
++                    shutil.copytree(fingerprints, destination / "fingerprints", dirs_exist_ok=True)
++
++
++    def path_dependency_fixture(self):
++        root = self.repo / "third_party/vendor"
++        root.mkdir(parents=True)
++        (root / "Cargo.toml").write_text('[package]\nname="vendor"\nversion="0.1.0"\n')
++        (root / "lib.rs").write_text("pub const VERSION: u32 = 1;\n")
++        package = {"id": "vendor 0.1.0", "name": "vendor", "version": "0.1.0",
++                   "source": None, "manifest_path": str(root / "Cargo.toml")}
++        original = local_ci.command_output
++        def metadata(argv, cwd, env):
++            result = original(argv, cwd, env)
++            if argv[:2] == ["cargo", "metadata"] and "--no-deps" not in argv:
++                value = json.loads(result.stdout)
++                value["packages"].append(package)
++                result.stdout = json.dumps(value)
++            return result
++        return root, package, patch.object(local_ci, "command_output", side_effect=metadata)
++
++    def test_changed_dependency_cleanup_failure_preserves_old_identity_and_skips_build(self):
++        root, _, metadata = self.path_dependency_fixture()
++        with metadata:
++            self.assertEqual(self.runner("dep-first").run(), 0)
++            owner = next(self.target_state_dir.glob("*.owner.json"))
++            before = owner.read_bytes()
++            (root / "lib.rs").write_text("pub const VERSION: u32 = 2;\n")
++            calls_before = self.call_log.read_text()
++            self.assertEqual(self.runner("dep-failed", env={**self.env, "FAIL_MATCH": "clean"}).run(), 1)
++            self.assertEqual(owner.read_bytes(), before)
++            self.assertNotIn("cargo build", self.call_log.read_text()[len(calls_before):])
++            self.assertEqual(self.runner("dep-recover").run(), 0)
++            self.assertEqual(len(self.summary("dep-recover")["target_cache"]["changed_path_dependencies"]), 1)
++
++    def test_legacy_dev_marker_invalidates_only_known_local_dependencies_once(self):
++        _, _, metadata = self.path_dependency_fixture()
++        with metadata:
++            self.assertEqual(self.runner("dep-prime").run(), 0)
++            owner = next(self.target_state_dir.glob("*.owner.json"))
++            value = json.loads(owner.read_text())
++            del value["path_dependencies"]
++            owner.write_text(json.dumps(value))
++            self.assertEqual(self.runner("dep-legacy").run(), 0)
++            self.assertEqual(self.summary("dep-legacy")["target_cache"]["cleanup_argv"][-2:],
++                             ["--package", "vendor 0.1.0"])
++            self.assertEqual(self.runner("dep-known").run(), 0)
++            self.assertIsNone(self.summary("dep-known")["target_cache"]["cleanup_argv"])
++
++    def test_dependency_content_change_during_build_is_stale_even_outside_git_inventory(self):
++        root, _, metadata = self.path_dependency_fixture()
++        with metadata:
++            runner = self.runner("dep-mutating", env={**self.env, "MUTATE_FILE": str(root / "lib.rs")})
++            self.assertEqual(runner.run(), 3)
++            self.assertTrue(self.summary("dep-mutating")["path_dependencies_stale"])
++            self.assertTrue(self.summary("dep-mutating")["stale"])
++
++    def test_dependency_clean_name_collision_refuses_before_marker_or_cleanup(self):
++        _, package, metadata = self.path_dependency_fixture()
++        with metadata:
++            self.assertEqual(self.runner("dep-before-collision").run(), 0)
++            owner = next(self.target_state_dir.glob("*.owner.json"))
++            before = owner.read_bytes()
++            # Cargo clean ignores ID qualifiers: a changed local package may not
++            # select a registry/workspace package with the same name as collateral.
++            package["name"] = "fixture"
++            calls_before = self.call_log.read_text()
++            self.assertEqual(self.runner("dep-collision").run(), 1)
++            self.assertIn("overlap", self.summary("dep-collision")["target_cache_error"])
++            self.assertEqual(owner.read_bytes(), before)
++            self.assertNotIn("cargo clean", self.call_log.read_text()[len(calls_before):])
++
++    def test_malformed_dependency_identity_refuses_and_preserves_marker(self):
++        _, _, metadata = self.path_dependency_fixture()
++        with metadata:
++            self.assertEqual(self.runner("dep-before-malformed").run(), 0)
++            owner = next(self.target_state_dir.glob("*.owner.json"))
++            value = json.loads(owner.read_text())
++            value["path_dependencies"] = {"vendor": "not a digest"}
++            owner.write_text(json.dumps(value))
++            before = owner.read_bytes()
++            self.assertEqual(self.runner("dep-malformed").run(), 1)
++            self.assertEqual(owner.read_bytes(), before)
++            self.assertIn("malformed", self.summary("dep-malformed")["target_cache_error"])
++
++    def test_directory_symlink_dependency_refuses_before_cache_mutation(self):
++        root, _, metadata = self.path_dependency_fixture()
++        (root / "recursive").symlink_to(root, target_is_directory=True)
++        with metadata:
++            self.assertEqual(self.runner("dep-symlink").run(), 1)
++            self.assertIn("directory symlink", self.summary("dep-symlink")["target_cache_error"])
++            self.assertFalse(list(self.target_state_dir.glob("*.owner.json")))
++            self.assertNotIn("cargo clean", self.call_log.read_text())
++
++
++    def test_unknown_target_refuses_before_dependency_resolution(self):
++        target = Path(self.env["FAKE_METADATA_TARGET"])
++        target.mkdir()
++        sentinel = target / "foreign"
++        sentinel.write_bytes(b"do not mutate")
++        with patch.object(local_ci.LocalCiRunner, "_resolve_path_dependencies",
++                          side_effect=AssertionError("resolved foreign target dependencies")):
++            self.assertEqual(self.runner("dep-unknown").run(), 1)
++        self.assertEqual(sentinel.read_bytes(), b"do not mutate")
++        self.assertFalse(list(self.target_state_dir.glob("*.owner.json")))
++
++    def test_contended_target_refuses_before_dependency_resolution(self):
++        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
++        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
++        holder = local_ci.CargoTargetLock(lock_path, {"run_id": "dep-holder"})
++        holder.acquire()
++        try:
++            with patch.object(local_ci.LocalCiRunner, "_resolve_path_dependencies",
++                              side_effect=AssertionError("resolved actively owned target dependencies")):
++                self.assertEqual(self.runner("dep-contended").run(), 1)
++        finally:
++            holder.release()
++        self.assertNotIn("cargo clean", self.call_log.read_text())
++
++    def test_invalid_dependency_metadata_refuses_before_marker_or_cleanup(self):
++        _, package, metadata = self.path_dependency_fixture()
++        package["manifest_path"] = False
++        with metadata:
++            self.assertEqual(self.runner("dep-invalid-metadata").run(), 1)
++        self.assertIn("invalid", self.summary("dep-invalid-metadata")["target_cache_error"])
++        self.assertFalse(list(self.target_state_dir.glob("*.owner.json")))
++        self.assertNotIn("cargo clean", self.call_log.read_text())
++
++
+ if __name__ == "__main__":
+     unittest.main()
