@@ -1,0 +1,26 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 37.24s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 4 tests
+
+thread 'editor::time_selection::retained_duplicate_tests::actual_later_range_selection_is_not_stolen_by_queued_range_copy_ack' (334597) panicked at crates/hex-ui/src/editor/time_selection/retained_duplicate_tests.rs:453:9:
+assertion `left == right` failed: later actual pointer range owns selection
+  left: Some(TimeRange { tracks: [TrackId(1)], start: 72086, end: 120143 })
+ right: Some(TimeRange { tracks: [TrackId(5)], start: 24029, end: 72086 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::time_selection::retained_duplicate_tests::actual_later_range_selection_is_not_stolen_by_queued_range_copy_ack ... FAILED
+test editor::time_selection::retained_duplicate_tests::real_option_drag_then_command_d_retains_range_after_worker_and_late_ticks ... ok
+test editor::time_selection::retained_duplicate_tests::real_audio_midi_partial_gap_copies_preserve_scope_media_and_one_undo ... ok
+test editor::time_selection::retained_duplicate_tests::real_command_d_three_times_retains_destination_range_after_worker_and_late_ticks ... ok
+
+failures:
+
+failures:
+    editor::time_selection::retained_duplicate_tests::actual_later_range_selection_is_not_stolen_by_queued_range_copy_ack
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 11.06s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

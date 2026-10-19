@@ -1,0 +1,46 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 35.56s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 36 tests
+test editor::clip_selection::tests::same_primary_membership_change_repaints_retained_audio_and_midi ... ok
+test editor::clip_selection::tests::shift_header_click_selects_five_mixed_clips_and_keeps_reverse_repeated_anchor ... ok
+test editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled ... ok
+test editor::clip_selection::tests::additive_clip_clicks_toggle_members_and_shift_on_other_track_starts_new_anchor ... ok
+test editor::edit_cursor_ui_test::captured_selection_edge_scrolls_while_pointer_is_stationary ... ok
+test editor::edit_cursor_ui_test::captured_time_selection_projects_outside_pointer_and_release_position ... ok
+test editor::edit_cursor_ui_test::clicked_audio_cursor_is_visible_and_command_e_uses_it_offline ... ok
+test editor::edit_cursor_ui_test::command_click_is_free_and_command_e_routes_midi_split ... ok
+test editor::edit_cursor_ui_test::command_modifier_reprojects_captured_selection_without_pointer_motion ... ok
+test editor::edit_cursor_ui_test::empty_position_and_missing_cursor_do_not_dispatch_a_split ... ok
+test editor::edit_cursor_ui_test::main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split ... ok
+test editor::edit_cursor_ui_test::empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction ... ok
+test editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination ... ok
+test editor::edit_cursor_ui_test::multi_row_move_preview_maps_each_source_row_to_its_destination_offset ... ok
+test editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source ... ok
+test editor::edit_cursor_ui_test::completed_time_selection_survives_idle_ticks_and_remains_rendered ... ok
+test editor::edit_cursor_ui_test::option_drag_copies_time_range_and_keeps_source_preview_visible ... ok
+test editor::clip_clipboard_ui_test::copied_whole_clips_survive_destination_click_repeated_paste_undo_and_text_focus ... ok
+test editor::edit_cursor_ui_test::ripple_shortcuts_route_to_insert_and_respect_editor_focus ... ok
+test editor::edit_cursor_ui_test::selected_time_range_drag_shows_and_dispatches_a_contiguous_move ... ok
+test editor::selection::tests::midi_clip_selection_follows_move_undo_and_redo_and_note_removal ... ok
+test editor::selection::tests::reconciliation_follows_a_moved_clip_through_undo_and_redo ... ok
+test editor::selection::tests::selection_handles_empty_stale_ids_boundaries_and_track_removal ... ok
+test editor::edit_cursor_ui_test::stale_or_canceled_time_gesture_cannot_autoscroll ... ok
+test editor::edit_cursor_ui_test::space_restarts_from_selection_then_edit_cursor_and_respects_focus ... ok
+test editor::time_selection::duplicate_tests::command_d_refuses_overflow_and_pending_edits_and_preserves_no_range_behavior ... ok
+test editor::edit_cursor_ui_test::selection_handle_and_reselect_zones_own_gestures_over_selected_clips ... ok
+test editor::time_selection::duplicate_tests::command_d_duplicates_bounded_audio_midi_gaps_and_advances_scope_atomically ... ok
+test editor::time_selection::retained_duplicate_tests::actual_later_range_selection_is_not_stolen_by_queued_range_copy_ack ... ok
+test editor::time_selection::retained_duplicate_tests::real_audio_midi_partial_gap_copies_preserve_scope_media_and_one_undo ... ok
+test editor::track_selection_ui_test::explicit_track_members_survive_insertions_and_prune_removed_ids ... ok
+test editor::track_selection_ui_test::export_sources_use_explicit_ids_and_names_not_time_scope_or_focused_track ... ok
+test editor::time_selection::retained_duplicate_tests::real_option_drag_then_command_d_retains_range_after_worker_and_late_ticks ... ok
+test editor::time_selection::retained_duplicate_tests::escape_before_submission_cancels_copy_but_after_submission_only_cancels_selection_intent ... ok
+test editor::track_selection_ui_test::track_headers_toggle_range_and_render_explicit_members_including_empty_tracks ... ok
+test editor::time_selection::retained_duplicate_tests::real_command_d_three_times_retains_destination_range_after_worker_and_late_ticks ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 1034 filtered out; finished in 19.62s
+

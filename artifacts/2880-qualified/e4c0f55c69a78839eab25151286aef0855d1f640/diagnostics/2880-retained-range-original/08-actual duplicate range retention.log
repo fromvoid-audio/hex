@@ -1,0 +1,26 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 36.25s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 2 tests
+
+thread 'editor::time_selection::retained_duplicate_tests::real_option_drag_then_command_d_retains_range_after_worker_and_late_ticks' (333909) panicked at crates/hex-ui/src/editor/time_selection/retained_duplicate_tests.rs:274:9:
+assertion failed: view.selected_clip.is_none()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::time_selection::retained_duplicate_tests::real_option_drag_then_command_d_retains_range_after_worker_and_late_ticks ... FAILED
+
+thread 'editor::time_selection::retained_duplicate_tests::real_command_d_three_times_retains_destination_range_after_worker_and_late_ticks' (333908) panicked at crates/hex-ui/src/editor/time_selection/retained_duplicate_tests.rs:199:17:
+range must not collapse into one clip
+test editor::time_selection::retained_duplicate_tests::real_command_d_three_times_retains_destination_range_after_worker_and_late_ticks ... FAILED
+
+failures:
+
+failures:
+    editor::time_selection::retained_duplicate_tests::real_command_d_three_times_retains_destination_range_after_worker_and_late_ticks
+    editor::time_selection::retained_duplicate_tests::real_option_drag_then_command_d_retains_range_after_worker_and_late_ticks
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 3.91s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

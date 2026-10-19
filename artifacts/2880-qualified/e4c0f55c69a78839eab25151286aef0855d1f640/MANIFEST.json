@@ -1,0 +1,118 @@
+{
+  "2880-diagnostic.py": {
+    "bytes": 1069,
+    "sha256": "9469d2727e83c585737dafb576957568b787ffd52382bb1d0b7fd5b3877243c5"
+  },
+  "2880-final.py": {
+    "bytes": 1568,
+    "sha256": "f4233e9c25ac5eed211f1ddd2bae46a3d47b6105c13b68162bf3cf361f8704cd"
+  },
+  "2880-group-supplement.py": {
+    "bytes": 642,
+    "sha256": "e46295546a621b8d3ceb5b0f6e330432182727f6434908b05846177c09d43154"
+  },
+  "2880-handoff.md": {
+    "bytes": 3727,
+    "sha256": "a05470d92b47ca1b290429e0339126eae4bf7e08329e651922e9230a391ef770"
+  },
+  "GIT-OBJECTS.json": {
+    "bytes": 3388,
+    "sha256": "bd7a5ae02e24c3b6263e67426e4afa12ea3ffc713a4d3fb0257f5e3812088363"
+  },
+  "checks/2880-retained-range-component-final/01-architecture.log": {
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  "checks/2880-retained-range-component-final/02-UI style.log": {
+    "bytes": 82,
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+  },
+  "checks/2880-retained-range-component-final/03-GPUI patch.log": {
+    "bytes": 149,
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+  },
+  "checks/2880-retained-range-component-final/04-dependency provenance.log": {
+    "bytes": 119,
+    "sha256": "9c0c3fd09b9b22707639566251a286248f3daf5eda36c9145e10c1f7cee736eb"
+  },
+  "checks/2880-retained-range-component-final/05-device layout.log": {
+    "bytes": 84,
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+  },
+  "checks/2880-retained-range-component-final/06-format.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/2880-retained-range-component-final/07-diff.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/2880-retained-range-component-final/08-range cursor clipboard selection controls.log": {
+    "bytes": 4533,
+    "sha256": "b6c85f14b9e7f05c7d5770b054361ac0e92ebd8a252d8b4b318ba23e3fe1cf17"
+  },
+  "checks/2880-retained-range-component-final/09-strict UI default.log": {
+    "bytes": 249,
+    "sha256": "455e7fb5f34cc45e4edb107baee592e3e0e146f4e8b116115c6de399c2f8da60"
+  },
+  "checks/2880-retained-range-component-final/10-strict UI feature.log": {
+    "bytes": 249,
+    "sha256": "8bd4441ad0eb357aa6a8514cb52ca71b7e3d2a4d5b89fe9cd3debdabd722357c"
+  },
+  "checks/2880-retained-range-component-final/summary.json": {
+    "bytes": 16422,
+    "sha256": "9e73b083ad20a4b69cf8e1eb148cf27c6600998e324d685bf7d27f5af7c845e2"
+  },
+  "checks/2880-retained-range-group-supplement/01-group drag corrected module.log": {
+    "bytes": 4526,
+    "sha256": "f63e93c67bdbbfea72b0b9a737b0a41c36bb0e53bc21f77cfbbf7af479256bf5"
+  },
+  "checks/2880-retained-range-group-supplement/summary.json": {
+    "bytes": 12543,
+    "sha256": "f63a3dc6f62ee7b28e7cb2a117ff5a61bc53d358518a23702debb63e424b0a03"
+  },
+  "diagnostics/2880-retained-range-custody-green/08-actual duplicate range retention.log": {
+    "bytes": 1136,
+    "sha256": "7ee66c83e11e67d0e27bc0161afc8ca6aad5f7049e52d766a4e806d341339961"
+  },
+  "diagnostics/2880-retained-range-custody-green/summary.json": {
+    "bytes": 15666,
+    "sha256": "a8e3c6e2674b7e8db069adf5af7abd1f45c5613e0591a9940a481eaacdf41b99"
+  },
+  "diagnostics/2880-retained-range-expanded/08-actual duplicate range retention.log": {
+    "bytes": 1972,
+    "sha256": "1fde29423a028946357cc4336824c34e41fd91db9a53ed9c9213bca0451c0d19"
+  },
+  "diagnostics/2880-retained-range-expanded/summary.json": {
+    "bytes": 15400,
+    "sha256": "97811773ecc5cb53d46991ec880a8a30f4e564bf5236b4f6a6d0fd6875ae0363"
+  },
+  "diagnostics/2880-retained-range-expanded-v2/08-actual duplicate range retention.log": {
+    "bytes": 1718,
+    "sha256": "f49969fac73b11ff0d4ac7b234bbe53fad9b0ca50c6f05db2117b863c72eee09"
+  },
+  "diagnostics/2880-retained-range-expanded-v2/summary.json": {
+    "bytes": 15430,
+    "sha256": "b9976a8dcf23307dab7b3b303c39fa49992658af69aa82b597d62a48e61ae4aa"
+  },
+  "diagnostics/2880-retained-range-first-green/08-actual duplicate range retention.log": {
+    "bytes": 724,
+    "sha256": "a01b8d04902746d7a5b27af89b12552ac938a51f88bdcbd998249cd4e64231f1"
+  },
+  "diagnostics/2880-retained-range-first-green/summary.json": {
+    "bytes": 15312,
+    "sha256": "295b2cfb3a88de4aa3e2b1ce930267a93f35893260a6a25458395fc3c5403ae5"
+  },
+  "diagnostics/2880-retained-range-original/08-actual duplicate range retention.log": {
+    "bytes": 1703,
+    "sha256": "00a338f4526c8e2f9f7ef52f8f775cea4c933bcf26ffb5fba2617a065cd3ccfd"
+  },
+  "diagnostics/2880-retained-range-original/summary.json": {
+    "bytes": 15618,
+    "sha256": "4b70b77aa526a7d262268386b03cb7f24828cb196cd1393563f8cfcf361b4035"
+  },
+  "metadata.json": {
+    "bytes": 1450,
+    "sha256": "d64f67495f1c9616bb2fa0e81bf827c2276d57c8d9938c0debd83e4fd6b54730"
+  }
+}

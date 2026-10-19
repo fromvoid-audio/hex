@@ -1,0 +1,31 @@
+{
+  "source": "e4c0f55c69a78839eab25151286aef0855d1f640",
+  "tree": "edd6648d0b8c64ebba04fd7e71dfff69c4197a41",
+  "base": "e5afe429363869ecdbf04c38a497a29c2c8a402a",
+  "summary_sha256": "9e73b083ad20a4b69cf8e1eb148cf27c6600998e324d685bf7d27f5af7c845e2",
+  "duration_seconds": 104.626,
+  "counts": [
+    [
+      "36",
+      "0"
+    ],
+    [
+      "21",
+      "0"
+    ]
+  ],
+  "runtime_executions": 57,
+  "emitted_names": 57,
+  "runtime_unique_names": 57,
+  "steps": 11,
+  "main_steps": 10,
+  "supplement_steps": 1,
+  "supplement_summary_sha256": "f63a3dc6f62ee7b28e7cb2a117ff5a61bc53d358518a23702debb63e424b0a03",
+  "supplement_seconds": 45.302,
+  "native_acceptance": false,
+  "full21": false,
+  "confirmed_scope": "Range copies retain destination range without original primary-clip fallback; a newer pointer range/Escape supersedes only pending selection intent.",
+  "remaining": "Native/installed user interaction and prospective current-main full required qualification remain separate.",
+  "negative_receipt_limit": "Original2REDs dirtye5afe committed76142263; late-owner RED dirtybb16 test-only extension committed7657063d. Guessed free-snap frames and unavailable pending header selector were fixture-only, not product REDs. Exact clean main and supplement independently bind shipping source.",
+  "selector_correction": "Main wrong editor::group_drag_ui_test matched zero; missing actual editor::drag::group_drag_ui_test supplemented only."
+}
