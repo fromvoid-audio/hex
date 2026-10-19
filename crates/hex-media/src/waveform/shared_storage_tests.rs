@@ -154,3 +154,122 @@ fn paired_waveform_ten_exports_retain_one_actual_embedded_native_pcm_field() {
     drop(owner);
     assert_eq!(exports[0].peaks_for_frames(0, 8).unwrap()[1].min, -0.5);
 }
+
+#[test]
+fn typed_waveform_projection_refuses_foreign_payload_bins_levels_and_pcm_fields() {
+    use hex_engine::sampler_host_fields::{
+        BodyRef, SharedMetadataRef, VecRef, WaveformFields, WaveformLevelsRef, WaveformPayload,
+        WaveformSamples,
+    };
+    let actual = SharedWaveform::new_on_control(peaks());
+    let mut foreign = peaks();
+    foreign.samples = Some(SampleBacking::NativeOriginal(
+        OwnedAudioSource::try_resident_mono(48_000, vec![0.25; 9])
+            .ok()
+            .unwrap(),
+    ));
+    let foreign = SharedWaveform::new_on_control(foreign);
+    struct Wrong<'a> {
+        actual: &'a Waveform,
+        foreign: &'a Waveform,
+        case: u8,
+    }
+    impl WaveformPayload for Wrong<'_> {
+        fn body(&self) -> BodyRef<'_> {
+            self.actual.body()
+        }
+        fn bins(&self) -> VecRef<'_> {
+            if self.case == 0 {
+                self.foreign.bins()
+            } else {
+                self.actual.bins()
+            }
+        }
+        fn levels(&self) -> WaveformLevelsRef<'_> {
+            if self.case == 1 {
+                self.foreign.levels()
+            } else {
+                self.actual.levels()
+            }
+        }
+        fn samples(&self) -> WaveformSamples<'_> {
+            if self.case == 2 {
+                self.foreign.samples()
+            } else {
+                self.actual.samples()
+            }
+        }
+    }
+    for case in 0..3 {
+        let wrong = Wrong {
+            actual: &actual,
+            foreign: &foreign,
+            case,
+        };
+        let fields = WaveformFields {
+            owner: SharedMetadataRef::of(&actual),
+            payload: &wrong,
+        };
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+        assert_eq!(
+            ledger.borrow_sampler_waveform_fields_on_control(&fields),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        assert!(
+            ledger.summary().is_err(),
+            "failed partial observation is unusable"
+        );
+    }
+    let fields = WaveformFields {
+        owner: SharedMetadataRef::of(&actual),
+        payload: foreign.as_ref(),
+    };
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+    assert_eq!(
+        ledger.borrow_sampler_waveform_fields_on_control(&fields),
+        Err(AudioStorageError::SourceMismatch)
+    );
+}
+
+#[test]
+fn typed_waveform_native_mono_and_stereo_aliases_keep_one_real_child_after_producer_drop() {
+    use std::sync::atomic::AtomicBool;
+    for stereo in [false, true] {
+        let source = if stereo {
+            OwnedAudioSource::try_resident(48_000, vec![[0.25, -0.5]; 9])
+                .ok()
+                .unwrap()
+        } else {
+            OwnedAudioSource::try_resident_mono(48_000, vec![0.25; 9])
+                .ok()
+                .unwrap()
+        };
+        let waveform = summarize_native_source_on_worker(
+            &source,
+            NativeOriginalWaveformLimits {
+                bins: 4,
+                scan_frames: 9,
+                metadata_bytes: native_original_metadata_bytes(9, 4).unwrap(),
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        drop(source);
+        let alias = waveform.clone();
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+        borrow_shared_storage_on_control(&waveform, &mut ledger).unwrap();
+        let bytes = ledger.summary().unwrap().data_bytes;
+        borrow_shared_storage_on_control(&alias, &mut ledger).unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert_eq!(ledger.summary().unwrap().data_bytes, bytes);
+        assert_eq!(ledger.selected_shared_counts_on_control(), (2, 3));
+        assert!(ledger.summary().unwrap().require_complete().is_err());
+        assert_eq!(waveform.peaks_for_frames(0, 9).unwrap()[0].max, 0.25);
+        assert_eq!(
+            waveform.peaks_for_frames(0, 9).unwrap()[1].min,
+            if stereo { -0.5 } else { 0.25 }
+        );
+    }
+}

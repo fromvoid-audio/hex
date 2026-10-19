@@ -21,45 +21,46 @@ pub fn visit_canonical_source_selected_storage_on_control<'a>(
     owner: &'a SharedCanonicalAudioSource,
     ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
 ) -> Result<(), hex_engine::AudioStorageError> {
-    ledger.borrow_sampler_captured_source_fields_on_control(&CapturedSource { owner })
+    ledger.borrow_sampler_captured_source_fields_on_control(&sampler_fields_on_control(owner))
 }
-// Actual immutable owner only; no default/foreign source constructor outside
-// this module. Exhaustive snapshot fields keep newly added owners reviewable.
-struct CapturedSource<'a> {
-    owner: &'a SharedCanonicalAudioSource,
-}
-impl<'a> hex_engine::sampler_host_fields::CapturedSourceFields<'a> for CapturedSource<'a> {
-    fn owner(&self) -> hex_engine::sampler_host_fields::SharedMetadataRef<'a> {
-        hex_engine::sampler_host_fields::SharedMetadataRef::of(self.owner)
+// Actual paired field and local payload only; no temporary projection owner.
+pub(crate) fn sampler_fields_on_control(
+    owner: &SharedCanonicalAudioSource,
+) -> hex_engine::sampler_host_fields::CapturedSourceFields<'_> {
+    hex_engine::sampler_host_fields::CapturedSourceFields {
+        owner: hex_engine::sampler_host_fields::SharedMetadataRef::of(owner),
+        payload: owner.as_ref(),
     }
-    fn project(&self) -> &'a crate::SharedProject {
-        let CanonicalAudioSourceSnapshot {
+}
+impl hex_engine::sampler_host_fields::CapturedSourcePayload for CanonicalAudioSourceSnapshot {
+    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+    fn project(&self) -> &crate::SharedProject {
+        let Self {
             project,
             context: _,
             mode: _,
             sources: _,
-        } = self.owner.as_ref();
+        } = self;
         project
     }
-    fn bindings(&self) -> hex_engine::sampler_host_fields::VecRef<'a> {
-        let CanonicalAudioSourceSnapshot {
+    fn bindings(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        let Self {
             project: _,
             context: _,
             mode: _,
             sources,
-        } = self.owner.as_ref();
+        } = self;
         hex_engine::sampler_host_fields::VecRef::entries(sources)
     }
-    fn resident(
-        &self,
-        index: usize,
-    ) -> Result<&'a hex_engine::Audio, hex_engine::AudioStorageError> {
-        let CanonicalAudioSourceSnapshot {
+    fn resident(&self, index: usize) -> Result<&hex_engine::Audio, hex_engine::AudioStorageError> {
+        let Self {
             project: _,
             context: _,
             mode: _,
             sources,
-        } = self.owner.as_ref();
+        } = self;
         match sources.as_slice().get(index).map(|(_, binding)| binding) {
             Some(crate::AudioSourceBinding::Resident(audio)) => Ok(audio),
             Some(crate::AudioSourceBinding::VerifiedFile(_)) | None => {
@@ -286,7 +287,9 @@ mod tests {
 
     #[test]
     fn typed_captured_source_after_history_prune_rejects_foreign_project_and_binding_fields() {
-        use hex_engine::sampler_host_fields::{CapturedSourceFields, SharedMetadataRef, VecRef};
+        use hex_engine::sampler_host_fields::{
+            BodyRef, CapturedSourceFields, CapturedSourcePayload, VecRef,
+        };
         use hex_engine::{
             AudioRootStorageLedger, AudioStorageError, AudioStorageLedgerReservation,
         };
@@ -330,10 +333,8 @@ mod tests {
             false,
             None,
         );
-        let actual = CapturedSource { owner: &captured };
-        let foreign = CapturedSource {
-            owner: current.canonical_audio_source.as_ref().unwrap(),
-        };
+        let actual = sampler_fields_on_control(&captured);
+        let foreign = sampler_fields_on_control(current.canonical_audio_source.as_ref().unwrap());
         let limits = AudioStorageLedgerReservation {
             data_rows: 512,
             handle_rows: 512,
@@ -347,30 +348,30 @@ mod tests {
             .unwrap();
         assert!(ledger.summary().unwrap().require_complete().is_err());
         struct Invalid<'a> {
-            actual: &'a CapturedSource<'a>,
-            foreign: &'a CapturedSource<'a>,
+            actual: &'a CapturedSourceFields<'a>,
+            foreign: &'a CapturedSourceFields<'a>,
             bindings: bool,
         }
-        impl<'a> CapturedSourceFields<'a> for Invalid<'a> {
-            fn owner(&self) -> SharedMetadataRef<'a> {
-                self.actual.owner()
+        impl CapturedSourcePayload for Invalid<'_> {
+            fn body(&self) -> BodyRef<'_> {
+                self.actual.payload.body()
             }
-            fn project(&self) -> &'a crate::SharedProject {
+            fn project(&self) -> &crate::SharedProject {
                 if self.bindings {
-                    self.actual.project()
+                    self.actual.payload.project()
                 } else {
-                    self.foreign.project()
+                    self.foreign.payload.project()
                 }
             }
-            fn bindings(&self) -> VecRef<'a> {
+            fn bindings(&self) -> VecRef<'_> {
                 if self.bindings {
-                    self.foreign.bindings()
+                    self.foreign.payload.bindings()
                 } else {
-                    self.actual.bindings()
+                    self.actual.payload.bindings()
                 }
             }
-            fn resident(&self, index: usize) -> Result<&'a hex_engine::Audio, AudioStorageError> {
-                self.actual.resident(index)
+            fn resident(&self, index: usize) -> Result<&hex_engine::Audio, AudioStorageError> {
+                self.actual.payload.resident(index)
             }
         }
         for bindings in [false, true] {
@@ -381,7 +382,10 @@ mod tests {
             };
             let mut ledger = AudioRootStorageLedger::try_new_on_control(limits).unwrap();
             assert_eq!(
-                ledger.borrow_sampler_captured_source_fields_on_control(&bad),
+                ledger.borrow_sampler_captured_source_fields_on_control(&CapturedSourceFields {
+                    owner: actual.owner,
+                    payload: &bad
+                }),
                 Err(AudioStorageError::SourceMismatch)
             );
             assert!(ledger.summary().is_err());

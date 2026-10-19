@@ -215,17 +215,21 @@ impl<'a> AudioRootStorageLedger<'a> {
         &mut self,
         lease: &'a OriginalSourceLease,
     ) -> Result<(), AudioStorageError> {
-        self.mutate(|ledger| {
-            if ledger.skip_observed_shared_field(lease) {
-                return Ok(());
-            }
-            visit(
-                &lease.root,
-                crate::audio_storage::Owner::exclusive(lease),
-                lease.handle,
-                ledger,
-            )
-        })
+        self.mutate(|ledger| ledger.embedded_original_source_lease(lease))
+    }
+    pub(crate) fn embedded_original_source_lease(
+        &mut self,
+        lease: &'a OriginalSourceLease,
+    ) -> Result<(), AudioStorageError> {
+        if self.skip_observed_shared_field(lease) {
+            return Ok(());
+        }
+        visit(
+            &lease.root,
+            crate::audio_storage::Owner::exclusive(lease),
+            lease.handle,
+            self,
+        )
     }
     pub fn borrow_original_source_lease_on_control(
         &mut self,

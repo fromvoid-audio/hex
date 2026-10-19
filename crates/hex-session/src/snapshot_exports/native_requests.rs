@@ -255,81 +255,218 @@ impl NativeRequests {
             .iter()
             .all(|r| r.phase == Phase::Vacant && r.payload.is_none() && !r.cleanup_pending)
     }
+    #[cfg(test)]
     pub(super) fn visit<'a>(
         &'a self,
         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
     ) -> Result<(), hex_engine::AudioStorageError> {
-        ledger.borrow_metadata_vec_backing_on_control(&self.records)?;
-        for record in &self.records {
-            if record.cleanup_pending {
-                return Err(hex_engine::AudioStorageError::UnknownStorage);
-            }
-            match (record.phase, &record.payload) {
-                (Phase::Vacant, None) => {}
-                (Phase::Claimed, None) if record.completed.load(Ordering::Acquire) => {}
-                (Phase::Queued, Some(request)) => visit_request(request, ledger)?,
-                // A still-claimed worker local is NOT an empty root. Actual
-                // dispatch fields must own its products before explicit ACK.
-                _ => return Err(hex_engine::AudioStorageError::UnknownStorage),
-            }
-        }
-        Ok(())
+        ledger.borrow_sampler_family_requests_on_control(self)
     }
 }
-fn visit_request<'a>(
-    request: &'a Request,
-    ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
-) -> Result<(), hex_engine::AudioStorageError> {
-    use hex_engine::AudioStorageError::UnknownStorage;
+impl hex_engine::sampler_host_fields::FamilyRequestRecords for NativeRequests {
+    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+    fn slots(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        let Self {
+            records,
+            sequence: _,
+            closed: _,
+        } = self;
+        hex_engine::sampler_host_fields::VecRef::of(records)
+    }
+    fn request(
+        &self,
+        index: usize,
+    ) -> Result<
+        hex_engine::sampler_host_fields::FamilyRequestFields<'_>,
+        hex_engine::AudioStorageError,
+    > {
+        use hex_engine::{
+            AudioStorageError::UnknownStorage,
+            sampler_host_fields::{BodyRef, FamilyRequestFields},
+        };
+        let record = self
+            .records
+            .get(index)
+            .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
+        let Record {
+            generation: _,
+            sequence: _,
+            phase,
+            payload,
+            completed,
+            cleanup_pending,
+        } = record;
+        if *cleanup_pending {
+            return Err(UnknownStorage);
+        }
+        let request = match (phase, payload) {
+            (Phase::Vacant, None) => None,
+            (Phase::Claimed, None) if completed.load(Ordering::Acquire) => None,
+            (Phase::Queued, Some(request)) => Some(request_fields(request)?),
+            _ => return Err(UnknownStorage),
+        };
+        Ok(FamilyRequestFields {
+            body: BodyRef::of(record),
+            request,
+        })
+    }
+}
+fn request_fields(
+    request: &Request,
+) -> Result<hex_engine::sampler_host_fields::FamilyRequestPayload<'_>, hex_engine::AudioStorageError>
+{
+    use hex_engine::{
+        AudioStorageError::UnknownStorage,
+        sampler_host_fields::{BodyRef, FamilyRequestPayload},
+    };
+    // Borrow-only Copy assertions: no 800-byte snapshot/tuple temporary. A new
+    // owning field cannot silently remain in the supported inline category.
+    fn copy_field<T: Copy>(_: &T) {}
+    let body = BodyRef::of(request);
+    macro_rules! inline { ($($field:expr),* $(,)?) => {{ $(copy_field($field);)* Ok(FamilyRequestPayload::Inline { body }) }} }
     match request {
-        // These exact enum variants have only inline scalar/Copy fields. The
-        // parent request Vec already charges every byte, including spare slots.
-        Request::Undo
-        | Request::Redo
-        | Request::SaveCurrent
-        | Request::RestoreStoppedPlayback
-        | Request::RestartAudio { .. }
-        | Request::ArmGainRecording { .. }
-        | Request::DropBrowserDeviceOnArrangement { .. }
-        | Request::DropNativeDevice { .. }
-        | Request::SetDeviceParameter { .. }
-        | Request::ConvertClip { .. }
-        | Request::CopyTimeRange(_)
-        | Request::CutTimeRange(_)
-        | Request::PasteTimeRange { .. }
-        | Request::InsertTimeRange { .. }
-        | Request::RestorePlayback { .. }
-        | Request::NewWithAudioMode { .. }
-        | Request::DeviceGesture(_)
-        | Request::TuningGesture(_) => Ok(()),
-        Request::SaveDevicePreset { path, .. }
-        | Request::LoadDevicePreset { path, .. }
-        | Request::Import(path)
+        Request::Undo | Request::Redo | Request::SaveCurrent | Request::RestoreStoppedPlayback => {
+            inline!()
+        }
+        Request::RestartAudio {
+            project_generation,
+            request_id,
+        } => inline!(project_generation, request_id),
+        Request::ArmGainRecording {
+            project_generation,
+            revision,
+            track,
+        } => inline!(project_generation, revision, track),
+        Request::DropBrowserDeviceOnArrangement {
+            project_generation,
+            revision,
+            class,
+            type_id,
+            destination,
+        } => inline!(project_generation, revision, class, type_id, destination),
+        Request::DropNativeDevice {
+            project_generation,
+            revision,
+            source,
+            track,
+            before,
+            replace,
+        } => inline!(project_generation, revision, source, track, before, replace),
+        Request::SetDeviceParameter {
+            device,
+            parameter,
+            value,
+        } => inline!(device, parameter, value),
+        Request::ConvertClip {
+            project_generation,
+            revision,
+            clip,
+            to_audio,
+        } => inline!(project_generation, revision, clip, to_audio),
+        Request::CopyTimeRange(range) | Request::CutTimeRange(range) => {
+            Ok(FamilyRequestPayload::TimeRange { body, range })
+        }
+        Request::PasteTimeRange { track, frame } | Request::InsertTimeRange { track, frame } => {
+            inline!(track, frame)
+        }
+        Request::RestorePlayback { generation } => inline!(generation),
+        Request::NewWithAudioMode { mode, reservation } => inline!(mode, reservation),
+        Request::DeviceGesture(value) => inline!(value),
+        Request::TuningGesture(value) => inline!(value),
+        Request::SaveDevicePreset { owner, path } | Request::LoadDevicePreset { owner, path } => {
+            copy_field(owner);
+            Ok(FamilyRequestPayload::Path { body, path })
+        }
+        Request::Import(path)
         | Request::Open(path)
         | Request::SaveNew(path)
-        | Request::Export(path)
-        | Request::ImportToTrack { path, .. }
-        | Request::ImportToTrackWithOverwrite { path, .. }
-        | Request::ImportToNewTrack { path, .. }
-        | Request::ImportToSession { path, .. } => {
-            ledger.borrow_metadata_path_backing_on_control(path)
+        | Request::Export(path) => Ok(FamilyRequestPayload::Path { body, path }),
+        Request::ImportToTrack { path, track, start }
+        | Request::ImportToTrackWithOverwrite { path, track, start } => {
+            copy_field(track);
+            copy_field(start);
+            Ok(FamilyRequestPayload::Path { body, path })
         }
-        Request::CopyClips(ids) => ledger.borrow_metadata_vec_backing_on_control(ids),
-        // No type/phase/counter upgrades raw input Arcs, opaque model commands,
-        // boxed device IDs, relink BTreeMaps or export controls. Their actual
-        // owning producer modules still need constructor/buffer visitors.
-        Request::PrepareTuningAudition { .. }
-        | Request::PrepareLiveExpression { .. }
-        | Request::PrepareComputerKeyboard { .. }
-        | Request::GainLane { .. }
-        | Request::TuningLibrary { .. }
-        | Request::AddNativeDevice { .. }
-        | Request::ReplaceNativeDevice { .. }
-        | Request::ImportAudioBatch { .. }
-        | Request::OpenWithAudioMode { .. }
-        | Request::OpenWith { .. }
+        Request::ImportToNewTrack {
+            path,
+            before_track,
+            start,
+        } => {
+            copy_field(before_track);
+            copy_field(start);
+            Ok(FamilyRequestPayload::Path { body, path })
+        }
+        Request::ImportToSession { path, track, scene } => {
+            copy_field(track);
+            copy_field(scene);
+            Ok(FamilyRequestPayload::Path { body, path })
+        }
+        Request::CopyClips(ids) => Ok(FamilyRequestPayload::ClipIds { body, ids }),
+        Request::PrepareTuningAudition {
+            revision: _,
+            input: _,
+        }
+        | Request::PrepareLiveExpression {
+            input: _,
+            revision: _,
+        }
+        | Request::PrepareComputerKeyboard {
+            project_generation: _,
+            revision: _,
+            request_id: _,
+            track: _,
+            input: _,
+        }
+        | Request::GainLane {
+            project_generation: _,
+            revision: _,
+            track: _,
+            edit: _,
+        }
+        | Request::TuningLibrary {
+            project_generation: _,
+            revision: _,
+            operation_id: _,
+            operation: _,
+        }
+        | Request::AddNativeDevice {
+            track: _,
+            class: _,
+            type_id: _,
+            before: _,
+        }
+        | Request::ReplaceNativeDevice {
+            device: _,
+            class: _,
+            type_id: _,
+        }
+        | Request::ImportAudioBatch {
+            paths: _,
+            destination: _,
+            context: _,
+            control: _,
+        }
+        | Request::OpenWithAudioMode {
+            source: _,
+            relinks: _,
+            mode: _,
+            reservation: _,
+        }
+        | Request::OpenWith {
+            source: _,
+            relinks: _,
+        }
         | Request::Edit(_)
-        | Request::ExportRange { .. } => Err(UnknownStorage),
+        | Request::ExportRange {
+            path: _,
+            start: _,
+            frames: _,
+            signal: _,
+            control: _,
+            overwrite: _,
+        } => Err(UnknownStorage),
     }
 }
 
@@ -377,6 +514,157 @@ mod tests {
             .unwrap(),
         }
     }
+    #[test]
+    fn native_request_time_range_actual_capacity_dedup_and_exact_limits() {
+        use hex_engine::{
+            AudioRootStorageLedger, AudioStorageError, AudioStorageLedgerReservation,
+        };
+        use hex_project::{Command, Created, Editor, Project, TimeRange, TrackId};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "range".into(),
+            })
+            .unwrap()
+        else {
+            panic!("actual track")
+        };
+        let budget = AudioStorageLedgerReservation {
+            data_rows: 16,
+            handle_rows: 16,
+            root_rows: 4,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        };
+        let mut queue = NativeRequests::default();
+        queue
+            .prepare(NativeRequests::requested_backing().unwrap())
+            .unwrap();
+        let summary = |budget| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(budget)?;
+            queue.visit(&mut ledger)?;
+            ledger.summary()
+        };
+        let empty = summary(budget).unwrap();
+        let mut actual_backing = 0;
+        for cut in [false, true] {
+            let mut tracks = Vec::with_capacity(128);
+            tracks.push(track);
+            assert_eq!(tracks.capacity(), 128);
+            actual_backing += tracks.capacity() * std::mem::size_of::<TrackId>();
+            let range = TimeRange::new(tracks, 0, 64).unwrap();
+            queue
+                .send(&mut Some(if cut {
+                    Request::CutTimeRange(range)
+                } else {
+                    Request::CopyTimeRange(range)
+                }))
+                .unwrap();
+        }
+        let summary = |budget| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(budget)?;
+            queue.visit(&mut ledger)?;
+            let first = ledger.summary()?;
+            queue.visit(&mut ledger)?;
+            assert_eq!(ledger.summary()?, first, "same actual fields dedup");
+            Ok::<_, AudioStorageError>(first)
+        };
+        let both = summary(budget).unwrap();
+        assert_eq!(
+            both.data_bytes - empty.data_bytes,
+            actual_backing,
+            "omitting either range or quoting len instead of capacity must fail"
+        );
+        assert_eq!(
+            both.data_allocations - empty.data_allocations,
+            2,
+            "equal track contents are two distinct owned Vec allocations"
+        );
+        let mut exact = budget;
+        exact.max_retained_bytes = both.retained_bytes;
+        exact.max_construction_peak_bytes = both.construction_peak_bytes;
+        assert_eq!(summary(exact).unwrap(), both);
+        let mut short = exact;
+        short.max_retained_bytes -= 1;
+        assert_eq!(summary(short), Err(AudioStorageError::ReservationExceeded));
+        short = exact;
+        short.max_construction_peak_bytes -= 1;
+        assert_eq!(summary(short), Err(AudioStorageError::ReservationExceeded));
+        eprintln!(
+            "SUPPORTED actual queued Copy+Cut tracks capacity128 len1 each: additional bytes={actual_backing}, allocations2, same-field dedup, retained/peak exact and each-minus1; metadata component only"
+        );
+    }
+
+    #[test]
+    fn native_request_time_range_foreign_field_refuses() {
+        use hex_engine::sampler_host_fields::{
+            BodyRef, FamilyRequestFields, FamilyRequestPayload, FamilyRequestRecords, VecRef,
+        };
+        use hex_project::{Command, Created, Editor, Project, TimeRange};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "range".into(),
+            })
+            .unwrap()
+        else {
+            panic!("actual track")
+        };
+        let mut queue = NativeRequests::default();
+        queue
+            .prepare(NativeRequests::requested_backing().unwrap())
+            .unwrap();
+        queue
+            .send(&mut Some(Request::CopyTimeRange(
+                TimeRange::new(vec![track], 0, 64).unwrap(),
+            )))
+            .unwrap();
+        struct Foreign<'a> {
+            queue: &'a NativeRequests,
+            range: &'a TimeRange,
+        }
+        impl FamilyRequestRecords for Foreign<'_> {
+            fn body(&self) -> BodyRef<'_> {
+                self.queue.body()
+            }
+            fn slots(&self) -> VecRef<'_> {
+                self.queue.slots()
+            }
+            fn request(
+                &self,
+                index: usize,
+            ) -> Result<FamilyRequestFields<'_>, hex_engine::AudioStorageError> {
+                let mut record = self.queue.request(index)?;
+                if let Some(FamilyRequestPayload::TimeRange { body, .. }) = record.request {
+                    record.request = Some(FamilyRequestPayload::TimeRange {
+                        body,
+                        range: self.range,
+                    });
+                }
+                Ok(record)
+            }
+        }
+        let foreign = TimeRange::new(vec![track], 0, 64).unwrap();
+        let fields = Foreign {
+            queue: &queue,
+            range: &foreign,
+        };
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 16,
+                handle_rows: 16,
+                root_rows: 4,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ledger.borrow_sampler_family_requests_on_control(&fields),
+            Err(hex_engine::AudioStorageError::SourceMismatch)
+        );
+    }
+
     #[test]
     fn native_request_actual_32_slots_keep_inline_terminal_and_fifo_through_claim_ack() {
         fn sync<T: Send + Sync>() {}

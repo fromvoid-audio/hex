@@ -32,13 +32,17 @@ impl<'a> AudioRootStorageLedger<'a> {
         &mut self,
         source: &'a crate::OwnedAudioSource,
     ) -> Result<(), AudioStorageError> {
-        self.mutate(|ledger| {
-            crate::audio_input_storage::parts(source)?;
-            if ledger.skip_observed_shared_field(source) {
-                return Ok(());
-            }
-            ledger.source(source)
-        })
+        self.mutate(|ledger| ledger.embedded_native_source(source))
+    }
+    pub(crate) fn embedded_native_source(
+        &mut self,
+        source: &'a crate::OwnedAudioSource,
+    ) -> Result<(), AudioStorageError> {
+        crate::audio_input_storage::parts(source)?;
+        if self.skip_observed_shared_field(source) {
+            return Ok(());
+        }
+        self.source(source)
     }
     /// Visit an actual closed source field retained by a media/control owner.
     /// This leaf inventory is not a declaration for its enclosing container.

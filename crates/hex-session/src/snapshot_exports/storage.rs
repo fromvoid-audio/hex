@@ -11,35 +11,105 @@ impl ViewState {
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
-        let ViewState {
-            canonical_audio_source,
-            project,
-            waveforms: _,
-            audio_clip_waveforms: _,
-            midi_preview,
-            gain_preview: _,
-            timeline_frames,
-            can_undo,
-            can_redo,
-            revision,
-            unsaved,
-            document_path,
-        } = self;
-        let _: (&u64, &bool, &bool, &u64, &bool) =
-            (timeline_frames, can_undo, can_redo, revision, unsaved);
-        if let Some(source) = canonical_audio_source {
-            crate::service::visit_canonical_source_selected_storage_on_control(source, ledger)?;
-        }
-        crate::visit_shared_project_selected_storage_on_control(project, ledger)?;
-        self.visit_waveform_storage_on_control(ledger)?;
-        hex_engine::visit_shared_midi_preview_storage_on_control(midi_preview, ledger)?;
-        self.visit_gain_preview_storage_on_control(ledger)?;
-        if let Some(path) = document_path {
-            ledger.borrow_metadata_path_backing_on_control(path)?;
-        }
-        Ok(())
+        ledger.borrow_sampler_snapshot_children_fields_on_control(self)
     }
 }
+// Actual fields under the existing family/worker borrow. This helper is
+// exhaustive on every owning ViewState field and allocates no projection list.
+struct ViewParts<'a> {
+    source: &'a Option<crate::service::SharedCanonicalAudioSource>,
+    project: &'a crate::SharedProject,
+    waveforms: &'a hex_project::SortedEntries<hex_project::AssetId, crate::SharedWaveform>,
+    clips: &'a hex_project::SortedEntries<hex_project::ClipId, crate::service::AudioClipWaveform>,
+    midi: &'a hex_engine::SharedMidiArrangementPreview,
+    gain: &'a Result<hex_engine::SharedGainAutomationPreview, hex_engine::Invalid>,
+    path: &'a Option<std::path::PathBuf>,
+}
+fn view_parts(view: &ViewState) -> ViewParts<'_> {
+    let ViewState {
+        canonical_audio_source,
+        project,
+        waveforms,
+        audio_clip_waveforms,
+        midi_preview,
+        gain_preview,
+        timeline_frames: _,
+        can_undo: _,
+        can_redo: _,
+        revision: _,
+        unsaved: _,
+        document_path,
+    } = view;
+    ViewParts {
+        source: canonical_audio_source,
+        project,
+        waveforms,
+        clips: audio_clip_waveforms,
+        midi: midi_preview,
+        gain: gain_preview,
+        path: document_path,
+    }
+}
+impl hex_engine::sampler_host_fields::SnapshotViewPayload for ViewState {
+    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+    fn source(&self) -> Option<hex_engine::sampler_host_fields::CapturedSourceFields<'_>> {
+        view_parts(self)
+            .source
+            .as_ref()
+            .map(crate::service::canonical_audio_source::sampler_fields_on_control)
+    }
+    fn project(&self) -> &crate::SharedProject {
+        view_parts(self).project
+    }
+    fn waveforms(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        hex_engine::sampler_host_fields::VecRef::entries(view_parts(self).waveforms)
+    }
+    fn waveform(
+        &self,
+        index: usize,
+    ) -> Result<hex_engine::sampler_host_fields::WaveformFields<'_>, AudioStorageError> {
+        let (_, waveform) = view_parts(self)
+            .waveforms
+            .as_slice()
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        Ok(hex_media::waveform::sampler_fields_on_control(waveform))
+    }
+    fn clip_waveforms(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        hex_engine::sampler_host_fields::VecRef::entries(view_parts(self).clips)
+    }
+    fn clip_waveform(
+        &self,
+        index: usize,
+    ) -> Result<hex_engine::sampler_host_fields::WaveformFields<'_>, AudioStorageError> {
+        let (
+            _,
+            crate::service::AudioClipWaveform {
+                waveform,
+                offset: _,
+                length: _,
+            },
+        ) = view_parts(self)
+            .clips
+            .as_slice()
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        Ok(hex_media::waveform::sampler_fields_on_control(waveform))
+    }
+    fn midi_preview(&self) -> &hex_engine::SharedMidiArrangementPreview {
+        view_parts(self).midi
+    }
+    fn gain_preview(&self) -> Option<&hex_engine::SharedGainAutomationPreview> {
+        // Invalid stores only its existing static diagnostic; no owning child.
+        view_parts(self).gain.as_ref().ok()
+    }
+    fn document_path(&self) -> Option<&std::path::PathBuf> {
+        view_parts(self).path.as_ref()
+    }
+}
+
 impl SnapshotExportRecords {
     /// Both actual table backings and ALL occupied snapshots, including retired,
     /// unpainted, pending-read and cleanup-latched records. Released read counts
@@ -49,60 +119,74 @@ impl SnapshotExportRecords {
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
-        let SnapshotExportRecords {
-            family,
-            revision,
-            closed,
+        ledger.borrow_sampler_family_fields_on_control(self)
+    }
+}
+impl hex_engine::sampler_host_fields::FamilyFields for SnapshotExportRecords {
+    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+    fn snapshots(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        let Self {
+            family: _,
+            revision: _,
+            closed: _,
             snapshots,
-            reads,
-            native_compiled,
-            native_requests,
+            reads: _,
+            native_compiled: _,
+            native_requests: _,
             max_bookkeeping_bytes: _,
         } = self;
-        let _: (&u64, &u64, &bool) = (family, revision, closed);
-        self.visit_backings_on_control(ledger)?;
-        native_requests.visit(ledger)?;
-        if let Some(records) = native_compiled {
-            records.visit(ledger)?;
-        }
-        for SnapshotRecord {
-            generation,
+        hex_engine::sampler_host_fields::VecRef::of(snapshots)
+    }
+    fn snapshot(
+        &self,
+        index: usize,
+    ) -> Result<hex_engine::sampler_host_fields::FamilySnapshotFields<'_>, AudioStorageError> {
+        use hex_engine::sampler_host_fields::{
+            BodyRef, FamilySnapshotFields, SharedMetadataRef, SnapshotViewFields,
+        };
+        let record = self
+            .snapshots
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        let SnapshotRecord {
+            generation: _,
             snapshot,
-            retired,
-            readers,
-            cleanup_started,
-        } in snapshots
-        {
-            let _: (&u64, &bool, &AtomicUsize, &bool) =
-                (generation, retired, readers, cleanup_started);
-            if let Some(view) = snapshot {
-                ledger.borrow_shared_metadata_body_on_control(view)?;
-                view.visit_children_selected_storage_on_control(ledger)?;
-            }
-        }
+            retired: _,
+            readers: _,
+            cleanup_started: _,
+        } = record;
+        Ok(FamilySnapshotFields {
+            body: BodyRef::of(record),
+            view: snapshot.as_ref().map(|owner| SnapshotViewFields {
+                owner: SharedMetadataRef::of(owner),
+                payload: owner.as_ref(),
+            }),
+        })
+    }
+    fn reads(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
         for ReadRecord {
-            generation,
-            snapshot_index,
-            snapshot_generation,
-            occupied,
-            released,
-        } in reads
-        {
-            let _: (
-                &AtomicU64,
-                &AtomicUsize,
-                &AtomicU64,
-                &AtomicBool,
-                &AtomicBool,
-            ) = (
-                generation,
-                snapshot_index,
-                snapshot_generation,
-                occupied,
-                released,
-            );
-        }
-        Ok(())
+            generation: _,
+            snapshot_index: _,
+            snapshot_generation: _,
+            occupied: _,
+            released: _,
+        } in &self.reads
+        {}
+        hex_engine::sampler_host_fields::VecRef::of(&self.reads)
+    }
+    fn requests(&self) -> &dyn hex_engine::sampler_host_fields::FamilyRequestRecords {
+        &self.native_requests
+    }
+    fn compiled(
+        &self,
+    ) -> Result<Option<hex_engine::sampler_host_fields::FamilyCompiledFields<'_>>, AudioStorageError>
+    {
+        self.native_compiled
+            .as_ref()
+            .map(|records| records.fields())
+            .transpose()
     }
 }
 
@@ -145,6 +229,122 @@ mod tests {
         ledger.validate_selected_shared_handles_on_control()?;
         ledger.summary()
     }
+    #[test]
+    fn typed_snapshot_view_refuses_foreign_payload_source_project_maps_previews_and_path() {
+        use hex_engine::sampler_host_fields::{
+            BodyRef, CapturedSourceFields, SharedMetadataRef, SnapshotViewFields,
+            SnapshotViewPayload, VecRef, WaveformFields,
+        };
+        let actual = hex_engine::SharedMetadata::new_on_control(pending(7).unwrap());
+        let mut foreign_value = pending(8).unwrap();
+        foreign_value.document_path = Some(std::path::PathBuf::from(
+            "/disposable/not-opened/foreign.hex",
+        ));
+        let foreign = hex_engine::SharedMetadata::new_on_control(foreign_value);
+        assert!(actual.gain_preview().is_some() && foreign.gain_preview().is_some());
+        let mut positive = AudioRootStorageLedger::try_new_on_control(budget()).unwrap();
+        positive
+            .borrow_sampler_snapshot_view_fields_on_control(&SnapshotViewFields {
+                owner: SharedMetadataRef::of(&actual),
+                payload: actual.as_ref(),
+            })
+            .unwrap();
+        positive
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert!(positive.summary().unwrap().require_complete().is_err());
+        struct Wrong<'a> {
+            actual: &'a ViewState,
+            foreign: &'a ViewState,
+            kind: u8,
+        }
+        impl SnapshotViewPayload for Wrong<'_> {
+            fn body(&self) -> BodyRef<'_> {
+                self.actual.body()
+            }
+            fn source(&self) -> Option<CapturedSourceFields<'_>> {
+                if self.kind == 0 {
+                    self.foreign.source()
+                } else {
+                    self.actual.source()
+                }
+            }
+            fn project(&self) -> &crate::SharedProject {
+                if self.kind == 1 {
+                    self.foreign.project()
+                } else {
+                    self.actual.project()
+                }
+            }
+            fn waveforms(&self) -> VecRef<'_> {
+                if self.kind == 2 {
+                    self.foreign.waveforms()
+                } else {
+                    self.actual.waveforms()
+                }
+            }
+            fn waveform(&self, index: usize) -> Result<WaveformFields<'_>, AudioStorageError> {
+                self.actual.waveform(index)
+            }
+            fn clip_waveforms(&self) -> VecRef<'_> {
+                if self.kind == 3 {
+                    self.foreign.clip_waveforms()
+                } else {
+                    self.actual.clip_waveforms()
+                }
+            }
+            fn clip_waveform(&self, index: usize) -> Result<WaveformFields<'_>, AudioStorageError> {
+                self.actual.clip_waveform(index)
+            }
+            fn midi_preview(&self) -> &hex_engine::SharedMidiArrangementPreview {
+                if self.kind == 4 {
+                    self.foreign.midi_preview()
+                } else {
+                    self.actual.midi_preview()
+                }
+            }
+            fn gain_preview(&self) -> Option<&hex_engine::SharedGainAutomationPreview> {
+                if self.kind == 5 {
+                    self.foreign.gain_preview()
+                } else {
+                    self.actual.gain_preview()
+                }
+            }
+            fn document_path(&self) -> Option<&std::path::PathBuf> {
+                if self.kind == 6 {
+                    self.foreign.document_path()
+                } else {
+                    self.actual.document_path()
+                }
+            }
+        }
+        for kind in 0..7 {
+            let wrong = Wrong {
+                actual: &actual,
+                foreign: &foreign,
+                kind,
+            };
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(budget()).unwrap();
+            assert_eq!(
+                ledger.borrow_sampler_snapshot_view_fields_on_control(&SnapshotViewFields {
+                    owner: SharedMetadataRef::of(&actual),
+                    payload: &wrong,
+                }),
+                Err(AudioStorageError::SourceMismatch),
+                "foreign field kind {kind}"
+            );
+            assert!(ledger.summary().is_err());
+        }
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(budget()).unwrap();
+        assert_eq!(
+            ledger.borrow_sampler_snapshot_view_fields_on_control(&SnapshotViewFields {
+                owner: SharedMetadataRef::of(&actual),
+                payload: foreign.as_ref(),
+            }),
+            Err(AudioStorageError::SourceMismatch)
+        );
+    }
+
     #[test]
     fn retained_snapshot_inventory_counts_old_new_unpainted_records_and_exact_budgets() {
         if !hex_engine::audio_storage_constructor_layout_supported() {

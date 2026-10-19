@@ -1,24 +1,31 @@
 use super::{BodyRef, SharedMetadataRef, VecRef};
 use crate::{Audio, AudioRootStorageLedger, AudioStorageError, SharedMetadata};
 
-/// Audited canonical-source producer. Every actual binding entry is required;
-/// a verified/unknown source returns refusal, never a missing optional record.
-pub trait CapturedSourceFields<'a> {
-    fn owner(&self) -> SharedMetadataRef<'a>;
-    fn project(&self) -> &'a SharedMetadata<hex_project::Project>;
-    fn bindings(&self) -> VecRef<'a>;
-    fn resident(&self, index: usize) -> Result<&'a Audio, AudioStorageError>;
+/// Audited local canonical-source payload. Every actual binding is required;
+/// verified/unknown source storage refuses, never a missing optional record.
+pub trait CapturedSourcePayload {
+    fn body(&self) -> BodyRef<'_>;
+    fn project(&self) -> &SharedMetadata<hex_project::Project>;
+    fn bindings(&self) -> VecRef<'_>;
+    fn resident(&self, index: usize) -> Result<&Audio, AudioStorageError>;
+}
+/// Per-index borrowed record without an allocated projection list. The actual
+/// paired field AND its payload remain borrowed, not cloned or adopted.
+pub struct CapturedSourceFields<'a> {
+    pub owner: SharedMetadataRef<'a>,
+    pub payload: &'a dyn CapturedSourcePayload,
 }
 pub(crate) fn visit_captured_source<'a>(
-    fields: &dyn CapturedSourceFields<'a>,
+    fields: &CapturedSourceFields<'a>,
     ledger: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
-    let owner = fields.owner();
-    let project = fields.project();
-    let bindings = fields.bindings();
-    // Actual paired outer payload contains these actual fields. Equality of
-    // models/contexts or a scalar counter grants no source association.
-    if !owner.payload().contains(BodyRef::of(project)) || !owner.payload().contains(bindings.body())
+    let CapturedSourceFields { owner, payload } = fields;
+    let body = payload.body();
+    let project = payload.project();
+    let bindings = payload.bindings();
+    if !owner.payload().same(body)
+        || !body.contains(BodyRef::of(project))
+        || !body.contains(bindings.body())
     {
         return Err(AudioStorageError::SourceMismatch);
     }
@@ -37,7 +44,7 @@ pub(crate) fn visit_captured_source<'a>(
     ledger.project_native_states(project)?;
     bindings.observe(ledger)?;
     for index in 0..bindings.len() {
-        let audio = fields.resident(index)?;
+        let audio = payload.resident(index)?;
         if !bindings.element(index)?.contains(BodyRef::of(audio)) {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -46,10 +53,10 @@ pub(crate) fn visit_captured_source<'a>(
     Ok(())
 }
 impl<'a> AudioRootStorageLedger<'a> {
-    /// The selected real source fields only, not worker closure/publication.
+    /// Selected real source fields only, not worker closure/publication.
     pub fn borrow_sampler_captured_source_fields_on_control(
         &mut self,
-        fields: &dyn CapturedSourceFields<'a>,
+        fields: &CapturedSourceFields<'a>,
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| visit_captured_source(fields, ledger))
     }

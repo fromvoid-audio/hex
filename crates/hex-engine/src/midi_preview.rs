@@ -50,44 +50,48 @@ pub fn visit_shared_midi_preview_storage_on_control<'a>(
     owner: &'a SharedMidiArrangementPreview,
     ledger: &mut crate::AudioRootStorageLedger<'a>,
 ) -> Result<(), crate::AudioStorageError> {
-    ledger.borrow_shared_metadata_body_on_control(owner)?;
-    ledger.mutate(|ledger| {
-        let MidiArrangementPreview { clips } = owner.as_ref();
-        if !ledger.skip_observed_shared_field(clips) {
-            ledger.observe_shared(
-                clips.arc(),
-                clips.parts(),
-                crate::audio_storage::Owner::exclusive(clips),
-            )?;
-        }
-        for MidiClipPreview {
+    ledger.mutate(|ledger| visit_shared_midi_preview_storage_on_control_inner(owner, ledger))
+}
+pub(crate) fn visit_shared_midi_preview_storage_on_control_inner<'a>(
+    owner: &'a SharedMidiArrangementPreview,
+    ledger: &mut crate::AudioRootStorageLedger<'a>,
+) -> Result<(), crate::AudioStorageError> {
+    crate::sampler_host_fields::SharedMetadataRef::of(owner).observe(ledger)?;
+    let MidiArrangementPreview { clips } = owner.as_ref();
+    if !ledger.skip_observed_shared_field(clips) {
+        ledger.observe_shared(
+            clips.arc(),
+            clips.parts(),
+            crate::audio_storage::Owner::exclusive(clips),
+        )?;
+    }
+    for MidiClipPreview {
+        clip_id,
+        frame_start,
+        frame_end,
+        authored_note_count,
+        occurrence_count,
+        samples,
+    } in clips.iter()
+    {
+        let _: (&ClipId, &u64, &u64, &usize, &usize) = (
             clip_id,
             frame_start,
             frame_end,
             authored_note_count,
             occurrence_count,
-            samples,
-        } in clips.iter()
+        );
+        for MidiPreviewSample {
+            frame_start,
+            frame_gate_end,
+            pitch,
+        } in samples
         {
-            let _: (&ClipId, &u64, &u64, &usize, &usize) = (
-                clip_id,
-                frame_start,
-                frame_end,
-                authored_note_count,
-                occurrence_count,
-            );
-            for MidiPreviewSample {
-                frame_start,
-                frame_gate_end,
-                pitch,
-            } in samples
-            {
-                let _: (&u64, &u64, &u8) = (frame_start, frame_gate_end, pitch);
-            }
-            ledger.vec(samples)?;
+            let _: (&u64, &u64, &u8) = (frame_start, frame_gate_end, pitch);
         }
-        Ok(())
-    })
+        ledger.vec(samples)?;
+    }
+    Ok(())
 }
 
 impl MidiArrangementPreview {

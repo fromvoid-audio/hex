@@ -27,7 +27,7 @@ pub use main_control_file::{
 };
 mod request_transport;
 use request_transport::{RequestReceiver, RequestSender};
-mod canonical_audio_source;
+pub(crate) mod canonical_audio_source;
 pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
 mod worker_roots;

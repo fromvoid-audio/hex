@@ -1820,3 +1820,55 @@ transport and source association are verified. Full native/frontier/seek/mixed/
 offline/CapturedMix/Stems requirements and the complete native-library goal stay
 open. These selected metadata components do not qualify playable Sampler or
 native publication.
+
+### Actual snapshot-family descendant and table traversal
+
+The existing Media waveform visitor and Session snapshot-family visitor now use
+finite Engine-driven borrowed schemas. Every occupied actual snapshot/request
+index, both inline compiled-reference slots, and the read/request/snapshot Vec
+backings remain in the mandatory traversal. The compiled pair is destructured as
+exactly two actual records; no caller count or copied projection list can omit a
+third slot after a capacity change. Existing per-record phase, unresolved-claim,
+cleanup/panic and paired-reader refusals remain in the owning producers.
+
+Paired snapshot records expose their actual local payload, captured source,
+Project, waveform maps (including each actual peak pyramid/PCM field), MIDI and
+gain previews, and document path. The Engine checks physical containment and
+walks those exact descendants. A legacy raw view's selected children do not
+qualify its outer Arc. Original resident Mono/Stereo waveform aliases retain one
+actual PCM child after producer drop; foreign payload/fields and unknown PCM
+refuse. These are actual worker/family consumers, not gallery or unused types.
+
+A Copy audit caught a prior selected-inventory omission: CopyTimeRange and
+CutTimeRange requests own a TimeRange with a private track Vec. A real queued
+128-capacity fixture reproduced both incorrectly returning Ok as inline data.
+They now refuse UnknownStorage rather than inferring capacity from the exposed
+slice; command dispatch, queue transitions and history behavior are unchanged.
+Qualifying those request children later requires the actual Project-owned Vec
+field. Other supported scalar request fields have borrow-only Copy assertions
+and exhaustive patterns, with no large snapshot copy temporary. Unsupported
+request/input/export classes are still refused.
+
+The complete outer-family/worker/native host and safe Audio facade/reborrow are
+still unfinished. No constructor-original binding or full retained/peak union is
+weakened by these selected descendants. Normally present legacy compiled,
+Playback/Event/channel owners, active request/products and native current/
+outgoing/pending/reaper roots must still be qualified and inventoried at their
+actual fields. Main Service dispatch, full Sampler/registration/modes/exports,
+final native publication and complete library acceptance remain open.
+
+#### Actual queued time-range ownership (19 October 2026)
+
+The initial request-schema audit reproduced an omitted owning tracks Vec for
+ordinary Copy/Cut TimeRange requests: the former inline category returned Ok
+while each actual queued range held capacity128 with only one selected track.
+A temporary Unknown refusal preserved custody during diagnosis; it is not the
+final normal-route policy. The Project-owned immutable
+`TimeRange::track_buffer_on_control` now exposes the actual owning Vec borrow,
+without changing range execution or ownership. Engine's finite request schema
+checks actual slot/range/header containment and observes capacity backing once;
+TrackId leaves are Copy and the header is already inside the reserved request
+slot. Two queued equal-content Copy/Cut allocations remain distinct, repeated
+observations dedup, foreign fields refuse, and actual retained/peak exact and
+individual-minus-one limits are checked. These are request-storage component
+checks, not complete Service admission or playable/native Sampler acceptance.

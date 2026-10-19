@@ -13,4 +13,16 @@ pub(crate) use physical::{BodyLayout, SharedLayout};
 mod tests;
 
 mod captured_source;
-pub use captured_source::CapturedSourceFields;
+pub use captured_source::{CapturedSourceFields, CapturedSourcePayload};
+
+mod waveform;
+pub use waveform::{WaveformFields, WaveformLevelsRef, WaveformPayload, WaveformSamples};
+
+mod snapshot_view;
+pub use snapshot_view::{SnapshotViewFields, SnapshotViewPayload};
+
+mod family;
+pub use family::{
+    FamilyCompiledFields, FamilyCompiledRecordFields, FamilyFields, FamilyRequestFields,
+    FamilyRequestPayload, FamilyRequestRecords, FamilySnapshotFields,
+};

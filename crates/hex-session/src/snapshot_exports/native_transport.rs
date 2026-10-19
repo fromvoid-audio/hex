@@ -268,25 +268,52 @@ impl NativeCompiledRecords {
 
     /// The enclosing registered-family body must already be observed. Every
     /// paired handle is visited at its actual current physical field location.
+    #[cfg(test)]
     pub(super) fn visit<'a>(
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
-        for record in &self.records {
-            if record.cleanup_pending || record.phase == Phase::Failed {
+        ledger.borrow_sampler_family_compiled_on_control(&self.fields()?)
+    }
+    pub(super) fn fields(
+        &self,
+    ) -> Result<hex_engine::sampler_host_fields::FamilyCompiledFields<'_>, AudioStorageError> {
+        use hex_engine::sampler_host_fields::{
+            BodyRef, FamilyCompiledFields, FamilyCompiledRecordFields,
+        };
+        let Self {
+            family: _,
+            closed: _,
+            records,
+        } = self;
+        let [first, second] = records; // capacity changes MUST adapt the schema
+        fn record(
+            record: &CompiledRecord,
+        ) -> Result<FamilyCompiledRecordFields<'_>, AudioStorageError> {
+            let CompiledRecord {
+                generation: _,
+                phase,
+                payload,
+                cleanup_pending,
+            } = record;
+            if *cleanup_pending || *phase == Phase::Failed {
                 return Err(AudioStorageError::UnknownStorage);
             }
-            match (record.phase, &record.payload) {
-                (Phase::Vacant | Phase::Reserved, None) => {}
-                (
-                    Phase::Queued | Phase::Claimed | Phase::Completed | Phase::Retiring,
-                    Some(reader),
-                ) => reader.visit_shared_storage_on_control(ledger)?,
-                (Phase::Retiring, None) => {} // cancelled reservation, no owner was constructed
+            match (phase, payload) {
+                (Phase::Vacant | Phase::Reserved, None) | (Phase::Retiring, None) => {}
+                (Phase::Queued | Phase::Claimed | Phase::Completed | Phase::Retiring, Some(_)) => {}
                 _ => return Err(AudioStorageError::UnknownStorage),
             }
+            Ok(FamilyCompiledRecordFields {
+                body: BodyRef::of(record),
+                reader: payload.as_ref(),
+            })
         }
-        Ok(())
+        Ok(FamilyCompiledFields {
+            body: BodyRef::of(self),
+            first: record(first)?,
+            second: record(second)?,
+        })
     }
 }
 

@@ -57,14 +57,18 @@ pub fn visit_shared_gain_preview_storage_on_control<'a>(
     owner: &'a SharedGainAutomationPreview,
     ledger: &mut crate::AudioRootStorageLedger<'a>,
 ) -> Result<(), crate::AudioStorageError> {
-    ledger.borrow_shared_metadata_body_on_control(owner)?;
-    ledger.mutate(|ledger| {
-        ledger.vec(&owner.tracks)?;
-        for (_, envelope) in &owner.tracks {
-            envelope.visit_audio_storage(ledger)?;
-        }
-        Ok(())
-    })
+    ledger.mutate(|ledger| visit_shared_gain_preview_storage_on_control_inner(owner, ledger))
+}
+pub(crate) fn visit_shared_gain_preview_storage_on_control_inner<'a>(
+    owner: &'a SharedGainAutomationPreview,
+    ledger: &mut crate::AudioRootStorageLedger<'a>,
+) -> Result<(), crate::AudioStorageError> {
+    crate::sampler_host_fields::SharedMetadataRef::of(owner).observe(ledger)?;
+    ledger.vec(&owner.tracks)?;
+    for (_, envelope) in &owner.tracks {
+        envelope.visit_audio_storage(ledger)?;
+    }
+    Ok(())
 }
 impl GainAutomationPreview {
     pub fn prepare(project: &Project) -> Result<Self, Invalid> {

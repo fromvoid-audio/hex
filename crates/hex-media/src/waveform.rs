@@ -44,26 +44,63 @@ pub fn borrow_shared_storage_on_control<'a>(
     owner: &'a SharedWaveform,
     ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
 ) -> Result<(), hex_engine::AudioStorageError> {
-    ledger.borrow_shared_metadata_body_on_control(owner)?;
-    let Waveform {
-        source_frames: _,
-        bins,
-        levels,
-        samples,
-    } = owner.as_ref();
-    ledger.borrow_metadata_vec_backing_on_control(bins)?;
-    ledger.borrow_metadata_vec_backing_on_control(levels)?;
-    for level in levels {
-        ledger.borrow_metadata_vec_backing_on_control(level)?;
+    ledger.borrow_sampler_waveform_fields_on_control(&sampler_fields_on_control(owner))
+}
+
+/// Internal audited actual owner projection; neither an admission certificate
+/// nor a source clone. Used by the same worker/family inventory consumers.
+/// ```compile_fail
+/// fn escape(owner: &hex_media::waveform::SharedWaveform)
+///     -> hex_engine::sampler_host_fields::WaveformFields<'static> {
+///     hex_media::waveform::sampler_fields_on_control(owner)
+/// }
+/// ```
+pub fn sampler_fields_on_control(
+    owner: &SharedWaveform,
+) -> hex_engine::sampler_host_fields::WaveformFields<'_> {
+    hex_engine::sampler_host_fields::WaveformFields {
+        owner: hex_engine::sampler_host_fields::SharedMetadataRef::of(owner),
+        payload: owner.as_ref(),
     }
-    match samples {
-        None => Ok(()),
-        Some(SampleBacking::Audio(audio)) => ledger.borrow_embedded_native_audio_on_control(audio),
-        Some(SampleBacking::Original(source)) => {
-            ledger.borrow_embedded_original_source_lease_on_control(source)
-        }
-        Some(SampleBacking::NativeOriginal(source)) => {
-            ledger.borrow_embedded_native_source_on_control(source)
+}
+// Exhaustive leaf declaration: adding an owning Peak field requires review of
+// this finite schema; the Engine physical Vec view certifies footprint only.
+const _: fn(Peak) = |Peak { min: _, max: _ }| {};
+impl hex_engine::sampler_host_fields::WaveformPayload for Waveform {
+    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+    fn bins(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        let Self {
+            source_frames: _,
+            bins,
+            levels: _,
+            samples: _,
+        } = self;
+        hex_engine::sampler_host_fields::VecRef::of(bins)
+    }
+    fn levels(&self) -> hex_engine::sampler_host_fields::WaveformLevelsRef<'_> {
+        let Self {
+            source_frames: _,
+            bins: _,
+            levels,
+            samples: _,
+        } = self;
+        hex_engine::sampler_host_fields::WaveformLevelsRef::of(levels)
+    }
+    fn samples(&self) -> hex_engine::sampler_host_fields::WaveformSamples<'_> {
+        use hex_engine::sampler_host_fields::WaveformSamples;
+        let Self {
+            source_frames: _,
+            bins: _,
+            levels: _,
+            samples,
+        } = self;
+        match samples {
+            None => WaveformSamples::None,
+            Some(SampleBacking::Audio(audio)) => WaveformSamples::Audio(audio),
+            Some(SampleBacking::Original(source)) => WaveformSamples::Original(source),
+            Some(SampleBacking::NativeOriginal(source)) => WaveformSamples::NativeOriginal(source),
         }
     }
 }
