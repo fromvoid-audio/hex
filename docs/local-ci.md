@@ -163,6 +163,25 @@ local inputs stale, including inputs outside the main Git inventory. The marker
 retains the initial identity so the next run invalidates any changed inputs.
 Release ownership and optimized artifact qualification remain separate.
 
+Each content traversal retains file/link and resolved-file identities plus each
+visited directory's identity and relevant entry inventory. After reading all
+bytes it revalidates those collected stamps and inventories, detecting an earlier
+input modified or added while a later input was read, including external packages
+and file-symlink targets. Directory symlinks are refused before excluding the
+actual Cargo target; the real target directory and its generated contents remain
+excluded. Directory metadata excludes mtime/ctime so legitimate excluded-target
+creation does not itself change source identity; relevant entry names/types and
+all included file stamps are still checked. This adds linear metadata/scratch
+work, not a filesystem transaction or a promise of atomicity against arbitrary
+writers after the final checks. Cooperative source freezing remains required.
+
+SIGINT/SIGTERM during the final dependency hash are handled as interruption too:
+the existing target-owner finalization, unlock, terminal exit-130 report and
+signal-handler restoration complete. Interrupted validation cannot qualify a run,
+even if its already-executed build steps passed. Final summary I/O failure still
+restores the caller's signal handlers. No release/adoption/CAS protocol changes
+or new automatic cleanup policy are introduced.
+
 The real vendored fixture uses two Git worktrees and older source mtimes to change
 a public struct field. Before this repair the actual compiler reports E0560 from
 reused dependency metadata. The repaired runner builds and runs the changed API,

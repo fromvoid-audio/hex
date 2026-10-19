@@ -574,6 +574,8 @@ class LocalCiRunner:
         """Hash package checkout bytes, not mtimes or worktree-specific path spellings."""
         digest = hashlib.sha256()
         file_count = byte_count = 0
+        files_seen = []
+        directories_seen = []
         if not root.is_dir() or not (root / "Cargo.toml").is_file():
             raise TargetCacheError(f"local dependency package is missing: {root}")
         def walk_error(error: OSError) -> None:
@@ -581,16 +583,31 @@ class LocalCiRunner:
         def stamp(status):
             return (status.st_dev, status.st_ino, status.st_mode, status.st_size,
                     status.st_mtime_ns, status.st_ctime_ns)
-        for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
+        def inventory(directory):
+            entries = []
+            with os.scandir(directory) as children:
+                for entry in children:
+                    if entry.name == ".git":
+                        continue
+                    is_directory = entry.is_dir(follow_symlinks=True)
+                    # Inspect the original entry before excluding the real target.
+                    if is_directory and entry.is_symlink():
+                        raise TargetCacheError(f"local dependency contains a directory symlink: {entry.path}")
+                    if is_directory and Path(entry.path).resolve() == target:
+                        continue
+                    entries.append(("directory" if is_directory else "input", entry.name))
+            return tuple(sorted(entries))
+        def directory_stamp(status):
+            return (status.st_dev, status.st_ino, status.st_mode)
+        for directory, directories, _ in os.walk(root, followlinks=False, onerror=walk_error):
             current = Path(directory)
-            directories[:] = sorted(name for name in directories if name != ".git"
-                                    and (current / name).resolve() != target)
-            for name in directories:
-                if (current / name).is_symlink():
-                    raise TargetCacheError(f"local dependency contains a directory symlink: {current / name}")
-            for name in sorted(filenames):
-                if name == ".git":
-                    continue
+            before_directory = current.lstat()
+            if not stat.S_ISDIR(before_directory.st_mode):
+                raise TargetCacheError(f"local dependency changed while hashing: {current}")
+            entries = inventory(current)
+            directories[:] = [name for kind, name in entries if kind == "directory"]
+            directories_seen.append((current, directory_stamp(before_directory), entries))
+            for name in (name for kind, name in entries if kind == "input"):
                 path = current / name
                 relative = os.fsencode(str(path.relative_to(root)))
                 before = path.lstat()
@@ -615,7 +632,18 @@ class LocalCiRunner:
                         raise TargetCacheError(f"local dependency changed while hashing: {path}")
                 if stamp(path.lstat()) != stamp(before) or stamp(path.stat()) != stamp(source_before):
                     raise TargetCacheError(f"local dependency changed while hashing: {path}")
+                files_seen.append((path, stamp(before), stamp(source_before)))
                 file_count += 1
+        # An earlier input can change while a later one is read. Revalidate the
+        # collected inventory after ALL bytes, including file-symlink targets.
+        # This detects traversal races; it is not a filesystem transaction.
+        for path, link_stamp, source_stamp in files_seen:
+            if stamp(path.lstat()) != link_stamp or stamp(path.stat()) != source_stamp:
+                raise TargetCacheError(f"local dependency changed while hashing: {path}")
+        for directory, identity, entries in directories_seen:
+            if (directory_stamp(directory.lstat()) != identity
+                    or inventory(directory) != entries):
+                raise TargetCacheError(f"local dependency changed while hashing: {directory}")
         return {"sha256": digest.hexdigest(), "files": file_count, "bytes": byte_count}
 
     def _resolve_path_dependencies(self, target: Path) -> list[dict[str, object]]:
@@ -1183,6 +1211,7 @@ class LocalCiRunner:
             previous_handlers[signum] = signal.signal(signum, interrupt_handler)
 
         failed = False
+        interrupted = False
         try:
             if not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
@@ -1221,6 +1250,7 @@ class LocalCiRunner:
                 self.summary["status"] = self.summary["verification_status"]
                 self.summary["exit_code"] = (2 if "disk_error" in self.summary else 1) if failed else 0
         except InterruptedRun:
+            interrupted = True
             self.summary["status"] = "interrupted"
             self.summary["exit_code"] = 130
             steps = self.summary["steps"]
@@ -1240,6 +1270,11 @@ class LocalCiRunner:
                     if any(end_dependencies[p["key"]]["sha256"] != p["sha256"]
                            for p in self.path_dependencies):
                         self.summary["path_dependencies_stale"] = True
+                except InterruptedRun:
+                    interrupted = True
+                    self.summary["path_dependency_check_error"] = "pipeline interrupted during final dependency hashing"
+                    self.summary["status"] = "interrupted"
+                    self.summary["exit_code"] = 130
                 except (OSError, TargetCacheError) as error:
                     self.summary["path_dependency_check_error"] = str(error)
                     self.summary["status"] = "incomplete"
@@ -1288,9 +1323,14 @@ class LocalCiRunner:
                             "error": "pipeline stopped before this step",
                         }
                     )
-            self._write_summary()
-            for signum, handler in previous_handlers.items():
-                signal.signal(signum, handler)
+            if interrupted:
+                self.summary["status"] = "interrupted"
+                self.summary["exit_code"] = 130
+            try:
+                self._write_summary()
+            finally:
+                for signum, handler in previous_handlers.items():
+                    signal.signal(signum, handler)
         return int(self.summary["exit_code"] if self.summary["exit_code"] is not None else 2)
 
 
