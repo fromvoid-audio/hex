@@ -2,7 +2,8 @@
 use super::*;
 use hex_engine::{RetainedControlCancellation as Worker, RetainedControlJobRoute as Route};
 use hex_session::snapshot_exports::{
-    SnapshotProducerKey, SnapshotWorkerControl, SnapshotWorkerOperations,
+    NativeRequestDelivery, NativeRequestStamp, NativeRequestSubmission, SnapshotProducerKey,
+    SnapshotRequestOperations, SnapshotWorkerControl, SnapshotWorkerOperations,
 };
 static WORKER_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static WORKER_OPERATIONS: SnapshotWorkerOperations = SnapshotWorkerOperations::new_unqualified(
@@ -10,7 +11,50 @@ static WORKER_OPERATIONS: SnapshotWorkerOperations = SnapshotWorkerOperations::n
     cancel_worker,
     finish_worker,
     report_worker,
+)
+.with_native_requests(&REQUEST_OPERATIONS);
+static REQUEST_OPERATIONS: SnapshotRequestOperations = SnapshotRequestOperations::new_unqualified(
+    prepare_requests,
+    submit_request,
+    receive_request,
+    complete_request,
 );
+fn prepare_requests(route: Route) -> Result<(), Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family.prepare_requests_on_control().map_err(record_error)
+    })
+    .map_err(family_error)?
+}
+fn submit_request(route: Route, submission: &mut NativeRequestSubmission) {
+    // Borrow the pending producer; a failed outer lookup invokes NO callback
+    // and cannot drop its actual Request. Only family insertion can consume it.
+    if let Err(error) =
+        hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+            submission.dispatch_on_control(family)
+        })
+    {
+        submission.refuse_lookup_on_control(family_error(error));
+    }
+}
+fn receive_request(
+    route: Route,
+    destination: &mut Option<NativeRequestDelivery>,
+) -> Result<(), Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .receive_request_on_control(destination)
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
+fn complete_request(route: Route, stamp: NativeRequestStamp) -> Result<(), Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .complete_request_on_control(stamp)
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
 fn validate_worker(worker: &Worker, producer: &SnapshotProducerKey) -> Result<(), Error> {
     hex_audio::validate_retained_family_worker_on_control::<SessionExportFamily>(worker)
         .map_err(family_error)?;
@@ -69,23 +113,49 @@ mod tests {
     use hex_engine::CancellationQuery;
     use hex_session::snapshot_exports::SnapshotExportReservation;
     use std::time::{Duration, Instant};
+    fn retry_busy<T, E: std::fmt::Debug + PartialEq>(
+        mut operation: impl FnMut() -> Result<T, E>,
+        busy: E,
+    ) -> T {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match operation() {
+                Ok(value) => return value,
+                Err(error) if error == busy && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                Err(error) => {
+                    panic!("actual setup refused while original pending fields retained: {error:?}")
+                }
+            }
+        }
+    }
     fn family() -> (
         RetainedFamilyId<SessionExportFamily>,
         Option<SnapshotProducerKey>,
     ) {
-        let slot = hex_audio::reserve_retained_family_slot_on_control().unwrap();
+        let slot = retry_busy(
+            hex_audio::reserve_retained_family_slot_on_control,
+            RetainedFamilyError::Busy,
+        );
         let (family, key) = SessionExportFamily::try_new_on_control(SnapshotExportReservation {
             snapshot_records: 2,
             read_records: 4,
             max_bookkeeping_bytes: 65_536,
         })
         .unwrap();
-        let id = register_family_on_control(
-            &slot,
-            &mut Some(family),
-            hex_audio::retained_family_job_body_quote::<SessionExportFamily>(),
-        )
-        .unwrap();
+        let mut pending = Some(family);
+        let id = retry_busy(
+            || {
+                register_family_on_control(
+                    &slot,
+                    &mut pending,
+                    hex_audio::retained_family_job_body_quote::<SessionExportFamily>(),
+                )
+            },
+            RetainedFamilyError::Busy,
+        );
+        assert!(pending.is_none());
         (id, Some(key))
     }
     static FINISHED_SIGNAL_CLOSURES: AtomicUsize = AtomicUsize::new(0);
@@ -95,7 +165,8 @@ mod tests {
             cancel_worker,
             inspect_finished_children,
             report_worker,
-        );
+        )
+        .with_native_requests(&REQUEST_OPERATIONS);
     fn inspect_finished_children(
         route: Route,
         key: &SnapshotProducerKey,
@@ -131,13 +202,22 @@ mod tests {
     }
     fn inspected_control() -> (RetainedFamilyId<SessionExportFamily>, SnapshotWorkerControl) {
         let (id, mut key) = family();
-        let (worker, _) = hex_audio::bind_retained_family_worker_on_control(id).unwrap();
-        let control = SnapshotWorkerControl::try_bind_on_control(
-            &mut Some(worker),
-            &mut key,
-            &INSPECTED_OPERATIONS,
-        )
-        .unwrap();
+        let (worker, _) = retry_busy(
+            || hex_audio::bind_retained_family_worker_on_control(id),
+            RetainedFamilyError::Busy,
+        );
+        let mut pending_worker = Some(worker);
+        let control = retry_busy(
+            || {
+                SnapshotWorkerControl::try_bind_on_control(
+                    &mut pending_worker,
+                    &mut key,
+                    &INSPECTED_OPERATIONS,
+                )
+            },
+            Error::Busy,
+        );
+        assert!(pending_worker.is_none() && key.is_none());
         (id, control)
     }
     struct ObservedStartup {
@@ -285,9 +365,15 @@ mod tests {
         super::super::tests::initialize_test_table();
         eprintln!("SUPPORTED actual registered Session worker neutral stop/completion route");
         let (id, mut producer) = family();
-        let (worker, _) = hex_audio::bind_retained_family_worker_on_control(id).unwrap();
+        let (worker, _) = retry_busy(
+            || hex_audio::bind_retained_family_worker_on_control(id),
+            RetainedFamilyError::Busy,
+        );
         let mut source = Some(worker);
-        let control = bind_registered_worker_on_control(&mut source, &mut producer).unwrap();
+        let control = retry_busy(
+            || bind_registered_worker_on_control(&mut source, &mut producer),
+            Error::Busy,
+        );
         assert!(source.is_none() && producer.is_none());
         let stop = control.stop_endpoint();
         let query = control.worker_on_control().unwrap().clone();
@@ -305,9 +391,15 @@ mod tests {
             }
         }
         let (next, mut key) = family();
-        let (worker, _) = hex_audio::bind_retained_family_worker_on_control(next).unwrap();
+        let (worker, _) = retry_busy(
+            || hex_audio::bind_retained_family_worker_on_control(next),
+            RetainedFamilyError::Busy,
+        );
         let mut worker = Some(worker);
-        let next = bind_registered_worker_on_control(&mut worker, &mut key).unwrap();
+        let next = retry_busy(
+            || bind_registered_worker_on_control(&mut worker, &mut key),
+            Error::Busy,
+        );
         assert!(matches!(stop.request_cancel(), Err(Error::Stale)));
         assert!(!next.worker_on_control().unwrap().is_cancelled());
         let next_stop = next.stop_endpoint();
@@ -322,7 +414,10 @@ mod tests {
             "SUPPORTED actual neutral worker constructor refuses mismatched physical signal/key"
         );
         let (id, mut key) = family();
-        let (worker, _) = hex_audio::bind_retained_family_worker_on_control(id).unwrap();
+        let (worker, _) = retry_busy(
+            || hex_audio::bind_retained_family_worker_on_control(id),
+            RetainedFamilyError::Busy,
+        );
         let other_signal =
             hex_engine::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
         let mut fake = Some(other_signal.bind_worker_on_control(worker.route_on_control()));
@@ -344,9 +439,218 @@ mod tests {
             Err(Error::Stale)
         ));
         assert!(actual.is_some() && wrong_key.is_some());
-        let control = bind_registered_worker_on_control(&mut actual, &mut key).unwrap();
+        let control = retry_busy(
+            || bind_registered_worker_on_control(&mut actual, &mut key),
+            Error::Busy,
+        );
         let stop = control.stop_endpoint();
         control.finish_on_control().unwrap();
         wait_retired(stop);
+    }
+    #[test]
+    fn registered_service_request_full32_returns_exact_inline_terminal_and_cancels_queued_payloads()
+    {
+        use hex_session::{
+            device_gesture::{
+                DeviceParameterSnapshot, GestureKey, GestureRequest, ParameterId, ParameterValue,
+            },
+            service::{Request, SubmitError},
+        };
+        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
+        super::super::tests::initialize_test_table();
+        let (_id, control) = inspected_control();
+        let stop = control.stop_endpoint();
+        let (observed, closed, sink) = observed_sink(true);
+        let service = hex_session::service::Service::with_audio_sink_and_worker_control(
+            8, 1024, None, sink, control,
+        )
+        .unwrap();
+        wait_until(|| observed.initialized.load(Ordering::Acquire) == 1);
+        let terminal = GestureRequest::CommitSnapshot {
+            key: GestureKey {
+                generation: 3,
+                token: 9,
+            },
+            sequence: 17,
+            snapshot: DeviceParameterSnapshot::new(&[(
+                ParameterId::from_static(1),
+                ParameterValue::Float(0.5),
+            )])
+            .unwrap(),
+        };
+        for _ in 0..32 {
+            service.submit(Request::DeviceGesture(terminal)).unwrap();
+        }
+        let Err(SubmitError::Full(Request::DeviceGesture(retry))) =
+            service.submit(Request::DeviceGesture(terminal))
+        else {
+            panic!("actual registered request32 must preserve terminal");
+        };
+        assert_eq!(retry, terminal);
+        drop(service);
+        closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        wait_retired(stop);
+        eprintln!(
+            "SUPPORTED ACTUAL registered Service request transport:32 inline terminal slots/full exact retry/cancel during initialize/control completion; fake output only"
+        );
+    }
+    #[test]
+    fn registered_service_requests_reach_actual_editor_and_history_without_request_mpsc() {
+        use hex_session::service::Request;
+        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
+        super::super::tests::initialize_test_table();
+        let (_id, control) =
+            super::super::worker_startup::worker_from_existing_table_on_control().unwrap();
+        let stop = control.stop_endpoint();
+        let (_observed, closed, sink) = observed_sink(false);
+        let service = hex_session::service::Service::with_audio_sink_and_worker_control(
+            8, 1024, None, sink, control,
+        )
+        .unwrap();
+        let initial = super::super::tests::receive(&service);
+        assert_eq!(initial.state.project.tracks().len(), 0);
+        service
+            .submit(Request::Edit(hex_project::Command::AddTrack {
+                name: "request fifo".into(),
+            }))
+            .unwrap();
+        let added = super::super::tests::receive(&service);
+        assert!(added.error.is_none());
+        assert_eq!(added.state.project.tracks().len(), 1);
+        service.submit(Request::Undo).unwrap();
+        let undone = super::super::tests::receive(&service);
+        assert!(undone.error.is_none());
+        assert_eq!(undone.state.project.tracks().len(), 0);
+        service.submit(Request::Redo).unwrap();
+        let redone = super::super::tests::receive(&service);
+        assert!(redone.error.is_none());
+        assert_eq!(redone.state.project.tracks().len(), 1);
+        drop((initial, added, undone, redone));
+        drop(service);
+        closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        wait_retired(stop);
+        eprintln!(
+            "SUPPORTED ACTUAL registered Service request consumer:Edit/AddTrack->Undo->Redo real canonical worker/history/ACK; legacy Event/compiled remaining UNQUALIFIED"
+        );
+    }
+    static PAUSE_OUTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static OUTER_ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    fn paused_family_step(
+        family: &mut SessionExportFamily,
+    ) -> Result<hex_audio::RetainedFamilyProgress, RetainedFamilyError> {
+        if PAUSE_OUTER.load(Ordering::Acquire) {
+            OUTER_ENTERED.store(true, Ordering::Release);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while PAUSE_OUTER.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        family
+            .cleanup_one_on_control()
+            .map(|p| match p {
+                hex_session::snapshot_exports::SnapshotFamilyCleanup::Pending => {
+                    hex_audio::RetainedFamilyProgress::Pending
+                }
+                hex_session::snapshot_exports::SnapshotFamilyCleanup::Disposed => {
+                    hex_audio::RetainedFamilyProgress::Disposed
+                }
+            })
+            .map_err(|_| RetainedFamilyError::Failed)
+    }
+    #[test]
+    fn registered_service_outer_lookup_busy_preserves_the_actual_retry_request() {
+        use hex_session::{
+            device_gesture::{
+                DeviceParameterSnapshot, GestureKey, GestureRequest, ParameterId, ParameterValue,
+            },
+            service::{Request, SubmitError},
+        };
+        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
+        super::super::tests::initialize_test_table();
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                PAUSE_OUTER.store(false, Ordering::Release);
+            }
+        }
+        let _reset = Reset;
+        let slot = retry_busy(
+            hex_audio::reserve_retained_family_slot_on_control,
+            RetainedFamilyError::Busy,
+        );
+        let (family, key) = SessionExportFamily::try_new_on_control(SnapshotExportReservation {
+            snapshot_records: 2,
+            read_records: 4,
+            max_bookkeeping_bytes: 65_536,
+        })
+        .unwrap();
+        let mut pending = Some(family);
+        let id = retry_busy(
+            || {
+                hex_audio::register_retained_family_on_control(
+                    &slot,
+                    &mut pending,
+                    hex_audio::retained_family_job_body_quote::<SessionExportFamily>(),
+                    paused_family_step,
+                )
+            },
+            RetainedFamilyError::Busy,
+        );
+        let (worker, _) = retry_busy(
+            || hex_audio::bind_retained_family_worker_on_control(id),
+            RetainedFamilyError::Busy,
+        );
+        let mut worker = Some(worker);
+        let mut key = Some(key);
+        let control = retry_busy(
+            || bind_registered_worker_on_control(&mut worker, &mut key),
+            Error::Busy,
+        );
+        let stop = control.stop_endpoint();
+        let (observed, closed, sink) = observed_sink(true);
+        let service = hex_session::service::Service::with_audio_sink_and_worker_control(
+            8, 1024, None, sink, control,
+        )
+        .unwrap();
+        wait_until(|| observed.initialized.load(Ordering::Acquire) == 1);
+        OUTER_ENTERED.store(false, Ordering::Release);
+        PAUSE_OUTER.store(true, Ordering::Release);
+        wait_until(|| OUTER_ENTERED.load(Ordering::Acquire));
+        let terminal = GestureRequest::CommitSnapshot {
+            key: GestureKey {
+                generation: 8,
+                token: 101,
+            },
+            sequence: 23,
+            snapshot: DeviceParameterSnapshot::new(&[(
+                ParameterId::from_static(1),
+                ParameterValue::Float(0.75),
+            )])
+            .unwrap(),
+        };
+        let result = service.submit(Request::DeviceGesture(terminal));
+        PAUSE_OUTER.store(false, Ordering::Release);
+        let Err(SubmitError::Busy(Request::DeviceGesture(actual))) = result else {
+            panic!("outer busy must return the exact producer request");
+        };
+        assert_eq!(actual, terminal);
+        let mut retry = Request::DeviceGesture(actual);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match service.submit(retry) {
+                Ok(()) => break,
+                Err(SubmitError::Busy(returned)) if Instant::now() < deadline => {
+                    retry = returned;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                other => panic!("original retry refused: {other:?}"),
+            }
+        }
+        drop(service);
+        closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        wait_retired(stop);
+        eprintln!(
+            "SUPPORTED actual registered outer-slot writer Busy BEFORE callback: original inline request returned, retry succeeds, no new Audio input API/owning closure/dummy request"
+        );
     }
 }

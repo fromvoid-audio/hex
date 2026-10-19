@@ -20,6 +20,8 @@ use hex_tuning::ProjectTuning;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
+mod request_transport;
+use request_transport::{RequestReceiver, RequestSender};
 mod canonical_audio_source;
 pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
@@ -591,7 +593,7 @@ impl std::error::Error for ServiceError {
 
 /// UI-owned endpoints. Dropping both channels detaches the worker without joining it.
 pub struct Service {
-    requests: SyncSender<Request>,
+    requests: RequestSender,
     events: Receiver<Event>,
     export_events: Receiver<ExportEvent>,
     export_busy: AtomicBool,
@@ -797,8 +799,27 @@ impl Service {
             None
         };
         let mut startup = WorkerStartup::new(session, control, worker_shutdown);
+        let (request_tx, request_rx) = match startup.control() {
+            Some(control) => {
+                let endpoint = control.prepare_requests_on_control().map_err(|_| {
+                    ServiceError::Session(SessionError::Invalid(
+                        "registered request storage is unavailable",
+                    ))
+                })?;
+                (
+                    RequestSender::Registered(endpoint),
+                    RequestReceiver::Registered(endpoint),
+                )
+            }
+            None => {
+                let (sender, receiver) = mpsc::sync_channel(REQUEST_CAPACITY);
+                (
+                    RequestSender::Unqualified(sender),
+                    RequestReceiver::Unqualified(receiver),
+                )
+            }
+        };
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
-        let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
@@ -886,7 +907,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            match try_submit(&self.requests, request) {
+            match self.requests.submit(request) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.export_busy.store(false, Ordering::Release);
@@ -894,7 +915,7 @@ impl Service {
                 }
             }
         } else {
-            try_submit(&self.requests, request)
+            self.requests.submit(request)
         }
     }
 
@@ -1308,7 +1329,7 @@ enum ArrangementClipboard {
 
 fn run_worker(
     mut session: Session,
-    requests: Receiver<Request>,
+    requests: RequestReceiver,
     mut events: WorkerEvents,
     export_work: SyncSender<ExportWork>,
     export_events: SyncSender<ExportEvent>,
@@ -1462,7 +1483,11 @@ fn run_worker(
         return;
     }
 
-    while let Some(request) = events.next_request(&requests, &dispatch_state!(None, None)) {
+    while let Some(delivery) = events.next_request(&requests, &dispatch_state!(None, None)) {
+        let crate::snapshot_exports::NativeRequestDelivery {
+            request,
+            stamp: request_stamp,
+        } = delivery;
         let mut computer_keyboard_complete = None;
         let mut tuning_audition_complete = None;
         let mut live_expression_complete = None;
@@ -3155,6 +3180,9 @@ fn run_worker(
             restore_prepared,
             preview_project,
         ));
+        if !events.complete_request(&requests, request_stamp) {
+            return;
+        }
         if !events.send(
             Event {
                 snapshot_reads: Default::default(),
@@ -6563,7 +6591,7 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let service = Service {
-            requests,
+            requests: requests.into(),
             events,
             export_events,
             export_busy: AtomicBool::new(false),

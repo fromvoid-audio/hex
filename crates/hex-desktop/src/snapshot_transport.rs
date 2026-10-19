@@ -176,4 +176,8 @@ pub use inventory::{
 };
 
 mod worker_control;
+mod worker_startup;
 pub use worker_control::bind_registered_worker_on_control;
+pub(super) use worker_startup::{
+    configure_native_table_on_control, worker_from_existing_table_on_control,
+};

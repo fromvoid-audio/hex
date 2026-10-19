@@ -16,6 +16,7 @@ pub struct SnapshotWorkerOperations {
     cancel: Cancel,
     finish: Finish,
     report: Report,
+    requests: Option<&'static super::SnapshotRequestOperations>,
 }
 impl SnapshotWorkerOperations {
     pub const fn new_unqualified(
@@ -29,7 +30,15 @@ impl SnapshotWorkerOperations {
             cancel,
             finish,
             report,
+            requests: None,
         }
+    }
+    pub const fn with_native_requests(
+        mut self,
+        requests: &'static super::SnapshotRequestOperations,
+    ) -> Self {
+        self.requests = Some(requests);
+        self
     }
 }
 /// UI correlation only. Copying it cannot retain a signal, family, PCM or job.
@@ -90,6 +99,12 @@ impl SnapshotWorkerControl {
                 Err(Error::Protocol)
             }
         }
+    }
+    pub(crate) fn prepare_requests_on_control(
+        &self,
+    ) -> Result<super::SnapshotRequestEndpoint, Error> {
+        let operations = self.stop.operations.requests.ok_or(Error::Protocol)?;
+        super::SnapshotRequestEndpoint::prepare(self.stop.route, operations)
     }
     pub fn stop_endpoint(&self) -> SnapshotWorkerStop {
         self.stop

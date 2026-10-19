@@ -22,6 +22,7 @@ pub struct SessionExportFamily {
     records: RwLock<SnapshotExportRecords>,
     abandoned: AtomicBool,
     retiring_compiled: native_transport::CompiledRetirement,
+    retiring_request: native_requests::RequestRetirement,
 }
 /// Control-only structural inventory guard. No records, model, waveform owner
 /// or mutable payload escapes. Atomics for ACK/derive/abandon are NOT frozen.
@@ -44,6 +45,7 @@ pub struct SessionExportFamily {
 pub struct SnapshotFamilyInventoryGuard<'a> {
     records: RwLockReadGuard<'a, SnapshotExportRecords>,
     retiring_compiled: &'a native_transport::CompiledRetirement,
+    retiring_request: &'a native_requests::RequestRetirement,
 }
 impl SnapshotFamilyInventoryGuard<'_> {
     pub fn inventory_revision(&self) -> u64 {
@@ -61,7 +63,8 @@ impl SnapshotFamilyInventoryGuard<'_> {
         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
     ) -> Result<(), hex_engine::AudioStorageError> {
         self.records.visit_selected_storage_on_control(ledger)?;
-        self.retiring_compiled.visit(ledger)
+        self.retiring_compiled.visit(ledger)?;
+        self.retiring_request.visit()
     }
 }
 impl SessionExportFamily {
@@ -96,6 +99,7 @@ impl SessionExportFamily {
             records,
             abandoned,
             retiring_compiled,
+            retiring_request,
         } = self;
         let _: (&u64, &AtomicBool) = (identity, abandoned);
         let records = records.try_read().map_err(|error| match error {
@@ -105,6 +109,7 @@ impl SessionExportFamily {
         Ok(SnapshotFamilyInventoryGuard {
             records,
             retiring_compiled,
+            retiring_request,
         })
     }
     pub fn try_new_on_control(
@@ -128,6 +133,7 @@ impl SessionExportFamily {
                 records: RwLock::new(records),
                 abandoned: AtomicBool::new(false),
                 retiring_compiled: native_transport::CompiledRetirement::default(),
+                retiring_request: Default::default(),
             },
             key,
         ))
@@ -235,6 +241,76 @@ impl SessionExportFamily {
             .ok_or(ExportRecordError::Stale)?
             .borrowed(stamp)?
             .metadata())
+    }
+    /// Reserve actual native request backing before a bound Service can escape.
+    pub fn prepare_requests_on_control(&self) -> Result<(), ExportRecordError> {
+        let mut records = self
+            .records
+            .try_write()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        let existing = std::mem::size_of::<SnapshotExportRecords>()
+            .checked_add(
+                records
+                    .snapshots
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<SnapshotRecord>())
+                    .ok_or(ExportRecordError::Reservation)?,
+            )
+            .and_then(|n| {
+                n.checked_add(
+                    records
+                        .reads
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<ReadRecord>())?,
+                )
+            })
+            .ok_or(ExportRecordError::Reservation)?;
+        let remaining = records
+            .max_bookkeeping_bytes
+            .checked_sub(existing)
+            .ok_or(ExportRecordError::Reservation)?;
+        records.native_requests.prepare(remaining)
+    }
+    pub fn send_request_on_control(
+        &self,
+        source: &mut Option<crate::service::Request>,
+    ) -> Result<(), ExportRecordError> {
+        let mut records = self
+            .records
+            .try_write()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        records.native_requests.send(source)
+    }
+    pub fn receive_request_on_control(
+        &self,
+        destination: &mut Option<NativeRequestDelivery>,
+    ) -> Result<(), ExportRecordError> {
+        let mut records = self
+            .records
+            .try_write()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        let family = records.family;
+        records.native_requests.receive(family, destination)
+    }
+    /// Shared-lock durable ACK destroys no owner, and cannot certify children.
+    pub fn complete_request_on_control(
+        &self,
+        stamp: NativeRequestStamp,
+    ) -> Result<(), ExportRecordError> {
+        let records = self
+            .records
+            .try_read()
+            .map_err(|_| ExportRecordError::Busy)?;
+        records.native_requests.complete(records.family, stamp)
     }
     pub fn insert_on_control(
         &self,
@@ -375,6 +451,7 @@ impl SessionExportFamily {
         Ok(read(SnapshotFamilyQueries {
             records: &records,
             retiring_compiled: &self.retiring_compiled,
+            retiring_request: &self.retiring_request,
         }))
     }
     /// Called only by the already-registered persistent control adapter. One
@@ -389,6 +466,29 @@ impl SessionExportFamily {
         };
         if self.abandoned.load(Ordering::Acquire) {
             records.close_on_control()?;
+        }
+        if !self.retiring_request.vacant() {
+            return Err(ExportRecordError::Stale);
+        }
+        if self.abandoned.load(Ordering::Acquire) {
+            records.native_requests.close();
+        }
+        let family = records.family;
+        if self.abandoned.load(Ordering::Acquire)
+            && records
+                .native_requests
+                .begin_cleanup(family, &mut self.retiring_request)?
+        {
+            drop(records);
+            self.retiring_request.release();
+            let records = self
+                .records
+                .get_mut()
+                .map_err(|_| ExportRecordError::Stale)?;
+            records
+                .native_requests
+                .finish_cleanup(family, &mut self.retiring_request)?;
+            return Ok(SnapshotFamilyCleanup::Pending);
         }
         if !self.retiring_compiled.vacant() {
             return Err(ExportRecordError::Stale);
@@ -437,7 +537,9 @@ impl SessionExportFamily {
             drop(records.snapshots[index].snapshot.take());
             records.snapshots[index].cleanup_started = false;
         }
-        if self.retiring_compiled.vacant()
+        if self.retiring_request.vacant()
+            && records.native_requests.disposed()
+            && self.retiring_compiled.vacant()
             && records
                 .native_compiled
                 .as_ref()
@@ -462,6 +564,7 @@ impl SessionExportFamily {
 pub struct SnapshotFamilyQueries<'a> {
     records: &'a SnapshotExportRecords,
     retiring_compiled: &'a native_transport::CompiledRetirement,
+    retiring_request: &'a native_requests::RequestRetirement,
 }
 impl SnapshotFamilyQueries<'_> {
     /// Actual nested records while the enclosing family read guard stays held.
@@ -472,7 +575,8 @@ impl SnapshotFamilyQueries<'_> {
         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
     ) -> Result<(), hex_engine::AudioStorageError> {
         self.records.visit_selected_storage_on_control(ledger)?;
-        self.retiring_compiled.visit(ledger)
+        self.retiring_compiled.visit(ledger)?;
+        self.retiring_request.visit()
     }
 
     pub fn inventory_revision(&self) -> u64 {
@@ -742,5 +846,47 @@ mod nonstatic_vec_tests {
                 "guard references do not certify or silently charge nested owned data"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod request_budget_tests {
+    use super::super::native_requests::NativeRequests;
+    use super::*;
+    type Error = ExportRecordError;
+    #[test]
+    fn native_request_family_budget_includes_both_existing_backings_before_request_allocation() {
+        let base = std::mem::size_of::<SessionExportFamily>()
+            + 2 * std::mem::size_of::<SnapshotRecord>()
+            + 2 * std::mem::size_of::<ReadRecord>();
+        let request_bytes = NativeRequests::requested_backing().unwrap();
+        let exact = base.checked_add(request_bytes).unwrap();
+        for (limit, expected) in [(exact - 1, Err(Error::Reservation)), (exact, Ok(()))] {
+            let (mut family, key) =
+                SessionExportFamily::try_new_native_on_control(SnapshotExportReservation {
+                    snapshot_records: 2,
+                    read_records: 2,
+                    max_bookkeeping_bytes: limit,
+                })
+                .unwrap();
+            assert_eq!(family.prepare_requests_on_control(), expected);
+            {
+                let records = family.records.read().unwrap();
+                assert_eq!(records.snapshots.capacity(), 2);
+                assert_eq!(records.reads.capacity(), 2);
+                assert_eq!(records.native_requests.ready(), expected.is_ok());
+            }
+            if expected.is_ok() {
+                assert_eq!(family.prepare_requests_on_control(), Err(Error::Stale));
+            }
+            family.abandon_on_control(&key).unwrap();
+            assert_eq!(
+                family.cleanup_one_on_control(),
+                Ok(SnapshotFamilyCleanup::Disposed)
+            );
+        }
+        eprintln!(
+            "SUPPORTED actual native family inline body+snapshot/read backings+request backing exact={exact}; minus1 refuses before request allocation (base family already exists)"
+        );
     }
 }

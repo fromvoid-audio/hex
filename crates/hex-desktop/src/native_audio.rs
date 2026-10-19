@@ -788,11 +788,16 @@ pub(super) fn backend() -> Result<EditorBackend, String> {
     let source_reservation = AudioPolicy::source_reservation();
     let (events, audio_events) = mpsc::sync_channel(4);
     let recovery = hex_session::service::untitled_recovery_path()?;
-    let service = Service::with_audio_sink(
+    crate::snapshot_transport::configure_native_table_on_control()
+        .map_err(|error| format!("native worker storage unavailable: {error:?}"))?;
+    let (_, control) = crate::snapshot_transport::worker_from_existing_table_on_control()
+        .map_err(|error| format!("native worker binding unavailable: {error:?}"))?;
+    let service = Service::with_audio_sink_and_worker_control(
         32,
         MAX_RESIDENT_FRAMES,
         Some(recovery),
         Box::new(NativeAudioSink::new(events)),
+        control,
     )
     .map_err(|e| e.to_string())?;
     Ok(EditorBackend {

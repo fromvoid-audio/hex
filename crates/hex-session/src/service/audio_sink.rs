@@ -140,20 +140,45 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    pub(super) fn complete_request(
+        &mut self,
+        requests: &RequestReceiver,
+        stamp: Option<crate::snapshot_exports::NativeRequestStamp>,
+    ) -> bool {
+        loop {
+            match requests.complete(stamp) {
+                Ok(()) => return true,
+                Err(crate::snapshot_exports::SnapshotTransportError::Busy) => {
+                    if self.cancelled() {
+                        if let Some(audio) = self.audio.as_mut() {
+                            audio.close();
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(_) => return false,
+            }
+        }
+    }
     pub(super) fn next_request(
         &mut self,
-        requests: &Receiver<Request>,
+        requests: &RequestReceiver,
         state: &WorkerDispatchState<'_>,
-    ) -> Option<Request> {
-        if self.audio.is_none() {
-            return requests.recv().ok();
+    ) -> Option<crate::snapshot_exports::NativeRequestDelivery> {
+        if self.audio.is_none()
+            && let Some(receiver) = requests.unqualified()
+        {
+            return receiver
+                .recv()
+                .ok()
+                .map(crate::snapshot_exports::NativeRequestDelivery::unqualified);
         }
         loop {
             if self.cancelled() {
                 return None;
             }
             self.poll(state, None, WorkerRootDispatch::Idle);
-            match requests.recv_timeout(Duration::from_millis(5)) {
+            match requests.receive_timeout(Duration::from_millis(5)) {
                 Ok(request) => return Some(request),
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}

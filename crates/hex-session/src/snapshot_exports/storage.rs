@@ -56,9 +56,12 @@ impl SnapshotExportRecords {
             snapshots,
             reads,
             native_compiled,
+            native_requests,
+            max_bookkeeping_bytes: _,
         } = self;
         let _: (&u64, &u64, &bool) = (family, revision, closed);
         self.visit_backings_on_control(ledger)?;
+        native_requests.visit(ledger)?;
         if let Some(records) = native_compiled {
             records.visit(ledger)?;
         }

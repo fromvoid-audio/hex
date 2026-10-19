@@ -1470,10 +1470,11 @@ native preparation slot retaining its incarnation and full reservation until
 release. This additional allocation changes current root-layout costs; historical
 source-bound byte boundaries above are not relabeled for this increment.
 
-This is an intermediate Engine/native-custody component. Startup still uses the
-legacy compiled/Event path, all four opaque Service mpsc queues remain in use,
-and the resource-aware complete candidate bridge and final joint publication
-frontier remain closed. The next work replaces admitted native transport with
+At the reader checkpoint, startup still used the legacy compiled/Event path
+and all four opaque Service mpsc queues remained in use. The Request increment
+below replaces one of those queues; the resource-aware complete candidate bridge
+and final joint publication frontier remain closed. The reader checkpoint did
+not qualify the Service path. The next work replaces admitted native transport with
 purpose-specific fixed-capacity records in the same registered Session family,
 including compiled, export, seek and real input ownership. Registered startup,
 exact captured-source/current-history inventory, original-rate loading and
@@ -1506,9 +1507,57 @@ repeat its destructive action; the next inventory/cleanup refuses. This is not a
 new mutex certificate: the accepted existing family exclusion and thread costs
 remain required, and no all-blocking-paths allocation claim is made.
 
-These concrete records are not yet the four native Service queues. Legacy
-Service startup/Event Playback, request/event/export/seek payloads, source
-association, complete original-bank compiler bridge and joint publication are
-still separate unfinished parts of the same playable Sampler deliverable. The
+At this compiled-slot checkpoint the four native Service queues were still
+separate. The Request increment below now consumes its actual registered slots.
+Legacy Service startup/Event Playback, event/export/seek payloads, source
+association, the complete original-bank compiler bridge and joint publication
+remain unfinished parts of the same playable Sampler deliverable. The
 current component tests use a real existing nonempty compiled audio-clip owner;
 they do not claim loaded Sampler PCM or native Service admission.
+
+
+### Registered Request transport: actual Service consumer, incomplete vertical
+
+The actual Desktop backend now creates one bounded family in the existing
+retained-family table and starts Service through
+`with_audio_sink_and_worker_control`. Its Request channel uses 32 initialized
+slots under that family's existing record RwLock, with no new per-record lock,
+registry or Request mpsc backing. The unregistered headless adapter retains an
+explicitly unqualified channel; failed registered preparation does not fall back.
+The existing event, export-work and export-result channels remain unqualified.
+
+The family's inline fields, persistent request-retirement destination, existing
+snapshot/read vector capacities and requested Request backing share the existing
+bookkeeping ceiling. Preparation checks remaining capacity before requesting the
+backing and refuses unexpected actual capacity before Service/thread escape.
+The exact/minus-one test covers this metadata composition before Request backing
+allocation; the already constructed base family is not described as unborn.
+This is not a whole Service retained/peak or allocator-platform qualification.
+
+A producer-local submission retains its actual Request through outer route Busy,
+inner writer Busy and full refusal. Only the fixed successful family insertion
+can consume it: no captured owning closure, dummy request or accepted flag is
+used. Generation and FIFO sequence are checked before transfer. The worker takes
+one payload into its actual local delivery; that claimed slot remains occupied
+and inventory refuses it until the worker has consumed the request and explicitly
+ACKed completion. ACK is a durable nonowning correlation, not a child-storage,
+publication or cleanup certificate. Known inline/path/vector variants have actual
+visitors; opaque commands, input Arcs and other unsupported variants still refuse.
+
+Cancellation closes submission, and queued payloads move into the actual
+persistent enclosing retirement field. The inner writer is released before
+payload destruction, with pending set before take/drop. Interrupted disposal
+cannot become vacant or repeat cleanup. An unacknowledged claim is not silently
+freed. Failed startup retains its actual family/key/worker fields through bounded
+Busy retries and uses the existing registered cancellation/completion path.
+
+Component fixtures execute real Service AddTrack/Undo/Redo, full 32-slot terminal
+backpressure, actual outer-lock Busy with unchanged retry request, cancellation,
+full Event queue shutdown and child-before-base completion. They share the real
+startup factory but use a fake audio sink and a private test table. They neither
+open an OS backend nor prove first qualified compiled startup, a complete worker
+root union, loaded Sampler PCM, native ACK/publication or musical acceptance.
+Event/UI borrowed consumption, original-rate Mono/Stereo loading, complete
+Arrangement/Session/runtime construction, joint publication/replacement/retirement
+and export/seek remain required for the same playable Service vertical. Mutable
+Send-only export/seek runtimes have no new Sync/lock workaround in this increment.

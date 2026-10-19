@@ -10,15 +10,18 @@ mod event;
 mod family;
 // Record transitions are independent of the platform exclusion primitive. The
 // existing family supplies structural exclusion; Service wiring is in progress.
+mod native_requests;
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "native Service transport integration in progress")
 )]
 mod native_transport;
+pub use native_requests::{NativeRequestDelivery, NativeRequestStamp};
 pub use native_transport::CompiledStamp as NativeCompiledStamp;
 mod storage;
 mod transport;
 mod worker_control;
+mod worker_requests;
 pub use family::{
     SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyInventoryGuard,
     SnapshotFamilyQueries, SnapshotProducerKey,
@@ -28,6 +31,8 @@ pub use transport::{
     SnapshotTransportError,
 };
 pub use worker_control::{SnapshotWorkerControl, SnapshotWorkerOperations, SnapshotWorkerStop};
+pub(crate) use worker_requests::SnapshotRequestEndpoint;
+pub use worker_requests::{NativeRequestSubmission, SnapshotRequestOperations};
 
 /// Component limits, taken from the same document/control reservation. They
 /// neither grant a new DATA allowance nor quote snapshot children/whole peak.
@@ -98,6 +103,8 @@ pub struct SnapshotExportRecords {
     snapshots: Vec<SnapshotRecord>,
     reads: Vec<ReadRecord>,
     native_compiled: Option<native_transport::NativeCompiledRecords>,
+    native_requests: native_requests::NativeRequests,
+    max_bookkeeping_bytes: usize,
 }
 /// A scoped read surface; even the underlying ViewState cannot be extracted.
 /// Copies are only borrowed queries, not registered readers or owners.
@@ -266,6 +273,8 @@ impl SnapshotExportRecords {
             snapshots,
             reads,
             native_compiled: None,
+            native_requests: Default::default(),
+            max_bookkeeping_bytes: limits.max_bookkeeping_bytes,
         })
     }
     pub fn inventory_revision(&self) -> u64 {
