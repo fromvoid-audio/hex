@@ -53,6 +53,21 @@ struct Binding {
     _observation: Subscription,
 }
 
+/// Mixer activators share palette resolution without adding project state.
+pub(super) fn activator_colors(active: bool) -> (u32, u32) {
+    let background = theme::color(if active {
+        theme::PaletteRole::Primary
+    } else {
+        theme::PaletteRole::Raised
+    });
+    let preferred = theme::color(if active {
+        theme::PaletteRole::Surface
+    } else {
+        theme::PaletteRole::Muted
+    });
+    (background, theme::readable_text(background, preferred))
+}
+
 fn automated(track: &Track) -> bool {
     !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
 }

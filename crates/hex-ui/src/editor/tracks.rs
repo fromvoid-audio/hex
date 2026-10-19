@@ -945,6 +945,9 @@ impl EditorView {
             });
         let live_volume = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         let header_content = if live_volume {
+            let (active_background, active_text) =
+                super::track_gain::activator_colors(!track.muted());
+            let (solo_background, solo_text) = super::track_gain::activator_colors(track.soloed());
             let utilities = div()
                 .id(("track-header-utilities", track_id.value()))
                 .on_click(|_, _, cx| cx.stop_propagation())
@@ -999,16 +1002,8 @@ impl EditorView {
             .flex_1()
             .min_w_0()
             .h(px(18.0))
-            .bg(rgb(theme::color(if track.muted() {
-                theme::PaletteRole::Raised
-            } else {
-                theme::PaletteRole::Primary
-            })))
-            .text_color(rgb(theme::color(if track.muted() {
-                theme::PaletteRole::Muted
-            } else {
-                theme::PaletteRole::Surface
-            })))
+            .bg(rgb(active_background))
+            .text_color(rgb(active_text))
             .child(theme::text((track_index + 1).to_string()))
             .on_click(cx.listener(move |view, _, _, cx| {
                 view.toggle_mute(track_id);
@@ -1022,16 +1017,8 @@ impl EditorView {
             .debug_selector(move || format!("track-solo-{}", track_id.value()))
             .w(px(28.0))
             .h(px(18.0))
-            .bg(rgb(theme::color(if track.soloed() {
-                theme::PaletteRole::Primary
-            } else {
-                theme::PaletteRole::Raised
-            })))
-            .text_color(rgb(theme::color(if track.soloed() {
-                theme::PaletteRole::Surface
-            } else {
-                theme::PaletteRole::Muted
-            })))
+            .bg(rgb(solo_background))
+            .text_color(rgb(solo_text))
             .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
                 view.toggle_solo(track_id, !event.modifiers().platform);
                 cx.notify();

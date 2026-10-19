@@ -612,7 +612,7 @@ impl NumericControl {
             {
                 delta_x
             }
-            // Rectangular readouts always scrub vertically, independent of the
+            // Other rectangular readouts scrub vertically, independent of the
             // track/dial presentation their owner uses.
             _ => -delta_y,
         };

@@ -797,4 +797,20 @@ fn return_header_filled_gain_commits_and_keyboard_invalid_draft_blocks_owner_tra
         )
     });
     visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let mute_id = Box::leak(format!("return-mute-{}", id.value()).into_boxed_str());
+    let on = visual.rendered_background(mute_id).unwrap();
+    assert_eq!(
+        on,
+        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Primary)).into()
+    );
+    let hit = visual.debug_bounds(mute_id).unwrap().center();
+    visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(hit, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().unwrap().project.return_tracks()[0].muted()
+    });
+    visual.run_until_parked();
+    assert_ne!(visual.rendered_background(mute_id).unwrap(), on);
 }

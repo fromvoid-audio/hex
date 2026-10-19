@@ -179,6 +179,7 @@ impl EditorView {
             let selected = self.focused_return == Some(id);
             let name = track.name().to_owned();
             let muted = track.muted();
+            let (active_background, active_text) = super::track_gain::activator_colors(!muted);
             let gain = track.gain();
             let gain_control = if self.document_audio_mode
                 == hex_session::DocumentAudioMode::Resident
@@ -281,8 +282,16 @@ impl EditorView {
                     return_button(
                         format!("return-mute-{}", id.value()),
                         if muted { "○" } else { "●" },
-                        "toggle return mute",
+                        if muted {
+                            "activate return"
+                        } else {
+                            "deactivate return"
+                        },
                     )
+                    .w(px(28.0))
+                    .h(px(18.0))
+                    .bg(rgb(active_background))
+                    .text_color(rgb(active_text))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         super::device_panel::enqueue_return_edit(
                             view,
