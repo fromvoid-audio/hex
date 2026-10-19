@@ -21,8 +21,13 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    PlaceIcon {
+        path: std::path::PathBuf,
+        id: Option<&'static str>,
+    },
     InsertTrack(InsertTrackAction),
     UtilityMode(UtilityModeAction),
+    DeviceComparison(super::device_comparison::Intent),
     TrackColor {
         generation: u64,
         track: TrackId,
@@ -57,6 +62,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             selected: 0,
             focus,
@@ -137,6 +143,7 @@ impl EditorView {
         window.focus(&focus);
         let target = flavor.toggled();
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             selected: 0,
             focus,
@@ -192,6 +199,7 @@ impl EditorView {
             ("switch to mid/side", true)
         };
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             items: vec![MenuItem {
                 label,
@@ -226,6 +234,12 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::DeviceComparison(target) => {
+                self.perform_device_comparison(target, cx)
+            }
+            EditorContextAction::PlaceIcon { path, id } => {
+                self.set_browser_place_icon(path, id, cx)
+            }
             EditorContextAction::TrackColor {
                 generation,
                 track,
@@ -332,6 +346,12 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::DeviceComparison(target) => {
+                    !super::device_comparison::current(self, target)
+                }
+                EditorContextAction::PlaceIcon { path, .. } => {
+                    !self.browser_place_icon_assignable(path)
+                }
                 EditorContextAction::InsertTrack(_) => false,
                 EditorContextAction::TrackColor {
                     generation, track, ..

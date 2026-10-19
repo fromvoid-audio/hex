@@ -1120,6 +1120,16 @@ impl App {
         self.platform.prompt_for_paths(options)
     }
 
+    /// Select paths, optionally starting in an exact native directory.
+    /// Platforms without a directory override retain their ordinary picker.
+    pub fn prompt_for_paths_with_directory(
+        &self,
+        options: PathPromptOptions,
+        directory: Option<&Path>,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        self.platform.prompt_for_paths_with_directory(options, directory)
+    }
+
     /// Displays a platform modal for selecting a new path where a file can be saved.
     ///
     /// The provided directory will be used to set the initial location.

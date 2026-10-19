@@ -1185,6 +1185,7 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
     Ok(DeviceSnapshot {
         id: device.id,
         bypassed: device.bypassed,
+        comparison: None,
         state,
     })
 }
@@ -2049,6 +2050,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid("unsupported alpha project format 30"));
         }
         if header.version == 31 {
+            return Err(StorageError::Invalid("unsupported alpha project format 31"));
+        }
+        if header.version == 32 {
             return tuning::decode(bytes);
         }
         if header.version == 29 {

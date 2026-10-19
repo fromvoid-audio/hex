@@ -20,6 +20,8 @@ pub use clip_clipboard::ClipClipboard;
 mod clip_fragment;
 mod conversion;
 mod device;
+mod device_comparison;
+pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
 mod device_assets;
 pub use device::{
     DEFAULT_INSTRUMENT_TYPE_ID, Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK,
@@ -568,6 +570,7 @@ impl Project {
         for track in &mut self.tracks {
             if track.instrument.is_none() {
                 track.instrument = Some(Device {
+                    comparison: None,
                     id: DeviceId(id),
                     state: state.clone(),
                     bypassed: false,

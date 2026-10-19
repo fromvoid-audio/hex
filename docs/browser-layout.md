@@ -14,8 +14,10 @@ The picker has an independent 4 px drag divider. Its session-only width starts a
 124 px, leaves at least 120 px for results, and resizes continuously to a 23 px
 minimum: the existing 22 px browser-control hit/centering slot plus the sidebar's
 existing 1 px right border. Collection, Library and Place glyphs share that fixed
-leading slot at every width. Labels hide below 64 px without moving the icon column;
-drag right to restore them. Full-row hit targets remain at least 22 px wide/high.
+leading slot at every width. Single-line labels progressively clip to the remaining
+space beside the icon, reaching zero width without ellipsis. Group headings and
+open section settings retain their line/row space during resizing, so source rows
+and icons do not jump vertically. Full-row hit targets remain at least 22 px wide/high.
 In icon mode, collections, sections and folder places retain name tooltips; folder
 save/error status remains available by hover.
 Section settings expand the picker when opened. All paint uses the existing semantic
