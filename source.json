@@ -1,0 +1,125 @@
+{
+  "head": "a9278234a03e90de0a59ebc43d81a0b008b4b03e",
+  "tree": "2e39c1f83e86d6930e086a95e2525b27d5707a70",
+  "parent_plan": "61b105a3e07ffb9674299415bbbd15d2cba5797a",
+  "pinned_main": "2eef0cb1ab096445df38c704ed3a1dfe68e4bdb3",
+  "main_tree": "bda231deb49e8c65aa2b2d00a85fe23958dca9dc",
+  "files": {
+    "crates/hex-project/src/audio_edit.rs": {
+      "sha256": "2439a18e84bfbf6b16118c01e9cf59c4bef2e06af258042dcedcc562fc0e0f01",
+      "blob": "8b3b1f12f8a400ee4406dd83d7eb9c6eb8d9f3b6"
+    },
+    "crates/hex-project/src/audio_edit/commands.rs": {
+      "sha256": "f3301002ce36c693956c707410fddcd55c640d7195f846a2883d930b540441d6",
+      "blob": "e2887002ce5488aedeffca6e2f73a6f77ee2b39a"
+    },
+    "crates/hex-project/src/audio_edit/stretch.rs": {
+      "sha256": "ed5c0b1ee05225be6e9429fa6b31a3d2e0508e8fee6a487d5734d87072216a0d",
+      "blob": "908527cf9883afb913009da7f3c5d44b93e1a11f"
+    },
+    "crates/hex-project/src/audio_edit/view.rs": {
+      "sha256": "a6e8d4b1f0ab5ff0b7ca86618c74237b755c149ff333b3e71f084580b5f2f709",
+      "blob": "d7584e258d34e78431c6062f4c75189fa573e0c6"
+    },
+    "crates/hex-project/src/clip_fade_trim.rs": {
+      "sha256": "9fa0949c5a82188abd3877dfd5ea194709a5d4f547d6dcb7c8b2460f2db3e9d5",
+      "blob": "8e1da6bf413cd5ff35a6d66a9b51f272f9b9b81d"
+    },
+    "crates/hex-project/src/edit.rs": {
+      "sha256": "8a229ab59b3bfeda1f0914d37523e9b3aa172e8e858b35d07cf92d193c3e1923",
+      "blob": "f0d4ac2cb77cec35012177ae8307ed65eae91c3c"
+    },
+    "crates/hex-project/src/lib.rs": {
+      "sha256": "2f12d39422f719b9f9150e71dbbd6a138c630c254bfa34bf6d03d2c1207439d4",
+      "blob": "729e90703cc476d585c00127e49afb2cd55b101d"
+    },
+    "crates/hex-project/tests/audio_view.rs": {
+      "sha256": "40018436d81cff5f510840cbcb6c170157b06dd66704d955c67b7ba73973064b",
+      "blob": "430a46a8b62a378f09d1deb4fa70cba1d0326513"
+    },
+    "crates/hex-storage/src/audio_edit.rs": {
+      "sha256": "b4a5f8eda1528a1458b01d124d2a1a43227703c022287089762f89caf2661cea",
+      "blob": "f069d1a040b7a1d1cb8909dcabb66f5919dceb35"
+    },
+    "crates/hex-storage/src/lib.rs": {
+      "sha256": "026939e2ab27ed6344ae025b2b0abb364b96c3b5cb9e8a17a63f6efb68d23cdd",
+      "blob": "3115362087337b77b3ee13fe853967fd5b071fb6"
+    },
+    "crates/hex-storage/src/schema.rs": {
+      "sha256": "e81d3aaebea7ed4be03582a80587e76d23f54e1e134831e67ca176fdc085ddf2",
+      "blob": "84a0a759d3628aad0b67f2fe8835edbf0d9bdfbb"
+    },
+    "crates/hex-storage/src/schema/fade_shapes.rs": {
+      "sha256": "35d8de15f7b7481d5910ace384f462f0eb094facf1cb30862cd14f7cf09ecf21",
+      "blob": "26b28c5a201df26ff14df56575c9df0ba4a38a8b"
+    },
+    "crates/hex-storage/src/schema/gain_touch/tests.rs": {
+      "sha256": "9d7df512b982b93c1a6be2b28bfc9f0fa433b489cd0c338984558c89348cad5a",
+      "blob": "cc42b15686f8c875c64e0066f22c73a90f78e29f"
+    },
+    "crates/hex-storage/src/schema/host_gain.rs": {
+      "sha256": "2fd992fc1028c716aca94398433a5fcd1f09c29b5465862b06d832275ddc5bed",
+      "blob": "bd76b95440ccf500a744314536076e5061c3c411"
+    },
+    "crates/hex-storage/src/schema/tuning.rs": {
+      "sha256": "b8b4b6fc2454905398fc6d7d576a3aad116f753b2c443dd0da941221d14d32e9",
+      "blob": "9754b0c5bc195f187ec8d2f7edb545a880a14515"
+    },
+    "crates/hex-storage/tests/appearance.rs": {
+      "sha256": "758cb8353dcb3a52021db1ba876354671b0cd2defd6115b88a0c3244604ae079",
+      "blob": "7d9e35e32709bc97f07faae6c42e4127ad4ea912"
+    },
+    "crates/hex-storage/tests/audio_edit.rs": {
+      "sha256": "db70ef28d6692a7fb0a6954c6b920ae9f6ba8fd0e9db59e5fb4f98aee7cb8098",
+      "blob": "f01a44ea497175a14e9354c576dcc9b81deb8b83"
+    },
+    "crates/hex-storage/tests/audio_events.rs": {
+      "sha256": "352c960f028b0c0a37971aead7da9ea8210b11c2c0499d74f6d505fbc17f1519",
+      "blob": "7cbf8fc74a70b842e027b94e547a977868a4a3be"
+    },
+    "crates/hex-storage/tests/audio_view.rs": {
+      "sha256": "16d557867e41ad265a710af80ba06d21d47c9f83350819e2717ba90baf329681",
+      "blob": "caf00b07c891dea44bd65ad02f3eb545e8f89595"
+    },
+    "crates/hex-storage/tests/device_assets.rs": {
+      "sha256": "6dfc9580c5d9baef7aa29f59dec01cf82dec00db6281e23871d177b81bd7c18c",
+      "blob": "59761e8ea872b05899da9436b295a1e4c5201f71"
+    },
+    "crates/hex-storage/tests/gain_envelope.rs": {
+      "sha256": "a13e054af8b5aa4e92aa47bf4c99ed5d9aa4e5f8f10ba2a2862fa07e841324fa",
+      "blob": "e9127bc36e3e0f91434892139d77d07637079b5a"
+    },
+    "crates/hex-storage/tests/persistence.rs": {
+      "sha256": "2210cec22def97ade4f8fae817252e58f8ad1bd8a4e8f4e76fd044f174aa41bb",
+      "blob": "c21df51ec7c3ef0af3fc1deff3ac171e3d481830"
+    },
+    "crates/hex-storage/tests/playable_routing.rs": {
+      "sha256": "51f34c9c31baaf7d2b83b4b8a5ac47b45eb492601c174a3be0373e8a2d667c6c",
+      "blob": "8c9bedb76dcb0ec2be8bad5f15aa55e93b794f2f"
+    },
+    "crates/hex-storage/tests/provenance.rs": {
+      "sha256": "00f6270ca6fcc01d9cfe841d5c57eb77b679877a0fb53623882db7b0db2ece27",
+      "blob": "342cd6a8fc79ec0cea7a2ad8147256b9b500f73f"
+    },
+    "crates/hex-storage/tests/return_feeds.rs": {
+      "sha256": "b6dc1cc7bafee7a9138a9e371223a846bd8d2cbb2c7da2a0a5242a2820c11a2e",
+      "blob": "e75851f743d21e4fed9868af69598f20609f5670"
+    },
+    "crates/hex-storage/tests/schema_lineages.rs": {
+      "sha256": "fb65048ee490a20dd09fc56c7d30b534c7e6ea3d9d52e1b4b72158f2561ca35a",
+      "blob": "13e63feee57c2f659c220612935da369e4fe1310"
+    },
+    "crates/hex-storage/tests/tuning.rs": {
+      "sha256": "16bb52f0d06235081edbb3b79c7f13c5d59d517e31790e2246199b4751c3b8a7",
+      "blob": "999502df9f7c806456116535a7a30379620d8f25"
+    },
+    "docs/audio-view-model.md": {
+      "sha256": "a8bec87bd9361abcb2126fb691ff8b9dd15a9452902e97b5f3b473a2b91581a4",
+      "blob": "cac31eb12ae3dc99646b0d957184f36f90cb6235"
+    },
+    "todo.md": {
+      "sha256": "7223b24ba0c649656e3acb43fadf42e39da0a0d98534b863308e3be72c504b1a",
+      "blob": "a1edf2f58b8037c20a9c3c001ebbacc0ae6ceef6"
+    }
+  }
+}
