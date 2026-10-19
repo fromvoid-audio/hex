@@ -30,9 +30,10 @@ pub(super) struct LoopRailGesture {
     timeline_width: f32,
     mode: EditMode,
     preview: Option<LoopRegion>,
-    pointer_down_x: f32,
-    last_pointer_x: f32,
+    pointer_down: gpui::Point<gpui::Pixels>,
+    last_pointer: gpui::Point<gpui::Pixels>,
     moved: bool,
+    click_disqualified: bool,
     toggle_on_click: bool,
 }
 
@@ -47,11 +48,12 @@ impl EditorView {
     fn begin_loop_rail_gesture(
         &mut self,
         bounds: Bounds<gpui::Pixels>,
-        x: f32,
+        position: gpui::Point<gpui::Pixels>,
         modifiers: Modifiers,
         viewport: Viewport,
         region: Option<LoopRegion>,
     ) -> bool {
+        let x = f32::from(position.x);
         let Some(state) = self.state.as_ref() else {
             return false;
         };
@@ -74,6 +76,7 @@ impl EditorView {
             || modifiers.alt
             || modifiers.control
             || !x.is_finite()
+            || !f32::from(position.y).is_finite()
         {
             return false;
         }
@@ -128,9 +131,10 @@ impl EditorView {
                     timeline_width,
                     mode,
                     preview: Some(region),
-                    pointer_down_x: x,
-                    last_pointer_x: x,
+                    pointer_down: position,
+                    last_pointer: position,
                     moved: false,
+                    click_disqualified: false,
                     toggle_on_click: modifiers.platform,
                 });
                 return true;
@@ -156,15 +160,21 @@ impl EditorView {
             timeline_width,
             mode: EditMode::Paint { anchor },
             preview: None,
-            pointer_down_x: x,
-            last_pointer_x: x,
+            pointer_down: position,
+            last_pointer: position,
             moved: false,
+            click_disqualified: false,
             toggle_on_click: false,
         });
         true
     }
 
-    fn update_loop_rail_gesture(&mut self, x: f32, modifiers: Modifiers) -> bool {
+    fn update_loop_rail_gesture(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: Modifiers,
+    ) -> bool {
+        let x = f32::from(position.x);
         let Some(mut gesture) = self.loop_rail_gesture.take() else {
             return false;
         };
@@ -182,6 +192,7 @@ impl EditorView {
             || self.opening_project
             || self.close_prompt_open
             || !x.is_finite()
+            || !f32::from(position.y).is_finite()
         {
             return true;
         }
@@ -194,8 +205,11 @@ impl EditorView {
             self.loop_rail_gesture = Some(gesture);
             return true;
         };
-        gesture.last_pointer_x = x;
-        gesture.moved |= (x - gesture.pointer_down_x).abs() > 3.0;
+        gesture.last_pointer = position;
+        gesture.moved |= (x - f32::from(gesture.pointer_down.x)).abs() > 3.0;
+        // Vertical travel disqualifies a click without qualifying a horizontal move.
+        gesture.click_disqualified |= gesture.moved
+            || (f32::from(position.y) - f32::from(gesture.pointer_down.y)).abs() > 3.0;
         if let EditMode::Move { original, anchor } = gesture.mode {
             let delta = i128::from(frame) - i128::from(anchor);
             let start = if modifiers.shift {
@@ -260,11 +274,15 @@ impl EditorView {
         true
     }
 
-    fn finish_loop_rail_gesture(&mut self, x: f32, modifiers: Modifiers) -> bool {
+    fn finish_loop_rail_gesture(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: Modifiers,
+    ) -> bool {
         if self.loop_rail_gesture.is_none() {
             return false;
         }
-        self.update_loop_rail_gesture(x, modifiers);
+        self.update_loop_rail_gesture(position, modifiers);
         let Some(gesture) = self.loop_rail_gesture.take() else {
             return true;
         };
@@ -278,7 +296,7 @@ impl EditorView {
         {
             return true;
         }
-        if !gesture.moved && gesture.toggle_on_click && modifiers.platform {
+        if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
             let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
             return true;
         }
@@ -313,7 +331,7 @@ impl EditorView {
             return self.cancel_loop_rail_gesture();
         }
         self.loop_rail_gesture
-            .is_some_and(|gesture| self.update_loop_rail_gesture(gesture.last_pointer_x, modifiers))
+            .is_some_and(|gesture| self.update_loop_rail_gesture(gesture.last_pointer, modifiers))
     }
 
     fn loop_rail_hover(&self, x: f32, viewport: Viewport, bounds: Bounds<gpui::Pixels>) -> Hover {
@@ -409,7 +427,7 @@ pub(super) fn view(
                                             || view.sample_bpm_editing(cx) { return false; }
                                         let started = view.begin_loop_rail_gesture(
                                             bounds,
-                                            f32::from(event.position.x),
+                                            event.position,
                                             event.modifiers,
                                             viewport,
                                             current_region,
@@ -459,7 +477,7 @@ pub(super) fn view(
                                     let changed = move_entity.update(cx, |view, _| {
                                         if !view.focus.is_focused(window) { return view.cancel_loop_rail_gesture(); }
                                         view.update_loop_rail_gesture(
-                                            f32::from(event.position.x),
+                                            event.position,
                                             event.modifiers,
                                         )
                                     });
@@ -478,7 +496,7 @@ pub(super) fn view(
                                     let finished = up_entity.update(cx, |view, _| {
                                         if !view.focus.is_focused(window) { return view.cancel_loop_rail_gesture(); }
                                         view.finish_loop_rail_gesture(
-                                            f32::from(event.position.x),
+                                            event.position,
                                             event.modifiers,
                                         )
                                     });

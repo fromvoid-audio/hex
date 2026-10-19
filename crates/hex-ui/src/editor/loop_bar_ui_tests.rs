@@ -642,3 +642,102 @@ fn command_vertical_motion_final_release_is_not_toggle(cx: &mut TestAppContext) 
 fn command_vertical_motion_return_to_origin_is_not_toggle(cx: &mut TestAppContext) {
     command_vertical_motion_control(cx, &[80.0, 0.0], 0.0);
 }
+
+#[gpui::test]
+fn command_click_stationary_and_rectangular_three_pixel_jitter_still_toggle(
+    cx: &mut TestAppContext,
+) {
+    for (dx, dy) in [(0.0, 0.0), (0.0, 3.0), (0.0, -3.0), (3.0, 3.0)] {
+        let (handle, editor) = fixture(
+            cx,
+            48_000,
+            144_000,
+            Viewport {
+                start: 0,
+                length: 384_000,
+            },
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let down = at(&mut visual, 0.25);
+        let target = point(down.x + gpui::px(dx), down.y + gpui::px(dy));
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_mouse_down(down, MouseButton::Left, command);
+        visual.simulate_mouse_move(target, MouseButton::Left, command);
+        visual.simulate_mouse_up(target, MouseButton::Left, command);
+        pump(&editor, &mut visual);
+        assert_eq!(
+            region(&editor, &visual),
+            LoopRegion::new(48_000, 144_000, true).unwrap()
+        );
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+    }
+}
+
+#[gpui::test]
+fn command_vertical_motion_threshold_crossing_then_return_stays_disqualified(
+    cx: &mut TestAppContext,
+) {
+    command_vertical_motion_control(cx, &[3.25, 0.0], 0.0);
+}
+
+#[gpui::test]
+fn ordinary_vertical_motion_off_grid_never_authors_snap_or_toggle(cx: &mut TestAppContext) {
+    let (handle, editor) = fixture(
+        cx,
+        50_123,
+        146_123,
+        Viewport {
+            start: 0,
+            length: 384_000,
+        },
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, cx| {
+        v.snap_grid = SnapGrid::Quarter;
+        v.last_enqueued_edit = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let down = at(&mut visual, 0.25);
+    let target = point(down.x, down.y + gpui::px(80.0));
+    let (before, revision) = editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        (state.project.snapshot(), state.revision)
+    });
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    // Modifier refresh must reuse the actual last full point and cannot qualify a move.
+    visual.simulate_modifiers_change(Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    });
+    visual.simulate_modifiers_change(Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        let gesture = v.loop_rail_gesture.expect("same held rail capture");
+        assert!(!gesture.moved, "Y is not horizontal range movement");
+        assert!(gesture.click_disqualified);
+        assert_eq!(gesture.last_pointer, target);
+    });
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        assert!(
+            v.last_enqueued_edit.is_none(),
+            "no snap, set or toggle submitted"
+        );
+        assert!(v.loop_rail_gesture.is_none());
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+    });
+}
