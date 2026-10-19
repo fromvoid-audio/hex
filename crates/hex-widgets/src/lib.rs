@@ -53,8 +53,8 @@ pub use numeric_control::{
     bind_numeric_control_keys,
 };
 pub use response_graph::{
-    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphEvent, ResponseGraphModel,
-    ResponseGraphNode, ResponseGraphPhase, bind_response_graph_keys,
+    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphEvent,
+    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase, bind_response_graph_keys,
 };
 pub use style::{
     CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceActionStyle, DeviceFrameStyle,

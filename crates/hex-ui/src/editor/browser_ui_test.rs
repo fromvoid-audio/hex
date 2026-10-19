@@ -798,7 +798,9 @@ fn browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel(
 }
 
 #[gpui::test]
-fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &mut TestAppContext) {
+fn browser_project_open_queues_selected_path_without_second_click_confirmation(
+    cx: &mut TestAppContext,
+) {
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -835,30 +837,50 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
     let second = std::path::PathBuf::from("/tmp/second.hex");
 
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(first.clone(), cx));
+        editor.update(cx, |view, cx| {
+            view.open_browser_project(first.clone(), cx);
+            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert!(view.pending_requests.is_empty());
+        });
     })
     .expect("editor window");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.pending_open_path.as_ref(), Some(&first));
-        assert!(view.pending_requests.is_empty());
-    });
-
+    assert!(
+        cx.has_pending_prompt(),
+        "the first selection reaches confirmation"
+    );
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(second.clone(), cx));
+        editor.update(cx, |view, cx| {
+            view.open_browser_project(second.clone(), cx);
+            assert!(!view.opening_project);
+            assert!(view.pending_requests.is_empty());
+            assert!(
+                view.error.is_some(),
+                "another path cannot replace an active intent"
+            );
+        });
     })
     .expect("editor window");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.pending_open_path.as_ref(), Some(&second));
-        assert!(view.pending_requests.is_empty());
-    });
-
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(second.clone(), cx));
+        editor.update(cx, |view, cx| {
+            assert!(!view.project_open.busy());
+            assert!(view.pending_open_path.is_none());
+            view.open_browser_project(second.clone(), cx);
+            assert_eq!(view.pending_open_path.as_ref(), Some(&second));
+            assert!(view.pending_requests.is_empty());
+        });
     })
     .expect("editor window");
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.opening_project);
+        assert!(!view.opening_project);
+        assert!(!view.project_open.busy());
         assert!(view.pending_open_path.is_none());
+        assert!(view.state.as_ref().unwrap().unsaved);
+        assert!(view.pending_requests.is_empty());
     });
 }
 
@@ -4306,9 +4328,12 @@ fn place_icon_preferences_window(
                         config.to_owned(),
                         recent.to_owned(),
                         directory.0.join("icon-theme.json"),
+                        directory.0.join("project-directory.json"),
                     ),
-                    None,
-                    Some(home),
+                    crate::editor::test_environment::Inputs {
+                        home: Some(home),
+                        ..Default::default()
+                    },
                 )
             })
         })
@@ -4894,3 +4919,9 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
         assert!(view.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "editor_test_environment_ui_test.rs"]
+mod test_environment;
+
+#[path = "browser_picker_compact_ui_test.rs"]
+mod compact_picker;

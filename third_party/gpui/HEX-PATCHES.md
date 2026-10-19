@@ -161,6 +161,14 @@ regressions use it to verify the actual painted outline and viewport clipping.
 Original baseline hashes remain unchanged; the cumulative patch is regenerated
 against the hash-verified original test_context.rs.
 
+18 October project Open test support: the existing deterministic test platform now
+queues Open picker requests and lets tests complete them with paths or Cancel.
+TestAppContext exposes the matching queue/selection methods. This replaces an
+unimplemented test-platform leaf; production native picker APIs and behavior are
+unchanged. Actual window dispatch, unsaved Save/Don’t Save/Cancel and canonical
+save/open events can be tested without touching a user document. Injected picker
+results are not evidence of native macOS picker presentation or physical input.
+
 18 October clip-bottom-border test support: `rendered_quad_paint_layers` reads the
 completed scene's quad draw order, stable position and masks for all matching
 fragments of a debug element, including retained cache replay.
@@ -168,3 +176,25 @@ Combined with existing painted border widths, ancestor mask and real separator
 bounds, this detects an occluding later row separator. It adds no production
 paint/layout/input behavior or native framebuffer claim. Original archive and
 source hashes remain verified; the cumulative patch is regenerated.
+
+19 October project picker directory: additive
+`App::prompt_for_paths_with_directory(options, Option<&Path>)` delegates through
+Platform with ordinary-picker default behavior on other platforms. macOS applies
+the optional NSOpenPanel directoryURL before opening; old Open calls retain their
+behavior. Save and Open share a filesystem-representation NSURL helper preserving
+native bytes and refusing NUL, replacing Save's lossy display conversion. No
+security, permission or directory-creation policy changes. TestPlatform records
+Open directory and Save directory/suggested-name arguments and supports injected
+cancel/error results; these are not native picker acceptance. A test-support Mac
+NSURL roundtrip helper shows/configures no panel. Original archive/file hashes,
+license and prior deltas remain; the cumulative patch is checked by applying it
+to the hash-verified original archive and comparing every patched/added byte.
+
+18 October opt-in bundled-font test support: `TestAppContext::use_native_text_system`
+selects the existing macOS `MacTextSystem` before any test windows are created.
+Both the App and test-context shaping references receive the same instance.
+Existing no-op test contexts remain unchanged. The method rejects replacement
+beneath live windows; it creates no OS window, registers no system font and adds
+no FFI or unsafe code. EQ tests still require the real embedded Ioskeley family;
+this corrects their otherwise impossible native assertion against NoopTextSystem.
+Native shaping is not evidence of GPU pixels, audio or physical interaction.

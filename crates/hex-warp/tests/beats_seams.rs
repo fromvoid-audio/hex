@@ -92,17 +92,24 @@ fn beats_off_nonzero_segment_end_reaches_silence_without_a_full_scale_step() {
 }
 
 #[test]
-fn beats_back_and_forth_reflects_sample_centers_without_endpoint_duplication() {
+fn beats_back_and_forth_protects_native_body_and_overlaps_reflected_turns() {
     let source: Vec<_> = (0..64)
         .map(|i| [i as f32 / 100.0, -i as f32 / 200.0])
         .collect();
     let pcm = render_tail(&source, Tail::Alternating, 8_000);
-    assert_eq!(&pcm[..64], &source);
-    // First reversal walks 62,61,... after the original sample63. It must
-    // neither replay63 nor jump back to the attack or beyond this segment.
-    for i in 0..16 {
-        assert_eq!(pcm[64 + i], source[62 - i]);
-    }
+    // A normalized overlap smooths the turn; it does not promise the old
+    // sample-by-sample reflected copier outside the protected native body.
+    // The scalar-plan unit separately checks 63,62,... without duplicate63.
+    assert_eq!(&pcm[..48], &source[..48]);
+    assert!(pcm.windows(2).all(|w| (w[1][0] - w[0][0]).abs() < 0.03));
+    assert!(
+        pcm.iter()
+            .all(|x| (0.0..=0.63).contains(&x[0]) && (x[1] + x[0] * 0.5).abs() < 1e-6)
+    );
+    assert!(
+        pcm[64..96].windows(2).any(|w| w[1][0] < w[0][0]),
+        "tail must actually traverse backwards"
+    );
 }
 
 #[test]
@@ -206,7 +213,20 @@ fn beats_tail_modes_keep_fractional_attack_times_and_stereo_schedule() {
             };
             let pcm = prepare(&source);
             assert_eq!(pcm[0], source[0]);
-            assert_eq!(pcm[attack], source[240]);
+            // All modes use the same bounded arriving-background treatment:
+            // preserve the authored onset CHANGE, rather than insisting on a
+            // raw absolute sample across an arbitrary compressed phase jump.
+            for c in 0..2 {
+                let original_edge = source[240][c] - source[239][c];
+                let actual_edge = pcm[attack][c] - pcm[attack - 1][c];
+                assert!(
+                    (actual_edge - original_edge).abs() < 0.005,
+                    "selected attack difference {tail:?}/{frames}/{c}"
+                );
+            }
+            if tail == Tail::Off && attack > 240 {
+                assert!(pcm[240..attack].iter().all(|frame| *frame == [0.0; 2]));
+            }
             assert!(
                 pcm.iter()
                     .enumerate()
@@ -224,7 +244,7 @@ fn beats_tail_modes_keep_fractional_attack_times_and_stereo_schedule() {
 }
 
 #[test]
-fn beats_work_budget_charges_overlap_reads_without_doubling_stop_playback() {
+fn beats_work_budget_charges_wsola_analysis_search_and_selected_reconstruction() {
     let source = vec![[0.1; 2]; 4_000];
     let map = TimeMap::new(
         vec![MapSegment {
@@ -268,8 +288,15 @@ fn beats_work_budget_charges_overlap_reads_without_doubling_stop_playback() {
         forward.work_units > stop.work_units,
         "the additional tail reads must be charged"
     );
-    assert!(
-        forward.work_units < stop.work_units * 2,
-        "single-read playback must not pay for a second read on every frame"
-    );
+    // Forward is now an analysis/search/overlap-add reconstruction, not the
+    // old single-read copier with a short tail crossfade. Its FFT, candidate
+    // search and selected overlapping grains must all remain charged. Stop
+    // still pays only for its actual one-shot path; a two-copier cost bound
+    // would certify the previous algorithm rather than this implementation.
+    assert!(forward.work_units > 8_000 * 64);
+    assert!(forward.work_units <= MAX_WORK_UNITS);
+    assert!(forward.peak_scratch_bytes <= MAX_SCRATCH_BYTES);
+    let repeat = prepare(Tail::Forward);
+    assert_eq!(repeat.work_units, forward.work_units);
+    assert_eq!(repeat.frames, forward.frames);
 }
