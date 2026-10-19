@@ -1,0 +1,41 @@
+{
+  "base": "fbc56de4566ebf07d71e534cc3385d9bf800d602",
+  "source": "48d92515d398613b04a35231b7c8d04774951ed8",
+  "tree": "21b583158df8fc89bee020233b8053b4aee7a403",
+  "diagnostic_sources": [
+    "fbaac201e0759d50ba11a06583394f490b2ccc75",
+    "59cfd4269cb40a4f55ac4c3b26dbc1282fa3f1d7"
+  ],
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/loop_bar_ui_tests.rs",
+      "before_blob": "a9984c3fa5171575efde77f97dada96b96bbb0a7",
+      "after_blob": "324f11b745a28258ec15127848162a2f368e9154",
+      "sha256": "7efd5cc032f6b9cf1bbd7c87b74e29b32c1bb2e1ea43cf21a80ca0d45a359ed2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail.rs",
+      "before_blob": "adba9e1e711caad1497cfdfcbe7b0706796621c7",
+      "after_blob": "025e8d18af813006de84965a88b57f3e93045f11",
+      "sha256": "a45eaef6e14f8af4a384e4d6c24789b3ab512a9a478325d13c70551195cbadbb"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail/review_ui_tests.rs",
+      "before_blob": null,
+      "after_blob": "12f6d065e0d5d7ea52b47e9a83a8d0bc100ac3d9",
+      "sha256": "2c725500c5b087ebe69ec4ecab6e24d8524bc432727fd3e9d24180445792bd70"
+    },
+    {
+      "path": "docs/runtime.md",
+      "before_blob": "4bf2454c03b80bd32bdbd3940d2db9b7f9ee782a",
+      "after_blob": "b16442bb306a59ea15816f843132add2245f04ba",
+      "sha256": "801cba1a371d7181e7470c680190f8b3b0bc690afcf9ebd2a4ea1024a0995e5b"
+    },
+    {
+      "path": "todo.md",
+      "before_blob": "55f8e37fe0fb7a0d79096a4b3e6e6e5e97f6453c",
+      "after_blob": "a74298c8468889459a88d5b43591fdfd5a9167d8",
+      "sha256": "37c5b4ec85b3ec506bdeda3f8947da8cde116b6027a491b3b9f966b2ac398a2a"
+    }
+  ]
+}

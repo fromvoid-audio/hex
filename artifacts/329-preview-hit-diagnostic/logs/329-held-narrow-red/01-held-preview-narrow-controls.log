@@ -1,0 +1,50 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 47.53s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+OFFGRID_HELD original=LoopRegion { start: 50123, end: 146123, enabled: false } held=LoopRegion { start: 48000, end: 144000, enabled: false } refreshed=LoopRegion { start: 48000, end: 144000, enabled: false } scenes=Bounds { origin: Point { x: 648.5px, y: 220px }, size: Size { 315px × 9px } }/Bounds { origin: Point { x: 641.5px, y: 220px }, size: Size { 315px × 9px } }/Bounds { origin: Point { x: 641.5px, y: 220px }, size: Size { 315px × 9px } }
+
+thread 'editor::loop_rail::loop_bar_ui_tests::review_ui_tests::off_grid_pure_y_hold_and_modifier_refresh_keep_original_preview_and_scene' (380187) panicked at crates/hex-ui/src/editor/loop_rail/review_ui_tests.rs:68:5:
+assertion `left == right` failed
+  left: (LoopRegion { start: 48000, end: 144000, enabled: false }, Bounds { origin: Point { x: 641.5px, y: 220px }, size: Size { 315px × 9px } }, LoopRegion { start: 48000, end: 144000, enabled: false }, Bounds { origin: Point { x: 641.5px, y: 220px }, size: Size { 315px × 9px } })
+ right: (LoopRegion { start: 50123, end: 146123, enabled: false }, Bounds { origin: Point { x: 648.5px, y: 220px }, size: Size { 315px × 9px } }, LoopRegion { start: 50123, end: 146123, enabled: false }, Bounds { origin: Point { x: 648.5px, y: 220px }, size: Size { 315px × 9px } })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::loop_rail::loop_bar_ui_tests::review_ui_tests::off_grid_pure_y_hold_and_modifier_refresh_keep_original_preview_and_scene ... FAILED
+NARROW_CENTER viewport=384000 requested_px=12 actual_bounds=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 12px × 9px } } down=Point { x: 1120px, y: 224.5px } target=Point { x: 1138px, y: 224.5px } mode=ResizeEnd { fixed_start: 192000, enabled: false } original=LoopRegion { start: 192000, end: 195657, enabled: false } preview=LoopRegion { start: 192000, end: 199314, enabled: false } held_scene=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 24px × 9px } } committed=LoopRegion { start: 192000, end: 199314, enabled: false } whole_pass=false
+ENDPOINT_CONTROL viewport=384000 px=12 left=true original=LoopRegion { start: 192000, end: 195657, enabled: false } resized=LoopRegion { start: 186514, end: 195657, enabled: false }
+NARROW_CENTER viewport=384000 requested_px=8 actual_bounds=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 8px × 9px } } down=Point { x: 1118px, y: 224.5px } target=Point { x: 1136px, y: 224.5px } mode=ResizeEnd { fixed_start: 192000, enabled: false } original=LoopRegion { start: 192000, end: 194438, enabled: false } preview=LoopRegion { start: 192000, end: 198705, enabled: false } held_scene=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 22px × 9px } } committed=LoopRegion { start: 192000, end: 198705, enabled: false } whole_pass=false
+ENDPOINT_CONTROL viewport=384000 px=12 left=false original=LoopRegion { start: 192000, end: 195657, enabled: false } resized=LoopRegion { start: 192000, end: 201143, enabled: false }
+
+thread 'editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels' (380186) panicked at crates/hex-ui/src/editor/loop_rail/review_ui_tests.rs:10:5:
+actual completed range quad
+test editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels ... FAILED
+ENDPOINT_CONTROL viewport=384000 px=8 left=true original=LoopRegion { start: 192000, end: 194438, enabled: false } resized=LoopRegion { start: 186514, end: 194438, enabled: false }
+ENDPOINT_CONTROL viewport=384000 px=8 left=false original=LoopRegion { start: 192000, end: 194438, enabled: false } resized=LoopRegion { start: 192000, end: 199924, enabled: false }
+ENDPOINT_CONTROL viewport=384000 px=1 left=true original=LoopRegion { start: 192000, end: 192305, enabled: false } resized=LoopRegion { start: 186514, end: 192305, enabled: false }
+ENDPOINT_CONTROL viewport=384000 px=1 left=false original=LoopRegion { start: 192000, end: 192305, enabled: false } resized=LoopRegion { start: 192000, end: 197790, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=12 left=true original=LoopRegion { start: 96000, end: 97829, enabled: false } resized=LoopRegion { start: 93257, end: 97829, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=12 left=false original=LoopRegion { start: 96000, end: 97829, enabled: false } resized=LoopRegion { start: 96000, end: 100571, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=8 left=true original=LoopRegion { start: 96000, end: 97219, enabled: false } resized=LoopRegion { start: 93257, end: 97219, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=8 left=false original=LoopRegion { start: 96000, end: 97219, enabled: false } resized=LoopRegion { start: 96000, end: 99962, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=1 left=true original=LoopRegion { start: 96000, end: 96152, enabled: false } resized=LoopRegion { start: 93257, end: 96152, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=1 left=false original=LoopRegion { start: 96000, end: 96152, enabled: false } resized=LoopRegion { start: 96000, end: 98895, enabled: false }
+test editor::loop_rail::loop_bar_ui_tests::review_ui_tests::stationary_command_endpoints_toggle_and_command_edge_drags_remain_free ... ok
+
+failures:
+
+failures:
+    editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels
+    editor::loop_rail::loop_bar_ui_tests::review_ui_tests::off_grid_pure_y_hold_and_modifier_refresh_keep_original_preview_and_scene
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 1116 filtered out; finished in 12.82s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

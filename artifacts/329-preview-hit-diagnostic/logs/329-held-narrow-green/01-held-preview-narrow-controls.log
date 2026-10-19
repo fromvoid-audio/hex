@@ -1,0 +1,63 @@
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-mts v0.1.0 (/workspace/hex/crates/hex-mts)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-diagnostics v0.1.0 (/workspace/hex/crates/hex-diagnostics)
+   Compiling hex-midi v0.1.0 (/workspace/hex/crates/hex-midi)
+   Compiling hex-library v0.1.0 (/workspace/hex/crates/hex-library)
+    Finished `test` profile [unoptimized] target(s) in 53.37s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 4 tests
+
+thread 'editor::loop_rail::loop_bar_ui_tests::review_ui_tests::hit_budget_preserves_outside_capture_clipped_bodies_and_wide_edges' (381741) panicked at crates/hex-ui/src/editor/loop_rail/review_ui_tests.rs:252:9:
+assertion `left == right` failed
+  left: "none"
+ right: "move"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::loop_rail::loop_bar_ui_tests::review_ui_tests::hit_budget_preserves_outside_capture_clipped_bodies_and_wide_edges ... FAILED
+OFFGRID_HELD original=LoopRegion { start: 50123, end: 146123, enabled: false } held=LoopRegion { start: 50123, end: 146123, enabled: false } refreshed=LoopRegion { start: 50123, end: 146123, enabled: false } scenes=Bounds { origin: Point { x: 648.5px, y: 220px }, size: Size { 315px × 9px } }/Bounds { origin: Point { x: 648.5px, y: 220px }, size: Size { 315px × 9px } }/Bounds { origin: Point { x: 648.5px, y: 220px }, size: Size { 315px × 9px } }
+test editor::loop_rail::loop_bar_ui_tests::review_ui_tests::off_grid_pure_y_hold_and_modifier_refresh_keep_original_preview_and_scene ... ok
+NARROW_CENTER viewport=384000 requested_px=12 actual_bounds=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 12px × 9px } } down=Point { x: 1120px, y: 224.5px } target=Point { x: 1138px, y: 224.5px } mode=Move { original: LoopRegion { start: 192000, end: 195657, enabled: false }, anchor: 193829 } original=LoopRegion { start: 192000, end: 195657, enabled: false } preview=LoopRegion { start: 197485, end: 201142, enabled: false } held_scene=Bounds { origin: Point { x: 1132px, y: 220px }, size: Size { 12px × 9px } } held_quads=1 committed=LoopRegion { start: 197485, end: 201142, enabled: false } whole_pass=true
+ENDPOINT_CONTROL viewport=384000 px=12 left=true original=LoopRegion { start: 192000, end: 195657, enabled: false } resized=LoopRegion { start: 186514, end: 195657, enabled: false }
+NARROW_CENTER viewport=384000 requested_px=8 actual_bounds=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 8px × 9px } } down=Point { x: 1118px, y: 224.5px } target=Point { x: 1136px, y: 224.5px } mode=Move { original: LoopRegion { start: 192000, end: 194438, enabled: false }, anchor: 193219 } original=LoopRegion { start: 192000, end: 194438, enabled: false } preview=LoopRegion { start: 197486, end: 199924, enabled: false } held_scene=Bounds { origin: Point { x: 1132px, y: 220px }, size: Size { 8px × 9px } } held_quads=1 committed=LoopRegion { start: 197486, end: 199924, enabled: false } whole_pass=true
+ENDPOINT_CONTROL viewport=384000 px=12 left=false original=LoopRegion { start: 192000, end: 195657, enabled: false } resized=LoopRegion { start: 192000, end: 201143, enabled: false }
+NARROW_CENTER viewport=384000 requested_px=1 actual_bounds=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 1px × 9px } } down=Point { x: 1114.5px, y: 224.5px } target=Point { x: 1132.5px, y: 224.5px } mode=Move { original: LoopRegion { start: 192000, end: 192305, enabled: false }, anchor: 192152 } original=LoopRegion { start: 192000, end: 192305, enabled: false } preview=LoopRegion { start: 197486, end: 197791, enabled: false } held_scene=Bounds { origin: Point { x: 1132px, y: 220px }, size: Size { 1px × 9px } } held_quads=1 committed=LoopRegion { start: 197486, end: 197791, enabled: false } whole_pass=true
+ENDPOINT_CONTROL viewport=384000 px=8 left=true original=LoopRegion { start: 192000, end: 194438, enabled: false } resized=LoopRegion { start: 186514, end: 194438, enabled: false }
+NARROW_CENTER viewport=192000 requested_px=12 actual_bounds=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 12px × 9px } } down=Point { x: 1120px, y: 224.5px } target=Point { x: 1138px, y: 224.5px } mode=Move { original: LoopRegion { start: 96000, end: 97829, enabled: false }, anchor: 96914 } original=LoopRegion { start: 96000, end: 97829, enabled: false } preview=LoopRegion { start: 98743, end: 100572, enabled: false } held_scene=Bounds { origin: Point { x: 1132px, y: 220px }, size: Size { 12px × 9px } } held_quads=1 committed=LoopRegion { start: 98743, end: 100572, enabled: false } whole_pass=true
+NARROW_CENTER viewport=192000 requested_px=8 actual_bounds=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 8px × 9px } } down=Point { x: 1118px, y: 224.5px } target=Point { x: 1136px, y: 224.5px } mode=Move { original: LoopRegion { start: 96000, end: 97219, enabled: false }, anchor: 96610 } original=LoopRegion { start: 96000, end: 97219, enabled: false } preview=LoopRegion { start: 98742, end: 99961, enabled: false } held_scene=Bounds { origin: Point { x: 1132px, y: 220px }, size: Size { 8px × 9px } } held_quads=1 committed=LoopRegion { start: 98742, end: 99961, enabled: false } whole_pass=true
+ENDPOINT_CONTROL viewport=384000 px=8 left=false original=LoopRegion { start: 192000, end: 194438, enabled: false } resized=LoopRegion { start: 192000, end: 199924, enabled: false }
+NARROW_CENTER viewport=192000 requested_px=1 actual_bounds=Bounds { origin: Point { x: 1114px, y: 220px }, size: Size { 1px × 9px } } down=Point { x: 1114.5px, y: 224.5px } target=Point { x: 1132.5px, y: 224.5px } mode=Move { original: LoopRegion { start: 96000, end: 96152, enabled: false }, anchor: 96076 } original=LoopRegion { start: 96000, end: 96152, enabled: false } preview=LoopRegion { start: 98743, end: 98895, enabled: false } held_scene=Bounds { origin: Point { x: 1132px, y: 220px }, size: Size { 1px × 9px } } held_quads=1 committed=LoopRegion { start: 98743, end: 98895, enabled: false } whole_pass=true
+test editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels ... ok
+ENDPOINT_CONTROL viewport=384000 px=1 left=true original=LoopRegion { start: 192000, end: 192305, enabled: false } resized=LoopRegion { start: 186514, end: 192305, enabled: false }
+ENDPOINT_CONTROL viewport=384000 px=1 left=false original=LoopRegion { start: 192000, end: 192305, enabled: false } resized=LoopRegion { start: 192000, end: 197790, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=12 left=true original=LoopRegion { start: 96000, end: 97829, enabled: false } resized=LoopRegion { start: 93257, end: 97829, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=12 left=false original=LoopRegion { start: 96000, end: 97829, enabled: false } resized=LoopRegion { start: 96000, end: 100571, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=8 left=true original=LoopRegion { start: 96000, end: 97219, enabled: false } resized=LoopRegion { start: 93257, end: 97219, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=8 left=false original=LoopRegion { start: 96000, end: 97219, enabled: false } resized=LoopRegion { start: 96000, end: 99962, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=1 left=true original=LoopRegion { start: 96000, end: 96152, enabled: false } resized=LoopRegion { start: 93257, end: 96152, enabled: false }
+ENDPOINT_CONTROL viewport=192000 px=1 left=false original=LoopRegion { start: 96000, end: 96152, enabled: false } resized=LoopRegion { start: 96000, end: 98895, enabled: false }
+test editor::loop_rail::loop_bar_ui_tests::review_ui_tests::stationary_command_endpoints_toggle_and_command_edge_drags_remain_free ... ok
+
+failures:
+
+failures:
+    editor::loop_rail::loop_bar_ui_tests::review_ui_tests::hit_budget_preserves_outside_capture_clipped_bodies_and_wide_edges
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1116 filtered out; finished in 14.74s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
