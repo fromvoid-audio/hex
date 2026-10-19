@@ -1963,3 +1963,7 @@ mod resize_release_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "resize_terminal_tests.rs"]
 mod resize_terminal_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_left_extension_ui_tests.rs"]
+mod midi_left_extension_ui_tests;
