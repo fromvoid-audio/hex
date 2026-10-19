@@ -15,7 +15,7 @@ use gpui::Context;
 use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_session::device_gesture::GestureKey;
-use hex_session::service::{DevicePreviewIdentity, Event, Request, SubmitError};
+use hex_session::service::{DevicePreviewIdentity, Event, Request, SubmitError, ViewState};
 use std::{
     collections::VecDeque,
     sync::Arc,
@@ -1021,35 +1021,17 @@ impl EditorView {
             .control
             .status()
             .map_or(0, |status| status.applied_revision.load(Acquire));
-        let actual_source = audio
-            .control
-            .status()
-            .and_then(|status| status.applied_audio_source());
-        let current_source = actual_source.filter(|source| {
-            self.state.as_ref().is_some_and(|state| {
-                state.audio_authoring_revision(source.context) == Some(state.revision)
-            })
-        });
-        let (reconciled, current_applied) = reconcile_verified_applied_source(
+        let (reconciled, current_applied) = reconcile_verified_source_binding(
             &mut self.audio_admission,
             self.document_audio_mode,
             audio.control.output_identity(),
             self.project_generation,
-            // Preserve the helper's exact source-context test, never a general older revision allowance.
-            current_source.map(|source| source.context.editor_revision),
-            actual_source,
+            self.state.as_ref().map(AsRef::as_ref),
+            audio
+                .control
+                .status()
+                .and_then(|status| status.applied_audio_source()),
         );
-        if let Some(source) = current_applied
-            && let Some(state) = self.state.as_ref()
-        {
-            self.audio_admission.applied(
-                super::audio_admission::ProjectRevision {
-                    generation: self.project_generation,
-                    revision: state.revision,
-                },
-                source.audio_revision,
-            );
-        }
         visible_change |= reconciled;
 
         if let Some((project, audio_revision)) = latest_applied_canonical_candidate(
@@ -3033,6 +3015,37 @@ fn restore_verified_recovery_from_applied(
     if let Some(generation) = pending {
         recovery.restored(generation);
     }
+}
+
+fn reconcile_verified_source_binding(
+    admission: &mut super::audio_admission::AudioAdmissionStatus,
+    mode: hex_session::DocumentAudioMode,
+    output_identity: Option<u64>,
+    generation: u64,
+    current: Option<&ViewState>,
+    source: Option<hex_audio::prepared::AppliedAudioSource>,
+) -> (bool, Option<hex_audio::prepared::AppliedAudioSource>) {
+    if let Some(source) = source
+        && mode == hex_session::DocumentAudioMode::VerifiedStreaming
+        && output_identity == Some(source.output_identity)
+        && source.context.project_generation == generation
+        && let Some(revision) =
+            current.and_then(|state| state.audio_authoring_revision(source.context))
+    {
+        return (
+            admission.applied(
+                super::audio_admission::ProjectRevision {
+                    generation,
+                    revision,
+                },
+                source.audio_revision,
+            ),
+            Some(source),
+        );
+    }
+    // Preserve factual historical ACKs, without accepting any old context for
+    // the current authoring view. Exact source/output matching above is required.
+    reconcile_verified_applied_source(admission, mode, output_identity, generation, None, source)
 }
 
 fn reconcile_verified_applied_source(

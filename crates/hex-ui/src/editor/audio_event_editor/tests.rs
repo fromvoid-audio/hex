@@ -62,6 +62,7 @@ fn event_drag_preview_cancel_and_revision_change_never_edit_outer_clip(cx: &mut 
         let state = view.state.as_ref().unwrap();
         let changed = hex_session::service::ViewState {
             canonical_audio_source: state.canonical_audio_source.clone(),
+            comparison_audio: None,
             project: state.project.clone(),
             waveforms: state.waveforms.clone(),
             audio_clip_waveforms: state.audio_clip_waveforms.clone(),
