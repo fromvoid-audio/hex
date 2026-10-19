@@ -1,0 +1,17 @@
+{
+  "path_dependencies": {
+    "external-helper#external-helper@0.1.0": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf",
+    "third_party/vendor-api#directory-vendor@0.1.0": "06facde6f2c002843cfd7fc3a1504bec137bc74ca543f4791afd45d072df1e98"
+  },
+  "recorded_at": "2026-10-19T15:14:36Z",
+  "schema_version": 1,
+  "target_directory": "/tmp/tmpur_6pjp_/directory-cargo-target",
+  "target_identity": {
+    "device": 33,
+    "inode": 267517
+  },
+  "workspace_owner": {
+    "git_common_dir": "/tmp/tmpur_6pjp_/directory-workspace/.git",
+    "workspace_root": "/tmp/tmpur_6pjp_/directory-workspace"
+  }
+}

@@ -1,0 +1,3 @@
+warning: version qualifier in `-p path+file:///tmp/tmp_aam7uph/vendored-worktree-b/third_party/vendor-api#0.1.0` is ignored, cleaning all versions of `vendor-api` found
+warning: url qualifier in `-p path+file:///tmp/tmp_aam7uph/vendored-worktree-b/third_party/vendor-api#0.1.0` ignored, cleaning all versions of `vendor-api` found
+     Removed 7 files, 6.8KiB total

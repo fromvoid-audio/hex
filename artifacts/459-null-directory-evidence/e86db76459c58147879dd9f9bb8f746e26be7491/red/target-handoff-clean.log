@@ -1,0 +1,11 @@
+warning: version qualifier in `-p path+file:///workspace/hex/third_party/block#0.1.6` is ignored, cleaning all versions of `block` found
+warning: url qualifier in `-p path+file:///workspace/hex/third_party/block#0.1.6` ignored, cleaning all versions of `block` found
+warning: version qualifier in `-p path+file:///workspace/hex/third_party/gpui#0.2.2` is ignored, cleaning all versions of `gpui` found
+warning: url qualifier in `-p path+file:///workspace/hex/third_party/gpui#0.2.2` ignored, cleaning all versions of `gpui` found
+warning: version qualifier in `-p path+file:///workspace/hex/third_party/mts-esp-master#mts-esp-master-adapter@0.1.0` is ignored, cleaning all versions of `mts-esp-master-adapter` found
+warning: url qualifier in `-p path+file:///workspace/hex/third_party/mts-esp-master#mts-esp-master-adapter@0.1.0` ignored, cleaning all versions of `mts-esp-master-adapter` found
+warning: version qualifier in `-p path+file:///workspace/hex/third_party/proc-macro-error2#2.0.1` is ignored, cleaning all versions of `proc-macro-error2` found
+warning: url qualifier in `-p path+file:///workspace/hex/third_party/proc-macro-error2#2.0.1` ignored, cleaning all versions of `proc-macro-error2` found
+warning: version qualifier in `-p path+file:///workspace/hex/third_party/xattr#0.2.3` is ignored, cleaning all versions of `xattr` found
+warning: url qualifier in `-p path+file:///workspace/hex/third_party/xattr#0.2.3` ignored, cleaning all versions of `xattr` found
+     Removed 86 files, 574.0MiB total

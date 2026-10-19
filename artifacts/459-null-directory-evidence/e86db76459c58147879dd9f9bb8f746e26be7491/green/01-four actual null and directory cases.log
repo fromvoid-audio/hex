@@ -1,0 +1,36 @@
+[1/1] build: running
+[1/1] build: passed
+Cargo target ownership marker is malformed at /tmp/tmpj2hbe5ni/target-ownership/c110e0bca936cdddd59ac3a621735fea844c45f06c7aa47ea0516579e7d5233b.owner.json; use a fresh target or explicitly adopt it after checking ownership
+ACTUAL_NULL_OWNER {'adopt': False, 'result': 1, 'escaped': None, 'lock_released': True, 'owner_preserved': True}
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+ACTUAL_NULL_OWNER {'adopt': True, 'result': 0, 'escaped': None, 'lock_released': True, 'owner_preserved': False}
+.[1/2] private-build: running
+[1/2] private-build: passed
+[2/2] private-release: running
+[2/2] private-release: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+ACTUAL_EMPTY_DIRECTORY {"after_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmp4jh327r6/directory-workspace/third_party/vendor-api", "sha256": "06facde6f2c002843cfd7fc3a1504bec137bc74ca543f4791afd45d072df1e98", "spec": "path+file:///tmp/tmp4jh327r6/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmp4jh327r6/directory-workspace/external-helper", "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf", "spec": "path+file:///tmp/tmp4jh327r6/directory-workspace/external-helper#0.1.0"}], "before_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmp4jh327r6/directory-workspace/third_party/vendor-api", "sha256": "5dc2a08d3a423d39cbc7952f34e9270e07cd85b07eb930b748b9b5918ccc39f7", "spec": "path+file:///tmp/tmp4jh327r6/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmp4jh327r6/directory-workspace/external-helper", "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf", "spec": "path+file:///tmp/tmp4jh327r6/directory-workspace/external-helper#0.1.0"}], "cleanup": ["cargo", "clean", "--profile", "dev", "--target-dir", "/tmp/tmp4jh327r6/directory-cargo-target", "--manifest-path", "/tmp/tmp4jh327r6/directory-workspace/Cargo.toml", "--package", "path+file:///tmp/tmp4jh327r6/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"], "expected": "18", "external_sha256": {"libexternal_helper-4435a338eada2dc7.rlib": "83e802fb4649985cf66f8406d4cd86eff90ade19cd3387d16f8b2b3f8b3a25f7"}, "external_unchanged": true, "observed": "18", "operation": "add", "original": "8", "release_sha256": "8dcb2d56fa26c71a386f02b8c3970dd21a8cd3f6b65caa97ad78fdd7d8398574", "release_unchanged": true}
+[1/1] private-build: running
+[1/1] private-build: passed
+.[1/2] private-build: running
+[1/2] private-build: passed
+[2/2] private-release: running
+[2/2] private-release: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+ACTUAL_EMPTY_DIRECTORY {"after_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api", "sha256": "5dc2a08d3a423d39cbc7952f34e9270e07cd85b07eb930b748b9b5918ccc39f7", "spec": "path+file:///tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmpb2hnnf_v/directory-workspace/external-helper", "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf", "spec": "path+file:///tmp/tmpb2hnnf_v/directory-workspace/external-helper#0.1.0"}], "before_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api", "sha256": "06facde6f2c002843cfd7fc3a1504bec137bc74ca543f4791afd45d072df1e98", "spec": "path+file:///tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmpb2hnnf_v/directory-workspace/external-helper", "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf", "spec": "path+file:///tmp/tmpb2hnnf_v/directory-workspace/external-helper#0.1.0"}], "cleanup": ["cargo", "clean", "--profile", "dev", "--target-dir", "/tmp/tmpb2hnnf_v/directory-cargo-target", "--manifest-path", "/tmp/tmpb2hnnf_v/directory-workspace/Cargo.toml", "--package", "path+file:///tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"], "expected": "8", "external_sha256": {"libexternal_helper-4435a338eada2dc7.rlib": "21d9e58278e436b10efac1b8a2c2cad4c8c1207a9d88685ffe900a3f553a3b7a"}, "external_unchanged": true, "observed": "8", "operation": "remove", "original": "18", "release_sha256": "e3c5b5e900adff52e5e76e98b7d8d9a09827b0bd512ca993aca2f8a9e0b4134a", "release_unchanged": true}
+[1/1] private-build: running
+[1/1] private-build: passed
+.
+----------------------------------------------------------------------
+Ran 4 tests in 2.472s
+
+OK

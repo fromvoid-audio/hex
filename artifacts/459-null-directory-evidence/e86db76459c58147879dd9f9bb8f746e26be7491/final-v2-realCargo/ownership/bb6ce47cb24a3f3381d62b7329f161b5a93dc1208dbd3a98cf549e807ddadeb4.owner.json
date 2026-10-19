@@ -1,0 +1,17 @@
+{
+  "path_dependencies": {
+    "external-helper#external-helper@0.1.0": "f70cc66deace5a104c14b3c4e3a8c43815277d03d6b4740b506aa7053c1f656b",
+    "third_party/vendor-api#vendor-api@0.1.0": "f769f7567d7666ffc47a92e68263234a8d1b12311718a3a3ecdee7c6ffcaee33"
+  },
+  "recorded_at": "2026-10-19T15:14:38Z",
+  "schema_version": 1,
+  "target_directory": "/tmp/tmp016_6941/vendored-cargo-target",
+  "target_identity": {
+    "device": 33,
+    "inode": 268338
+  },
+  "workspace_owner": {
+    "git_common_dir": "/tmp/tmp016_6941/vendored-workspace/.git",
+    "workspace_root": "/tmp/tmp016_6941/vendored-worktree-b"
+  }
+}

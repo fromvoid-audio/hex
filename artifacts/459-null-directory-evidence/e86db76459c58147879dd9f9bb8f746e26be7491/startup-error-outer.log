@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "/tmp/459-review-component.py", line 5, in <module>
+    result=r.run();print('COMPONENT_ONLY_SUMMARY',r.summary_path);raise SystemExit(result)
+           ^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 1223, in run
+    if not self._capture_repository_state("start_tree"):
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 351, in _capture_repository_state
+    digest.update(b"symlink\0" if stat.S_ISLNK(before.st_mode) else b"file\0")
+                                               ^^^^^^
+NameError: name 'before' is not defined

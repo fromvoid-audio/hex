@@ -1,0 +1,79 @@
+/workspace/hex/scripts/tests/test_local_ci.py:35: SyntaxWarning: invalid escape sequence '\ '
+  git\ rev-parse*) echo deadbeef; exit 0 ;;
+[1/1] build: running
+[1/1] build: passed
+ACTUAL_NULL_OWNER {'adopt': False, 'result': None, 'escaped': 'AttributeError("\'NoneType\' object has no attribute \'get\'")', 'lock_released': True, 'owner_preserved': True}
+F[1/1] build: running
+[1/1] build: passed
+ACTUAL_NULL_OWNER {'adopt': True, 'result': None, 'escaped': 'AttributeError("\'NoneType\' object has no attribute \'get\'")', 'lock_released': True, 'owner_preserved': True}
+F[1/2] private-build: running
+[1/2] private-build: passed
+[2/2] private-release: running
+[2/2] private-release: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+ACTUAL_EMPTY_DIRECTORY {"after_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmpom9zy_28/directory-workspace/third_party/vendor-api", "sha256": "ba92ac40d677fa2b389c1480763907a28edde3baa48e6c6e4459d8b68854c519", "spec": "path+file:///tmp/tmpom9zy_28/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmpom9zy_28/directory-workspace/external-helper", "sha256": "34de960a4cdd8b526f695bd287171e37f8f7e506c3f704b28c05b08d107ca917", "spec": "path+file:///tmp/tmpom9zy_28/directory-workspace/external-helper#0.1.0"}], "before_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmpom9zy_28/directory-workspace/third_party/vendor-api", "sha256": "ba92ac40d677fa2b389c1480763907a28edde3baa48e6c6e4459d8b68854c519", "spec": "path+file:///tmp/tmpom9zy_28/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmpom9zy_28/directory-workspace/external-helper", "sha256": "34de960a4cdd8b526f695bd287171e37f8f7e506c3f704b28c05b08d107ca917", "spec": "path+file:///tmp/tmpom9zy_28/directory-workspace/external-helper#0.1.0"}], "cleanup": null, "expected": "18", "external_sha256": {"libexternal_helper-4435a338eada2dc7.rlib": "834cf97288baab86f2a1b468197e6b77075d687fa2f6b38db5a56ec590b5f4e9"}, "external_unchanged": true, "observed": "8", "operation": "add", "original": "8", "release_sha256": "8dcb2d56fa26c71a386f02b8c3970dd21a8cd3f6b65caa97ad78fdd7d8398574", "release_unchanged": true}
+F[1/2] private-build: running
+[1/2] private-build: passed
+[2/2] private-release: running
+[2/2] private-release: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+ACTUAL_EMPTY_DIRECTORY {"after_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmp90peg45d/directory-workspace/third_party/vendor-api", "sha256": "ba92ac40d677fa2b389c1480763907a28edde3baa48e6c6e4459d8b68854c519", "spec": "path+file:///tmp/tmp90peg45d/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmp90peg45d/directory-workspace/external-helper", "sha256": "34de960a4cdd8b526f695bd287171e37f8f7e506c3f704b28c05b08d107ca917", "spec": "path+file:///tmp/tmp90peg45d/directory-workspace/external-helper#0.1.0"}], "before_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmp90peg45d/directory-workspace/third_party/vendor-api", "sha256": "ba92ac40d677fa2b389c1480763907a28edde3baa48e6c6e4459d8b68854c519", "spec": "path+file:///tmp/tmp90peg45d/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmp90peg45d/directory-workspace/external-helper", "sha256": "34de960a4cdd8b526f695bd287171e37f8f7e506c3f704b28c05b08d107ca917", "spec": "path+file:///tmp/tmp90peg45d/directory-workspace/external-helper#0.1.0"}], "cleanup": null, "expected": "8", "external_sha256": {"libexternal_helper-4435a338eada2dc7.rlib": "027e9f63556e5edbc3cc7fb6767cba7224fcaaa451a3f9c55ef27d43b476780f"}, "external_unchanged": true, "observed": "18", "operation": "remove", "original": "18", "release_sha256": "e3c5b5e900adff52e5e76e98b7d8d9a09827b0bd512ca993aca2f8a9e0b4134a", "release_unchanged": true}
+F
+======================================================================
+FAIL: test_dependency_null_owner_refuses_without_traceback_or_mutation (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_null_owner_refuses_without_traceback_or_mutation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1287, in test_dependency_null_owner_refuses_without_traceback_or_mutation
+    self._null_dependency_owner(False)
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1270, in _null_dependency_owner
+    self.assertIsNone(escaped, "malformed marker must use controlled refusal/adoption")
+AssertionError: 'AttributeError("\'NoneType\' object has no attribute \'get\'")' is not None : malformed marker must use controlled refusal/adoption
+
+======================================================================
+FAIL: test_dependency_null_owner_uses_existing_explicit_adoption (scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_null_owner_uses_existing_explicit_adoption)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1290, in test_dependency_null_owner_uses_existing_explicit_adoption
+    self._null_dependency_owner(True)
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1270, in _null_dependency_owner
+    self.assertIsNone(escaped, "malformed marker must use controlled refusal/adoption")
+AssertionError: 'AttributeError("\'NoneType\' object has no attribute \'get\'")' is not None : malformed marker must use controlled refusal/adoption
+
+======================================================================
+FAIL: test_real_cargo_empty_directory_add_rebuilds_build_script (scripts.tests.test_local_ci.LocalCiRunnerTests.test_real_cargo_empty_directory_add_rebuilds_build_script)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1390, in test_real_cargo_empty_directory_add_rebuilds_build_script
+    self._real_cargo_empty_directory_change(False)
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1368, in _real_cargo_empty_directory_change
+    self.assertEqual(observed, expected, "actual build-script output must follow empty-directory presence")
+AssertionError: '8' != '18'
+- 8
++ 18
+? +
+ : actual build-script output must follow empty-directory presence
+
+======================================================================
+FAIL: test_real_cargo_empty_directory_remove_rebuilds_build_script (scripts.tests.test_local_ci.LocalCiRunnerTests.test_real_cargo_empty_directory_remove_rebuilds_build_script)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1394, in test_real_cargo_empty_directory_remove_rebuilds_build_script
+    self._real_cargo_empty_directory_change(True)
+  File "/workspace/hex/scripts/tests/test_local_ci.py", line 1368, in _real_cargo_empty_directory_change
+    self.assertEqual(observed, expected, "actual build-script output must follow empty-directory presence")
+AssertionError: '18' != '8'
+- 18
+? -
++ 8
+ : actual build-script output must follow empty-directory presence
+
+----------------------------------------------------------------------
+Ran 4 tests in 1.779s
+
+FAILED (failures=4)

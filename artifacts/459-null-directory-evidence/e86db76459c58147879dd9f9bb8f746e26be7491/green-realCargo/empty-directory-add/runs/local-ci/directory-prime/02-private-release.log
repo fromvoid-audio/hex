@@ -1,0 +1,4 @@
+   Compiling directory-vendor v0.1.0 (/tmp/tmp4jh327r6/directory-workspace/third_party/vendor-api)
+   Compiling external-helper v0.1.0 (/tmp/tmp4jh327r6/directory-workspace/external-helper)
+   Compiling directory-app v0.1.0 (/tmp/tmp4jh327r6/directory-workspace/app)
+    Finished `release` profile [optimized] target(s) in 0.23s

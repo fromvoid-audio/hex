@@ -1,0 +1,23 @@
+commit e86db76459c58147879dd9f9bb8f746e26be7491
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 15:14:33 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 15:14:33 2026 +0000
+
+    Keep entry-type domain tagging confined to dependency hashing
+
+commit bc34246b669cec5a929b81a53a35fecf2db3c6bb
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 15:13:58 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 15:13:58 2026 +0000
+
+    Validate present dependency maps and persist typed directory identities
+
+commit 9f7fa7fd2eaac42366cf369f135fe4aa1e748ac2
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 15:12:29 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 15:12:29 2026 +0000
+
+    Reproduce null dependency owners and stale empty-directory Cargo builds

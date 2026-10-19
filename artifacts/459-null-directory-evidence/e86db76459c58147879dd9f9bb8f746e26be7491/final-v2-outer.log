@@ -1,0 +1,17 @@
+[1/8] all actual runner cases: running
+[1/8] all actual runner cases: passed
+[2/8] all script regressions: running
+[2/8] all script regressions: passed
+[3/8] Python39 grammar: running
+[3/8] Python39 grammar: passed
+[4/8] architecture: running
+[4/8] architecture: passed
+[5/8] vendor provenance: running
+[5/8] vendor provenance: passed
+[6/8] UI style: running
+[6/8] UI style: passed
+[7/8] format: running
+[7/8] format: passed
+[8/8] diff: running
+[8/8] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/459-review-null-directory-final-v2/summary.json

@@ -1,0 +1,222 @@
+{
+  "cargo_identity": {
+    "configured_target_value": "/tmp/tmp_aam7uph/vendored-cargo-target",
+    "lock_path": "/tmp/tmp_aam7uph/vendored-target-owner/33e7837174d2c764b73c2049b9b27411ab88f9dfefdf40bcdaea884b078b86f8.lock",
+    "manifest_path": "/tmp/tmp_aam7uph/vendored-worktree-b/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/tmp/tmp_aam7uph/vendored-worktree-b/Cargo.toml"
+    ],
+    "owner_path": "/tmp/tmp_aam7uph/vendored-target-owner/33e7837174d2c764b73c2049b9b27411ab88f9dfefdf40bcdaea884b078b86f8.owner.json",
+    "target_directory": "/tmp/tmp_aam7uph/vendored-cargo-target",
+    "target_source": "environment",
+    "workspace_packages": [
+      {
+        "id": "path+file:///tmp/tmp_aam7uph/vendored-worktree-b/crates/fixture-api#0.1.0",
+        "name": "fixture-api",
+        "spec": "path+file:///tmp/tmp_aam7uph/vendored-worktree-b/crates/fixture-api#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///tmp/tmp_aam7uph/vendored-worktree-b/crates/fixture-app#0.1.0",
+        "name": "fixture-app",
+        "spec": "path+file:///tmp/tmp_aam7uph/vendored-worktree-b/crates/fixture-app#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/tmp/tmp_aam7uph/vendored-worktree-b"
+  },
+  "commit": "0dfe64451d314da5819a0367811f2453e6b30bf9",
+  "dirty": true,
+  "dirty_files": [
+    " M crates/fixture-api/src/lib.rs",
+    " M crates/fixture-app/src/main.rs",
+    " M third_party/vendor-api/src/lib.rs"
+  ],
+  "disk_headroom": {
+    "checked_at": "2026-10-19T15:14:56Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 9393004544,
+        "probed_path": "/tmp/tmp_aam7uph/vendored-worktree-b",
+        "requested_path": "/tmp/tmp_aam7uph/vendored-worktree-b",
+        "role": "workspace",
+        "total_bytes": 9441337344
+      },
+      {
+        "free_bytes": 9393004544,
+        "probed_path": "/tmp/tmp_aam7uph/vendored-cargo-target",
+        "requested_path": "/tmp/tmp_aam7uph/vendored-cargo-target",
+        "role": "target",
+        "total_bytes": 9441337344
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 0.071,
+  "end_path_dependencies": {
+    "external-helper#external-helper@0.1.0": {
+      "bytes": 93,
+      "files": 2,
+      "sha256": "f70cc66deace5a104c14b3c4e3a8c43815277d03d6b4740b506aa7053c1f656b"
+    },
+    "third_party/vendor-api#vendor-api@0.1.0": {
+      "bytes": 102,
+      "files": 2,
+      "sha256": "f769f7567d7666ffc47a92e68263234a8d1b12311718a3a3ecdee7c6ffcaee33"
+    }
+  },
+  "end_tree": {
+    "commit": "0dfe64451d314da5819a0367811f2453e6b30bf9",
+    "content_sha256": "09a8d95a3dda4c722889f7568bb48dc5c95cb13b269c40a8eb58badab192cf44",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/fixture-api/src/lib.rs",
+      " M crates/fixture-app/src/main.rs",
+      " M third_party/vendor-api/src/lib.rs"
+    ]
+  },
+  "ended_at": "2026-10-19T15:14:56Z",
+  "exit_code": 0,
+  "invocation_argv": [
+    "python3 -m unittest",
+    "discover",
+    "-s",
+    "scripts/tests"
+  ],
+  "mode": "full",
+  "path_dependencies": [
+    {
+      "bytes": 93,
+      "files": 2,
+      "key": "external-helper#external-helper@0.1.0",
+      "name": "external-helper",
+      "root": "/tmp/tmp_aam7uph/vendored-worktree-b/external-helper",
+      "sha256": "f70cc66deace5a104c14b3c4e3a8c43815277d03d6b4740b506aa7053c1f656b",
+      "spec": "path+file:///tmp/tmp_aam7uph/vendored-worktree-b/external-helper#0.1.0"
+    },
+    {
+      "bytes": 102,
+      "files": 2,
+      "key": "third_party/vendor-api#vendor-api@0.1.0",
+      "name": "vendor-api",
+      "root": "/tmp/tmp_aam7uph/vendored-worktree-b/third_party/vendor-api",
+      "sha256": "f769f7567d7666ffc47a92e68263234a8d1b12311718a3a3ecdee7c6ffcaee33",
+      "spec": "path+file:///tmp/tmp_aam7uph/vendored-worktree-b/third_party/vendor-api#0.1.0"
+    }
+  ],
+  "path_dependency_identity_seconds": 0.020583,
+  "path_dependency_metadata_command": [
+    "cargo",
+    "metadata",
+    "--format-version",
+    "1",
+    "--locked",
+    "--manifest-path",
+    "/tmp/tmp_aam7uph/vendored-worktree-b/Cargo.toml"
+  ],
+  "repo_root": "/tmp/tmp_aam7uph/vendored-worktree-b",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "vendor-d",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "0dfe64451d314da5819a0367811f2453e6b30bf9",
+    "content_sha256": "09a8d95a3dda4c722889f7568bb48dc5c95cb13b269c40a8eb58badab192cf44",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/fixture-api/src/lib.rs",
+      " M crates/fixture-app/src/main.rs",
+      " M third_party/vendor-api/src/lib.rs"
+    ],
+    "git_common_dir": "/tmp/tmp_aam7uph/vendored-workspace/.git",
+    "workspace_root": "/tmp/tmp_aam7uph/vendored-worktree-b"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "0dfe64451d314da5819a0367811f2453e6b30bf9",
+    "content_sha256": "09a8d95a3dda4c722889f7568bb48dc5c95cb13b269c40a8eb58badab192cf44",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/fixture-api/src/lib.rs",
+      " M crates/fixture-app/src/main.rs",
+      " M third_party/vendor-api/src/lib.rs"
+    ]
+  },
+  "started_at": "2026-10-19T15:14:56Z",
+  "status": "passed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked"
+      ],
+      "ended_at": "2026-10-19T15:14:56Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/vendor-d/01-debug-build.log",
+      "started_at": "2026-10-19T15:14:56Z",
+      "status": "passed",
+      "step_id": "debug-build"
+    }
+  ],
+  "target_cache": {
+    "action": "reuse",
+    "changed_path_dependencies": [],
+    "cleanup_argv": null,
+    "cleanup_status": "not_needed",
+    "current_workspace_owner": {
+      "git_common_dir": "/tmp/tmp_aam7uph/vendored-workspace/.git",
+      "workspace_root": "/tmp/tmp_aam7uph/vendored-worktree-b"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/tmp_aam7uph/vendored-target-owner/33e7837174d2c764b73c2049b9b27411ab88f9dfefdf40bcdaea884b078b86f8.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/tmp/tmp_aam7uph/vendored-workspace/.git",
+      "workspace_root": "/tmp/tmp_aam7uph/vendored-worktree-b"
+    },
+    "target_identity_before": {
+      "device": 33,
+      "inode": 277595
+    }
+  },
+  "verification_status": "passed"
+}

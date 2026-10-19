@@ -1,0 +1,201 @@
+{
+  "cargo_identity": {
+    "configured_target_value": "/tmp/tmp4jh327r6/directory-cargo-target",
+    "lock_path": "/tmp/tmp4jh327r6/directory-cargo-owner/839c33ebce26863a1fb5ab266f7be6609d97af195639be02142b21f520e8ca63.lock",
+    "manifest_path": "/tmp/tmp4jh327r6/directory-workspace/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/tmp/tmp4jh327r6/directory-workspace/Cargo.toml"
+    ],
+    "owner_path": "/tmp/tmp4jh327r6/directory-cargo-owner/839c33ebce26863a1fb5ab266f7be6609d97af195639be02142b21f520e8ca63.owner.json",
+    "target_directory": "/tmp/tmp4jh327r6/directory-cargo-target",
+    "target_source": "environment",
+    "workspace_packages": [
+      {
+        "id": "path+file:///tmp/tmp4jh327r6/directory-workspace/app#directory-app@0.1.0",
+        "name": "directory-app",
+        "spec": "path+file:///tmp/tmp4jh327r6/directory-workspace/app#directory-app@0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/tmp/tmp4jh327r6/directory-workspace"
+  },
+  "commit": "07d86e0b41ac987900aebf324109bbab78939f94",
+  "dirty": false,
+  "dirty_files": [],
+  "disk_headroom": {
+    "checked_at": "2026-10-19T15:12:31Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 9388863488,
+        "probed_path": "/tmp/tmp4jh327r6/directory-workspace",
+        "requested_path": "/tmp/tmp4jh327r6/directory-workspace",
+        "role": "workspace",
+        "total_bytes": 9441337344
+      },
+      {
+        "free_bytes": 9388863488,
+        "probed_path": "/tmp/tmp4jh327r6/directory-cargo-target",
+        "requested_path": "/tmp/tmp4jh327r6/directory-cargo-target",
+        "role": "target",
+        "total_bytes": 9441337344
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 0.099,
+  "end_path_dependencies": {
+    "external-helper#external-helper@0.1.0": {
+      "bytes": 92,
+      "files": 2,
+      "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf"
+    },
+    "third_party/vendor-api#directory-vendor@0.1.0": {
+      "bytes": 324,
+      "files": 3,
+      "sha256": "5dc2a08d3a423d39cbc7952f34e9270e07cd85b07eb930b748b9b5918ccc39f7"
+    }
+  },
+  "end_tree": {
+    "commit": "07d86e0b41ac987900aebf324109bbab78939f94",
+    "content_sha256": "674763722c2f6a48bb0521fa8b38234d81547c84b4e31aa7d50b867117defec5",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "ended_at": "2026-10-19T15:12:31Z",
+  "exit_code": 0,
+  "invocation_argv": [
+    "python3 -m unittest",
+    "scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_null_owner_refuses_without_traceback_or_mutation",
+    "scripts.tests.test_local_ci.LocalCiRunnerTests.test_dependency_null_owner_uses_existing_explicit_adoption",
+    "scripts.tests.test_local_ci.LocalCiRunnerTests.test_real_cargo_empty_directory_add_rebuilds_build_script",
+    "scripts.tests.test_local_ci.LocalCiRunnerTests.test_real_cargo_empty_directory_remove_rebuilds_build_script"
+  ],
+  "mode": "full",
+  "path_dependencies": [
+    {
+      "bytes": 324,
+      "files": 3,
+      "key": "third_party/vendor-api#directory-vendor@0.1.0",
+      "name": "directory-vendor",
+      "root": "/tmp/tmp4jh327r6/directory-workspace/third_party/vendor-api",
+      "sha256": "5dc2a08d3a423d39cbc7952f34e9270e07cd85b07eb930b748b9b5918ccc39f7",
+      "spec": "path+file:///tmp/tmp4jh327r6/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"
+    },
+    {
+      "bytes": 92,
+      "files": 2,
+      "key": "external-helper#external-helper@0.1.0",
+      "name": "external-helper",
+      "root": "/tmp/tmp4jh327r6/directory-workspace/external-helper",
+      "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf",
+      "spec": "path+file:///tmp/tmp4jh327r6/directory-workspace/external-helper#0.1.0"
+    }
+  ],
+  "path_dependency_identity_seconds": 0.031754,
+  "path_dependency_metadata_command": [
+    "cargo",
+    "metadata",
+    "--format-version",
+    "1",
+    "--locked",
+    "--manifest-path",
+    "/tmp/tmp4jh327r6/directory-workspace/Cargo.toml"
+  ],
+  "repo_root": "/tmp/tmp4jh327r6/directory-workspace",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "directory-reuse",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "07d86e0b41ac987900aebf324109bbab78939f94",
+    "content_sha256": "674763722c2f6a48bb0521fa8b38234d81547c84b4e31aa7d50b867117defec5",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/tmp/tmp4jh327r6/directory-workspace/.git",
+    "workspace_root": "/tmp/tmp4jh327r6/directory-workspace"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "07d86e0b41ac987900aebf324109bbab78939f94",
+    "content_sha256": "674763722c2f6a48bb0521fa8b38234d81547c84b4e31aa7d50b867117defec5",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "started_at": "2026-10-19T15:12:31Z",
+  "status": "passed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked"
+      ],
+      "ended_at": "2026-10-19T15:12:31Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/directory-reuse/01-private-build.log",
+      "started_at": "2026-10-19T15:12:31Z",
+      "status": "passed",
+      "step_id": "private-build"
+    }
+  ],
+  "target_cache": {
+    "action": "reuse",
+    "changed_path_dependencies": [],
+    "cleanup_argv": null,
+    "cleanup_status": "not_needed",
+    "current_workspace_owner": {
+      "git_common_dir": "/tmp/tmp4jh327r6/directory-workspace/.git",
+      "workspace_root": "/tmp/tmp4jh327r6/directory-workspace"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/tmp4jh327r6/directory-cargo-owner/839c33ebce26863a1fb5ab266f7be6609d97af195639be02142b21f520e8ca63.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/tmp/tmp4jh327r6/directory-workspace/.git",
+      "workspace_root": "/tmp/tmp4jh327r6/directory-workspace"
+    },
+    "target_identity_before": {
+      "device": 33,
+      "inode": 265776
+    }
+  },
+  "verification_status": "passed"
+}

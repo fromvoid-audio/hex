@@ -1,0 +1,263 @@
+diff --git a/docs/local-ci.md b/docs/local-ci.md
+index 1fffa8fb..39baa601 100644
+--- a/docs/local-ci.md
++++ b/docs/local-ci.md
+@@ -140,8 +140,10 @@ fixture changes a workspace API and verifies selective workspace cleanup.
+ While holding the same lock, after validating target/repository ownership and
+ before cleanup or compilation, full locked Cargo metadata identifies local path
+ packages outside the workspace membership, including vendored registry patches.
+-Their content identities include relative filenames, executable bits and file
+-bytes, including manifests, build scripts and assets; mtimes are not identities.
++Their content identities include relative directory/file paths and entry types,
++executable bits and file bytes, including manifests, build scripts and assets;
++mtimes are not identities. Empty directories are inputs too: a build script can
++observe their presence even when Cargo does not rerun it automatically.
+ Checkout-relative package keys survive worktree changes. External package keys
+ retain their actual absolute path. The marker and summary record hashes and
+ file/byte counts; hashing streams one file at a time. Only `.git` metadata and the
+@@ -163,6 +165,20 @@ local inputs stale, including inputs outside the main Git inventory. The marker
+ retains the initial identity so the next run invalidates any changed inputs.
+ Release ownership and optimized artifact qualification remain separate.
+ 
++The v2 content digest domain-separates directory, regular-file and file-symlink
++records, length-prefixing relative paths. This intentionally changes prior local
++package hashes once; the existing changed-package path selectively invalidates
++their development artifacts and records the new identities. It is not a new
++owner schema, adoption policy or compatibility/migration reader. Unchanged v2
++inputs reuse their artifacts, including after empty-directory add/remove repairs.
++A missing legacy `path_dependencies` field retains its existing one-time local
++invalidation behavior. An explicitly present null/non-map/malformed field is a
++malformed owner: controlled refusal preserves the marker before mutation, while
++existing explicit `--adopt-target` recovery remains available after ownership
++inspection. No uncaught attribute error or implicit null-to-empty normalization
++may bypass that distinction.
++
++
+ Each content traversal retains file/link and resolved-file identities plus each
+ visited directory's identity and relevant entry inventory. After reading all
+ bytes it revalidates those collected stamps and inventories, detecting an earlier
+diff --git a/scripts/local-ci.py b/scripts/local-ci.py
+index 1ca915e9..1ba38ab4 100644
+--- a/scripts/local-ci.py
++++ b/scripts/local-ci.py
+@@ -537,7 +537,7 @@ class LocalCiRunner:
+             ):
+                 raise ValueError("owner fields have invalid types")
+             dependencies = value.get("path_dependencies")
+-            if dependencies is not None and (
++            if "path_dependencies" in value and (
+                 not isinstance(dependencies, dict)
+                 or any(not isinstance(key, str) or not isinstance(digest, str)
+                        or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+@@ -571,8 +571,9 @@ class LocalCiRunner:
+ 
+     @staticmethod
+     def _dependency_content(root: Path, target: Path) -> dict[str, object]:
+-        """Hash package checkout bytes, not mtimes or worktree-specific path spellings."""
++        """Hash package entry types, paths and bytes, not mtimes or worktree spellings."""
+         digest = hashlib.sha256()
++        digest.update(b"hex-local-dependency-v2\0")
+         file_count = byte_count = 0
+         files_seen = []
+         directories_seen = []
+@@ -607,12 +608,18 @@ class LocalCiRunner:
+             entries = inventory(current)
+             directories[:] = [name for kind, name in entries if kind == "directory"]
+             directories_seen.append((current, directory_stamp(before_directory), entries))
++            relative_directory = os.fsencode(str(current.relative_to(root)))
++            digest.update(b"directory\0")
++            digest.update(len(relative_directory).to_bytes(8, "big"))
++            digest.update(relative_directory)
++
+             for name in (name for kind, name in entries if kind == "input"):
+                 path = current / name
+                 relative = os.fsencode(str(path.relative_to(root)))
+                 before = path.lstat()
+                 if not stat.S_ISREG(before.st_mode) and not stat.S_ISLNK(before.st_mode):
+                     raise TargetCacheError(f"local dependency input is not a regular file: {path}")
++                digest.update(b"symlink\0" if stat.S_ISLNK(before.st_mode) else b"file\0")
+                 digest.update(len(relative).to_bytes(8, "big"))
+                 digest.update(relative)
+                 digest.update(str(before.st_mode & 0o111).encode("ascii") + b"\0")
+diff --git a/scripts/tests/test_local_ci.py b/scripts/tests/test_local_ci.py
+index fc58236f..c273cbd6 100644
+--- a/scripts/tests/test_local_ci.py
++++ b/scripts/tests/test_local_ci.py
+@@ -1241,6 +1241,177 @@ runpy.run_path(sys.argv[1], run_name='__main__')
+         self.final_hash_signal(local_ci.signal.SIGTERM)
+ 
+ 
++    def _null_dependency_owner(self, adopt):
++        _, _, metadata = self.path_dependency_fixture()
++        target = Path(self.env["FAKE_METADATA_TARGET"])
++        target.mkdir()
++        with metadata:
++            self.assertEqual(self.runner("null-prime").run(), 0)
++            owner = next(self.target_state_dir.glob("*.owner.json"))
++            record = json.loads(owner.read_text())
++            record["path_dependencies"] = None
++            owner.write_text(json.dumps(record))
++            before = owner.read_bytes()
++            sentinel = target / "release-external-sentinel"
++            sentinel.write_bytes(b"preserve unrelated artifacts")
++            calls = self.call_log.read_text()
++            runner = self.runner("null-attempt", adopt_target=adopt)
++            escaped = None
++            result = None
++            try:
++                result = runner.run()
++            except Exception as error:
++                escaped = repr(error)
++            print("ACTUAL_NULL_OWNER", {"adopt": adopt, "result": result,
++                  "escaped": escaped, "lock_released": runner.target_lock is None,
++                  "owner_preserved": owner.read_bytes() == before}, flush=True)
++            self.assertIsNone(runner.target_lock)
++            self.assertEqual(sentinel.read_bytes(), b"preserve unrelated artifacts")
++            self.assertIsNone(escaped, "malformed marker must use controlled refusal/adoption")
++            self.assertEqual(result, 0 if adopt else 1)
++            if adopt:
++                self.assertIsInstance(json.loads(owner.read_text())["path_dependencies"], dict)
++                self.assertEqual(self.summary("null-attempt")["target_cache"]["action"], "adopted")
++                self.assertIn("--profile dev", self.call_log.read_text()[len(calls):])
++            else:
++                self.assertEqual(owner.read_bytes(), before)
++                self.assertIn("malformed", self.summary("null-attempt")["target_cache_error"])
++                self.assertNotIn("cargo clean", self.call_log.read_text()[len(calls):])
++                self.assertNotIn("cargo build", self.call_log.read_text()[len(calls):])
++            lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
++            lock = local_ci.CargoTargetLock(lock_path, {"run_id": "null-reacquire"})
++            lock.acquire()
++            lock.release()
++
++    def test_dependency_null_owner_refuses_without_traceback_or_mutation(self):
++        self._null_dependency_owner(False)
++
++    def test_dependency_null_owner_uses_existing_explicit_adoption(self):
++        self._null_dependency_owner(True)
++
++    def _real_cargo_empty_directory_change(self, initially_present):
++        root = self.base / "directory-workspace"
++        vendor = root / "third_party/vendor-api"
++        app = root / "app"
++        helper = root / "external-helper"
++        for directory in (vendor, app, helper):
++            (directory / "src").mkdir(parents=True)
++        (root / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["third_party/vendor-api","external-helper"]\nresolver="2"\n')
++        (root / ".gitignore").write_text("/artifacts/\n")
++        for directory, name in [(vendor, "directory-vendor"), (app, "directory-app"), (helper, "external-helper")]:
++            (directory / "Cargo.toml").write_text(f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2021"\n')
++        with (app / "Cargo.toml").open("a") as manifest:
++            manifest.write('[dependencies]\ndirectory-vendor={path="../third_party/vendor-api"}\nexternal-helper={path="../external-helper"}\n')
++        (vendor / "build.rs").write_text(
++            'fn main() { println!("cargo:rerun-if-changed=build.rs"); '
++            'let value = if std::path::Path::new("empty-flag").is_dir() { 17 } else { 7 }; '
++            'println!("cargo:rustc-env=DIRECTORY_VALUE={}", value); }\n')
++        (vendor / "src/lib.rs").write_text('pub fn value() -> u32 { env!("DIRECTORY_VALUE").parse().unwrap() }\n')
++        (helper / "src/lib.rs").write_text('pub fn value() -> u32 { 1 }\n')
++        (app / "src/main.rs").write_text('fn main() { println!("{}", directory_vendor::value() + external_helper::value()); }\n')
++        flag = vendor / "empty-flag"
++        if initially_present:
++            flag.mkdir()
++        target = self.base / "directory-cargo-target"
++        state = self.base / "directory-cargo-owner"
++        env = {**os.environ, "CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "0", "CARGO_NET_OFFLINE": "true"}
++        def command(argv):
++            result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True, check=False)
++            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++            return result.stdout.strip()
++        command(["git", "init", "-q"])
++        command(["git", "config", "user.email", "local-ci-test@example.invalid"])
++        command(["git", "config", "user.name", "local ci fixture"])
++        command(["cargo", "generate-lockfile", "--offline"])
++        command(["git", "add", "."])
++        command(["git", "commit", "-qm", "directory fixture base"])
++        build = local_ci.Step("private-build", ("cargo", "build", "--offline", "--locked"))
++        def run(name, release=False):
++            steps = (build, local_ci.Step("private-release", ("cargo", "build", "--offline", "--locked", "--release"))) if release else (build,)
++            runner = local_ci.LocalCiRunner(root, run_id=name, env=env, steps=steps, min_free_bytes=0, target_state_dir=state)
++            self.assertEqual(runner.run(), 0)
++            return runner
++        evidence = os.environ.get("HEX_PRIVATE_CARGO_EVIDENCE")
++        label = "remove" if initially_present else "add"
++        try:
++            prime = run("directory-prime", True)
++            original = "18" if initially_present else "8"
++            expected = "8" if initially_present else "18"
++            self.assertEqual(command([str(target / "debug/directory-app")]), original)
++            release = target / "release/directory-app"
++            release_sha = hashlib.sha256(release.read_bytes()).hexdigest()
++            external = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (target / "debug/deps").glob("libexternal_helper-*.rlib")}
++            self.assertTrue(external)
++            reuse = run("directory-reuse")
++            self.assertEqual(reuse.summary["target_cache"]["changed_path_dependencies"], [])
++            self.assertIsNone(reuse.summary["target_cache"]["cleanup_argv"])
++            unchanged_git = command(["git", "status", "--porcelain"])
++            self.assertEqual(unchanged_git, "")
++            if initially_present:
++                flag.rmdir()
++            else:
++                flag.mkdir()
++            self.assertEqual(command(["git", "status", "--porcelain"]), unchanged_git)
++            changed = run("directory-change")
++            observed = command([str(target / "debug/directory-app")])
++            preservation = {
++                "release_unchanged": hashlib.sha256(release.read_bytes()).hexdigest() == release_sha,
++                "external_unchanged": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (target / "debug/deps").glob("libexternal_helper-*.rlib")} == external,
++            }
++            record = {"operation": label, "original": original, "expected": expected, "observed": observed,
++                      "before_dependencies": prime.summary["path_dependencies"], "after_dependencies": changed.summary["path_dependencies"],
++                      "cleanup": changed.summary["target_cache"]["cleanup_argv"], "release_sha256": release_sha,
++                      "external_sha256": external, **preservation}
++            print("ACTUAL_EMPTY_DIRECTORY", json.dumps(record, sort_keys=True), flush=True)
++            (root / "artifacts/empty-directory-proof.json").write_text(json.dumps(record, indent=2))
++            self.assertTrue(all(preservation.values()))
++            self.assertEqual(observed, expected, "actual build-script output must follow empty-directory presence")
++            self.assertEqual(len(changed.summary["target_cache"]["changed_path_dependencies"]), 1)
++            again = run("directory-after-reuse")
++            self.assertEqual(again.summary["target_cache"]["changed_path_dependencies"], [])
++            self.assertIsNone(again.summary["target_cache"]["cleanup_argv"])
++        finally:
++            if evidence:
++                destination = Path(evidence) / ("empty-directory-" + label)
++                destination.mkdir(parents=True, exist_ok=True)
++                if (root / "artifacts").exists():
++                    shutil.copytree(root / "artifacts", destination / "runs", dirs_exist_ok=True)
++                if state.exists():
++                    shutil.copytree(state, destination / "ownership", dirs_exist_ok=True)
++                if (target / "debug/.fingerprint").exists():
++                    shutil.copytree(target / "debug/.fingerprint", destination / "fingerprints", dirs_exist_ok=True)
++                for path in [root / "Cargo.toml", vendor / "build.rs", vendor / "src/lib.rs", app / "src/main.rs"]:
++                    out = destination / "fixture" / path.relative_to(root)
++                    out.parent.mkdir(parents=True, exist_ok=True)
++                    out.write_bytes(path.read_bytes())
++
++    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
++    def test_real_cargo_empty_directory_add_rebuilds_build_script(self):
++        self._real_cargo_empty_directory_change(False)
++
++    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
++    def test_real_cargo_empty_directory_remove_rebuilds_build_script(self):
++        self._real_cargo_empty_directory_change(True)
++
++    def test_dependency_empty_directory_path_and_entry_type_are_persisted_inputs(self):
++        root, _, _ = self.path_dependency_fixture()
++        target = self.base / "outside-target"
++        original = local_ci.LocalCiRunner._dependency_content(root, target)
++        leaf = root / "a"
++        leaf.mkdir()
++        directory = local_ci.LocalCiRunner._dependency_content(root, target)
++        self.assertNotEqual(directory["sha256"], original["sha256"])
++        self.assertEqual((directory["files"], directory["bytes"]), (original["files"], original["bytes"]))
++        leaf.rename(root / "b")
++        renamed = local_ci.LocalCiRunner._dependency_content(root, target)
++        self.assertNotEqual(renamed["sha256"], directory["sha256"])
++        (root / "b").rmdir()
++        leaf.write_bytes(b"")
++        regular = local_ci.LocalCiRunner._dependency_content(root, target)
++        self.assertNotEqual(regular["sha256"], directory["sha256"])
++        leaf.unlink()
++        self.assertEqual(local_ci.LocalCiRunner._dependency_content(root, target), original)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

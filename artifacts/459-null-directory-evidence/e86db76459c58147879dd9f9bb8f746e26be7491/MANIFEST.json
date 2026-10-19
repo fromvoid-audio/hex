@@ -1,0 +1,1098 @@
+{
+  "HANDOFF.md": {
+    "sha256": "266bd23f2fafdd80831a2486ab1e6b940b2e7a0e9949d6f27584ce543ec6c49c",
+    "size": 3434
+  },
+  "final-v2-outer.log": {
+    "sha256": "00a5ad09c76412014326f768b82d3b5931dd3f78b1c7071bfc2faf3a7acdedec",
+    "size": 569
+  },
+  "final-v2-realCargo/a/local-ci/vendor-a/01-debug-build.log": {
+    "sha256": "e68fe7243f32b37fefdea9d21e4a0033e0c02625319eb8ba8ea103e00f05f95d",
+    "size": 432
+  },
+  "final-v2-realCargo/a/local-ci/vendor-a/02-release-build.log": {
+    "sha256": "c63ac08dc2e3fbbef3282807b558f28be21f36a8c728e725ad843c1a255967ff",
+    "size": 422
+  },
+  "final-v2-realCargo/a/local-ci/vendor-a/summary.json": {
+    "sha256": "c60939cf4f617577629e4b40d3419ff3b6109bcf438e6a8b25698cbba77a9009",
+    "size": 6480
+  },
+  "final-v2-realCargo/b/local-ci/vendor-b/01-debug-build.log": {
+    "sha256": "e78bec2e940ea1b4312f071eb2d3ff1cd43cc02e7f7c2d781668848f6c7e1f0e",
+    "size": 345
+  },
+  "final-v2-realCargo/b/local-ci/vendor-b/summary.json": {
+    "sha256": "9c141b7a3674ef8ddba4b18b64253dd7d0a746ed1d74eccecde55962a3b745cb",
+    "size": 6972
+  },
+  "final-v2-realCargo/b/local-ci/vendor-b/target-handoff-clean.log": {
+    "sha256": "85f206d976dfa1efa35ffebdcb2f3cd1d0ec065b6ec34557fd29c26c8f8f8ad1",
+    "size": 1017
+  },
+  "final-v2-realCargo/b/local-ci/vendor-c/01-debug-build.log": {
+    "sha256": "0c1da2e367bad9829c0a10bb53813b60b6db3bcf5f66350215b73057ff03934c",
+    "size": 345
+  },
+  "final-v2-realCargo/b/local-ci/vendor-c/summary.json": {
+    "sha256": "c609afca0dcf154d2f91a9b417f950ab52d89fffc357c38122e249884662790a",
+    "size": 7286
+  },
+  "final-v2-realCargo/b/local-ci/vendor-c/target-handoff-clean.log": {
+    "sha256": "1c99d2fdc8e1aa5a9dcb5e58fb66b996a23521311e6331cda146b2a65e806b83",
+    "size": 366
+  },
+  "final-v2-realCargo/b/local-ci/vendor-d/01-debug-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "final-v2-realCargo/b/local-ci/vendor-d/summary.json": {
+    "sha256": "b0dd69560874560d7d8039cfbe711ec41dfc0c25fc48cd2b7b6054bcf0fa8938",
+    "size": 6812
+  },
+  "final-v2-realCargo/b/source-provenance.json": {
+    "sha256": "a42d7f513249b9c933d66fbd665d7986bc2a85bbacf6eee95ac4c2cf9449911f",
+    "size": 407
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/bin-directory-app": {
+    "sha256": "c2cbb974aa4b6367e387b7640ab725d8221a18c1c610791cb0de65adf2327643",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/bin-directory-app.json": {
+    "sha256": "e0adaae32f3b72c4f3fc7d3db858f1c0abbcdf5ef5cdc4627138fbc3d78f04a1",
+    "size": 495
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/dep-bin-directory-app": {
+    "sha256": "dd32b16937730a9a92a8070aa73e4dbbc632703f88e1395eb2196a4f6b11a95a",
+    "size": 31
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build": {
+    "sha256": "8f63bdcb08ccd41473f48c6105cee0b900f2ead14aaad03d487a0e5cbdeac63e",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build.json": {
+    "sha256": "b7f88360cd365a69d1ca27f9bbd8ca591b92a570fca89c06ca6e513b07d60005",
+    "size": 335
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build": {
+    "sha256": "6dd63333724592fe2075c2dd5c9787e4e628479c7c25d6a5ef856648e9e2e71b",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build.json": {
+    "sha256": "16d07363c50ff363af33428ab042dd3fcb812b866945af87f99b2aa068f5e47f",
+    "size": 376
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/dep-build-script-build-script-build": {
+    "sha256": "a71f952e7f3252ef5608298951fd55b25f3590c98bc0765ae4145e623604ee7d",
+    "size": 28
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/dep-lib-directory_vendor": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor": {
+    "sha256": "20f6240fda8346e1d5d30ff2d711e802bc501ecf45e2d1fb9547305572483da6",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor.json": {
+    "sha256": "62a8ba7abea8cbd401582575b2f282d071324a141f7b90f1289d8cad1eeeb6b2",
+    "size": 434
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/dep-lib-external_helper": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper": {
+    "sha256": "a7631e56867ef75e3c204a3c264e5d918fc31987f57035f34b39277414b63927",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper.json": {
+    "sha256": "24846881669f8194734d23d9a7275256a67def2ea904c8eaebe1ac203cd0c09c",
+    "size": 365
+  },
+  "final-v2-realCargo/empty-directory-add/fixture/Cargo.toml": {
+    "sha256": "e31e8f6e88cbe5962b5df6fc85093716598e45f084ba422101d39b001eaa1ef2",
+    "size": 94
+  },
+  "final-v2-realCargo/empty-directory-add/fixture/app/src/main.rs": {
+    "sha256": "95db52099601d9e51e57157fe612fb64411d32ad7fac630287668ede2511e8e9",
+    "size": 84
+  },
+  "final-v2-realCargo/empty-directory-add/fixture/third_party/vendor-api/build.rs": {
+    "sha256": "60d5d8d7155861349372f7b9531c876a7d9589d66eb99702f29c825bc8d37c6f",
+    "size": 192
+  },
+  "final-v2-realCargo/empty-directory-add/fixture/third_party/vendor-api/src/lib.rs": {
+    "sha256": "fbead081ee66f7cd6dacc1cd009494d070e6e31d5a197093b8e8d03d44ec0b86",
+    "size": 67
+  },
+  "final-v2-realCargo/empty-directory-add/ownership/86a789784955f45d85be279bfd2ec4a57d26dd239b6c3844da270fe764ceef7a.lock": {
+    "sha256": "a341ecf9b0a14ebaa6ab9e2b76f7d3e3a5f2b7824b0a92a3189a6e85afdbdfcf",
+    "size": 267
+  },
+  "final-v2-realCargo/empty-directory-add/ownership/86a789784955f45d85be279bfd2ec4a57d26dd239b6c3844da270fe764ceef7a.owner.json": {
+    "sha256": "060cc9d3be781ac2e630761454d9da1f9bcaf4abcaf5b82970bb7b7b7050562b",
+    "size": 617
+  },
+  "final-v2-realCargo/empty-directory-add/ownership/fcec1b8e440468c64f917b0931ec04ca87b2acf36eaaa6f6e35de7e145a7dc4f.lock": {
+    "sha256": "fa7de710f26f3c00791ef6bd79093e1c03cbee1912f0db9506406fc510337da3",
+    "size": 267
+  },
+  "final-v2-realCargo/empty-directory-add/ownership/fcec1b8e440468c64f917b0931ec04ca87b2acf36eaaa6f6e35de7e145a7dc4f.owner.json": {
+    "sha256": "9aff530f3252977ea9ea14c7d74e1bb06fb75631f4e9424a60181880ce17fa85",
+    "size": 617
+  },
+  "final-v2-realCargo/empty-directory-add/runs/empty-directory-proof.json": {
+    "sha256": "c9393abaf7846bfb272e4fed1bbba6d42e0491d5dc7a9cc0ae17ff924be77183",
+    "size": 2365
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-after-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-after-reuse/summary.json": {
+    "sha256": "d19e8ae5f50fd7a5b07a688dc237e3441dd76f8d76f89ac248c41eb18c2ad73c",
+    "size": 6097
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-change/01-private-build.log": {
+    "sha256": "56a5bc32f20bb8485410fbfb7b54d8d34b49b3ccbe73b3479d82bec03fb56bb5",
+    "size": 248
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-change/summary.json": {
+    "sha256": "a059d4e3ea3d77eb7ff09a71788e82e419f1895079dc6b64605bc4b85a9781d8",
+    "size": 6593
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-change/target-handoff-clean.log": {
+    "sha256": "03d44505e1b71232d07f396ce1767558b2e62d35bc49bb0f5abcd5d737326c51",
+    "size": 413
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-prime/01-private-build.log": {
+    "sha256": "3e3b9467cf4ec90bc25be984dac9b49d76b74fbee7ce3b46f5c5f75c3e6bffe4",
+    "size": 339
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-prime/02-private-release.log": {
+    "sha256": "5af99c05a4ba1802e119dbe1a72448e2f63da5e3fda7d88d8e96477b9fe8b151",
+    "size": 329
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-prime/summary.json": {
+    "sha256": "38383cc814b3642da003867389144e6d60a58f2bf92b531590cd8b10984e7c5b",
+    "size": 6308
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "final-v2-realCargo/empty-directory-add/runs/local-ci/directory-reuse/summary.json": {
+    "sha256": "ba0bd254747716429491f4a7a0ac1c39d44eac6a2f2e1b71d4e595787fea4693",
+    "size": 6085
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/bin-directory-app": {
+    "sha256": "c2cbb974aa4b6367e387b7640ab725d8221a18c1c610791cb0de65adf2327643",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/bin-directory-app.json": {
+    "sha256": "e0adaae32f3b72c4f3fc7d3db858f1c0abbcdf5ef5cdc4627138fbc3d78f04a1",
+    "size": 495
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/dep-bin-directory-app": {
+    "sha256": "dd32b16937730a9a92a8070aa73e4dbbc632703f88e1395eb2196a4f6b11a95a",
+    "size": 31
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build": {
+    "sha256": "8f63bdcb08ccd41473f48c6105cee0b900f2ead14aaad03d487a0e5cbdeac63e",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build.json": {
+    "sha256": "b7f88360cd365a69d1ca27f9bbd8ca591b92a570fca89c06ca6e513b07d60005",
+    "size": 335
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build": {
+    "sha256": "6dd63333724592fe2075c2dd5c9787e4e628479c7c25d6a5ef856648e9e2e71b",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build.json": {
+    "sha256": "16d07363c50ff363af33428ab042dd3fcb812b866945af87f99b2aa068f5e47f",
+    "size": 376
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/dep-build-script-build-script-build": {
+    "sha256": "a71f952e7f3252ef5608298951fd55b25f3590c98bc0765ae4145e623604ee7d",
+    "size": 28
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/dep-lib-directory_vendor": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor": {
+    "sha256": "20f6240fda8346e1d5d30ff2d711e802bc501ecf45e2d1fb9547305572483da6",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor.json": {
+    "sha256": "62a8ba7abea8cbd401582575b2f282d071324a141f7b90f1289d8cad1eeeb6b2",
+    "size": 434
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/dep-lib-external_helper": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper": {
+    "sha256": "a7631e56867ef75e3c204a3c264e5d918fc31987f57035f34b39277414b63927",
+    "size": 16
+  },
+  "final-v2-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper.json": {
+    "sha256": "24846881669f8194734d23d9a7275256a67def2ea904c8eaebe1ac203cd0c09c",
+    "size": 365
+  },
+  "final-v2-realCargo/empty-directory-remove/fixture/Cargo.toml": {
+    "sha256": "e31e8f6e88cbe5962b5df6fc85093716598e45f084ba422101d39b001eaa1ef2",
+    "size": 94
+  },
+  "final-v2-realCargo/empty-directory-remove/fixture/app/src/main.rs": {
+    "sha256": "95db52099601d9e51e57157fe612fb64411d32ad7fac630287668ede2511e8e9",
+    "size": 84
+  },
+  "final-v2-realCargo/empty-directory-remove/fixture/third_party/vendor-api/build.rs": {
+    "sha256": "60d5d8d7155861349372f7b9531c876a7d9589d66eb99702f29c825bc8d37c6f",
+    "size": 192
+  },
+  "final-v2-realCargo/empty-directory-remove/fixture/third_party/vendor-api/src/lib.rs": {
+    "sha256": "fbead081ee66f7cd6dacc1cd009494d070e6e31d5a197093b8e8d03d44ec0b86",
+    "size": 67
+  },
+  "final-v2-realCargo/empty-directory-remove/ownership/514f0bf43a16d3080a6535c1c39ad9bc5fd68f9287e3560ed9fce4f96c75b52d.lock": {
+    "sha256": "bba403e40718045f9ead9b76c3f48f2a746638b18fd8e26b8c2054fae3c33335",
+    "size": 267
+  },
+  "final-v2-realCargo/empty-directory-remove/ownership/514f0bf43a16d3080a6535c1c39ad9bc5fd68f9287e3560ed9fce4f96c75b52d.owner.json": {
+    "sha256": "42ca4c9de58b8fbc39e6cf4001facb18891569da5c702420eb5c20531eab61ac",
+    "size": 617
+  },
+  "final-v2-realCargo/empty-directory-remove/ownership/98ff41ad42c7c56a7083d83619bbb6bcca447e7bfbf3ced221df3379411904a6.lock": {
+    "sha256": "9d8434f3d272f1f5b3644aaed91572e33695c030c2fad08c4869267ec9c5540e",
+    "size": 267
+  },
+  "final-v2-realCargo/empty-directory-remove/ownership/98ff41ad42c7c56a7083d83619bbb6bcca447e7bfbf3ced221df3379411904a6.owner.json": {
+    "sha256": "d1e4c9cfffee9f323cb2ba23e41b0056768ec9c87b58e5cb91209fb68605d8ae",
+    "size": 617
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/empty-directory-proof.json": {
+    "sha256": "a607d9fea250f9cb72015f251db91e3a2f62b156ab1ab9bd332d656351f816b6",
+    "size": 2367
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-after-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-after-reuse/summary.json": {
+    "sha256": "4b228b6eadcea5b39896ee04cfb62ff8e8372ef53658999456d4803c996ec76d",
+    "size": 6097
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-change/01-private-build.log": {
+    "sha256": "4bd7ad72e71d8df9e6ea5a3ff7abde5ac55cb7fb6b7b586e01bf2ebd66999ac4",
+    "size": 248
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-change/summary.json": {
+    "sha256": "4e8f66aa59f782589311254e0c5308324c9616bd8e1245df66f9a21c37a941aa",
+    "size": 6593
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-change/target-handoff-clean.log": {
+    "sha256": "453a62ac86154043d050b8604e35cc741ca4ecf199672e3810df14656b81ddd1",
+    "size": 413
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-prime/01-private-build.log": {
+    "sha256": "268960e6ceaabd035c3a2ff9e995a18a5fff0598205b9cbad6405e47548bc8da",
+    "size": 339
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-prime/02-private-release.log": {
+    "sha256": "5ae665ae0fac42ffa261e00f29037113506401fe819c7f25202e457de1838fdb",
+    "size": 329
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-prime/summary.json": {
+    "sha256": "1203170439d84f54680262c9e465db5ff9cc597d3dfd9d1ba8590c8d13050f01",
+    "size": 6308
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "final-v2-realCargo/empty-directory-remove/runs/local-ci/directory-reuse/summary.json": {
+    "sha256": "aa95d9c5ad7b47fa6eaea05e3c0561692b281c67e23b2470e750b9883b749a58",
+    "size": 6085
+  },
+  "final-v2-realCargo/fingerprints/external-helper-4435a338eada2dc7/dep-lib-external_helper": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "final-v2-realCargo/fingerprints/external-helper-4435a338eada2dc7/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper": {
+    "sha256": "a7631e56867ef75e3c204a3c264e5d918fc31987f57035f34b39277414b63927",
+    "size": 16
+  },
+  "final-v2-realCargo/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper.json": {
+    "sha256": "24846881669f8194734d23d9a7275256a67def2ea904c8eaebe1ac203cd0c09c",
+    "size": 365
+  },
+  "final-v2-realCargo/fingerprints/fixture-api-b9b0d5bec7576e1f/dep-lib-fixture_api": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "final-v2-realCargo/fingerprints/fixture-api-b9b0d5bec7576e1f/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/fingerprints/fixture-api-b9b0d5bec7576e1f/lib-fixture_api": {
+    "sha256": "57fb62ae7b04b53e939aa40032dc0c3eb8ff7c413ef0810d9aca30f030240dd2",
+    "size": 16
+  },
+  "final-v2-realCargo/fingerprints/fixture-api-b9b0d5bec7576e1f/lib-fixture_api.json": {
+    "sha256": "a99609ffc57c4cc43267cb4150e951f9b99ec3770dc91742701fec2f616a3676",
+    "size": 417
+  },
+  "final-v2-realCargo/fingerprints/fixture-app-2f728a19e6756046/bin-fixture-app": {
+    "sha256": "2c26c9b3eabe483c0b0bd12d288e6b441b82fba8c61f17daf19a6308c3c8cc3c",
+    "size": 16
+  },
+  "final-v2-realCargo/fingerprints/fixture-app-2f728a19e6756046/bin-fixture-app.json": {
+    "sha256": "49c10909040bcd10a99c9dd2631c663a5a593035c5fd82edafd1edcd45f64303",
+    "size": 485
+  },
+  "final-v2-realCargo/fingerprints/fixture-app-2f728a19e6756046/dep-bin-fixture-app": {
+    "sha256": "dd32b16937730a9a92a8070aa73e4dbbc632703f88e1395eb2196a4f6b11a95a",
+    "size": 31
+  },
+  "final-v2-realCargo/fingerprints/fixture-app-2f728a19e6756046/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/fingerprints/vendor-api-693e9b1a98d59e57/dep-lib-vendor_api": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "final-v2-realCargo/fingerprints/vendor-api-693e9b1a98d59e57/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "final-v2-realCargo/fingerprints/vendor-api-693e9b1a98d59e57/lib-vendor_api": {
+    "sha256": "6c32afc48fb6f8170e213b5dcf45da62e704cab7e752910d0939bd8201fc650f",
+    "size": 16
+  },
+  "final-v2-realCargo/fingerprints/vendor-api-693e9b1a98d59e57/lib-vendor_api.json": {
+    "sha256": "0b4b97ceb0f999e182d5e2024df620461410696bb9da450029af4f1866a164c3",
+    "size": 353
+  },
+  "final-v2-realCargo/ownership/33e7837174d2c764b73c2049b9b27411ab88f9dfefdf40bcdaea884b078b86f8.lock": {
+    "sha256": "a3ad623a513c65ae5194e3c0e5d28f7154b58194acb8bafd7c2dac70bb7c8e70",
+    "size": 253
+  },
+  "final-v2-realCargo/ownership/33e7837174d2c764b73c2049b9b27411ab88f9dfefdf40bcdaea884b078b86f8.owner.json": {
+    "sha256": "a417f033aec720a85d216d973284d107d1a3d03c8d3d1947feadef5a9bfd28d6",
+    "size": 609
+  },
+  "final-v2-realCargo/ownership/bb6ce47cb24a3f3381d62b7329f161b5a93dc1208dbd3a98cf549e807ddadeb4.lock": {
+    "sha256": "08da34f0f81ff714af8b77c4beb37ba3ec067d50cf9ac6f23071d0b0e0029e91",
+    "size": 253
+  },
+  "final-v2-realCargo/ownership/bb6ce47cb24a3f3381d62b7329f161b5a93dc1208dbd3a98cf549e807ddadeb4.owner.json": {
+    "sha256": "6d8d0503ce774c9e05d9685781ed49fd838edc6281d8b6208d317f1496afa408",
+    "size": 609
+  },
+  "final-v2/01-all actual runner cases.log": {
+    "sha256": "3d2bc0af049d69c3eef267784b2aef75ab60029d46bca223823759c44440c14c",
+    "size": 12444
+  },
+  "final-v2/02-all script regressions.log": {
+    "sha256": "13b1352e369a7f7675ca8f7153877b2cc27dc8d323b07470634b02434b5e819f",
+    "size": 14088
+  },
+  "final-v2/03-Python39 grammar.log": {
+    "sha256": "4692f0f411708e1b111eb240a1889c0fba65d965e88e75ccc7c5198a8264f06c",
+    "size": 23
+  },
+  "final-v2/04-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "final-v2/05-vendor provenance.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "final-v2/06-UI style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "final-v2/07-format.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "final-v2/08-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "final-v2/summary.json": {
+    "sha256": "e076f5cdf1f4d45d1c43f6008d245f87f6d9888fcdc0de8c3c2cc472546036a1",
+    "size": 16102
+  },
+  "green-outer.log": {
+    "sha256": "596582027af6a393c37fb5df4f1c76eae29310130419ad591c5abc4bffc424be",
+    "size": 205
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/bin-directory-app": {
+    "sha256": "c2cbb974aa4b6367e387b7640ab725d8221a18c1c610791cb0de65adf2327643",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/bin-directory-app.json": {
+    "sha256": "e0adaae32f3b72c4f3fc7d3db858f1c0abbcdf5ef5cdc4627138fbc3d78f04a1",
+    "size": 495
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/dep-bin-directory-app": {
+    "sha256": "dd32b16937730a9a92a8070aa73e4dbbc632703f88e1395eb2196a4f6b11a95a",
+    "size": 31
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build": {
+    "sha256": "8f63bdcb08ccd41473f48c6105cee0b900f2ead14aaad03d487a0e5cbdeac63e",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build.json": {
+    "sha256": "b7f88360cd365a69d1ca27f9bbd8ca591b92a570fca89c06ca6e513b07d60005",
+    "size": 335
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build": {
+    "sha256": "6dd63333724592fe2075c2dd5c9787e4e628479c7c25d6a5ef856648e9e2e71b",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build.json": {
+    "sha256": "16d07363c50ff363af33428ab042dd3fcb812b866945af87f99b2aa068f5e47f",
+    "size": 376
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/dep-build-script-build-script-build": {
+    "sha256": "a71f952e7f3252ef5608298951fd55b25f3590c98bc0765ae4145e623604ee7d",
+    "size": 28
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/dep-lib-directory_vendor": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor": {
+    "sha256": "20f6240fda8346e1d5d30ff2d711e802bc501ecf45e2d1fb9547305572483da6",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor.json": {
+    "sha256": "62a8ba7abea8cbd401582575b2f282d071324a141f7b90f1289d8cad1eeeb6b2",
+    "size": 434
+  },
+  "green-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/dep-lib-external_helper": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "green-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "green-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper": {
+    "sha256": "a7631e56867ef75e3c204a3c264e5d918fc31987f57035f34b39277414b63927",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper.json": {
+    "sha256": "24846881669f8194734d23d9a7275256a67def2ea904c8eaebe1ac203cd0c09c",
+    "size": 365
+  },
+  "green-realCargo/empty-directory-add/fixture/Cargo.toml": {
+    "sha256": "e31e8f6e88cbe5962b5df6fc85093716598e45f084ba422101d39b001eaa1ef2",
+    "size": 94
+  },
+  "green-realCargo/empty-directory-add/fixture/app/src/main.rs": {
+    "sha256": "95db52099601d9e51e57157fe612fb64411d32ad7fac630287668ede2511e8e9",
+    "size": 84
+  },
+  "green-realCargo/empty-directory-add/fixture/third_party/vendor-api/build.rs": {
+    "sha256": "60d5d8d7155861349372f7b9531c876a7d9589d66eb99702f29c825bc8d37c6f",
+    "size": 192
+  },
+  "green-realCargo/empty-directory-add/fixture/third_party/vendor-api/src/lib.rs": {
+    "sha256": "fbead081ee66f7cd6dacc1cd009494d070e6e31d5a197093b8e8d03d44ec0b86",
+    "size": 67
+  },
+  "green-realCargo/empty-directory-add/ownership/839c33ebce26863a1fb5ab266f7be6609d97af195639be02142b21f520e8ca63.lock": {
+    "sha256": "6766f9c1453c595bb805d11c93e1cf241fb3536ae4b659520cad59aab741e674",
+    "size": 267
+  },
+  "green-realCargo/empty-directory-add/ownership/839c33ebce26863a1fb5ab266f7be6609d97af195639be02142b21f520e8ca63.owner.json": {
+    "sha256": "b3e01313c7e0bdfc438c47640367cfe7e34b713af342cebbb89410be259e0d2c",
+    "size": 617
+  },
+  "green-realCargo/empty-directory-add/runs/empty-directory-proof.json": {
+    "sha256": "eab82a1f77a4daa48eb057e411d643b7b05e550f583b1196b21a54d132da967d",
+    "size": 2365
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-after-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-after-reuse/summary.json": {
+    "sha256": "2d5ac45765eed5ce3cd77db3bbee763779395ec763f45cb9e1c1d804b2142a7f",
+    "size": 6509
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-change/01-private-build.log": {
+    "sha256": "a3a14542ad23890bd685796c17c77f16a412ba16ca607c27fe1181815e3b2609",
+    "size": 248
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-change/summary.json": {
+    "sha256": "bdfc46937e4ea6fba4b7c9c3fb9affa1c2cf80b68175701cce6a565c51e74369",
+    "size": 7005
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-change/target-handoff-clean.log": {
+    "sha256": "1335e0adb19d929131c965d78ba10170ffd95c3eefc96fb89466e18b340b78a0",
+    "size": 413
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-prime/01-private-build.log": {
+    "sha256": "b3ddbeed2698abce6a6c9dae0802d020162a52c2f6749713ac38d914240c4edf",
+    "size": 339
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-prime/02-private-release.log": {
+    "sha256": "d618ad506051551c8437bfdebc067e3d375be56bf4bf5c0cfbd25a1116f35378",
+    "size": 329
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-prime/summary.json": {
+    "sha256": "dfa4d73729093ab7771d00b5518320be03c638e88cea202113f8090e6bcb5d51",
+    "size": 6720
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "green-realCargo/empty-directory-add/runs/local-ci/directory-reuse/summary.json": {
+    "sha256": "cf8700ac7a563e9a2eafa19720f23c393903da2c149a9c8f80be13c38750534b",
+    "size": 6497
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/bin-directory-app": {
+    "sha256": "c2cbb974aa4b6367e387b7640ab725d8221a18c1c610791cb0de65adf2327643",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/bin-directory-app.json": {
+    "sha256": "e0adaae32f3b72c4f3fc7d3db858f1c0abbcdf5ef5cdc4627138fbc3d78f04a1",
+    "size": 495
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/dep-bin-directory-app": {
+    "sha256": "dd32b16937730a9a92a8070aa73e4dbbc632703f88e1395eb2196a4f6b11a95a",
+    "size": 31
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build": {
+    "sha256": "8f63bdcb08ccd41473f48c6105cee0b900f2ead14aaad03d487a0e5cbdeac63e",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build.json": {
+    "sha256": "b7f88360cd365a69d1ca27f9bbd8ca591b92a570fca89c06ca6e513b07d60005",
+    "size": 335
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build": {
+    "sha256": "6dd63333724592fe2075c2dd5c9787e4e628479c7c25d6a5ef856648e9e2e71b",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build.json": {
+    "sha256": "16d07363c50ff363af33428ab042dd3fcb812b866945af87f99b2aa068f5e47f",
+    "size": 376
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/dep-build-script-build-script-build": {
+    "sha256": "a71f952e7f3252ef5608298951fd55b25f3590c98bc0765ae4145e623604ee7d",
+    "size": 28
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/dep-lib-directory_vendor": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor": {
+    "sha256": "20f6240fda8346e1d5d30ff2d711e802bc501ecf45e2d1fb9547305572483da6",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor.json": {
+    "sha256": "62a8ba7abea8cbd401582575b2f282d071324a141f7b90f1289d8cad1eeeb6b2",
+    "size": 434
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/dep-lib-external_helper": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper": {
+    "sha256": "a7631e56867ef75e3c204a3c264e5d918fc31987f57035f34b39277414b63927",
+    "size": 16
+  },
+  "green-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper.json": {
+    "sha256": "24846881669f8194734d23d9a7275256a67def2ea904c8eaebe1ac203cd0c09c",
+    "size": 365
+  },
+  "green-realCargo/empty-directory-remove/fixture/Cargo.toml": {
+    "sha256": "e31e8f6e88cbe5962b5df6fc85093716598e45f084ba422101d39b001eaa1ef2",
+    "size": 94
+  },
+  "green-realCargo/empty-directory-remove/fixture/app/src/main.rs": {
+    "sha256": "95db52099601d9e51e57157fe612fb64411d32ad7fac630287668ede2511e8e9",
+    "size": 84
+  },
+  "green-realCargo/empty-directory-remove/fixture/third_party/vendor-api/build.rs": {
+    "sha256": "60d5d8d7155861349372f7b9531c876a7d9589d66eb99702f29c825bc8d37c6f",
+    "size": 192
+  },
+  "green-realCargo/empty-directory-remove/fixture/third_party/vendor-api/src/lib.rs": {
+    "sha256": "fbead081ee66f7cd6dacc1cd009494d070e6e31d5a197093b8e8d03d44ec0b86",
+    "size": 67
+  },
+  "green-realCargo/empty-directory-remove/ownership/f8331c78600dff7d4121eeff18b9c21906d316d394bb2b70d1fb7e5e3305042c.lock": {
+    "sha256": "ca30762f18a09595f9eb593dc4bc5f20724abffb78ad88133b97b8b0410cb32e",
+    "size": 267
+  },
+  "green-realCargo/empty-directory-remove/ownership/f8331c78600dff7d4121eeff18b9c21906d316d394bb2b70d1fb7e5e3305042c.owner.json": {
+    "sha256": "ef907253a719b1ec794f65b0620462622a4296f1cd9325b0bb05f28a52686a19",
+    "size": 617
+  },
+  "green-realCargo/empty-directory-remove/runs/empty-directory-proof.json": {
+    "sha256": "78508f78df6e52c4a5cbbcb1fcac7b2e4c04ded6bc9ced660e65a30b6f86ccc7",
+    "size": 2367
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-after-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-after-reuse/summary.json": {
+    "sha256": "baa71d39421c8b9318fbb327107497d8ac199f4ab6c167d7e26537db7b337d96",
+    "size": 6509
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-change/01-private-build.log": {
+    "sha256": "8e427852627ee7a52cc52159dc69e14a41496cea48a19125a82384e9192279f9",
+    "size": 248
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-change/summary.json": {
+    "sha256": "5aaa2303134ba593b6c285808fd08692c5ba468dfd96fd6c61e9e280b8b36693",
+    "size": 7004
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-change/target-handoff-clean.log": {
+    "sha256": "3bbdd96b91f8bc0159bbddfdb811390858c217182e6e332f7690af4653502f1f",
+    "size": 413
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-prime/01-private-build.log": {
+    "sha256": "6c81e795a34230693c11f2200c5e818ef11aaf0336302399ebbdc69988e267e0",
+    "size": 339
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-prime/02-private-release.log": {
+    "sha256": "c4be8e1c56a28d4732c7e784132b8d7f2eb6f6f1baa216b81b65cee00110a5bf",
+    "size": 329
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-prime/summary.json": {
+    "sha256": "4d38e5136212825c94c8b5c030cf39035c2cb74de37062d2d36d67fed6140575",
+    "size": 6720
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "green-realCargo/empty-directory-remove/runs/local-ci/directory-reuse/summary.json": {
+    "sha256": "0d1bfb6c464b0db254e64001872315e13f8a850248838caac03921acd948baf8",
+    "size": 6497
+  },
+  "green/01-four actual null and directory cases.log": {
+    "sha256": "3b9f2485362ef49724151c2970485c0edd0f25390f18537e915a70a8054eaf0b",
+    "size": 5449
+  },
+  "green/summary.json": {
+    "sha256": "5a0bf387987e9f8636f0d4299238bfcd71a7b3f2ccb336ab45c60ca826c6cc6a",
+    "size": 14492
+  },
+  "green/target-handoff-clean.log": {
+    "sha256": "c2b28bc8560e0696d6b57161d9d8d51996cd19f8afd9afd225b5411f5766d71e",
+    "size": 1498
+  },
+  "orchestration/459-null-directory-tests.txt": {
+    "sha256": "2d17fa876fe9931086d52a52c2f42ec79279911549a8a0e198c5ddc5978ced40",
+    "size": 9747
+  },
+  "orchestration/459-review-component.py": {
+    "sha256": "9fd7d4673f8e0da7522a555bc8afe1a8ec6a0aa5b6632211fe177fc6f681d2ba",
+    "size": 538
+  },
+  "orchestration/header-component.py": {
+    "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7",
+    "size": 520
+  },
+  "orchestration/seal-459-null.py": {
+    "sha256": "a8600b7e32c710a5327e0ae7a74dd31adc67831b9ebdffff4b26da9f9103005a",
+    "size": 6174
+  },
+  "protected-proof.json": {
+    "sha256": "b982e6b199b96e16880193c36ff308e7dda1d836095128e10f3fb80b9da25d46",
+    "size": 3471
+  },
+  "red-outer.log": {
+    "sha256": "0a3ce38df09d09828608dacffdccb68a476aaface17a94cb8ecf40ddb4ce1b52",
+    "size": 203
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/bin-directory-app": {
+    "sha256": "c2cbb974aa4b6367e387b7640ab725d8221a18c1c610791cb0de65adf2327643",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/bin-directory-app.json": {
+    "sha256": "e0adaae32f3b72c4f3fc7d3db858f1c0abbcdf5ef5cdc4627138fbc3d78f04a1",
+    "size": 495
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/dep-bin-directory-app": {
+    "sha256": "dd32b16937730a9a92a8070aa73e4dbbc632703f88e1395eb2196a4f6b11a95a",
+    "size": 31
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-app-3738c020592c2c99/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build": {
+    "sha256": "8f63bdcb08ccd41473f48c6105cee0b900f2ead14aaad03d487a0e5cbdeac63e",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build.json": {
+    "sha256": "b7f88360cd365a69d1ca27f9bbd8ca591b92a570fca89c06ca6e513b07d60005",
+    "size": 335
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build": {
+    "sha256": "6dd63333724592fe2075c2dd5c9787e4e628479c7c25d6a5ef856648e9e2e71b",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build.json": {
+    "sha256": "16d07363c50ff363af33428ab042dd3fcb812b866945af87f99b2aa068f5e47f",
+    "size": 376
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/dep-build-script-build-script-build": {
+    "sha256": "a71f952e7f3252ef5608298951fd55b25f3590c98bc0765ae4145e623604ee7d",
+    "size": 28
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-c740a5353d41f602/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/dep-lib-directory_vendor": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor": {
+    "sha256": "20f6240fda8346e1d5d30ff2d711e802bc501ecf45e2d1fb9547305572483da6",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-add/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor.json": {
+    "sha256": "62a8ba7abea8cbd401582575b2f282d071324a141f7b90f1289d8cad1eeeb6b2",
+    "size": 434
+  },
+  "red-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/dep-lib-external_helper": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "red-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "red-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper": {
+    "sha256": "a7631e56867ef75e3c204a3c264e5d918fc31987f57035f34b39277414b63927",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-add/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper.json": {
+    "sha256": "24846881669f8194734d23d9a7275256a67def2ea904c8eaebe1ac203cd0c09c",
+    "size": 365
+  },
+  "red-realCargo/empty-directory-add/fixture/Cargo.toml": {
+    "sha256": "e31e8f6e88cbe5962b5df6fc85093716598e45f084ba422101d39b001eaa1ef2",
+    "size": 94
+  },
+  "red-realCargo/empty-directory-add/fixture/app/src/main.rs": {
+    "sha256": "95db52099601d9e51e57157fe612fb64411d32ad7fac630287668ede2511e8e9",
+    "size": 84
+  },
+  "red-realCargo/empty-directory-add/fixture/third_party/vendor-api/build.rs": {
+    "sha256": "60d5d8d7155861349372f7b9531c876a7d9589d66eb99702f29c825bc8d37c6f",
+    "size": 192
+  },
+  "red-realCargo/empty-directory-add/fixture/third_party/vendor-api/src/lib.rs": {
+    "sha256": "fbead081ee66f7cd6dacc1cd009494d070e6e31d5a197093b8e8d03d44ec0b86",
+    "size": 67
+  },
+  "red-realCargo/empty-directory-add/ownership/1a764f581470dda2b43309b7325a8a6342058bd04b1b2dd94848bdb0258d59e3.lock": {
+    "sha256": "c89bbfa87a2e8f6d2231978a50252697a5a0b7f15fff2a19fd81ddc46c2da49e",
+    "size": 262
+  },
+  "red-realCargo/empty-directory-add/ownership/1a764f581470dda2b43309b7325a8a6342058bd04b1b2dd94848bdb0258d59e3.owner.json": {
+    "sha256": "1aaa6070d56d8c443af779f9e0831cf3a925d89572ee9fce6e34737e5193a763",
+    "size": 617
+  },
+  "red-realCargo/empty-directory-add/runs/empty-directory-proof.json": {
+    "sha256": "e6b3f97a472017fba14672540217cc600a7f24400267a31175219c933b6deb4e",
+    "size": 2046
+  },
+  "red-realCargo/empty-directory-add/runs/local-ci/directory-change/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "red-realCargo/empty-directory-add/runs/local-ci/directory-change/summary.json": {
+    "sha256": "3bdc7de9b5f19bd6161149c16cfab637f1e066f95906454c008caa24c6e96dbd",
+    "size": 6499
+  },
+  "red-realCargo/empty-directory-add/runs/local-ci/directory-prime/01-private-build.log": {
+    "sha256": "6b875347a9b54d917a5bcd78876005e90c1c02a0e817e29a9caced82a92cff96",
+    "size": 339
+  },
+  "red-realCargo/empty-directory-add/runs/local-ci/directory-prime/02-private-release.log": {
+    "sha256": "941d2c7059fe9f8befb0912eed1e42a8eb6e0012902505c339386edc8d2e6cb8",
+    "size": 329
+  },
+  "red-realCargo/empty-directory-add/runs/local-ci/directory-prime/summary.json": {
+    "sha256": "428d66bbc7995c2361ef7a98211b70f3cf278f2afeb69559547e3edc3d9d4222",
+    "size": 6720
+  },
+  "red-realCargo/empty-directory-add/runs/local-ci/directory-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "red-realCargo/empty-directory-add/runs/local-ci/directory-reuse/summary.json": {
+    "sha256": "059ce7c4d30c9e40813b74baf6af30e5ff1ecaed1c754fe99727a21ec50b020d",
+    "size": 6497
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/bin-directory-app": {
+    "sha256": "c2cbb974aa4b6367e387b7640ab725d8221a18c1c610791cb0de65adf2327643",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/bin-directory-app.json": {
+    "sha256": "e0adaae32f3b72c4f3fc7d3db858f1c0abbcdf5ef5cdc4627138fbc3d78f04a1",
+    "size": 495
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/dep-bin-directory-app": {
+    "sha256": "dd32b16937730a9a92a8070aa73e4dbbc632703f88e1395eb2196a4f6b11a95a",
+    "size": 31
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-app-3738c020592c2c99/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build": {
+    "sha256": "8f63bdcb08ccd41473f48c6105cee0b900f2ead14aaad03d487a0e5cbdeac63e",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-46c1d6c710cfcaaa/run-build-script-build-script-build.json": {
+    "sha256": "b7f88360cd365a69d1ca27f9bbd8ca591b92a570fca89c06ca6e513b07d60005",
+    "size": 335
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build": {
+    "sha256": "6dd63333724592fe2075c2dd5c9787e4e628479c7c25d6a5ef856648e9e2e71b",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/build-script-build-script-build.json": {
+    "sha256": "16d07363c50ff363af33428ab042dd3fcb812b866945af87f99b2aa068f5e47f",
+    "size": 376
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/dep-build-script-build-script-build": {
+    "sha256": "a71f952e7f3252ef5608298951fd55b25f3590c98bc0765ae4145e623604ee7d",
+    "size": 28
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-c740a5353d41f602/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/dep-lib-directory_vendor": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor": {
+    "sha256": "20f6240fda8346e1d5d30ff2d711e802bc501ecf45e2d1fb9547305572483da6",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/directory-vendor-f310cff9c2133794/lib-directory_vendor.json": {
+    "sha256": "62a8ba7abea8cbd401582575b2f282d071324a141f7b90f1289d8cad1eeeb6b2",
+    "size": 434
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/dep-lib-external_helper": {
+    "sha256": "f14f96adde2da250a05802a30e565519ea310fa1799083f7444b109fa37007fc",
+    "size": 30
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/invoked.timestamp": {
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "size": 48
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper": {
+    "sha256": "a7631e56867ef75e3c204a3c264e5d918fc31987f57035f34b39277414b63927",
+    "size": 16
+  },
+  "red-realCargo/empty-directory-remove/fingerprints/external-helper-4435a338eada2dc7/lib-external_helper.json": {
+    "sha256": "24846881669f8194734d23d9a7275256a67def2ea904c8eaebe1ac203cd0c09c",
+    "size": 365
+  },
+  "red-realCargo/empty-directory-remove/fixture/Cargo.toml": {
+    "sha256": "e31e8f6e88cbe5962b5df6fc85093716598e45f084ba422101d39b001eaa1ef2",
+    "size": 94
+  },
+  "red-realCargo/empty-directory-remove/fixture/app/src/main.rs": {
+    "sha256": "95db52099601d9e51e57157fe612fb64411d32ad7fac630287668ede2511e8e9",
+    "size": 84
+  },
+  "red-realCargo/empty-directory-remove/fixture/third_party/vendor-api/build.rs": {
+    "sha256": "60d5d8d7155861349372f7b9531c876a7d9589d66eb99702f29c825bc8d37c6f",
+    "size": 192
+  },
+  "red-realCargo/empty-directory-remove/fixture/third_party/vendor-api/src/lib.rs": {
+    "sha256": "fbead081ee66f7cd6dacc1cd009494d070e6e31d5a197093b8e8d03d44ec0b86",
+    "size": 67
+  },
+  "red-realCargo/empty-directory-remove/ownership/a1475895e8faee30468b9415d0929b4453368726d723760c29313bb8d0745bc4.lock": {
+    "sha256": "021f70260e604de560886fd1bf815844648891cc223277aef4e10e6901c98406",
+    "size": 262
+  },
+  "red-realCargo/empty-directory-remove/ownership/a1475895e8faee30468b9415d0929b4453368726d723760c29313bb8d0745bc4.owner.json": {
+    "sha256": "9e82ad06d45c851fa799eb4ba8a0005e7c03c3b244031e9c966e9834a30c506b",
+    "size": 617
+  },
+  "red-realCargo/empty-directory-remove/runs/empty-directory-proof.json": {
+    "sha256": "41e4b8d209ea22df766abb9ec73405de26c47df799fb9fb3484efd6e35859ab3",
+    "size": 2050
+  },
+  "red-realCargo/empty-directory-remove/runs/local-ci/directory-change/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "red-realCargo/empty-directory-remove/runs/local-ci/directory-change/summary.json": {
+    "sha256": "f2cef0b9dc3f05d887e9e3eb59fb9b0d5b5c5fa69ddb05d016979ebc6520c8de",
+    "size": 6499
+  },
+  "red-realCargo/empty-directory-remove/runs/local-ci/directory-prime/01-private-build.log": {
+    "sha256": "8d3b31000af58744ac24c243bd615cd6d7c3c1349581dc073225b65a93b25854",
+    "size": 339
+  },
+  "red-realCargo/empty-directory-remove/runs/local-ci/directory-prime/02-private-release.log": {
+    "sha256": "d98d9ab461363fad60b2f1a7086cb4f5f9f4a2a000a3710035a9aef8e903b07f",
+    "size": 329
+  },
+  "red-realCargo/empty-directory-remove/runs/local-ci/directory-prime/summary.json": {
+    "sha256": "b8a834ebaa70b71b2021da309519f8a1d40307d0f4435cc4917e1b59200ef819",
+    "size": 6720
+  },
+  "red-realCargo/empty-directory-remove/runs/local-ci/directory-reuse/01-private-build.log": {
+    "sha256": "6d77f64dfc8c5325b90fdbe05d8be367bdd578bcccec24f275c5ffee7d03dd6e",
+    "size": 72
+  },
+  "red-realCargo/empty-directory-remove/runs/local-ci/directory-reuse/summary.json": {
+    "sha256": "8ada436f2765ebc6dc7204848c4ac899625f1c9263ef1e8242f141ae69c1cef3",
+    "size": 6497
+  },
+  "red/01-four actual null and directory cases.log": {
+    "sha256": "80b363a7c8b76f71ff30bb2c11890a9446d46e25329fbb65ec3e6064156baf35",
+    "size": 8223
+  },
+  "red/summary.json": {
+    "sha256": "71ad11914cc83735c0690ee63a89b4ab93b58acbf4f4c442eb0de57e926d8050",
+    "size": 14529
+  },
+  "red/target-handoff-clean.log": {
+    "sha256": "722c70c135e5a1363a3c21c243a178d01f0b34f36876c675bcc62be0b80c20e2",
+    "size": 1515
+  },
+  "source-history.txt": {
+    "sha256": "3a878783775f762fb483a8181466375de234445c60484196ba5a6960152555b1",
+    "size": 895
+  },
+  "source-identities.json": {
+    "sha256": "9fce0e8d156a962f5c8d5536efbf89060426920d7574218235bf15b39f59a16b",
+    "size": 635
+  },
+  "source.patch": {
+    "sha256": "cbe37cbafb12f47f5910a20144127bccd22d1cef65def1cc23806698748fb125",
+    "size": 16292
+  },
+  "source/after/docs/local-ci.md": {
+    "sha256": "52b1c729ab2a461d8376dad35f668ca3719aee66d4a55638b4e9831e50afdcd8",
+    "size": 23203
+  },
+  "source/after/scripts/local-ci.py": {
+    "sha256": "fc8161df28c43eee25a0f2bcefe7c82776cbe1460ed9b6cd3ca7cb2a3b9d1826",
+    "size": 72172
+  },
+  "source/after/scripts/tests/test_local_ci.py": {
+    "sha256": "83d978add3bd84aaffe6bddf25b5df7b55a05e875e367ff17a9fcb8e7e0e3d0e",
+    "size": 77586
+  },
+  "source/before/docs/local-ci.md": {
+    "sha256": "655dc592255e287a14dca41eccbff08eecd814c71029b7e31e0adaafb504f936",
+    "size": 22148
+  },
+  "source/before/scripts/local-ci.py": {
+    "sha256": "ba6ab952481fde1bbea79d3168393b8ef8e0552d6fbc62ec710a3800ed1abd33",
+    "size": 71789
+  },
+  "source/before/scripts/tests/test_local_ci.py": {
+    "sha256": "f8205086614fe762c92e39f64aab6413440e650a5cdf7d858d2f8eeabe19ea35",
+    "size": 66784
+  },
+  "startup-error-outer.log": {
+    "sha256": "6a415ce61e2280d93e50b0ea11422c3a4a5bad0652f103b570a4fd19cc22720f",
+    "size": 637
+  }
+}

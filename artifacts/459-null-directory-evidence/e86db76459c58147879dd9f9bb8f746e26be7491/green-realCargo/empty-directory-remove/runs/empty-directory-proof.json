@@ -1,0 +1,64 @@
+{
+  "operation": "remove",
+  "original": "18",
+  "expected": "8",
+  "observed": "8",
+  "before_dependencies": [
+    {
+      "key": "third_party/vendor-api#directory-vendor@0.1.0",
+      "spec": "path+file:///tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0",
+      "name": "directory-vendor",
+      "root": "/tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api",
+      "sha256": "06facde6f2c002843cfd7fc3a1504bec137bc74ca543f4791afd45d072df1e98",
+      "files": 3,
+      "bytes": 324
+    },
+    {
+      "key": "external-helper#external-helper@0.1.0",
+      "spec": "path+file:///tmp/tmpb2hnnf_v/directory-workspace/external-helper#0.1.0",
+      "name": "external-helper",
+      "root": "/tmp/tmpb2hnnf_v/directory-workspace/external-helper",
+      "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf",
+      "files": 2,
+      "bytes": 92
+    }
+  ],
+  "after_dependencies": [
+    {
+      "key": "third_party/vendor-api#directory-vendor@0.1.0",
+      "spec": "path+file:///tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0",
+      "name": "directory-vendor",
+      "root": "/tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api",
+      "sha256": "5dc2a08d3a423d39cbc7952f34e9270e07cd85b07eb930b748b9b5918ccc39f7",
+      "files": 3,
+      "bytes": 324
+    },
+    {
+      "key": "external-helper#external-helper@0.1.0",
+      "spec": "path+file:///tmp/tmpb2hnnf_v/directory-workspace/external-helper#0.1.0",
+      "name": "external-helper",
+      "root": "/tmp/tmpb2hnnf_v/directory-workspace/external-helper",
+      "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf",
+      "files": 2,
+      "bytes": 92
+    }
+  ],
+  "cleanup": [
+    "cargo",
+    "clean",
+    "--profile",
+    "dev",
+    "--target-dir",
+    "/tmp/tmpb2hnnf_v/directory-cargo-target",
+    "--manifest-path",
+    "/tmp/tmpb2hnnf_v/directory-workspace/Cargo.toml",
+    "--package",
+    "path+file:///tmp/tmpb2hnnf_v/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"
+  ],
+  "release_sha256": "e3c5b5e900adff52e5e76e98b7d8d9a09827b0bd512ca993aca2f8a9e0b4134a",
+  "external_sha256": {
+    "libexternal_helper-4435a338eada2dc7.rlib": "21d9e58278e436b10efac1b8a2c2cad4c8c1207a9d88685ffe900a3f553a3b7a"
+  },
+  "release_unchanged": true,
+  "external_unchanged": true
+}

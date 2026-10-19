@@ -1,0 +1,3 @@
+warning: version qualifier in `-p path+file:///tmp/tmpkbq073u6/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0` is ignored, cleaning all versions of `directory-vendor` found
+warning: url qualifier in `-p path+file:///tmp/tmpkbq073u6/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0` ignored, cleaning all versions of `directory-vendor` found
+     Removed 20 files, 7.6MiB total

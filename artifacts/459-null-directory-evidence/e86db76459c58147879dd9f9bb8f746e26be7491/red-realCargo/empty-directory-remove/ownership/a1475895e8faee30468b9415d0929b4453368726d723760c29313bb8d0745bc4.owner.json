@@ -1,0 +1,17 @@
+{
+  "path_dependencies": {
+    "external-helper#external-helper@0.1.0": "34de960a4cdd8b526f695bd287171e37f8f7e506c3f704b28c05b08d107ca917",
+    "third_party/vendor-api#directory-vendor@0.1.0": "ba92ac40d677fa2b389c1480763907a28edde3baa48e6c6e4459d8b68854c519"
+  },
+  "recorded_at": "2026-10-19T15:11:39Z",
+  "schema_version": 1,
+  "target_directory": "/tmp/tmp90peg45d/directory-cargo-target",
+  "target_identity": {
+    "device": 33,
+    "inode": 265382
+  },
+  "workspace_owner": {
+    "git_common_dir": "/tmp/tmp90peg45d/directory-workspace/.git",
+    "workspace_root": "/tmp/tmp90peg45d/directory-workspace"
+  }
+}

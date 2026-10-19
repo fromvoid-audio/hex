@@ -1,0 +1,190 @@
+/workspace/hex/scripts/tests/test_local_ci.py:35: SyntaxWarning: invalid escape sequence '\ '
+  git\ rev-parse*) echo deadbeef; exit 0 ;;
+[1/1] build: running
+[1/1] build: passed
+.[1/1] build: running
+[1/1] build: passed
+workspace dev-artifact cleanup failed; previous owner was preserved
+[1/1] build: running
+[1/1] build: passed
+.Cargo target is already in use by another local CI run; current holder: {"active_holder": {"run_id": "dep-holder"}}
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.[1/1] build: running
+[1/1] build: passed
+local dependency clean names overlap other packages
+.[1/1] build: running
+[1/1] build: passed
+.[1/1] build: running
+[1/1] build: passed
+local dependency contains a directory symlink: /tmp/tmpoaz5wvy_/repo/third_party/vendor/generated-alias
+ACTUAL_DIRECTORY_TARGET_SYMLINK 1
+..[1/1] build: running
+[1/1] build: passed
+ACTUAL_FINAL_HASH_SIGNAL 2 {'code': 130, 'escaped': False, 'lock_retained': False, 'handlers_restored': True, 'summary_exit': 130, 'ended_at': '2026-10-19T15:14:35Z'}
+.[1/1] build: running
+[1/1] build: passed
+ACTUAL_FINAL_HASH_SIGNAL 15 {'code': 130, 'escaped': False, 'lock_retained': False, 'handlers_restored': True, 'summary_exit': 130, 'ended_at': '2026-10-19T15:14:35Z'}
+.[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS entry 2 local dependency changed while hashing: /tmp/tmpobzvycct/external-vendor
+.[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS file 2 local dependency changed while hashing: /tmp/tmps0rr9qcc/external-vendor/a.rs
+.[1/1] build: running
+[1/1] build: passed
+ACTUAL_DEPENDENCY_ENDPASS link 2 local dependency changed while hashing: /tmp/tmpc576iz45/external-vendor/a.rs
+..[1/1] build: running
+[1/1] build: passed
+Cargo target ownership marker is malformed at /tmp/tmp9xn5_wnk/target-ownership/722cea12282859c9ca8bd7610886849e8a40f2a8c9bdb96e591be49ccff2307b.owner.json; use a fresh target or explicitly adopt it after checking ownership
+ACTUAL_NULL_OWNER {'adopt': False, 'result': 1, 'escaped': None, 'lock_released': True, 'owner_preserved': True}
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+ACTUAL_NULL_OWNER {'adopt': True, 'result': 0, 'escaped': None, 'lock_released': True, 'owner_preserved': False}
+.local dependency contains a directory symlink: /tmp/tmpcp443iw_/repo/third_party/vendor/recursive
+.could not inspect disk headroom for workspace: unavailable volume
+.[1/1] build: running
+[1/1] build: passed
+.target has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.[1/1] build: running
+[1/1] build: passed
+workspace dev-artifact cleanup failed; previous owner was preserved
+.[1/2] bad: running
+[1/2] bad: failed
+.[1/21] runner-tests: running
+[1/21] runner-tests: passed
+[2/21] changelog: running
+[2/21] changelog: passed
+[3/21] architecture: running
+[3/21] architecture: passed
+[4/21] gpui-patch: running
+[4/21] gpui-patch: passed
+[5/21] dependency-patches: running
+[5/21] dependency-patches: passed
+[6/21] ui-style: running
+[6/21] ui-style: passed
+[7/21] device-layout: running
+[7/21] device-layout: passed
+[8/21] format: running
+[8/21] format: passed
+[9/21] dependency-future-lints: running
+[9/21] dependency-future-lints: passed
+[10/21] workspace-tests: running
+[10/21] workspace-tests: passed
+[11/21] prepared-export-instrument-tests: running
+[11/21] prepared-export-instrument-tests: passed
+[12/21] ui-feature-tests: running
+[12/21] ui-feature-tests: passed
+[13/21] device-gallery-tests: running
+[13/21] device-gallery-tests: passed
+[14/21] audio-allocation-probe: running
+[14/21] audio-allocation-probe: passed
+[15/21] stream-allocation-probe: running
+[15/21] stream-allocation-probe: passed
+[16/21] workspace-clippy: running
+[16/21] workspace-clippy: passed
+[17/21] prepared-export-instrument-clippy: running
+[17/21] prepared-export-instrument-clippy: passed
+[18/21] ui-feature-clippy: running
+[18/21] ui-feature-clippy: passed
+[19/21] audio-feature-clippy: running
+[19/21] audio-feature-clippy: passed
+[20/21] stream-feature-clippy: running
+[20/21] stream-feature-clippy: passed
+[21/21] desktop-build: running
+[21/21] desktop-build: passed
+.[1/2] first: running
+[1/2] first: passed
+workspace has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.[1/2] interrupt: running
+.unsafe local dependency metadata: local package fields are invalid
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.could not record Cargo target lock holder: runner holder write denied
+[1/1] build: running
+[1/1] build: passed
+.workspace has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.[1/1] build: running
+[1/1] build: passed
+Cargo target ownership marker is malformed at /tmp/tmpmvcct8gy/target-ownership/aa2f5ee7b564324bd5531253e144f6ca3fd94855601b02dfd6a43a6589c02e65.owner.json; use a fresh target or explicitly adopt it after checking ownership
+.Cargo target ownership marker is malformed at /tmp/tmps9das1rt/target-ownership/9bea4ab52182a9b1e4b3550c279d6431aa466c664b45ad73a39482108b0ced67.owner.json; use a fresh target or explicitly adopt it after checking ownership
+.{'exit_code': 9, 'stderr': 'metadata unavailable'}
+.[1/1] missing: running
+[1/1] missing: failed
+.[1/1] format: running
+[1/1] format: passed
+.[1/1] first: running
+[1/1] first: passed
+.[1/2] first: running
+[1/2] first: passed
+[2/2] second: running
+[2/2] second: passed
+.[1/2] private-build: running
+[1/2] private-build: passed
+[2/2] private-release: running
+[2/2] private-release: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+ACTUAL_EMPTY_DIRECTORY {"after_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmpur_6pjp_/directory-workspace/third_party/vendor-api", "sha256": "06facde6f2c002843cfd7fc3a1504bec137bc74ca543f4791afd45d072df1e98", "spec": "path+file:///tmp/tmpur_6pjp_/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmpur_6pjp_/directory-workspace/external-helper", "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf", "spec": "path+file:///tmp/tmpur_6pjp_/directory-workspace/external-helper#0.1.0"}], "before_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmpur_6pjp_/directory-workspace/third_party/vendor-api", "sha256": "5dc2a08d3a423d39cbc7952f34e9270e07cd85b07eb930b748b9b5918ccc39f7", "spec": "path+file:///tmp/tmpur_6pjp_/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmpur_6pjp_/directory-workspace/external-helper", "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf", "spec": "path+file:///tmp/tmpur_6pjp_/directory-workspace/external-helper#0.1.0"}], "cleanup": ["cargo", "clean", "--profile", "dev", "--target-dir", "/tmp/tmpur_6pjp_/directory-cargo-target", "--manifest-path", "/tmp/tmpur_6pjp_/directory-workspace/Cargo.toml", "--package", "path+file:///tmp/tmpur_6pjp_/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"], "expected": "18", "external_sha256": {"libexternal_helper-4435a338eada2dc7.rlib": "3bee4e1784840c1866faf2d90d66107959c5a62f3d0b0f16af7e9dc3f7335efa"}, "external_unchanged": true, "observed": "18", "operation": "add", "original": "8", "release_sha256": "8dcb2d56fa26c71a386f02b8c3970dd21a8cd3f6b65caa97ad78fdd7d8398574", "release_unchanged": true}
+[1/1] private-build: running
+[1/1] private-build: passed
+.[1/2] private-build: running
+[1/2] private-build: passed
+[2/2] private-release: running
+[2/2] private-release: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+[1/1] private-build: running
+[1/1] private-build: passed
+ACTUAL_EMPTY_DIRECTORY {"after_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmpvyfhlinl/directory-workspace/third_party/vendor-api", "sha256": "5dc2a08d3a423d39cbc7952f34e9270e07cd85b07eb930b748b9b5918ccc39f7", "spec": "path+file:///tmp/tmpvyfhlinl/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmpvyfhlinl/directory-workspace/external-helper", "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf", "spec": "path+file:///tmp/tmpvyfhlinl/directory-workspace/external-helper#0.1.0"}], "before_dependencies": [{"bytes": 324, "files": 3, "key": "third_party/vendor-api#directory-vendor@0.1.0", "name": "directory-vendor", "root": "/tmp/tmpvyfhlinl/directory-workspace/third_party/vendor-api", "sha256": "06facde6f2c002843cfd7fc3a1504bec137bc74ca543f4791afd45d072df1e98", "spec": "path+file:///tmp/tmpvyfhlinl/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"}, {"bytes": 92, "files": 2, "key": "external-helper#external-helper@0.1.0", "name": "external-helper", "root": "/tmp/tmpvyfhlinl/directory-workspace/external-helper", "sha256": "206fdb03a048da03a0e302a9549f0da5e97961ed908b9326645a2986b11504bf", "spec": "path+file:///tmp/tmpvyfhlinl/directory-workspace/external-helper#0.1.0"}], "cleanup": ["cargo", "clean", "--profile", "dev", "--target-dir", "/tmp/tmpvyfhlinl/directory-cargo-target", "--manifest-path", "/tmp/tmpvyfhlinl/directory-workspace/Cargo.toml", "--package", "path+file:///tmp/tmpvyfhlinl/directory-workspace/third_party/vendor-api#directory-vendor@0.1.0"], "expected": "8", "external_sha256": {"libexternal_helper-4435a338eada2dc7.rlib": "79abe56ddc79d9c6ac0f939df27d3ffb6dae56b4c7230649c680b983c32fc222"}, "external_unchanged": true, "observed": "8", "operation": "remove", "original": "18", "release_sha256": "e3c5b5e900adff52e5e76e98b7d8d9a09827b0bd512ca993aca2f8a9e0b4134a", "release_unchanged": true}
+[1/1] private-build: running
+[1/1] private-build: passed
+.[1/2] debug-build: running
+[1/2] debug-build: passed
+[2/2] release-build: running
+[2/2] release-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: passed
+.[1/2] debug-build: running
+[1/2] debug-build: passed
+[2/2] release-build: running
+[2/2] release-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: passed
+real cargo handoff: workspace dev outputs rebuilt; external path dependency and release binary preserved (target=/tmp/tmpl9qhtk47/isolated-cargo-target)
+..Cargo target is already in use by another local CI run; current holder: {"active_holder": {"commit": "deadbeef", "profile": "release", "run_id": "holder", "target_directory": "/tmp/tmpsohw4f2p/repo/cargo-target", "workspace_root": "/tmp/tmpsohw4f2p/repo"}}
+......[1/1] build: running
+[1/1] build: passed
+Cargo target directory identity changed; choose a fresh target or pass --adopt-target
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.[1/1] mutate: running
+[1/1] mutate: passed
+.Cargo target is already in use by another local CI run; current holder: {"active_holder": {"run_id": "holder", "target_directory": "/tmp/tmp0_fq18nk/repo/cargo-target", "workspace_root": "/tmp/tmp0_fq18nk/repo"}}
+.Cargo target ownership is unknown at /tmp/tmpxxc6rhoa/repo/cargo-target; choose an empty target or pass --adopt-target
+.Cargo target ownership is unknown at /tmp/tmpeknmx0wv/repo/cargo-target; choose an empty target or pass --adopt-target
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.
+----------------------------------------------------------------------
+Ran 54 tests in 4.849s
+
+OK
