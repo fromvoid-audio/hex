@@ -5821,6 +5821,99 @@ User rejected device-local automation editing. Remove its button, graph mode and
   Audio-owner edit, full21 merge claim or application operation. Native/release
   qualification and source-specific final integration remain explicitly separate.
 
+## 19 October 2026 — Pulse2806 / PR412 explicit recreated release-target recovery
+
+- Root29797 accepts distinct `./launch --recover-release-target`; default and
+  automatic force-restart target identity/CAS protections remain. Never signals
+  an app. Initial and guarded mutation-boundary checks require configured/raw
+  executables inactive; normal latest-main build/install/open, tests opt-in.
+- Read-only inspection binds old regular bounded owner bytes, exact replacement
+  directory identity, same workspace/common repo, ancestor clean source and
+  retained package specs. Guard rechecks under existing lock before pending
+  marker/selective release clean/fresh identified build/ready. No stale artifact
+  qualification, blind marker deletion, shared-target test cleanup or new owner.
+- Source tests cover actual production Runner/private recreated directories,
+  fake Cargo compilation/identification, read-only inspection, explicit routing,
+  old automatic refusal, marker/target/source races, foreign/malformed metadata,
+  package changes, missing/symlink targets, busy lock and running-app refusal.
+  Original29786 causal diagnostic is retained; new fixture setup corrections
+  are distinct from product failures. Exact check receipts accompany handoff.
+- Root alone performs later real Mac recovery after safe app shutdown. Cloud
+  tests do not establish actual machine recovery, native qualification or merge.
+
+## 19 October 2026 — Pulse2806 / PR412 three-path recovery return
+
+- Root29859 accepts three reproduced supported-path repairs on exactc670, keeping
+  merged474 and all413 guards. recover+test uses a retained fresh invocation-owned
+  verification target via runner env only; no old dev-owner adoption/rewrite,
+  original inspected release target/environment still used for packaging.
+- Plain validated app-parent creation/revalidation supports configured new paths;
+  symlink/non-directory parents still refuse. Same-identity explicit retry allows
+  exact own PENDING only, never unchanged READY, with all ownerCAS/source/package/
+  identity/inactivity/lock/final checks before normal clean/freshbuild/ready.
+- Three actual new baseline errors retained: stale devowner stops real verification
+  Runner; missingparent activationlock FileNotFound; failed guardedconsumer leaves
+  pending that explicit reinspection refuses. New source tests prove each path,
+  real stale devmarker preservation/fresh target claim, unchanged release env,
+  realguardedconsumerfailure then actual packaging helper/fakeCargo freshartifact
+  ready, parent negative controls and unchanged READY refusal. No native actions.
+
+
+### 2026-10-19 — Pulse2867 / PR469 captured resize release
+
+- Actual same-window release over another track rejected the captured audio/MIDI
+  resize; generic outside release fell through to cancellation. The corrected
+  outside fixture retains a changed preview; its real baseline failure is kept
+  separately from an earlier no-op assertion and a private-field compile error.
+- Existing root finish now uses the captured source track rather than hovered
+  receiver eligibility. Keep the existing final-coordinate/modifier resolver,
+  model/Warp/source admission, focus/stale/cancel checks and pending FIFO/ACK owner.
+- Both-edge audio/MIDI/Shift/enabled-Warp receiver and pan-stop/outside-release
+  controls use actual GPUI input, Service commits, non-retargeting, full snapshots
+  and Undo/Redo. Exact frozen source/check counts and negative artifacts are in
+  Pulse; sole merger owns prospective qualification/review/merge.
+- This source is stacked explicitly on frozen PR463 pointer-delivery work.
+  Physical outside-window capture and optimized waveform/input acceptance remain
+  Root-owned; no native app action or global reliability claim is implied.
+
+
+## 19 october 2026 — pulse2867 / pr469 upper-rail oracle return
+
+- On exact canonical4454/tree0479, replace the stale upper-rail cancellation
+  expectation with the user's captured-source release law. Test-only owning
+  case plus docs; no production edits or canonical branch overwrite.
+- Retain actual browser/body/no-hover region assertions and real pointer input.
+  Use an owned WAV and actual Service project/events instead of the prior
+  unrelated empty worker, then prove typed command/frame/modifier, canonical
+  before ACK, capture/pending retirement, exact worker clip/untouched track and
+  complete one-Undo/Redo snapshots.
+- Single case passed actual1/0ignored with raw command192000 and accepted
+  extent95999..96000. First fixture assertion equating these values failed and
+  is permanently preserved; final canonical model projection oracle keeps both.
+- Original failed721.767s/fullUI1064PASS1FAIL3oldignore remains negative; old61
+  focused positives remain source-bound. Fresh focused qualification/immutable
+  transport is reported in Pulse. Merger owns prospective full21/review/merge;
+  no native app operation or acceptance claim.
+
+## 19 October 2026 — Pulse2867 / PR469 single-root fixture custody return
+
+- Root29830 confirms structural BatchFiles/independent Environment root mismatch,
+  without claiming an executed filesystem race or new product release failure.
+  Correct only the upper-rail Service fixture: one precreated Arc Environment,
+  WAV/samples/default paths before startup, injected existing constructor.
+- Reuse existing PendingSetup custody pattern; only a real successful matching
+  Import ACK with exact source path/48kHz/96k frames disarms retention. Actual
+  view/browser/assets/four preferences/catalog share that root, checked through
+  two feature-test-only private path accessors following existing test_path APIs.
+- Actual paused catalog worker holds root after view+caller drop, saves then
+  permits cleanup. Actual pre-ACK missing-file import refusal retains disk
+  evidence without leaking Arc; controlled artificial case cleans its own root
+  only after observing the sole request finish, with no UI jobs started.
+- All original release/preview/raw192000/canonical-before-ACK/actual worker and
+  one-UndoRedo assertions are byte-identical; no production runtime behavior,
+  owner framework, Service join, global fixture sweep or native operation.
+  Prior f3d56-case/required-negative evidence stays independently source-bound.
+
 ## shared text double-click toggle — pulse2817 / PR423, 18 october 2026
 
 Original actual input regressions showed repeated query double-clicks never

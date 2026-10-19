@@ -1182,25 +1182,26 @@ fn audio_event_outside_release_only_owns_focus_during_its_actual_gesture(cx: &mu
 
 #[gpui::test]
 fn resize_edge_pan_stops_after_original_audio_handle_leaves_view(cx: &mut TestAppContext) {
-    check_edge_pan_after_original_handle_leaves_view(cx, false, false, false);
+    check_edge_pan_after_original_handle_leaves_view(cx, false, false, false, false);
 }
 #[gpui::test]
 fn resize_edge_pan_stops_after_original_midi_handle_leaves_view(cx: &mut TestAppContext) {
-    check_edge_pan_after_original_handle_leaves_view(cx, true, false, false);
+    check_edge_pan_after_original_handle_leaves_view(cx, true, false, false, false);
 }
 #[gpui::test]
 fn resize_edge_pan_stops_after_original_shift_handle_leaves_view(cx: &mut TestAppContext) {
-    check_edge_pan_after_original_handle_leaves_view(cx, false, true, false);
+    check_edge_pan_after_original_handle_leaves_view(cx, false, true, false, false);
 }
 #[gpui::test]
 fn resize_edge_pan_stops_after_original_warp_handle_leaves_view(cx: &mut TestAppContext) {
-    check_edge_pan_after_original_handle_leaves_view(cx, false, false, true);
+    check_edge_pan_after_original_handle_leaves_view(cx, false, false, true, false);
 }
 fn check_edge_pan_after_original_handle_leaves_view(
     cx: &mut TestAppContext,
     midi: bool,
     stretch: bool,
     enabled_warp: bool,
+    outside_release: bool,
 ) {
     for left in [false, true] {
         let viewport = Viewport {
@@ -1380,7 +1381,18 @@ fn check_edge_pan_after_original_handle_leaves_view(
                     .and_then(|drag| *drag.preview.borrow()),
             )
         });
-        visual.simulate_mouse_up(center, MouseButton::Left, modifiers);
+        let release = if outside_release {
+            let ruler = visual
+                .debug_bounds("arrangement-loop-rail-row")
+                .expect("actual ruler receiver");
+            let release = point(center.x, ruler.center().y);
+            visual.simulate_mouse_move(release, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            release
+        } else {
+            center
+        };
+        visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
@@ -1414,4 +1426,17 @@ fn check_edge_pan_after_original_handle_leaves_view(
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
         });
     }
+}
+
+#[gpui::test]
+fn resize_edge_pan_interior_stop_then_outside_audio_release_commits(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, false, false, false, true);
+}
+#[gpui::test]
+fn resize_edge_pan_interior_stop_then_outside_midi_release_commits(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, true, false, false, true);
+}
+#[gpui::test]
+fn resize_edge_pan_interior_stop_then_outside_shift_release_commits(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, false, true, false, true);
 }

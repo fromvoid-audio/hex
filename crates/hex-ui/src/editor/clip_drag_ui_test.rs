@@ -927,10 +927,176 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     });
 }
 
+// Same private pre-ACK custody pattern as the existing group-drag fixture.
+// Service shutdown is not a worker join; uncertain setup retains disk evidence.
+struct UpperRailPendingSetup {
+    environment: Arc<super::test_environment::Environment>,
+    acknowledged: bool,
+}
+impl UpperRailPendingSetup {
+    fn acknowledge_import(&mut self, event: &hex_session::service::Event, path: &std::path::Path) {
+        assert!(event.error.is_none(), "{:?}", event.error);
+        assert!(event.request_complete);
+        assert_eq!(event.status.as_deref(), Some("audio imported"));
+        assert!(event.state.project.assets().any(|asset| {
+            asset.path() == path
+                && asset.source_sample_rate() == 48_000
+                && asset.source_frames() == 96_000
+        }));
+        self.acknowledged = true;
+    }
+}
+impl Drop for UpperRailPendingSetup {
+    fn drop(&mut self) {
+        if !self.acknowledged {
+            self.environment.retain_for_unacknowledged_setup_failure();
+        }
+    }
+}
+fn upper_rail_next(service: &Service) -> hex_session::service::Event {
+    use std::time::{Duration, Instant};
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(event) = service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            return event;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+fn upper_rail_owned_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    Arc<super::test_environment::Environment>,
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+) {
+    use hex_session::service::Request;
+    cx.update(super::bind_editor_keys);
+    let files = super::test_environment::Environment::new().unwrap();
+    let mut setup = UpperRailPendingSetup {
+        environment: Arc::clone(&files),
+        acknowledged: false,
+    };
+    let wav = files.root().join("upper-rail-resize.wav");
+    // Identical mono PCM16, 48kHz/96k frames, now under the actual leased root.
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + 96_000_u32 * 2).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(96_000_u32 * 2).to_le_bytes());
+    for _ in 0..96_000 {
+        bytes.extend_from_slice(&8192_i16.to_le_bytes());
+    }
+    std::fs::write(&wav, bytes).unwrap();
+    std::fs::create_dir(files.root().join("samples")).unwrap();
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    upper_rail_next(&service);
+    service.submit(Request::Import(wav.clone())).unwrap();
+    let imported = upper_rail_next(&service);
+    setup.acknowledge_import(&imported, &wav);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "untouched target".into(),
+        }))
+        .unwrap();
+    let event = upper_rail_next(&service);
+    let handle = *cx.add_window(|_, _| Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_environment(window, cx, service, Arc::clone(&files))
+            });
+            install_close_guard(window, cx, editor.downgrade());
+            editor.update(cx, |view, cx| {
+                view.receive(event);
+                view.focus.focus(window);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    editor.read_with(cx, |view, _| {
+        let root = files.root();
+        assert!(Arc::ptr_eq(&files, &view.test_environment));
+        assert_eq!(view.browser.directory, root.join("samples"));
+        assert_eq!(view.browser.places, vec![root.join("samples")]);
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .assets()
+                .all(|asset| asset.path().starts_with(root))
+        );
+        assert_eq!(
+            view.browser.test_preferences_path(),
+            root.join("config/browser.json")
+        );
+        assert_eq!(
+            view.recent_projects.test_path(),
+            root.join("config/recent-projects.json")
+        );
+        assert_eq!(
+            view.theme_settings.test_path(),
+            root.join("config/theme.json")
+        );
+        assert_eq!(
+            view.project_directory.test_path(),
+            root.join("config/project-directory.json")
+        );
+        assert_eq!(
+            view.browser
+                .test_preferences_path()
+                .with_extension("samples-v1.db"),
+            root.join("config/browser.samples-v1.db")
+        );
+    });
+    (files, handle, editor)
+}
+
 #[gpui::test]
-fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppContext) {
-    let (project, source, _, clip) = audio_project();
-    let (handle, editor) = editor_window(cx, project, Arc::default());
+fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack(
+    cx: &mut TestAppContext,
+) {
+    use std::time::{Duration, Instant};
+    fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let done = editor.update(&mut *visual, |view, cx| {
+                if view.tick(cx) {
+                    cx.notify();
+                }
+                assert!(view.error.is_none(), "{:?}", view.error);
+                view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+            });
+            if done {
+                visual.run_until_parked();
+                return;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+    let (source, clip, before, target_before) = editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project.tracks()[0].id(),
+            project.tracks()[0].clips()[0].id(),
+            project.snapshot(),
+            project.tracks()[1].clone(),
+        )
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let selector = Box::leak(format!("clip-trim-left-{}", clip.value()).into_boxed_str());
@@ -953,14 +1119,14 @@ fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppCont
         ))
         .expect("source lane");
     // The historical x=lane.left-20 was inside the browser. Browser release
-    // now intentionally commits; test cancellation on the actual upper rail.
+    // intentionally commits, as does captured release on the actual upper rail.
     let outside = point(lane.center().x, lane.origin.y - px(20.0));
     let browser = visual
         .debug_bounds("resize-browser-hit-region")
         .expect("actual browser region");
     assert!(
         !browser.contains(&outside),
-        "cancellation fixture must stay outside browser"
+        "release fixture stays outside browser"
     );
     editor.read_with(cx, |view, _| {
         assert_eq!(view.arrangement_bounds_epoch, view.drag_layout_generation);
@@ -971,7 +1137,7 @@ fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppCont
         );
         assert!(
             !bounds.contains(&outside),
-            "cancellation fixture must stay outside Arrangement body"
+            "release fixture stays outside Arrangement body"
         );
         assert!(
             view.hovered_drag_target(f32::from(outside.x), f32::from(outside.y))
@@ -979,17 +1145,96 @@ fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppCont
         );
     });
     visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let (expected_frame, expected_clip) = editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_trim_drag
+            .as_ref()
+            .expect("captured source survives upper rail");
+        assert_eq!(drag.source_track, source);
+        assert_eq!(drag.clip.id(), clip);
+        assert!(!drag.stretch_modifier.get());
+        let preview = drag.preview.borrow();
+        let preview = preview.as_ref().expect("actual admitted displayed preview");
+        // The canonical model may clamp a raw command point (here 192000)
+        // to a one-frame source extent. Keep the exact command separately.
+        let project = &view.state.as_ref().unwrap().project;
+        let asset_frames = project.asset(drag.clip.asset()).unwrap().playback_frames();
+        assert_eq!(
+            drag.clip
+                .preview_edge_trim_with_tempo(
+                    hex_project::TrimEdge::Left,
+                    preview.command_frame_for_test(),
+                    asset_frames,
+                    project.tempo_map()
+                )
+                .unwrap(),
+            preview.clip,
+            "displayed geometry is the canonical projection of the exact command"
+        );
+        assert_ne!(
+            preview.clip.start(),
+            0,
+            "fixture makes a real left-edge edit"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(view.last_enqueued_edit.is_none());
+        (preview.command_frame_for_test(), preview.clip.clone())
+    });
+    assert!(visual.debug_bounds("trim-live-preview").is_some());
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(
-            view.last_enqueued_edit.is_none(),
-            "outside release cancels trim"
+        assert_eq!(view.last_trim_release_snap, Some(false), "actual release modifier");
+        assert!(matches!(view.last_enqueued_edit.as_ref(),
+            Some(Command::TrimClipEdge { clip: requested, edge: hex_project::TrimEdge::Left, frame })
+                if *requested == clip && *frame == expected_frame),
+            "upper-rail release submits the captured displayed left edge: {:?}", view.last_enqueued_edit);
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before, "canonical remains unchanged before actual worker ACK");
+        assert!(view.active_trim_drag.is_none(), "release retires active capture");
+        assert!(view.pending_trim.is_some(), "accepted preview remains while its own ACK is pending");
+        assert_eq!(view.worker_requests_pending, 1);
+    });
+    assert!(!cx.update(|app| app.has_active_drag()));
+    pump(&editor, &mut visual);
+    let committed = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project.clip(clip), Some(&expected_clip));
+        assert_eq!(
+            state.project.tracks()[1],
+            target_before,
+            "no hovered/other track retarget"
         );
         assert!(
-            view.active_trim_drag.is_none(),
-            "outside release removes transient preview"
+            view.pending_trim.is_none(),
+            "own canonical terminal retires pending preview"
         );
+        assert!(view.active_trim_drag.is_none());
+        assert_eq!(view.worker_requests_pending, 0);
+        state.project.snapshot()
+    });
+    eprintln!(
+        "upper-rail release source={source:?} clip={clip:?} frame={expected_frame} actual worker accepted extent={}..{}",
+        expected_clip.start(),
+        expected_clip.start() + expected_clip.duration()
+    );
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.snapshot(),
+            before,
+            "one Undo restores the entire canonical snapshot"
+        )
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.snapshot(),
+            committed,
+            "one Redo restores exactly the accepted edit"
+        )
     });
 }
 
@@ -2193,4 +2438,115 @@ fn shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit(cx: &mut
         visual.simulate_mouse_up(target, MouseButton::Left, shift);
         editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
     }
+}
+
+#[gpui::test]
+fn upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop(cx: &mut TestAppContext) {
+    use std::{
+        sync::atomic::Ordering,
+        time::{Duration, Instant},
+    };
+    let (files, handle, editor) = upper_rail_owned_fixture(cx);
+    let root = files.root().to_owned();
+    let weak = Arc::downgrade(&files);
+    let gate = files.gate_next_catalog_save();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(
+        gate.reached.load(Ordering::Acquire),
+        "actual catalog worker reached save gate"
+    );
+    assert!(!gate.finished.load(Ordering::Acquire));
+    let catalog = editor.read_with(&visual, |view, _| {
+        assert!(Arc::ptr_eq(&files, &view.test_environment));
+        view.browser
+            .test_preferences_path()
+            .with_extension("samples-v1.db")
+    });
+    assert_eq!(catalog, root.join("config/browser.samples-v1.db"));
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| Empty);
+    });
+    let editor_weak = editor.downgrade();
+    drop(editor);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(
+        editor_weak.upgrade().is_none(),
+        "real view retired before save continuation"
+    );
+    drop(files);
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "only actual paused filesystem job retains fixture root"
+    );
+    assert!(root.is_dir());
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.save_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(weak.upgrade().is_none(), "no leaked fixture/view/job Arc");
+    let until = Instant::now() + Duration::from_secs(5);
+    while root.exists() {
+        assert!(
+            Instant::now() < until,
+            "owned background cleanup timed out: {root:?}"
+        );
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(!root.exists(), "completed job cannot recreate retired root");
+    eprintln!(
+        "upper_rail_fixture_custody actual_save=true same_root=true all_four_preferences=true view_retired=true cleaned=true"
+    );
+}
+
+#[test]
+fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_leak() {
+    use hex_session::service::Request;
+    use std::time::{Duration, Instant};
+    let files = super::test_environment::Environment::new().unwrap();
+    let root = files.root().to_owned();
+    let weak = Arc::downgrade(&files);
+    let observed = std::cell::Cell::new(false);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut setup = UpperRailPendingSetup {
+            environment: files,
+            acknowledged: false,
+        };
+        let missing = root.join("missing.wav");
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        upper_rail_next(&service);
+        service.submit(Request::Import(missing.clone())).unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        let event = loop {
+            if let Ok(event) = service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(event.request_complete);
+        assert!(event.error.is_some(), "actual missing-file import refused");
+        observed.set(true);
+        setup.acknowledge_import(&event, &missing); // Must unwind before disarming.
+    }));
+    assert!(caught.is_err());
+    assert!(
+        observed.get(),
+        "actual response observed, not a timeout panic"
+    );
+    assert!(
+        weak.upgrade().is_none(),
+        "disk evidence retention does not leak Arc"
+    );
+    assert!(root.is_dir());
+    eprintln!(
+        "upper_rail_fixture_pre_ack actual_refusal=true disk_retained=true weak_expired=true root={root:?}"
+    );
+    // Only this artificial case proved its sole request finished, with no UI jobs.
+    std::fs::remove_dir_all(root).unwrap();
 }
