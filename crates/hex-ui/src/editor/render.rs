@@ -471,6 +471,9 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.refresh_loop_rail_modifiers(event.modifiers, window) {
+                        cx.notify();
+                    }
                     view.refresh_drag_modifiers(
                         event.modifiers.platform,
                         event.modifiers.alt,
@@ -691,7 +694,8 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
-                if view.cancel_project_spectrum_resize(cx)
+                if view.cancel_loop_rail_gesture()
+                    | view.cancel_project_spectrum_resize(cx)
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                 {

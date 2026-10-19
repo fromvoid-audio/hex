@@ -300,8 +300,20 @@ impl EditorView {
         true
     }
 
-    fn cancel_loop_rail_gesture(&mut self) -> bool {
+    pub(super) fn cancel_loop_rail_gesture(&mut self) -> bool {
         self.loop_rail_gesture.take().is_some()
+    }
+
+    pub(super) fn refresh_loop_rail_modifiers(
+        &mut self,
+        modifiers: Modifiers,
+        window: &gpui::Window,
+    ) -> bool {
+        if !self.focus.is_focused(window) {
+            return self.cancel_loop_rail_gesture();
+        }
+        self.loop_rail_gesture
+            .is_some_and(|gesture| self.update_loop_rail_gesture(gesture.last_pointer_x, modifiers))
     }
 
     fn loop_rail_hover(&self, x: f32, viewport: Viewport, bounds: Bounds<gpui::Pixels>) -> Hover {
@@ -350,7 +362,6 @@ pub(super) fn view(
         .and_then(|gesture| gesture.preview)
         .or(current_region);
     let entity = cx.entity();
-    let modifier_entity = entity.clone();
     let rail = div()
         .h(px(RAIL_HEIGHT))
         .flex_shrink_0()
@@ -367,18 +378,6 @@ pub(super) fn view(
                 .flex_1()
                 .min_w_0()
                 .cursor(view.loop_rail_cursor)
-                .on_modifiers_changed(move |event, window, cx| {
-                    modifier_entity.update(cx, |view, cx| {
-                        if !view.focus.is_focused(window) {
-                            if view.cancel_loop_rail_gesture() { cx.notify(); }
-                            return;
-                        }
-                        if let Some(gesture) = view.loop_rail_gesture
-                            && view.update_loop_rail_gesture(gesture.last_pointer_x, event.modifiers) {
-                            cx.notify();
-                        }
-                    });
-                })
                 .tooltip(|_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
                         description: "drag empty rail to set loop · drag bar to move · shift steps loop length · cmd-click toggles · cmd-drag is free".into(),
@@ -629,7 +628,7 @@ fn stepped_start(region: LoopRegion, delta: i128) -> Option<u64> {
 }
 
 /// Frame endpoints retain quantized musical intervals, not authored beat IDs.
-/// Accept a binary Q32.32 duration only if exact canonical forward rounding can
+/// Accept exactly one binary Q32.32 duration whose canonical forward rounding can
 /// place its two beat endpoints at these stored frames (no pixel/epsilon test).
 fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
     let map = project.tempo_map();

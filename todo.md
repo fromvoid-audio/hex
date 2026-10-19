@@ -5659,3 +5659,23 @@ User rejected device-local automation editing. Remove its button, graph mode and
   fresh review/merge of BOTH PRs and physical acceptance remain outstanding.
 
 - Merger integration note, 19 october2026: preserve complete4bbe owner runtime/tests and both canonical419/458 histories. Correct the one retained prose reference from18 to the actual20-case union already documented in the command/checklist; no runtime or test-oracle changes. New exact guarded changed cases/full21/fresh review of each PR remain required; oldadb3 green is historical/review-blocked, installed2eef unchanged.
+
+### 2026-10-19 — PR329 loop-bar gestures and musical marker
+
+- Continue original c525/2713 history after one main2683 composition; preserve
+  earlier c71e three executed negatives and separate literal compile failure.
+- Command-body click toggles on/off; ordinary body move preserves full length,
+  Shift uses nearest full-length steps relative to the captured original start.
+  Existing edge resize/empty-rail painting and Command-L/toolbar remain intact.
+- Mark two/four and unambiguous fractional binary musical lengths through exact
+  canonical forward-rounded endpoint intervals, not pixels; ambiguous subframe
+  intervals carry no marker. Include tempo seams, zoom and resize controls.
+- Real routed Escape/stationary-modifier negatives required narrow existing root
+  callbacks into private rail state; no new gesture owner/framework/vendor code.
+  Old rail fixture now initializes its actual Service project instead of only
+  overriding the displayed state. Twelve beats plus the existing two-second
+  Service horizon preserve its exact384000-frame viewport assertions.
+- Qualification covers original five rail cases, eight real-Service loop-bar
+  cases and four pure math cases, with save/open, Undo/Redo, both directions,
+  live modifiers/focus/cancel/Open invalidation. Native physical/listening and
+  merger's prospective full21/review/actual merge remain separate and open.

@@ -1,6 +1,7 @@
-use super::{EditorView, Viewport, clip_drag_ui_test};
+use super::{EditorView, Viewport};
 use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
-use hex_project::{Command, Editor, LoopRegion};
+use hex_project::{BeatTime, Command, Editor, LoopRegion};
+use hex_session::service::{Event, Request, Service};
 use std::{sync::Arc, thread, time::Duration};
 
 const TIMELINE_FRAMES: u64 = 384_000;
@@ -10,19 +11,59 @@ fn loop_editor(
     initial: Option<LoopRegion>,
 ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
     cx.update(super::bind_editor_keys);
-    let (mut project, _, _, _) = clip_drag_ui_test::audio_project();
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    fn next(service: &Service) -> Event {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(event) = service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                return event;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    next(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "loop fixture".into(),
+        }))
+        .unwrap();
+    let event = next(&service);
+    let track = event.state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(12).unwrap(),
+        }))
+        .unwrap();
+    let mut event = next(&service);
     if let Some(region) = initial {
-        let mut history = Editor::new(project, 8).expect("project history");
-        history
-            .execute(Command::SetLoopRegion {
+        service
+            .submit(Request::Edit(Command::SetLoopRegion {
                 start: region.start(),
                 end: region.end(),
                 enabled: region.enabled(),
-            })
-            .expect("valid initial loop");
-        project = history.project().clone();
+            }))
+            .unwrap();
+        event = next(&service);
     }
-    let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.activate_window();
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline loop rail test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(event.state);
+                view.focus.focus(window);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
     editor.update(cx, |view, window_cx| {
         view.viewport = Some(Viewport {
             start: 0,
