@@ -5336,3 +5336,7 @@ source handoff is separate from final integration/full CI/merge and delivery.
 - Ordered valid metadata proof may reconcile authoring while preserving ancillary recovery error; actual publication ACK/output/runtime ownership and refusal/generation checks remain. Retained canonical source Project must count in future395 custody.
 - Current32 comparison/tuning/asset manifest is qualified independently of unmerged456 placement; future composition must retain both required capabilities. No whole395/456/409/420/407/399/419 import.
 - Required new exact prospective full21 and fresh independent review pending; no physical provider listening, native Verified constructor, installed/user acceptance or merge claim.
+
+## 19 October 2026 — EQ local automation removal (#2855 / PR457)
+
+User rejected device-local automation editing. Remove its button, graph mode and point controls; retain ordinary stable-node parameter bindings, existing stored lane data/runtime evaluation and canonical history. Future central Arrange automation remains #2839/#2674, not implemented here. Actual rendered pre-change regression f31267b3 failed on the automate entry (original component 20261019T060051Z-73bfe14e, clean/stale=false). Targeted final source verification and native limits are recorded in live Pulse2855; sole merger owns prospective full21/review/merge. No app installation or user acceptance claimed.
