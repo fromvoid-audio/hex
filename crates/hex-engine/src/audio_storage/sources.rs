@@ -66,6 +66,10 @@ impl<'a> AudioRootStorageLedger<'a> {
         })
     }
     pub(crate) fn inputs(&mut self, inputs: &'a OwnedAudioInputs) -> Result<(), AudioStorageError> {
+        #[cfg(test)]
+        if inputs.drop_probe.is_some() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         self.vec(&inputs.sources)?;
         self.vec(&inputs.aliases)?;
         for (_, source) in &inputs.sources {

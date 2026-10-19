@@ -19,6 +19,7 @@ pub struct AudioCandidateDraft {
     pub(super) groups: Vec<Group>,
     pub(super) journal: Vec<groups::TransferRow>,
     pub(super) archive: Option<groups::Archive>,
+    purpose: ConstructorPurpose,
     phase: Phase,
     first_panic: Option<Box<dyn Any + Send>>,
 }
@@ -32,6 +33,7 @@ impl AudioCandidateDraft {
             groups: Vec::new(),
             journal: Vec::new(),
             archive: None,
+            purpose: ConstructorPurpose::NativeFresh,
             phase: Phase::Empty,
             first_panic: None,
         }
@@ -44,6 +46,17 @@ impl AudioCandidateDraft {
         custody: &AudioPreparationCustody,
         token: &AudioPreparationToken,
     ) -> Result<(), AudioStorageError> {
+        self.prepare_with(custody, token, || Ok(()))
+    }
+    pub(super) fn prepare_main_on_control(
+        &mut self,
+        custody: &AudioPreparationCustody,
+        token: &AudioPreparationToken,
+    ) -> Result<(), AudioStorageError> {
+        if self.phase != Phase::Empty {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.purpose = ConstructorPurpose::MainExport;
         self.prepare_with(custody, token, || Ok(()))
     }
     fn prepare_with(
@@ -95,7 +108,12 @@ impl AudioCandidateDraft {
             revision.arrangement().return_buses().len(),
         )?;
         self.runtime = Some(Box::new(RuntimeOwner {
-            playback: Playback::new_audio_candidate(revision)?,
+            playback: match self.purpose {
+                ConstructorPurpose::NativeFresh => Playback::new_audio_candidate(revision)?,
+                ConstructorPurpose::MainExport => {
+                    Playback::new_audio_candidate_for_purpose(revision, self.purpose)?
+                }
+            },
             #[cfg(any(test, feature = "instrument-test-support"))]
             probe: None,
         }));

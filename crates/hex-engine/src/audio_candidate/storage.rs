@@ -43,6 +43,14 @@ impl AudioCandidateOwner {
         reservation: AudioStorageLedgerReservation,
         external_runtime_bytes: usize,
     ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
+        if self
+            .inner
+            .runtime
+            .as_ref()
+            .is_some_and(|r| r.playback.is_main_control_runtime())
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         self.inner.constructor_data = None;
         if self.inner.phase != AudioCandidateDisposalPhase::Owned
             || self.inner.runtime_receipt.is_some()
@@ -141,6 +149,10 @@ impl AudioCandidateOwner {
         clippy::too_many_arguments,
         reason = "closed actual captured and producer input operation"
     )]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "native source host consumer in progress")
+    )]
     pub(crate) fn seal_sampler_constructor_on_control(
         &mut self,
         target: &crate::SharedMetadata<hex_project::Project>,
@@ -152,6 +164,34 @@ impl AudioCandidateOwner {
         original: &AudioRootStorageLedger<'_>,
         transforms: &crate::audio_transform::AudioTransformPreparation,
         reservation: AudioStorageLedgerReservation,
+    ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
+        self.seal_sampler_constructor_for_purpose_on_control(
+            target,
+            producer,
+            editor,
+            previous,
+            original,
+            transforms,
+            reservation,
+            ConstructorPurpose::NativeFresh,
+        )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "closed actual input and purpose operation"
+    )]
+    pub(super) fn seal_sampler_constructor_for_purpose_on_control(
+        &mut self,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
+        editor: &hex_project::Editor,
+        previous: Option<
+            &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        >,
+        original: &AudioRootStorageLedger<'_>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        reservation: AudioStorageLedgerReservation,
+        purpose: ConstructorPurpose,
     ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
         self.inner.constructor_data = None;
         if self.inner.phase != AudioCandidateDisposalPhase::Owned
@@ -179,7 +219,7 @@ impl AudioCandidateOwner {
                 &mut ledger,
             )?;
             let before = ledger.summary()?.data_bytes;
-            self.inner.visit_fresh_storage(&mut ledger)?;
+            self.inner.visit_constructor_storage(&mut ledger, purpose)?;
             self.finish_constructor_inspection(&ledger, before, reservation, 0)
         })?;
         self.inner.constructor_data = Some(summary);
@@ -213,6 +253,13 @@ impl CandidateState {
     fn visit_fresh_storage<'a>(
         &'a self,
         l: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        self.visit_constructor_storage(l, ConstructorPurpose::NativeFresh)
+    }
+    fn visit_constructor_storage<'a>(
+        &'a self,
+        l: &mut AudioRootStorageLedger<'a>,
+        purpose: ConstructorPurpose,
     ) -> Result<(), AudioStorageError> {
         let Self {
             identity: _,
@@ -260,7 +307,10 @@ impl CandidateState {
             Location("runtime-owner-box", 0),
             std::mem::size_of::<RuntimeOwner>(),
         )?;
-        playback.visit_fresh_candidate_storage(l)
+        match purpose {
+            ConstructorPurpose::NativeFresh => playback.visit_fresh_candidate_storage(l),
+            ConstructorPurpose::MainExport => playback.visit_main_control_storage(l, true),
+        }
     }
 }
 

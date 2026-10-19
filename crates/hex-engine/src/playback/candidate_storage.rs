@@ -14,6 +14,29 @@ impl Playback {
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
+        self.visit_constructor_storage(ledger, false, true)
+    }
+    pub(crate) fn is_main_control_runtime(&self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.is_linear_arrangement_export())
+    }
+    pub(crate) fn visit_main_control_storage<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+        fresh: bool,
+    ) -> Result<(), AudioStorageError> {
+        self.visit_constructor_storage(ledger, true, fresh)
+    }
+    fn visit_constructor_storage<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+        main: bool,
+        fresh: bool,
+    ) -> Result<(), AudioStorageError> {
+        if self.is_main_control_runtime() != main {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         let Self {
             metronome,
             tuning_audition,
@@ -54,7 +77,18 @@ impl Playback {
             Location("session-box", 0),
             std::mem::size_of::<SessionPlayback>(),
         )?;
-        session.visit_fresh_candidate_storage(ledger)?;
+        if main {
+            session.visit_main_control_storage(ledger, fresh)?;
+        } else {
+            session.visit_fresh_candidate_storage(ledger)?;
+        }
+        if main {
+            return if metronome.is_none() {
+                Ok(())
+            } else {
+                Err(AudioStorageError::SourceMismatch)
+            };
+        }
         let metronome = metronome
             .as_ref()
             .ok_or(AudioStorageError::UnknownStorage)?;

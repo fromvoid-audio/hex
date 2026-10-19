@@ -28,6 +28,34 @@ impl AudioCandidatePreparation {
         transforms: &crate::audio_transform::AudioTransformPreparation,
         reservation: crate::AudioStorageLedgerReservation,
     ) -> Result<(), AudioStorageError> {
+        self.prepare_original_sampler_for_purpose_on_control(
+            target,
+            producer,
+            editor,
+            previous,
+            original,
+            transforms,
+            reservation,
+            ConstructorPurpose::NativeFresh,
+        )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "same closed actual inputs and private birth purpose"
+    )]
+    pub(super) fn prepare_original_sampler_for_purpose_on_control(
+        &mut self,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        producer: &OriginalResourceBankPlan<'_>,
+        editor: &hex_project::Editor,
+        previous: Option<
+            &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        >,
+        original: &crate::AudioRootStorageLedger<'_>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        reservation: crate::AudioStorageLedgerReservation,
+        purpose: ConstructorPurpose,
+    ) -> Result<(), AudioStorageError> {
         if self.failed_incomplete()
             || self.cleaning
             || self.complete
@@ -102,17 +130,19 @@ impl AudioCandidatePreparation {
             .draft
             .as_mut()
             .ok_or(AudioStorageError::SourceMismatch)?;
-        draft.prepare_on_control(
-            custody,
-            self.token
-                .as_ref()
-                .ok_or(AudioStorageError::SourceMismatch)?,
-        )?;
+        let token = self
+            .token
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        match purpose {
+            ConstructorPurpose::NativeFresh => draft.prepare_on_control(custody, token)?,
+            ConstructorPurpose::MainExport => draft.prepare_main_on_control(custody, token)?,
+        }
         draft.finish_on_control(&mut self.custody, &mut self.token, &mut self.owner)?;
         self.owner
             .as_mut()
             .ok_or(AudioStorageError::SourceMismatch)?
-            .seal_sampler_constructor_on_control(
+            .seal_sampler_constructor_for_purpose_on_control(
                 target,
                 Some(producer),
                 editor,
@@ -120,6 +150,7 @@ impl AudioCandidatePreparation {
                 original,
                 transforms,
                 reservation,
+                purpose,
             )?;
         Ok(())
     }

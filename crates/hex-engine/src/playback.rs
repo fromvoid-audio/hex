@@ -472,7 +472,23 @@ impl Playback {
     pub(crate) fn new_audio_candidate(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, crate::AudioStorageError> {
-        let runtime = SessionPlayback::new_audio_candidate(Arc::clone(&revision))?;
+        Self::new_audio_candidate_for_purpose(
+            revision,
+            crate::audio_candidate::ConstructorPurpose::NativeFresh,
+        )
+    }
+    pub(crate) fn new_audio_candidate_for_purpose(
+        revision: Arc<PreparedRevision>,
+        purpose: crate::audio_candidate::ConstructorPurpose,
+    ) -> Result<Self, crate::AudioStorageError> {
+        let runtime = match purpose {
+            crate::audio_candidate::ConstructorPurpose::NativeFresh => {
+                SessionPlayback::new_audio_candidate(Arc::clone(&revision))?
+            }
+            crate::audio_candidate::ConstructorPurpose::MainExport => {
+                SessionPlayback::new_audio_candidate_for_purpose(Arc::clone(&revision), purpose)?
+            }
+        };
         Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
     }
     pub(crate) fn validate_candidate_runtime_storage(
@@ -655,7 +671,11 @@ impl Playback {
         session_unavailable: Option<crate::SessionPlaybackError>,
     ) -> Self {
         let project = Arc::clone(prepared_revision.arrangement());
-        let metronome = Metronome::prepare(project.sample_rate()).ok().map(Box::new);
+        let metronome = (!session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.is_linear_arrangement_export()))
+        .then(|| Metronome::prepare(project.sample_rate()).ok().map(Box::new))
+        .flatten();
         let refuses_unowned_prepared_fallback = session_runtime.is_none()
             && session_unavailable.is_some()
             && (prepared_revision.session().has_mutable_instruments()

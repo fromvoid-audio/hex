@@ -270,6 +270,16 @@ fn mutable_transport_loops_admit_while_linear_export_still_refuses_source_loops(
     let transport_loop =
         legacy_project_from_snapshot(snapshot).expect("valid transport loop project");
     assert!(SessionPlayback::new(prepare_mutable(&transport_loop)).is_ok());
+    assert!(
+        matches!(
+            crate::playback::Playback::new_audio_candidate_for_purpose(
+                prepare_mutable(&transport_loop),
+                crate::audio_candidate::ConstructorPurpose::MainExport
+            ),
+            Err(crate::AudioStorageError::UnsupportedGraph)
+        ),
+        "qualified Main birth preserves existing source-loop refusal, with no interactive fallback"
+    );
     assert_eq!(
         SessionPlayback::new_linear_arrangement_export(prepare_mutable(&transport_loop)).err(),
         Some(SessionPlaybackError::MutableInstrumentLoopUnsupported)

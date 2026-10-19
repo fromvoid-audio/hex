@@ -373,6 +373,15 @@ impl AudioPreparationCustody {
         }
         result
     }
+    #[cfg(test)]
+    pub(crate) fn test_original_input_drop(
+        &mut self,
+        probe: crate::audio_only_inputs::OriginalInputDropProbe,
+    ) {
+        let bank = self.bank.as_mut().expect("actual original input bank");
+        assert!(bank.drop_probe.is_none());
+        bank.drop_probe = Some(probe);
+    }
     pub(crate) fn source_context(&self) -> Option<AudioSourceContext> {
         self.source_context
     }

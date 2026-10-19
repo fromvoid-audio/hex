@@ -2,7 +2,9 @@
 //! and no owner getter: cancellation must retain this cell until explicit normal
 //! cleanup, while a failed cell remains quarantined by its host.
 use super::*;
+mod control_work;
 mod original_resources;
+pub use control_work::{AudioCandidateControlBlock, AudioCandidateControlProgress};
 use hex_project::{AssetId, Project};
 
 pub struct AudioCandidatePreparation {
@@ -14,6 +16,7 @@ pub struct AudioCandidatePreparation {
     token: Option<AudioPreparationToken>,
     draft: Option<AudioCandidateDraft>,
     owner: Option<AudioCandidateOwner>,
+    control_work: Option<control_work::ControlWork>,
     owner_runtime_done: bool,
     original_resource_attempted: bool,
     original_resource_refused: bool,
@@ -58,6 +61,7 @@ impl AudioCandidatePreparation {
             token: None,
             draft: Some(AudioCandidateDraft::new_on_control()),
             owner: None,
+            control_work: None,
             owner_runtime_done: false,
             original_resource_attempted: false,
             original_resource_refused: false,
@@ -271,6 +275,10 @@ impl AudioCandidatePreparation {
     pub fn failed_incomplete(&self) -> bool {
         self.failed
             || self
+                .control_work
+                .as_ref()
+                .is_some_and(control_work::ControlWork::failed_incomplete)
+            || self
                 .draft
                 .as_ref()
                 .is_some_and(AudioCandidateDraft::failed_incomplete)
@@ -295,6 +303,10 @@ impl AudioCandidatePreparation {
         }
         self.cleaning = true;
         match catch_unwind(AssertUnwindSafe(|| {
+            if let Some(work) = self.control_work.as_mut() {
+                work.cleanup_on_control()?;
+            }
+            drop(self.control_work.take());
             if let Some(owner) = self.owner.as_mut() {
                 if !self.owner_runtime_done {
                     owner.dispose_on_control()?;

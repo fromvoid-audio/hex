@@ -1646,3 +1646,42 @@ plus retained/peak/row-shortage refusal before compiler owner births or clones.
 It does not create a scalar SourceContext to impersonate Service association.
 Actual Service/native construction, post-preroll ControlWork, source freshness,
 full live-union admission and all broader musical coverage remain open.
+
+### Main-purpose construction and persistent control work
+
+The private captured constructor now chooses native-fresh or Main-export behavior
+before runtime allocation. Main uses the existing linear Arrangement kernel on
+its actual prepared revision, ignores authored transport wrapping as that kernel
+requires, and omits the native metronome. Native/public defaults keep interactive
+behavior. Actual runtime policy, paired owners, supported classes and mandatory
+input closure are checked; the purpose scalar does not confer storage authority.
+Main cannot obtain native constructor claims or enter the public native split.
+
+The same preparation cell retains Main runtime, original anchors and one bounded
+256-frame output block. Productive irregular turns preserve a completed block
+until its exact runtime/sequence/offset/count acknowledgment; pending reads do
+not render again. Post-work inspection visits actual runtime and retained input
+fields, including scalar note events in already-charged backing. Fresh/native
+inspection still requires empty event/query state; unsupported tails, opaque
+providers and live input/expression remain refused.
+
+Cleanup retires the actual runtime first, records its disposal proof, finishes
+anchor/root retirement, then explicitly disposes original inputs before releasing
+anchors. Persistent subphases preserve reader-Pending retries and first destructor
+failure; consumed root cleanup is not retried. A test-only destructor hook is
+installed in the actual original bank after inspection, is refused by inventory,
+and proves that cancellation and bank destruction failure retain correct custody.
+
+Focused Mono/Stereo direct/Utility-Return tests compare Main PCM to the independent
+existing linear kernel across an authored transport loop and Session tempo change.
+They cover pending-block cancellation, reader-delayed cleanup, measured render
+allocation totals and original-bank destruction exactly once. The initial
+post-render rejection of a scalar buffered note event and earlier prototype
+cleanup defect remain negative history. These are constructor/control-work
+components on the cloud toolchain with a 16 MiB Rust test stack. The conservative
+runtime-envelope refusal tests do not establish exact whole-Service budgets.
+
+The actual Service/file consumer, separate seek post-preroll admission, complete
+captured Audio+MIDI/CapturedMix/Stems coverage, full current/old-source/history/UI
+union, native publication/ACK/reaper and physical musical acceptance remain open.
+This private purpose does not turn a constructor summary into publication proof.

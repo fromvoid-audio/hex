@@ -4,7 +4,22 @@ use hex_project::{BeatTime, Command, Created};
 
 #[test]
 fn original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_custody() {
-    for stereo in [false, true] {
+    exercise(ConstructorPurpose::NativeFresh, false, false);
+}
+#[test]
+fn main_original_sampler_control_work_matches_linear_pcm_and_reader_cleanup() {
+    exercise(ConstructorPurpose::MainExport, false, false);
+}
+#[test]
+fn main_original_input_destruction_failure_stays_in_same_anchor_once() {
+    exercise(ConstructorPurpose::MainExport, true, false);
+}
+#[test]
+fn main_cancel_with_unacknowledged_block_retains_reader_and_retires_original_once() {
+    exercise(ConstructorPurpose::MainExport, false, true);
+}
+fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
+    for (stereo, with_return) in [(false, false), (false, true), (true, false), (true, true)] {
         let (unused_bank, identity, mut editor) =
             crate::shared_analytic::sampler_tests::canonical_fixture().unwrap();
         drop(identity);
@@ -30,6 +45,46 @@ fn original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_cus
                 velocity: 127,
             })
             .unwrap();
+        if purpose == ConstructorPurpose::MainExport {
+            editor
+                .execute(Command::SetLoopRegion {
+                    start: 0,
+                    end: 128,
+                    enabled: true,
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: BeatTime::ONE,
+                    tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+                })
+                .unwrap();
+        }
+        if with_return {
+            use hex_lattice_contract::NativeDeviceMetadata;
+            editor
+                .execute(Command::AddReturnTrack {
+                    name: "main return".into(),
+                })
+                .unwrap();
+            let return_track = editor.project().return_tracks()[0].id();
+            editor
+                .execute(Command::InsertReturnDevice {
+                    return_track,
+                    before: None,
+                    state: hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap(),
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetReturnSend {
+                    track,
+                    return_track,
+                    gain: 0.25,
+                })
+                .unwrap();
+        }
         let target = crate::SharedMetadata::new_on_control(editor.project().clone());
         editor.execute(Command::RemoveTrack(track)).unwrap();
         let original_source = if stereo {
@@ -98,14 +153,15 @@ fn original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_cus
             crate::owned_shared::reset_birth_count();
             crate::owned_shared::reset_clone_count();
             assert_eq!(
-                cell.prepare_original_sampler_on_control(
+                cell.prepare_original_sampler_for_purpose_on_control(
                     &target,
                     &plan,
                     &editor,
                     None,
                     &original,
                     &transforms,
-                    too_small
+                    too_small,
+                    purpose
                 ),
                 Err(expected),
                 "{refusal}"
@@ -114,16 +170,30 @@ fn original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_cus
             assert_eq!(crate::owned_shared::clone_count(), 0, "{refusal}");
             assert!(cell.owner.is_none() && cell.token.is_none());
         }
-        cell.prepare_original_sampler_on_control(
-            &target,
-            &plan,
-            &editor,
-            None,
-            &original,
-            &transforms,
-            limits,
-        )
-        .unwrap();
+        if purpose == ConstructorPurpose::NativeFresh {
+            cell.prepare_original_sampler_on_control(
+                &target,
+                &plan,
+                &editor,
+                None,
+                &original,
+                &transforms,
+                limits,
+            )
+            .unwrap();
+        } else {
+            cell.prepare_original_sampler_for_purpose_on_control(
+                &target,
+                &plan,
+                &editor,
+                None,
+                &original,
+                &transforms,
+                limits,
+                purpose,
+            )
+            .unwrap();
+        }
         assert!(cell.custody.is_none() && cell.token.is_none() && cell.owner.is_some());
         assert!(
             cell.owner
@@ -140,6 +210,119 @@ fn original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_cus
             .operations_on_control()
             .register_compiled_reader_on_control()
             .unwrap();
+        if purpose == ConstructorPurpose::NativeFresh {
+            assert_eq!(
+                cell.begin_main_control_work_on_control(24001),
+                Err(AudioStorageError::SourceMismatch)
+            );
+        } else {
+            assert_eq!(
+                cell.owner
+                    .as_mut()
+                    .unwrap()
+                    .seal_constructor_on_control(limits),
+                Err(AudioStorageError::SourceMismatch)
+            );
+            assert!(cell.preallocate_publication_split_on_control().is_err());
+            let owner = cell.owner.as_ref().unwrap();
+            let revision = owner
+                .inner
+                .custody
+                .candidate_root_view(&owner.inner.token)
+                .unwrap();
+            let mut oracle = crate::playback::Playback::from_arrangement_preroll(
+                crate::SessionPlayback::new_linear_arrangement_export(std::sync::Arc::clone(
+                    revision,
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+            let mut interactive =
+                crate::playback::Playback::new_audio_candidate(std::sync::Arc::clone(revision))
+                    .unwrap();
+            interactive.apply(crate::PlaybackCommand::Play);
+            let mut loop_output = [[0.0; 2]; 513];
+            interactive.render(&mut loop_output).unwrap();
+            assert!(
+                interactive.position() < 128,
+                "native still wraps authored loop"
+            );
+            drop(interactive);
+            oracle.apply(crate::PlaybackCommand::Play);
+            let mut expected = [[0.0; 2]; 24001];
+            oracle.render(&mut expected).unwrap();
+            drop(oracle);
+            cell.begin_main_control_work_on_control(24001).unwrap();
+            let mut actual = [[0.0; 2]; 24001];
+            assert!(cell.test_work_native_claim_refuses());
+            let mut previous = None;
+            let mut offset = 0;
+            loop {
+                let mut step = Ok(crate::AudioCandidateControlProgress::Complete);
+                let measured = allocation_counter::measure(|| {
+                    step = cell.step_main_control_work_with_frames_on_control(
+                        [1, 17, 251, 83][offset % 4],
+                    );
+                });
+                assert_eq!(measured.count_total, 0);
+                assert_eq!(measured.count_current, 0);
+                let crate::AudioCandidateControlProgress::Block(block) = step.unwrap() else {
+                    break;
+                };
+                assert_eq!(block.offset(), offset as u64);
+                if let Some(old) = previous {
+                    assert_eq!(
+                        cell.acknowledge_main_control_block_on_control(old),
+                        Err(AudioStorageError::SourceMismatch)
+                    );
+                }
+                assert!(cell.test_work_native_claim_refuses());
+                assert_eq!(
+                    cell.step_main_control_work_on_control().unwrap(),
+                    crate::AudioCandidateControlProgress::Block(block)
+                );
+                let mut copy = [[0.0; 2]; 256];
+                cell.copy_main_control_block_on_control(block, &mut copy)
+                    .unwrap();
+                actual[offset..offset + block.frames()].copy_from_slice(&copy[..block.frames()]);
+                offset += block.frames();
+                if cancel {
+                    break;
+                }
+                cell.acknowledge_main_control_block_on_control(block)
+                    .unwrap();
+                previous = Some(block);
+                assert_eq!(
+                    cell.acknowledge_main_control_block_on_control(block),
+                    Err(AudioStorageError::SourceMismatch)
+                );
+            }
+            if cancel {
+                assert_eq!(&actual[..offset], &expected[..offset]);
+                assert_eq!(offset, 1);
+            } else {
+                assert_eq!(actual, expected);
+                assert_eq!(offset, 24001);
+            }
+            cell.test_main_work_inventory(
+                &target,
+                &plan,
+                &editor,
+                &original,
+                &transforms,
+                &reader,
+                limits,
+            )
+            .unwrap();
+        }
+        let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        if purpose == ConstructorPurpose::MainExport {
+            let drops = drops.clone();
+            cell.test_work_original_drop(Box::new(move || {
+                drops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert!(!fault, "injected original input destruction");
+            }));
+        }
         drop(original);
         assert_eq!(
             cell.cleanup_on_control(),
@@ -147,7 +330,26 @@ fn original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_cus
         );
         assert!(!cell.failed_incomplete());
         drop(reader);
-        cell.cleanup_on_control().unwrap();
-        assert!(cell.complete && cell.owner.is_none());
+        eprintln!(
+            "main control completed purpose={purpose:?} stereo={stereo} return={with_return} fault={fault}"
+        );
+        if fault {
+            assert_eq!(
+                cell.cleanup_on_control(),
+                Err(AudioStorageError::UnknownStorage)
+            );
+            assert!(cell.test_work_kept_original_drop_failure());
+            assert_eq!(
+                cell.cleanup_on_control(),
+                Err(AudioStorageError::UnknownStorage)
+            );
+            assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
+        } else {
+            cell.cleanup_on_control().unwrap();
+            assert!(cell.complete && cell.owner.is_none());
+            if purpose == ConstructorPurpose::MainExport {
+                assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
+            }
+        }
     }
 }

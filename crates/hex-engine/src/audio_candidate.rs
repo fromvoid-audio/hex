@@ -1,5 +1,10 @@
 //! Constructor-owned runtime custody, independent of cost/admission authority.
 //! Teardown follows original177 claims_teardown's Pending-before-take protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConstructorPurpose {
+    NativeFresh,
+    MainExport,
+}
 mod claimed;
 mod draft;
 mod preparation;
@@ -7,7 +12,9 @@ mod preparation_operations;
 pub use preparation_operations::AudioCandidatePreparationOperations;
 mod reservation;
 pub use draft::AudioCandidateDraft;
-pub use preparation::AudioCandidatePreparation;
+pub use preparation::{
+    AudioCandidateControlBlock, AudioCandidateControlProgress, AudioCandidatePreparation,
+};
 pub use reservation::AudioCandidateReservationQuote;
 mod storage;
 pub use storage::AudioCandidateConstructorSummary;

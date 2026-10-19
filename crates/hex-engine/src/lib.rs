@@ -32,11 +32,12 @@ mod audio_candidate;
 mod audio_storage;
 pub use audio_candidate::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
-    AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateDraft,
-    AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation,
-    AudioCandidatePreparationOperations, AudioCandidatePreparedSplit, AudioCandidateRefusal,
-    AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed, AudioCandidateRuntimeStatus,
-    AudioCandidateSplitRefusal, AudioCandidateTransfer, ClaimedAudioCandidateRuntime,
+    AudioCandidateControlBlock, AudioCandidateControlProgress, AudioCandidateDisposalPhase,
+    AudioCandidateDisposed, AudioCandidateDraft, AudioCandidateIdentity, AudioCandidateOwner,
+    AudioCandidatePreparation, AudioCandidatePreparationOperations, AudioCandidatePreparedSplit,
+    AudioCandidateRefusal, AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed,
+    AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
+    ClaimedAudioCandidateRuntime,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,

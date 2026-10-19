@@ -22,6 +22,7 @@ struct ClaimedState {
     phase: ClaimedPhase,
     first_panic: Option<Box<dyn Any + Send>>,
     owned_runtime_bytes: Option<usize>,
+    main_export: bool,
 }
 impl ClaimedState {
     fn wrapper_storage_bytes(&self) -> usize {
@@ -34,6 +35,7 @@ impl ClaimedState {
             phase: _,
             first_panic: _,
             owned_runtime_bytes: _,
+            main_export: _,
         } = self;
         // Existing Runtime/Vec allocations move unchanged from the constructor;
         // only this wrapper is a new allocation at the split frontier.
@@ -105,7 +107,7 @@ impl AudioCandidateOwner {
         (ClaimedAudioCandidateRuntime, AudioCandidateAnchors),
         Box<AudioCandidateSplitRefusal>,
     > {
-        match self.prepare_constructor_split() {
+        match self.prepare_constructor_split(ConstructorPurpose::NativeFresh) {
             Ok(state) => Ok(self.commit_constructor_split(state)),
             Err(reason) => Err(Box::new(AudioCandidateSplitRefusal {
                 reason,
@@ -113,10 +115,18 @@ impl AudioCandidateOwner {
             })),
         }
     }
-    fn prepare_constructor_split(&self) -> Result<Box<ClaimedState>, AudioStorageError> {
+    fn prepare_constructor_split(
+        &self,
+        purpose: ConstructorPurpose,
+    ) -> Result<Box<ClaimedState>, AudioStorageError> {
         if self.inner.phase != AudioCandidateDisposalPhase::Owned
             || self.inner.runtime_receipt.is_some()
         {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if self.inner.runtime.as_ref().is_none_or(|r| {
+            r.playback.is_main_control_runtime() != (purpose == ConstructorPurpose::MainExport)
+        }) {
             return Err(AudioStorageError::SourceMismatch);
         }
         self.inner.validate_groups()?;
@@ -130,6 +140,7 @@ impl AudioCandidateOwner {
             phase: ClaimedPhase::Current,
             first_panic: None,
             owned_runtime_bytes: self.inner.constructor_data.map(|s| s.owned_runtime_bytes),
+            main_export: purpose == ConstructorPurpose::MainExport,
         });
         let _actual_wrapper_bytes = state.wrapper_storage_bytes();
         Ok(state)
@@ -239,7 +250,19 @@ impl AudioCandidatePreparation {
         let state = self
             .owner_ref_on_control()
             .ok_or(AudioStorageError::SourceMismatch)?
-            .prepare_constructor_split()?;
+            .prepare_constructor_split(ConstructorPurpose::NativeFresh)?;
+        Ok(AudioCandidatePreparedSplit {
+            preparation: self,
+            state,
+        })
+    }
+    pub(super) fn preallocate_main_split_on_control(
+        &mut self,
+    ) -> Result<AudioCandidatePreparedSplit<'_>, AudioStorageError> {
+        let state = self
+            .owner_ref_on_control()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .prepare_constructor_split(ConstructorPurpose::MainExport)?;
         Ok(AudioCandidatePreparedSplit {
             preparation: self,
             state,
@@ -259,7 +282,13 @@ impl AudioCandidateAnchors {
         &'a self,
         runtime: &'a ClaimedAudioCandidateRuntime,
     ) -> Option<AudioCandidateConstructorClaims<'a>> {
-        if !self.matches_current(runtime)
+        if runtime.inner.main_export
+            || runtime
+                .inner
+                .runtime
+                .as_ref()
+                .is_none_or(|r| r.playback.is_main_control_runtime())
+            || !self.matches_current(runtime)
             || self.owner.inner.constructor_data.is_none()
             || runtime.inner.phase != ClaimedPhase::Current
             || !runtime
@@ -343,6 +372,49 @@ impl AudioCandidateAnchors {
     }
 }
 impl ClaimedAudioCandidateRuntime {
+    pub(super) fn visit_main_control_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        if !self.inner.main_export
+            || self.inner.phase != ClaimedPhase::Current
+            || !self.inner.journal.is_empty()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_ref()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        if !runtime.playback.is_main_control_runtime()
+            || self.inner.groups.iter().enumerate().any(|(i, g)| {
+                g.closed
+                    || g.origin
+                        != g.present.then_some(groups::Origin {
+                            runtime: self.inner.identity,
+                            member: i,
+                        })
+            })
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        validate_runtime_groups(runtime, &self.inner.groups)?;
+        ledger.bytes(
+            Owner::exclusive(self.inner.as_ref()),
+            Location("claimed-state-box", 0),
+            std::mem::size_of::<ClaimedState>(),
+        )?;
+        ledger.vec(&self.inner.groups)?;
+        ledger.vec(&self.inner.journal)?;
+        ledger.bytes(
+            Owner::exclusive(runtime),
+            Location("runtime-owner-box", 0),
+            std::mem::size_of::<RuntimeOwner>(),
+        )?;
+        runtime.playback.visit_main_control_storage(ledger, false)
+    }
     pub fn source_context(&self) -> Option<crate::AudioSourceContext> {
         self.inner.source_context
     }

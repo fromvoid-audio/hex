@@ -417,12 +417,27 @@ impl SessionPlayback {
     pub(crate) fn new_audio_candidate(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, crate::AudioStorageError> {
+        Self::new_audio_candidate_for_purpose(
+            revision,
+            crate::audio_candidate::ConstructorPurpose::NativeFresh,
+        )
+    }
+    pub(crate) fn new_audio_candidate_for_purpose(
+        revision: Arc<PreparedRevision>,
+        purpose: crate::audio_candidate::ConstructorPurpose,
+    ) -> Result<Self, crate::AudioStorageError> {
         let bytes = preroll::arrangement_runtime_storage_preflight_bytes(&revision)
             .ok_or(crate::AudioStorageError::UnknownStorage)?;
         if bytes > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
             return Err(crate::AudioStorageError::ReservationExceeded);
         }
-        Self::new(revision).map_err(|_| crate::AudioStorageError::UnsupportedGraph)
+        match purpose {
+            crate::audio_candidate::ConstructorPurpose::NativeFresh => Self::new(revision),
+            crate::audio_candidate::ConstructorPurpose::MainExport => {
+                Self::new_linear_arrangement_export(revision)
+            }
+        }
+        .map_err(|_| crate::AudioStorageError::UnsupportedGraph)
     }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,

@@ -394,7 +394,19 @@ impl<'a> OwnedAudioSourceView<'a> {
         }
     }
 }
+#[cfg(test)]
+pub(crate) struct OriginalInputDropProbe(pub(crate) Option<Box<dyn FnOnce() + Send + Sync>>);
+#[cfg(test)]
+impl Drop for OriginalInputDropProbe {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
+}
 pub struct OwnedAudioInputs {
+    #[cfg(test)]
+    pub(crate) drop_probe: Option<OriginalInputDropProbe>,
     bank: u64,
     custodian: u64,
     pub(crate) aliases: Vec<AliasRow>,
@@ -429,6 +441,8 @@ impl OwnedAudioInputs {
         };
         match Self::prepare_sources(&sources, reservation, &mut capacity) {
             Ok((aliases, bank)) => Ok(Self {
+                #[cfg(test)]
+                drop_probe: None,
                 sources,
                 capacity,
                 bank,
@@ -462,6 +476,8 @@ impl OwnedAudioInputs {
         };
         let (aliases, bank) = Self::prepare_sources(sources, reservation, &mut capacity)?;
         *destination = Some(Self {
+            #[cfg(test)]
+            drop_probe: None,
             sources: std::mem::take(sources),
             capacity,
             bank,

@@ -34,6 +34,21 @@ impl SessionPlayback {
         &'a self,
         l: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
+        self.visit_constructor_storage(l, false, true)
+    }
+    pub(crate) fn visit_main_control_storage<'a>(
+        &'a self,
+        l: &mut AudioRootStorageLedger<'a>,
+        fresh: bool,
+    ) -> Result<(), AudioStorageError> {
+        self.visit_constructor_storage(l, true, fresh)
+    }
+    fn visit_constructor_storage<'a>(
+        &'a self,
+        l: &mut AudioRootStorageLedger<'a>,
+        main: bool,
+        fresh: bool,
+    ) -> Result<(), AudioStorageError> {
         let Self {
             live_expression,
             computer_keyboard,
@@ -87,8 +102,8 @@ impl SessionPlayback {
         } = self;
         if live_expression.is_some()
             || computer_keyboard.is_some()
-            || *linear_arrangement_export
-            || !candidate_admission_open
+            || *linear_arrangement_export != main
+            || (fresh && !candidate_admission_open)
             || tail_groups.iter().any(Option::is_some)
             || tail_mutable_instruments.iter().any(Option::is_some)
             || retained_contexts.iter().any(Option::is_some)
@@ -97,13 +112,24 @@ impl SessionPlayback {
             || !context_lease_plan.is_empty()
             || !releases.is_empty()
             || !release_scratch.is_empty()
-            || !mutable_events.is_empty()
+            || (fresh && !mutable_events.is_empty())
             || !suppressions.is_empty()
             || !suppression_scratch.is_empty()
-            || !spans.is_empty()
-            || !mutable_onsets.candidate_storage_empty()
+            || (fresh && !spans.is_empty())
+            || (fresh && !mutable_onsets.candidate_storage_empty())
         {
             return Err(AudioStorageError::UnsupportedGraph);
+        }
+        // Inline, constructor-bound note query results cannot acquire owners.
+        // Copy bounds deliberately fail compilation if an owning field appears.
+        fn scalar<T: Copy>(_: &T) {}
+        // Rendered Main blocks may leave scalar note events in their already
+        // inventoried Vec backing. Native/fresh admission still requires empty.
+        for event in mutable_events {
+            scalar(event);
+        }
+        for span in spans.spans() {
+            scalar(span);
         }
         l.existing_shared(
             revision,
