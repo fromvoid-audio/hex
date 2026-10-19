@@ -123,8 +123,8 @@ struct NativeWork {
 pub(super) struct Custody {
     enabled: AtomicBool,
     closed: AtomicBool,
-    bank: Mutex<NativeBank>,
-    work: Mutex<NativeWork>,
+    bank: CustodyMutex<NativeBank>,
+    work: CustodyMutex<NativeWork>,
 }
 impl Custody {
     fn mark_closing(&self, bank: &mut NativeBank) {
@@ -168,7 +168,10 @@ impl Custody {
         native.matches(root).then_some(())?;
         native.data_bytes()
     }
-    pub(super) fn prewarm_on_control(&self) {
+    #[cfg(test)]
+    pub(super) fn test_inline_native_exclusions(&self) {
+        self.bank.try_lock().map(drop).unwrap();
+        self.work.try_lock().map(drop).unwrap();
         drop(lock(&self.bank));
         drop(lock(&self.work));
     }

@@ -867,6 +867,72 @@ mod tests {
         )
     }
     #[test]
+    fn actual_native_work_contention_refuses_loan_and_retains_prepared_sources() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported constructor layout; no positive actual work proof");
+            return;
+        }
+        let root = root();
+        let custody = &root.0.eligible;
+        let token = custody
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .ok()
+            .unwrap();
+        let (_, asset, audio) = project();
+        assert_eq!(
+            custody
+                .with_runtime_preparation(token, |cell| cell
+                    .copy_resident_source_on_control(asset, &audio))
+                .unwrap(),
+            AudioCandidatePreparationProgress::Collecting
+        );
+        let before = lock(&custody.work).publication.preparations[token.slot]
+            .as_ref()
+            .unwrap()
+            .test_summary();
+        crate::candidate_custody::inline_lock_tests::held_on_other_thread(&custody.work, || {
+            let measured = allocation_counter::measure(|| {
+                assert_eq!(
+                    custody
+                        .with_runtime_preparation(token, |_| panic!("contended loan must not run")),
+                    Err("candidate preparation is busy")
+                );
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        });
+        assert_eq!(
+            lock(&custody.work).publication.preparations[token.slot]
+                .as_ref()
+                .unwrap()
+                .test_summary(),
+            before
+        );
+        assert_eq!(
+            custody
+                .with_runtime_preparation(token, |cell| {
+                    assert!(!cell.failed_incomplete());
+                    Ok(())
+                })
+                .unwrap(),
+            AudioCandidatePreparationProgress::Collecting
+        );
+        assert!(custody.cancel_runtime_preparation(token));
+        custody.advance_publications_on_control(&root, false);
+        assert!(custody.complete());
+        eprintln!(
+            "SUPPORTED actual native Work other-thread hold: real loan busy BEFORE callback/allocfree0, same parent/source reservation retained; after release loan then cancellation cleanup completes"
+        );
+    }
+
+    #[test]
     fn rooted_stage_holds_terminal_and_preparation_cancellation_guards_through_enqueue() {
         if !hex_engine::audio_storage_constructor_layout_supported() {
             eprintln!("unsupported rooted native guard test; no positive stage proof");
@@ -913,33 +979,34 @@ mod tests {
                 assert!(custody.cancel_runtime_preparation(token));
             }
             let mut queued = None;
-            let result = custody.stage_runtime_preparation(
-                &root,
-                token,
-                Header {
-                    revision: 1,
-                    context_generation: 2,
-                    policy: crate::prepared::PublicationPolicy::InheritRuntime,
-                },
-                48_000,
-                |value| {
-                    // Test-only queue observer. Production supplies its already
-                    // reserved rtrb write, not an application callback.
-                    assert!(matches!(
+            let result =
+                custody.stage_runtime_preparation(
+                    &root,
+                    token,
+                    Header {
+                        revision: 1,
+                        context_generation: 2,
+                        policy: crate::prepared::PublicationPolicy::InheritRuntime,
+                    },
+                    48_000,
+                    |value| {
+                        // Test-only queue observer. Production supplies its already
+                        // reserved rtrb write, not an application callback.
+                        assert!(matches!(
                         root.0.bank.try_lock(),
-                        Err(std::sync::TryLockError::WouldBlock)
+                        Err(crate::candidate_custody::custody_mutex::CustodyTryLockError::Contended)
                     ));
-                    assert!(matches!(
+                        assert!(matches!(
                         custody.bank.try_lock(),
-                        Err(std::sync::TryLockError::WouldBlock)
+                        Err(crate::candidate_custody::custody_mutex::CustodyTryLockError::Contended)
                     ));
-                    assert!(matches!(
+                        assert!(matches!(
                         custody.work.try_lock(),
-                        Err(std::sync::TryLockError::WouldBlock)
+                        Err(crate::candidate_custody::custody_mutex::CustodyTryLockError::Contended)
                     ));
-                    queued = Some(value);
-                },
-            );
+                        queued = Some(value);
+                    },
+                );
             if cancel_before {
                 assert!(result.is_err());
                 assert!(queued.is_none());

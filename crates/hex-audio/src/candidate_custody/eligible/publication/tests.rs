@@ -360,3 +360,103 @@ fn actual_lifecycle_paired_aliases_require_each_physical_handle() {
         "SUPPORTED actual lifecycle paired data1/handles2; omitted actual alias refuses, repeated identical field dedups; no whole native-root claim"
     );
 }
+
+#[test]
+fn actual_native_bank_contention_refuses_cancel_without_mutating_live_owner() {
+    let Some(mut owner) = crate::prepared::candidate_tests::candidate() else {
+        return;
+    };
+    let identity = owner.identity();
+    let root = root(reservation_for(&mut owner));
+    let (queued, ticket) = stage(&root, owner, vec![]).ok().unwrap();
+    crate::candidate_custody::inline_lock_tests::held_on_other_thread(
+        &root.0.eligible.bank,
+        || {
+            let measured = allocation_counter::measure(|| {
+                assert_eq!(
+                    root.cancel_eligible(&ticket),
+                    AudioCandidateCancellationResult::Unavailable
+                );
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        },
+    );
+    {
+        let bank = lock(&root.0.eligible.bank);
+        let slot = &bank.publication.slots[ticket.stamp.slot];
+        assert_eq!(slot.identity, Some(identity));
+        assert_eq!(slot.life.cancellation.load(Ordering::Acquire), PENDING);
+        assert_eq!(slot.anchors.as_ref().unwrap().identity(), identity);
+    }
+    assert_eq!(
+        root.cancel_eligible(&ticket),
+        AudioCandidateCancellationResult::Cancelled
+    );
+    root.ingest_eligible(queued.reject_before_install())
+        .ok()
+        .unwrap();
+    root.advance_on_control();
+    let recovered = root
+        .recover(&ticket)
+        .expect("actual same owner retired after release");
+    assert_eq!(recovered.disposed.identity(), identity);
+    eprintln!(
+        "SUPPORTED actual native Bank other-thread hold: one-try cancellation Unavailable/allocfree0 preserves SAME live anchors and Pending; release allows actual cancel+normal retirement"
+    );
+}
+
+#[test]
+fn changed_inline_custody_body_is_priced_once_in_existing_publication_metadata_limits() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported pinned constructor layout; no positive metadata limit proof");
+        return;
+    }
+    let root = CandidateRoot::new(2).unwrap();
+    let capacity = lock(&root.0.bank).slots.capacity();
+    // Same actual caller expression as configure_publications: Inner embeds
+    // eligible and all five wrappers. Their bodies must NOT be added again.
+    let body = std::mem::size_of::<Inner>();
+    let base = body + capacity * std::mem::size_of::<Slot>();
+    let (bank, work) = Bank::prepare(reservation(), base).unwrap();
+    let required = base + bank.metadata_bytes;
+    drop((bank, work));
+    let mut exact = reservation();
+    exact.max_retained_data_bytes = required;
+    exact.max_construction_peak_data_bytes = required;
+    let (bank, work) = Bank::prepare(exact, base).unwrap();
+    assert_eq!(base + bank.metadata_bytes, required);
+    drop((bank, work));
+    for retained in [true, false] {
+        let mut short = exact;
+        if retained {
+            short.max_retained_data_bytes -= 1;
+        } else {
+            short.max_construction_peak_data_bytes -= 1;
+        }
+        let mut refused = false;
+        let measured =
+            allocation_counter::measure(|| refused = Bank::prepare(short, base).is_err());
+        assert!(refused);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    eprintln!(
+        "SUPPORTED changed inline Inner{body} embeds all5wrappers once, existing slot capacity{capacity}; publication metadata total{required} exact/eachminus1 pre-new-backing0. Guard{} is separate overlapping scratch for future whole-host peak, not admitted here. Peak-minus1 also rejects peak<retained; no aggregate Root factory ceiling/claim.",
+        std::mem::size_of::<CustodyMutexGuard<'_, NativeBank>>()
+    );
+}

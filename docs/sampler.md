@@ -1910,3 +1910,58 @@ peak>=retained relation (not an independent transient graph-peak proof). Actual
 alias handles must each be visited, sharing one body; omitting a real alias
 refuses. Whole native Work/Bank/current/queued/retiring roots and same-parent
 facade/reborrow remain separate mandatory work. No macOS result is inferred.
+
+#### Five inline custody exclusions (19 October 2026)
+
+Only CandidateRoot Inner bank/execution/returns and its inline eligible Custody
+bank/work now use the private CustodyMutex. It wraps explicit pinned
+spin::mutex::SpinMutex<T, spin::Yield> plus sticky AtomicBool poison. The direct
+Audio dependency is spin0.9.9, default features disabled, with mutex/spin_mutex/std;
+the package was already present transitively. Explicit type selection avoids the
+feature-selected Mutex alias. The pinned source has inline AtomicBool, UnsafeCell
+payload and PhantomData, and supports Send-only payloads without a Sync widening.
+No workspace unsafe, raw access, extraction or new owner family is introduced.
+The lock has no owning children beyond T; every actual T child remains mandatory.
+
+try_lock performs exactly one underlying strong Acquire CAS, checks poison while
+exclusive and releases immediately on poison refusal. It never retries, yields,
+logs, allocates or destroys the payload. The existing control-only helper uses
+yielding acquisition and recovers contents without clearing poison. Guard Drop
+sets sticky poison on a new escaping unwind before its dependency guard releases;
+a caught panic while the guard remains alive and acquisition during unwind keep
+the original std transition law. The Rc PhantomData keeps guards non-Send. All
+existing try/control call choices, release order, panic retention and cleanup
+state machines stay intact; the five prewarm calls are removed. The unrelated,
+never-locked terminal carrier Mutex remains unchanged.
+
+This changes control contention from parking to yield retries. There is no
+fairness, bounded wait, or callback deadline guarantee. Callback try paths remain
+one attempt. Source policy restricts the exact dependency, five fields, private
+wrapper, one-try implementation and audited callback paths; it is a finite source
+guard, not a general Rust callgraph verifier. Actual default/probe features and
+the pinned crate source/checksum are retained with component evidence.
+
+Cloud checks exercise first/repeated/contended acquisitions with zero Rust
+allocator activity, sticky poison/recovery and unwind cases, Send-only Cell and
+an actual non-Send compile negative. Actual five-field construction separates the
+existing Root/slot/two DomainSignal allocations from zero-allocation lock work;
+other-thread contention at each real exclusion refuses the actual nonblocking
+consumer while preserving its owner, then permits control progress after release.
+Changed concrete Inner layout includes all five wrappers once. Guard layout is
+separate overlapping scratch for the later complete operation. Existing metadata
+exact/minus-one tests remain metadata-local, not a whole-Root construction quote;
+CandidateRoot::new still lacks an aggregate before-birth ceiling. Outer raw owners,
+complete actual payload visits, facade scratch, normal binding and retained/peak
+union remain required. No native readiness follows from this primitive change.
+
+Finite coordinator-only macOS follow-up: on the sealed exact source, run the six
+custody_mutex tests, two inline_lock_tests, two actual_native contention cases and
+the changed_inline_custody_body metadata case; require actual positive statuses,
+zero ignored, source identity and allocation diagnostics. Compile the same private
+source guard-negative/Cell-positive probes against its resolved spin artifact.
+These are headless component checks, with no app/backend/device operation. Before
+platform performance acceptance, also exercise the actual qualified Service and
+callback publication/replacement/retirement workload under realistic control
+contention on pinned macOS, recording throughput and latency tails rather than
+inventing a fairness/deadline bound. That whole-Service workload remains open
+until its qualified consumer and complete union exist. Root owns all dispatch.

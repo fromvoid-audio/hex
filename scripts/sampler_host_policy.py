@@ -6,6 +6,7 @@ finite schema. This check preserves the independent Cargo dependency checks.
 """
 import re
 
+
 EXACT = {
     'crates/hex-audio/src/candidate_custody/eligible/publication/tests.rs',
     'crates/hex-audio/src/candidate_custody/eligible/publication.rs',
@@ -44,7 +45,8 @@ def violations(path: str, source: str) -> list[str]:
 
 
 def repository_violations(root):
-    result = []
+    from custody_mutex_policy import repository_violations as custody_mutex_violations
+    result = custody_mutex_violations(root)
     for path in sorted((root / 'crates').rglob('*.rs')):
         result.extend(violations(path.relative_to(root).as_posix(), path.read_text()))
     return result

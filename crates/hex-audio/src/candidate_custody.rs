@@ -8,10 +8,14 @@ use std::{
     any::Any,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+mod custody_mutex;
+#[cfg(test)]
+mod inline_lock_tests;
+use custody_mutex::{CustodyMutex, CustodyMutexGuard};
 mod eligible;
 pub(crate) use eligible::DomainEnvelope;
 pub(crate) use eligible::publication::{
@@ -138,10 +142,10 @@ struct AbandonedReturns {
 struct Inner {
     root: u64,
     eligible: eligible::Custody,
-    bank: Mutex<Bank>,
-    execution: Mutex<Work>,
+    bank: CustodyMutex<Bank>,
+    execution: CustodyMutex<Work>,
     abandoned: AtomicBool,
-    returns: Mutex<Option<AbandonedReturns>>,
+    returns: CustodyMutex<Option<AbandonedReturns>>,
 }
 #[derive(Clone)]
 pub(crate) struct CandidateRoot(Arc<Inner>);
@@ -215,8 +219,8 @@ impl QueuedCandidate {
         }
     }
 }
-fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
-    value.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock<T>(value: &CustodyMutex<T>) -> CustodyMutexGuard<'_, T> {
+    value.lock_recover_on_control()
 }
 impl CandidateRoot {
     pub(crate) fn new(capacity: usize) -> Result<Self, &'static str> {
@@ -231,24 +235,17 @@ impl CandidateRoot {
         let root = Self(Arc::new(Inner {
             root,
             eligible: eligible::Custody::default(),
-            bank: Mutex::new(Bank {
+            bank: CustodyMutex::new(Bank {
                 root,
                 closing: false,
                 slots,
                 scheduled: false,
                 retiring: false,
             }),
-            execution: Mutex::new(Work::default()),
+            execution: CustodyMutex::new(Work::default()),
             abandoned: AtomicBool::new(false),
-            returns: Mutex::new(None),
+            returns: CustodyMutex::new(None),
         }));
-        // Some supported std mutex implementations allocate lazily at first
-        // lock. Initialize every actual lock during channel construction,
-        // never during the legacy allocation-free control reclaim contract.
-        drop(lock(&root.0.bank));
-        drop(lock(&root.0.execution));
-        drop(lock(&root.0.returns));
-        root.0.eligible.prewarm_on_control();
         Ok(root)
     }
     /// Ordinary control lock spans reservation and queue push: terminal closure
