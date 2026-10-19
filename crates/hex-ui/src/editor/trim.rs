@@ -1735,6 +1735,7 @@ mod tests {
 
         let stale_revision = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&state.project),
             waveforms: BTreeMap::new(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1794,6 +1795,7 @@ mod tests {
             .expect("remove clip");
         let removed = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1841,6 +1843,7 @@ mod tests {
         );
         let moved = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(moved_editor.project().clone()),
             waveforms: BTreeMap::new(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1891,6 +1894,7 @@ mod tests {
         };
         let state = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),

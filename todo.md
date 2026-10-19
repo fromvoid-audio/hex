@@ -5261,6 +5261,13 @@ to normal; existing selection/hover/focus/audition regressions remain applicable
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
 
+18 October2026 — Pulse2709/PR325: reproduced rail width480→624px on tag-editor
+open plus mini-strip open-only click. Keep toolbar/body in one fixed base column
+and append editor beside the whole browser; both original controls toggle at a
+stationary pointer. Rendered normal/23px picker and sample-metadata retention
+regressions; focused checks/evidence in Pulse. Tag persistence2667 remains separate;
+sole merger owns prospective fullCI/merge, root optimized native acceptance.
+
 - 18 October 2026 — Pulse2808 / PR414: common cfg(test) editor resolver allocates
   unique private Home/Music/config before discovery, preserving explicit fixture
   paths; no process environment or application feature-only behavior change.
@@ -5368,3 +5375,21 @@ source handoff is separate from final integration/full CI/merge and delivery.
 - Private palette selection now derives counts from the palette and uses a bounded ordered tie loop; exact ticket mapping is covered across1024 legal authored profiles. Original fixed-nine panic reachability was disproved, so this is a policy cleanup rather than a reproduced runtime crash fix.
 - Verified all35 immutable owner payloads/four source-file hashes. Owner completeStorage baseline117PASS3FAIL then all120PASS and final125 positives remain component evidence; all three prior required-run negatives stay preserved.
 - Composed actualqualified mainbd54 with newly merged spectrum painter; no unqualified407/456/447 imports. New exact full21/freshreview pending before any merge, installation or user acceptance claim.
+### 2026-10-19 — PR447 coherent six-return and ancillary-error integration
+
+- Composed full owner1561 plus both12d ancillary-error commits with qualified mainbd54, preserving successful Open continuation, recovery/trim counters, recent-directory persistence, current EQ lifecycle and shared spectrum painter. Git merged disjoint hunks without feature edits.
+- Verified62 six-return and16 ancillary-error evidence payloads; actual recovery checkpoint error RED and final24 functional components remain source-bound, as do coordinator14 native functional positives. Original651 full21 green-but-review-blocked receipt remains historical.
+- Ordered valid metadata proof may reconcile authoring while preserving ancillary recovery error; actual publication ACK/output/runtime ownership and refusal/generation checks remain. Retained canonical source Project must count in future395 custody.
+- Current32 comparison/tuning/asset manifest is qualified independently of unmerged456 placement; future composition must retain both required capabilities. No whole395/456/409/420/407/399/419 import.
+- Required new exact prospective full21 and fresh independent review pending; no physical provider listening, native Verified constructor, installed/user acceptance or merge claim.
+
+### 2026-10-19 — PR325 stationary tag-column integration
+
+- Composed exact owner2e48c996 with qualified main447e042; fixed base toolbar/body column plus outward full-height tag editor and both stationary toggle controls.
+- Verified21 immutable owner payloads and all six before/after source hashes; actual two rendered reds, first/final positives88browser plus strict checks remain source-bound. Preserved414 private startup/custody, four preference paths, Source1Open and actualA/Bcomparison fields,444three-field divider/hysteresis and currentsharedspectrum.
+- Only append-only browser-test module and todo conflicts retained both histories. Exact prospective FULL21/fresh review remain pending; no tag persistence, physical/native pointer, installed or acceptance claim.
+
+### 2026-10-19 — PR399 controlled spectrum fixture return
+
+- Composed ownerd2dd90d4 over failed e301 with qualified main325/447; controlled Orange no-op now verifies cache reuse, then genuinely different Blue and Orange transitions verify invalidation and unchanged signal points. All21 owner payloads and exact before/after source snapshots verified.
+- Preserved all prior palette, full-snapshot legacy fixture, current32 comparison/assets/tuning and spectrum oracles. No production cache/randomness changes; original e301 UI negative remains distinct. New exact prospective full21 and fresh review required; no installed/native/user acceptance claim.

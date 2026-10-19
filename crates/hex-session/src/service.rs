@@ -21,8 +21,11 @@ use hex_tuning::ProjectTuning;
 mod audio_batch_tests;
 mod audio_sink;
 mod canonical_audio_source;
+mod comparison_audio;
 pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
+pub use comparison_audio::ComparisonAudioBinding;
+mod device_comparison;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -63,9 +66,12 @@ pub struct AudioClipWaveform {
 
 /// Read-only model and cached summaries for a single committed project revision.
 pub struct ViewState {
-    /// Present only for a canonical worker snapshot. Preview views cannot mint
-    /// source freshness for streamed constructor publication.
+    /// Exact audio preparation source. Comparison-only authoring can advance
+    /// while this retained source/context remains unchanged. Preview views cannot
+    /// mint source freshness for streamed constructor publication.
     pub canonical_audio_source: Option<Arc<CanonicalAudioSourceSnapshot>>,
+    /// Sealed worker proof of comparison-only authoring, never a callback ACK.
+    pub comparison_audio: Option<ComparisonAudioBinding>,
     pub project: Arc<Project>,
     pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
@@ -351,6 +357,11 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: Box<hex_lattice_contract::DeviceTypeId>,
     },
+    CompareDevice {
+        owner: preset::Owner,
+        expected: hex_project::DeviceVariant,
+        action: hex_project::DeviceComparisonAction,
+    },
     SetDeviceParameter {
         device: hex_project::DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -453,6 +464,7 @@ impl Request {
                 | Request::SaveCurrent
                 | Request::SaveDevicePreset { .. }
                 | Request::LoadDevicePreset { .. }
+                | Request::CompareDevice { .. }
                 | Request::Export(_)
                 | Request::ExportRange { .. }
                 | Request::ConvertClip { .. }
@@ -852,6 +864,29 @@ fn view_state(
     unsaved: bool,
     document_path: Option<&Path>,
 ) -> Arc<ViewState> {
+    view_state_bound(
+        session,
+        midi_preview,
+        revision,
+        project_generation,
+        unsaved,
+        document_path,
+        None,
+    )
+}
+
+fn view_state_bound(
+    session: &Session,
+    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    revision: u64,
+    project_generation: u64,
+    unsaved: bool,
+    document_path: Option<&Path>,
+    binding: Option<(
+        Arc<CanonicalAudioSourceSnapshot>,
+        Option<ComparisonAudioBinding>,
+    )>,
+) -> Arc<ViewState> {
     let project = Arc::new(session.project().clone());
     let rate = u64::from(project.sample_rate());
     let latest_clip_end = latest_clip_end(&project);
@@ -862,12 +897,15 @@ fn view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
-        canonical_audio_source: Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
-            &project,
-            project_generation,
-            revision,
-            session,
-        ))),
+        comparison_audio: binding.as_ref().and_then(|(_, proof)| proof.clone()),
+        canonical_audio_source: binding.map(|(source, _)| source).or_else(|| {
+            Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
+                &project,
+                project_generation,
+                revision,
+                session,
+            )))
+        }),
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
@@ -898,6 +936,7 @@ fn preview_view_state(
     );
     Arc::new(ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: canonical.waveforms.clone(),
@@ -1282,6 +1321,7 @@ fn run_worker(
         let mut save_complete = false;
         let mut project_replaced = false;
         let mut replacement_revision = None;
+        let mut comparison_changed = false;
         let mut created = None;
         let revision_before_request = revision;
         let mut duplicate_complete = false;
@@ -1301,8 +1341,22 @@ fn run_worker(
         let mut preview_prepared = None;
         let mut preview_project = None;
         let barrier = request.finalizes_parameter_gesture();
-        let mut barrier_failure = None;
-        if barrier {
+        // Reject stale comparison ownership before a barrier could commit an
+        // unrelated live draft. Valid requests still use the existing barrier.
+        let mut barrier_failure = match &request {
+            Request::CompareDevice {
+                owner, expected, ..
+            } => device_comparison::preflight(
+                &session,
+                project_generation,
+                revision,
+                *owner,
+                *expected,
+            )
+            .err(),
+            _ => None,
+        };
+        if barrier && barrier_failure.is_none() {
             if let Some(outcome) = device_gesture.finish(
                 &mut session,
                 compiled.as_ref().map(|(_, artifact)| artifact),
@@ -1377,6 +1431,17 @@ fn run_worker(
                 }
             }
         }
+        let comparison_binding = match &request {
+            Request::CompareDevice { .. } | Request::Undo | Request::Redo => {
+                ComparisonAudioBinding::advance(
+                    &state,
+                    project_generation,
+                    revision.saturating_add(1),
+                    &session,
+                )
+            }
+            _ => None,
+        };
         if let Some(reason) = barrier_failure {
             open_complete = request.is_project_open();
             if let Request::TuningLibrary { operation_id, .. } = &request {
@@ -2133,6 +2198,55 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::CompareDevice {
+                    owner,
+                    expected,
+                    action,
+                } => {
+                    let command = device_comparison::command(
+                        &session,
+                        project_generation,
+                        revision,
+                        owner,
+                        expected,
+                        action,
+                    );
+                    match command {
+                        Ok(command) => {
+                            let before = session.project().clone();
+                            match session.comparison_command(
+                                command,
+                                compiled
+                                    .as_ref()
+                                    .filter(|_| comparison_binding.is_some())
+                                    .map(|(_, artifact)| artifact),
+                            ) {
+                                Ok((_, outcome)) if session.project() != &before => {
+                                    unsaved = true;
+                                    if outcome.metadata_only {
+                                        comparison_changed = true;
+                                    } else {
+                                        replacement_revision = Some(outcome.prepared);
+                                    }
+                                    status = Some(
+                                        match action {
+                                            hex_project::DeviceComparisonAction::Switch => {
+                                                "device comparison switched"
+                                            }
+                                            hex_project::DeviceComparisonAction::CopyToInactive => {
+                                                "device comparison copied"
+                                            }
+                                        }
+                                        .into(),
+                                    );
+                                }
+                                Ok(_) => status = Some("no change".into()),
+                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            }
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
                 Request::SetDeviceParameter {
                     device,
                     parameter,
@@ -2338,8 +2452,12 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string().to_lowercase()),
                     }
                 }
-                Request::Undo => match session.undo_prepared_revision_with(
-                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                Request::Undo => match session.comparison_history(
+                    false,
+                    compiled
+                        .as_ref()
+                        .filter(|_| comparison_binding.is_some())
+                        .map(|(_, artifact)| artifact),
                     |source, target, prepared| {
                         prepare_tuning_input_publication(
                             source,
@@ -2354,17 +2472,25 @@ fn run_worker(
                         )
                     },
                 ) {
-                    Ok(Some((prepared, keyboard))) => {
+                    Ok(Some(outcome)) => {
                         unsaved = true;
-                        replacement_revision = Some(prepared);
-                        tuning_input_publication = keyboard;
+                        if outcome.metadata_only {
+                            comparison_changed = true;
+                        } else {
+                            replacement_revision = Some(outcome.prepared);
+                        }
+                        tuning_input_publication = outcome.completed.flatten();
                         status = Some("undo committed".into());
                     }
                     Ok(None) => status = Some("nothing to undo".into()),
                     Err(reason) => error = Some(reason.to_string().to_lowercase()),
                 },
-                Request::Redo => match session.redo_prepared_revision_with(
-                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                Request::Redo => match session.comparison_history(
+                    true,
+                    compiled
+                        .as_ref()
+                        .filter(|_| comparison_binding.is_some())
+                        .map(|(_, artifact)| artifact),
                     |source, target, prepared| {
                         prepare_tuning_input_publication(
                             source,
@@ -2379,10 +2505,14 @@ fn run_worker(
                         )
                     },
                 ) {
-                    Ok(Some((prepared, keyboard))) => {
+                    Ok(Some(outcome)) => {
                         unsaved = true;
-                        replacement_revision = Some(prepared);
-                        tuning_input_publication = keyboard;
+                        if outcome.metadata_only {
+                            comparison_changed = true;
+                        } else {
+                            replacement_revision = Some(outcome.prepared);
+                        }
+                        tuning_input_publication = outcome.completed.flatten();
                         status = Some("redo committed".into());
                     }
                     Ok(None) => status = Some("nothing to redo".into()),
@@ -2396,13 +2526,16 @@ fn run_worker(
                                 Ok(token) => {
                                     document = Some(DocumentHandle { path, token });
                                     unsaved = false;
-                                    state = view_state(
+                                    state = view_state_bound(
                                         &session,
                                         Arc::clone(&midi_preview),
                                         revision,
                                         project_generation,
                                         unsaved,
                                         document.as_ref().map(|handle| handle.path.as_path()),
+                                        state.canonical_audio_source.as_ref().map(|source| {
+                                            (Arc::clone(source), state.comparison_audio.clone())
+                                        }),
                                     );
                                     status = Some("project saved".into());
                                 }
@@ -2435,13 +2568,16 @@ fn run_worker(
                                     unsaved = commit.dirty;
                                     status = Some(commit.status.into());
                                     error = commit.error;
-                                    state = view_state(
+                                    state = view_state_bound(
                                         &session,
                                         Arc::clone(&midi_preview),
                                         revision,
                                         project_generation,
                                         unsaved,
                                         document.as_ref().map(|current| current.path.as_path()),
+                                        state.canonical_audio_source.as_ref().map(|source| {
+                                            (Arc::clone(source), state.comparison_audio.clone())
+                                        }),
                                     );
                                 }
                                 Err(reason) => error = Some(reason.to_string().to_lowercase()),
@@ -2771,6 +2907,32 @@ fn run_worker(
             tuning_gesture.reset();
             project_generation = project_generation.saturating_add(1);
         }
+        if comparison_changed {
+            // The only producer is the comparison-classified Editor transaction.
+            // Keep the actual prepared owner and its exact preparation snapshot.
+            let next = revision.saturating_add(1);
+            if let Some(binding) = comparison_binding {
+                revision = next;
+                state = view_state_bound(
+                    &session,
+                    Arc::clone(&midi_preview),
+                    revision,
+                    project_generation,
+                    unsaved,
+                    document.as_ref().map(|handle| handle.path.as_path()),
+                    Some((Arc::clone(&binding.source), Some(binding))),
+                );
+                if let Some((compiled_revision, _)) = &mut compiled {
+                    *compiled_revision = revision;
+                }
+                if let Some((generation, keyboard_revision, _, _)) = &mut keyboard_activation
+                    && *generation == project_generation
+                    && *keyboard_revision == revision_before_request
+                {
+                    *keyboard_revision = revision;
+                }
+            }
+        }
         let canonical_changed = replacement_revision.is_some();
         let canonical_prepared = if let Some(prepared) = replacement_revision {
             revision = revision.saturating_add(1);
@@ -2798,7 +2960,10 @@ fn run_worker(
                 *prepared_revision = revision;
             }
             computer_keyboard_playback = Some(playback);
-        } else if project_replaced || canonical_changed || revision != revision_before_request {
+        } else if project_replaced
+            || canonical_changed
+            || (!comparison_changed && revision != revision_before_request)
+        {
             // Invalidate control-side inheritance immediately, but let the
             // actual audio publication cancel the audible lease. A candidate
             // can wait or be refused without silencing the installed graph.

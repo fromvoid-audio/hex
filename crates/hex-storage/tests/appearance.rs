@@ -232,7 +232,7 @@ fn schema26_defaults_and_strict_appearance_validation() {
         })
         .unwrap();
     let value: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
-    assert_eq!(value["version"], 31);
+    assert_eq!(value["version"], 32);
     let mut legacy = value.clone();
     legacy["version"] = json!(26);
     legacy.as_object_mut().unwrap().remove("tuning");

@@ -27,6 +27,7 @@ pub(super) enum EditorContextAction {
     },
     InsertTrack(InsertTrackAction),
     UtilityMode(UtilityModeAction),
+    DeviceComparison(super::device_comparison::Intent),
     TrackColor {
         generation: u64,
         track: TrackId,
@@ -236,6 +237,9 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::DeviceComparison(target) => {
+                self.perform_device_comparison(target, cx)
+            }
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
             }
@@ -345,6 +349,9 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::DeviceComparison(target) => {
+                    !super::device_comparison::current(self, target)
+                }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
                 }
