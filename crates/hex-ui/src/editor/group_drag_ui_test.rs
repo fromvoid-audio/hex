@@ -1476,3 +1476,160 @@ fn integration_group_console_refuses_partial_primary_copy(cx: &mut TestAppContex
         assert_eq!(view.worker_requests_pending, 0);
     });
 }
+
+#[gpui::test]
+fn console_midi_primary_group_cell_insertion_and_stale_release_are_atomic(cx: &mut TestAppContext) {
+    for (insert, stale) in [(false, false), (true, false), (false, true)] {
+        let cx = &mut cx.new_app();
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
+                name: "group midi".into(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        let track = editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .last()
+                .unwrap()
+                .id()
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::from_quarters(6).unwrap(),
+                length: hex_project::BeatTime::ONE,
+            })));
+        });
+        pump(&editor, &mut visual);
+        let midi = editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()[0]
+                .id()
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddMidiNote {
+                clip: midi,
+                start: hex_project::BeatTime::ZERO,
+                duration: hex_project::BeatTime::ONE,
+                pitch: 69,
+                channel: 0,
+                velocity: 100,
+            })));
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddScene {
+                name: "midi group target".into(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        let scene = editor.read_with(&visual, |v, _| {
+            v.state.as_ref().unwrap().project.scenes()[0].id()
+        });
+        // The actual dragged/primary member is MIDI; its Audio neighbour must
+        // neither be flattened into it nor silently left behind by this receiver.
+        let selected = vec![clips[1], midi];
+        begin_group(&mut visual, &selected);
+        let retained = editor.read_with(&visual, |view, _| {
+            let drag = view.active_clip_drag.as_ref().unwrap();
+            assert_eq!(drag.clip, midi);
+            assert_eq!(drag.group.borrow().ids, selected);
+            assert!(drag.group.borrow().capture.is_some());
+            assert!(view.drag_start_is_current(drag));
+            drag.clone()
+        });
+        if stale {
+            // A genuine worker revision, not a fabricated stale Project/Event.
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::Edit(Command::Gain { track, gain: 0.75 })));
+            });
+            pump(&editor, &mut visual);
+        }
+        let (before, revision, history, selection, primary) =
+            editor.read_with(&visual, |view, _| {
+                let state = view.state.as_ref().unwrap();
+                (
+                    state.project.snapshot(),
+                    state.revision,
+                    (state.can_undo, state.can_redo),
+                    view.selected_clip_ids(),
+                    view.selected_clip,
+                )
+            });
+        editor.update(&mut visual, |view, cx| {
+            view.last_enqueued_edit = None;
+            view.set_mode(super::super::EditorMode::Session);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let selector = if insert {
+            format!("console-insert-before-{}-{}", track.value(), scene.value())
+        } else {
+            format!("console-cell-{}-{}", track.value(), scene.value())
+        };
+        let target = visual
+            .debug_bounds(Box::leak(selector.into_boxed_str()))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert!(
+                view.last_enqueued_edit.is_none(),
+                "insert={insert} stale={stale}"
+            );
+            assert_eq!(state.project.snapshot(), before);
+            assert_eq!(state.revision, revision);
+            assert_eq!((state.can_undo, state.can_redo), history);
+            assert_eq!(view.selected_clip_ids(), selection);
+            assert_eq!(view.selected_clip, primary);
+            assert!(state.project.session_cell(track, scene).is_none());
+            assert!(view.active_clip_drag.is_none());
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(view.pending_requests.is_empty());
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|s| s.contains("arrangement target"))
+            );
+        });
+        assert!(retained.group.borrow().capture.is_none());
+        assert!(retained.preview.get().is_none());
+        assert!(retained.destination.get().is_none());
+        assert!(!retained.lane_hovered.get());
+        assert!(retained.insertion_line_y.get().is_none());
+        assert!(!visual.update(|_, app| app.has_active_drag()));
+        // Refusal did not insert even a no-op history entry: the next actual
+        // Undo is the prior authored scene (or independent Gain in stale case).
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            if stale {
+                assert_eq!(project.track(track).unwrap().gain(), 1.0);
+                assert_eq!(project.scenes().len(), 1);
+            } else {
+                assert!(project.scenes().is_empty());
+            }
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
+}
