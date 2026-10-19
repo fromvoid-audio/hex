@@ -1,0 +1,187 @@
+{
+  "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+  "tree": "206d1121a769f420d7badea7a5ab1055add9a238",
+  "mode": "read-only proposal; no source changes or new test execution",
+  "files": [
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "blob": "2e30a67ff30da5d1387b4d0a09bfc24bb996abff",
+      "sha256": "7f5c884d06bf654711dfbaedfdd81844feea71ade1475516d22daba1d97dcd97"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      "blob": "0d2108af1a2cb1b81bb91253fd0301e7d7688ea1",
+      "sha256": "bbbfd366ca145e6e9b4271de62c5328a74df80a20e005bb4f5207ce0d84dbec2"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-engine/src/audio_preparation/storage.rs",
+      "blob": "72e532af2e89db71a701013f0f71a9ae0b0dbee2",
+      "sha256": "a41daf0fd763a5bb579540ffe16ef7fcce8152b2959718aafd7b0e38df455840"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-engine/src/audio_candidate/preparation.rs",
+      "blob": "d3e91792a3c19107a31c7bb730a62d90a4574a02",
+      "sha256": "b2ae6a3c90ee26a34b6647671b9dac291c49a3934665f170732211f35b8604e5"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-engine/src/audio_candidate/storage.rs",
+      "blob": "3c340429429d5591a7b76eedd82f2680cbf70762",
+      "sha256": "68087082a2dd6db3e274c9d396047b97d6d58e93e4b84eae575613758a4c3c4c"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-engine/src/playback/candidate_storage.rs",
+      "blob": "3fc3896abecb4d40a44d723aff78e295a9f8fe29",
+      "sha256": "c64ab898fe5a4239a2ab1bed60690de29ff287aec48d5de2a3691cec37ce96ee"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-engine/src/prepared_revision/assembly.rs",
+      "blob": "59ab47d0465ae5ce052110dcfa1f78f6a39915b7",
+      "sha256": "524864ad3ed6bdce7f0aa319c768ec7a811e1c8ec9da8f12843509c8c61a2af7"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/service.rs",
+      "blob": "20d33f5400a209df771914fe7dd052ee30b71593",
+      "sha256": "13b16ee80a67224626bfe69984a298ade7c40fc18d84aabc5299523a4a712c79"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/service/audio_sink.rs",
+      "blob": "98b7b27adf641b6f3b7a35582a95f367d6ad3c4c",
+      "sha256": "79f664a7af8c89431b17dab57a925b4b9b33709d672b56416b38733cd1960852"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/service/worker_roots.rs",
+      "blob": "2689cf008dc19df96f24968dcc64fac910fff7a8",
+      "sha256": "c0701d47943a091b91eb13370c15b46ac7ac984246733d76eacae6328d51519b"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/service/worker_startup.rs",
+      "blob": "14ff73865fb469071f12f2746f25620d93bb8342",
+      "sha256": "64f56a85b2dc4cd472cd689f37a9b7dca62ffca4085f71c9552634703262f9e3"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/service/canonical_audio_source.rs",
+      "blob": "6d763d8ce165193fa22ca66742eefa358e261c1e",
+      "sha256": "51ca830c9285523e042bbc1ee350353a0ef373236e27cdc35387298163a3276d"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/resource_plan.rs",
+      "blob": "e7969a22c389502e2fe84d76bebdf2d3e5960c04",
+      "sha256": "9bec0a3747376c369c56108d4c9359a26e9bf717134bcab176d8cdbef6a3aa94"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/resource_plan/producer.rs",
+      "blob": "cd3a9d2bb0447cedcc8ae881bd4b1def0926d2e9",
+      "sha256": "87244adca7a657a7c0a2849faaf84f8af670306d4d1a171b624cfa08ad2f80f2"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/device_sample.rs",
+      "blob": "cd2ae8cab86c296392b0088aa8c96d00210c0391",
+      "sha256": "e7683fc1debca359b5082eb0724e0d0455edeaaa1867fd24ec99abbcff8ec8cd"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/snapshot_exports/storage.rs",
+      "blob": "16ba8d6aeb6aa5290a2326973930f2a4f8da6e98",
+      "sha256": "733b2946ac7deb281ed1ca5d8ecf7a4a7c209e2d0af87fa32de14b58740225a8"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/snapshot_exports/transport.rs",
+      "blob": "75185d872b0b3b32dda1066fd0915afe2888de27",
+      "sha256": "3942ed7674471f8397ad3c477a11cd2e66f591cb35f2fa0b1d052a286c824874"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/snapshot_exports/worker_control.rs",
+      "blob": "c78e0e7a33c0293528ef4a97b012f50243a93a3d",
+      "sha256": "a5ae5582740dae36d6947e246d3ef466c994812d7a46a8b05b98ff6ab61037f9"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/device_gesture.rs",
+      "blob": "e322daa7c4b6553f73e0b9010bd6638fde4e2d34",
+      "sha256": "4e1d6531e80f45db969254aa1542b746465ac6479cc07e93d1710486420654f4"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-session/src/tuning_gesture.rs",
+      "blob": "967866ce8b22445e9c194a09f8d86a39acf1a490",
+      "sha256": "46023211bd3fdfe4cecf76c3416a99e2e41d6e788cda9087710d73bfc98c03d3"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-storage/src/journal.rs",
+      "blob": "ae04873a4bdbe8aa18a7594c8b33a42a5d3834e2",
+      "sha256": "59499b0efa54ab64a49913483c61afda56ab72efd5679b8bb2429c5e79426841"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-desktop/src/native_audio.rs",
+      "blob": "84cc715e338c574bb97b04e6680be2cf72b0b76f",
+      "sha256": "0ed00c00f4134000864ecdcd9dcd822fe082052f8e3af5dae2f5cce862378ceb"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-desktop/src/snapshot_transport/worker_control.rs",
+      "blob": "a4e50dc21d18ef8bcf5388c1f259b3771bf704c7",
+      "sha256": "25874b940fef3f619b5ba10c31d18de77109c45c187d4a51b19b2986eff9a675"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-desktop/src/snapshot_transport/inventory.rs",
+      "blob": "8d3b607118cc56fc9d175795ead6eb3a9cb44d56",
+      "sha256": "9d00a3ec3bb5093e614edebd4a366f1357070c59b500176eb705d5b3b2340ff2"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs",
+      "blob": "1c4563a54b0d551bc96d80ac9325566e6399d1fa",
+      "sha256": "753dbda51466bae3d939bf6e0a15cf5a66380cc70cbacce0e2041d047fa1f340"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs",
+      "blob": "fcea1ba74d69ea9a7565d1892e6d0bda7d90cefc",
+      "sha256": "a735d99a254f8c7a6d9ad651ce60315e4e4e68cc6e2967351ef39841170ae035"
+    },
+    {
+      "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+      "path": "crates/hex-audio/src/native_callback_owner.rs",
+      "blob": "f8b0420b2b189c35d53b41ce8e783f4e11603dfc",
+      "sha256": "9e1ac6d07ebdc0d5668de9b437a82411a13e5854aa4a1812fdeaf40d95bec12d"
+    },
+    {
+      "source": "1561b999604ed4e9349b0128ca85693c0be4d3d5",
+      "path": "crates/hex-session/src/service/comparison_audio.rs",
+      "blob": "bf348afc48014c8d2609cd645c7cb8cecafb92b6",
+      "sha256": "4a7906df09f4bdb8c8670647821589654fcdf799d28f436f9b9ae688f83f517d"
+    },
+    {
+      "source": "1561b999604ed4e9349b0128ca85693c0be4d3d5",
+      "path": "crates/hex-session/src/service.rs",
+      "blob": "672d0186f8026fe3636098af303aabc090fffa73",
+      "sha256": "0fe655e2a347fb235583924d9bfeedd8ba3023725b16dd405f7d928842ea443e"
+    },
+    {
+      "source": "1561b999604ed4e9349b0128ca85693c0be4d3d5",
+      "path": "crates/hex-session/src/service/device_comparison/metadata_tests.rs",
+      "blob": "6721f45aa7365bad315a93f6a1a2ca100fbb5437",
+      "sha256": "bca4203d73ecf364d3e83194fc9dfa8d20f4192ea9fab74ccda02281937cec89"
+    }
+  ]
+}
