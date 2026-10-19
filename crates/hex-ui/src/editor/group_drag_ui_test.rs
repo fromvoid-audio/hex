@@ -1633,3 +1633,92 @@ fn console_midi_primary_group_cell_insertion_and_stale_release_are_atomic(cx: &m
         });
     }
 }
+
+#[gpui::test]
+fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_step(
+    cx: &mut TestAppContext,
+) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddScene {
+            name: "single target".into(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    let (track, scene, asset, before) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let source = &project.tracks()[0].clips()[1];
+        assert_eq!(source.id(), clips[1]);
+        (
+            project.tracks()[0].id(),
+            project.scenes()[0].id(),
+            source.asset(),
+            project.snapshot(),
+        )
+    });
+    click(&mut visual, clips[1], false);
+    let down = visual
+        .debug_bounds(Box::leak(
+            format!("clip-drag-surface-{}", clips[1].value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(
+            view.active_clip_drag.as_ref().unwrap().group.borrow().ids,
+            vec![clips[1]]
+        );
+        view.last_enqueued_edit = None;
+        view.set_mode(super::super::EditorMode::Session);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let target = visual
+        .debug_bounds(Box::leak(
+            format!("console-cell-{}-{}", track.value(), scene.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    let after = editor.read_with(&visual, |view, _| {
+        assert!(matches!(view.last_enqueued_edit,
+            Some(Command::CopyArrangementAudioClipToSession { source, scene: target })
+                if source == clips[1] && target == scene));
+        let project = &view.state.as_ref().unwrap().project;
+        let Some(hex_project::SessionCellContent::Audio(copied)) =
+            project.session_cell(track, scene)
+        else {
+            panic!("actual single Audio copy must reach canonical Console state");
+        };
+        assert_eq!(copied.asset(), asset);
+        assert_eq!(copied.source_start(), 24_000);
+        assert_eq!(copied.source_end(), 48_000);
+        assert_eq!(project.tracks()[0].clips().len(), 3);
+        assert_eq!(view.selected_clip_ids(), vec![clips[1]]);
+        assert!(view.active_clip_drag.is_none());
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+        project.snapshot()
+    });
+    assert!(!visual.update(|_, app| app.has_active_drag()));
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+    });
+}
