@@ -142,7 +142,8 @@ fn project_steps_preserve_bounds_precision_cancel_invalid_and_composition(cx: &m
         ("1", "down cmd-down", "1"),
         ("1000", "up cmd-up", "1000"),
         ("120.123456", "up cmd-down", "121.023456"),
-        ("120", "shift-up shift-down", "120"),
+        ("120", "shift-up", "121"),
+        ("120", "shift-down", "119"),
         ("120", "cmd-up", "120.1"),
     ] {
         visual.simulate_keystrokes("cmd-a");
@@ -248,10 +249,21 @@ fn sample_bpm_uses_same_arrow_policy_and_actual_canonical_history(cx: &mut TestA
         cx.notify();
     });
     pump(&editor, &mut visual);
+    let before = editor.read_with(&visual, |view, _| {
+        format!("{:?}", view.state.as_ref().unwrap().project)
+    });
     begin(&mut visual, "audio-sample-bpm-value");
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("120.123456");
-    visual.simulate_keystrokes("up cmd-up cmd-down down cmd-down enter");
+    visual.simulate_keystrokes("up cmd-up cmd-down down cmd-down");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            format!("{:?}", view.state.as_ref().unwrap().project),
+            before,
+            "sample arrow draft is local"
+        )
+    });
+    visual.simulate_keystrokes("enter");
     pump(&editor, &mut visual);
     let tempo = |view: &EditorView| {
         view.state
@@ -272,12 +284,28 @@ fn sample_bpm_uses_same_arrow_policy_and_actual_canonical_history(cx: &mut TestA
         assert_eq!(tempo(view), 120_023_456);
         assert!(matches!(view.last_enqueued_edit, Some(Command::SetAudioClipSampleBpm{clip: actual, ..}) if actual==clip));
     });
+    let changed = editor.read_with(&visual, |view, _| {
+        format!("{:?}", view.state.as_ref().unwrap().project)
+    });
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
     pump(&editor, &mut visual);
-    editor.read_with(&visual, |view, _| assert_ne!(tempo(view), 120_023_456));
+    // Before its first explicit edit sample_bpm is None (tempo-map fallback),
+    // not a fabricated Some(120). Undo restores the complete actual state.
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            format!("{:?}", view.state.as_ref().unwrap().project),
+            before
+        )
+    });
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
     pump(&editor, &mut visual);
-    editor.read_with(&visual, |view, _| assert_eq!(tempo(view), 120_023_456));
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(tempo(view), 120_023_456);
+        assert_eq!(
+            format!("{:?}", view.state.as_ref().unwrap().project),
+            changed
+        );
+    });
     begin(&mut visual, "audio-sample-bpm-value");
     visual.simulate_keystrokes("up cmd-up escape");
     pump(&editor, &mut visual);
