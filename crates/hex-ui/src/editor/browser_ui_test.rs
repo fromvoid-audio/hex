@@ -4925,6 +4925,9 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     });
 }
 
+#[path = "browser_tag_editor_geometry_ui_test.rs"]
+mod tag_editor_geometry;
+
 #[path = "editor_test_environment_ui_test.rs"]
 mod test_environment;
 

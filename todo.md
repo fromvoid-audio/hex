@@ -5261,6 +5261,13 @@ to normal; existing selection/hover/focus/audition regressions remain applicable
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
 
+18 October2026 — Pulse2709/PR325: reproduced rail width480→624px on tag-editor
+open plus mini-strip open-only click. Keep toolbar/body in one fixed base column
+and append editor beside the whole browser; both original controls toggle at a
+stationary pointer. Rendered normal/23px picker and sample-metadata retention
+regressions; focused checks/evidence in Pulse. Tag persistence2667 remains separate;
+sole merger owns prospective fullCI/merge, root optimized native acceptance.
+
 - 18 October 2026 — Pulse2808 / PR414: common cfg(test) editor resolver allocates
   unique private Home/Music/config before discovery, preserving explicit fixture
   paths; no process environment or application feature-only behavior change.
@@ -5336,3 +5343,9 @@ source handoff is separate from final integration/full CI/merge and delivery.
 - Ordered valid metadata proof may reconcile authoring while preserving ancillary recovery error; actual publication ACK/output/runtime ownership and refusal/generation checks remain. Retained canonical source Project must count in future395 custody.
 - Current32 comparison/tuning/asset manifest is qualified independently of unmerged456 placement; future composition must retain both required capabilities. No whole395/456/409/420/407/399/419 import.
 - Required new exact prospective full21 and fresh independent review pending; no physical provider listening, native Verified constructor, installed/user acceptance or merge claim.
+
+### 2026-10-19 — PR325 stationary tag-column integration
+
+- Composed exact owner2e48c996 with qualified main447e042; fixed base toolbar/body column plus outward full-height tag editor and both stationary toggle controls.
+- Verified21 immutable owner payloads and all six before/after source hashes; actual two rendered reds, first/final positives88browser plus strict checks remain source-bound. Preserved414 private startup/custody, four preference paths, Source1Open and actualA/Bcomparison fields,444three-field divider/hysteresis and currentsharedspectrum.
+- Only append-only browser-test module and todo conflicts retained both histories. Exact prospective FULL21/fresh review remain pending; no tag persistence, physical/native pointer, installed or acceptance claim.
