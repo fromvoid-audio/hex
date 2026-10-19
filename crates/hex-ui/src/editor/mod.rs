@@ -23,7 +23,6 @@ mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
 
-
 mod group_copy;
 #[cfg(test)]
 mod test_environment;
