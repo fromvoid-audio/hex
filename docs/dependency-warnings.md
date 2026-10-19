@@ -148,6 +148,8 @@ allocator usage. A modified/hostile installed toolchain is outside the existing
 installation trust; metadata/version checks are not binary authenticity proof.
 No production PCM, Audio construction, audio callback or allocator law changed.
 
-Current native macOS compilation, optimized physical behavior and PR395's two
-unpublished Audio unused-host diagnostics remain the native owner's verification
-work. Linux checks cannot clear those diagnostics or establish Mac acceptance.
+Native macOS compilation and optimized physical behavior remain separate checks.
+The native owner reports PR395's original two Audio unused-host errors cleared in
+its intermediate cfg(test) source (Pulse29631/29634); production promotion and
+any other build diagnostics remain with that owner. This PR does not edit those
+in-flight files or use Linux checks to establish Mac acceptance.

@@ -5780,7 +5780,9 @@ User rejected device-local automation editing. Remove its button, graph mode and
   Rust 1.94.0 x86_64 Linux reproduced 46 vendored block missing-ABI warnings,
   duplicate Engine/Warp `profile` and `profile.dwp` outputs, and fail-closed PCM
   Unknown under the installed Clippy workspace wrapper. These are distinct from
-  Cargo cleanup package-qualifier notices and native395-owned unpublished errors.
+  Cargo cleanup package-qualifier notices and the historical native395 errors
+  (reported cleared in intermediate cfg(test) source; production promotion stays
+  native-owner work).
 - Spell the existing C ABI explicitly in block, retain the complete original
   archive/license inventory and exact reverse provenance guard, deny missing_abi
   in the real dependency compile. Name the Warp example `warp_profile`; preserve
