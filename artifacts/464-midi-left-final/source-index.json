@@ -1,0 +1,78 @@
+{
+  "source": "30585f9d8694091cd404a625a1c97daeb6c17b4c",
+  "tree": "e8336e9e832ecd9f3f844b91ef0657d8beacaf40",
+  "base": "57acc3717eefaab8b22848287e131d62fd37abfc",
+  "canonical_plan": "f548689d0a614f22fe14565c46b9229705e3e4ad",
+  "ordinary_main_merge": "fc2ac1e4ceadcc967f219230d38263294a0cf397",
+  "diagnostic": "2702dc0b413f80880ecc533601503af5d7b405ed",
+  "files": [
+    {
+      "path": "crates/hex-project/src/midi.rs",
+      "before_blob": "7a16b58da69c9bb253800dc7760de8ce1f75f475",
+      "after_blob": "21fbb52d6fa73a783f5a95584d9a24d2ab40ef80",
+      "sha256": "3bf4d44dcdc5611749a1b82ea860258df1a78931b9adca2c5f5009d1d8802a95"
+    },
+    {
+      "path": "crates/hex-project/tests/midi_trim.rs",
+      "before_blob": "bc14c6d18e5c8275db6c4e5902438bfe88b873a3",
+      "after_blob": "ca61a62a8629b2d2011dea21780e67ff45c7d596",
+      "sha256": "4f614a292a480b39efcd318036dd96ac9897c798c469d625a776d436cd7b8d8f"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_left_extension_ui_tests.rs",
+      "before_blob": null,
+      "after_blob": "4d744164999cac91193ba152df8c7cae5353e0a6",
+      "sha256": "c8e9b36bc0f8ac66bc23c4d314cc41701b3e991caf878d429d50b3ed325c5fa7"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tracks.rs",
+      "before_blob": "0ebfa689c534e346daa863b912a098c496231e22",
+      "after_blob": "cc9a37cdcf1f6d1d9a8e41df9e0055e3a8f0fff1",
+      "sha256": "8973a0f51631922a1a2438ae436e7cfd472c2629ae951952db3987d807c2bbc4"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/trim.rs",
+      "before_blob": "acf979cd9f087409fe2e0b58397299bc2a081fff",
+      "after_blob": "9d5acc06787a93363d55c43a71f4ee4dd92f109f",
+      "sha256": "d5acacf45dd0988b41e1e43bc3dfc2bcfe803964a5a103cddbd9531c43098ba6"
+    },
+    {
+      "path": "docs/midi.md",
+      "before_blob": "76b2def50f7375a43eeecd0da1cfcbc378f100dc",
+      "after_blob": "e89d870ecc3ebb05002029035f141cb29ddb9828",
+      "sha256": "b53f719006c2a326e1b56324e6109f3d6afc2b3af8ab002acc65410cf9a6b5ea"
+    }
+  ],
+  "tested_dirty_parent": "2702dc0b413f80880ecc533601503af5d7b405ed",
+  "tested_content_sha256": "73360ede6a26712269010637d3c6b5d1a49bbeeadc85d9d7c638dce2e59348c4",
+  "all_original_trim_production_bytes_unchanged_prefix": 68128,
+  "all_tracks_bytes_outside_single_note_paint_helper_unchanged": true,
+  "all_original_model_test_bytes_retained_except_explicit_nonloop_earliest_policy_update": true,
+  "runtime_counts": {
+    "logs/464-midi-left-final/01-midi-and-audio-model.log": [
+      7,
+      21,
+      5,
+      7
+    ],
+    "logs/464-midi-left-final/02-fresh-midi-left-ui.log": [
+      5
+    ],
+    "logs/464-midi-left-final/03-resize-release-controls.log": [
+      26
+    ],
+    "logs/464-midi-left-final/04-resize-pan-controls.log": [
+      24
+    ],
+    "logs/464-midi-left-final/05-resize-terminal-controls.log": [
+      9
+    ],
+    "logs/464-midi-left-final/06-warp-limit-controls.log": [
+      4
+    ],
+    "logs/464-midi-left-final/07-trim-helper-controls.log": [
+      6
+    ]
+  },
+  "runtime_total": 114
+}

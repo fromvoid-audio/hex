@@ -1,0 +1,29 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized] target(s) in 47.00s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 1 test
+fresh midi original=BeatTime(17179869184)..34359738368 source=BeatTime(0), down=Point { x: 801px, y: 256px } target=Point { x: 711px, y: 256px }, preview=BeatTime(17179869184)..34359738368
+
+thread 'editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history' (376526) panicked at crates/hex-ui/src/editor/midi_left_extension_ui_tests.rs:133:9:
+fresh MIDI left edge must expose earlier blank time
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history ... FAILED
+
+failures:
+
+failures:
+    editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1091 filtered out; finished in 0.51s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

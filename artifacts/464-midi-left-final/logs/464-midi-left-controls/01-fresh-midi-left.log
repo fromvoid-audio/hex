@@ -1,0 +1,13 @@
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+    Finished `test` profile [unoptimized] target(s) in 33.37s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 4 tests
+fresh midi original=BeatTime(17179869184)..34359738368 source=BeatTime(0), down=Point { x: 801px, y: 256px } target=Point { x: 711px, y: 256px }, preview=BeatTime(12267321382)..34359738368
+test editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_grid_modifier_release_keeps_the_same_canonical_candidate ... ok
+test editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry ... ok
+test editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history ... ok
+test editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_escape_and_actual_project_replacement_never_commit_prefix ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1091 filtered out; finished in 1.24s
+

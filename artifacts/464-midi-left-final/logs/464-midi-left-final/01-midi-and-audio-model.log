@@ -1,0 +1,66 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized] target(s) in 0.58s
+     Running tests/clip_trim.rs (target/debug/deps/clip_trim-6e036d3949c2d0cb)
+
+running 7 tests
+test edge_trim_preview_noop_retains_fade_and_bounds_wrap_without_overflow ... ok
+test edge_trim_preserves_one_shot_silent_tail_and_clamps_to_legal_edges ... ok
+test loop_split_keeps_source_region_and_advances_phase_recursively ... ok
+test invalid_snapshot_phases_and_commands_are_rejected_without_history_changes ... ok
+test looping_left_trim_and_extension_update_phase_and_right_trim_keeps_region ... ok
+test neutral_lower_resize_and_unchanged_or_source_clamped_edges_preserve_noop_history ... ok
+test lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_history ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/midi.rs (target/debug/deps/midi-dc9238ecc8d8debf)
+
+running 21 tests
+test batch_update_and_remove_are_single_order_preserving_history_steps ... ok
+test batch_note_insert_preserves_input_order_expression_and_one_step_history ... ok
+test disabled_loop_markers_are_retained_and_source_can_differ_from_arrangement ... ok
+test duplicate_midi_clip_assigns_fresh_clip_and_every_note_id_across_history_branch ... ok
+test duplicate_refuses_overflow_of_the_duplicated_timeline_interval_atomically ... ok
+test invalid_midi_note_edits_are_atomic_and_keep_redo ... ok
+test invalid_batch_insertions_preserve_project_ids_and_redo ... ok
+test midi_notes_validate_clip_local_ranges_allow_overlap_and_roundtrip ... ok
+test midi_overwrite_rejects_unbounded_loop_expansion_without_mutating_project_or_history ... ok
+test midi_overwrite_splits_victim_and_retriggers_held_note_in_finite_right_fragment ... ok
+test batch_midi_edits_validate_every_target_before_mutation_and_preserve_redo ... ok
+test mixed_note_edit_compacts_then_appends_in_one_ordered_history_step ... ok
+test moving_midi_clip_to_new_hybrid_track_preserves_clip_and_note_ids_in_one_step ... ok
+test one_hybrid_track_accepts_both_clip_types_and_cross_type_moves_undo ... ok
+test invalid_mixed_note_batches_preserve_project_allocator_and_redo ... ok
+test source_changes_reject_invalidated_notes_without_consuming_history_or_ids ... ok
+test source_settings_are_atomic_keep_hidden_notes_and_duplicate_exactly ... ok
+test unchanged_sources_share_across_project_clones_and_note_edits_detach ... ok
+test snapshot_rejects_bad_global_ids_and_note_cap ... ok
+test mixed_batch_checks_final_global_cap_and_id_range_before_removing ... ok
+test batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/midi_split.rs (target/debug/deps/midi_split-6c60ab1522a26823)
+
+running 5 tests
+test loop_split_materializes_carry_and_later_loop_onsets_without_repeating_the_carry ... ok
+test invalid_boundary_splits_preserve_project_and_redo ... ok
+test exhausted_id_space_refuses_split_without_mutating_history ... ok
+test one_shot_split_materializes_a_carried_gate_into_a_finite_right_source ... ok
+test split_refuses_project_clip_limit_and_note_duplication_limit ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/midi_trim.rs (target/debug/deps/midi_trim-0f115e2167be62c3)
+
+running 7 tests
+test left_extension_checked_source_capacity_and_refused_preparation_preserve_history ... ok
+test midi_trim_bounds_keep_nonempty_source_and_allow_silent_right_extension ... ok
+test midi_loop_left_trim_advances_intro_and_rewinds_loop_phase_without_note_expansion ... ok
+test midi_trim_preserves_notes_source_and_history_and_can_reveal_them_again ... ok
+test midi_unchanged_resize_keeps_redo_and_source_identity ... ok
+test one_shot_left_extension_prepends_blank_time_and_preserves_absolute_notes_and_history ... ok
+test left_extension_small_domain_keeps_right_edge_and_source_note_timeline_invariant ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

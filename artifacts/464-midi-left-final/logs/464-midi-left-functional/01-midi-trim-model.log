@@ -1,0 +1,17 @@
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized] target(s) in 2.77s
+     Running tests/midi_trim.rs (target/debug/deps/midi_trim-0f115e2167be62c3)
+
+running 7 tests
+test midi_trim_bounds_keep_nonempty_source_and_allow_silent_right_extension ... ok
+test midi_loop_left_trim_advances_intro_and_rewinds_loop_phase_without_note_expansion ... ok
+test left_extension_checked_source_capacity_and_refused_preparation_preserve_history ... ok
+test midi_unchanged_resize_keeps_redo_and_source_identity ... ok
+test midi_trim_preserves_notes_source_and_history_and_can_reveal_them_again ... ok
+test one_shot_left_extension_prepends_blank_time_and_preserves_absolute_notes_and_history ... ok
+test left_extension_small_domain_keeps_right_edge_and_source_note_timeline_invariant ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
