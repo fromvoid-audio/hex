@@ -1,23 +1,56 @@
 //! Distinguish painted separator width from the unchanged resize capture gutter.
 use super::*;
 
+use crate::editor::test_environment::Environment;
+use std::sync::Arc;
+
 fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
-    PreferencesTestDirectory,
+    Arc<Environment>,
 ) {
-    let directory = PreferencesTestDirectory::new();
-    let (handle, editor) = place_icon_preferences_window(
-        cx,
-        &directory,
-        &directory.0.join("browser.json"),
-        &directory.0.join("recent.json"),
-    );
+    with_environment(cx, Environment::new().expect("owned divider environment"))
+}
+
+fn with_environment(
+    cx: &mut TestAppContext,
+    environment: Arc<Environment>,
+) -> (
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+    Arc<Environment>,
+) {
+    let music = environment.home.join("Music");
+    std::fs::write(music.join("fixture.wav"), mono_pcm_wav(24)).unwrap();
+    let handle = *cx.add_window(|_, _| Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_with_browser_paths(
+                    window,
+                    cx,
+                    Service::new(48_000, 32, 8_000_000).unwrap(),
+                    Err("offline divider test".into()),
+                    Default::default(),
+                    crate::editor::test_environment::Inputs {
+                        existing_environment: Some(Arc::clone(&environment)),
+                        home: Some(environment.home.clone()),
+                        defaults: [true; 4],
+                        ..Default::default()
+                    },
+                )
+            })
+        })
+        .unwrap();
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    (handle, editor, directory)
+    editor.read_with(visual, |view, _| {
+        assert!(Arc::ptr_eq(&environment, &view.test_environment));
+        assert_eq!(view.browser.directory, music);
+    });
+    (handle, editor, environment)
 }
 
 #[gpui::test]
@@ -154,4 +187,83 @@ fn browser_divider_paint_padding_and_line_both_resize_with_thin_hover_and_drag(
             }
         }
     }
+}
+
+#[gpui::test]
+fn browser_divider_fixture_catalog_retains_same_music_and_preferences_until_job_finishes(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::Ordering;
+    let environment = Environment::new().unwrap();
+    let root = environment.root().to_owned();
+    let music = environment.home.join("Music");
+    let wav = music.join("fixture.wav");
+    let weak = Arc::downgrade(&environment);
+    let gate = environment.gate_next_catalog_save();
+    let (handle, editor, owner) = with_environment(cx, environment);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    assert!(gate.reached.load(Ordering::Acquire));
+    assert!(!gate.finished.load(Ordering::Acquire));
+    let paths = editor.read_with(&visual, |view, _| {
+        assert!(Arc::ptr_eq(&owner, &view.test_environment));
+        assert_eq!(view.browser.directory, music);
+        [
+            view.browser.test_preferences_path().to_owned(),
+            view.recent_projects.test_path().to_owned(),
+            view.theme_settings.test_path().to_owned(),
+            view.project_directory.test_path().to_owned(),
+        ]
+    });
+    for (path, name) in paths.iter().zip([
+        "browser.json",
+        "recent-projects.json",
+        "theme.json",
+        "project-directory.json",
+    ]) {
+        assert_eq!(*path, root.join("config").join(name));
+        assert!(path.parent().unwrap().is_dir());
+    }
+    let database = paths[0].with_extension("samples-v1.db");
+    assert_eq!(database, root.join("config/browser.samples-v1.db"));
+    assert!(!database.exists());
+    assert_eq!(std::fs::read(&wav).unwrap(), mono_pcm_wav(24));
+    let editor_weak = editor.downgrade();
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| Empty);
+    });
+    drop(editor);
+    drop(owner);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(editor_weak.upgrade().is_none());
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "only actual held catalog job retains root"
+    );
+    assert_eq!(std::fs::read(&wav).unwrap(), mono_pcm_wav(24));
+    for path in &paths {
+        assert!(path.parent().unwrap().is_dir());
+    }
+    assert!(!gate.finished.load(Ordering::Acquire));
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.save_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(weak.upgrade().is_none());
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while root.exists() {
+        assert!(
+            std::time::Instant::now() < until,
+            "owned divider root cleanup"
+        );
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(!root.exists(), "retired catalog job cannot recreate root");
+    eprintln!(
+        "divider_fixture SAME owner/Music/WAV/fourprefs/database, held real save, retired view and caller, cleaned root verified"
+    );
 }
