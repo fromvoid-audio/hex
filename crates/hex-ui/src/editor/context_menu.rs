@@ -404,6 +404,20 @@ impl EditorView {
                     !self.browser_place_icon_assignable(path)
                 }
                 EditorContextAction::InsertTrack(_) => false,
+                EditorContextAction::InsertScene {
+                    generation,
+                    revision,
+                    before,
+                } => {
+                    self.mode != super::EditorMode::Session
+                        || *generation != self.project_generation
+                        || self.state.as_ref().is_none_or(|state| {
+                            state.revision != *revision
+                                || before.is_some_and(|id| {
+                                    !state.project.scenes().iter().any(|scene| scene.id() == id)
+                                })
+                        })
+                }
                 EditorContextAction::TrackColor {
                     generation, track, ..
                 } => {

@@ -270,3 +270,202 @@ fn console_browser_between_and_bottom_are_actual_atomic_scene_targets(cx: &mut T
     history(&editor, cx, Request::Redo);
     assert_eq!(*project(&editor, cx), *bottom);
 }
+
+#[gpui::test]
+fn console_occupied_failure_then_replace_preserves_old_and_one_undo(cx: &mut TestAppContext) {
+    let (handle, editor, track, scene, path) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let target = bounds(
+        &mut visual,
+        format!("console-cell-{}-{}", track.value(), scene.value()),
+    )
+    .center();
+    begin_browser(&mut visual, &editor);
+    release(&mut visual, target);
+    receive_worker(&editor, cx);
+    let before = project(&editor, cx);
+    let original_bytes = std::fs::read(&path).unwrap();
+    // Own fixture file only: real decoder failure must not replace the old cell.
+    std::fs::write(&path, b"not a wave file").unwrap();
+    let failed = begin_browser(&mut visual, &editor);
+    release(&mut visual, target);
+    assert_retired(&failed);
+    receive_worker(&editor, cx);
+    assert_eq!(*project(&editor, cx), *before);
+    editor.read_with(cx, |view, _| assert!(view.error.is_some()));
+    std::fs::write(&path, original_bytes).unwrap();
+    let drag = begin_browser(&mut visual, &editor);
+    // Selecting another cell/scene cannot redirect the actual drop hit surface.
+    editor.update(cx, |view, _| {
+        view.selected_cell = None;
+        view.selected_scene = None;
+    });
+    release(&mut visual, target);
+    assert_retired(&drag);
+    receive_worker(&editor, cx);
+    let after = project(&editor, cx);
+    assert_ne!(*after, *before);
+    assert_eq!(after.scenes(), before.scenes());
+    assert_eq!(after.session_cells().len(), before.session_cells().len());
+    history(&editor, cx, Request::Undo);
+    assert_eq!(*project(&editor, cx), *before);
+    history(&editor, cx, Request::Redo);
+    assert_eq!(*project(&editor, cx), *after);
+}
+
+#[gpui::test]
+fn console_scene_context_actual_row_empty_list_focus_and_history(cx: &mut TestAppContext) {
+    let (handle, editor, _, scene, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = project(&editor, cx);
+    let target = bounds(&mut visual, format!("console-scene-menu-{}", scene.value())).center();
+    visual.simulate_mouse_down(target, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        assert_eq!(
+            menu.items.iter().map(|item| item.label).collect::<Vec<_>>(),
+            ["add scene"]
+        );
+    });
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx);
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+    let inserted = project(&editor, cx);
+    assert_eq!(inserted.scenes().len(), 2);
+    assert_eq!(
+        inserted.scenes()[1].id(),
+        scene,
+        "actual right-clicked row is the before anchor"
+    );
+    history(&editor, cx, Request::Undo);
+    assert_eq!(*project(&editor, cx), *before);
+    // Empty projects still expose explicit Add Scene without a track or drag.
+    editor.update(cx, |view, _| {
+        view.begin_open_request(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        })
+    });
+    receive_worker(&editor, cx);
+    visual.run_until_parked();
+    let empty = project(&editor, cx);
+    assert!(empty.tracks().is_empty() && empty.scenes().is_empty());
+    let target = bounds(&mut visual, "console-append-row".into()).center();
+    visual.simulate_mouse_down(target, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx);
+    assert_eq!(project(&editor, cx).scenes().len(), 1);
+    history(&editor, cx, Request::Undo);
+    assert_eq!(*project(&editor, cx), *empty);
+}
+
+#[gpui::test]
+fn console_browser_cancel_outside_refusal_and_stale_scan_retire_only_owned_payload(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, scene, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let target = bounds(
+        &mut visual,
+        format!("console-cell-{}-{}", track.value(), scene.value()),
+    )
+    .center();
+    let before = project(&editor, cx);
+    for case in 0..4 {
+        let drag = begin_browser(&mut visual, &editor);
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        match case {
+            0 => {
+                visual.simulate_keystrokes("escape");
+                // GPUI may still carry its zero-sized payload until mouseup;
+                // actual late drop must refuse the now-retired token.
+                visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            }
+            1 => release(&mut visual, point(px(8.0), px(8.0))),
+            2 => {
+                editor.update(cx, |view, _| view.save_dialog_open = true);
+                visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+                editor.update(cx, |view, _| view.save_dialog_open = false);
+            }
+            _ => {
+                editor.update(cx, |view, _| view.browser.scans.generation += 1);
+                visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            }
+        }
+        assert_retired(&drag);
+        receive_worker(&editor, cx);
+        editor.read_with(cx, |view, _| {
+            assert!(view.active_browser_audio_drag.is_none(), "case {case}")
+        });
+        assert_eq!(
+            *project(&editor, cx),
+            *before,
+            "case {case} must not import"
+        );
+    }
+    let old = begin_browser(&mut visual, &editor);
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let fresh = begin_browser(&mut visual, &editor);
+    editor.update(cx, |view, _| view.clear_browser_audio_drag(&old));
+    editor.read_with(cx, |view, _| {
+        assert!(std::rc::Rc::ptr_eq(
+            &view.active_browser_audio_drag.as_ref().unwrap().destination,
+            &fresh.destination
+        ))
+    });
+    release(&mut visual, target);
+    assert_retired(&fresh);
+    receive_worker(&editor, cx);
+    assert!(project(&editor, cx).session_cell(track, scene).is_some());
+}
+
+#[gpui::test]
+fn console_browser_view_project_and_deleted_target_changes_reject_late_drop(
+    cx: &mut TestAppContext,
+) {
+    for case in 0..4 {
+        let (handle, editor, track, scene, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let at = bounds(
+            &mut visual,
+            format!("console-cell-{}-{}", track.value(), scene.value()),
+        )
+        .center();
+        let drag = begin_browser(&mut visual, &editor);
+        match case {
+            0 => editor.update(cx, |view, cx| {
+                view.set_mode(EditorMode::Arrangement);
+                cx.notify();
+            }),
+            1 => {
+                editor.update(cx, |view, _| {
+                    view.begin_open_request(Request::NewWithAudioMode {
+                        mode: hex_session::DocumentAudioMode::Resident,
+                        reservation: None,
+                    })
+                });
+                receive_worker(&editor, cx);
+            }
+            2 => history(&editor, cx, Request::Edit(Command::RemoveScene(scene))),
+            _ => history(&editor, cx, Request::Edit(Command::RemoveTrack(track))),
+        }
+        let before = project(&editor, cx);
+        assert_retired(&drag);
+        release(&mut visual, at);
+        receive_worker(&editor, cx);
+        assert_eq!(
+            *project(&editor, cx),
+            *before,
+            "late case {case} cannot apply to changed document/target"
+        );
+    }
+}
