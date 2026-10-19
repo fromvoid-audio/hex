@@ -154,6 +154,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             find_mut(project, return_track)?.devices.insert(
                 index,
                 Device {
+                    comparison: None,
                     id,
                     state,
                     bypassed: false,

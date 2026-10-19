@@ -335,6 +335,38 @@ impl TestAppContext {
         self.test_platform.simulate_new_path_selection(select_path);
     }
 
+    /// Whether the test platform has an outstanding Open picker request.
+    pub fn did_prompt_for_paths(&self) -> bool {
+        self.test_platform.did_prompt_for_paths()
+    }
+
+    /// Complete the test platform Open picker; this does not show a native picker.
+    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
+        self.test_platform.simulate_paths_selection(paths);
+    }
+
+    /// Arguments of the pending injected Open request; never a native panel probe.
+    pub fn pending_open_directory(&self) -> Option<Option<std::path::PathBuf>> {
+        self.test_platform.pending_open_directory()
+    }
+    /// Initial directory and suggested name of an injected Save request.
+    pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
+        self.test_platform.pending_save_options()
+    }
+    /// Complete the injected Open request with a platform error, without a panel.
+    pub fn simulate_paths_error(&self, message: &str) {
+        self.test_platform.simulate_paths_error(message);
+    }
+    /// Complete the injected Save request with a platform error, without a panel.
+    pub fn simulate_new_path_error(&self, message: &str) {
+        self.test_platform.simulate_new_path_error(message);
+    }
+    /// Pure NSURL roundtrip in the Mac dependency; no panel is shown or configured.
+    #[cfg(target_os = "macos")]
+    pub fn picker_directory_url_roundtrip(&self, directory: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+        crate::MacPlatform::picker_directory_url_for_test(directory)
+    }
+
     /// Simulates clicking a button in an platform-level alert dialog.
     #[track_caller]
     pub fn simulate_prompt_answer(&self, button: &str) {

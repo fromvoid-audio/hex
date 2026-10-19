@@ -134,6 +134,36 @@ impl EditorView {
         }
         cx.notify();
     }
+    /// Match the existing Enter/blur commit law, but keep a refused draft
+    /// visible when a project replacement is requested.
+    pub(super) fn finalize_clip_name_for_open(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(edit) = &self.clip_name_edit else {
+            return true;
+        };
+        let name = &edit.input.read(cx).content;
+        if self.edit_pending()
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || edit.generation != self.project_generation
+            || !self.state.as_ref().is_some_and(|state| {
+                state.revision == edit.revision
+                    && state.project.clip_name(edit.clip) == Some(edit.original.as_str())
+            })
+            || name.trim().is_empty()
+            || name.len() > hex_project::MAX_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            self.error =
+                Some("finish or cancel the current name edit before opening a project".into());
+            return false;
+        }
+        self.finish_clip_name(true, window, cx);
+        true
+    }
     pub(super) fn finish_clip_name(
         &mut self,
         commit: bool,
@@ -368,6 +398,7 @@ mod tests {
                 editor.update(cx, |v, cx| {
                     v.state = Some(Arc::new(hex_session::service::ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::new(canonical.project().clone()),
                         waveforms: Default::default(),
                         audio_clip_waveforms: Default::default(),

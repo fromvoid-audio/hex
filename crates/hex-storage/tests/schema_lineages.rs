@@ -36,7 +36,7 @@ fn exact_published_lineages_migrate_edit_and_reopen_without_data_loss() {
         assert_eq!(project.tuning(), hex_tuning::ProjectTuning::default());
         let encoded = encode(&project).unwrap();
         let doc = value(&encoded);
-        assert_eq!(doc["version"], 31);
+        assert_eq!(doc["version"], 32);
         assert_eq!(decode(&encoded).unwrap(), project);
         assert_eq!(
             doc["tracks"][0]["devices"][0]["payload"],

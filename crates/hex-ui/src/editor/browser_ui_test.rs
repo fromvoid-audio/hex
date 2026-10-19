@@ -106,6 +106,7 @@ fn browser_drag_fixture_with_tracks(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -606,6 +607,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                     .clone();
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -664,6 +666,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                 let project = Project::new(48_000).expect("project");
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -798,7 +801,9 @@ fn browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel(
 }
 
 #[gpui::test]
-fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &mut TestAppContext) {
+fn browser_project_open_queues_selected_path_without_second_click_confirmation(
+    cx: &mut TestAppContext,
+) {
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -814,6 +819,7 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
                     .clone();
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -835,30 +841,50 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
     let second = std::path::PathBuf::from("/tmp/second.hex");
 
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(first.clone(), cx));
+        editor.update(cx, |view, cx| {
+            view.open_browser_project(first.clone(), cx);
+            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert!(view.pending_requests.is_empty());
+        });
     })
     .expect("editor window");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.pending_open_path.as_ref(), Some(&first));
-        assert!(view.pending_requests.is_empty());
-    });
-
+    assert!(
+        cx.has_pending_prompt(),
+        "the first selection reaches confirmation"
+    );
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(second.clone(), cx));
+        editor.update(cx, |view, cx| {
+            view.open_browser_project(second.clone(), cx);
+            assert!(!view.opening_project);
+            assert!(view.pending_requests.is_empty());
+            assert!(
+                view.error.is_some(),
+                "another path cannot replace an active intent"
+            );
+        });
     })
     .expect("editor window");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.pending_open_path.as_ref(), Some(&second));
-        assert!(view.pending_requests.is_empty());
-    });
-
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(second.clone(), cx));
+        editor.update(cx, |view, cx| {
+            assert!(!view.project_open.busy());
+            assert!(view.pending_open_path.is_none());
+            view.open_browser_project(second.clone(), cx);
+            assert_eq!(view.pending_open_path.as_ref(), Some(&second));
+            assert!(view.pending_requests.is_empty());
+        });
     })
     .expect("editor window");
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.opening_project);
+        assert!(!view.opening_project);
+        assert!(!view.project_open.busy());
         assert!(view.pending_open_path.is_none());
+        assert!(view.state.as_ref().unwrap().unsaved);
+        assert!(view.pending_requests.is_empty());
     });
 }
 
@@ -2148,6 +2174,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
         let clip = project.project().midi_clip(clip_id).expect("clip");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(project.project().clone()),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -2199,6 +2226,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             last_pointer: Rc::new(Cell::new(None)),
         };
         let clip_drag = ClipDrag {
+            group: Default::default(),
             project_generation: view.project_generation,
             revision: current.revision.saturating_add(1),
             source_track: track,
@@ -4306,6 +4334,7 @@ fn place_icon_preferences_window(
                         config.to_owned(),
                         recent.to_owned(),
                         directory.0.join("icon-theme.json"),
+                        directory.0.join("project-directory.json"),
                     ),
                     crate::editor::test_environment::Inputs {
                         home: Some(home),
@@ -4896,6 +4925,12 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
         assert!(view.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "browser_resize_feedback_ui_test.rs"]
+mod resize_feedback;
+
+#[path = "browser_tag_editor_geometry_ui_test.rs"]
+mod tag_editor_geometry;
 
 #[path = "editor_test_environment_ui_test.rs"]
 mod test_environment;

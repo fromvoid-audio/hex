@@ -1909,25 +1909,34 @@ impl EditorView {
             .flex_col()
             .child(panel.w_full().flex_1().min_h_0().min_w_0())
             .child(preview);
+        // The rail belongs to the fixed base column. The optional editor is a
+        // sibling of that WHOLE column, so neither opening control can move.
         panel = div()
             .w(px(pane_width + editor_width))
             .flex_shrink_0()
             .min_h_0()
             .flex()
-            .flex_col()
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(toolbar)
             .child(
                 div()
-                    .flex_1()
+                    .w(px(pane_width))
+                    .flex_shrink_0()
                     .min_h_0()
                     .flex()
-                    .child(sidebar)
-                    .child(self.browser_sidebar_resize(pane_width, cx))
-                    .child(panel)
-                    .children(editor),
-            );
+                    .flex_col()
+                    .child(toolbar)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .child(sidebar)
+                            .child(self.browser_sidebar_resize(pane_width, cx))
+                            .child(panel),
+                    ),
+            )
+            .children(editor);
 
         let entity = cx.entity();
         let mut resize = div()
@@ -1937,7 +1946,11 @@ impl EditorView {
             .w(px(4.0))
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(if self.browser.resizing {
+                theme::PaletteRole::Secondary
+            } else {
+                theme::PaletteRole::Border
+            })))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))));
         resize = resize.child(
             canvas(
@@ -1962,10 +1975,17 @@ impl EditorView {
                     let move_entity = entity.clone();
                     let available = f32::from(bounds.size.width);
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if !phase.bubble() || !event.dragging() {
+                        if !phase.bubble() {
                             return;
                         }
                         move_entity.update(cx, |view, cx| {
+                            if !event.dragging() {
+                                if view.browser.resizing {
+                                    view.browser.resizing = false;
+                                    cx.notify();
+                                }
+                                return;
+                            }
                             if view.browser.resizing {
                                 view.browser.width = clamped_panel_width(
                                     view.browser.layout.base_width_for_total(
@@ -2566,3 +2586,7 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "browser_ui_test.rs"]
 mod ui_test;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "console_drop_ui_test.rs"]
+mod console_drop_ui_test;

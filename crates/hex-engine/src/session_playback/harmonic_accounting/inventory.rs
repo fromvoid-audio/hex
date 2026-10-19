@@ -111,6 +111,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         track.instrument_position = Some(48);
         for slot in 0..64 {
             track.devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if index >= shape.tracks - shape.effect_tracks && slot == 63 {
                     stateful.clone()
@@ -155,6 +156,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         let mut devices = Vec::new();
         for slot in 0..64 {
             devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if index < shape.returns && slot == 63 {
                     stateful.clone()
