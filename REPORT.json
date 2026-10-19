@@ -1,0 +1,39 @@
+{
+  "source": "12d261c319dc82c24c6298a4fad8b767f09b264b",
+  "tree": "202013a6c3fccc97290b7bf1c8031c670cd17550",
+  "parent": "1561b999604ed4e9349b0128ca85693c0be4d3d5",
+  "canonical_pr": 447,
+  "canonical_unchanged": "65181d3c0b3f915559465aa0ac428e58faa8f42f",
+  "original_runs": [
+    {
+      "run": "20261019T004415Z-1c03db74",
+      "source": "7483061e962206c9ab53ace03a5a7ce63c2d5b8a",
+      "summary_sha256": "16052b78c4070ddc04ad56041db3d21a12673b882bc2d064853d2db090c8bded",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T004630Z-4c29ce28",
+      "source": "12d261c319dc82c24c6298a4fad8b767f09b264b",
+      "summary_sha256": "f3289cd9d36957702b488f5c554dcedd3ce0048c3949911ca94af0819e3d0899",
+      "status": "passed",
+      "stale": false,
+      "exit_code": 0
+    }
+  ],
+  "source_identity": {
+    "commit": "12d261c319dc82c24c6298a4fad8b767f09b264b",
+    "content_sha256": "6c2d17822a89dc9e21a1743d1bb4aafe612414700502b646e737bfd6c510dd05",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-device-ab-review-2845"
+  },
+  "scope": "owner component repair; not prospective full21/native/merge/delivery",
+  "changed_files": 2,
+  "component_passes": "Session8 + UI16 =24/0ignored; strict UI all-target Clippy and fmt",
+  "native_changed_case": "pending root serial lane",
+  "original_six_repairs_evidence": "f46c49a993079a10b9371cb45003d51685521d76",
+  "original_archive_sha256": "7ef914b867f2e19d7268a4e91b46b9ad0731c50aa0e750f8b0f9875bbe8d1ab7"
+}
