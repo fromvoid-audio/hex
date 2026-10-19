@@ -1,0 +1,30 @@
+{
+  "source": "037460332911d2db152e9bdccbaa9f60da810efb",
+  "tree": "a663fdfaa534820c9d3b96f82c52dacd8e693627",
+  "base": "f3d25f4b43ba1be5c2a1a78420859cc66b5c4caa",
+  "files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
+    "crates/hex-ui/src/editor/project_directory.rs",
+    "docs/resize-edge-pan.md",
+    "todo.md"
+  ],
+  "runtime_unique": 30,
+  "counts": [
+    [
+      "27",
+      "0"
+    ],
+    [
+      "3",
+      "0"
+    ]
+  ],
+  "summary_sha256": "9136f51da4ecb398f2ea5aed9a8504c89654ff098ecfcf0231e54d819113abf4",
+  "behavior_block_equal": true,
+  "behavior_block_sha256": "ed95c5b9b0f41de6a1fe0cde864f798ce58994bf7a0b54067cd0aa701aa52a91",
+  "test_only_delta": true,
+  "prior_56_case_evidence": "2685a8c0afc18c41a87b0ff8782bc51c9282a09a",
+  "root_structural_return_note": 29830,
+  "no_new_executed_race_claim": true
+}

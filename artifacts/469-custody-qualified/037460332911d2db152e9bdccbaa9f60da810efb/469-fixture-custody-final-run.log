@@ -1,0 +1,23 @@
+[1/11] all clip drag input and upper rail custody cases: running
+[1/11] all clip drag input and upper rail custody cases: passed
+[2/11] existing group fixture custody controls: running
+[2/11] existing group fixture custody controls: passed
+[3/11] strict UI default: running
+[3/11] strict UI default: passed
+[4/11] strict UI feature: running
+[4/11] strict UI feature: passed
+[5/11] architecture: running
+[5/11] architecture: passed
+[6/11] UI style: running
+[6/11] UI style: passed
+[7/11] GPUI patch: running
+[7/11] GPUI patch: passed
+[8/11] dependency provenance: running
+[8/11] dependency provenance: passed
+[9/11] device layout: running
+[9/11] device layout: passed
+[10/11] format: running
+[10/11] format: passed
+[11/11] diff: running
+[11/11] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/469-fixture-custody-final/summary.json

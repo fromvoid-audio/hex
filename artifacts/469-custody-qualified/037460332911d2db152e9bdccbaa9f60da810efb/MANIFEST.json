@@ -1,0 +1,122 @@
+{
+  "469-custody-functional-run.log": {
+    "bytes": 226,
+    "sha256": "f0e39a7c6835b5366c09055fc20b50c41bedb3f14dce7aedd5f5f99e62c064bb"
+  },
+  "469-fixture-custody-final-run.log": {
+    "bytes": 853,
+    "sha256": "15a65830aaa5ec8886ef219aa267c6cb6d57344465c9bb76f46def4333b7ad18"
+  },
+  "HANDOFF.md": {
+    "bytes": 4030,
+    "sha256": "324abab7bab7480d959dca9e07244752a62b76ed88637a45e34f6a8319b0bc22"
+  },
+  "checks/469-fixture-custody-final/01-all clip drag input and upper rail custody cases.log": {
+    "bytes": 4144,
+    "sha256": "4d711eae2406371929c023877f78c1671af2389010cc6bd91a4cfe50ad7fd3c8"
+  },
+  "checks/469-fixture-custody-final/02-existing group fixture custody controls.log": {
+    "bytes": 1781,
+    "sha256": "4ddece6308772756e3013b9381ee211421ffa088a8d1f41f4c526cc768454a6a"
+  },
+  "checks/469-fixture-custody-final/03-strict UI default.log": {
+    "bytes": 1081,
+    "sha256": "f4c7a8c1d6c6eaa9a78a2095d80995998cde3d52a04a02d44f351b59c0054d45"
+  },
+  "checks/469-fixture-custody-final/04-strict UI feature.log": {
+    "bytes": 609,
+    "sha256": "13e3b3b4da4d615d69d72e3c4b7425e2fe7c57f7c1c1393b25dd844361c6be53"
+  },
+  "checks/469-fixture-custody-final/05-architecture.log": {
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  "checks/469-fixture-custody-final/06-UI style.log": {
+    "bytes": 82,
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+  },
+  "checks/469-fixture-custody-final/07-GPUI patch.log": {
+    "bytes": 149,
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+  },
+  "checks/469-fixture-custody-final/08-dependency provenance.log": {
+    "bytes": 113,
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+  },
+  "checks/469-fixture-custody-final/09-device layout.log": {
+    "bytes": 84,
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+  },
+  "checks/469-fixture-custody-final/10-format.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/469-fixture-custody-final/11-diff.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/469-fixture-custody-final/summary.json": {
+    "bytes": 16619,
+    "sha256": "9136f51da4ecb398f2ea5aed9a8504c89654ff098ecfcf0231e54d819113abf4"
+  },
+  "checks/469-upper-rail-oracle-custody-functional/01-upper rail release and actual root custody.log": {
+    "bytes": 2300,
+    "sha256": "ce9821a1734b1b56e1ba043b7dc8717cacf8796a0d949d122c2fe4af17d2e052"
+  },
+  "checks/469-upper-rail-oracle-custody-functional/summary.json": {
+    "bytes": 13395,
+    "sha256": "064c272a107795b7c85eeb14ace831f7de13f00fba5771eef42354ce12d919bc"
+  },
+  "component-wrapper.py": {
+    "bytes": 1587,
+    "sha256": "9b92d8a224063a0e72c2302d6ded134663c89124b0ff6c125a17fb3a6c90df2c"
+  },
+  "metadata.json": {
+    "bytes": 882,
+    "sha256": "a472ce07c0e9d305b7080683871625c79ee60d4f8651efde6001421c2c26a0e5"
+  },
+  "source/after/crates/hex-ui/src/editor/browser.rs": {
+    "bytes": 98145,
+    "sha256": "7ccb332815eb9464d000b0278255b76b5bd50cdd5008f86e47426a27e48cd2bd"
+  },
+  "source/after/crates/hex-ui/src/editor/clip_drag_ui_test.rs": {
+    "bytes": 100237,
+    "sha256": "06d78fc567abaa3810fcec76c4caf6fb699b6098b96b7fd716697d200a844b1c"
+  },
+  "source/after/crates/hex-ui/src/editor/project_directory.rs": {
+    "bytes": 11017,
+    "sha256": "514bfce63f073cdd1eaffb61b6efc08e3a4e326c826ee3e8278014983b606fdb"
+  },
+  "source/after/docs/resize-edge-pan.md": {
+    "bytes": 12026,
+    "sha256": "f0d9845fc18dc7900061d5394a431ef3cafaa00c5125d5e732c858c0543355b4"
+  },
+  "source/after/todo.md": {
+    "bytes": 405100,
+    "sha256": "00cf69b49094cfd73a21fb6da55103836836609d49fcbe17c191f75aebed86c0"
+  },
+  "source/before/crates/hex-ui/src/editor/browser.rs": {
+    "bytes": 97987,
+    "sha256": "29c4282e1da858e2c23e4f55ccaa07317a2cf2d1d4d651ae445a810461a12c4a"
+  },
+  "source/before/crates/hex-ui/src/editor/clip_drag_ui_test.rs": {
+    "bytes": 92481,
+    "sha256": "42693f195df6b17055667fdf3504d5827c29c2a972fe50b0117392f1985906ae"
+  },
+  "source/before/crates/hex-ui/src/editor/project_directory.rs": {
+    "bytes": 10883,
+    "sha256": "5549757de7db19e69b851de3f1b62f5cdd8be7f5dbb48412e10d21a819aa5df0"
+  },
+  "source/before/docs/resize-edge-pan.md": {
+    "bytes": 11231,
+    "sha256": "0172e59d1bedc1f6fa93d43efae50af1313f17426ec1312a214ab11ff5c77e4a"
+  },
+  "source/before/todo.md": {
+    "bytes": 403770,
+    "sha256": "57ee2f110de0151c15f2e59e504062285abfaaecde1dfbf3ad4a09640eb18c67"
+  },
+  "source.patch": {
+    "bytes": 17685,
+    "sha256": "3fa006240e7d765f5da67f71d1e167e0f49a4c55a69aeaba6201cad260a57671"
+  }
+}

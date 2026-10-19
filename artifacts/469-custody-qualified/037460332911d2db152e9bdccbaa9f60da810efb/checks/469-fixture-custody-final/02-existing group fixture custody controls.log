@@ -1,0 +1,24 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 37.94s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+
+thread 'editor::drag::group_drag_ui_test::group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory' (316468) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:29:9:
+Some("could not read media file: no such file or directory (os error 2)")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+retained editor test root after unacknowledged setup: "/tmp/hex-editor-test-316466-0"
+group_fixture_pre_ack_retention actual_refusal=true weak_expired=true disk_retained=true root="/tmp/hex-editor-test-316466-0"
+test editor::drag::group_drag_ui_test::group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory ... ok
+
+thread 'editor::drag::group_drag_ui_test::group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup' (316467) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:965:13:
+intentional post-ACK fixture unwind
+group_fixture_catalog_custody unwind=true actual_save=true same_root=true cleaned=true
+test editor::drag::group_drag_ui_test::group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup ... ok
+group_fixture_catalog_custody unwind=false actual_save=true same_root=true cleaned=true
+test editor::drag::group_drag_ui_test::group_fixture_same_root_survives_real_catalog_job_after_view_retirement ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1067 filtered out; finished in 0.29s
+

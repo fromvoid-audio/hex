@@ -1,0 +1,414 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index 6078e7ca..faa74444 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -286,6 +286,11 @@ impl BrowserState {
+         }
+     }
+ 
++    #[cfg(all(test, feature = "ui-test-support"))]
++    pub(super) fn test_preferences_path(&self) -> &std::path::Path {
++        &self.preferences_path
++    }
++
+     fn reset_results(&mut self) {
+         self.selected_index = 0;
+         self.results_focused = false;
+diff --git a/crates/hex-ui/src/editor/clip_drag_ui_test.rs b/crates/hex-ui/src/editor/clip_drag_ui_test.rs
+index 9d052798..515e2f5a 100644
+--- a/crates/hex-ui/src/editor/clip_drag_ui_test.rs
++++ b/crates/hex-ui/src/editor/clip_drag_ui_test.rs
+@@ -927,65 +927,94 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
+     });
+ }
+ 
+-#[gpui::test]
+-fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack(
+-    cx: &mut TestAppContext,
+-) {
+-    use hex_session::service::{Event, Request};
+-    use std::time::{Duration, Instant};
+-    fn next(service: &Service) -> Event {
+-        let until = Instant::now() + Duration::from_secs(10);
+-        loop {
+-            if let Ok(event) = service.try_event() {
+-                assert!(event.error.is_none(), "{:?}", event.error);
+-                return event;
+-            }
+-            assert!(Instant::now() < until);
+-            std::thread::sleep(Duration::from_millis(2));
++// Same private pre-ACK custody pattern as the existing group-drag fixture.
++// Service shutdown is not a worker join; uncertain setup retains disk evidence.
++struct UpperRailPendingSetup {
++    environment: Arc<super::test_environment::Environment>,
++    acknowledged: bool,
++}
++impl UpperRailPendingSetup {
++    fn acknowledge_import(&mut self, event: &hex_session::service::Event, path: &std::path::Path) {
++        assert!(event.error.is_none(), "{:?}", event.error);
++        assert!(event.request_complete);
++        assert_eq!(event.status.as_deref(), Some("audio imported"));
++        assert!(event.state.project.assets().any(|asset| {
++            asset.path() == path
++                && asset.source_sample_rate() == 48_000
++                && asset.source_frames() == 96_000
++        }));
++        self.acknowledged = true;
++    }
++}
++impl Drop for UpperRailPendingSetup {
++    fn drop(&mut self) {
++        if !self.acknowledged {
++            self.environment.retain_for_unacknowledged_setup_failure();
+         }
+     }
+-    fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+-        let until = Instant::now() + Duration::from_secs(10);
+-        loop {
+-            let done = editor.update(&mut *visual, |view, cx| {
+-                if view.tick(cx) {
+-                    cx.notify();
+-                }
+-                assert!(view.error.is_none(), "{:?}", view.error);
+-                view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+-            });
+-            if done {
+-                visual.run_until_parked();
+-                return;
+-            }
+-            assert!(Instant::now() < until);
+-            std::thread::sleep(Duration::from_millis(2));
++}
++fn upper_rail_next(service: &Service) -> hex_session::service::Event {
++    use std::time::{Duration, Instant};
++    let until = Instant::now() + Duration::from_secs(10);
++    loop {
++        if let Ok(event) = service.try_event() {
++            assert!(event.error.is_none(), "{:?}", event.error);
++            return event;
+         }
++        assert!(Instant::now() < until);
++        std::thread::sleep(Duration::from_millis(2));
+     }
++}
++fn upper_rail_owned_fixture(
++    cx: &mut TestAppContext,
++) -> (
++    Arc<super::test_environment::Environment>,
++    gpui::AnyWindowHandle,
++    gpui::Entity<EditorView>,
++) {
++    use hex_session::service::Request;
+     cx.update(super::bind_editor_keys);
+-    let files = super::external_audio_drop_ui_test::BatchFiles::new();
+-    let wav = files.wav("upper-rail-resize.wav", 48_000, 96_000);
+-    let directory = wav.parent().unwrap();
+-    std::fs::create_dir(directory.join("samples")).unwrap();
++    let files = super::test_environment::Environment::new().unwrap();
++    let mut setup = UpperRailPendingSetup {
++        environment: Arc::clone(&files),
++        acknowledged: false,
++    };
++    let wav = files.root().join("upper-rail-resize.wav");
++    // Identical mono PCM16, 48kHz/96k frames, now under the actual leased root.
++    let mut bytes = Vec::new();
++    bytes.extend_from_slice(b"RIFF");
++    bytes.extend_from_slice(&(36 + 96_000_u32 * 2).to_le_bytes());
++    bytes.extend_from_slice(b"WAVEfmt ");
++    bytes.extend_from_slice(&16_u32.to_le_bytes());
++    bytes.extend_from_slice(&1_u16.to_le_bytes());
++    bytes.extend_from_slice(&1_u16.to_le_bytes());
++    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
++    bytes.extend_from_slice(&96_000_u32.to_le_bytes());
++    bytes.extend_from_slice(&2_u16.to_le_bytes());
++    bytes.extend_from_slice(&16_u16.to_le_bytes());
++    bytes.extend_from_slice(b"data");
++    bytes.extend_from_slice(&(96_000_u32 * 2).to_le_bytes());
++    for _ in 0..96_000 {
++        bytes.extend_from_slice(&8192_i16.to_le_bytes());
++    }
++    std::fs::write(&wav, bytes).unwrap();
++    std::fs::create_dir(files.root().join("samples")).unwrap();
+     let service = Service::new(48_000, 32, 8_000_000).unwrap();
+-    next(&service);
++    upper_rail_next(&service);
+     service.submit(Request::Import(wav.clone())).unwrap();
+-    let imported = next(&service);
+-    let source = imported.state.project.tracks()[0].id();
+-    let clip = imported.state.project.tracks()[0].clips()[0].id();
++    let imported = upper_rail_next(&service);
++    setup.acknowledge_import(&imported, &wav);
+     service
+         .submit(Request::Edit(Command::AddTrack {
+             name: "untouched target".into(),
+         }))
+         .unwrap();
+-    let event = next(&service);
+-    let before = event.state.project.snapshot();
+-    let target_before = event.state.project.tracks()[1].clone();
++    let event = upper_rail_next(&service);
+     let handle = *cx.add_window(|_, _| Empty);
+     let editor = cx
+         .update_window(handle, |_, window, cx| {
+             let editor = window.replace_root(cx, |window, cx| {
+-                EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
++                EditorView::new_for_test_with_environment(window, cx, service, Arc::clone(&files))
+             });
+             install_close_guard(window, cx, editor.downgrade());
+             editor.update(cx, |view, cx| {
+@@ -996,6 +1025,78 @@ fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worke
+             editor
+         })
+         .unwrap();
++    editor.read_with(cx, |view, _| {
++        let root = files.root();
++        assert!(Arc::ptr_eq(&files, &view.test_environment));
++        assert_eq!(view.browser.directory, root.join("samples"));
++        assert_eq!(view.browser.places, vec![root.join("samples")]);
++        assert!(
++            view.state
++                .as_ref()
++                .unwrap()
++                .project
++                .assets()
++                .all(|asset| asset.path().starts_with(root))
++        );
++        assert_eq!(
++            view.browser.test_preferences_path(),
++            root.join("config/browser.json")
++        );
++        assert_eq!(
++            view.recent_projects.test_path(),
++            root.join("config/recent-projects.json")
++        );
++        assert_eq!(
++            view.theme_settings.test_path(),
++            root.join("config/theme.json")
++        );
++        assert_eq!(
++            view.project_directory.test_path(),
++            root.join("config/project-directory.json")
++        );
++        assert_eq!(
++            view.browser
++                .test_preferences_path()
++                .with_extension("samples-v1.db"),
++            root.join("config/browser.samples-v1.db")
++        );
++    });
++    (files, handle, editor)
++}
++
++#[gpui::test]
++fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack(
++    cx: &mut TestAppContext,
++) {
++    use std::time::{Duration, Instant};
++    fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
++        let until = Instant::now() + Duration::from_secs(10);
++        loop {
++            let done = editor.update(&mut *visual, |view, cx| {
++                if view.tick(cx) {
++                    cx.notify();
++                }
++                assert!(view.error.is_none(), "{:?}", view.error);
++                view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++            });
++            if done {
++                visual.run_until_parked();
++                return;
++            }
++            assert!(Instant::now() < until);
++            std::thread::sleep(Duration::from_millis(2));
++        }
++    }
++    let (_files, handle, editor) = upper_rail_owned_fixture(cx);
++    let (source, clip, before, target_before) = editor.read_with(cx, |view, _| {
++        let project = &view.state.as_ref().unwrap().project;
++        (
++            project.tracks()[0].id(),
++            project.tracks()[0].clips()[0].id(),
++            project.snapshot(),
++            project.tracks()[1].clone(),
++        )
++    });
+     let mut visual = VisualTestContext::from_window(handle, cx);
+     visual.run_until_parked();
+     let selector = Box::leak(format!("clip-trim-left-{}", clip.value()).into_boxed_str());
+@@ -2338,3 +2439,114 @@ fn shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit(cx: &mut
+         editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+     }
+ }
++
++#[gpui::test]
++fn upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop(cx: &mut TestAppContext) {
++    use std::{
++        sync::atomic::Ordering,
++        time::{Duration, Instant},
++    };
++    let (files, handle, editor) = upper_rail_owned_fixture(cx);
++    let root = files.root().to_owned();
++    let weak = Arc::downgrade(&files);
++    let gate = files.gate_next_catalog_save();
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    assert!(
++        gate.reached.load(Ordering::Acquire),
++        "actual catalog worker reached save gate"
++    );
++    assert!(!gate.finished.load(Ordering::Acquire));
++    let catalog = editor.read_with(&visual, |view, _| {
++        assert!(Arc::ptr_eq(&files, &view.test_environment));
++        view.browser
++            .test_preferences_path()
++            .with_extension("samples-v1.db")
++    });
++    assert_eq!(catalog, root.join("config/browser.samples-v1.db"));
++    visual.update(|window, cx| {
++        let _ = window.replace_root(cx, |_, _| Empty);
++    });
++    let editor_weak = editor.downgrade();
++    drop(editor);
++    visual.update(|_, _| {});
++    visual.run_until_parked();
++    assert!(
++        editor_weak.upgrade().is_none(),
++        "real view retired before save continuation"
++    );
++    drop(files);
++    assert_eq!(
++        weak.strong_count(),
++        1,
++        "only actual paused filesystem job retains fixture root"
++    );
++    assert!(root.is_dir());
++    gate.release();
++    visual.run_until_parked();
++    assert!(gate.finished.load(Ordering::Acquire));
++    assert!(gate.save_succeeded.load(Ordering::Relaxed));
++    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
++    visual.update(|_, _| {});
++    assert!(weak.upgrade().is_none(), "no leaked fixture/view/job Arc");
++    let until = Instant::now() + Duration::from_secs(5);
++    while root.exists() {
++        assert!(
++            Instant::now() < until,
++            "owned background cleanup timed out: {root:?}"
++        );
++        std::thread::yield_now();
++    }
++    visual.run_until_parked();
++    assert!(!root.exists(), "completed job cannot recreate retired root");
++    eprintln!(
++        "upper_rail_fixture_custody actual_save=true same_root=true all_four_preferences=true view_retired=true cleaned=true"
++    );
++}
++
++#[test]
++fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_leak() {
++    use hex_session::service::Request;
++    use std::time::{Duration, Instant};
++    let files = super::test_environment::Environment::new().unwrap();
++    let root = files.root().to_owned();
++    let weak = Arc::downgrade(&files);
++    let observed = std::cell::Cell::new(false);
++    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        let mut setup = UpperRailPendingSetup {
++            environment: files,
++            acknowledged: false,
++        };
++        let missing = root.join("missing.wav");
++        let service = Service::new(48_000, 32, 8_000_000).unwrap();
++        upper_rail_next(&service);
++        service.submit(Request::Import(missing.clone())).unwrap();
++        let until = Instant::now() + Duration::from_secs(10);
++        let event = loop {
++            if let Ok(event) = service.try_event() {
++                break event;
++            }
++            assert!(Instant::now() < until);
++            std::thread::sleep(Duration::from_millis(2));
++        };
++        assert!(event.request_complete);
++        assert!(event.error.is_some(), "actual missing-file import refused");
++        observed.set(true);
++        setup.acknowledge_import(&event, &missing); // Must unwind before disarming.
++    }));
++    assert!(caught.is_err());
++    assert!(
++        observed.get(),
++        "actual response observed, not a timeout panic"
++    );
++    assert!(
++        weak.upgrade().is_none(),
++        "disk evidence retention does not leak Arc"
++    );
++    assert!(root.is_dir());
++    eprintln!(
++        "upper_rail_fixture_pre_ack actual_refusal=true disk_retained=true weak_expired=true root={root:?}"
++    );
++    // Only this artificial case proved its sole request finished, with no UI jobs.
++    std::fs::remove_dir_all(root).unwrap();
++}
+diff --git a/crates/hex-ui/src/editor/project_directory.rs b/crates/hex-ui/src/editor/project_directory.rs
+index ab70d02b..93f21a9e 100644
+--- a/crates/hex-ui/src/editor/project_directory.rs
++++ b/crates/hex-ui/src/editor/project_directory.rs
+@@ -32,6 +32,11 @@ pub(super) struct State {
+     directory_gate: Option<Arc<TestGate>>,
+ }
+ impl State {
++    #[cfg(all(test, feature = "ui-test-support"))]
++    pub(super) fn test_path(&self) -> &std::path::Path {
++        &self.path
++    }
++
+     pub(super) fn new(path: PathBuf) -> Self {
+         Self {
+             path,
+diff --git a/docs/resize-edge-pan.md b/docs/resize-edge-pan.md
+index 2d7df2ec..33ff8463 100644
+--- a/docs/resize-edge-pan.md
++++ b/docs/resize-edge-pan.md
+@@ -171,3 +171,14 @@ retained as diagnostic evidence; it was not a new production failure. The
+ original required full-run failure remains failed/historical until the merger
+ qualifies a fresh combined candidate. Native captured-release acceptance remains
+ separate, as do the inherited focus-cancel paint issue and warning-cleanup PR474.
++
++The PR469 upper-rail regression fixture now creates one existing test Environment
++before Service/import/startup and injects that same Arc into the editor. Its WAV,
++samples, four preferences and derived catalog all belong to that root. The
++existing pre-ACK retention pattern disarms only on the actual matching successful
++Import response (48kHz, 96k frames). A paused real catalog save proves the root
++survives view/caller retirement until filesystem completion, then cleans up;
++a real missing-import refusal preserves evidence without leaking an Arc. This
++is fixture custody, not a Service join or new production release behavior. The
++original pointer/geometry/typed192000/pre-ACK/worker/UndoRedo assertion block is
++byte-identical. Earlier 56-case evidence remains tied to its original source.
+diff --git a/todo.md b/todo.md
+index 37173cb8..4f010cf3 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5809,3 +5809,22 @@ User rejected device-local automation editing. Remove its button, graph mode and
+   focused positives remain source-bound. Fresh focused qualification/immutable
+   transport is reported in Pulse. Merger owns prospective full21/review/merge;
+   no native app operation or acceptance claim.
++
++## 19 October 2026 — Pulse2867 / PR469 single-root fixture custody return
++
++- Root29830 confirms structural BatchFiles/independent Environment root mismatch,
++  without claiming an executed filesystem race or new product release failure.
++  Correct only the upper-rail Service fixture: one precreated Arc Environment,
++  WAV/samples/default paths before startup, injected existing constructor.
++- Reuse existing PendingSetup custody pattern; only a real successful matching
++  Import ACK with exact source path/48kHz/96k frames disarms retention. Actual
++  view/browser/assets/four preferences/catalog share that root, checked through
++  two feature-test-only private path accessors following existing test_path APIs.
++- Actual paused catalog worker holds root after view+caller drop, saves then
++  permits cleanup. Actual pre-ACK missing-file import refusal retains disk
++  evidence without leaking Arc; controlled artificial case cleans its own root
++  only after observing the sole request finish, with no UI jobs started.
++- All original release/preview/raw192000/canonical-before-ACK/actual worker and
++  one-UndoRedo assertions are byte-identical; no production runtime behavior,
++  owner framework, Service join, global fixture sweep or native operation.
++  Prior f3d56-case/required-negative evidence stays independently source-bound.

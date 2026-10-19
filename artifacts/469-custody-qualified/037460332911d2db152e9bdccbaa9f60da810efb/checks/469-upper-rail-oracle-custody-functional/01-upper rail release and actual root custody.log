@@ -1,0 +1,32 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+    Finished `test` profile [unoptimized] target(s) in 1m 00s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+
+thread 'editor::clip_drag_ui_test::upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_leak' (316035) panicked at crates/hex-ui/src/editor/clip_drag_ui_test.rs:938:9:
+Some("could not read media file: no such file or directory (os error 2)")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+retained editor test root after unacknowledged setup: "/tmp/hex-editor-test-316033-0"
+upper_rail_fixture_pre_ack actual_refusal=true disk_retained=true weak_expired=true root="/tmp/hex-editor-test-316033-0"
+test editor::clip_drag_ui_test::upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_leak ... ok
+upper_rail_fixture_custody actual_save=true same_root=true all_four_preferences=true view_retired=true cleaned=true
+test editor::clip_drag_ui_test::upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop ... ok
+upper-rail release source=TrackId(1) clip=ClipId(4) frame=192000 actual worker accepted extent=95999..96000
+test editor::clip_drag_ui_test::rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1067 filtered out; finished in 0.83s
+
