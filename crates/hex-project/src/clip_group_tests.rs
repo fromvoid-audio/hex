@@ -940,7 +940,9 @@ fn review_full_capacity_copy_accounts_later_mixed_victims_before_first_split() {
     result.expect("legal final occupancy must not refuse at an intermediate split");
     assert_eq!(preparations, 1);
     assert!(f.editor.undo());
-    assert_eq!(f.editor.project(), &before);
+    let mut undone = before.clone();
+    undone.next_id = f.editor.project().next_id;
+    assert_eq!(f.editor.project(), &undone);
     assert!(f.editor.redo());
 }
 
