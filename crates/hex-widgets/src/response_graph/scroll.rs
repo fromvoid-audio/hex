@@ -137,7 +137,6 @@ impl ResponseGraph {
             .model
             .nodes
             .iter()
-            .filter(|node| self.scroll.eligible.contains(&node.id))
             .filter_map(|node| {
                 let dx = (node.position[0] - position[0]) * width;
                 let dy = (node.position[1] - position[1]) * height;
@@ -147,6 +146,10 @@ impl ResponseGraph {
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, id)| id);
         let Some(node_id) = node else { return };
+        if !self.scroll.eligible.contains(&node_id) {
+            // Match pointer hit ownership before opting into parameter input.
+            return;
+        }
         // This is a parameter wheel, not content scrolling. Undo the platform's
         // preference inversion exactly once so physical up means increasing.
         let units = f32::from(event.physical_delta().pixel_delta(px(24.0)).y) / 24.0;
