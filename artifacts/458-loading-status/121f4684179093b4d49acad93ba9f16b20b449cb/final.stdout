@@ -1,0 +1,21 @@
+[1/10] all-header-rendered: running
+[1/10] all-header-rendered: passed
+[2/10] header-title-data: running
+[2/10] header-title-data: passed
+[3/10] ui-feature-strict: running
+[3/10] ui-feature-strict: passed
+[4/10] architecture: running
+[4/10] architecture: passed
+[5/10] gpui-patch: running
+[5/10] gpui-patch: passed
+[6/10] dependency-patches: running
+[6/10] dependency-patches: passed
+[7/10] ui-style: running
+[7/10] ui-style: passed
+[8/10] device-layout: running
+[8/10] device-layout: passed
+[9/10] fmt: running
+[9/10] fmt: passed
+[10/10] diff: running
+[10/10] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-toolbar458-loading-final/summary.json

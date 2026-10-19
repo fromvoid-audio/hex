@@ -1,0 +1,119 @@
+{
+  "kind": "source-review-disproof-regression-not-full-ci-never-build-merge-evidence",
+  "source": "121f4684179093b4d49acad93ba9f16b20b449cb",
+  "tree": "e078352bef60273cfffd8f73b5d0aafce739d858",
+  "payloads": {
+    "HANDOFF.md": {
+      "bytes": 4570,
+      "sha256": "492f1d06fc54c23ac8e6f80c2de8c12a2aaac09770c245e060982a63b949869a"
+    },
+    "baseline.stdout": {
+      "bytes": 191,
+      "sha256": "09f93fc2b2d0af9f158efff766594ee65eb81bebc30c9c3947c3bac071d05af7"
+    },
+    "component-runner.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "file-hashes.json": {
+      "bytes": 810,
+      "sha256": "02e27e66db45aafb7df5599cb9b187f530a2e93b6c97145714e6eaeb948a6d67"
+    },
+    "final.stdout": {
+      "bytes": 689,
+      "sha256": "faccf90abad379c8ab6a404c7b008ba01443b7363e55f2301d2bc919a71ec5c1"
+    },
+    "github-review-readback.json": {
+      "bytes": 12337,
+      "sha256": "a906f7452739a5c9a3591da718e1299501541ca0a6a2f024476fb2bfcc84144e"
+    },
+    "initial-selector-assumption-fixture.rs": {
+      "bytes": 26747,
+      "sha256": "aab4ad0de8d77f2aa7c1f8c8d0753d1f3c0e31ecd86d94b1653f233740da34b4"
+    },
+    "markers.stdout": {
+      "bytes": 190,
+      "sha256": "e2eac93bb0757d5e4633bb3136e863b64b5676d8554af61067e1f933c2a1b442"
+    },
+    "owner.patch": {
+      "bytes": 7861,
+      "sha256": "78b174fe46d295e03030a110054e56d45ff023dcfa561ab1a5daf7d822e97ff2"
+    },
+    "qualification.json": {
+      "bytes": 574,
+      "sha256": "32156c42d971db4161d8bfd684294e6b6b9e42d904adc7d44b903d22bad05f7e"
+    },
+    "runs/toolbar458-loading-baseline/01-actual-startup-status.log": {
+      "bytes": 1367,
+      "sha256": "6a058107823a7f235b5db7f37fa4544274f235415b9c767c65042ef9e0906d69"
+    },
+    "runs/toolbar458-loading-baseline/summary.json": {
+      "bytes": 9969,
+      "sha256": "d32fb7462160c46816a470bd60d6bc58edd0c2236ea1b424875617eb4e652e22"
+    },
+    "runs/toolbar458-loading-final/01-all-header-rendered.log": {
+      "bytes": 10733,
+      "sha256": "179517a215d87f7ef221026fa949120f0a953cdfffc92c79c529e9fa0954c3e4"
+    },
+    "runs/toolbar458-loading-final/02-header-title-data.log": {
+      "bytes": 570,
+      "sha256": "0d2110c59cfd5f182373fda7f1525ac612091400cf26b058e5900f0348fe7f28"
+    },
+    "runs/toolbar458-loading-final/03-ui-feature-strict.log": {
+      "bytes": 360,
+      "sha256": "a1d25c3364a64c75afbf1aee61622d0adca976598a5f28beab7e82aa7740fcb3"
+    },
+    "runs/toolbar458-loading-final/04-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/toolbar458-loading-final/05-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/toolbar458-loading-final/06-dependency-patches.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/toolbar458-loading-final/07-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/toolbar458-loading-final/08-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/toolbar458-loading-final/09-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/toolbar458-loading-final/10-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/toolbar458-loading-final/summary.json": {
+      "bytes": 14104,
+      "sha256": "56c13a32dd7d1f29d30d033883d1ad151fc042ab6699a56e54b19e3f5b6a5b71"
+    },
+    "runs/toolbar458-loading-markers/01-actual-startup-status.log": {
+      "bytes": 6738,
+      "sha256": "bd01eb7ea08bfaf862620615220a666de8aebf7d004da73663b662d9e6fa75e5"
+    },
+    "runs/toolbar458-loading-markers/summary.json": {
+      "bytes": 10162,
+      "sha256": "80c534e0b8cd6a61d49866785dd75c00f40a7dde11cae3ef6c33c7fa1a28c744"
+    },
+    "source/crates/hex-ui/src/editor/header.rs": {
+      "bytes": 27244,
+      "sha256": "282a618103f28e38f3dfc02bbf9dfec56897798e3ca66eaaf2303e0ed898454c"
+    },
+    "source/crates/hex-ui/src/editor/tempo_input.rs": {
+      "bytes": 6590,
+      "sha256": "e3b0efcd3e091a57981216f196186a4252eb38796dd42c5ae5d5301411eea139"
+    },
+    "source/crates/hex-ui/src/editor/transport.rs": {
+      "bytes": 14918,
+      "sha256": "8e06ba000cbbf3020e62526919050d31d6cb188051fd9e77964b1ecf2d189ff6"
+    }
+  }
+}

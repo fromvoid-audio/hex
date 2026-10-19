@@ -1,0 +1,180 @@
+{
+  "review": {
+    "review_threads": [
+      {
+        "id": "PRRT_kwDOVB_C-s6t2wxc",
+        "is_resolved": false,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/transport.rs",
+        "line": 213,
+        "diff_side": "RIGHT",
+        "start_line": 209,
+        "start_diff_side": "RIGHT",
+        "original_line": 213,
+        "original_start_line": 209,
+        "resolved_by": null,
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQbAZg",
+            "database_id": 4312186982,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Reserve status width while the project is loading**\n\nAt the supported 880 px minimum, this shrinkable `min_w_0` item only recovers enough space for the short offline label, but when `state()` is `None`, the additional padded `loading` element appended below consumes that space and can collapse the audio status back to zero width. Cover the real loading state in the compact-width test and reserve enough width for both indicators so startup does not reintroduce the original invisible-status failure.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/09b46aefc5b4702cd671167afd82594ce286d316/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T09:22:45Z",
+            "updated_at": "2026-10-19T09:22:45Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQeGTg",
+            "database_id": 4312237646,
+            "body": "Recorded against exact09b46aef in shared Pulse2813/2856 notes28052/28053. This is a source-backed return pending the continuing implementation owner's actual pointer/loading-state reproduction or disproof; I am not resolving it from the existing focused tests. The already-running frozen full21 continues unchanged, and its terminal receipt will remain distinct from review clearance. Both canonical PR identities and prior negative evidence are preserved.",
+            "created_at": "2026-10-19T09:28:48Z",
+            "updated_at": "2026-10-19T09:28:48Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6t2wxl",
+        "is_resolved": false,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 44,
+        "diff_side": "RIGHT",
+        "start_line": 42,
+        "start_diff_side": "RIGHT",
+        "original_line": 44,
+        "original_start_line": 42,
+        "resolved_by": null,
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQbAcg",
+            "database_id": 4312186994,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Refuse Tab while arrangement pan owns the pointer**\n\nWhen the workspace already has focus and the middle mouse button is holding an arrangement pan, this guard does not check `arrangement_pan`, so an unmodified Tab reaches `set_mode`; that method immediately cancels the pan and switches to Console before mouse-up. Treat the active pan like the other pointer gestures here so Tab cannot interrupt a captured timeline interaction.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/09b46aefc5b4702cd671167afd82594ce286d316/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T09:22:45Z",
+            "updated_at": "2026-10-19T09:22:45Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQeFqw",
+            "database_id": 4312237483,
+            "body": "Recorded against exact09b46aef in shared Pulse2813/2856 notes28052/28053. This is a source-backed return pending the continuing implementation owner's actual pointer/loading-state reproduction or disproof; I am not resolving it from the existing focused tests. The already-running frozen full21 continues unchanged, and its terminal receipt will remain distinct from review clearance. Both canonical PR identities and prior negative evidence are preserved.",
+            "created_at": "2026-10-19T09:28:47Z",
+            "updated_at": "2026-10-19T09:28:47Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      }
+    ]
+  },
+  "issue": {
+    "issue": {
+      "url": "https://github.com/PORTALSURFER/hex/pull/458",
+      "title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar",
+      "issue_number": 458,
+      "body": "Keep audio output status visible in the compact workspace toolbar alongside full Arrange/Console names.\n\nCoherent exact prospective source on BOTH canonical PRs: `09b46aefc5b4702cd671167afd82594ce286d316`, tree `4358682e8b798dc0adc31729e85246fb38f51f47`. Existing histories419 `2df27623` and458 `20f85436` retained through ordinary integration of owner419 `1d38161a`, dependent458 `1c682bd2`, qualifiedmain420 `f9201561`.\n\nRequired exact local FULL21 **PASSED**, 875.523s, clean unchanged/start=end/stale=false/exit0. UI **965 passed,0failed,3existingignored**,269.79s, including all9workspace and both header geometry cases; allocationprobes/allstrict/desktop passed. Summary SHA256 `2ea6533152093c7f77bb54cc49a10f671d5522b1fe24d0f37735b69f33538914`.\n\n**Fresh review blocked, not merged:** active middle-button pan+Tab ownership (4194312181644 /4584312186994), and458 state=None loading toolbar output-status width (4312186982). Sole implementation owner will reproduce/disprove on frozen source; no unchanged full-CI retry. Older resize/paint/scrub/todo returns addressed and resolved from actual current evidence; original toolbar-focus hypothesis disproved with corrected post-header selection capture, preserving focus behavior. All prior negative receipts retained.\n\nImmutable evidence only: `evidence/hex419-458-09b46aef-review-blocked-20261019` @ `e381a7aaacab6eeb0810f6826d51d6f28f059569`, `hex419-458-09b46aef-review-blocked-evidence.tar.gz`,524888B,SHA256 `58d0972a29f60c9f10ffbfeec36ec859bf6353076ce3ad5820f901cc9ab5ef07`;103safe members/102verified payloads. Never build or merge evidence refs.\n\nBoth canonical PRs retain independent authenticated merge/readiness requirements. No actualmerge/ReadyForReview/native physical input/IME/pixel/installed acceptance claim; installed2eef unchanged.",
+      "state": "open",
+      "user": {
+        "login": "pulse-iocore-portalsurfer[bot]",
+        "name": "pulse-iocore-portalsurfer[bot]",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 340736319
+      },
+      "assignees": [
+        {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 41680373
+        }
+      ],
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": 1,
+      "created_at": "2026-10-19T07:42:58Z",
+      "updated_at": "2026-10-19T09:34:12Z",
+      "closed_at": null,
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/458",
+      "display_title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar"
+    },
+    "url": "https://github.com/PORTALSURFER/hex/pull/458",
+    "title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar",
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/458",
+    "display_title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar"
+  },
+  "pr": {
+    "url": "https://github.com/PORTALSURFER/hex/pull/458",
+    "number": 458,
+    "state": "open",
+    "merged": false,
+    "mergeable": true,
+    "draft": false,
+    "body": "Keep audio output status visible in the compact workspace toolbar alongside full Arrange/Console names.\n\nCoherent exact prospective source on BOTH canonical PRs: `09b46aefc5b4702cd671167afd82594ce286d316`, tree `4358682e8b798dc0adc31729e85246fb38f51f47`. Existing histories419 `2df27623` and458 `20f85436` retained through ordinary integration of owner419 `1d38161a`, dependent458 `1c682bd2`, qualifiedmain420 `f9201561`.\n\nRequired exact local FULL21 **PASSED**, 875.523s, clean unchanged/start=end/stale=false/exit0. UI **965 passed,0failed,3existingignored**,269.79s, including all9workspace and both header geometry cases; allocationprobes/allstrict/desktop passed. Summary SHA256 `2ea6533152093c7f77bb54cc49a10f671d5522b1fe24d0f37735b69f33538914`.\n\n**Fresh review blocked, not merged:** active middle-button pan+Tab ownership (4194312181644 /4584312186994), and458 state=None loading toolbar output-status width (4312186982). Sole implementation owner will reproduce/disprove on frozen source; no unchanged full-CI retry. Older resize/paint/scrub/todo returns addressed and resolved from actual current evidence; original toolbar-focus hypothesis disproved with corrected post-header selection capture, preserving focus behavior. All prior negative receipts retained.\n\nImmutable evidence only: `evidence/hex419-458-09b46aef-review-blocked-20261019` @ `e381a7aaacab6eeb0810f6826d51d6f28f059569`, `hex419-458-09b46aef-review-blocked-evidence.tar.gz`,524888B,SHA256 `58d0972a29f60c9f10ffbfeec36ec859bf6353076ce3ad5820f901cc9ab5ef07`;103safe members/102verified payloads. Never build or merge evidence refs.\n\nBoth canonical PRs retain independent authenticated merge/readiness requirements. No actualmerge/ReadyForReview/native physical input/IME/pixel/installed acceptance claim; installed2eef unchanged.",
+    "title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar",
+    "base": "main",
+    "base_sha": "f9201561eb409bea2a111d7337b7e7a73e4832b1",
+    "head": "pulse/task-2856-g1-d1cf74cba023",
+    "head_sha": "09b46aefc5b4702cd671167afd82594ce286d316",
+    "head_repo_id": 1411367674,
+    "head_repo_full_name": "PORTALSURFER/hex",
+    "merge_commit_sha": "26d738132535da633edbfcc73e1453696cff3278",
+    "user": {
+      "login": "pulse-iocore-portalsurfer[bot]",
+      "name": "pulse-iocore-portalsurfer[bot]",
+      "email": null,
+      "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+      "id": 340736319
+    },
+    "requested_reviewers": [
+      {
+        "login": "PORTALSURFER",
+        "name": "PORTALSURFER",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 41680373
+      }
+    ],
+    "requested_team_reviewers": null,
+    "diff": null,
+    "comments": null,
+    "created_at": "2026-10-19T07:42:58Z",
+    "updated_at": "2026-10-19T09:34:12Z",
+    "closed_at": null,
+    "merged_at": null,
+    "commits": 14,
+    "changed_files": 10,
+    "additions": 911,
+    "deletions": 10,
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/458",
+    "display_title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar"
+  }
+}

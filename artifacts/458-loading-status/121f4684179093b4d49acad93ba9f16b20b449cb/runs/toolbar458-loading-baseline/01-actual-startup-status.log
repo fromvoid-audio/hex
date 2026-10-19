@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.41s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+actual startup loading=true width=880 mode=Arrangement status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 61.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+
+thread 'editor::header::ui_tests::compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators' (181746) panicked at crates/hex-ui/src/editor/header.rs:557:26:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::header::ui_tests::compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators ... FAILED
+
+failures:
+
+failures:
+    editor::header::ui_tests::compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 968 filtered out; finished in 0.25s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

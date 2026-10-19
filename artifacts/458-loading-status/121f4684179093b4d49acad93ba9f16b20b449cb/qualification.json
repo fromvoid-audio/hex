@@ -1,0 +1,13 @@
+{
+  "source": "121f4684179093b4d49acad93ba9f16b20b449cb",
+  "tree": "e078352bef60273cfffd8f73b5d0aafce739d858",
+  "parent": "09b46aefc5b4702cd671167afd82594ce286d316",
+  "patch_base": "09b46aefc5b4702cd671167afd82594ce286d316",
+  "source_content_sha256": "1f2b1b42b271339e4ed46f797e81bc1381f8dc40a0f902a51aa081047f9b3d60",
+  "summary_sha256": "56c13a32dd7d1f29d30d033883d1ad151fc042ab6699a56e54b19e3f5b6a5b71",
+  "duration_seconds": 109.302,
+  "steps": 10,
+  "cases": 5,
+  "ignored": 0,
+  "result_kind": "review hypothesis disproved; regression supplement; no sizing fix"
+}
