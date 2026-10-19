@@ -107,6 +107,25 @@ audio-event gesture. Active outside cancellation still retains event focus,
 clears its preview and submits no edit. Deliberate foreign-focus trim cancellation
 remains unchanged.
 
+## Pointer delivery after the original handle leaves view
+
+Edge-pan can move the original canonical clip completely outside the viewport
+while its prospective resize remains visible. Pointer updates belong to that
+captured resize payload, not to the original handle's rendered lifetime. The
+existing typed audio/MIDI move handlers now live on the stable editor root;
+original handle listeners are removed to avoid duplicate updates. Current-owner,
+stale/cancel, modifiers, canonical preview and valid-position checks are retained.
+The timer and its edge-band calculation are unchanged.
+
+Real rendered regressions first pan until the original handle is absent, then
+move the held pointer into the interior: further ticks must leave the viewport
+fixed while capture continues. Re-entering either edge resumes only its current
+direction; a second interior entry stops again. Normal audio, MIDI, temporary
+Shift stretch and enabled Warp cover both edges, exact displayed-to-worker
+extent and one Undo/Redo. Existing Escape/stale/release/pending-horizon cases
+remain separate controls. Track-height resizing is not a timeline-pan gesture.
+These headless results do not claim native physical input acceptance.
+
 
 ## Clip-local resize styling (Pulse2860 / PR462)
 
