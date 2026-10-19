@@ -1,0 +1,20 @@
+{
+  "source": "2cfe0a346b0d26d1775be202896be249fead0491",
+  "tree": "f8ddadf8669901bd454b5f5aa0b45d4ee2ce2823",
+  "base": "3539f1f37ffe01cba653b4939d6055c95da00167",
+  "changed_file": {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/device_preset_ui_tests.rs",
+    "before_blob": "36fb324b26b78e41a66e1b13496281d3f6ba1809",
+    "after_blob": "0166fdbcd300706bac5baa098592a3ac458a3325",
+    "sha256": "1f3be923fd71779cf03d2aa4ad7029462e9f626dc074e8139ffede4990df34fe"
+  },
+  "unchanged_widget": {
+    "path": "crates/hex-widgets/src/numeric_control.rs",
+    "blob": "a565ee7e901337b41ddfefac59c0e463255def7a",
+    "sha256": "8e3623c53dc23735b0b6a7401abec6c96187cb3c802a71713eda523b1faaa92f"
+  },
+  "all_original_lines_preserved": true,
+  "diff_numstat": "37\t0\tcrates/hex-ui/src/editor/device_panel/tests/device_preset_ui_tests.rs",
+  "tested_dirty_parent": "84235a266e168c84f8aa2e3b2b59ad80dece9340",
+  "tested_content_sha256": "534336ab8d79f53735acb71548418298b79a047635ca716a124814e7fd194479"
+}
