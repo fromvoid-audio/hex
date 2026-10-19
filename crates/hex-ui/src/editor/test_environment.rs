@@ -14,7 +14,7 @@ use std::{
 pub(super) struct Inputs {
     pub(super) directory: Option<PathBuf>,
     pub(super) home: Option<PathBuf>,
-    pub(super) defaults: [bool; 3],
+    pub(super) defaults: [bool; 4],
 }
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -83,10 +83,10 @@ impl Environment {
     }
     pub(super) fn resolve_paths(
         &self,
-        paths: (PathBuf, PathBuf, PathBuf),
-        defaults: [bool; 3],
-    ) -> (PathBuf, PathBuf, PathBuf) {
-        let (browser, recent, theme) = paths;
+        paths: (PathBuf, PathBuf, PathBuf, PathBuf),
+        defaults: [bool; 4],
+    ) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (browser, recent, theme, project) = paths;
         let config = self.root.0.join("config");
         // Flags describe constructor intent; explicit paths are never recognized
         // by string comparison or derived from an arbitrary preferences parent.
@@ -105,6 +105,11 @@ impl Environment {
                 config.join("theme.json")
             } else {
                 theme
+            },
+            if defaults[3] {
+                config.join("project-directory.json")
+            } else {
+                project
             },
         )
     }

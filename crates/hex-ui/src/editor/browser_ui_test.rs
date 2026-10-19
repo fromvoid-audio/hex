@@ -4328,6 +4328,7 @@ fn place_icon_preferences_window(
                         config.to_owned(),
                         recent.to_owned(),
                         directory.0.join("icon-theme.json"),
+                        directory.0.join("project-directory.json"),
                     ),
                     crate::editor::test_environment::Inputs {
                         home: Some(home),

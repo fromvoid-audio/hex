@@ -98,46 +98,58 @@ impl EditorView {
             cx.notify();
             return;
         };
-        let response = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(match mode {
-                hex_session::DocumentAudioMode::Resident => "open project".into(),
-                hex_session::DocumentAudioMode::VerifiedStreaming => {
-                    "open project as verified streaming".into()
-                }
-            }),
-        });
         let handle = window.window_handle();
-        cx.spawn(async move |this, cx| {
-            let picked = response.await;
-            let _ = cx.update_window(handle, |_, window, cx| {
-                let _ = this.update(cx, |view, cx| {
-                    if !view.finish_open_picker(generation, serial) {
-                        return;
-                    }
-                    if window.focused(cx).is_none() {
-                        view.focus.focus(window);
-                    }
-                    match picked {
-                        Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
-                            if let Some(path) = paths.pop() {
-                                if super::device_panel::finalize_controls(view, cx) {
-                                    view.choose_project(path, mode);
+        self.with_project_picker_directory(cx, move |view, directory, cx| {
+            if !view.open_picker_is_current(generation, serial) {
+                return;
+            }
+            if !cx.windows().contains(&handle) {
+                view.finish_open_picker(generation, serial);
+                return;
+            }
+            let response = cx.prompt_for_paths_with_directory(
+                PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: false,
+                    prompt: Some(match mode {
+                        hex_session::DocumentAudioMode::Resident => "open project".into(),
+                        hex_session::DocumentAudioMode::VerifiedStreaming => {
+                            "open project as verified streaming".into()
+                        }
+                    }),
+                },
+                directory.as_deref(),
+            );
+            cx.spawn(async move |this, cx| {
+                let picked = response.await;
+                let _ = cx.update_window(handle, |_, window, cx| {
+                    let _ = this.update(cx, |view, cx| {
+                        if !view.finish_open_picker(generation, serial) {
+                            return;
+                        }
+                        if window.focused(cx).is_none() {
+                            view.focus.focus(window);
+                        }
+                        match picked {
+                            Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
+                                if let Some(path) = paths.pop() {
+                                    if super::device_panel::finalize_controls(view, cx) {
+                                        view.choose_project(path, mode);
+                                    }
                                 }
                             }
+                            Ok(Err(error)) => {
+                                view.error = Some(error.to_string().to_lowercase().into())
+                            }
+                            _ => view.status = "open cancelled".into(),
                         }
-                        Ok(Err(error)) => {
-                            view.error = Some(error.to_string().to_lowercase().into())
-                        }
-                        _ => view.status = "open cancelled".into(),
-                    }
-                    cx.notify();
+                        cx.notify();
+                    });
                 });
-            });
-        })
-        .detach();
+            })
+            .detach();
+        });
     }
 
     pub(super) fn choose_project(

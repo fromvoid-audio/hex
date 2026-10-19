@@ -5323,3 +5323,27 @@ source handoff is separate from final integration/full CI/merge and delivery.
   New exact prospective FULL21 and final review remain pending. User review on
   a qualified delivered build should check nine created hues, recolor, Undo/Redo,
   save/reopen and existing gray preservation. Empty-track policy408 stays separate.
+
+- 19 October 2026 — Pulse2818 / PR424 returned startup writer repair: retain
+  both owner commits ee9ac4c8 and67b84e10. Actual named Save during held initial
+  preference load followed by view drop lost the queued folder; the existing
+  owned writer now starts immediately, retaining independent off-UI preference
+  validation and the non-writable refusal. Two actual reds and the condition-only
+  green remain preserved; owner expanded54positive cases and strict checks pass.
+  Merger verified all47new payloads and both owner file identities, then ordinarily
+  integrated qualified main without conflicts or feature edits. New exact FULL21
+  and final review remain pending; previous1f085full21 and4737native51 are scoped
+  history, not this repair's qualification. Actual OS chooser, physical save/open
+  and installation acceptance remain open.
+
+- 19 October 2026 — Pulse2793 / PR399 import-equivalence fixture return: first
+  exact candidate e66a9102 failed workspace checks in two Session import cases
+  whose independently created tracks drew different valid automatic hues. The
+  source owner retained full Project/resource comparisons and production random
+  policy, using a shared authored eight-hue baseline with one legal unused Cyan
+  choice; complete Undo/Redo comparisons remain. Actual paired red/green and
+  135 positive focused cases are separate from final required checks. Merger
+  verified all26 repair payloads and bytes outside the two test functions, then
+  ordinarily integrated qualified main, preserving both append-only todo sides.
+  New exact FULL21/final review remain pending; old e66 failure stays negative,
+  original owner native2 stays scoped, and physical palette/delivery remain open.
