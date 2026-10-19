@@ -6008,3 +6008,12 @@ prospective full CI/integration; native physical mouse/IME acceptance stays open
   cases and four pure math cases, with save/open, Undo/Redo, both directions,
   live modifiers/focus/cancel/Open invalidation. Native physical/listening and
   merger's prospective full21/review/actual merge remain separate and open.
+
+
+## 408 empty-track source continuation
+
+- Compose original c206 empty ordinary-track insertion with current non-gray
+  color selection and the 345a one-Environment keyboard fixture return.
+- Original model/Service PCM/storage/Engine and new fixture receipts are source
+  component evidence; current required checks and actual merge are recorded in
+  Pulse2802. Physical input, delivery and listening acceptance remain separate.

@@ -5,8 +5,8 @@ helper. They now allocate only the track identity and start with no instrument,
 no instrument position and no effects. Raw/prepared audio imports retain the
 chosen media and clips without inserting Sine. Existing tracks/devices are not
 rewritten. Track naming, selection, current-format snapshots and Undo/Redo
-remain canonical. The independent #2793 color policy must be retained when
-combining its insertion hunk; this branch does not import that unmerged feature.
+remain canonical. Insertion retains the merged non-gray color policy while
+allocating only the new track identity.
 
 Explicit device-drop creation remains explicit: InsertTrackWithDevice inserts
 the chosen instrument through InsertInstrument, or the chosen effect through
@@ -29,8 +29,11 @@ No test-only production default, skipped test or relaxed audio oracle is added.
 
 The real Command-T test keeps naming/history assertions and verifies the empty
 track's existing add button, native-device menu and drop region. Its private
-startup roots use the existing bounded browser constructor; text-focus protection
-is retained. No production header, shell, keyboard binding or panel edit is needed.
+startup uses one precreated test Environment for the view and actual catalog-job
+leases. A held catalog-save control proves the root and four preference paths
+survive view/caller retirement until the real job finishes and cleanup completes.
+Text-focus protection is retained. No production header, shell, keyboard binding
+or panel edit is needed.
 Current-format encode/decode tests preserve both empty and explicitly authored
 tracks, with no autoload during repeated reopen.
 
