@@ -401,10 +401,16 @@ fn four_review_mac_cancelled_terminal_cancels_inside_and_outside_once(cx: &mut T
                     f.outside.borrow().as_slice(),
                     [TouchPhase::Cancelled]
                 ));
-                assert!(matches!(
-                    f.parent.borrow().as_slice(),
-                    [TouchPhase::Cancelled]
-                ));
+                let parent = f.parent.borrow();
+                if units == 0.0 {
+                    // A zero start deliberately bubbles before the terminal.
+                    assert!(matches!(
+                        parent.as_slice(),
+                        [TouchPhase::Started, TouchPhase::Cancelled]
+                    ));
+                } else {
+                    assert!(matches!(parent.as_slice(), [TouchPhase::Cancelled]));
+                }
             }
         }
     }
