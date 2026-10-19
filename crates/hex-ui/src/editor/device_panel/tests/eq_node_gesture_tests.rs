@@ -1932,7 +1932,12 @@ fn four_review_stale_cancel_cannot_discard_a_newer_queued_stream(cx: &mut TestAp
         cx.emit(Event {
             phase: Phase::Cancel,
             ..old
-        })
+        });
+        cx.emit(Event {
+            phase: Phase::Begin,
+            steps: 0,
+            ..old
+        });
     });
     visual.run_until_parked();
     assert_eq!(
@@ -1951,4 +1956,58 @@ fn four_review_stale_cancel_cannot_discard_a_newer_queued_stream(cx: &mut TestAp
         editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
         pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
     }
+}
+
+#[gpui::test]
+fn four_review_escape_on_refused_overflow_stream_cancels_only_queued_context(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(b, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let held = held_real_scroll_begin(&editor, cx);
+    for index in 0..=crate::editor::UI_REQUEST_CAPACITY {
+        wheel(
+            &mut visual,
+            if index % 2 == 0 { b } else { a },
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Moved,
+            false,
+        );
+    }
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (crate::editor::UI_REQUEST_CAPACITY, true)
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_eq!(
+        editor
+            .read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device))
+            .0,
+        0
+    );
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 1;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
 }

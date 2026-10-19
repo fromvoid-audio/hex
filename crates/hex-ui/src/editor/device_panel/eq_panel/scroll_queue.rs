@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 pub(super) struct Queue {
     waiting: Option<Retiring>,
     streams: VecDeque<Stream>,
+    latest_input: Option<(u64, u32)>,
 }
 
 struct Retiring {
@@ -33,6 +34,7 @@ struct Stream {
 pub(super) fn cancel_queued(view: &mut EditorView, device: DeviceId) {
     if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
         panel.scroll_queue.streams.clear();
+        panel.scroll_queue.latest_input = None;
     }
 }
 
@@ -44,14 +46,28 @@ pub(super) fn intercept(view: &mut EditorView, device: DeviceId, event: Event) -
                 .iter()
                 .any(|s| s.id == event.gesture_id && s.node == event.node_id)
         });
-        cancel_queued(view, device);
-        return queued;
+        let owns_context = view.device_panel.eq_panels.get(&device).is_some_and(|p| {
+            p.scroll_queue.latest_input == Some((event.gesture_id, event.node_id))
+        });
+        if owns_context {
+            cancel_queued(view, device);
+        }
+        return owns_context && queued;
     }
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return false;
     };
     let queue = &mut panel.scroll_queue;
     if event.phase == Phase::Begin && queue.waiting.is_some() {
+        if queue
+            .latest_input
+            .is_some_and(|(id, _)| event.gesture_id <= id)
+        {
+            return true;
+        }
+        // Retain refused-stream identity too: its real Escape/Cancel still
+        // cancels this queued context, while an older token cannot clear it.
+        queue.latest_input = Some((event.gesture_id, event.node_id));
         if queue.streams.len() >= super::super::super::UI_REQUEST_CAPACITY
             || queue.streams.try_reserve(1).is_err()
         {
@@ -99,9 +115,8 @@ pub(super) fn retiring(view: &mut EditorView, device: DeviceId, scroll: gestures
     ) else {
         return;
     };
-    let Some(expected_revision) = state.revision.checked_add(u64::from(expected != before)) else {
-        return;
-    };
+    // Match the existing Service revision law, including its saturated limit.
+    let expected_revision = state.revision.saturating_add(u64::from(expected != before));
     let waiting = Retiring {
         key: scroll.key,
         owner: view.device_panel.owner,
@@ -176,12 +191,9 @@ pub(in crate::editor) fn after_worker_event(
             continue;
         }
         if terminal.is_none() {
-            view.device_panel
-                .eq_panels
-                .get_mut(&device)
-                .unwrap()
-                .scroll_queue
-                .waiting = Some(waiting);
+            if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+                panel.scroll_queue.waiting = Some(waiting);
+            }
             continue;
         }
         if view.worker_requests_pending != 0

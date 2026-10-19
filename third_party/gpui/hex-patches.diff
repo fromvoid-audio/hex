@@ -521,7 +521,10 @@ diff --git a/src/gpui.rs b/src/gpui.rs
 diff --git a/src/interactive.rs b/src/interactive.rs
 --- a/src/interactive.rs
 +++ b/src/interactive.rs
-@@ -363,0 +364,8 @@
+@@ -88,0 +89,2 @@
++    /// The platform cancelled the physical gesture.
++    Cancelled,
+@@ -363,0 +366,14 @@
 +    /// True when the platform inverted device scroll direction for user preferences.
 +    /// Raw `delta` remains suitable for ordinary content scrolling.
 +    pub direction_inverted_from_device: bool,
@@ -530,10 +533,27 @@ diff --git a/src/interactive.rs b/src/interactive.rs
 +    /// Neutral by default. Ordinary content scrolling keeps using raw `delta`.
 +    pub is_momentum: bool,
 +
-@@ -374,0 +383,14 @@
++    /// Physical wheel increments, when the platform knows them independently
++    /// of content-line preferences. Fractional increments are retained. Uses
++    /// the same preference-direction convention as `delta`; content scrolling
++    /// must continue using `delta`, not this optional parameter-input metadata.
++    pub wheel_ticks: Option<Point<f32>>,
++
+@@ -374,0 +391,25 @@
 +}
 +
 +impl ScrollWheelEvent {
++    /// Opt-in physical detents, with user-preference inversion undone once.
++    pub fn physical_wheel_ticks(&self) -> Option<Point<f32>> {
++        self.wheel_ticks.map(|ticks| {
++            if self.direction_inverted_from_device {
++                point(-ticks.x, -ticks.y)
++            } else {
++                ticks
++            }
++        })
++    }
++
 +    /// Device-direction delta before the platform's user-preference inversion.
 +    /// This is opt-in: ordinary scrolling should continue using `delta`.
 +    pub fn physical_delta(&self) -> ScrollDelta {
@@ -904,15 +924,21 @@ diff --git a/src/platform/linux/wayland/client.rs b/src/platform/linux/wayland/c
 @@ -1790,0 +1791,2 @@
 +                                direction_inverted_from_device: false,
 +                                is_momentum: false,
-@@ -1802,0 +1805,2 @@
+@@ -1792,0 +1795 @@
++                                wheel_ticks: discrete.map(|ticks| ticks.map(|lines| lines / SCROLL_LINES)),
+@@ -1802,0 +1806,2 @@
 +                            direction_inverted_from_device: false,
 +                            is_momentum: false,
+@@ -1804,0 +1810 @@
++                            wheel_ticks: Some(discrete.map(|lines| lines / SCROLL_LINES)),
 diff --git a/src/platform/linux/x11/client.rs b/src/platform/linux/x11/client.rs
 --- a/src/platform/linux/x11/client.rs
 +++ b/src/platform/linux/x11/client.rs
 @@ -2217,0 +2218,2 @@
 +        direction_inverted_from_device: false,
 +        is_momentum: false,
+@@ -2219,0 +2222 @@
++        wheel_ticks: Some(delta.map(|lines| lines / SCROLL_LINES)),
 diff --git a/src/platform/mac/accessibility.rs b/src/platform/mac/accessibility.rs
 new file mode 100644
 --- /dev/null
@@ -1921,12 +1947,15 @@ new file mode 100644
 diff --git a/src/platform/mac/events.rs b/src/platform/mac/events.rs
 --- a/src/platform/mac/events.rs
 +++ b/src/platform/mac/events.rs
-@@ -235,0 +236,2 @@
+@@ -221,0 +222 @@
++                        NSEventPhase::NSEventPhaseCancelled => TouchPhase::Cancelled,
+@@ -235,0 +237,2 @@
 +                    let direction_inverted: cocoa::base::BOOL =
 +                        msg_send![native_event, isDirectionInvertedFromDevice];
-@@ -236,0 +239,2 @@
+@@ -236,0 +240,3 @@
 +                        direction_inverted_from_device: direction_inverted == YES,
 +                        is_momentum: native_event.momentumPhase() != NSEventPhase::NSEventPhaseNone,
++                        wheel_ticks: None,
 diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 --- a/src/platform/mac/platform.rs
 +++ b/src/platform/mac/platform.rs
@@ -2330,12 +2359,30 @@ diff --git a/src/platform/test/platform.rs b/src/platform/test/platform.rs
 diff --git a/src/platform/windows/events.rs b/src/platform/windows/events.rs
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
+@@ -548,2 +548,2 @@
+-        let wheel_distance =
+-            (wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_amount as f32;
++        let wheel_ticks = wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
++        let wheel_distance = wheel_ticks * wheel_scroll_amount as f32;
 @@ -555,0 +556,2 @@
 +            direction_inverted_from_device: false,
 +            is_momentum: false,
-@@ -601,0 +604,2 @@
+@@ -566,0 +569,5 @@
++            wheel_ticks: Some(if modifiers.shift {
++                Point { x: wheel_ticks, y: 0.0 }
++            } else {
++                Point { x: 0.0, y: wheel_ticks }
++            }),
+@@ -594,2 +601,2 @@
+-        let wheel_distance =
+-            (-wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_chars as f32;
++        let wheel_ticks = -wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
++        let wheel_distance = wheel_ticks * wheel_scroll_chars as f32;
+@@ -601,0 +609,2 @@
 +            direction_inverted_from_device: false,
 +            is_momentum: false,
+@@ -606,0 +616 @@
++            wheel_ticks: Some(Point { x: wheel_ticks, y: 0.0 }),
 diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 --- a/src/platform/windows/util.rs
 +++ b/src/platform/windows/util.rs
