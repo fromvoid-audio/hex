@@ -23,6 +23,10 @@ struct Gesture {
 }
 
 impl Navigation {
+    pub(in crate::editor) fn is_active(&self) -> bool {
+        self.gesture.is_some()
+    }
+
     pub(in crate::editor) fn cancel(&mut self) -> bool {
         self.gesture.take().is_some()
     }

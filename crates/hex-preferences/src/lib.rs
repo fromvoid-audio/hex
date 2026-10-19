@@ -1,8 +1,11 @@
 //! Bounded, versioned preferences independent of project documents.
 
+mod project_directory;
+pub use project_directory::{load_project_directory, save_project_directory};
+
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
@@ -15,6 +18,7 @@ const MAX_DOCUMENT_BYTES: u64 = 64 * 1024;
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_TOTAL_PATH_BYTES: usize = 8 * 1024;
 pub const MAX_USER_PLACES: usize = 14;
+const MAX_PLACE_ICON_ID_BYTES: usize = 64;
 pub const MAX_RECENT_PROJECTS: usize = 10;
 const TEMPORARY_ATTEMPTS: usize = 8;
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
@@ -33,6 +37,14 @@ pub fn recent_projects_path(home: &Path) -> PathBuf {
         .join("Application Support")
         .join("hex")
         .join("recent-projects.json")
+}
+
+/// Stable location for the last successfully used project folder.
+pub fn project_directory_preferences_path(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("hex")
+        .join("project-directory.json")
 }
 
 /// Stable app-support location for the independent four-color theme.
@@ -87,6 +99,7 @@ impl RgbColor {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BrowserPlaces {
     additional: Vec<PathBuf>,
+    icons: BTreeMap<PathBuf, String>,
 }
 
 impl BrowserPlaces {
@@ -120,11 +133,48 @@ impl BrowserPlaces {
                 additional.push(path);
             }
         }
-        Ok(Self { additional })
+        Ok(Self {
+            additional,
+            icons: BTreeMap::new(),
+        })
     }
 
     pub fn additional(&self) -> &[PathBuf] {
         &self.additional
+    }
+
+    /// A bounded opaque bundled-icon identifier, keyed by the original native path.
+    /// Unknown identifiers survive a save; the UI owns their visible fallback.
+    pub fn icon(&self, path: &Path) -> Option<&str> {
+        self.icons.get(path).map(String::as_str)
+    }
+
+    pub fn icon_assignments(&self) -> impl Iterator<Item = (&Path, &str)> {
+        self.icons
+            .iter()
+            .map(|(path, id)| (path.as_path(), id.as_str()))
+    }
+
+    pub fn set_icon(&mut self, path: &Path, id: Option<&str>) -> Result<(), PreferencesError> {
+        if !self.additional.iter().any(|place| place == path) {
+            return Err(PreferencesError::InvalidDocument(
+                "icon has no matching place".into(),
+            ));
+        }
+        if let Some(id) = id {
+            if id.is_empty()
+                || id.len() > MAX_PLACE_ICON_ID_BYTES
+                || id.chars().any(char::is_control)
+            {
+                return Err(PreferencesError::InvalidDocument(
+                    "invalid place icon identifier".into(),
+                ));
+            }
+            self.icons.insert(path.to_owned(), id.to_owned());
+        } else {
+            self.icons.remove(path);
+        }
+        Ok(())
     }
 }
 
@@ -268,7 +318,23 @@ pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
         .into_iter()
         .map(StoredPath::into_path)
         .collect::<Result<Vec<_>, _>>()?;
-    BrowserPlaces::new(paths)
+    let mut places = BrowserPlaces::new(paths)?;
+    if document.place_icons.len() > MAX_USER_PLACES {
+        return Err(PreferencesError::InvalidDocument(
+            "too many place icons".into(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    for icon in document.place_icons {
+        let path = icon.path.into_path()?;
+        if !seen.insert(path.clone()) {
+            return Err(PreferencesError::InvalidDocument(
+                "duplicate place icon".into(),
+            ));
+        }
+        places.set_icon(&path, Some(&icon.id))?;
+    }
+    Ok(places)
 }
 
 /// Load recent project paths. Missing settings are empty; malformed files are
@@ -383,6 +449,16 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
     }
     let document = Document {
         version: DOCUMENT_VERSION,
+        place_icons: places
+            .icons
+            .iter()
+            .map(|(path, id)| {
+                Ok(StoredPlaceIcon {
+                    path: StoredPath::from_path(path)?,
+                    id: id.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, PreferencesError>>()?,
         additional_places: places
             .additional
             .iter()
@@ -517,6 +593,15 @@ fn sync_directory(_directory: &Path) -> io::Result<()> {
 struct Document {
     version: u32,
     additional_places: Vec<StoredPath>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    place_icons: Vec<StoredPlaceIcon>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredPlaceIcon {
+    path: StoredPath,
+    id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -881,5 +966,82 @@ mod tests {
             Err(PreferencesError::InvalidDocument(_))
         ));
         assert_eq!(fs::read(&config).expect("read preserved document"), corrupt);
+    }
+    #[test]
+    fn place_icons_round_trip_by_native_identity_allow_reuse_and_preserve_unknown() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        let first = directory.0.join("one/same");
+        let second = directory.0.join("two/same");
+        let mut places = BrowserPlaces::new([second.clone(), first.clone()]).unwrap();
+        assert_eq!(places.icon(&first), None);
+        places.set_icon(&first, Some("samples")).unwrap();
+        places.set_icon(&second, Some("samples")).unwrap();
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
+        places
+            .set_icon(&second, Some("future-bundled-icon"))
+            .unwrap();
+        save(&config, &places).unwrap();
+        let loaded = load(&config).unwrap();
+        assert_eq!(loaded.additional(), &[second.clone(), first.clone()]);
+        assert_eq!(loaded.icon(&first), Some("samples"));
+        assert_eq!(loaded.icon(&second), Some("future-bundled-icon"));
+        places.set_icon(&first, None).unwrap();
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap().icon(&first), None);
+        assert!(
+            places
+                .set_icon(&directory.0.join("absent"), Some("folder"))
+                .is_err()
+        );
+        assert!(
+            places
+                .set_icon(&first, Some(&"x".repeat(MAX_PLACE_ICON_ID_BYTES + 1)))
+                .is_err()
+        );
+        assert!(places.set_icon(&first, Some("bad\nicon")).is_err());
+    }
+
+    #[test]
+    fn invalid_icon_metadata_refuses_load_and_preserves_original_on_save() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        let stored = serde_json::json!({"encoding":"utf8", "value":"/added"});
+        let icon = serde_json::json!({"path":stored.clone(), "id":"samples"});
+        for icons in [
+            serde_json::json!([icon.clone(), icon]),
+            serde_json::json!([{"path":{"encoding":"utf8", "value":"/orphan"}, "id":"folder"}]),
+            serde_json::json!([{"path":stored.clone(), "id":""}]),
+            serde_json::json!([{"path":stored.clone(), "id":"x".repeat(65)}]),
+        ] {
+            let bytes = serde_json::to_vec(&serde_json::json!({"version":1,
+                "additional_places":[stored.clone()], "place_icons":icons}))
+            .unwrap();
+            fs::write(&config, &bytes).unwrap();
+            assert!(load(&config).is_err());
+            assert!(save(&config, &BrowserPlaces::default()).is_err());
+            assert_eq!(fs::read(&config).unwrap(), bytes);
+        }
+        fs::write(
+            &config,
+            br#"{"version":1,"additional_places":[{"encoding":"utf8","value":"/added"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&config).unwrap().icon(Path::new("/added")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn place_icon_keys_preserve_non_utf8_native_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        let path = directory.0.join(OsString::from_vec(vec![b'f', 0xff]));
+        let mut places = BrowserPlaces::new([path.clone()]).unwrap();
+        places.set_icon(&path, Some("waveform")).unwrap();
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
+        assert_eq!(load(&config).unwrap().icon(&path), Some("waveform"));
     }
 }

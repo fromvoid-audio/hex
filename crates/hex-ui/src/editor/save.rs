@@ -79,7 +79,7 @@ impl EditorView {
             }
         }
 
-        let directory = self
+        let fallback_directory = self
             .state
             .as_ref()
             .and_then(|state| state.document_path.as_deref())
@@ -87,24 +87,45 @@ impl EditorView {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
         self.save_dialog_open = true;
-        let response = cx.prompt_for_new_path(&directory, Some("untitled.hex"));
-        cx.spawn(async move |this, cx| {
-            let picked = response.await;
-            let _ = this.update(cx, |view, cx| {
+        let generation = self.project_generation;
+        self.with_project_picker_directory(cx, move |view, directory, cx| {
+            if !view.save_dialog_open {
+                return;
+            }
+            if view.project_generation != generation {
                 view.save_dialog_open = false;
-                match picked {
-                    Ok(Ok(Some(path))) => {
-                        if super::device_panel::finalize_controls(view, cx) {
-                            view.begin_save_new(path);
-                        }
-                    }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
-                    _ => {}
-                }
                 cx.notify();
-            });
-        })
-        .detach();
+                return;
+            }
+            let directory = directory.unwrap_or(fallback_directory);
+            let response = cx.prompt_for_new_path(&directory, Some("untitled.hex"));
+            cx.spawn(async move |this, cx| {
+                let picked = response.await;
+                let _ = this.update(cx, |view, cx| {
+                    view.save_dialog_open = false;
+                    if view.project_generation != generation {
+                        cx.notify();
+                        return;
+                    }
+                    match picked {
+                        Ok(Ok(Some(path))) => {
+                            if super::device_panel::finalize_controls(view, cx) {
+                                view.begin_save_new(path);
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            view.error = Some(error.to_string().to_lowercase().into())
+                        }
+                        _ => {}
+                    }
+                    if !view.saving_project {
+                        view.cancel_open_after_save();
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        });
     }
 
     fn save_admission(&self) -> SaveAdmission {
@@ -115,7 +136,10 @@ impl EditorView {
                 .is_some(),
             self.saving_project,
             self.save_dialog_open,
-            self.close_prompt_open || self.opening_project,
+            self.close_prompt_open
+                || self.opening_project
+                || (self.project_open.busy() && !self.project_open.permits_save())
+                || self.pending_open_path.is_some(),
         )
     }
 

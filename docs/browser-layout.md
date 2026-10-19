@@ -11,9 +11,15 @@ minimum applies to the base browser, with the editor borrowing additional worksp
 space while open. Workspace/drop geometry includes the extra column.
 
 The picker has an independent 4 px drag divider. Its session-only width starts at
-124 px, leaves at least 120 px for results, and snaps to a 36 px icon rail below
-64 px. Drag right to restore labels. In icon mode, collections, sections and folder
-places retain name tooltips; folder save/error status remains available by hover.
+124 px, leaves at least 120 px for results, and resizes continuously to a 23 px
+minimum: the existing 22 px browser-control hit/centering slot plus the sidebar's
+existing 1 px right border. Collection, Library and Place glyphs share that fixed
+leading slot at every width. Single-line labels progressively clip to the remaining
+space beside the icon, reaching zero width without ellipsis. Group headings and
+open section settings retain their line/row space during resizing, so source rows
+and icons do not jump vertically. Full-row hit targets remain at least 22 px wide/high.
+In icon mode, collections, sections and folder places retain name tooltips; folder
+save/error status remains available by hover.
 Section settings expand the picker when opened. All paint uses the existing semantic
 theme and captions use the bundled typography/lowercase display boundary.
 
@@ -128,8 +134,8 @@ pending instead of showing another source's contents.
 A Place owns its root even while navigating a child folder; only that Place is
 highlighted. Without a query it shows its bounded supported folder contents.
 With a query it combines indexed WAV matches within that root and supported
-current-folder matches, with original-path deduplication. Samples remains the
-all-roots indexed catalog; its folder chips select the corresponding Place rather
+current-folder matches, with original-path deduplication. Samples retains
+all-roots indexed search; its folder chips select the corresponding Place rather
 than retaining an independent filter. Command-F chooses All and preserves indexed
 global sample/device/folder search. Adding a root from Samples still indexes it
 without changing the active source. Plain folder snapshots are cached and invalidated
@@ -143,3 +149,115 @@ existing bounded persistence; no user files are changed by source selection.
 Inline hierarchy, collections/tag editing and navigation history remain their
 separate owning issues. Native normal/icon picker, focus and offline-source
 acceptance is coordinator-owned and pending.
+
+## Inline source hierarchy — Pulse2728 / PR341
+
+Source browsing uses one virtualized inline list. Samples shows the configured
+sample roots as collapsed folders; All shows the configured roots/current folder
+and registered devices. Place and Projects show the selected root's immediate
+children. Samples filters children to folders/WAVs, Projects to folders/Hex
+projects, and Places/All retain both supported file kinds. Folder disclosure inserts indented descendants without changing the
+source/root or replacing surrounding rows. Original native path bytes identify
+rows; sample labels show only their filename, including identical filenames in
+different folders. The full path remains available in the tooltip and for
+preview, selection, explicit import and drag/drop.
+
+A nonempty query keeps indexed Samples/global search and scoped Place search.
+These are flat indexed matches, augmented by matching children of any explicitly
+expanded matching folder. Clearing the query returns to the source hierarchy;
+source and expansion state remain distinct. No recursive project search, tag
+membership or shared-library service is introduced. Device rows retain their
+registered selection/drag behavior.
+
+The interaction contract is documentation-derived from the official [Live12
+browser manual](https://www.ableton.com/en/live-manual/12/working-with-the-browser/#navigating-in-the-browser):
+Right opens a selected folder (or enters an open folder), Left closes it or
+selects its visible parent, and Up/Down selects visible rows. Disclosure and
+folder double-click/Enter expand/collapse. Opening a different branch closes
+other branches by default; Cmd-disclosure retains siblings. Closing a branch
+releases its descendant expansion/cache state. Manual sample Right/Play/Stop
+and waveform-position audition remain independent of auto-audition; sample
+double-click still cannot import. These explicit Hex behaviors take precedence
+over other Live import/preview defaults.
+
+One background child worker and a bounded queue load only requested folders.
+Existing root-folder and sample-index workers remain separate. Child snapshots
+retain at most 64 folders, 8192 entries, 4MiB of entry-path bytes, 16KiB per path and
+64 visible nested levels, in addition to the existing bounded root listing and
+sample catalog. Cache/queue/depth limits are visible. Hidden children and
+symlinks retain the existing scanner's exclusion, so folder links cannot create
+recursive cycles. Unreadable/offline children show a disclosure error with no
+stale descendants; other branches remain usable. Refresh preserves existing
+rows while real work runs, then reconciles paths/selection and removes deleted
+children. Epoch and per-request serial checks discard superseded results,
+including rapid collapse/reopen. No filesystem access runs on UI/audio threads.
+Unchanged renders/hover reuse the row snapshot and cannot queue another scan.
+
+Native optimized hierarchy/keyboard/scroll/width/reference acceptance is open.
+The coordinator's finite reference availability check found no running Live and
+a locked Mac; no gestures were observed and no app was launched. This implements
+the documented contract, not an observed claim of exact installed-Live parity.
+
+Samples count labels follow the listing model: the inline hierarchy reports visible
+items (folders plus files), while flat indexed query results report sample matches.
+Expanding a folder can change the item count without discovering another WAV. The
+label does not enumerate collapsed folders or imply a total sample count. Pulse2728
+counter follow-up; optimized native acceptance remains open.
+
+Tree refresh revalidates the existing bounded expanded-folder set even when an
+indexed query hides its rows. Parents refresh before descendants; removed branches
+retire their queued children through the existing cancellation checks. Cached rows
+remain until replacement, and clearing a query restores refreshed content. This
+does not open collapsed folders or change the folder/entry/path-byte budgets. The
+hidden-branch refresh regression uses actual disclosure input and a disposable WAV
+replacement, distinguishing fresh index data from stale cached hierarchy data.
+
+## picker alignment follow-up — pulse2706 / PR322
+
+Headless GPUI geometry reproduced the old 63-to-36 px snap and a 1 px glyph-center
+offset from adjacent browser controls. The shared slot centers the actual glyph
+layout boxes, retains row heights and removes the width snap. Tests exercise all
+three source-row types at minimum, transition and normal widths, plus full-row
+clicks, hover without selection/audition/preparation, search focus, keyboard Down,
+selected paint and drag lifecycle. Tooltip names/handlers remain unchanged by source
+inspection; their physical native display and optical glyph appearance remain
+coordinator-owned optimized acceptance, alongside smooth native divider dragging.
+No tree indentation, results, preview, persisted preferences or divider feedback
+behavior is implemented by this follow-up.
+
+## Active resize feedback — Pulse2708 / PR324
+
+Picker and outer browser dividers keep the theme's secondary/cyan color for the
+whole active gesture, independently of hover over their moving rectangles. Only
+the active divider latches that color; idle hover still uses the same highlight.
+Down, release and lost-Left-button transitions publish their current state, so
+release outside returns to idle and release over the handle retains normal hover.
+A movement without Left held ends either gesture at its latest width; a later
+unrelated drag cannot resume it. Existing close-browser cancellation is unchanged.
+Widths, cursor affordances, capture callbacks and resize/snap laws are retained.
+The separate thin-line/hit-area request remains Pulse2707.
+
+Actual GPUI input/paint regressions reproduce hover-only color loss and the
+outer divider's stale lost-button latch, then verify outside/return crossings,
+release inside/outside, cancellation, ordinary/23px picker and open/closed editor.
+These checks establish deterministic rendered feedback, not temporal native GPU
+or physical macOS capture/hover acceptance; that remains in the root's serial lane.
+
+## Stationary tag-editor toggles — Pulse2709 / PR325
+
+The rail and original browser body share one fixed base-width column. The optional
+editor is a sibling to that whole column, beginning at the rail's top and spanning
+the browser height. It borrows space to the right using the existing editor-width
+and outer-resize law; it neither overlays the base browser nor stretches the rail.
+Top and mini-strip controls both toggle, so a second click at the same coordinates
+closes the editor. Its dedicated close control remains available.
+
+Rendered input regressions reproduce the original rail expanding from480to624px
+and the mini-strip's open-only callback. They verify repeated stationary clicks at
+124px and23px picker widths, all rail/control bounds, results/preview/waveform and
+source geometry, top/right/bottom column alignment and return of the outer edge.
+An actually selected private WAV retains its loaded metadata owner without new
+preparation/audition requests. Existing browser source menus, heading/minimum snap,
+selection, drag/import, audition and history contracts remain separate and intact.
+This is layout/toggle behavior only; persistent tag editing remains Pulse2667.
+Optimized native pointer/GPU/tooltip acceptance remains root-owned and open.
