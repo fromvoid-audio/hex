@@ -1246,6 +1246,12 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     });
     let mut block = [[0.0; 2]; 128];
     backend.render(&mut block).unwrap();
+    if recovery_error {
+        assert!(
+            block.iter().flatten().any(|sample| *sample != 0.0),
+            "the real callback must keep rendering the held note"
+        );
+    }
     assert_eq!(
         backend.status().unwrap().applied_revision.load(Acquire),
         audio_revision
@@ -1315,6 +1321,20 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                 .unwrap(),
             &prepared
         ));
+        if recovery_error {
+            // A same-revision Save/status must not need to replay the lost edge.
+            view.service.submit(Request::SaveNew(directory.0.join("after-recovery.hex"))).unwrap();
+            let saved = receive_service_event(&view.service);
+            assert!(saved.error.is_none());
+            assert!(saved.playback.is_none());
+            assert_eq!(saved.state.revision, next.revision);
+            assert!(Arc::ptr_eq(saved.state.canonical_audio_source.as_ref().unwrap(), &source));
+            view.receive(saved);
+            assert_eq!(view.applied_project_revision(), Some(next.revision));
+            assert_eq!(view.audio_admission.current().unwrap().audio_revision, Some(audio_revision));
+            assert!(!keyboard.is_cancelled());
+            assert!(view.computer_keyboard.held()[0].is_some());
+        }
         // Repeated status reconstruction is idempotent, not a new publication.
         view.tick(cx);
         assert_eq!(view.applied_project_revision(), Some(next.revision));

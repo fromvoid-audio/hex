@@ -1685,7 +1685,11 @@ impl EditorView {
             };
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
-        if !event.project_replaced && event.error.is_none() {
+        if !event.project_replaced {
+            // A successful comparison commit can also report a later recovery
+            // checkpoint error. Reconcile its sealed, ordered proof regardless
+            // of that diagnostic; a refusal without valid proof cannot advance
+            // audio correlation. The error is still surfaced below.
             self.reconcile_comparison_authoring(&event_state);
         }
         if event.project_replaced
