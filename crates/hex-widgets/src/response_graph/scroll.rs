@@ -27,6 +27,7 @@ pub(super) struct State {
     next_token: u64,
     gesture: Option<Gesture>,
     quiet: Option<Task<()>>,
+    phased: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -81,6 +82,7 @@ impl ResponseGraph {
 
     pub(super) fn finish_scroll(&mut self, cancel: bool, cx: &mut Context<Self>) {
         self.scroll.quiet = None;
+        self.scroll.phased = false;
         if let Some(gesture) = self.scroll.gesture.take()
             && gesture.begun
         {
@@ -104,12 +106,12 @@ impl ResponseGraph {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !event.is_momentum
-            && matches!(event.touch_phase, TouchPhase::Ended)
-            && self.scroll.active()
-        {
-            self.finish_scroll(false, cx);
-            cx.stop_propagation();
+        if !event.is_momentum && matches!(event.touch_phase, TouchPhase::Ended) {
+            self.scroll.phased = false;
+            if self.scroll.active() {
+                self.finish_scroll(false, cx);
+                cx.stop_propagation();
+            }
             return;
         }
         if !self.editable
@@ -122,13 +124,10 @@ impl ResponseGraph {
         {
             return;
         }
-        let Some(plot) = self
-            .plot_bounds()
-            .filter(|bounds| bounds.contains(&event.position))
-        else {
+        let Some(plot) = self.plot_bounds() else {
             return;
         };
-        let Some(position) = self.normalized_position(event.position) else {
+        let Some(position) = self.unclamped_position(event.position) else {
             return;
         };
         let width = f32::from(plot.size.width);
@@ -153,7 +152,16 @@ impl ResponseGraph {
         // This is a parameter wheel, not content scrolling. Undo the platform's
         // preference inversion exactly once so physical up means increasing.
         let units = f32::from(event.physical_delta().pixel_delta(px(24.0)).y) / 24.0;
-        if !units.is_finite() || units == 0.0 {
+        if !units.is_finite() {
+            return;
+        }
+        if !event.is_momentum && matches!(event.touch_phase, TouchPhase::Started) {
+            // A zero-delta physical start still identifies later Moved input.
+            // Retain only metadata here, without taking horizontal scrolling.
+            self.scroll.phased = true;
+            self.scroll.quiet = None;
+        }
+        if units == 0.0 {
             // A horizontal-only wheel belongs to the outer content scroller.
             // Keep nonzero fractional vertical intent for deliberate coalescing.
             return;
@@ -165,6 +173,7 @@ impl ResponseGraph {
             cx.stop_propagation();
             return;
         }
+        let phased = self.scroll.phased;
         if self
             .scroll
             .gesture
@@ -172,6 +181,7 @@ impl ResponseGraph {
         {
             self.finish_scroll(false, cx);
         }
+        self.scroll.phased = phased;
         let mut gesture = if let Some(gesture) = self.scroll.gesture {
             gesture
         } else {
@@ -215,8 +225,12 @@ impl ResponseGraph {
         let token = gesture.token;
         self.scroll.gesture = Some(gesture);
         cx.stop_propagation();
+        // Physical streams end explicitly, even after a held-finger pause.
+        // Only streams without Started need the mouse-wheel quiet fallback.
+        if self.scroll.phased {
+            return;
+        }
         // One retained UI timer; replacing it cancels the prior quiet deadline.
-        // Ended gives trackpads an immediate terminal. Mouse wheels use quiet.
         self.scroll.quiet = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(250))
