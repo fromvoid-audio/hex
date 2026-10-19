@@ -1,0 +1,27 @@
+test_failed_explicit_build_consumer_pending_retries_same_target_with_fresh_artifact (test_launch_restart.RecreatedTargetTests.test_failed_explicit_build_consumer_pending_retries_same_target_with_fresh_artifact) ... ERROR
+
+======================================================================
+ERROR: test_failed_explicit_build_consumer_pending_retries_same_target_with_fresh_artifact (test_launch_restart.RecreatedTargetTests.test_failed_explicit_build_consumer_pending_retries_same_target_with_fresh_artifact)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 790, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 673, in test_failed_explicit_build_consumer_pending_retries_same_target_with_fresh_artifact
+    retry=self.inspect()
+          ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 826, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+----------------------------------------------------------------------
+Ran 1 test in 0.048s
+
+FAILED (errors=1)

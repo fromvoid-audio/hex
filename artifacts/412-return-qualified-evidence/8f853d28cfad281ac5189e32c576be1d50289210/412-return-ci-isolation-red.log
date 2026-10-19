@@ -1,0 +1,21 @@
+test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target (test_launch.LaunchTests.test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target) ... [1/1] build: running
+[1/1] build: passed
+Cargo target directory identity changed; choose a fresh target or pass --adopt-target
+fetching latest main...
+Cargo target directory identity changed; choose a fresh target or pass --adopt-target
+ERROR
+
+======================================================================
+ERROR: test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target (test_launch.LaunchTests.test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch.py", line 506, in test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target
+    launch.run_launch(self.root,argv=['--recover-release-target','--test'])
+  File "/workspace/hex/launch", line 213, in run_launch
+    raise LaunchError(f"full local CI failed; see {runner.summary_path}")
+hex_launch.LaunchError: full local CI failed; see /tmp/tmp240b1jhu/repo/artifacts/local-ci/recovery-verification/summary.json
+
+----------------------------------------------------------------------
+Ran 1 test in 0.055s
+
+FAILED (errors=1)

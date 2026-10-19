@@ -1,0 +1,27 @@
+test_missing_plain_configured_app_parent_is_created_before_inspection_lock (test_launch_restart.RecreatedTargetTests.test_missing_plain_configured_app_parent_is_created_before_inspection_lock) ... ERROR
+
+======================================================================
+ERROR: test_missing_plain_configured_app_parent_is_created_before_inspection_lock (test_launch_restart.RecreatedTargetTests.test_missing_plain_configured_app_parent_is_created_before_inspection_lock)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 657, in test_missing_plain_configured_app_parent_is_created_before_inspection_lock
+    authority=restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,Mock())
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/launch-restart.py", line 444, in inspect_recreated_target
+    with delivery.activation_lock(app):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/hex-test-build.py", line 237, in activation_lock
+    with lock_path.open("a+") as lock:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmpn3vl6t9p/repo/new-output/nested/.hex-test-build.lock'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.018s
+
+FAILED (errors=1)

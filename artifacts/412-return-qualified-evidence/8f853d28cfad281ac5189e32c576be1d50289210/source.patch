@@ -1,0 +1,281 @@
+diff --git a/docs/local-ci.md b/docs/local-ci.md
+index 6d077457..a54ddc07 100644
+--- a/docs/local-ci.md
++++ b/docs/local-ci.md
+@@ -170,7 +170,11 @@ specifications. Under the target lock the guard checks those facts again, along
+ with a required packaging inactivity check immediately before mutation. No
+ replacement identity means the existing automatic expected-owner guard still
+ requires the retained old target identity. This adds no owner format or general
+-adoption permission; see `docs/test-builds.md` for refusal and race limits.
++adoption permission. Exact own PENDING state may retry at the same current
++identity; unchanged READY state cannot use this exception. Recovery plus --test
++uses a fresh invocation-owned verification target with ordinary no-adopt CI,
++leaving the old dev marker and original release packaging target independent.
++See `docs/test-builds.md` for refusal and race limits.
+ 
+ Before incompatible release cleanup, the guard durably writes a pending marker.
+ It invokes `cargo clean --profile release` for current workspace package IDs
+diff --git a/docs/test-builds.md b/docs/test-builds.md
+index 118baef4..af9a06c0 100644
+--- a/docs/test-builds.md
++++ b/docs/test-builds.md
+@@ -82,8 +82,8 @@ source update. It cannot be combined with installed-only `--open`. This is futur
+ operator invocation, not permission for unattended force-quit during verification.
+ 
+ `./launch --recover-release-target` is a separate explicit option for a recreated
+-Cargo target whose retained release owner belongs to this exact checkout and
+-common repository. Save and quit **both** the configured app and any raw
++Cargo target, or retrying an exact owned pending handoff, whose retained release
++owner belongs to this exact checkout and common repository. Save and quit **both** the configured app and any raw
+ `hex-desktop` first. This option never requests quit or force termination and is
+ incompatible with `--force-restart` and `--open`. It still updates clean main,
+ rebuilds, installs and opens normally; tests remain opt-in with `--test`.
+@@ -92,11 +92,24 @@ Read-only inspection under the existing activation/target locks binds the old
+ owner bytes by SHA256 and the observed replacement directory device/inode. The
+ old source must be a clean known ancestor of the fetched source, and retained
+ package name/version/spec ownership must match the current locked workspace
+-(new members are permitted). Missing, foreign, malformed, symlinked or unchanged
+-targets refuse. Historical ready-artifact metadata is not reuse or qualification:
++(new members are permitted). Missing, foreign, malformed or symlinked targets
++refuse. The same current target identity is accepted only for an exact owned
++**pending** record; an unchanged **ready** record still refuses this recovery
++option. Failed cleanup/build/consumption leaves pending ownership, so another
++explicit inspection and guarded fresh build can retry without marker edits. Historical ready-artifact metadata is not reuse or qualification:
+ the old executable need not remain in a recreated target and is never adopted as
+ a new build. The owner marker stays untouched during inspection.
+ 
++A missing configured app output parent is created only after plain-path validation,
++and rechecked before its activation lock is opened; symlink or non-directory
++parents refuse. With `--recover-release-target --test`, ordinary full local CI
++uses a fresh invocation-owned target under ignored `artifacts/launch`, retaining
++its normal verification provenance and disk/lock rules. This grants no adoption
++of a stale development owner. Packaging still uses the originally inspected
++release target/environment and its independent owner CAS. Failed verification
++leaves that original dev/release ownership untouched; the isolated target/logs
++remain available for diagnosis.
++
+ At the guarded mutation boundary, under the same target-wide lock, packaging
+ rechecks configured-app/raw-desktop inactivity, source, exact owner hash,
+ replacement directory and package ownership. Races or a busy cooperative lock
+diff --git a/launch b/launch
+index 7f11d89c..8a9b7701 100755
+--- a/launch
++++ b/launch
+@@ -207,7 +207,16 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
+ 
+     tested = "--test" in (argv or [])
+     if tested:
+-        runner = ci.LocalCiRunner(root, mode="full")
++        verification = {}
++        if "--recover-release-target" in (argv or []):
++            # Release recovery is not authority to adopt a stale DEV cache.
++            # Retain this fresh invocation-owned target and its normal CI owner;
++            # packaging still inherits the original release target environment.
++            artifacts = root / "artifacts/launch"
++            artifacts.mkdir(parents=True, exist_ok=True)
++            target = Path(tempfile.mkdtemp(prefix="verification-target-", dir=artifacts))
++            verification["env"] = {**os.environ, "CARGO_TARGET_DIR": str(target)}
++        runner = ci.LocalCiRunner(root, mode="full", **verification)
+         result = runner.run()
+         if result != 0 or runner.summary.get("status") != "passed":
+             raise LaunchError(f"full local CI failed; see {runner.summary_path}")
+@@ -248,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
+                              "force it if necessary (unsaved work may be lost); recover matching owned "
+                              "pending state, rebuild latest main, then start it; tests remain opt-in")
+     parser.add_argument("--recover-release-target", action="store_true",
+-                        help="explicitly recover this repository's inspected recreated release target; "
++                        help="explicitly recover this repository's inspected pending or recreated release target; "
+                              "requires hex already stopped, never signals an app; rebuild/install/open "
+                              "latest main normally, tests remain opt-in")
+     arguments = list(sys.argv[1:] if argv is None else argv)
+diff --git a/scripts/launch-restart.py b/scripts/launch-restart.py
+index 3bdcdbdc..9b20b544 100644
+--- a/scripts/launch-restart.py
++++ b/scripts/launch-restart.py
+@@ -441,6 +441,11 @@ def inspect_recreated_target(root: Path, app: Path, source: str, ci, delivery, a
+     report = {"kind": "explicit recreated-target inspection; tests not run",
+               "candidate": source, "app": str(app), "status": "incomplete"}
+     try:
++        # A supported configured app may not have an output directory yet.
++        # Validate before creation and again before opening its activation lock.
++        delivery.assert_plain_path(app)
++        app.parent.mkdir(parents=True, exist_ok=True)
++        delivery.assert_plain_path(app)
+         with delivery.activation_lock(app):
+             delivery.assert_inactive(app)
+             assert_no_raw(root)
+diff --git a/scripts/local-ci.py b/scripts/local-ci.py
+index 01c4d833..095f9a10 100644
+--- a/scripts/local-ci.py
++++ b/scripts/local-ci.py
+@@ -781,7 +781,7 @@ class LocalCiRunner:
+                     or not isinstance(old_identity, dict) or set(old_identity) != {"device", "inode"}
+                     or any(type(old_identity[k]) is not int or old_identity[k] < (1 if k == "inode" else 0)
+                            for k in ("device", "inode"))
+-                    or old_identity == identity
++                    or (old_identity == identity and record["state"] != "pending")
+                     or not isinstance(previous, dict)
+                     or set(previous) != {"commit", "dirty", "dirty_files", "content_sha256"}
+                     or previous["dirty"] is not False or previous["dirty_files"] != []
+diff --git a/scripts/tests/test_launch.py b/scripts/tests/test_launch.py
+index bdc95df4..27fa594c 100644
+--- a/scripts/tests/test_launch.py
++++ b/scripts/tests/test_launch.py
+@@ -471,6 +471,52 @@ class LaunchTests(unittest.TestCase):
+         inspect.assert_not_called()
+ 
+ 
++    def test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target(self):
++        import os
++        import test_local_ci as fixtures
++        f=fixtures.LocalCiRunnerTests();f.setUp();self.addCleanup(f.tearDown)
++        self.root=f.repo
++        (self.root/'scripts').mkdir();(self.root/'.git').mkdir()
++        (self.root/'scripts/hex-test-build.json').write_text('{"app_path":"artifacts/hex.app"}')
++        git=f.bin/'git';git.write_text(git.read_text().replace('deadbeef',self.source))
++        cargo=f.bin/'cargo';cargo.write_text(cargo.read_text().replace('"$FAKE_METADATA_TARGET"','"${CARGO_TARGET_DIR:-$FAKE_METADATA_TARGET}"'))
++        target=Path(f.env['FAKE_METADATA_TARGET']);target.mkdir()
++        old=f.runner('old-dev-owner');self.assertEqual(old.run(),0)
++        _,owner=fixtures.local_ci.target_state_paths(target,f.target_state_dir);raw=owner.read_bytes()
++        target.rename(target.with_name('retained-dev'));target.mkdir()
++        (target/'release').mkdir();(target/'release/external').write_bytes(b'preserve release')
++        stale=f.runner('stale-default-control');self.assertEqual(stale.run(),1)
++        self.assertEqual(owner.read_bytes(),raw)
++        authority={'owner_sha256':'e'*64,'target_identity':stale._directory_identity(target)}
++        observed=[];package_targets=[]
++        def verification(root,mode,env=None):
++            selected=dict(f.env)
++            if env is not None and 'CARGO_TARGET_DIR' in env:selected['CARGO_TARGET_DIR']=env['CARGO_TARGET_DIR']
++            runner=f.runner('recovery-verification',root=root,env=selected)
++            observed.append(runner);return runner
++        def command(argv,**kwargs):
++            if argv[:2]==['sh','scripts/bundle-macos.sh']:package_targets.append(os.environ['CARGO_TARGET_DIR'])
++            return self.command(argv,**kwargs)
++        with patch.dict(os.environ,{**f.env,'CARGO_TARGET_DIR':str(target)},clear=True), \
++                patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=command), \
++                patch.object(launch.ci,'LocalCiRunner',side_effect=verification), \
++                patch.object(launch.restart,'inspect_recreated_target',return_value=authority), \
++                patch.object(launch.delivery,'assert_inactive'), \
++                patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}):
++            launch.run_launch(self.root,argv=['--recover-release-target','--test'])
++        self.assertEqual(len(observed),1)
++        runner=observed[0];actual=Path(runner.cargo_identity['target_directory'])
++        self.assertNotEqual(actual,target);self.assertTrue(actual.is_relative_to(self.root/'artifacts/launch'))
++        self.assertFalse(runner.adopt_target);self.assertEqual(runner.summary['target_cache']['action'],'claim-empty')
++        self.assertEqual(runner.summary['status'],'passed');self.assertIsNone(runner.target_lock)
++        self.assertEqual(owner.read_bytes(),raw)
++        self.assertEqual((target/'release/external').read_bytes(),b'preserve release')
++        self.assertEqual(package_targets,[str(target)],'packaging inherits ORIGINAL release target')
++        self.assertNotIn('cargo clean',f.call_log.read_text())
++        package=next(x for x in self.calls if x[0]=='sh')
++        self.assertIn('--ci-report',package);self.assertIn('--expected-recreated-target-inode',package)
++
++
+ class ForceRestartFlagTests(unittest.TestCase):
+     def test_native_bundle_verification_failure_is_a_controlled_cli_refusal(self):
+         with patch.object(launch,'run_launch',side_effect=launch.delivery.DeliveryError('sealed bundle mismatch')), \
+diff --git a/scripts/tests/test_launch_restart.py b/scripts/tests/test_launch_restart.py
+index 5a830538..541da875 100644
+--- a/scripts/tests/test_launch_restart.py
++++ b/scripts/tests/test_launch_restart.py
+@@ -622,8 +622,7 @@ class RecreatedTargetTests(ReleaseFixture):
+                         Mock(side_effect=None if app_running else delivery.DeliveryError('raw running')))
+             controller.assert_not_called();self.assertEqual(self.owner.read_bytes(),raw)
+             self.assertIsNone(self.runner.target_lock)
+-    def test_packaging_artifact_helper_forwards_authority_into_real_guard(self):
+-        authority=self.inspect();inactive=Mock()
++    def install_fixture_cargo(self):
+         cargo=self.f.bin/'cargo';original=cargo.read_text()
+         # The owned executable emits a real Cargo-shaped artifact record and
+         # materializes that fixture file; metadata/clean stay the original fake.
+@@ -635,6 +634,10 @@ class RecreatedTargetTests(ReleaseFixture):
+                 '"target":{"name":"hex-desktop"},"profile":{"opt_level":"3"}}));sys.exit(0)\n'
+                 'os.execv("/bin/sh",["/bin/sh",str(Path(__file__).with_name("cargo-original")),*sys.argv[1:]])\n')
+         (cargo.with_name('cargo-original')).write_text(original.replace('tool=${0##*/}', 'tool=cargo'));cargo.write_text(prefix)
++
++    def test_packaging_artifact_helper_forwards_authority_into_real_guard(self):
++        authority=self.inspect();inactive=Mock()
++        self.install_fixture_cargo()
+         with delivery.optimized_artifact(self.runner,adopt=True,
+                 expected_owner_sha256=authority['owner_sha256'],
+                 expected_recreated_target_identity=authority['target_identity'],
+@@ -646,6 +649,54 @@ class RecreatedTargetTests(ReleaseFixture):
+         self.assertEqual(json.loads(self.owner.read_bytes())['state'],'ready')
+         self.assertIsNone(self.runner.target_lock)
+ 
++    def test_missing_plain_configured_app_parent_is_created_before_inspection_lock(self):
++        app=self.f.repo.resolve()/'new-output'/'nested'/'hex.app'
++        self.assertFalse(app.parent.exists());raw=self.owner.read_bytes()
++        with patch.object(fixtures.local_ci,'LocalCiRunner',return_value=self.runner), \
++                patch.object(delivery,'assert_inactive'),patch.object(restart,'NativeController') as controller:
++            authority=restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,Mock())
++        self.assertTrue(app.parent.is_dir());self.assertFalse(app.exists())
++        self.assertEqual(authority['owner_sha256'],hashlib.sha256(raw).hexdigest())
++        self.assertEqual(self.owner.read_bytes(),raw);controller.assert_not_called()
++        self.assertIsNone(self.runner.target_lock)
++
++    def test_failed_explicit_build_consumer_pending_retries_same_target_with_fresh_artifact(self):
++        authority=self.inspect();first_raw=self.owner.read_bytes()
++        with self.assertRaisesRegex(RuntimeError,'fixture consumer failed'):
++            with self.guard(authority):raise RuntimeError('fixture consumer failed')
++        pending=json.loads(self.owner.read_bytes())
++        self.assertEqual(pending['state'],'pending')
++        self.assertEqual(pending['target_identity'],authority['target_identity'])
++        self.assertNotEqual(self.owner.read_bytes(),first_raw)
++        self.assertIsNone(self.runner.target_lock)
++        # This is now an unchanged target, but exactly owned PENDING, not READY.
++        retry=self.inspect()
++        self.assertEqual(retry['owner_sha256'],hashlib.sha256(self.owner.read_bytes()).hexdigest())
++        self.install_fixture_cargo()
++        with delivery.optimized_artifact(self.runner,adopt=True,
++                expected_owner_sha256=retry['owner_sha256'],
++                expected_recreated_target_identity=retry['target_identity'],recovery_inactive_check=Mock()) as (binary,report):
++            self.assertEqual(binary.read_bytes(),b'fresh packaged fixture')
++            self.assertEqual(report['previous_owner'],pending)
++        self.assertEqual(json.loads(self.owner.read_bytes())['state'],'ready')
++        self.assertEqual(self.keep.read_bytes(),b'preserve external data')
++        self.assertEqual((self.retained/'old-artifact').read_bytes(),b'never qualify or erase old build')
++        with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect() # unchanged READY still refuses
++        self.assertIsNone(self.runner.target_lock)
++
++    def test_missing_parent_refuses_symlink_and_nondirectory_without_marker_changes(self):
++        raw=self.owner.read_bytes();foreign=self.f.base/'foreign-parent';foreign.mkdir()
++        alias=self.f.repo/'alias';alias.symlink_to(foreign,target_is_directory=True)
++        plain_file=self.f.repo/'not-directory';plain_file.write_bytes(b'preserve file')
++        for parent in (alias/'nested',plain_file/'nested'):
++            app=parent/'hex.app'
++            with patch.object(fixtures.local_ci,'LocalCiRunner',return_value=self.runner), \
++                    patch.object(delivery,'assert_inactive'),patch.object(restart,'NativeController') as controller:
++                with self.assertRaises((delivery.DeliveryError,OSError)):
++                    restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,Mock())
++            controller.assert_not_called();self.assertEqual(self.owner.read_bytes(),raw)
++        self.assertFalse((foreign/'nested').exists());self.assertEqual(plain_file.read_bytes(),b'preserve file')
++
+ 
+ class PreflightTests(ReleaseFixture):
+     def prepare_fixture(self):
+diff --git a/todo.md b/todo.md
+index 182701d5..86e16580 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5840,3 +5840,20 @@ User rejected device-local automation editing. Remove its button, graph mode and
+   are distinct from product failures. Exact check receipts accompany handoff.
+ - Root alone performs later real Mac recovery after safe app shutdown. Cloud
+   tests do not establish actual machine recovery, native qualification or merge.
++
++## 19 October 2026 — Pulse2806 / PR412 three-path recovery return
++
++- Root29859 accepts three reproduced supported-path repairs on exactc670, keeping
++  merged474 and all413 guards. recover+test uses a retained fresh invocation-owned
++  verification target via runner env only; no old dev-owner adoption/rewrite,
++  original inspected release target/environment still used for packaging.
++- Plain validated app-parent creation/revalidation supports configured new paths;
++  symlink/non-directory parents still refuse. Same-identity explicit retry allows
++  exact own PENDING only, never unchanged READY, with all ownerCAS/source/package/
++  identity/inactivity/lock/final checks before normal clean/freshbuild/ready.
++- Three actual new baseline errors retained: stale devowner stops real verification
++  Runner; missingparent activationlock FileNotFound; failed guardedconsumer leaves
++  pending that explicit reinspection refuses. New source tests prove each path,
++  real stale devmarker preservation/fresh target claim, unchanged release env,
++  realguardedconsumerfailure then actual packaging helper/fakeCargo freshartifact
++  ready, parent negative controls and unchanged READY refusal. No native actions.

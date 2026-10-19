@@ -1,0 +1,14 @@
+test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target (test_launch.LaunchTests.test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target) ... [1/1] build: running
+[1/1] build: passed
+Cargo target directory identity changed; choose a fresh target or pass --adopt-target
+fetching latest main...
+[1/1] build: running
+[1/1] build: passed
+verifying installed hex...
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.038s
+
+OK
+opened /tmp/tmpicb8u1le/repo/artifacts/hex.app

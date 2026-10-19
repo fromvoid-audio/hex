@@ -1,0 +1,23 @@
+{
+  "source": "8f853d28cfad281ac5189e32c576be1d50289210",
+  "tree": "ec05c770b2f853ed74dae294ba7b1fdae6481e42",
+  "base": "c670ecf2dbb3ca286cd8614b49aba59015347850",
+  "files": [
+    "docs/local-ci.md",
+    "docs/test-builds.md",
+    "launch",
+    "scripts/launch-restart.py",
+    "scripts/local-ci.py",
+    "scripts/tests/test_launch.py",
+    "scripts/tests/test_launch_restart.py",
+    "todo.md"
+  ],
+  "summary_sha256": "c5b7cd47c8eb7ec9b82bc05319ef0f6e370ebeac0a81eda4744694d36b337173",
+  "component_stages": 9,
+  "python_total": 247,
+  "python_passed": 245,
+  "old_native_skips": 2,
+  "recovery_class_functions": 15,
+  "baseline_evidence": "795cbcb2350e0c823fe653fbd0b0c8b4507d8490",
+  "no_native_or_full21_claim": true
+}
