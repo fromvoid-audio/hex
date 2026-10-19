@@ -100,6 +100,25 @@ impl ResponseGraph {
         }
     }
 
+    /// Capture can see Ended outside the graph. Defer ownership retirement so
+    /// ordinary inside bubble handling keeps its existing consumption priority.
+    pub(super) fn observe_scroll_end(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(token) = self.scroll.gesture.map(|gesture| gesture.token) else {
+            // A zero-delta Started may own phase metadata without any edit.
+            self.scroll.phased = false;
+            return;
+        };
+        cx.defer_in(window, move |graph, _, cx| {
+            if graph
+                .scroll
+                .gesture
+                .is_some_and(|gesture| gesture.token == token)
+            {
+                graph.finish_scroll(false, cx);
+            }
+        });
+    }
+
     pub(super) fn scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
@@ -311,3 +330,7 @@ mod tests {
         assert_eq!(accumulate(0.0, -10000.0), (0.0, -16));
     }
 }
+
+#[cfg(test)]
+#[path = "scroll_terminal_tests.rs"]
+mod terminal_tests;

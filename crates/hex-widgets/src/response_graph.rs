@@ -1126,6 +1126,17 @@ impl Element for ResponseGraphCaptureElement {
                 window.refresh();
             }
         });
+        let entity = self.entity.clone();
+        window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+            if phase.capture()
+                && !event.is_momentum
+                && matches!(event.touch_phase, gpui::TouchPhase::Ended)
+            {
+                // Observe only the terminal. Normal hit-tested bubble routing
+                // retains first refusal and other panels still receive Ended.
+                entity.update(cx, |graph, cx| graph.observe_scroll_end(window, cx));
+            }
+        });
     }
 }
 
