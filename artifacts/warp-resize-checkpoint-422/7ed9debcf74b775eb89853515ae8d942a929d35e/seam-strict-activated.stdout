@@ -1,0 +1,25 @@
+[1/12] warp-admission-differential: running
+[1/12] warp-admission-differential: passed
+[2/12] engine-admission-differential: running
+[2/12] engine-admission-differential: passed
+[3/12] warp-existing-dsp: running
+[3/12] warp-existing-dsp: passed
+[4/12] strict-warp-engine: running
+[4/12] strict-warp-engine: passed
+[5/12] strict-ui: running
+[5/12] strict-ui: passed
+[6/12] architecture: running
+[6/12] architecture: passed
+[7/12] gpui: running
+[7/12] gpui: passed
+[8/12] dependencies: running
+[8/12] dependencies: passed
+[9/12] ui-style: running
+[9/12] ui-style: passed
+[10/12] device-layout: running
+[10/12] device-layout: passed
+[11/12] fmt: running
+[11/12] fmt: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/warp-resize-422-seam-strict-activated/summary.json

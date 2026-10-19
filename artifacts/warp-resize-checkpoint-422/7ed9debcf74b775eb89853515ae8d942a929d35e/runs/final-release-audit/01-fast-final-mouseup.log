@@ -1,0 +1,20 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0425]: cannot find value `enabled_warp` in this scope
+    --> crates/hex-ui/src/editor/resize_release_tests.rs:1088:12
+     |
+1088 |         if enabled_warp {
+     |            ^^^^^^^^^^^^ not found in this scope
+
+warning: unused variable: `enabled_warp`
+    --> crates/hex-ui/src/editor/resize_release_tests.rs:1208:75
+     |
+1208 | fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enabled_warp: bool) {
+     |                                                                           ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_enabled_warp`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0425`.
+warning: `hex-ui` (lib test) generated 1 warning
+error: could not compile `hex-ui` (lib test) due to 1 previous error; 1 warning emitted

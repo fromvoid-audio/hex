@@ -1,0 +1,2 @@
+could not resolve Cargo target: [Errno 2] No such file or directory: 'cargo'
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/warp-resize-422-seam-strict/summary.json

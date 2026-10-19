@@ -1,0 +1,38 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0616]: field `start` of struct `MidiClipTrim` is private
+    --> crates/hex-ui/src/editor/resize_release_tests.rs:1266:53
+     |
+1266 |                 assert_eq!(actual.start(), expected.start);
+     |                                                     ^^^^^ private field
+     |
+help: a method `start` also exists, call it with parentheses
+     |
+1266 |                 assert_eq!(actual.start(), expected.start());
+     |                                                          ++
+
+error[E0616]: field `length` of struct `MidiClipTrim` is private
+    --> crates/hex-ui/src/editor/resize_release_tests.rs:1267:54
+     |
+1267 |                 assert_eq!(actual.length(), expected.length);
+     |                                                      ^^^^^^ private field
+     |
+help: a method `length` also exists, call it with parentheses
+     |
+1267 |                 assert_eq!(actual.length(), expected.length());
+     |                                                            ++
+
+error[E0616]: field `source_start` of struct `MidiClipTrim` is private
+    --> crates/hex-ui/src/editor/resize_release_tests.rs:1268:60
+     |
+1268 |                 assert_eq!(actual.source_start(), expected.source_start);
+     |                                                            ^^^^^^^^^^^^ private field
+     |
+help: a method `source_start` also exists, call it with parentheses
+     |
+1268 |                 assert_eq!(actual.source_start(), expected.source_start());
+     |                                                                        ++
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `hex-ui` (lib test) due to 3 previous errors

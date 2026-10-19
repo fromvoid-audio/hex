@@ -1,0 +1,268 @@
+{
+  "cargo_metadata_error": "could not resolve Cargo target: [Errno 2] No such file or directory: 'cargo'",
+  "commit": "7ed9debcf74b775eb89853515ae8d942a929d35e",
+  "dirty": false,
+  "dirty_files": [],
+  "duration_seconds": 0.271,
+  "end_tree": {
+    "commit": "7ed9debcf74b775eb89853515ae8d942a929d35e",
+    "content_sha256": "66fd9cffc985418420b859ebb0082b266ba6acfd2632ce0dc32f8a8f85888bc5",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "ended_at": "2026-10-19T06:20:30Z",
+  "exit_code": 2,
+  "invocation_argv": [
+    "/tmp/422-component.py",
+    "seam-strict",
+    "[[\"warp-admission-differential\",[\"cargo\",\"test\",\"-p\",\"hex-warp\",\"--test\",\"stretch_admission\",\"--\",\"--nocapture\"]],[\"engine-admission-differential\",[\"cargo\",\"test\",\"-p\",\"hex-engine\",\"--lib\",\"warp_preview_\",\"--\",\"--nocapture\"]],[\"warp-existing-dsp\",[\"cargo\",\"test\",\"-p\",\"hex-warp\",\"--test\",\"dsp\",\"--\",\"--nocapture\"]],[\"strict-warp-engine\",[\"cargo\",\"clippy\",\"-p\",\"hex-warp\",\"-p\",\"hex-engine\",\"--all-targets\",\"--\",\"-D\",\"warnings\"]],[\"strict-ui\",[\"cargo\",\"clippy\",\"-p\",\"hex-ui\",\"--features\",\"ui-test-support\",\"--all-targets\",\"--\",\"-D\",\"warnings\"]],[\"architecture\",[\"python3\",\"scripts/check-architecture.py\"]],[\"gpui\",[\"python3\",\"scripts/check-gpui-patch.py\"]],[\"dependencies\",[\"python3\",\"scripts/check-dependency-patches.py\"]],[\"ui-style\",[\"python3\",\"scripts/check-ui-style.py\"]],[\"device-layout\",[\"python3\",\"scripts/check-device-layout.py\"]],[\"fmt\",[\"cargo\",\"fmt\",\"--all\",\"--check\"]],[\"diff\",[\"git\",\"diff\",\"--check\"]]]"
+  ],
+  "metadata_error": "could not resolve exact Cargo workspace and target identity",
+  "mode": "component",
+  "repo_root": "/workspace/hex",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "warp-resize-422-seam-strict",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "7ed9debcf74b775eb89853515ae8d942a929d35e",
+    "content_sha256": "66fd9cffc985418420b859ebb0082b266ba6acfd2632ce0dc32f8a8f85888bc5",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "7ed9debcf74b775eb89853515ae8d942a929d35e",
+    "content_sha256": "66fd9cffc985418420b859ebb0082b266ba6acfd2632ce0dc32f8a8f85888bc5",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "started_at": "2026-10-19T06:20:29Z",
+  "status": "failed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-warp",
+        "--test",
+        "stretch_admission",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "warp-admission-differential"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-engine",
+        "--lib",
+        "warp_preview_",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "engine-admission-differential"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-warp",
+        "--test",
+        "dsp",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "warp-existing-dsp"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-warp",
+        "-p",
+        "hex-engine",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "strict-warp-engine"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "strict-ui"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "architecture"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "gpui"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "dependencies"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "ui-style"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "device-layout"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "fmt"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "diff"
+    }
+  ]
+}

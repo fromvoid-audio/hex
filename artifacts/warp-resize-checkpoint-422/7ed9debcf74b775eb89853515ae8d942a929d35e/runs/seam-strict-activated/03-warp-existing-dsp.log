@@ -1,0 +1,20 @@
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running tests/dsp.rs (target/debug/deps/dsp-34e77dbd04e1000f)
+
+running 11 tests
+test direct_requests_reject_bad_modes_extent_ratios_and_cancellation ... ok
+test beats_attack_mapping_tail_modes_and_decay_are_real ... ok
+test complex_linked_stereo_keeps_independent_channel_partial_phase_and_level ... ok
+formant peaks shifted=2200 corrected=1200; ratios=0.1279248014916499/20.732004009186614/151.26100740361198
+test finite_short_silence_dc_nyquist_and_stretch_edges ... ok
+test repitch_doubles_frequency_and_filters_downsampling_alias ... ok
+test source_envelope_runs_before_resampling_and_follows_loop_phase ... ok
+test complex_pro_reimposes_actual_formants_and_zero_transpose_is_an_exact_noop ... ok
+test transient_detector_has_no_warmup_attacks_on_sustained_material_at_different_rates ... ok
+test distinct_stretch_modes_keep_stationary_pitch_and_antiphase_stereo ... ok
+test nonzero_transpose_is_independent_of_duration_in_tonal_texture_and_spectral_modes ... ok
+test texture_is_seeded_and_grain_size_changes_processing ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+

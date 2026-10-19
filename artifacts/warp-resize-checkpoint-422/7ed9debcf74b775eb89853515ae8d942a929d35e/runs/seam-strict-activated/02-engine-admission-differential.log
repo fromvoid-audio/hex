@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/debug/deps/hex_engine-5ab7741602b2157c)
+
+running 3 tests
+test audio_transform::tests::warp_preview_admission_nonuniform_markers_and_subframe_errors_match_actual_preparation ... ok
+test audio_transform::tests::warp_preview_valid_endpoints_can_be_disconnected_by_marker_tempo_crossings ... ok
+test audio_transform::tests::warp_preview_admission_matches_actual_preparation_pitch_modes_tempo_and_rounding ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 542 filtered out; finished in 2.54s
+

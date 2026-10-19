@@ -1,0 +1,23 @@
+{
+  "crates/hex-engine/src/audio_transform/mod.rs": {
+    "before_sha256": "6f3ab787ba387b22dd7f9b2c164b9b9204abf3f307e7f69c7ae201b376cd9276",
+    "after_sha256": "17100a2c8219cc3b9515a81d2049517b70487221a5835945b4632fe51a66a879"
+  },
+  "crates/hex-engine/src/audio_transform/tests.rs": {
+    "before_sha256": "713a728948ee4d510afef943e575d5cb25d86817f74879b620bc9c675dcec764",
+    "after_sha256": "72e730de1ae677659983412dd79c8de3b5c679c9bc38aa28d49259a668b93304"
+  },
+  "crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "before_sha256": "500fe644316eaf0d8a3be3dab01402ce397619bee5c81223c66e52a79daeb905",
+    "after_sha256": "a78f3c1d063c0cf3b5314919774ebe25ec015ba7f89b468a35c0ad1f7acb21e7"
+  },
+  "crates/hex-warp/src/lib.rs": {
+    "before_sha256": "021ac7b302db9148623b6f529adcd0f4e3c652396fa71f1e61a409c9f620f7b3",
+    "after_sha256": "b752a56a9d26d4cf3b86cda86fe77ffa582df0fbd3944a2adaf0de9fea3c70f8"
+  },
+  "crates/hex-warp/tests/stretch_admission.rs": {
+    "before_sha256": null,
+    "after_sha256": "ce84993634dcf673e9ccc9392ab71b7e2f0ac5d888b74b293e9f929986ac5fa5"
+  },
+  "audit_original_file_prefix_unchanged": true
+}

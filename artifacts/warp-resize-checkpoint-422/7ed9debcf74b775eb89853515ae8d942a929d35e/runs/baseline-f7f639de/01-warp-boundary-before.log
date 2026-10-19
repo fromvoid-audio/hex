@@ -1,0 +1,38 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 00s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+capability edge=Right desired=96000..102458 actual=Some((96000, 96000)) error=Some(DisplayError { message: "playback compile failed: warp stretch including pitch compensation must be within 1/8..8", batch_member: None }) submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 102458 })
+
+thread 'editor::trim::stretch_limit_tests::shift_right_preview_boundary_is_accepted_by_actual_worker' (150437) panicked at crates/hex-ui/src/editor/stretch_limit_tests.rs:162:9:
+visible preview must be prepared-capable: Some(DisplayError { message: "playback compile failed: warp stretch including pitch compensation must be within 1/8..8", batch_member: None })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::trim::stretch_limit_tests::shift_right_preview_boundary_is_accepted_by_actual_worker ... FAILED
+capability edge=Left desired=185314..192000 actual=Some((96000, 96000)) error=Some(DisplayError { message: "playback compile failed: warp stretch including pitch compensation must be within 1/8..8", batch_member: None }) submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 185314 })
+
+thread 'editor::trim::stretch_limit_tests::shift_left_preview_boundary_is_accepted_by_actual_worker' (150436) panicked at crates/hex-ui/src/editor/stretch_limit_tests.rs:162:9:
+visible preview must be prepared-capable: Some(DisplayError { message: "playback compile failed: warp stretch including pitch compensation must be within 1/8..8", batch_member: None })
+test editor::trim::stretch_limit_tests::shift_left_preview_boundary_is_accepted_by_actual_worker ... FAILED
+
+failures:
+
+failures:
+    editor::trim::stretch_limit_tests::shift_left_preview_boundary_is_accepted_by_actual_worker
+    editor::trim::stretch_limit_tests::shift_right_preview_boundary_is_accepted_by_actual_worker
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 933 filtered out; finished in 0.56s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

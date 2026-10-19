@@ -1,0 +1,5 @@
+[1/2] warp-admission-differential: running
+[1/2] warp-admission-differential: passed
+[2/2] engine-admission-differential: running
+[2/2] engine-admission-differential: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/warp-resize-422-seam-first/summary.json

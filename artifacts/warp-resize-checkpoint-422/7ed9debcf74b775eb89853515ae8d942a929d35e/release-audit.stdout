@@ -1,0 +1,5 @@
+[1/2] release-current-baseline: running
+[1/2] release-current-baseline: passed
+[2/2] terminal-current-baseline: running
+[2/2] terminal-current-baseline: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/warp-resize-422-release-audit-f7f639de/summary.json
