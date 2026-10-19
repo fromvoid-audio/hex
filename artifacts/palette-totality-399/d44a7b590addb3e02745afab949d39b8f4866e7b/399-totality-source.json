@@ -1,0 +1,12 @@
+{
+  "base": "8258fad9733bc78358470f735b3344cfdcc10cf7",
+  "head": "d44a7b590addb3e02745afab949d39b8f4866e7b",
+  "tree": "5a4fd529fe65e9e942a7b953769fc0684aa7c026",
+  "fixture_commit": "e1729d2aaf6704671e2a5cb0f029ec5a0895e540",
+  "files": [
+    "crates/hex-project/src/appearance.rs",
+    "crates/hex-storage/tests/clip_names.rs",
+    "crates/hex-storage/tests/gain_envelope.rs",
+    "crates/hex-storage/tests/musical_routing.rs"
+  ]
+}

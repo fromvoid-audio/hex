@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/lib.rs (target/debug/deps/hex_project-36707f45c482d0ae)
+
+running 2 tests
+test appearance::automatic_color_tests::every_unused_tie_is_reachable_without_changing_the_palette ... ok
+test appearance::automatic_color_tests::authored_count_profiles_preserve_exact_ticket_rank_for_every_tie_subset ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 83 filtered out; finished in 0.13s
+

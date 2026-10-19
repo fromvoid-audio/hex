@@ -1,0 +1,162 @@
+diff --git a/crates/hex-project/src/appearance.rs b/crates/hex-project/src/appearance.rs
+index 6d5e27ed..f5872bc1 100644
+--- a/crates/hex-project/src/appearance.rs
++++ b/crates/hex-project/src/appearance.rs
+@@ -65,7 +65,7 @@ impl ElementColor {
+ // Control-side only: count at most MAX_TRACKS existing identities, then choose
+ // among equally least-used hues. No new failure mode when the palette fills.
+ fn least_used_track_color(project: &Project, ticket: u64) -> ElementColor {
+-    let mut counts = [0_u16; 9];
++    let mut counts = ElementColor::TRACK_CHOICES.map(|_| 0_u16);
+     for track in &project.tracks {
+         if let Some(index) = ElementColor::TRACK_CHOICES
+             .iter()
+@@ -76,14 +76,20 @@ fn least_used_track_color(project: &Project, ticket: u64) -> ElementColor {
+     }
+     let minimum = counts.iter().copied().min().unwrap_or(0);
+     let ties = counts.iter().filter(|n| **n == minimum).count();
+-    let choice = (ticket % ties as u64) as usize;
+-    ElementColor::TRACK_CHOICES
+-        .into_iter()
+-        .zip(counts)
+-        .filter(|(_, count)| *count == minimum)
+-        .nth(choice)
+-        .expect("nonempty finite track palette")
+-        .0
++    let mut remaining = (ticket % ties.max(1) as u64) as usize;
++    // The fixed palette is nonempty at compile time. Select its ordered tie
++    // rank with bounded work, without a fallible iterator lookup or Gray fallback.
++    let [mut selected, ..] = ElementColor::TRACK_CHOICES;
++    for (color, count) in ElementColor::TRACK_CHOICES.into_iter().zip(counts) {
++        if count == minimum {
++            selected = color;
++            if remaining == 0 {
++                break;
++            }
++            remaining -= 1;
++        }
++    }
++    selected
+ }
+ 
+ pub(crate) fn new_track_color(project: &Project) -> ElementColor {
+@@ -113,6 +119,52 @@ mod automatic_color_tests {
+         assert_eq!(ElementColor::ALL[0], ElementColor::Gray);
+         assert_eq!(ElementColor::ALL[1..], ElementColor::TRACK_CHOICES);
+     }
++    #[test]
++    fn authored_count_profiles_preserve_exact_ticket_rank_for_every_tie_subset() {
++        use crate::{Command, Editor};
++        let palette = ElementColor::TRACK_CHOICES;
++        let mut completed = 0;
++        // Legal projects cover every unused-hue subset and every least-used
++        // subset after exhaustion, without inventing malformed runtime state.
++        for base in [0_u16, 1] {
++            for mask in 0..(1_usize << palette.len()) {
++                let counts =
++                    std::array::from_fn::<_, 9, _>(|i| base + u16::from(mask & (1 << i) != 0));
++                let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
++                for (color, count) in palette.into_iter().zip(counts) {
++                    for _ in 0..count {
++                        let Created::Track(track) = editor
++                            .execute(Command::AddTrack {
++                                name: "authored".into(),
++                            })
++                            .unwrap()
++                        else {
++                            panic!("track");
++                        };
++                        editor
++                            .execute(Command::SetTrackColor { track, color })
++                            .unwrap();
++                    }
++                }
++                let minimum = counts.into_iter().min().unwrap();
++                let candidates = palette
++                    .into_iter()
++                    .zip(counts)
++                    .filter_map(|(color, count)| (count == minimum).then_some(color))
++                    .collect::<Vec<_>>();
++                assert!(!candidates.is_empty());
++                for ticket in (0..(2 * candidates.len()) as u64).chain([u64::MAX - 1, u64::MAX]) {
++                    assert_eq!(
++                        least_used_track_color(editor.project(), ticket),
++                        candidates[(ticket % candidates.len() as u64) as usize],
++                        "base{base} mask{mask} ticket{ticket}"
++                    );
++                }
++                completed += 1;
++            }
++        }
++        assert_eq!(completed, 1024);
++    }
+ }
+ 
+ #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+diff --git a/crates/hex-storage/tests/clip_names.rs b/crates/hex-storage/tests/clip_names.rs
+index 3b0b001f..79c53773 100644
+--- a/crates/hex-storage/tests/clip_names.rs
++++ b/crates/hex-storage/tests/clip_names.rs
+@@ -147,7 +147,14 @@ fn names_preserve_case_history_copies_and_storage_in_all_clip_domains() {
+ 
+ #[test]
+ fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
+-    let (editor, _, audio, _) = fixture();
++    let (mut editor, track, audio, _) = fixture();
++    // This legacy document predates authored track colors.
++    editor
++        .execute(Command::SetTrackColor {
++            track,
++            color: hex_project::ElementColor::Gray,
++        })
++        .unwrap();
+     let value: serde_json::Value =
+         serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
+     let mut unchanged = Editor::new(editor.project().clone(), 8).unwrap();
+diff --git a/crates/hex-storage/tests/gain_envelope.rs b/crates/hex-storage/tests/gain_envelope.rs
+index 16c11a70..82578895 100644
+--- a/crates/hex-storage/tests/gain_envelope.rs
++++ b/crates/hex-storage/tests/gain_envelope.rs
+@@ -172,7 +172,16 @@ fn new_writer_uses_complete_schema_even_without_lanes_or_feeds() {
+ }
+ #[test]
+ fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaque_states() {
+-    let previous = fixture();
++    // Author a schema22-compatible baseline without changing ordinary fixtures.
++    let mut baseline = Editor::new(fixture(), 8).unwrap();
++    let track = baseline.project().tracks()[0].id();
++    baseline
++        .execute(Command::SetTrackColor {
++            track,
++            color: hex_project::ElementColor::Gray,
++        })
++        .unwrap();
++    let previous = baseline.project().clone();
+     let mut snapshot = previous.snapshot();
+     snapshot.tracks[0].gain_touch_epoch = 17;
+     let project = Project::from_snapshot(snapshot).unwrap();
+diff --git a/crates/hex-storage/tests/musical_routing.rs b/crates/hex-storage/tests/musical_routing.rs
+index 1f5a10e4..0e4fb357 100644
+--- a/crates/hex-storage/tests/musical_routing.rs
++++ b/crates/hex-storage/tests/musical_routing.rs
+@@ -274,9 +274,19 @@ fn development(version: u32) -> Value {
+ #[test]
+ fn private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds() {
+     for version in [20, 21] {
++        // These private envelopes omit track colors; their authored expected
++        // project is neutral while the current-format fixtures stay colored.
++        let mut expected = Editor::new(fixture(version == 21), 8).unwrap();
++        let track = expected.project().tracks()[0].id();
++        expected
++            .execute(Command::SetTrackColor {
++                track,
++                color: hex_project::ElementColor::Gray,
++            })
++            .unwrap();
+         let doc = development(version);
+         let restored = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
+-        assert_eq!(restored, fixture(version == 21));
++        assert_eq!(restored, *expected.project());
+         for edit in 0..5 {
+             let mut bad = doc.clone();
+             match edit {

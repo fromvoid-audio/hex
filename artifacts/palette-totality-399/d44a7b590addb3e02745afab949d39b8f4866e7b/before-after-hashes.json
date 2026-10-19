@@ -1,0 +1,26 @@
+{
+  "crates/hex-project/src/appearance.rs": {
+    "before_blob": "6d5e27ed8c3c8b6f0c3d3ea2b494424af450baba",
+    "before_sha256": "822e27311208f2208000a9035e52fc9cb449788855b8c322bbe9567489de20c3",
+    "after_blob": "f5872bc10045896a71720f822f443e839cb756aa",
+    "after_sha256": "de8f7dac123589ef49aa7373d420baf0a898d1d25a466c239f77b0349e656170"
+  },
+  "crates/hex-storage/tests/clip_names.rs": {
+    "before_blob": "3b0b001f2d9f3b4dfc761d714038ade5d3dd4c5d",
+    "before_sha256": "a6579118bd99e5759e3dbc35e3a57ae3ce3ca3dad91ac80fa6c0bb51aec79ce9",
+    "after_blob": "79c537731831c1e9557346f2214ddfbba52d853d",
+    "after_sha256": "2829d0967303ea6e0c3b0001eea7d0f2d9b3cdfecdc415de02fa6c9ecf38b145"
+  },
+  "crates/hex-storage/tests/gain_envelope.rs": {
+    "before_blob": "16c11a7091b59c238c070e549e69305e8244270c",
+    "before_sha256": "d2aa53227a7e40427baed7993e1903d63ff79631f6dcb9fde882219d465153c6",
+    "after_blob": "8257889548925951884a33c2131fcebfc8f27ad7",
+    "after_sha256": "c300e4d88e2832627f12a2e76bf65b1a6603f3cf1ae18f7fe18078504e36ca21"
+  },
+  "crates/hex-storage/tests/musical_routing.rs": {
+    "before_blob": "1f5a10e4ee405942558e1ec6dc1e657a0cabad1c",
+    "before_sha256": "60fa87000d6fb4ea5f19965dd806f6a11e1781b6ff99084419507d7f5068adbc",
+    "after_blob": "0e4fb357ac1b2e3f252e4ae1f61ccee6ed54a8cd",
+    "after_sha256": "d8057b98d4fc564f1203f46f1ac82d7bd5e177afa3ac90f29e3b166a05c238ab"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "crates/hex-storage/tests/clip_names.rs": {
+    "only_named_function_changed": "schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25",
+    "assertion_count_preserved": 19,
+    "format31_literals_preserved": 0
+  },
+  "crates/hex-storage/tests/gain_envelope.rs": {
+    "only_named_function_changed": "schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaque_states",
+    "assertion_count_preserved": 35,
+    "format31_literals_preserved": 5
+  },
+  "crates/hex-storage/tests/musical_routing.rs": {
+    "only_named_function_changed": "private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds",
+    "assertion_count_preserved": 10,
+    "format31_literals_preserved": 0
+  }
+}

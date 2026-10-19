@@ -1,0 +1,545 @@
+{
+  "schema": 1,
+  "ticket": 2793,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/399",
+  "source": {
+    "base": "8258fad9733bc78358470f735b3344cfdcc10cf7",
+    "head": "d44a7b590addb3e02745afab949d39b8f4866e7b",
+    "tree": "5a4fd529fe65e9e942a7b953769fc0684aa7c026",
+    "fixture_commit": "e1729d2aaf6704671e2a5cb0f029ec5a0895e540",
+    "files": [
+      "crates/hex-project/src/appearance.rs",
+      "crates/hex-storage/tests/clip_names.rs",
+      "crates/hex-storage/tests/gain_envelope.rs",
+      "crates/hex-storage/tests/musical_routing.rs"
+    ]
+  },
+  "file_hashes": {
+    "crates/hex-project/src/appearance.rs": {
+      "before_blob": "6d5e27ed8c3c8b6f0c3d3ea2b494424af450baba",
+      "before_sha256": "822e27311208f2208000a9035e52fc9cb449788855b8c322bbe9567489de20c3",
+      "after_blob": "f5872bc10045896a71720f822f443e839cb756aa",
+      "after_sha256": "de8f7dac123589ef49aa7373d420baf0a898d1d25a466c239f77b0349e656170"
+    },
+    "crates/hex-storage/tests/clip_names.rs": {
+      "before_blob": "3b0b001f2d9f3b4dfc761d714038ade5d3dd4c5d",
+      "before_sha256": "a6579118bd99e5759e3dbc35e3a57ae3ce3ca3dad91ac80fa6c0bb51aec79ce9",
+      "after_blob": "79c537731831c1e9557346f2214ddfbba52d853d",
+      "after_sha256": "2829d0967303ea6e0c3b0001eea7d0f2d9b3cdfecdc415de02fa6c9ecf38b145"
+    },
+    "crates/hex-storage/tests/gain_envelope.rs": {
+      "before_blob": "16c11a7091b59c238c070e549e69305e8244270c",
+      "before_sha256": "d2aa53227a7e40427baed7993e1903d63ff79631f6dcb9fde882219d465153c6",
+      "after_blob": "8257889548925951884a33c2131fcebfc8f27ad7",
+      "after_sha256": "c300e4d88e2832627f12a2e76bf65b1a6603f3cf1ae18f7fe18078504e36ca21"
+    },
+    "crates/hex-storage/tests/musical_routing.rs": {
+      "before_blob": "1f5a10e4ee405942558e1ec6dc1e657a0cabad1c",
+      "before_sha256": "60fa87000d6fb4ea5f19965dd806f6a11e1781b6ff99084419507d7f5068adbc",
+      "after_blob": "0e4fb357ac1b2e3f252e4ae1f61ccee6ed54a8cd",
+      "after_sha256": "d8057b98d4fc564f1203f46f1ac82d7bd5e177afa3ac90f29e3b166a05c238ab"
+    }
+  },
+  "runs": {
+    "original-mapping": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 3.728,
+      "start_tree": {
+        "commit": "8258fad9733bc78358470f735b3344cfdcc10cf7",
+        "content_sha256": "49a3ccb0350093304ca3d3e0039559acd4a163ebfd4d4659ace530ab86900338",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-project/src/appearance.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--lib",
+            "appearance::automatic_color_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:32:28Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-original-mapping/01-original-mapping-property.log",
+          "started_at": "2026-10-19T01:32:25Z",
+          "status": "passed",
+          "step_id": "original-mapping-property"
+        }
+      ]
+    },
+    "storage-before": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 18.98,
+      "start_tree": {
+        "commit": "8258fad9733bc78358470f735b3344cfdcc10cf7",
+        "content_sha256": "74d5093eba7756de135bb9e6a6ce8e339e1106efbee0120267d1b21c033dd6ee",
+        "dirty": false,
+        "dirty_files": []
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--no-fail-fast",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:33:49Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/palette-totality-399-storage-before/01-all-storage-targets-baseline.log",
+          "started_at": "2026-10-19T01:33:30Z",
+          "status": "failed",
+          "step_id": "all-storage-targets-baseline"
+        }
+      ]
+    },
+    "storage-fixtures-green": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 7.506,
+      "start_tree": {
+        "commit": "8258fad9733bc78358470f735b3344cfdcc10cf7",
+        "content_sha256": "76fb4ea6f71ed055dfda34a821bc690fedcd655024f2ab1586976b9d15721f1a",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-storage/tests/clip_names.rs",
+          " M crates/hex-storage/tests/gain_envelope.rs",
+          " M crates/hex-storage/tests/musical_routing.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--no-fail-fast",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:35:40Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-storage-fixtures-green/01-all-storage-targets.log",
+          "started_at": "2026-10-19T01:35:33Z",
+          "status": "passed",
+          "step_id": "all-storage-targets"
+        }
+      ]
+    },
+    "palette-green": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 6.064,
+      "start_tree": {
+        "commit": "e1729d2aaf6704671e2a5cb0f029ec5a0895e540",
+        "content_sha256": "86ce3613bd4b239971e42a8e1b0433a1fe378bcee0f9974d86f67fcd689f50bb",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-project/src/appearance.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--lib",
+            "appearance::automatic_color_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:36:35Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-palette-green/01-total-selection-mapping.log",
+          "started_at": "2026-10-19T01:36:32Z",
+          "status": "passed",
+          "step_id": "total-selection-mapping"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--test",
+            "automatic_track_colors",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:36:38Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-palette-green/02-actual-creation-policy.log",
+          "started_at": "2026-10-19T01:36:35Z",
+          "status": "passed",
+          "step_id": "actual-creation-policy"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 32.628,
+      "start_tree": {
+        "commit": "d44a7b590addb3e02745afab949d39b8f4866e7b",
+        "content_sha256": "86ce3613bd4b239971e42a8e1b0433a1fe378bcee0f9974d86f67fcd689f50bb",
+        "dirty": false,
+        "dirty_files": []
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--no-fail-fast",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:37:41Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/01-all-storage-targets.log",
+          "started_at": "2026-10-19T01:37:24Z",
+          "status": "passed",
+          "step_id": "all-storage-targets"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--lib",
+            "appearance::automatic_color_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:37:41Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/02-palette-mapping.log",
+          "started_at": "2026-10-19T01:37:41Z",
+          "status": "passed",
+          "step_id": "palette-mapping"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--test",
+            "automatic_track_colors",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:37:41Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/03-automatic-colors.log",
+          "started_at": "2026-10-19T01:37:41Z",
+          "status": "passed",
+          "step_id": "automatic-colors"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-project",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T01:37:44Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/04-project-clippy.log",
+          "started_at": "2026-10-19T01:37:41Z",
+          "status": "passed",
+          "step_id": "project-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-storage",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T01:37:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/05-storage-clippy.log",
+          "started_at": "2026-10-19T01:37:44Z",
+          "status": "passed",
+          "step_id": "storage-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-19T01:37:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/06-architecture.log",
+          "started_at": "2026-10-19T01:37:50Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-19T01:37:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/07-gpui-patch.log",
+          "started_at": "2026-10-19T01:37:50Z",
+          "status": "passed",
+          "step_id": "gpui-patch"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-19T01:37:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/08-ui-style.log",
+          "started_at": "2026-10-19T01:37:50Z",
+          "status": "passed",
+          "step_id": "ui-style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-19T01:37:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/09-device-layout.log",
+          "started_at": "2026-10-19T01:37:50Z",
+          "status": "passed",
+          "step_id": "device-layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T01:37:56Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/10-format.log",
+          "started_at": "2026-10-19T01:37:50Z",
+          "status": "passed",
+          "step_id": "format"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T01:37:56Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/palette-totality-399-qualification/11-diff.log",
+          "started_at": "2026-10-19T01:37:56Z",
+          "status": "passed",
+          "step_id": "diff"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "No reachablecurrentpalettepanic; policycleanup preservesexactticketmapping",
+    "Threeprovednamedlegacyfixturebaselines only; no prodcodec/migration/Graynormalization",
+    "AllStorage120+Project5 final125PASS; not wholeprospectivefull21",
+    "Allformat31literalsremain31/noSource6456import",
+    "Old3negativehistoriespreserved; no oldnative2repeat/physicalacceptanceOPEN"
+  ],
+  "payloads": {
+    "399-totality-component.py": {
+      "bytes": 549,
+      "sha256": "88ad721b3aa8483d06f5d47ba1b0bdf4e41f6c5fd1d838669adb4a76c52f6dc6"
+    },
+    "399-totality-evidence.py": {
+      "bytes": 7742,
+      "sha256": "21262983c90d4902743e2f6f024c610be80e3ced1aeedf6a1170c5bd6d107444"
+    },
+    "399-totality-original-mapping.stdout": {
+      "bytes": 189,
+      "sha256": "c64c511f992719abeda48bc83e82e5595330941534ac9faec21a8492cbea88c1"
+    },
+    "399-totality-palette-green.stdout": {
+      "bytes": 257,
+      "sha256": "ad64ec328f184c1e12ce5ad2070d47be672953afd2bba466b8fc2c55fc1bce26"
+    },
+    "399-totality-qualification-steps.json": {
+      "bytes": 951,
+      "sha256": "b72ef31d1473aefe3cbf90e573043adeb1aa1b4d8e93bc1b26cef3f576ce14c0"
+    },
+    "399-totality-qualification.stdout": {
+      "bytes": 734,
+      "sha256": "3eda4422008b1a08f14aefd23ded62d9c23838eff2d4a619cc0153885a21c02b"
+    },
+    "399-totality-scope-proof.json": {
+      "bytes": 730,
+      "sha256": "9c93445c2b33572177e65169dc41097ec205453b089084f6c4f6f563b0636db4"
+    },
+    "399-totality-source.json": {
+      "bytes": 436,
+      "sha256": "640e7ce4c3a00255398e370effe6ad9b8dcad7823145f1c8b213de2f9b2e6f53"
+    },
+    "399-totality-storage-before.stdout": {
+      "bytes": 193,
+      "sha256": "f90378b5775a0aae5bd3157b2019d8dd40fef7b7b03761013727fbe9e5a002e2"
+    },
+    "399-totality-storage-fixtures-green.stdout": {
+      "bytes": 183,
+      "sha256": "cd72baa2596f1faa3c38291dc3b81be7adba612bf4c12367572023c5a2b5eb66"
+    },
+    "399-totality-storage-negative-differences.json": {
+      "bytes": 464,
+      "sha256": "73dad5bb498ad72ab59f66c0c567c4335b858dd6469f67967d574a3cef41e349"
+    },
+    "HANDOFF.md": {
+      "bytes": 4242,
+      "sha256": "91a91d2e1e145ad4bc801992c14d24c2fcb55fb5062cebbda0b1c7ae7fef7a2f"
+    },
+    "before-after-hashes.json": {
+      "bytes": 1417,
+      "sha256": "2465712ca85fd6aaa5b1a030d4b28aa92333795592a12d8080697875c76e46eb"
+    },
+    "owner.patch": {
+      "bytes": 7415,
+      "sha256": "d3e80d4b54b8ed1ffd47e77e5826eb2fcbf4e361e5f7ed89e89ed8e3879ddb62"
+    },
+    "runs/original-mapping/01-original-mapping-property.log": {
+      "bytes": 563,
+      "sha256": "d6304aa3c6e6f9a1639f5bb4925a723d289527f396543aab7b4923f381c040cd"
+    },
+    "runs/original-mapping/summary.json": {
+      "bytes": 9863,
+      "sha256": "a5f611cf9188526f281a4858d10e5ac6eba78f0d9fab2fb184ff8b57b5752d4c"
+    },
+    "runs/palette-green/01-total-selection-mapping.log": {
+      "bytes": 563,
+      "sha256": "b1f3942630d5f312401d7d88ecb8b4520919c77e611fa3d7d31e919ca3751d9d"
+    },
+    "runs/palette-green/02-actual-creation-policy.log": {
+      "bytes": 591,
+      "sha256": "fe01309393851baba0e6d627d705a68122f6cbb91e27aaa26cb232931561600a"
+    },
+    "runs/palette-green/summary.json": {
+      "bytes": 10508,
+      "sha256": "4230f98240f63e89285bb0b7311e72fe17ba3feb29b1e8af990196524c993416"
+    },
+    "runs/qualification/01-all-storage-targets.log": {
+      "bytes": 14190,
+      "sha256": "2825f6b57870f9978da79759ae0677a868d38431e960aec3f117190042375222"
+    },
+    "runs/qualification/02-palette-mapping.log": {
+      "bytes": 495,
+      "sha256": "b7db54303f175d3d76c1887f1a1a69b88b73b23066ea6485e0b2bd4aec839836"
+    },
+    "runs/qualification/03-automatic-colors.log": {
+      "bytes": 523,
+      "sha256": "9e00250ecb95fd0b12a479db7516e6a9fcc8e07b3213dd839e9b65eaa0c5d7b9"
+    },
+    "runs/qualification/04-project-clippy.log": {
+      "bytes": 140,
+      "sha256": "7db8c2c1ee6e969069dee589c0f57020e9749646e1448ec3f7b9f45f6a38dc21"
+    },
+    "runs/qualification/05-storage-clippy.log": {
+      "bytes": 140,
+      "sha256": "ea18bf0a7f86cbc3771b7855da9cb19e21ce5152744b75eb7f1d6700bbac2111"
+    },
+    "runs/qualification/06-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/07-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/08-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/09-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/10-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/11-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 14708,
+      "sha256": "f38e3e43ad8eff296430a08e1229899d5feb797178e32740da1278ea39d707c7"
+    },
+    "runs/storage-before/01-all-storage-targets-baseline.log": {
+      "bytes": 26401,
+      "sha256": "81060f53f2337c578fade120c2de1c88d305115369b03a1b9c5ed27d04e41d5c"
+    },
+    "runs/storage-before/summary.json": {
+      "bytes": 9599,
+      "sha256": "0705a88f48abff038d54c0e7c824eefee5ee35c115306948a5a11101960003c1"
+    },
+    "runs/storage-fixtures-green/01-all-storage-targets.log": {
+      "bytes": 14189,
+      "sha256": "f97da6dbf8b5c2c33986db699fc3548c6a538dc005999ad248d61a8005e9d243"
+    },
+    "runs/storage-fixtures-green/summary.json": {
+      "bytes": 10242,
+      "sha256": "26718c6d73940046034ae868a19613b005e95a382925608116298f5571360ed9"
+    }
+  }
+}

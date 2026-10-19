@@ -1,0 +1,17 @@
+{
+  "schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25": [
+    {
+      "actual": "Gray",
+      "expected": "Violet"
+    }
+  ],
+  "schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaque_states": {
+    "error": "older schema cannot save element colors or clip flavors"
+  },
+  "private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds": [
+    {
+      "actual": "Gray",
+      "expected": "Blue"
+    }
+  ]
+}
