@@ -5332,6 +5332,13 @@ to normal; existing selection/hover/focus/audition regressions remain applicable
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
 
+18 October2026 — Pulse2708/PR324: actual active picker drag lost cyan beyond its
+moving hit bounds; outer resize activity survived lost-Left movement. Bind paint
+to each existing gesture and notify on state transitions; clear stale outer latch
+on no-Left movement. Keep resize widths/cursors/laws and existing close cancellation.
+Focused paint/input regressions and evidence in Pulse;2707 thin dividers separate.
+Sole merger owns prospective fullCI/merge; root owns optimized native acceptance.
+
 18 October2026 — Pulse2709/PR325: reproduced rail width480→624px on tag-editor
 open plus mini-strip open-only click. Keep toolbar/body in one fixed base column
 and append editor beside the whole browser; both original controls toggle at a
@@ -5568,3 +5575,8 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - The only new runtime refusal is existing arrangement_pan ownership in workspace Tab. The loading hypothesis was disproved by actual constructor None then actual Service Init measurements: absent tempo input pays for loading status; the supplement adds only layout-neutral debug selectors and regression tests, with no invented sizing/focus/content fix.
 - Current group-copy/capture/Console atomic receiver and private shared-Environment custody remain intact; module-declaration and appended-tracking conflicts keep both sides. All32 held-pan and28 loading payloads verified; original pan RED, Escape fixture correction and earlier status0/46px negatives retained source-bound.
 - New guarded affected compile and exact joint full21/fresh per-PR reviews required before actual separate merge/readiness proof. Prior09b full21 does not qualify new source; no physical keyboard/IME/font/pixels/native/app/delivery acceptance claim. Earlier09b tracking describes its historical pre409 composition; current qualified409 is included here.
+### 2026-10-19 — PR324 active browser resize feedback integration
+
+- Preserve the original e934 owner history and compose actual qualified main a2d47. Both dividers paint their own active cyan state, retain normal idle hover, and publish release/lost-Left retirement. Original owner actual twoREDs and final90browser controls remain historical component evidence.
+- Resolve only the overlapping sidebar transitions around the current444 THREE-field pointer/width/locked tuple and existing snap hysteresis; preserve325 stationary tag-column geometry,414 private constructor/FS leases, Console/group receiver and all current main source outside the six owning files. Keep all appended test registrations/docs/history.
+- Verified all original payload and source hashes; exact new guarded focused and required full21/fresh review remain pending. Native physical hover/capture-loss/GPU flicker and delivery remain separate. Thin divider323 is not imported.
