@@ -427,6 +427,16 @@ impl Render for EditorView {
                 super::device_panel::capture_navigation_pointer_down(view, event, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left
+                    && let Some(drag) = view.active_browser_audio_drag.clone()
+                {
+                    cx.defer_in(window, move |view, _, cx| {
+                        // Child drop receivers run before this deferred cleanup.
+                        // Retire only the captured Browser payload, never Trim.
+                        view.clear_browser_audio_drag(&drag);
+                        cx.notify();
+                    });
+                }
                 if event.button == MouseButton::Left && view.active_fade_drag.is_some() {
                     view.update_fade_gesture(event.position, event.modifiers.platform, cx);
                     view.finish_fade_gesture(window, cx);
@@ -608,6 +618,11 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.cancel_active_browser_audio_drag() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
@@ -645,6 +660,7 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &Stop, window, cx| {
                 cx.stop_active_drag(window);
                 view.active_clip_drag = None;
+                view.cancel_active_browser_audio_drag();
                 view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
                 view.device_panel.navigation.cancel();
@@ -658,6 +674,11 @@ impl Render for EditorView {
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
+                    return;
+                }
+                if view.cancel_active_browser_audio_drag() {
+                    cx.stop_propagation();
+                    cx.notify();
                     return;
                 }
                 if view.active_fade_drag.take().is_some() {

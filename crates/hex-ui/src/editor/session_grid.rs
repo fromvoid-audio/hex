@@ -1183,6 +1183,14 @@ impl EditorView {
                         }));
                 }
             }
+            let cell = self.console_drop_surface(
+                cell,
+                hex_session::import_batch::ConsoleDestination::Cell {
+                    track: track_id,
+                    scene: scene_id,
+                },
+                cx,
+            );
             row = row.child(cell);
         }
         let scene_column = div()
@@ -1488,6 +1496,7 @@ impl EditorView {
     pub(super) fn set_mode(&mut self, mode: EditorMode) {
         if self.mode != mode {
             self.cancel_arrangement_pan();
+            self.cancel_active_browser_audio_drag();
             self.cancel_time_selection_gesture();
             self.cancel_scene_duplicate_selection();
         }

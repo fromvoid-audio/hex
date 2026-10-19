@@ -1553,6 +1553,7 @@ impl EditorView {
                 .is_some_and(|previous| previous.revision != revision)
         {
             self.invalidate_prepared_seek();
+            self.cancel_active_browser_audio_drag();
         }
         if !event.project_replaced
             && self.viewport.is_none()
@@ -2201,6 +2202,7 @@ impl EditorView {
         {
             if let [path] = paths.as_slice() {
                 match destination {
+                    hex_session::import_batch::AudioBatchDestination::Console(_) => {}
                     hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
                         self.last_enqueued_import_to_track =
                             Some((path.clone(), *track, *start, true))

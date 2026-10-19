@@ -31,6 +31,7 @@ mod clip_view;
 mod clip_view_ui_test;
 mod close;
 mod computer_keyboard;
+mod console_drop;
 mod context_menu;
 mod controller;
 mod controller_input;
