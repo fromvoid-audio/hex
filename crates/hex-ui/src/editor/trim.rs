@@ -21,6 +21,13 @@ pub(super) struct TrimPreviewState {
     stretch: bool,
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
+impl TrimPreviewState {
+    pub(super) fn command_frame_for_test(&self) -> u64 {
+        self.command_frame
+    }
+}
+
 fn replace_audio_trim_preview(
     preview: &RefCell<Option<TrimPreviewState>>,
     next: Option<TrimPreviewState>,
