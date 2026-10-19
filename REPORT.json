@@ -1,0 +1,53 @@
+{
+  "ticket": 2855,
+  "canonical_pr": 457,
+  "source": "96ad6ba71084a33f113c83e8a319586746f57c44",
+  "tree": "12c90a2b0b59d06ccc8cb0cb650ed4565e0a56a1",
+  "source_baseline": "abb59d2b9226511e1017c46e899583533d6a1b18",
+  "intake_main": "e042800884c1ad607df443985fa4c9ceda337506",
+  "changed_files": [
+    "crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+    "crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs",
+    "docs/eq.md",
+    "todo.md"
+  ],
+  "original_runs": [
+    {
+      "run": "20261019T060051Z-73bfe14e",
+      "source": "f31267b34d38e688c5f2987185e1cee1c2861a4c",
+      "summary_sha256": "b1e9bafc22e86112eadc182352d33c623bceca629d7d3e58682ad8481bd6db1d",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T060759Z-eccde73b",
+      "source": "96ad6ba71084a33f113c83e8a319586746f57c44",
+      "summary_sha256": "f55b99e9325d98b9c187edc59182af95e4a2da4c2e14f49a75f240607d2ff01f",
+      "status": "passed",
+      "stale": false,
+      "exit_code": 0
+    }
+  ],
+  "final_original_run": {
+    "run": "20261019T060759Z-eccde73b",
+    "source": "96ad6ba71084a33f113c83e8a319586746f57c44",
+    "summary_sha256": "f55b99e9325d98b9c187edc59182af95e4a2da4c2e14f49a75f240607d2ff01f",
+    "status": "passed",
+    "stale": false,
+    "exit_code": 0
+  },
+  "source_identity": {
+    "commit": "96ad6ba71084a33f113c83e8a319586746f57c44",
+    "content_sha256": "6948b401ba65eb6dd2919f598f65859cbfd87c023c4982f86da3cabf09d50c18",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-eq-no-local-2855"
+  },
+  "tracked_files": 1970,
+  "qualification": "owner focused27UI+strict affected all-targetClippy+fmt+five guards; NOT full21/native/installed",
+  "negative": "actual rendered before f31267b3 failed at unwanted automate entry; original receipt preserved. Architecture first guard shell CargoNotFound retained; activated guard passed, no source fix/guard weakening.",
+  "unchanged": "Engine/Audio/Session/Project/provider/widget/bindings/spectrum/context_menu/schema/data untouched",
+  "future_automation": "2839/443 central Arrange and2674 shared parameter work remain OPEN; stable IDs retained, no new exposure protocol claimed"
+}

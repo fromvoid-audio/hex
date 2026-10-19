@@ -1,0 +1,19 @@
+[
+  {
+    "name": "Changed EQ local editor removal + parameter/identity/history/layout/focus",
+    "expected_unique": 8,
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-ui",
+      "--features",
+      "ui-test-support",
+      "--lib",
+      "--locked",
+      "editor::device_panel::tests::eq_ui_tests::eq_",
+      "--",
+      "--nocapture"
+    ]
+  }
+]
