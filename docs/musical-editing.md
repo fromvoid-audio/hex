@@ -279,3 +279,10 @@ suite passed in `20261016T071608Z-c8c5da7e`. The derived-only ownership probe no
 also uses a routed gain-lane graph. Initial codec/version/fixture failures remain
 in development logs. These targeted checks do not replace the clean merge
 candidate's final full local CI, optimized comparison or optional native tests.
+
+### distinct warp profiling target — pulse2872
+
+The current command is `cargo run --release -p hex-warp --example warp_profile --locked`.
+Its source remains `examples/profile.rs`; only its Cargo target name changed to
+avoid collision with the retained Engine `profile` example in workspace builds.
+Historical commands and measurements above describe their original source.

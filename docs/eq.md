@@ -37,8 +37,6 @@ node through that same atomic history command. An empty graph consumes the key;
 text/numeric editors retain their own Backspace behavior. Held gestures,
 creation previews, pending/stale work and old project generations cannot remove
 a node. Focused Escape cancels a held graph pointer before editor bindings.
-Automation point focus consumes Backspace without interpreting a lane
-index as a node identity; its explicit **− point** action remains available.
 Scalar gestures, opaque state edits, undo/redo and project/preset persistence use
 the existing canonical device path.
 
@@ -64,54 +62,38 @@ values remain preserved.
 
 ## Panel layout
 
-The forty-pixel top row contains mode/output controls, channel banks/count and
-analyzer/listen controls, separated by shared theme dividers. The forty-pixel
-footer keeps selected-node controls, automate and remove together. Frequency
-uses a reusable 74-pixel micro dial so full values and units fit; other controls
-keep the shared compact dial, selector and button presentations. The shared host
-[bindings](native-device-bindings.md) own their identity, gesture and retirement
-behavior; panel composition supplies presentation only. Control widths
-never shrink into neighboring labels or readouts. EQ text actions use intrinsic
-nonwrapping label widths plus padding, retaining the shared action paint and
-minimum size. The rendered regression shapes complete labels with the bundled
-font instead of checking only their containers. Automation adds a separate
-sixteen-pixel row containing its field/page controls and playhead readout, while
-the response/automation plot retains the remaining height.
+The graph remains the main editing area; the compact sidebar contains mode/output,
+channel banks, spectrum/listen actions and the six selected-node controls. Shared
+host [bindings](native-device-bindings.md) own control identity, gestures, draft
+finalization and retirement. The remove action stays separate from parameter
+controls. Text action labels retain intrinsic nonwrapping widths and padding;
+rendered tests check graph/sidebar geometry at supported narrow and wide widths.
 
-## EQ-owned arrangement automation
+## Automation workflow boundary
 
-The **automate** button edits the selected node's frequency, gain, Q, shape,
-slope or enabled curve on sixteen-quarter-note-beat pages. Click adds a point;
-drag edits beat/value; **− point** removes it. A point drag previews locally and
-commits once on release. Curves use strict, unique, ascending unsigned Q32.32
-arrangement beats. Frequency and Q interpolate logarithmically; gain interpolates
-linearly in db; discrete controls hold the preceding value. Before/after a curve,
-the first/last point is held. The codec allows 64 lanes, 160 total points and 64
-points in one lane, within the unchanged 4096-byte device payload. Capacity,
-invalid data and duplicate-time refusals preserve the previous state.
+Pulse #2855 / PR #457 removes the EQ-local **automate** button, curve editor,
+point controls and their graph-event mode following the user's 19 October 2026
+workflow decision. Selecting a node always exposes its ordinary enabled, shape,
+frequency, gain, Q and slope controls alongside the response graph. It does not
+open a device-local automation editor.
 
-These are EQ-owned lanes in versioned opaque device state, not a general device
-automation schema or recording system. Playback and prepared linear export use
-the same content-aligned arrangement clock, including ordinary and compensated
-Track/Return paths. Loops follow arrangement position; linear export advances.
-Stopped monitoring and unavailable/warmup clocks use authored base values.
-Coefficient updates use an absolute arrangement-frame cadence of 64 samples,
-with 64-sample coefficient ramps. Seeks clear histories and evaluate the new
-position; bypass advances private processing and automation while preserving dry
-samples. Band storage is allocated to the exact node count on control (maximum 64), and
-never resized on audio. No project compilation, allocation, logging or I/O occurs in the EQ
-callback. Mode changes reset histories; compatible node history follows stable ID.
+Node parameters retain their existing stable `DeviceId` / `NodeId`-derived
+`ParameterId` bindings and state-aware metadata. This is the identity boundary
+for future central DAW automation; it does not implement Arrange automation mode,
+lanes or recording. Those remain separate work under Pulse #2839 / PR #443 and
+the common native parameter work #2674. No new automation protocol is introduced.
 
-The response plot is explicitly **authored response**, cached by effective state
+Existing EQ-owned lane bytes, codec validation, playback/export evaluation and
+canonical history remain intact. Ordinary edits do not clear authored lanes;
+removing a node still removes only that node and its associated lanes atomically,
+with Undo restoring both. No project or preset conversion is performed.
+
+The response plot remains the **authored response**, cached by effective state
 and sample rate. Enabled band centers and shoulders are sampled within the
-existing256-point graph limit, including all64 bands. Coordinates use actual
-logarithmic frequencies; narrow notches reach their true display depth rather
-than disappearing between fixed samples. The finite polyline still interpolates
-between samples, without a global error guarantee. See [quality cycle1](eq-quality-cycle1.md).
-It does not animate the automated response. The spectrum remains
-live; the selected automation value's **playhead** readout is display telemetry,
-not an exact delayed-callback timestamp. Transient listen selectors carry stable
-node IDs and fade over 256 frames, independently of authored state/history.
+existing 256-point graph limit, including all 64 bands. The finite polyline does
+not animate automation or guarantee a global interpolation error bound; see
+[quality cycle 1](eq-quality-cycle1.md). Spectrum and stable-ID transient listen
+behavior are unchanged.
 
 ## Live input and output spectra
 
@@ -148,7 +130,7 @@ headless contracts do not establish native deadline or listening acceptance.
 Focused automated checks cover codec truncation/ranges/capacity, identity
 reservation and undo, imported high-water marks, legacy PCM and invalid shelves,
 cut responses/Q, live/offline/compensated/Return automation partition/loop/seek/
-linear-export behavior, rendered creation/drag/curve editing/upgrade/history, and
+linear-export behavior, rendered creation/drag/ordinary parameter editing/upgrade/history, and
 zero total/net allocation during maximum-density processing, bypass, history
 copy and reset. An actual prepared Track/Return callback fixture also checks
 initial admission, held stable-ID listen during parameter publication, smooth
@@ -166,9 +148,10 @@ Finite native checklist for the exact optimized candidate:
    Adjust Q/shape and all cut slopes; check bypass/remove too.
 2. Upgrade an existing EQ8, compare all authored channel banks and sound, undo the
    upgrade, then upgrade and add nodes again. Confirm settings and trim survive.
-3. Add/drag/delete automation points for gain/frequency/Q and stepped controls;
-   listen through playback, seek, loop and bypass, and compare a linear export.
-   Check the playhead value moves; the response line remains explicitly authored.
+3. Select a node and confirm there is no automate entry or local curve editor.
+   Type frequency/gain/Q and edit shape/slope/enabled; verify single-edit Undo/Redo
+   and correct values after switching nodes. Existing saved lane data must remain
+   intact; central Arrange lane editing is not implemented by this change.
 4. Arm listen and hold/release a node while editing its parameters; check smooth
    transitions and the live spectrum. Add/remove other nodes and confirm the
    selected node's automation/listen never moves to another node.

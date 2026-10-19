@@ -135,11 +135,12 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
     },
     /// Atomically replace opaque device state and reserve fresh identities.
-    /// Expected source and allocator cursor prevent stale UI edits overwriting
+    /// Expected source, active A/B slot and allocator cursor prevent stale UI edits overwriting
     /// another edit; history preserves the allocator high-water mark on undo.
     ReplaceDeviceStateWithIdentityReservation {
         device: DeviceId,
         expected_state: hex_lattice_contract::NativeDeviceState,
+        expected_variant: crate::DeviceVariant,
         state: hex_lattice_contract::NativeDeviceState,
         expected_next_id: u64,
         reserved_ids: u64,
@@ -147,6 +148,18 @@ pub enum Command {
     SetDeviceBypass {
         device: DeviceId,
         bypassed: bool,
+    },
+    /// Compare provider settings without changing bypass, routing or host trims.
+    CompareDevice {
+        device: DeviceId,
+        expected: crate::DeviceVariant,
+        action: crate::DeviceComparisonAction,
+    },
+    /// Restore a validated complete comparison pair (for current-format presets).
+    ReplaceDeviceComparison {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        comparison: Option<crate::DeviceComparison>,
     },
     AddReturnTrack {
         name: String,
@@ -388,6 +401,14 @@ pub enum Command {
         track: TrackId,
         start: u64,
     },
+    /// Move/copy one selected Arrangement group with a single prepared history edit.
+    MoveClipsWithOverwrite {
+        clips: Vec<ClipId>,
+        anchor: ClipId,
+        track: TrackId,
+        position: crate::ClipGroupPosition,
+        copy: bool,
+    },
     /// Atomically insert a hybrid track before a stable anchor/end and move an
     /// existing audio clip there, preserving its ID and source metadata.
     MoveClipToNewTrack {
@@ -453,6 +474,12 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
+    /// Recompute a clip-local loop operation from the current authored source.
+    /// Outer growth carves both clip kinds; cycle edits retain outer occupancy.
+    ResizeAudioClipView {
+        clip: ClipId,
+        operation: crate::AudioViewResizeOperation,
+    },
     SetAudioClipWarp {
         clip: ClipId,
         settings: Option<crate::WarpSettings>,
@@ -499,6 +526,11 @@ pub enum Command {
     },
     AddScene {
         name: String,
+    },
+    /// Insert before an existing stable scene, or explicitly append with None.
+    InsertScene {
+        name: String,
+        before: Option<crate::SceneId>,
     },
     /// Copy a scene immediately after it with fresh IDs for copied MIDI content.
     DuplicateScene(crate::SceneId),
@@ -713,6 +745,12 @@ pub enum Created {
     Device(DeviceId),
     Asset(AssetId),
     Clip(ClipId),
+    /// Actual Arrangement clip births in this inclusive range are copies from
+    /// one group command. Filter committed clips; note-ID holes are permitted.
+    Clips {
+        first: ClipId,
+        last: ClipId,
+    },
     Note(NoteId),
     Scene(crate::SceneId),
     SessionClip(ClipId),
@@ -759,10 +797,11 @@ pub(crate) fn insert_track_before(
         None => project.tracks.len(),
     };
     let id = TrackId(project.allocate_id()?);
+    let color = crate::appearance::new_track_color(project);
     project.tracks.insert(
         index,
         Track {
-            color: crate::ElementColor::default(),
+            color,
             gain_lane: crate::GainLane::default(),
             id,
             name,
@@ -1050,6 +1089,13 @@ pub(crate) fn split_clip_at_tempo(
     if frame <= original.start || frame >= end {
         return Err(Invalid("split cursor must be inside the clip"));
     }
+    if edit.placement.is_some() {
+        let left = crate::audio_edit::trim_view(original, crate::TrimEdge::Right, frame, tempo)?;
+        let mut right =
+            crate::audio_edit::trim_view(original, crate::TrimEdge::Left, frame, tempo)?;
+        right.id = right_id;
+        return Ok((left, right));
+    }
     let cut = edit.crop_at_frame(original, frame, tempo)?;
     if cut <= edit.view_start || cut >= edit.view_end {
         return Err(Invalid("split has no positive musical crop"));
@@ -1073,6 +1119,35 @@ pub(crate) fn split_clip_at_tempo(
     Ok((left, right))
 }
 
+/// Crop one retained interval through the existing typed split law.
+pub(crate) fn retained_audio_fragment(
+    victim: &Clip,
+    start: u64,
+    end: u64,
+    id: ClipId,
+    tempo: &crate::TempoMap,
+) -> Result<Clip, Invalid> {
+    let original_end = victim
+        .start
+        .checked_add(victim.duration)
+        .ok_or(Invalid("timeline end overflow"))?;
+    if start < victim.start || start >= end || end > original_end {
+        return Err(Invalid(
+            "retained audio interval is outside its source clip",
+        ));
+    }
+    let mut retained = if start > victim.start {
+        split_clip_at_tempo(victim, start, id, tempo)?.1
+    } else {
+        victim.clone()
+    };
+    if end < original_end {
+        retained = split_clip_at_tempo(&retained, end, id, tempo)?.0;
+    }
+    retained.id = id;
+    Ok(retained)
+}
+
 struct AudioOverwriteFragments {
     left: Option<Clip>,
     right: Option<Clip>,
@@ -1084,6 +1159,16 @@ pub(crate) fn overwrite_audio_interval(
     start: u64,
     end: u64,
     excluded: ClipId,
+) -> Result<(), Invalid> {
+    overwrite_audio_interval_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_audio_interval_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: u64,
+    end: u64,
+    excluded: impl Fn(ClipId) -> bool,
 ) -> Result<(), Invalid> {
     if start >= end {
         return Err(Invalid("overwrite interval must be positive"));
@@ -1102,7 +1187,7 @@ pub(crate) fn overwrite_audio_interval(
         .try_reserve_exact(snapshot.len())
         .map_err(|_| Invalid("could not reserve overwrite fragment storage"))?;
     for victim in snapshot {
-        if victim.id == excluded {
+        if excluded(victim.id) {
             continue;
         }
         let victim_end = victim
@@ -1115,18 +1200,26 @@ pub(crate) fn overwrite_audio_interval(
         let keeps_left = victim.start < start;
         let keeps_right = victim_end > end;
         let left = keeps_left
-            .then(|| split_clip_at_tempo(&victim, start, victim.id, project.tempo_map()))
-            .transpose()?
-            .map(|parts| parts.0);
+            .then(|| {
+                retained_audio_fragment(
+                    &victim,
+                    victim.start,
+                    start,
+                    victim.id,
+                    project.tempo_map(),
+                )
+            })
+            .transpose()?;
         let right_id = if keeps_left && keeps_right {
             ClipId(0)
         } else {
             victim.id
         };
         let right = keeps_right
-            .then(|| split_clip_at_tempo(&victim, end, right_id, project.tempo_map()))
-            .transpose()?
-            .map(|parts| parts.1);
+            .then(|| {
+                retained_audio_fragment(&victim, end, victim_end, right_id, project.tempo_map())
+            })
+            .transpose()?;
         fragments.push((victim.id, AudioOverwriteFragments { left, right }));
     }
     if fragments.is_empty() {
@@ -1202,10 +1295,20 @@ pub(crate) fn overwrite_audio_in_beats(
     end: crate::BeatTime,
     excluded: ClipId,
 ) -> Result<(), Invalid> {
+    overwrite_audio_in_beats_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_audio_in_beats_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: crate::BeatTime,
+    end: crate::BeatTime,
+    excluded: impl Fn(ClipId) -> bool,
+) -> Result<(), Invalid> {
     let start_frame = project.tempo_map().beat_to_frame(start)?;
     let end_frame = project.tempo_map().beat_to_frame(end)?;
     if start_frame < end_frame {
-        overwrite_audio_interval(project, track, start_frame, end_frame, excluded)?;
+        overwrite_audio_interval_excluding(project, track, start_frame, end_frame, excluded)?;
     }
     Ok(())
 }
@@ -1340,7 +1443,11 @@ impl Project {
             | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
             | Command::ReplaceDeviceStateWithIdentityReservation { .. }
-            | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
+            | Command::SetDeviceBypass { .. }
+            | Command::CompareDevice { .. }
+            | Command::ReplaceDeviceComparison { .. }) => {
+                crate::device::apply(self, device_command)
+            }
             return_command @ (Command::AddReturnTrack { .. }
             | Command::RemoveReturnTrack(_)
             | Command::RenameReturnTrack { .. }
@@ -1410,6 +1517,7 @@ impl Project {
                 Ok(Created::Track(track))
             }
             session_command @ (Command::AddScene { .. }
+            | Command::InsertScene { .. }
             | Command::DuplicateScene(_)
             | Command::MoveScene { .. }
             | Command::RenameScene { .. }
@@ -2049,6 +2157,13 @@ impl Project {
                 self.audio_clips_mut(track)?.push(moved);
                 Ok(Created::None)
             }
+            Command::MoveClipsWithOverwrite {
+                clips,
+                anchor,
+                track,
+                position,
+                copy,
+            } => crate::clip_group::apply(self, clips, anchor, track, position, copy),
             Command::MoveClipWithOverwrite { clip, track, start } => {
                 let mut incoming = self
                     .clip(clip)
@@ -2167,6 +2282,9 @@ impl Project {
                     original.preview_fade_edge_trim(edge, frame, asset_frames, self.tempo_map())?;
                 *self.clip_mut(clip)? = trimmed;
                 Ok(Created::None)
+            }
+            Command::ResizeAudioClipView { clip, operation } => {
+                crate::audio_edit::resize_view(self, clip, operation)
             }
             command @ (Command::SetAudioClipPitch { .. }
             | Command::SetAudioClipMusical { .. }

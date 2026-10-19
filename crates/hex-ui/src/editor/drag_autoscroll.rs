@@ -162,6 +162,7 @@ impl EditorView {
                 self.apply_drag_scroll(&drag.scroll, next, horizon);
             }
             if vertical {
+                drag.group.borrow_mut().invalidate();
                 drag.preview.set(None);
                 drag.destination.set(None);
                 drag.insertion_line_y.set(None);

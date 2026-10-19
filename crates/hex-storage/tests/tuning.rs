@@ -23,13 +23,13 @@ fn refuses(value: &Value) {
 }
 
 #[test]
-fn required_schema31_tuning_roundtrips_every_waveform_enabled_and_disabled() {
+fn required_schema32_tuning_roundtrips_every_waveform_enabled_and_disabled() {
     for enabled in [false, true] {
         for waveform in [Waveform::Triangle, Waveform::Square, Waveform::Saw] {
             let project = tuned(enabled, waveform);
             let bytes = encode(&project).unwrap();
             let doc: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(doc["version"], 31);
+            assert_eq!(doc["version"], 32);
             assert_eq!(
                 doc["tuning"]["scale"]["cents"].as_array().unwrap().len(),
                 48
