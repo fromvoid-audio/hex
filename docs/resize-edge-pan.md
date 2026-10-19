@@ -206,3 +206,15 @@ a real missing-import refusal preserves evidence without leaking an Arc. This
 is fixture custody, not a Service join or new production release behavior. The
 original pointer/geometry/typed192000/pre-ACK/worker/UndoRedo assertion block is
 byte-identical. Earlier 56-case evidence remains tied to its original source.
+
+The four captured-release matrices retain all 40 mode/edge/destination cases,
+but now construct one real Service/import/window fixture per mode instead of
+one per case. Every case still proves the exact accepted command and complete
+Undo/Redo snapshots, then performs another real Undo, waits for the worker,
+and verifies the baseline and retired pending/drag state before reuse. These
+fixtures are local to each test; no global project or fake worker is shared.
+The same four selectors measured 54.12s before and 20.15s after in Rust test
+runtime, with four actual fixture markers and all 40 release markers. Cargo
+time changed from 170.40s to 41.74s across different source/tooling revisions;
+that also includes PR487's build-identity improvement, not fixture reuse alone.
+These measurements are component evidence, not full or native acceptance.
