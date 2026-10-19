@@ -7,9 +7,11 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
+import time
 
 
-def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=None) -> str:
+def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=None, compiler_only=False) -> str:
     digest = hashlib.sha256()
 
     def field(value):
@@ -71,9 +73,11 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
             raise ValueError("selected Cargo executable is not executable: " + name)
         field(name)
         observe(path)
-    field(json.dumps({k: v for k, v in env.items() if
+    if compiler_only:
+        return digest.hexdigest()
+    field(json.dumps({k: v for k, v in env.items() if k != "CARGO_TARGET_DIR" and (
                      k.startswith(("CARGO_", "RUST", "CC", "CXX", "AR", "LD", "PKG_CONFIG"))
-                     or k in {"PATH", "HOST", "TARGET", "SDKROOT", "DEVELOPER_DIR", "MACOSX_DEPLOYMENT_TARGET"}}, sort_keys=True))
+                     or k in {"PATH", "HOST", "TARGET", "SDKROOT", "DEVELOPER_DIR", "MACOSX_DEPLOYMENT_TARGET"})}, sort_keys=True))
     members = set(metadata["workspace_members"])
     workspace_roots = {Path(p["manifest_path"]).parent.resolve() for p in metadata["packages"] if p["id"] in members}
     declared_paths = {Path(d["path"]).resolve() for p in metadata["packages"] for d in p.get("dependencies", []) if d.get("path")}
@@ -112,3 +116,69 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
                     raise ValueError("compiler/wrapper selection in Cargo config is unsupported; use explicit executable environment")
             observe(config)
     return digest.hexdigest()
+
+
+def workspace_snapshot(root: Path, env: dict, metadata: dict) -> dict:
+    """Compact package content witnesses; timestamps are freshness hints, never identities."""
+    members = set(metadata["workspace_members"])
+    packages = []
+    for package in metadata["packages"]:
+        if package["id"] in members:
+            directory = Path(package["manifest_path"]).parent.resolve().relative_to(root.resolve())
+            packages.append({"spec": package["id"], "path": directory.as_posix(), "sha256": hashlib.sha256(),
+                             "timestamps": hashlib.sha256()})
+    paths = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=root, env=env)
+    for raw in sorted(set(paths.split(b"\0")) - {b""}):
+        name = os.fsdecode(raw)
+        matches = [p for p in packages if p["path"] == "." or name.startswith(p["path"] + "/")]
+        if not matches:
+            continue
+        package = max(matches, key=lambda p: len(p["path"]))
+        path = root / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            content, mode, stamp = b"<missing>", 0, 0
+        else:
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("workspace source input is not a regular file: " + name)
+            content, mode, stamp = path.read_bytes(), info.st_mode, info.st_mtime_ns
+        for value in (raw, str(mode).encode(), content):
+            package["sha256"].update(len(value).to_bytes(8, "big") + value)
+        package["timestamps"].update(raw + b"\0" + str(stamp).encode() + b"\0")
+    for package in packages:
+        package["sha256"] = package["sha256"].hexdigest()
+        package["timestamps"] = package["timestamps"].hexdigest()
+    return {"packages": sorted(packages, key=lambda p: p["spec"]), "observed_ns": time.time_ns()}
+
+
+def stale_workspace_packages(root: Path, env: dict, previous: dict | None, current: dict) -> list[str]:
+    """Only trust normal edits newer than the last completed build observation.
+
+    Git supplies changed paths from the immutable previous clean commit. Missing,
+    deleted, backdated or otherwise unproven edits require package invalidation.
+    No per-file inventory is persisted in the bounded release-owner document.
+    """
+    if not previous or not previous.get("checked"):
+        return [p["spec"] for p in current["packages"]]
+    old = {p["spec"]: p for p in previous["packages"]}
+    changed = [p for p in current["packages"] if old.get(p["spec"], {}).get("sha256") != p["sha256"]]
+    if not changed:
+        return []
+    paths = None
+    if previous.get("dirty") is False:
+        result = subprocess.run(["git", "diff", "--no-renames", "--name-only", "-z", previous["commit"], "--"],
+                                cwd=root, env=env, capture_output=True)
+        if result.returncode == 0:
+            untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=root, env=env)
+            paths = set(os.fsdecode(p) for p in (result.stdout + untracked).split(b"\0") if p)
+    stale = []
+    for package in changed:
+        owned = [name for name in (paths or ()) if package["path"] == "." or name.startswith(package["path"] + "/")]
+        fresh = bool(owned)
+        for name in owned:
+            path = root / name
+            fresh = fresh and path.is_file() and not path.is_symlink() and path.stat().st_mtime_ns > previous["observed_ns"]
+        if not fresh:
+            stale.append(package["spec"])
+    return stale

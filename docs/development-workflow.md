@@ -92,3 +92,27 @@ progress, failure or required action; observation delay alone never restarts a
 runner. AI changelog generation stays off the merge critical path. Release
 channels remain the separate Pulse2873/2874–2877 plan; this change enables no
 nightly, publication, installation or app-control automation.
+
+
+Cache reuse binds workspace package content as well as configuration. A completed
+build records compact package hashes and the observation time. Normal edits from
+a clean recorded commit remain incremental when all changed input timestamps are
+newer than that completed observation. Deleted, backdated, dirty-base or otherwise
+unproven changed inputs invalidate their owning package. Both development checks
+and optimized builds enforce this rule; neither trusts restored source mtimes.
+Changed path dependencies invalidate the corresponding dependency artifacts too.
+
+Compiler and wrapper executable identities are recorded separately. A changed or
+legacy unknown compiler identity invalidates the owned **profile**, including its
+path and registry dependencies. This is a toolchain transition, not a clean on
+every commit; development and release profiles remain separate. Pending/failed
+runs never advance a completed source witness. The release owner stays bounded:
+package hashes and a clean Git commit identify changes without a per-file ledger.
+
+`CARGO_TARGET_DIR` is an ownership/location input, not a semantic compilation flag.
+An invocation-owned recovery CI target may therefore certify the same source and
+configuration later built in the separately locked release target. Target inode,
+checkout identity, expected owner hash and recovery refusal checks still apply.
+A metadata-only report contains no executed-runtime or dependency witness and is
+refused by the locked CI-qualified release receiver. Build-only launch remains
+explicitly `tests: not_run`; this does not turn prose checks into runtime tests.

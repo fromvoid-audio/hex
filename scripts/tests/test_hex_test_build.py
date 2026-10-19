@@ -477,6 +477,8 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(runner, "_capture_repository_state", side_effect=capture), \
                 patch.object(runner, "_resolve_cargo_identity", return_value=True), \
                 patch.object(runner, "_release_scope", return_value=scope), \
+                patch.object(delivery.ci.build_inputs, "workspace_snapshot", return_value={"packages": [], "observed_ns": 1}), \
+                patch.object(runner, "_path_dependency_inputs", return_value=[]), \
                 patch.object(runner, "_check_disk_headroom", return_value=True), \
                 patch.object(delivery, "optimized_artifact", side_effect=artifact_guard), \
                 patch.object(delivery, "native_signature", return_value=SIGNED), \
@@ -900,6 +902,32 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(incremental["cleanup_status"], "not_needed")
             self.assertNotEqual(incremental["source"], reused["source"])
             self.assertNotEqual(incremental["artifact"]["sha256"], reused["artifact"]["sha256"])
+            # Same-size current source with the exact old mtime must never
+            # reuse the old optimized executable. Normal edits above stay warm.
+            api = root / "api/src/lib.rs"
+            stamp = api.stat()
+            api.write_text('pub fn value() -> u32 { 20 }\n')
+            os.utime(api, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "backdated workspace behavior"])
+            restored = build(root, "release-a-restored-mtime", "29")
+            self.assertEqual(restored["cleanup_status"], "passed")
+            self.assertIn("fixture-api", " ".join(restored["cleanup_argv"]))
+            self.assertNotEqual(restored["artifact"]["sha256"], incremental["artifact"]["sha256"])
+            api.write_text('pub fn value() -> u32 { 10 }\n')
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "restore normal behavior"])
+            build(root, "release-a-after-restored", "19")
+            # External path dependencies need the same content-based release
+            # protection, even when Cargo's timestamp observation is unchanged.
+            external_source = external / "src/lib.rs"
+            stamp = external_source.stat()
+            external_source.write_text('pub fn suffix() -> u32 { 8 }\n')
+            os.utime(external_source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            external_changed = build(root, "release-a-external-restored", "18")
+            self.assertIn("external-helper", " ".join(external_changed["cleanup_argv"]))
+            external_source.write_text('pub fn suffix() -> u32 { 9 }\n')
+            build(root, "release-a-external-restored-back", "19")
             changed_config = build(root, "release-a-config", "19", {**env, "RUSTFLAGS": "--cfg release_fixture_changed"})
             self.assertEqual(changed_config["cleanup_status"], "passed")
             configured_dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
@@ -925,6 +953,9 @@ class ReleaseCargoTests(unittest.TestCase):
                     self.fail("pending state was silently reused")
             with delivery.optimized_artifact(runner(root, "pending-explicit"), package="fixture-app", adopt=True) as (binary, _):
                 self.assertEqual(command([str(binary)]), "16")
+            # Explicit recovery switched from the guarded Cargo wrapper back
+            # to the original tool, invalidating that release dependency profile.
+            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
             # Cargo cannot select the old removed/renamed member from this graph.
             (other / "api/Cargo.toml").write_text('[package]\nname="renamed-api"\nversion="0.1.0"\nedition="2021"\n')
             (other / "app/Cargo.toml").write_text(manifest.replace('fixture-api={path=', 'fixture-api={package="renamed-api",path='))
@@ -955,7 +986,7 @@ class ReleaseCargoTests(unittest.TestCase):
             command(["cargo", "generate-lockfile", "--offline"])
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "add workspace dependency"])
-            addition = build(root, "release-addition", "17", guarded_env)
+            addition = build(root, "release-addition", "17")
             self.assertEqual(addition["cleanup_status"], "passed")
             self.assertTrue(any("fixture-extra" in argument for argument in addition["cleanup_argv"]))
             self.assertEqual({p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}, dependencies)

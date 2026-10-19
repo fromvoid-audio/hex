@@ -28,6 +28,142 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_review_target_directory_is_ownership_not_semantic_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = {"workspace_members": [], "packages": [], "target_directory": str(root / "ci-target")}
+            env = {"CARGO_HOME": str(root / "home"), "CARGO_TARGET_DIR": str(root / "ci-target")}
+            before = inputs.fingerprint(root, env, metadata, {})
+            moved = {**env, "CARGO_TARGET_DIR": str(root / "release-target")}
+            self.assertEqual(before, inputs.fingerprint(root, moved, {**metadata, "target_directory": moved["CARGO_TARGET_DIR"]}, {}))
+            self.assertNotEqual(before, inputs.fingerprint(root, {**env, "RUSTFLAGS": "--cfg actually_changed"}, metadata, {}))
+
+    def test_review_workspace_restored_mtime_runs_current_test_and_normal_edit_stays_incremental(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "Cargo.toml").write_text('[package]\nname="workspace-source-fixture"\nversion="0.1.0"\nedition="2021"\n')
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            source = root / "src/lib.rs"
+            source.write_text('#[test] fn old_case() {}\n')
+            def command(*argv):
+                return subprocess.check_output(argv, cwd=root).decode().strip()
+            command("git", "init", "-q");command("git", "config", "user.name", "workspace fixture");command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline");command("git", "add", ".");command("git", "commit", "-qm", "old test")
+            def run(name):
+                runner = ci.LocalCiRunner(root, mode="component", run_id=name, min_free_bytes=0,
+                    env={**os.environ, "CARGO_TARGET_DIR": str(root / "target")},
+                    steps=(ci.Step("list", ("cargo", "test", "--offline", "--locked", "--", "--list")),))
+                self.assertEqual(runner.run(), 0)
+                return runner, (runner.output_dir / "01-list.log").read_text()
+            first, log = run("old")
+            self.assertIn("old_case: test", log)
+            stamp = source.stat()
+            source.write_text('#[test] fn new_case() {}\n')
+            os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            command("git", "add", ".");command("git", "commit", "-qm", "same mtime new test")
+            second, log = run("restored")
+            self.assertIn("new_case: test", log)
+            self.assertNotIn("old_case: test", log)
+            source.write_text('#[test] fn now_case() {}\n')
+            command("git", "add", ".");command("git", "commit", "-qm", "ordinary later edit")
+            third, log = run("ordinary")
+            self.assertIn("now_case: test", log)
+            self.assertEqual(third.summary["target_cache"]["cleanup_status"], "not_needed")
+
+    def test_review_metadata_report_refused_by_locked_release_receiver_before_pending(self):
+        delivery = module("metadata_receiver_fixture", "hex-test-build.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "src/lib.rs").write_text("pub fn value() {}\n")
+            (root / "Cargo.toml").write_text('[package]\nname="metadata-receiver"\nversion="0.1.0"\nedition="2021"\n')
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            (root / "scripts").mkdir()
+            (root / "scripts/ci_plan.py").write_bytes((SCRIPTS / "ci_plan.py").read_bytes())
+            def command(*argv):
+                return subprocess.check_output(argv, cwd=root).decode().strip()
+            command("git", "init", "-q");command("git", "config", "user.name", "receiver fixture");command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline");command("git", "add", ".");command("git", "commit", "-qm", "runtime")
+            base = command("git", "rev-parse", "HEAD")
+            (root / "README.md").write_text("Prose-only change.\n")
+            command("git", "add", ".");command("git", "commit", "-qm", "metadata")
+            candidate = command("git", "rev-parse", "HEAD")
+            metadata = json.loads(command("cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"))
+            resolved = plan.resolve(root, profile="merge", base=base, source=candidate, metadata=metadata)
+            self.assertEqual(resolved["scope"], "metadata")
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
+            checked = delivery.ci.LocalCiRunner(root, mode="merge", plan=resolved, env=env, run_id="metadata", min_free_bytes=0)
+            self.assertEqual(checked.run(), 0)
+            self.assertNotIn("target_cache", checked.summary)
+            receiver = delivery.ci.LocalCiRunner(root, env=env, run_id="receiver", min_free_bytes=0)
+            def validate():
+                self.assertIsNotNone(receiver.target_lock)
+                delivery.validate_ci(checked.summary_path, receiver, candidate, allow_dev_profile=True)
+            with self.assertRaisesRegex(delivery.DeliveryError, "toolchain/configuration"):
+                with receiver.guarded_release(requested_build_argv=["cargo", "build", "--release", "--locked"], verification_check=validate):
+                    self.fail("metadata-only report reached PENDING/build")
+            self.assertIsNone(receiver.target_lock)
+            self.assertNotIn("release_target_cache", receiver.summary)
+            self.assertFalse((root / "target").exists())
+
+    def test_review_changed_wrapper_rebuilds_unchanged_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for folder in ("app/src", "vendor/src"):
+                (root / folder).mkdir(parents=True)
+            (root / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
+            (root / "app/Cargo.toml").write_text('[package]\nname="tool-consumer"\nversion="0.1.0"\nedition="2021"\n[dependencies]\ntool-dependency={path="../vendor"}\n')
+            (root / "vendor/Cargo.toml").write_text('[package]\nname="tool-dependency"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "vendor/src/lib.rs").write_text('pub fn value()->u32 { 7 }\n')
+            (root / "app/src/main.rs").write_text('fn main(){println!("{}",tool_dependency::value());}\n')
+            (root / ".gitignore").write_text('/target/\n/release-target/\n/artifacts/\n/wrapper\n/compiler.log\n')
+            wrapper = root / "wrapper"
+            log = root / "compiler.log"
+            def write_wrapper(label):
+                wrapper.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                    'if "--crate-name" in sys.argv:\n'
+                    f' with open({str(log)!r},"a") as f:f.write({label!r}+":"+sys.argv[sys.argv.index("--crate-name")+1]+"\\n")\n'
+                    'os.execv(sys.argv[1],sys.argv[1:])\n')
+                wrapper.chmod(0o755)
+            write_wrapper("first")
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target"), "RUSTC_WRAPPER": str(wrapper)}
+            def command(*argv):
+                return subprocess.check_output(argv, cwd=root, env=env).decode().strip()
+            command("git", "init", "-q");command("git", "config", "user.name", "compiler fixture");command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline");command("git", "add", ".");command("git", "commit", "-qm", "source")
+            def run(name):
+                runner = ci.LocalCiRunner(root, mode="component", run_id=name, env=env, min_free_bytes=0,
+                    steps=(ci.Step("build", ("cargo", "build", "--offline", "--locked")),))
+                self.assertEqual(runner.run(), 0, runner.summary)
+                return runner
+            run("old-tool")
+            self.assertIn("first:tool_dependency", log.read_text())
+            log.write_text("")
+            write_wrapper("second")
+            run("new-tool")
+            self.assertIn("second:tool_dependency", log.read_text())
+            log.write_text("")
+            run("same-tool")
+            self.assertNotIn(":tool_dependency", log.read_text())
+            self.assertNotIn(":tool_consumer", log.read_text())
+            delivery = module("compiler_release_fixture", "hex-test-build.py")
+            def release(name):
+                runner = delivery.ci.LocalCiRunner(root, env={**env, "CARGO_TARGET_DIR": str(root / "release-target")}, run_id=name, min_free_bytes=0)
+                with delivery.optimized_artifact(runner, package="tool-consumer") as (binary, ownership):
+                    self.assertEqual(command(str(binary)), "7")
+                return ownership
+            release("old-release-tool")
+            log.write_text("")
+            write_wrapper("third")
+            release("new-release-tool")
+            self.assertIn("third:tool_dependency", log.read_text())
+            log.write_text("")
+            reused = release("same-release-tool")
+            self.assertNotIn(":tool_dependency", log.read_text())
+            self.assertNotIn(":tool_consumer", log.read_text())
+            self.assertEqual(reused["cleanup_status"], "not_needed")
+
     def test_review_default_tool_relative_and_empty_path_uses_cargo_cwd(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -298,7 +434,11 @@ class CacheIdentityTests(unittest.TestCase):
             # Simulate the old workspace-only witness under the same actual
             # target lock. Cargo itself sees the restored timestamp, not a fake
             # compiler/error/event, and must demonstrate the stale API failure.
-            with patch.object(stale, "_dependency_context", return_value=first._dependency_inputs):
+            def old_dependency_witness():
+                stale._release_scope()
+                stale._release_build_inputs(["guarded-dev-inputs-v1"])
+                return first._dependency_inputs
+            with patch.object(stale, "_dependency_context", side_effect=old_dependency_witness):
                 self.assertEqual(stale.run(), 1)
             stale_log = (stale.output_dir / "01-build.log").read_text()
             self.assertIn("mismatched types", stale_log)
@@ -319,12 +459,13 @@ class CacheIdentityTests(unittest.TestCase):
                 previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
                 identity = {"version": 1, "sha256": "a" * 64, "packages": []}
                 calls = 0
+                original_observe = runner._dependency_context
                 def observe():
                     nonlocal calls
                     calls += 1
                     if calls == 2:
                         os.kill(os.getpid(), signum)
-                    return identity
+                    return original_observe()
                 with patch.object(runner, "_dependency_context", side_effect=observe):
                     self.assertEqual(runner.run(), 130)
                 self.assertIsNone(runner.target_lock)
@@ -345,13 +486,14 @@ class CacheIdentityTests(unittest.TestCase):
                 identity = {"version": 1, "sha256": "a" * 64, "packages": []}
                 owner_before = None
                 calls = 0
+                original_observe = runner._dependency_context
                 def observe():
                     nonlocal calls, owner_before
                     calls += 1
                     if calls == 2:
                         owner_before = runner.target_owner_path.read_bytes() if runner.target_owner_path.exists() else None
                         raise error
-                    return identity
+                    return original_observe()
                 with patch.object(runner, "_dependency_context", side_effect=observe):
                     self.assertEqual(runner.run(), 2)
                 self.assertEqual(runner.summary["status"], "incomplete")

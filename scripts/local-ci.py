@@ -363,6 +363,10 @@ class LocalCiRunner:
         self.target_owner_claimed = False
         self._release_metadata = None
         self._dependency_inputs = None
+        self._compiler_inputs = None
+        self._workspace_inputs = None
+        self._path_inputs = []
+        self._invalidate_dependency_profile = False
 
     def _write_summary(self) -> None:
         temporary = self.summary_path.with_suffix(".json.tmp")
@@ -643,11 +647,12 @@ class LocalCiRunner:
                 "use a fresh target or explicitly adopt it after checking ownership"
             ) from error
 
-    def _write_target_owner(self, path: Path, owner: dict[str, object]) -> None:
+    def _write_target_owner(self, path: Path, owner: dict[str, object], *, checked=False) -> None:
         temporary = path.with_name(f"{path.name}.{os.getpid()}.{self.run_id}.tmp")
         payload = {
             "schema_version": 2,
             "dependency_inputs": self._dependency_inputs,
+            "cache_inputs": self._cache_provenance(checked=checked),
             "target_directory": self.cargo_identity["target_directory"] if self.cargo_identity else None,
             "workspace_owner": {
                 "workspace_root": owner["workspace_root"],
@@ -696,6 +701,8 @@ class LocalCiRunner:
             target_identity = self._directory_identity(target)
             dependency_inputs = self._dependency_context()
             self._dependency_inputs = dependency_inputs
+            self._path_inputs = dependency_inputs["packages"]
+            self._workspace_inputs = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
             self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = dependency_inputs["sha256"]
             ownership_action = "reuse"
             cleanup_argv: list[str] | None = None
@@ -745,6 +752,18 @@ class LocalCiRunner:
                 if ownership_action == "reuse":
                     ownership_action = "dependency-input-handoff"
                 cleanup_argv = self._workspace_clean_argv(target)
+            invalidated = self._provenance_cleanup(owner_record) if owner_record else []
+            if self._invalidate_dependency_profile:
+                ownership_action = "compiler-profile-handoff"
+                cleanup_argv = self._workspace_clean_argv(target)[:8]
+            if invalidated:
+                if ownership_action == "reuse":
+                    ownership_action = "source-or-compiler-handoff"
+                if cleanup_argv is None:
+                    cleanup_argv = self._workspace_clean_argv(target)[:8]
+                for spec in invalidated:
+                    if spec not in cleanup_argv:
+                        cleanup_argv.extend(("--package", spec))
             if cleanup_argv is not None:
                 current = {p["name"]: p for p in dependency_inputs["packages"]}
                 previous = owner_record.get("dependency_inputs", {}) if owner_record else {}
@@ -753,7 +772,7 @@ class LocalCiRunner:
                         raise TargetCacheError("removed/version-changed path dependency requires a fresh target")
                 old_by_name = {p["name"]: p for p in (previous or {}).get("packages", [])}
                 for package in dependency_inputs["packages"]:
-                    if old_by_name.get(package["name"]) != package:
+                    if not self._invalidate_dependency_profile and old_by_name.get(package["name"]) != package:
                         cleanup_argv.extend(("--package", package["spec"]))
 
             self.summary["target_cache"] = {
@@ -863,12 +882,18 @@ class LocalCiRunner:
                            "sha256": digest.hexdigest(), "mode": info.st_mode}
         key = build_inputs.fingerprint(self.root, self.env, self._release_metadata, tools)
         self.summary["toolchain"] = tools
+        self._compiler_inputs = build_inputs.fingerprint(self.root, self.env, self._release_metadata, tools, compiler_only=True)
         return hashlib.sha256((key + json.dumps(argv)).encode()).hexdigest()
 
     def _dependency_context(self) -> dict:
         # Full feature metadata includes optional/dev path dependencies. Read it
         # inside the target lock, before even Python's private Cargo fixtures.
         self._release_scope()
+        self._path_inputs = self._path_dependency_inputs()
+        return {"version": 1, "sha256": self._release_build_inputs(["guarded-dev-inputs-v1"]),
+                "packages": self._path_inputs}
+
+    def _path_dependency_inputs(self) -> list[dict]:
         metadata = self._release_metadata
         members = set(metadata["workspace_members"])
         packages = [{"name": p["name"], "version": p["version"], "spec": p["id"],
@@ -878,8 +903,61 @@ class LocalCiRunner:
         for package in packages:
             if sum(p["name"] == package["name"] for p in metadata["packages"]) != 1:
                 raise TargetCacheError("path dependency cleanup has an ambiguous package name")
-        return {"version": 1, "sha256": self._release_build_inputs(["guarded-dev-inputs-v1"]),
-                "packages": sorted(packages, key=lambda p: p["name"])}
+        return sorted(packages, key=lambda p: p["name"])
+
+    def _cache_provenance(self, *, checked=False) -> dict | None:
+        if self._compiler_inputs is None:
+            return None
+        witness = dict(self._workspace_inputs)
+        source = self.summary.get("start_tree", {})
+        witness.update(commit=source.get("commit"), dirty=source.get("dirty"), checked=checked)
+        return {"compiler_sha256": self._compiler_inputs, "workspace": witness, "dependencies": self._path_inputs}
+
+    def _provenance_cleanup(self, owner: dict) -> list[str]:
+        self._invalidate_dependency_profile = False
+        previous = owner.get("cache_inputs")
+        # Existing bounded ownership records without cache witnesses get a
+        # one-time conservative invalidation; ownership/adoption is independent.
+        if previous is not None:
+            if (not isinstance(previous, dict) or set(previous) not in ({"compiler_sha256", "workspace"}, {"compiler_sha256", "workspace", "dependencies"})
+                    or not isinstance(previous["compiler_sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", previous["compiler_sha256"])
+                    or not isinstance(previous["workspace"], dict)):
+                raise TargetCacheError("malformed cache input provenance")
+            witness = previous["workspace"]
+            if (set(witness) != {"packages", "observed_ns", "commit", "dirty", "checked"}
+                    or type(witness["observed_ns"]) is not int or witness["observed_ns"] <= 0
+                    or type(witness["checked"]) is not bool or type(witness["dirty"]) is not bool
+                    or not isinstance(witness["commit"], str) or not isinstance(witness["packages"], list)
+                    or any(not isinstance(p, dict) or set(p) != {"spec", "path", "sha256", "timestamps"}
+                           or not all(isinstance(v, str) and v for v in p.values())
+                           or any(not re.fullmatch(r"[0-9a-f]{64}", p[k]) for k in ("sha256", "timestamps"))
+                           for p in witness["packages"])):
+                raise TargetCacheError("malformed workspace cache provenance")
+        dependencies = previous.get("dependencies", []) if previous else []
+        if (not isinstance(dependencies, list) or any(not isinstance(p, dict)
+                or set(p) != {"name", "version", "spec", "sha256"}
+                or not all(isinstance(v, str) and v for v in p.values())
+                or not re.fullmatch(r"[0-9a-f]{64}", p["sha256"]) for p in dependencies)):
+            raise TargetCacheError("malformed path dependency cache provenance")
+        current = {p["name"]: p for p in self._path_inputs}
+        for old in dependencies:
+            if old["name"] not in current or current[old["name"]]["version"] != old["version"]:
+                raise TargetCacheError("removed/version-changed path dependency requires a fresh target")
+        if previous is None or previous["compiler_sha256"] != self._compiler_inputs:
+            # Toolchain changes invalidate this owned profile's dependencies,
+            # including registry/previously selected versions, not just members.
+            # Cargo owns the profile cleanup; dev and release remain separate.
+            self._invalidate_dependency_profile = True
+            return []
+        changed = [p["spec"] for p in self._path_inputs if p not in dependencies]
+        return changed + build_inputs.stale_workspace_packages(self.root, self.env, previous["workspace"], self._workspace_inputs)
+
+    def _completed_workspace_inputs(self) -> None:
+        current = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
+        if current["packages"] != self._workspace_inputs["packages"]:
+            raise TargetCacheError("workspace source content/timestamps changed during guarded build")
+        self._workspace_inputs = current
 
     def validate_release_inputs(self, report: dict) -> None:
         """Refuse drift before handing an executable to a staging consumer."""
@@ -1062,6 +1140,8 @@ class LocalCiRunner:
                     cache_key = self._release_build_inputs(requested_build_argv)
                 except (KeyError, ValueError, TypeError, OSError) as error:
                     raise TargetCacheError(f"cannot identify incremental release inputs: {error}") from error
+            self._workspace_inputs = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
+            self._path_inputs = self._path_dependency_inputs()
             workspace = {k: self.git_identity[k] for k in ("workspace_root", "git_common_dir")}
             source = self.summary["start_tree"]
             identity = self._directory_identity(target)
@@ -1136,15 +1216,18 @@ class LocalCiRunner:
                          and record["workspace_owner"] == workspace
                          and (record["source"] == source if requested_build_argv is None else
                               cache_key is not None and record.get("build_cache_key") == cache_key))
+            invalidated = self._provenance_cleanup(record) if record else []
             pending = {"schema_version": 1, "profile": "release", "state": "pending",
                        "target_directory": str(target), "target_identity": identity,
                        "workspace_owner": workspace, "source": source, "packages": scope,
-                       "recorded_at": utc_now()}
+                       "recorded_at": utc_now(), "cache_inputs": self._cache_provenance()}
             if cache_key is not None:
                 pending["build_cache_key"] = cache_key
                 self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = cache_key
             report = {**pending, "owner_path": str(owner_path), "lock_path": str(lock_path),
-                      "action": "reuse" if reuse else ("adopted" if adopt else "handoff"),
+                      "action": ("compiler-profile-handoff" if self._invalidate_dependency_profile else
+                                 "source-or-dependency-handoff" if invalidated and reuse else
+                                 "reuse" if reuse else ("adopted" if adopt else "handoff")),
                       "cleanup_status": "not_needed", "previous_owner": record,
                       "malformed_previous_owner": malformed}
             if replacement is not None:
@@ -1156,9 +1239,12 @@ class LocalCiRunner:
                 report["explicit_recreated_target"] = inspected
             self.summary["release_target_cache"] = report
             self._write_release_owner(owner_path, pending)
-            if not reuse and populated:
-                argv = self._workspace_clean_argv(target)
+            if (not reuse or invalidated or self._invalidate_dependency_profile) and populated:
+                argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
                 argv[3] = "release"
+                for spec in invalidated:
+                    if spec not in argv:
+                        argv.extend(("--package", spec))
                 report["cleanup_argv"] = argv
                 report["cleanup_status"] = "pending"
                 # Keep release and dev cleanup evidence independent.
@@ -1183,6 +1269,8 @@ class LocalCiRunner:
                 raise TargetCacheError("release artifact changed before ownership completion")
             if not self._capture_repository_state("release_end_tree") or self.summary["release_end_tree"] != source:
                 raise TargetCacheError("release source changed during build")
+            self._completed_workspace_inputs()
+            pending["cache_inputs"] = self._cache_provenance(checked=True)
             pending.update(state="ready", target_identity=self._directory_identity(target),
                            artifact=report["artifact"], build_argv=report.get("build_argv"), recorded_at=utc_now())
             self._write_release_owner(owner_path, pending)
@@ -1429,7 +1517,8 @@ class LocalCiRunner:
                             try:
                                 if self._dependency_context() != self._dependency_inputs:
                                     raise TargetCacheError("dependency inputs changed during guarded checks")
-                                self._write_target_owner(self.target_owner_path, self.git_identity)
+                                self._completed_workspace_inputs()
+                                self._write_target_owner(self.target_owner_path, self.git_identity, checked=self.summary.get("exit_code") == 0)
                             except InterruptedRun:
                                 self.summary.update(status="interrupted", exit_code=130,
                                                     target_owner_update_error="dependency identity interrupted; owner not advanced")

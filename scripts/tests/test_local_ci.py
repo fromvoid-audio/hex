@@ -32,9 +32,9 @@ printf '%s %s [target=%s]\\n' "$tool" "$*" "$CARGO_TARGET_DIR" >> "$CALL_LOG"
 case "$tool $*" in
   'git rev-parse --show-toplevel') echo "$FAKE_TOPLEVEL"; exit 0 ;;
   'git rev-parse --git-common-dir') echo "$FAKE_COMMON_DIR"; exit 0 ;;
-  git\ rev-parse*) echo deadbeef; exit 0 ;;
-  git\ status*) exit 0 ;;
-  git\ ls-files*) printf '%s\\0' "$FAKE_FILE_LIST"; exit 0 ;;
+  git\\ rev-parse*) echo deadbeef; exit 0 ;;
+  git\\ status*) exit 0 ;;
+  git\\ ls-files*) printf '%s\\0' "$FAKE_FILE_LIST"; exit 0 ;;
   'cargo metadata'*)
     case "$FAIL_MATCH" in *metadata*) echo "metadata unavailable" >&2; exit 9 ;; esac
     printf '{"target_directory":"%s","workspace_root":"%s","workspace_members":["fixture 0.1.0","other 0.1.0"],"packages":[{"id":"fixture 0.1.0","name":"fixture","version":"0.1.0","manifest_path":"%s/Cargo.toml"},{"id":"other 0.1.0","name":"other","version":"0.1.0","manifest_path":"%s/other/Cargo.toml"}]}\\n' "$FAKE_METADATA_TARGET" "$FAKE_WORKSPACE_ROOT" "$FAKE_WORKSPACE_ROOT" "$FAKE_WORKSPACE_ROOT"
@@ -762,18 +762,6 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             local_ci.Step("debug-build", ("cargo", "build", "--offline", "--locked")),
             local_ci.Step("release-build", ("cargo", "build", "--offline", "--locked", "--release")),
         )
-        run_a = local_ci.LocalCiRunner(
-            root, run_id="real-a", env=env, steps=steps, min_free_bytes=0, target_state_dir=state
-        )
-        self.assertEqual(run_a.run(), 0)
-        release_binary = target / "release/fixture-app"
-        release_digest = hashlib.sha256(release_binary.read_bytes()).hexdigest()
-        helper_artifacts = sorted((target / "debug/deps").glob("libexternal_helper-*.rlib"))
-        self.assertTrue(helper_artifacts, "external path dependency artifact was not produced")
-        helper_digests = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in helper_artifacts}
-        api_artifacts = sorted((target / "debug/deps").glob("libfixture_api-*.rlib"))
-        self.assertTrue(api_artifacts, "old workspace API artifact was not produced")
-
         wrapper_dir = self.base / "cargo-wrapper"
         wrapper_dir.mkdir()
         cargo_wrapper = wrapper_dir / "cargo"
@@ -790,9 +778,22 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             encoding="utf-8",
         )
         cargo_wrapper.chmod(0o755)
+        env["PATH"] = f"{wrapper_dir}{os.pathsep}{env.get("PATH", "")}"
+        run_a = local_ci.LocalCiRunner(
+            root, run_id="real-a", env=env, steps=steps, min_free_bytes=0, target_state_dir=state
+        )
+        self.assertEqual(run_a.run(), 0)
+        release_binary = target / "release/fixture-app"
+        release_digest = hashlib.sha256(release_binary.read_bytes()).hexdigest()
+        helper_artifacts = sorted((target / "debug/deps").glob("libexternal_helper-*.rlib"))
+        self.assertTrue(helper_artifacts, "external path dependency artifact was not produced")
+        helper_digests = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in helper_artifacts}
+        api_artifacts = sorted((target / "debug/deps").glob("libfixture_api-*.rlib"))
+        self.assertTrue(api_artifacts, "old workspace API artifact was not produced")
+
         env_b_runtime = {
             **env,
-            "PATH": f"{wrapper_dir}{os.pathsep}{env.get('PATH', '')}",
+            "PATH": env["PATH"],
             "ASSERT_WORKSPACE_CLEAN": "1",
         }
 
