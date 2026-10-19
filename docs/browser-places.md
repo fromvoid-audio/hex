@@ -270,3 +270,20 @@ survives view/caller retirement, saves successfully, then cleans up without
 recreation. No import or new PendingSetup is needed for this browser-only fixture;
 no production input policy changes. Original query/IME/double-pair/value-event
 assertions remain byte-identical. Older fixtures are not converted by this fix.
+
+### keyboard row-action eligibility
+
+Left/Right operate only on a highlighted browser result. Clicking a source/Place
+or pressing Escape retains navigation focus but clears the highlight; subsequent
+Right cannot audition an implicit first sample or expand an implicit folder, and
+Left cannot collapse one. Up/Down still enter and navigate results through the
+existing selection path. A highlighted sample's Right audition and highlighted
+folder Left/Right remain available, as do explicit row clicks and manual preview.
+The browser key context and search/Command-F text ownership are unchanged.
+
+Pulse2858/PR460 promotes the verified five failures from both main2683942b and
+original423 into normal rendered regressions. They use actual routed keys,
+private filesystem workers and canonical Service Init; refused row actions leave
+canonical metadata/history and project requests unchanged. Selected-row controls
+and Up/Down-to-Right plus Command-F typing remain positive cases. This is source
+coverage, not physical keyboard/audio-output or native delivery acceptance.
