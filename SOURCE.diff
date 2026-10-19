@@ -1,0 +1,715 @@
+diff --git a/crates/hex-engine/src/audio_candidate/preparation/original_resources.rs b/crates/hex-engine/src/audio_candidate/preparation/original_resources.rs
+index 2ffd4fda..dc519de6 100644
+--- a/crates/hex-engine/src/audio_candidate/preparation/original_resources.rs
++++ b/crates/hex-engine/src/audio_candidate/preparation/original_resources.rs
+@@ -6,6 +6,124 @@ use crate::native_device_resources::{
+     OriginalResourceBankPlan, OriginalResourcePlanReservation, ResourcePreparationError,
+ };
+ impl AudioCandidatePreparation {
++    /// One fixed target loan from compiler preflight through runtime sealing.
++    /// This is private construction, not a Service source/publication binding.
++    #[cfg_attr(
++        not(test),
++        expect(dead_code, reason = "Service consumer under construction")
++    )]
++    #[expect(
++        clippy::too_many_arguments,
++        reason = "closed actual captured and producer input operation"
++    )]
++    pub(in crate::audio_candidate) fn prepare_original_sampler_on_control(
++        &mut self,
++        target: &crate::SharedMetadata<hex_project::Project>,
++        producer: &OriginalResourceBankPlan<'_>,
++        editor: &hex_project::Editor,
++        previous: Option<
++            &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
++        >,
++        original: &crate::AudioRootStorageLedger<'_>,
++        transforms: &crate::audio_transform::AudioTransformPreparation,
++        reservation: crate::AudioStorageLedgerReservation,
++    ) -> Result<(), AudioStorageError> {
++        if self.failed_incomplete()
++            || self.cleaning
++            || self.complete
++            || !self.original_resource_attempted
++            || self.original_resource_refused
++            || self.bank.is_some()
++            || self.token.is_some()
++            || self.owner.is_some()
++            || !self.sources.is_empty()
++            || self.resident_draft.capacity() != 0
++            || self.custody.is_none()
++            || self.draft.is_none()
++        {
++            return Err(AudioStorageError::SourceMismatch);
++        }
++        if reservation.max_retained_bytes > self.reservation.max_prepared_data_bytes
++            || reservation.max_construction_peak_bytes
++                > self.reservation.max_construction_data_bytes
++        {
++            return Err(AudioStorageError::ReservationExceeded);
++        }
++        // Existing draft/runtime checks bound the actual new mutable buffers,
++        // group/archive/journal and split wrapper by the unchanged runtime cap.
++        // Keep the still-live persistent host wrapper/backing separately charged
++        // while compiler construction and its temporary ledgers overlap it.
++        let groups = crate::session_playback::candidate_group_reservation(
++            target.tracks().len(),
++            target.return_tracks().len(),
++        )?;
++        let runtime_metadata = groups
++            .checked_mul(
++                std::mem::size_of::<Group>()
++                    + std::mem::size_of::<groups::TransferRow>()
++                    + std::mem::size_of::<groups::ArchivedOrigin>(),
++            )
++            .and_then(|n| n.checked_add(std::mem::size_of::<RuntimeOwner>()))
++            .and_then(|n| n.checked_add(std::mem::size_of::<CandidateState>()))
++            .and_then(|n| n.checked_add(claimed::reserved_state_bytes()))
++            .ok_or(AudioStorageError::Overflow)?;
++        let extra = self
++            .collection_bytes()?
++            .checked_add(runtime_metadata)
++            .and_then(|n| n.checked_add(crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES))
++            .ok_or(AudioStorageError::Overflow)?;
++        let mut compiler = reservation;
++        compiler.max_retained_bytes = compiler
++            .max_retained_bytes
++            .checked_sub(extra)
++            .ok_or(AudioStorageError::ReservationExceeded)?;
++        compiler.max_construction_peak_bytes = compiler
++            .max_construction_peak_bytes
++            .checked_sub(extra)
++            .ok_or(AudioStorageError::ReservationExceeded)?;
++        let custody = self
++            .custody
++            .as_mut()
++            .ok_or(AudioStorageError::SourceMismatch)?;
++        // The actual closed compiler checks BOTH reduced ceilings and normal
++        // mandatory-input closure before constructing the first new owner.
++        self.token = Some(
++            custody.compile_original_sampler_revision_with_producer_on_control(
++                target,
++                Some(producer),
++                editor,
++                previous,
++                original,
++                transforms,
++                compiler,
++            )?,
++        );
++        let draft = self
++            .draft
++            .as_mut()
++            .ok_or(AudioStorageError::SourceMismatch)?;
++        draft.prepare_on_control(
++            custody,
++            self.token
++                .as_ref()
++                .ok_or(AudioStorageError::SourceMismatch)?,
++        )?;
++        draft.finish_on_control(&mut self.custody, &mut self.token, &mut self.owner)?;
++        self.owner
++            .as_mut()
++            .ok_or(AudioStorageError::SourceMismatch)?
++            .seal_sampler_constructor_on_control(
++                target,
++                Some(producer),
++                editor,
++                previous,
++                original,
++                transforms,
++                reservation,
++            )?;
++        Ok(())
++    }
++
+     pub(in crate::audio_candidate) fn install_original_resources_on_control(
+         &mut self,
+         plan: &OriginalResourceBankPlan<'_>,
+diff --git a/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests.rs b/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests.rs
+index cb5d0608..c149b74a 100644
+--- a/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests.rs
++++ b/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests.rs
+@@ -1,6 +1,7 @@
+ use super::*;
+ use crate::native_device_resources::{OriginalResourceInput, ResourceCatalogReservation};
+ use std::sync::atomic::{AtomicUsize, Ordering};
++mod runtime;
+ struct Query {
+     calls: AtomicUsize,
+     cancel: bool,
+diff --git a/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs b/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs
+new file mode 100644
+index 00000000..88500d35
+--- /dev/null
++++ b/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs
+@@ -0,0 +1,153 @@
++use super::*;
++use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
++use hex_project::{BeatTime, Command, Created};
++
++#[test]
++fn original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_custody() {
++    for stereo in [false, true] {
++        let (unused_bank, identity, mut editor) =
++            crate::shared_analytic::sampler_tests::canonical_fixture().unwrap();
++        drop(identity);
++        drop(unused_bank);
++        let track = editor.project().tracks()[0].id();
++        let Created::Clip(clip) = editor
++            .execute(Command::PlaceMidiClip {
++                track,
++                start: BeatTime::ZERO,
++                length: BeatTime::ONE,
++            })
++            .unwrap()
++        else {
++            panic!("clip")
++        };
++        editor
++            .execute(Command::AddMidiNote {
++                clip,
++                start: BeatTime::ZERO,
++                duration: BeatTime::ONE,
++                pitch: 60,
++                channel: 0,
++                velocity: 127,
++            })
++            .unwrap();
++        let target = crate::SharedMetadata::new_on_control(editor.project().clone());
++        editor.execute(Command::RemoveTrack(track)).unwrap();
++        let original_source = if stereo {
++            crate::OwnedAudioSource::try_resident(
++                44_100,
++                crate::native_device_resources::tests::PCM.to_vec(),
++            )
++            .ok()
++            .unwrap()
++        } else {
++            crate::OwnedAudioSource::try_resident_mono(44_100, vec![0.25, -0.5, 0.75, -1.0])
++                .ok()
++                .unwrap()
++        };
++        let entries = vec![OriginalResourceInput::native(
++            crate::native_device_resources::tests::ids()[0],
++            &original_source,
++        )];
++        let plan = OriginalResourceBankPlan::borrow(&entries);
++        let mut storage = outer();
++        storage.max_prepared_data_bytes = 64 * 1024 * 1024;
++        storage.max_construction_data_bytes = 64 * 1024 * 1024;
++        let mut cell = AudioCandidatePreparation::try_new_on_control(0, storage).unwrap();
++        cell.operations_on_control()
++            .install_original_resources_on_control(&plan, allowance(), &query(false, false))
++            .unwrap();
++        let signal = crate::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
++        let job = crate::RetainedControlJob::try_from_owned_on_control(
++            &mut Some(0u8),
++            usize::MAX,
++            |_: &mut u8| Ok::<_, ()>(crate::RetainedControlJobProgress::Pending),
++        )
++        .unwrap();
++        let worker = signal.bind_worker_on_control(job.route());
++        let transforms = crate::audio_transform::AudioTransformPreparation::with_retained_cancellation_on_control(worker.clone());
++        let limits = AudioStorageLedgerReservation {
++            data_rows: 1024,
++            handle_rows: 1024,
++            root_rows: 128,
++            max_retained_bytes: 48 * 1024 * 1024,
++            max_construction_peak_bytes: 48 * 1024 * 1024,
++        };
++        let mut original = AudioRootStorageLedger::try_new_on_control(limits).unwrap();
++        original
++            .borrow_native_source_on_control(&original_source, AudioStorageRole::Caller)
++            .unwrap();
++        signal.visit_storage_on_control(&mut original).unwrap();
++        worker.visit_storage_on_control(&mut original).unwrap();
++        for refusal in ["retained", "peak", "rows"] {
++            let mut too_small = limits;
++            let expected = match refusal {
++                "retained" => {
++                    too_small.max_retained_bytes = crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES - 1;
++                    AudioStorageError::ReservationExceeded
++                }
++                "peak" => {
++                    too_small.max_construction_peak_bytes =
++                        crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES - 1;
++                    AudioStorageError::ReservationExceeded
++                }
++                _ => {
++                    too_small.handle_rows = 0;
++                    AudioStorageError::Capacity
++                }
++            };
++            crate::owned_shared::reset_birth_count();
++            crate::owned_shared::reset_clone_count();
++            assert_eq!(
++                cell.prepare_original_sampler_on_control(
++                    &target,
++                    &plan,
++                    &editor,
++                    None,
++                    &original,
++                    &transforms,
++                    too_small
++                ),
++                Err(expected),
++                "{refusal}"
++            );
++            assert_eq!(crate::owned_shared::birth_count(), 0, "{refusal}");
++            assert_eq!(crate::owned_shared::clone_count(), 0, "{refusal}");
++            assert!(cell.owner.is_none() && cell.token.is_none());
++        }
++        cell.prepare_original_sampler_on_control(
++            &target,
++            &plan,
++            &editor,
++            None,
++            &original,
++            &transforms,
++            limits,
++        )
++        .unwrap();
++        assert!(cell.custody.is_none() && cell.token.is_none() && cell.owner.is_some());
++        assert!(
++            cell.owner
++                .as_ref()
++                .unwrap()
++                .inner
++                .constructor_data
++                .is_some()
++        );
++        // No scalar SourceContext is fabricated to make this component look
++        // like an admitted Service source association.
++        assert!(cell.owner.as_ref().unwrap().source_context().is_none());
++        let reader = cell
++            .operations_on_control()
++            .register_compiled_reader_on_control()
++            .unwrap();
++        drop(original);
++        assert_eq!(
++            cell.cleanup_on_control(),
++            Err(AudioStorageError::ExternalReadersPending)
++        );
++        assert!(!cell.failed_incomplete());
++        drop(reader);
++        cell.cleanup_on_control().unwrap();
++        assert!(cell.complete && cell.owner.is_none());
++    }
++}
+diff --git a/crates/hex-engine/src/audio_candidate/storage.rs b/crates/hex-engine/src/audio_candidate/storage.rs
+index 9110b77f..01e23f1d 100644
+--- a/crates/hex-engine/src/audio_candidate/storage.rs
++++ b/crates/hex-engine/src/audio_candidate/storage.rs
+@@ -137,13 +137,14 @@ impl AudioCandidateOwner {
+     /// Engine-private fixed actual-input traversal, consumed by the same closed
+     /// preparation operation that constructed this target. This grants no
+     /// Service/native source association or whole-host completion authority.
+-    #[cfg_attr(
+-        not(test),
+-        expect(dead_code, reason = "same-operation preparation consumer in progress")
++    #[expect(
++        clippy::too_many_arguments,
++        reason = "closed actual captured and producer input operation"
+     )]
+     pub(crate) fn seal_sampler_constructor_on_control(
+         &mut self,
+         target: &crate::SharedMetadata<hex_project::Project>,
++        producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
+         editor: &hex_project::Editor,
+         previous: Option<
+             &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+@@ -170,6 +171,7 @@ impl AudioCandidateOwner {
+             ledger.root(self, crate::AudioStorageRole::Current)?;
+             self.inner.custody.visit_sampler_candidate_inputs(
+                 target,
++                producer,
+                 editor,
+                 previous,
+                 original,
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
+index c412f3f7..ef43658c 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
+@@ -83,6 +83,7 @@ impl ArrangementClips {
+     }
+ }
+ struct Inputs<'a> {
++    producer: Option<&'a crate::native_device_resources::OriginalResourceBankPlan<'a>>,
+     rows: &'a ArrangementClips,
+     preparation: &'a crate::AudioPreparationCustody,
+     editor: &'a hex_project::Editor,
+@@ -151,6 +152,9 @@ impl<'a> Inputs<'a> {
+             ledger.root(self.resources, AudioStorageRole::Caller)?;
+         }
+         self.resources.visit_storage_on_control(ledger)?;
++        if let Some(producer) = self.producer {
++            producer.visit_storage_on_control(ledger)?;
++        }
+         if let Some(target) = self.target {
+             // This exact paired captured Project remains a distinct physical
+             // input even after current authoring/history has discarded it.
+@@ -192,6 +196,7 @@ impl ArrangementClips {
+         reservation: AudioStorageLedgerReservation,
+     ) -> Result<(), AudioStorageError> {
+         let construction = Inputs {
++            producer: None,
+             rows: self,
+             preparation,
+             editor,
+@@ -397,9 +402,14 @@ impl Inputs<'_> {
+     }
+ }
+ impl crate::AudioPreparationCustody {
++    #[expect(
++        clippy::too_many_arguments,
++        reason = "closed mandatory actual-input visitor"
++    )]
+     pub(crate) fn visit_sampler_candidate_inputs<'scope>(
+         &'scope self,
+         target: &'scope crate::SharedMetadata<hex_project::Project>,
++        producer: Option<&'scope crate::native_device_resources::OriginalResourceBankPlan<'scope>>,
+         editor: &'scope hex_project::Editor,
+         previous: Option<&'scope OwnedShared<SharedAnalyticContextTable>>,
+         original: &'scope AudioRootStorageLedger<'scope>,
+@@ -407,6 +417,7 @@ impl crate::AudioPreparationCustody {
+         ledger: &mut AudioRootStorageLedger<'scope>,
+     ) -> Result<(), AudioStorageError> {
+         let inputs = Inputs {
++            producer,
+             rows: &self.arrangement_clips,
+             preparation: self,
+             editor,
+@@ -437,6 +448,7 @@ impl crate::AudioPreparationCustody {
+     ) -> Result<(), AudioStorageError> {
+         self.inspect_sampler_destination()?;
+         let construction = Inputs {
++            producer: None,
+             rows: &self.arrangement_clips,
+             preparation: self,
+             editor,
+@@ -490,6 +502,7 @@ impl crate::AudioPreparationCustody {
+     ) -> Result<(), AudioStorageError> {
+         self.inspect_sampler_destination()?;
+         let construction = Inputs {
++            producer: None,
+             rows: &self.arrangement_clips,
+             preparation: self,
+             editor,
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs
+index 085773e6..7020e396 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs
+@@ -48,6 +48,30 @@ impl crate::AudioPreparationCustody {
+         original: &AudioRootStorageLedger<'_>,
+         transforms: &AudioTransformPreparation,
+         reservation: AudioStorageLedgerReservation,
++    ) -> Result<crate::AudioPreparationToken, AudioStorageError> {
++        self.compile_original_sampler_revision_with_producer_on_control(
++            target,
++            None,
++            editor,
++            previous,
++            original,
++            transforms,
++            reservation,
++        )
++    }
++    #[expect(
++        clippy::too_many_arguments,
++        reason = "closed actual captured and producer input operation"
++    )]
++    pub(crate) fn compile_original_sampler_revision_with_producer_on_control(
++        &mut self,
++        target: &crate::SharedMetadata<hex_project::Project>,
++        producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
++        editor: &hex_project::Editor,
++        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
++        original: &AudioRootStorageLedger<'_>,
++        transforms: &AudioTransformPreparation,
++        reservation: AudioStorageLedgerReservation,
+     ) -> Result<crate::AudioPreparationToken, AudioStorageError> {
+         self.inspect_sampler_destination()?;
+         let next = self
+@@ -55,6 +79,7 @@ impl crate::AudioPreparationCustody {
+             .checked_add(1)
+             .ok_or(AudioStorageError::Overflow)?;
+         let construction = Inputs {
++            producer,
+             rows: &self.arrangement_clips,
+             preparation: self,
+             editor,
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
+index 62a8c24b..2c4c9f9e 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
+@@ -139,6 +139,7 @@ fn normal_bounds(
+     f.transforms
+         .with_pcm_inventory_on_control(|inventory| {
+             let inputs = Inputs {
++                producer: None,
+                 rows,
+                 preparation: &f.preparation,
+                 editor: &f.editor,
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs
+index e6df944d..b22f5bc6 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs
+@@ -205,6 +205,7 @@ fn captured_sampler_complete_revision_is_registered_at_birth_and_retires_in_same
+         .with_pcm_inventory_on_control(|inventory| {
+             let mut ledger = AudioRootStorageLedger::try_new_on_control(limits())?;
+             let inputs = Inputs {
++                producer: None,
+                 rows: &preparation.arrangement_clips,
+                 preparation: &preparation,
+                 editor: &editor,
+@@ -270,6 +271,7 @@ fn captured_complete_revision_exact_and_minus_one_refuse_before_constructor_birt
+         let (retained, peak) = transforms
+             .with_pcm_inventory_on_control(|inventory| {
+                 let inputs = Inputs {
++                    producer: None,
+                     rows: &preparation.arrangement_clips,
+                     preparation: &preparation,
+                     editor: &editor,
+@@ -546,6 +548,7 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
+         assert_eq!(
+             prepared_owner.seal_sampler_constructor_on_control(
+                 &unrelated_target,
++                None,
+                 &editor,
+                 None,
+                 &original,
+@@ -561,6 +564,7 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
+         assert_eq!(
+             prepared_owner.seal_sampler_constructor_on_control(
+                 &target,
++                None,
+                 &unrelated_editor,
+                 None,
+                 &original,
+@@ -574,6 +578,7 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
+         assert_eq!(
+             prepared_owner.seal_sampler_constructor_on_control(
+                 &target,
++                None,
+                 &editor,
+                 None,
+                 &original,
+@@ -586,6 +591,7 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
+         drop(omitted_state);
+         let result = prepared_owner.seal_sampler_constructor_on_control(
+             &target,
++            None,
+             &editor,
+             None,
+             &original,
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs
+index f63b3508..b0cb0a86 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs
+@@ -90,6 +90,7 @@ fn parent_bound_nonempty_success_owns_context_and_children_from_birth_through_cl
+     // The nonempty actual parent is also visited in place, not rebuilt into a
+     // synthetic cleanup parent. Closure includes all borrowed input aliases.
+     let inputs = Inputs {
++        producer: None,
+         rows: &preparation.arrangement_clips,
+         preparation: &preparation,
+         editor: &editor,
+@@ -193,6 +194,7 @@ fn parent_bound_inspection_is_allocation_id_clone_and_cleanup_free() {
+     crate::owned_shared::reset_birth_count();
+     crate::owned_shared::reset_clone_count();
+     let inputs = Inputs {
++        producer: None,
+         rows: &preparation.arrangement_clips,
+         preparation: &preparation,
+         editor: &editor,
+@@ -253,6 +255,7 @@ fn bound_limits(
+         )
+         .unwrap();
+     let inputs = Inputs {
++        producer: None,
+         rows: &preparation.arrangement_clips,
+         preparation,
+         editor,
+@@ -636,6 +639,7 @@ fn parent_bound_arithmetic_original_has_no_normal_authority_or_side_effects() {
+             usize::MAX,
+             |original| {
+                 let inputs = Inputs {
++                    producer: None,
+                     rows: &f.preparation.arrangement_clips,
+                     preparation: &f.preparation,
+                     editor: &f.editor,
+diff --git a/crates/hex-engine/src/audio_storage.rs b/crates/hex-engine/src/audio_storage.rs
+index 79b7279b..92b393be 100644
+--- a/crates/hex-engine/src/audio_storage.rs
++++ b/crates/hex-engine/src/audio_storage.rs
+@@ -100,7 +100,9 @@ impl<'a> Owner<'a> {
+             },
+         }
+     }
+-    fn exclusive_vec<T>(value: &'a Vec<T>) -> Self {
++    // Actual lifetime-bound Vec field identity only, including borrowed-element
++    // metadata vectors. This grants no source origin or retirement authority.
++    pub(crate) fn exclusive_vec<T>(value: &'a Vec<T>) -> Self {
+         Self {
+             domain: OwnerDomain::ExclusiveVec,
+             vec_field: Some(value), // the REAL lifetime-bound Vec field
+diff --git a/crates/hex-engine/src/native_device_resources/producer.rs b/crates/hex-engine/src/native_device_resources/producer.rs
+index dcd876e5..a0b0a8f4 100644
+--- a/crates/hex-engine/src/native_device_resources/producer.rs
++++ b/crates/hex-engine/src/native_device_resources/producer.rs
+@@ -91,6 +91,42 @@ pub struct OriginalResourceBankPlan<'a> {
+     entries: &'a Vec<OriginalResourceInput<'a>>,
+ }
+ impl<'a> OriginalResourceBankPlan<'a> {
++    pub(crate) fn visit_storage_on_control<'scope>(
++        &self,
++        ledger: &mut crate::AudioRootStorageLedger<'scope>,
++    ) -> Result<(), AudioStorageError>
++    where
++        'a: 'scope,
++    {
++        use crate::audio_storage::{Location, Owner};
++        ledger.vec(self.entries)?;
++        ledger.bytes(
++            Owner::exclusive_vec(self.entries),
++            Location("original-resource-input-vec-inline", 0),
++            size_of_val(self.entries),
++        )?;
++        for entry in self.entries {
++            match &entry.source {
++                Source::Native(source) => {
++                    if !ledger.skip_observed_root(*source) {
++                        ledger.borrow_native_source_on_control(
++                            source,
++                            crate::AudioStorageRole::Caller,
++                        )?;
++                    }
++                }
++                Source::Stereo(source) => {
++                    if !ledger.skip_observed_root(*source) {
++                        ledger.borrow_native_audio_on_control(
++                            source,
++                            crate::AudioStorageRole::Caller,
++                        )?;
++                    }
++                }
++            }
++        }
++        Ok(())
++    }
+     pub fn borrow(entries: &'a Vec<OriginalResourceInput<'a>>) -> Self {
+         Self { entries }
+     }
+diff --git a/crates/hex-engine/src/native_device_resources/producer/tests.rs b/crates/hex-engine/src/native_device_resources/producer/tests.rs
+index 7d5af479..bba0a50c 100644
+--- a/crates/hex-engine/src/native_device_resources/producer/tests.rs
++++ b/crates/hex-engine/src/native_device_resources/producer/tests.rs
+@@ -1,5 +1,73 @@
+ use super::*;
+ use std::sync::atomic::AtomicBool;
++
++#[test]
++fn original_plan_inspection_covers_actual_input_backing_aliases_without_births() {
++    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
++    let ids = crate::native_device_resources::tests::ids();
++    let source = OwnedAudioSource::try_resident_mono(44100, vec![0.25; 4])
++        .ok()
++        .unwrap();
++    let mut entries = Vec::with_capacity(7);
++    entries.push(OriginalResourceInput::native(ids[0], &source));
++    entries.push(OriginalResourceInput::native(ids[1], &source));
++    let plan = OriginalResourceBankPlan::borrow(&entries);
++    let reservation = AudioStorageLedgerReservation {
++        data_rows: 64,
++        handle_rows: 16,
++        root_rows: 8,
++        max_retained_bytes: 1_000_000,
++        max_construction_peak_bytes: 1_000_000,
++    };
++    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
++    ledger
++        .borrow_native_source_on_control(&source, AudioStorageRole::Caller)
++        .unwrap();
++    let before = ledger.summary().unwrap().data_bytes;
++    crate::owned_shared::reset_birth_count();
++    crate::owned_shared::reset_clone_count();
++    let ids_before = crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get());
++    let measured = allocation_counter::measure(|| {
++        plan.visit_storage_on_control(&mut ledger).unwrap();
++        plan.visit_storage_on_control(&mut ledger).unwrap();
++    });
++    assert_eq!(measured.count_total, 0);
++    assert_eq!(crate::owned_shared::birth_count(), 0);
++    assert_eq!(crate::owned_shared::clone_count(), 0);
++    assert_eq!(
++        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
++        ids_before
++    );
++    assert_eq!(
++        ledger.summary().unwrap().data_bytes - before,
++        size_of_val(&entries) + entries.capacity() * size_of::<OriginalResourceInput<'_>>()
++    );
++    ledger.validate_closed_shared_handles().unwrap();
++    let measured = allocation_counter::measure(|| {
++        AudioRootStorageLedger::arithmetic_cost_for_limits(
++            reservation,
++            usize::MAX,
++            usize::MAX,
++            |ledger| plan.visit_storage_on_control(ledger),
++        )
++        .unwrap();
++    });
++    assert_eq!(measured.count_total, 0);
++    assert_eq!(
++        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
++        ids_before
++    );
++    let raw = crate::Audio::new(44100, vec![[0.0; 2]; 4]).unwrap();
++    let raw_entries = vec![OriginalResourceInput::stereo(ids[0], &raw)];
++    let raw_plan = OriginalResourceBankPlan::borrow(&raw_entries);
++    let mut refused = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
++    assert_eq!(
++        raw_plan.visit_storage_on_control(&mut refused),
++        Err(AudioStorageError::UnknownStorage)
++    );
++    assert_eq!(refused.summary(), Err(AudioStorageError::UnknownStorage));
++}
++
+ fn limits() -> OriginalResourcePlanReservation {
+     OriginalResourcePlanReservation {
+         inputs: crate::AudioStorageReservation {
+diff --git a/docs/sampler.md b/docs/sampler.md
+index 47a830a9..294b0744 100644
+--- a/docs/sampler.md
++++ b/docs/sampler.md
+@@ -1621,3 +1621,28 @@ native backend/ACK, export or musical acceptance. The persistent preparation
+ consumer still needs a combined before-birth reservation and one captured-target
+ loan through compilation and sealing; final Service live-union and source
+ association must not be inferred from this private constructor seal.
++
++The Engine-private persistent preparation consumer now holds that single target
++loan across complete compilation, actual draft/runtime construction, fixed owner
++installation and bound-input sealing. Its before-compiler quote separately
++reserves the unchanged runtime ceiling, finite group/archive/journal/split
++metadata and still-live host collection storage. Both ceilings and the normal
++mandatory input/row checks remain required before compiler births.
++
++A real original-rate Mono/Stereo producer fixture keeps its original source
++alive through this operation. This exposed a genuine missing producer-input
++root: the original ledger's source field was absent from mandatory inputs.
++The private traversal now borrows the actual producer plan and visits its Vec
++body/backing and concrete source fields before original-ledger import. The
++original `SourceMismatch` is retained as negative evidence; original-root binding
++was not relaxed. Repeated inspection allocates/clones/mints no IDs, deduplicates
++the same real field and continues to refuse raw/unknown source origin. The
++existing lifetime-bound Vec identity constructor is crate-visible solely to
++charge that actual borrowed Vec body; its identity/provenance semantics and
++public ledger APIs are unchanged.
++
++The fixture verifies persistent candidate ownership and reader-delayed cleanup,
++plus retained/peak/row-shortage refusal before compiler owner births or clones.
++It does not create a scalar SourceContext to impersonate Service association.
++Actual Service/native construction, post-preroll ControlWork, source freshness,
++full live-union admission and all broader musical coverage remain open.

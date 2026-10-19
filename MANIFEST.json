@@ -1,0 +1,199 @@
+{
+  "payloads": [
+    {
+      "path": "CHECKS.json",
+      "bytes": 6433,
+      "sha256": "b6ea1bf2476841ddd3a0008f16e1965d831986db0c953385bef34c9adc26f71c"
+    },
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2705,
+      "sha256": "2027f7f405c95a35010c549992723107ba91520b5d91fb96a43656bca9d594c9"
+    },
+    {
+      "path": "SOURCE.diff",
+      "bytes": 32445,
+      "sha256": "d81b75a21a4860ed0ab7495f802c3ae5e2d7a6116c20eb1129cd161724d0c8d5"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 2885,
+      "sha256": "5bfa5cff767da6a2685f9da2f889f4316973879c091a7f1b80712e7353a614f6"
+    },
+    {
+      "path": "TOOLCHAIN.txt",
+      "bytes": 276,
+      "sha256": "02aa84782da339f00fca9842b48acaae26d2708d26e4e903eed883d665cb6d99"
+    },
+    {
+      "path": "history/hex395-persistent-consumer-affected-compiler.log",
+      "bytes": 11013,
+      "sha256": "df68b28f2f55b7e5152588bfd919e297905135c2d7dc9f6baaac6cd669d85eda"
+    },
+    {
+      "path": "history/hex395-persistent-consumer-original-route.log",
+      "bytes": 1556,
+      "sha256": "da7ec18c9c8c2418bfc3ee2f4b275fb70458d1f6f6d74a0076d157e46a94e999"
+    },
+    {
+      "path": "history/hex395-persistent-consumer-producer-suite.log",
+      "bytes": 771,
+      "sha256": "9922e13e1d016ec5136b7634356dadb7263c1bf9b8333ef7b406bc6038c439a7"
+    },
+    {
+      "path": "history/hex395-persistent-consumer-quick.log",
+      "bytes": 429,
+      "sha256": "708643bc552ccdef0d0eb7f18c7f4ede6557bd531e40dd570ac98ec5b149545b"
+    },
+    {
+      "path": "history/hex395-persistent-consumer-strict-final.log",
+      "bytes": 256,
+      "sha256": "acf9c0cde403f4568517d2f3eeb22045d84536dd6237bfe889e802b894c15827"
+    },
+    {
+      "path": "history/hex395-persistent-consumer-strict.log",
+      "bytes": 868,
+      "sha256": "d88001e811e4bc73657be183c05761c0c3e5d43039eee2bf4ae55a6ffc6ccd79"
+    },
+    {
+      "path": "history/hex395-persistent-sampler-consumer-first.log",
+      "bytes": 1163,
+      "sha256": "d58f02aeb90252a55948adc7ec41d9bf174b356de054b4099babd8415ea2fdee"
+    },
+    {
+      "path": "history/hex395-persistent-sampler-consumer-missing-entry-red.log",
+      "bytes": 3326,
+      "sha256": "271feb320aea00d14038df4844b81933760616fa8d6275c8b2a872b62fd13337"
+    },
+    {
+      "path": "history/hex395-persistent-sampler-first-red-source/original_resources.rs",
+      "bytes": 6352,
+      "sha256": "70d8905446f42126350860c6ee68ea2adfad45f2a098c96900df162f9296753e"
+    },
+    {
+      "path": "history/hex395-persistent-sampler-first-red-source/runtime.rs",
+      "bytes": 4396,
+      "sha256": "c7f9c02a35ab34421e2e10b5b70fc632a0f6dfb1d6594a56eaf14a845c54f11a"
+    },
+    {
+      "path": "history/hex395-persistent-sampler-producer-bound-budgets.log",
+      "bytes": 514,
+      "sha256": "5da72e195d41fcf30d0af877b3127153bd4ed888be520ed8549144ace6c5628b"
+    },
+    {
+      "path": "history/hex395-persistent-sampler-producer-bound-second.log",
+      "bytes": 514,
+      "sha256": "011e8f9a54e1903fede9a8811dcedf0115e7157a9efb2fd69a1381465c363024"
+    },
+    {
+      "path": "history/hex395-persistent-sampler-producer-bound.log",
+      "bytes": 1142,
+      "sha256": "71e6b724f4ccd5cdc6a4f5695d8de4ad60e063dcb06ece4de6fda2e31bb8dd58"
+    },
+    {
+      "path": "history/hex395-producer-plan-actual-inspection.log",
+      "bytes": 484,
+      "sha256": "81e8c4be9bf633c241347356942016b4faeabf9649a6ff1c3ece6c5d235731e5"
+    },
+    {
+      "path": "quick-original/01-architecture.log",
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    {
+      "path": "quick-original/02-gpui-patch.log",
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    {
+      "path": "quick-original/03-dependency-patches.log",
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    {
+      "path": "quick-original/04-ui-style.log",
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    {
+      "path": "quick-original/05-device-layout.log",
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    {
+      "path": "quick-original/06-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "quick-original/summary.json",
+      "bytes": 4540,
+      "sha256": "0e288b91dce985987bae218938d1a58b00acd0f31f9ea785aacbe167d0b5f22d"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs",
+      "bytes": 6027,
+      "sha256": "33d4dc9be9973339afa2f1fc7698c59321be21f8cc5b06093dedf63c4aab6a01"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests.rs",
+      "bytes": 9388,
+      "sha256": "49dc3667db7e2be41bd43fc885cf63a45de62cb6bcf3fe81c8d8e6d7b695c5c0"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_candidate/preparation/original_resources.rs",
+      "bytes": 7987,
+      "sha256": "556877e036f8ea8120c8efbf142ccc48c218eacb25d4950dda8ede30ff4a2dcf"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_candidate/storage.rs",
+      "bytes": 15083,
+      "sha256": "39c42e2c685b76bf816512dd6d60b960a5b995074560c772afdcc87b306b82ef"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs",
+      "bytes": 7953,
+      "sha256": "690303287b7be3d0b93c043b8f77d9dc2370fabcb7632810ebb683496bf8d5a6"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs",
+      "bytes": 29417,
+      "sha256": "d91470c98d8ac5db346cc22828e235ad1b637f6bbeaa559100fac1aba0475ac5"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs",
+      "bytes": 24351,
+      "sha256": "faabea9a4ddbfaeb85e5a29d537de912239362c529d538a5460045e38071ffe0"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
+      "bytes": 28921,
+      "sha256": "96b39b37c7cb534836edca948e185974db18233f5d6ff6d29d6bd2d01370be36"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "bytes": 23652,
+      "sha256": "1addf98ebbf254e77cdd8108ea1e4613e081c903a3da4427d8437d185e36df59"
+    },
+    {
+      "path": "source/crates/hex-engine/src/audio_storage.rs",
+      "bytes": 29939,
+      "sha256": "15474eccd4f7e9bd0a749143e7f10ffecdae2f6a42a4e7f0625abbeb477d2c22"
+    },
+    {
+      "path": "source/crates/hex-engine/src/native_device_resources/producer/tests.rs",
+      "bytes": 7505,
+      "sha256": "928a0a4a0d71c255fdc9269e83c90a390e0b2378b08fc2c96f874d789165b997"
+    },
+    {
+      "path": "source/crates/hex-engine/src/native_device_resources/producer.rs",
+      "bytes": 10687,
+      "sha256": "5f59d7361b99fab84c77ff168d1a95452afbf5b903ff06ccce86632741607e98"
+    },
+    {
+      "path": "source/docs/sampler.md",
+      "bytes": 111579,
+      "sha256": "e719ff5f835ca342e12bd665769fa565cb9fcd94402474daaad3050e094a1c20"
+    }
+  ]
+}

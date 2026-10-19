@@ -1,0 +1,70 @@
+{
+  "source": "e05f85c24dbd98d0179b9744708c89cd55615989",
+  "tree": "a7d3a4d82c008392c4cf5047bede1d62086e050f",
+  "checks": [
+    {
+      "log": "history/hex395-persistent-consumer-affected-compiler.log",
+      "passed": 28,
+      "failed": 0,
+      "ignored": 0,
+      "unique_names": [
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_cancelled_route_refuses_before_normal_backing_and_preserves_original",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_closed_sampler_compile_binds_bank_history_parent_and_constructs_both_selectors",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_cheap_bound_cannot_skip_normal_closure_or_accept_an_omitted_context_alias",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_compiler_error_and_panic_restore_same_context_without_legacy_producer",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_failed_parent_and_pending_destination_refuse_before_owner_activity",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_existing_cancellation_poll_seam_preserves_each_closed_operation_frontier",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_original_growth_and_standalone_bank_import_order_are_preserved",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_sampler_compile_keeps_equal_content_return_plans_physically_distinct",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_complete_revision_partial_session_and_revision_failure_retain_same_parent_cleanup",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_context_aliases_close_without_duplicate_pcm_or_reservation_enlargement",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_sampler_complete_revision_is_registered_at_birth_and_retires_in_same_parent",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::actual_aggregate_exact_and_minus_one_limits_refuse_before_inspection_or_owner_birth",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_sampler_target_survives_current_editor_history_pruning",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_arithmetic_original_has_no_normal_authority_or_side_effects",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_cancel_and_track_error_retain_real_partial_owners_for_cleanup",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_complete_revision_exact_and_minus_one_refuse_before_constructor_birth",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_target_alias_and_unrelated_bank_refuse_before_compiler_birth",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_constructor_panic_preserves_first_payload_and_cleanup_never_retries_pending",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_inspection_is_allocation_id_clone_and_cleanup_free",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_nonempty_success_owns_context_and_children_from_birth_through_cleanup",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_sampler_complete_revision_enters_actual_candidate_runtime",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_failed_pending_invalid_and_omitted_alias_refuse_without_cleanup",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_opaque_context_refuses_before_any_move_or_cleanup",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::root_owned_context_only_cancellation_is_discovered_and_retired_by_actual_parent",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::root_owned_retirement_unwind_is_pending_and_actual_parent_preserves_first_payload",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_original_unrelated_parent_or_data_cannot_supply_cleanup_binding",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::root_owned_successful_project_restores_same_table_and_real_parent_retires_once",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::parent_bound::parent_bound_exact_minus_one_and_row_shortage_precede_new_owners"
+      ]
+    },
+    {
+      "log": "history/hex395-persistent-consumer-producer-suite.log",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "unique_names": [
+        "native_device_resources::producer::tests::typed_original_producer_preserves_raw_refusal_and_charges_reserved_input_capacity",
+        "native_device_resources::producer::tests::original_plan_inspection_covers_actual_input_backing_aliases_without_births",
+        "native_device_resources::producer::tests::typed_original_producer_keeps_actual_original_layout_rate_and_allocation"
+      ]
+    },
+    {
+      "log": "history/hex395-persistent-consumer-original-route.log",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "unique_names": [
+        "audio_candidate::preparation::original_resources::tests::affine_original_install_reported_cancel_prevents_second_producer_and_allows_cleanup",
+        "audio_candidate::preparation::original_resources::tests::affine_original_install_query_unwind_latches_actual_cell_and_refuses_retry_cleanup",
+        "audio_candidate::preparation::original_resources::tests::affine_original_install_validates_before_producer_retains_once_and_cleans_on_control",
+        "audio_candidate::preparation::original_resources::tests::runtime::original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_custody"
+      ]
+    }
+  ],
+  "distinct_positive_tests": 35,
+  "strict": "Engine all-targets -D warnings exit0; original obsolete-expect negative retained",
+  "quick": "sixPASS/PARTIAL/cleanstart=end/stalefalse; original summary+all logs",
+  "scope": "private actual persistent-constructor consumer; NOT Service/native/fullSampler admission",
+  "stack": "cloud16MiB, not default native"
+}
