@@ -1,0 +1,178 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized] target(s) in 12.51s
+     Running unittests src/lib.rs (target/debug/deps/hex_engine-6d11557fa9a26bde)
+
+running 22 tests
+hex Session preparation evidence: private_prepared_revision_extraction; branch=supported-constructor
+hex Session preparation evidence: test audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_checked_reservation_overflow_precedes_any_owner_borrow ... borrowed_storage_pressureok; branch=supported-constructor
+
+hex Session preparation evidence: borrowed_storage_real_roots; branch=supported-constructor
+hex Session preparation evidence: borrowed_storage_retained_failure; branch=supported-constructor
+test audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_pressure_refuses_without_consuming_original_owners ... ok
+hex Session preparation evidence: private_prepared_revision_child_alias; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_inventory_covers_real_roots_without_retirement_admission' (342248) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs:670:9:
+assertion `left == right` failed
+  left: 18
+ right: 17
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_inventory_covers_real_roots_without_retirement_admission ... FAILED
+test audio_preparation::arrangement_clips::root::revision_tests::actual_alias_or_weak_refusal_pins_identical_revision_and_never_retries ... ok
+hex Session preparation evidence: private_prepared_revision_child_panic; branch=supported-constructor
+hex Session preparation evidence: private_prepared_revision_frontiers; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::child_destructor_panic_after_four_root_extraction_retains_bank_and_first_payload' (342252) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs:512:13:
+revision child destructor
+test audio_preparation::arrangement_clips::root::revision_tests::child_destructor_panic_after_four_root_extraction_retains_bank_and_first_payload ... ok
+hex Session preparation evidence: private_prepared_revision_pcm; branch=supported-constructor
+test audio_preparation::arrangement_clips::root::revision_tests::child_alias_refusal_retains_partial_extraction_in_persistent_slots ... ok
+hex Session preparation evidence: private_prepared_revision_reservations; branch=supported-constructor
+test audio_preparation::arrangement_clips::root::revision_tests::four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumption ... ok
+hex Session preparation evidence: unsupported_main_graphs; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_retained_roles_and_failure_custody_never_drop_or_close_owners' (342250) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(9)
+ right: Some(9)
+test audio_preparation::arrangement_clips::root::revision_tests::new_touch_and_transformed_graphs_refuse_before_source_moves ... ok
+hex Session preparation evidence: private_prepared_revision_restore_refusal; branch=supported-constructor
+test audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_retained_roles_and_failure_custody_never_drop_or_close_owners ... ok
+hex Session preparation evidence: private_prepared_revision_aliases; branch=supported-constructor
+test audio_preparation::arrangement_clips::root::revision_tests::occupied_restore_destination_and_invalid_handle_preserve_all_four_owners ... ok
+hex Session preparation evidence: arrangement_project_root_pcm; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(0)
+ right: Some(0)
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(1)
+ right: Some(1)
+test audio_preparation::arrangement_clips::root::revision_tests::root_wrapping_adds_no_aliases_and_equal_content_revisions_have_distinct_roots ... 
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(2)
+ right: Some(2)
+ok
+hex Session preparation evidence: main_carrier_identity; branch=supported-constructor
+hex preparation evidence: private_prepared_revision_pcm; supported-controls=completed; four-actual-roots; resident-streamed-parity; exact-bank-restored
+test audio_preparation::arrangement_clips::root::revision_tests::four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity ... ok
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(3)
+ right: Some(3)
+hex Session preparation evidence: arrangement_project_root_faults; branch=supported-constructor
+test audio_preparation::arrangement_clips::root::tests::empty_main_carrier_survives_construct_transfer_restore_and_reuse ... ok
+hex Session preparation evidence: main_carrier_before_birth; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(4)
+ right: Some(4)
+
+thread 'audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody' (342261) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs:376:9:
+assertion `left != right` failed: persistent Arrangement root panic
+  left: Some(0)
+ right: Some(0)
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(5)
+ right: Some(5)
+
+thread 'audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody' (342261) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs:376:9:
+assertion `left != right` failed: persistent Arrangement root panic
+  left: Some(1)
+ right: Some(1)
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(6)
+ right: Some(6)
+hex preparation evidence: arrangement_project_root_pcm; supported-controls=completed; resident-streamed-parity; context-handles2
+test audio_preparation::arrangement_clips::root::tests::actual_resident_and_streamed_root_matches_legacy_pcm_and_preserves_context_handles ... ok
+hex Session preparation evidence: arrangement_project_root_association; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(7)
+ right: Some(7)
+test audio_preparation::arrangement_clips::root::tests::main_carrier_is_not_born_before_either_byte_reservation_admits_it ... ok
+hex Session preparation evidence: main_carrier_authored_refusal; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody' (342261) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs:376:9:
+assertion `left != right` failed: persistent Arrangement root panic
+  left: Some(2)
+ right: Some(2)
+test audio_preparation::arrangement_clips::root::tests::mismatched_root_association_refuses_reporting_and_restore_without_losing_owners ... ok
+hex Session preparation evidence: arrangement_project_root_restore_pressure; branch=supported-constructor
+test audio_preparation::arrangement_clips::root::tests::narrow_root_refuses_authored_main_before_taking_any_source ... ok
+hex Session preparation evidence: arrangement_project_root_disposal; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(8)
+ right: Some(8)
+
+thread 'audio_preparation::arrangement_clips::root::tests::restored_root_child_destructor_panic_retains_first_payload_bank_and_remaining_owners' (342266) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root/tests.rs:287:13:
+root child destructor probe
+test audio_preparation::arrangement_clips::root::tests::restored_root_child_destructor_panic_retains_first_payload_bank_and_remaining_owners ... ok
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(9)
+ right: Some(9)
+hex Session preparation evidence: arrangement_project_root_aliases; branch=supported-constructor
+
+thread 'audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody' (342261) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs:376:9:
+assertion `left != right` failed: persistent Arrangement root panic
+  left: Some(3)
+ right: Some(3)
+test audio_preparation::arrangement_clips::root::tests::occupied_restore_target_and_caller_byte_pressure_keep_original_owners ... ok
+
+thread 'audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody' (342261) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs:376:9:
+assertion `left != right` failed: persistent Arrangement root panic
+  left: Some(4)
+ right: Some(4)
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(10)
+ right: Some(10)
+test audio_preparation::arrangement_clips::root::tests::root_moves_add_no_aliases_and_equal_content_roots_retain_distinct_allocations ... ok
+
+thread 'audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody' (342253) panicked at crates/hex-engine/src/prepared_revision/assembly.rs:471:9:
+assertion `left != right` failed: persistent private revision root panic
+  left: Some(11)
+ right: Some(11)
+hex preparation evidence: private_prepared_revision_frontiers; supported-controls=completed; twelve-error-panic-frontiers; original-bank-or-retained-owner
+test audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody ... ok
+
+thread 'audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody' (342261) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs:376:9:
+assertion `left != right` failed: persistent Arrangement root panic
+  left: Some(5)
+ right: Some(5)
+
+thread 'audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody' (342261) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs:376:9:
+assertion `left != right` failed: persistent Arrangement root panic
+  left: Some(6)
+ right: Some(6)
+
+thread 'audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody' (342261) panicked at crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs:376:9:
+assertion `left != right` failed: persistent Arrangement root panic
+  left: Some(7)
+ right: Some(7)
+hex preparation evidence: arrangement_project_root_faults; supported-controls=completed; reserve-transfer-install-frontiers8-errors-and-panics
+test audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody ... ok
+
+failures:
+
+failures:
+    audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_inventory_covers_real_roots_without_retirement_admission
+
+test result: FAILED. 21 passed; 1 failed; 0 ignored; 0 measured; 529 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p hex-engine --lib`

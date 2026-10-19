@@ -1,0 +1,48 @@
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+warning: unused import: `hex_lattice::NativeDeviceDefinition`
+   --> crates/hex-engine/src/audio_preparation/arrangement_clips/root/tests.rs:492:9
+    |
+492 |     use hex_lattice::NativeDeviceDefinition;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0599]: no method named `default_state` found for struct `UtilityDefinition` in the current scope
+   --> crates/hex-engine/src/audio_preparation/arrangement_clips/root/tests.rs:499:18
+    |
+498 |               state: hex_devices::utility::UTILITY_DEFINITION
+    |  ____________________-
+499 | |                 .default_state()
+    | |                 -^^^^^^^^^^^^^ method not found in `UtilityDefinition`
+    | |_________________|
+    |
+    |
+   ::: crates/hex-lattice-contract/src/lib.rs:569:8
+    |
+569 |       fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError>;
+    |          ------------- the method is available for `UtilityDefinition` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `NativeDeviceMetadata` which provides `default_state` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use hex_lattice_contract::NativeDeviceMetadata;
+    |
+
+error[E0063]: missing field `main_devices` in initializer of `hex_project::Snapshot`
+   --> crates/hex-engine/src/session_playback/tests.rs:955:34
+    |
+955 |     legacy_project_from_snapshot(Snapshot {
+    |                                  ^^^^^^^^ missing `main_devices`
+
+error[E0063]: missing field `main_devices` in initializer of `hex_project::Snapshot`
+    --> crates/hex-engine/src/session_playback/tests.rs:1171:34
+     |
+1171 |     legacy_project_from_snapshot(Snapshot {
+     |                                  ^^^^^^^^ missing `main_devices`
+
+Some errors have detailed explanations: E0063, E0599.
+For more information about an error, try `rustc --explain E0063`.
+warning: `hex-engine` (lib test) generated 1 warning
+error: could not compile `hex-engine` (lib test) due to 3 previous errors; 1 warning emitted

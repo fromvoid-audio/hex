@@ -1,0 +1,5 @@
+    Checking hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Checking hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Checking hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+    Finished `dev` profile [unoptimized] target(s) in 8.37s
