@@ -326,6 +326,16 @@ impl AudioPreparationCustody {
         Ok((self.root, self.incarnation, self.revision.candidate_root()?))
     }
 
+    #[cfg(test)]
+    pub(crate) fn reader_word_for_test(&self) -> Option<usize> {
+        self.revision.reader_word_for_test()
+    }
+    #[cfg(test)]
+    pub(crate) fn revision_strong_count_for_test(&self) -> Option<usize> {
+        self.revision
+            .owner_for_test()
+            .map(|owner| std::sync::Arc::strong_count(owner.arc()))
+    }
     /// Register an immutable compiled field against this actual constructor
     /// incarnation. No arbitrary revision owner can be adopted.
     pub fn register_compiled_reader_on_control(

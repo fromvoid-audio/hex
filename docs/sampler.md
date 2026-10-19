@@ -1425,15 +1425,40 @@ return an owning revision/Playback. Explicit duplication registers another
 physical field, with its own ledger observations. Scalar identity and metadata
 queries confer no publication or cleanup authority.
 
-The existing revision root retains a separate constructor-declared reader-state
-allocation. Its body/header, inline fields and observation destination are
-included in the same preparation reservation and ledger. Reader release drops
-the paired revision alias before decrementing its registration under a small
-control-only mutex. Retirement seals registration under that same exclusion.
-No callback takes this lock. An unexplained revision/Weak alias is a sticky
-Unknown refusal; a real registered reader instead leaves the existing parent
-Cleaning with every constructor-root charge intact. Release does not itself
-clear those charges or perform final child disposal.
+The initial reader checkpoint81 used `std::sync::Mutex<ReaderState>`. The pinned
+Rust1.94 macOS pthread backend lazily allocates a boxed child on first lock;
+charging only its inline body/header was insufficient. Its Linux positives and
+original evidence remain historical, not cross-platform accounting acceptance.
+
+The repair keeps the same declared allocation with one packed `AtomicUsize`:
+low Closed/Failed bits and reader count in units of four. Pointer-atomic support
+and actual body/header layout are checked before birth. Registration reserves
+both observation identities, checks overflow, and tries one strong CAS before
+cloning either paired owner. A collision is `ExternalReadersPending`, a truthful
+retryable control refusal; the producer and reserved slot must remain owned.
+There is no spin/retry lock, hidden OS child or allocation after successful CAS.
+A private reservation guard drops partial clones before latching Failed and
+releasing the count on abnormal unwind.
+
+Reader Drop releases the revision alias before the Release decrement; its
+registration field drops afterward. Retirement permanently sets Closed. While
+count is nonzero it retains all charges and does not reconcile transient Arc
+counts. Acquire-observed zero orders all earlier revision alias drops; actual
+revision strong/Weak and registration Weak fields are then checked. Unexpected
+aliases latch Unknown permanently. A dying registration field can still require
+Pending at zero. Counts do not establish origin or independently clear charges.
+No callback takes a lock or changes this protocol.
+
+The concrete new reader destination checks both retained and peak allowance
+before its one allocation, using the actual remaining revision-root reservation
+after observing the four existing root declarations. Exact and either-minus-one
+probes discriminate that allocation and its body/header. A stronger diagnostic
+against the older legacy revision route separately found seven earlier helper
+owner births before its global cap refusal; its original contract only preserves
+the input bank on refusal. That red source/log is preserved. It is not labeled
+early-all-owner admission: the complete native Service operation still needs the
+mandatory aggregate bootstrap before every producer/helper birth. The local
+reader-body proof does not discharge that later integration obligation.
 
 Candidate/runtime retirement and native preparation/archive cleanup preserve
 `ExternalReadersPending` as a retryable retained state. The mutable runtime is

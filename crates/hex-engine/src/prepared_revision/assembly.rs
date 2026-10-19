@@ -225,6 +225,9 @@ impl RevisionAssembly {
                 .and_then(|n| n.checked_add(overhead))
                 .ok_or(Error::Overflow)?;
         }
+        if !super::compiled_reader::ReaderState::supported() {
+            return Err(Error::UnsupportedConstructor);
+        }
         let (payload, overhead) = super::compiled_reader::ReaderOwner::declared_parts()
             .ok_or(Error::UnsupportedConstructor)?;
         self.reserved_bytes = self
@@ -468,7 +471,22 @@ impl RevisionAssembly {
         }
         #[cfg(test)]
         self.fault(11)?;
-        self.reader_registration = Some(OwnedShared::new_owned(std::sync::Mutex::default()));
+        // The new reader allocation uses only this root's actual remaining
+        // pre-reserved bytes, after observing the four real paired root bodies.
+        let report = self.capacity()?;
+        let existing = report
+            .actual_payload_bytes
+            .checked_add(report.actual_declared_overhead_bytes)
+            .ok_or(Error::Overflow)?;
+        let available = self
+            .reserved_bytes
+            .checked_sub(existing)
+            .ok_or(Error::ReservationExceeded)?;
+        super::compiled_reader::ReaderState::construct_on_control(
+            &mut self.reader_registration,
+            available,
+            available,
+        )?;
         self.capacity()?;
         Ok(())
     }
@@ -589,6 +607,12 @@ impl RevisionAssembly {
     ) {
         assert!(self.mutable_descriptors.capacity() == 0);
         self.mutable_descriptors = std::mem::take(source);
+    }
+    #[cfg(test)]
+    pub(crate) fn reader_word_for_test(&self) -> Option<usize> {
+        self.reader_registration
+            .as_ref()
+            .map(|state| state.observed_word_for_test())
     }
     #[cfg(test)]
     pub(crate) fn owner_for_test(&self) -> Option<&OwnedShared<PreparedRevision>> {

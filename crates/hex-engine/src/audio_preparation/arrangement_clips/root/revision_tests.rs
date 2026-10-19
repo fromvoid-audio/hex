@@ -609,6 +609,12 @@ fn four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumptio
     assert!(c.cancel(&token));
     c.cleanup_on_control();
     assert!(c.recover_on_control(&token).is_some());
+    eprintln!(
+        "SUPPORTED revision roots exact retained={} peak={} reader_registration={} handles=18; each-minusone before original bank consumption (legacy helper births remain separate)",
+        report.retained_stage_bytes,
+        report.construction_peak_bytes,
+        report.revision_roots.reader_registration_bytes
+    );
     for pressure in 0..3 {
         let (project, mut bank) = fixture(false);
         match pressure {
