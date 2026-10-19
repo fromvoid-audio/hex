@@ -151,3 +151,23 @@ corrected changed-extent generic-outside failure from an earlier no-op fixture
 assertion and an initial test-only private-field compile error. Physical OS
 outside-window delivery, optimized waveform appearance and native capture remain
 Root-owned acceptance; cloud input does not establish platform-wide capture.
+
+### upper-rail legacy oracle correction — pulse2867 / pr469
+
+The previous `rendered_audio_trim_release_outside_cancels_without_edit` case
+asserted the obsolete cancellation law at a point proven outside the browser,
+Arrangement body and hovered row. It now tests captured-source acceptance on the
+same upper rail. This case uses a real disposable WAV/Service project and actual
+worker events, retains the region proofs, and verifies exact ClipId/left edge/
+release modifier/command frame, unchanged canonical state before ACK, pending
+preview ownership, exact accepted clip and untouched other track, and one
+Undo/Redo of the complete canonical snapshot. No production behavior changed.
+
+The fixture's raw command point is 192000 while the ordinary trim model projects
+that point to the valid one-frame extent 95999..96000. It intentionally retains
+the exact command, rather than reconstructing it from displayed geometry. A
+first test-only equality assumption between these distinct values failed and is
+retained as diagnostic evidence; it was not a new production failure. The
+original required full-run failure remains failed/historical until the merger
+qualifies a fresh combined candidate. Native captured-release acceptance remains
+separate, as do the inherited focus-cancel paint issue and warning-cleanup PR474.

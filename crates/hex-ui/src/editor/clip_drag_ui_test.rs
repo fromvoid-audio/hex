@@ -928,9 +928,74 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
 }
 
 #[gpui::test]
-fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppContext) {
-    let (project, source, _, clip) = audio_project();
-    let (handle, editor) = editor_window(cx, project, Arc::default());
+fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::service::{Event, Request};
+    use std::time::{Duration, Instant};
+    fn next(service: &Service) -> Event {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(event) = service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                return event;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let done = editor.update(&mut *visual, |view, cx| {
+                if view.tick(cx) {
+                    cx.notify();
+                }
+                assert!(view.error.is_none(), "{:?}", view.error);
+                view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+            });
+            if done {
+                visual.run_until_parked();
+                return;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    cx.update(super::bind_editor_keys);
+    let files = super::external_audio_drop_ui_test::BatchFiles::new();
+    let wav = files.wav("upper-rail-resize.wav", 48_000, 96_000);
+    let directory = wav.parent().unwrap();
+    std::fs::create_dir(directory.join("samples")).unwrap();
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    next(&service);
+    service.submit(Request::Import(wav.clone())).unwrap();
+    let imported = next(&service);
+    let source = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "untouched target".into(),
+        }))
+        .unwrap();
+    let event = next(&service);
+    let before = event.state.project.snapshot();
+    let target_before = event.state.project.tracks()[1].clone();
+    let handle = *cx.add_window(|_, _| Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
+            });
+            install_close_guard(window, cx, editor.downgrade());
+            editor.update(cx, |view, cx| {
+                view.receive(event);
+                view.focus.focus(window);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let selector = Box::leak(format!("clip-trim-left-{}", clip.value()).into_boxed_str());
@@ -953,14 +1018,14 @@ fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppCont
         ))
         .expect("source lane");
     // The historical x=lane.left-20 was inside the browser. Browser release
-    // now intentionally commits; test cancellation on the actual upper rail.
+    // intentionally commits, as does captured release on the actual upper rail.
     let outside = point(lane.center().x, lane.origin.y - px(20.0));
     let browser = visual
         .debug_bounds("resize-browser-hit-region")
         .expect("actual browser region");
     assert!(
         !browser.contains(&outside),
-        "cancellation fixture must stay outside browser"
+        "release fixture stays outside browser"
     );
     editor.read_with(cx, |view, _| {
         assert_eq!(view.arrangement_bounds_epoch, view.drag_layout_generation);
@@ -971,7 +1036,7 @@ fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppCont
         );
         assert!(
             !bounds.contains(&outside),
-            "cancellation fixture must stay outside Arrangement body"
+            "release fixture stays outside Arrangement body"
         );
         assert!(
             view.hovered_drag_target(f32::from(outside.x), f32::from(outside.y))
@@ -979,17 +1044,96 @@ fn rendered_audio_trim_release_outside_cancels_without_edit(cx: &mut TestAppCont
         );
     });
     visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let (expected_frame, expected_clip) = editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_trim_drag
+            .as_ref()
+            .expect("captured source survives upper rail");
+        assert_eq!(drag.source_track, source);
+        assert_eq!(drag.clip.id(), clip);
+        assert!(!drag.stretch_modifier.get());
+        let preview = drag.preview.borrow();
+        let preview = preview.as_ref().expect("actual admitted displayed preview");
+        // The canonical model may clamp a raw command point (here 192000)
+        // to a one-frame source extent. Keep the exact command separately.
+        let project = &view.state.as_ref().unwrap().project;
+        let asset_frames = project.asset(drag.clip.asset()).unwrap().playback_frames();
+        assert_eq!(
+            drag.clip
+                .preview_edge_trim_with_tempo(
+                    hex_project::TrimEdge::Left,
+                    preview.command_frame_for_test(),
+                    asset_frames,
+                    project.tempo_map()
+                )
+                .unwrap(),
+            preview.clip,
+            "displayed geometry is the canonical projection of the exact command"
+        );
+        assert_ne!(
+            preview.clip.start(),
+            0,
+            "fixture makes a real left-edge edit"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(view.last_enqueued_edit.is_none());
+        (preview.command_frame_for_test(), preview.clip.clone())
+    });
+    assert!(visual.debug_bounds("trim-live-preview").is_some());
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(
-            view.last_enqueued_edit.is_none(),
-            "outside release cancels trim"
+        assert_eq!(view.last_trim_release_snap, Some(false), "actual release modifier");
+        assert!(matches!(view.last_enqueued_edit.as_ref(),
+            Some(Command::TrimClipEdge { clip: requested, edge: hex_project::TrimEdge::Left, frame })
+                if *requested == clip && *frame == expected_frame),
+            "upper-rail release submits the captured displayed left edge: {:?}", view.last_enqueued_edit);
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before, "canonical remains unchanged before actual worker ACK");
+        assert!(view.active_trim_drag.is_none(), "release retires active capture");
+        assert!(view.pending_trim.is_some(), "accepted preview remains while its own ACK is pending");
+        assert_eq!(view.worker_requests_pending, 1);
+    });
+    assert!(!cx.update(|app| app.has_active_drag()));
+    pump(&editor, &mut visual);
+    let committed = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project.clip(clip), Some(&expected_clip));
+        assert_eq!(
+            state.project.tracks()[1],
+            target_before,
+            "no hovered/other track retarget"
         );
         assert!(
-            view.active_trim_drag.is_none(),
-            "outside release removes transient preview"
+            view.pending_trim.is_none(),
+            "own canonical terminal retires pending preview"
         );
+        assert!(view.active_trim_drag.is_none());
+        assert_eq!(view.worker_requests_pending, 0);
+        state.project.snapshot()
+    });
+    eprintln!(
+        "upper-rail release source={source:?} clip={clip:?} frame={expected_frame} actual worker accepted extent={}..{}",
+        expected_clip.start(),
+        expected_clip.start() + expected_clip.duration()
+    );
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.snapshot(),
+            before,
+            "one Undo restores the entire canonical snapshot"
+        )
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.snapshot(),
+            committed,
+            "one Redo restores exactly the accepted edit"
+        )
     });
 }
 

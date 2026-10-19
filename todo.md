@@ -5790,3 +5790,22 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - This source is stacked explicitly on frozen PR463 pointer-delivery work.
   Physical outside-window capture and optimized waveform/input acceptance remain
   Root-owned; no native app action or global reliability claim is implied.
+
+
+## 19 october 2026 — pulse2867 / pr469 upper-rail oracle return
+
+- On exact canonical4454/tree0479, replace the stale upper-rail cancellation
+  expectation with the user's captured-source release law. Test-only owning
+  case plus docs; no production edits or canonical branch overwrite.
+- Retain actual browser/body/no-hover region assertions and real pointer input.
+  Use an owned WAV and actual Service project/events instead of the prior
+  unrelated empty worker, then prove typed command/frame/modifier, canonical
+  before ACK, capture/pending retirement, exact worker clip/untouched track and
+  complete one-Undo/Redo snapshots.
+- Single case passed actual1/0ignored with raw command192000 and accepted
+  extent95999..96000. First fixture assertion equating these values failed and
+  is permanently preserved; final canonical model projection oracle keeps both.
+- Original failed721.767s/fullUI1064PASS1FAIL3oldignore remains negative; old61
+  focused positives remain source-bound. Fresh focused qualification/immutable
+  transport is reported in Pulse. Merger owns prospective full21/review/merge;
+  no native app operation or acceptance claim.
