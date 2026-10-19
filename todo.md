@@ -1,3 +1,17 @@
+## group batch capacity, copied selection and victim accent — pulse2803 / PR409
+
+The accepted review repair plans the complete final Arrangement state before
+installation, with Session-inclusive clip/note counts, separate occurrence bounds
+and all fragment IDs before copied IDs. One existing candidate/preparation/history
+commit owns the result. Additive Created::Clips reports actual copied endpoints;
+request-ordered scalar intent selects real committed clips only after canonical
+installation and never steals newer selection. Passive row-local victim accents
+follow all ghosts, exclude selected originals in both modes and use one bounded
+scalar sweep. Targeted canonical/rendered/strict evidence is recorded in Pulse2803;
+original three review REDs and intermediate compile failures remain preserved.
+No final prospective full CI, native deadline/listening or installed acceptance
+is implied. See docs/group-clip-drag.md. Sole merger owns final integration.
+
 ## selected group drag review return — pulse2803 / PR409, 19 october2026
 
 Original22bc source implemented whole-selection Audio/MIDI drag with one prepared

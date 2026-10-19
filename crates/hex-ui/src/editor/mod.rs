@@ -19,6 +19,7 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+mod group_copy;
 #[cfg(test)]
 mod test_environment;
 
@@ -614,6 +615,7 @@ pub(super) struct EditorView {
     pending_new_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
+    pending_group_copy: Option<group_copy::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     export_control: Option<hex_session::service::ExportControl>,
@@ -1171,6 +1173,7 @@ impl EditorView {
             pending_new_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
+            pending_group_copy: None,
             close_prompt_open: false,
             export_pending: false,
             export_control: None,

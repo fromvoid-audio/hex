@@ -1365,8 +1365,17 @@ impl super::EditorView {
         } else {
             move_command(drag.clip, target_track, preview.position)
         };
+        let copy_intent = super::group_copy::Pending::capture(self, &command);
         clear(self);
-        self.enqueue(Request::Edit(command));
+        let before_pending = self.worker_requests_pending;
+        if self.enqueue(Request::Edit(command)) {
+            if let Some(mut intent) = copy_intent {
+                if self.worker_requests_pending > before_pending {
+                    intent.submitted(self.worker_requests_pending);
+                }
+                self.pending_group_copy = Some(intent);
+            }
+        }
         cx.notify();
     }
 }

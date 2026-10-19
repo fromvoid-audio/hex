@@ -721,6 +721,12 @@ pub enum Created {
     Device(DeviceId),
     Asset(AssetId),
     Clip(ClipId),
+    /// Actual Arrangement clip births in this inclusive range are copies from
+    /// one group command. Filter committed clips; note-ID holes are permitted.
+    Clips {
+        first: ClipId,
+        last: ClipId,
+    },
     Note(NoteId),
     Scene(crate::SceneId),
     SessionClip(ClipId),
@@ -1087,6 +1093,35 @@ pub(crate) fn split_clip_at_tempo(
     Ok((left, right))
 }
 
+/// Crop one retained interval through the existing typed split law.
+pub(crate) fn retained_audio_fragment(
+    victim: &Clip,
+    start: u64,
+    end: u64,
+    id: ClipId,
+    tempo: &crate::TempoMap,
+) -> Result<Clip, Invalid> {
+    let original_end = victim
+        .start
+        .checked_add(victim.duration)
+        .ok_or(Invalid("timeline end overflow"))?;
+    if start < victim.start || start >= end || end > original_end {
+        return Err(Invalid(
+            "retained audio interval is outside its source clip",
+        ));
+    }
+    let mut retained = if start > victim.start {
+        split_clip_at_tempo(victim, start, id, tempo)?.1
+    } else {
+        victim.clone()
+    };
+    if end < original_end {
+        retained = split_clip_at_tempo(&retained, end, id, tempo)?.0;
+    }
+    retained.id = id;
+    Ok(retained)
+}
+
 struct AudioOverwriteFragments {
     left: Option<Clip>,
     right: Option<Clip>,
@@ -1139,18 +1174,26 @@ pub(crate) fn overwrite_audio_interval_excluding(
         let keeps_left = victim.start < start;
         let keeps_right = victim_end > end;
         let left = keeps_left
-            .then(|| split_clip_at_tempo(&victim, start, victim.id, project.tempo_map()))
-            .transpose()?
-            .map(|parts| parts.0);
+            .then(|| {
+                retained_audio_fragment(
+                    &victim,
+                    victim.start,
+                    start,
+                    victim.id,
+                    project.tempo_map(),
+                )
+            })
+            .transpose()?;
         let right_id = if keeps_left && keeps_right {
             ClipId(0)
         } else {
             victim.id
         };
         let right = keeps_right
-            .then(|| split_clip_at_tempo(&victim, end, right_id, project.tempo_map()))
-            .transpose()?
-            .map(|parts| parts.1);
+            .then(|| {
+                retained_audio_fragment(&victim, end, victim_end, right_id, project.tempo_map())
+            })
+            .transpose()?;
         fragments.push((victim.id, AudioOverwriteFragments { left, right }));
     }
     if fragments.is_empty() {

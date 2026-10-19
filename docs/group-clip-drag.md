@@ -119,3 +119,62 @@ frame and musical selections up to16,384. Full GPUI redraw includes unrelated
 view work and is measured separately. These are debug source measurements, not
 optimized/native deadline, audio, delivery or physical interaction acceptance.
 Final exact-source receipts and immutable originals are in Pulse2803.
+
+## complete batch planning, copy completion and passive victim paint
+
+The returned PR409 capacity finding is handled by a private final-state batch
+plan, rather than successive one-clip overwrite/install operations. It unions
+half-open destination cuts per row in each victim's coordinate domain. Audio
+uses frame cuts and the existing typed split/source/fade law; MIDI preserves the
+existing audio-to-beat lower-bound fence and exact beat cuts. Each original
+victim is planned once. Disjoint cuts retain the intervening gaps. The first
+surviving piece keeps the victim's ID; later audio pieces and materialized MIDI
+pieces receive fresh IDs. A retained MIDI prefix keeps its authored source;
+other pieces use finite one-shot carried notes as the single-interval wrapper
+does. The extracted single-interval helpers keep their existing behavior.
+
+Final clip and note counts include Session clips and sources, even though Session
+cells are never overwrite victims. Copied MIDI notes and all retained/materialized
+notes count toward the final limit. Occurrence enumeration has a separate checked
+bound, including occurrences discarded by a cut; full removal needs no expansion.
+The plan reserves complete row replacement storage and IDs before installation.
+All fragment births precede command-copy births. Old Arrangement rows are cleared
+before complete replacements are installed, inside the existing isolated candidate
+and one preparation/history commit. Refusal preserves the complete prior project,
+ID high-water and history. No extra rollback clone or raised capacity is used.
+
+`Created::Clips { first, last }` reports the copied ClipId endpoints. Actual
+Arrangement clip births in that range are exactly the command copies; NoteId
+holes are allowed. The UI filters real committed clips, never enumerates integers.
+A private scalar intent is armed only after accepted enqueue and receives its FIFO
+ordinal only after actual Service submission, including deferred/barrier queues.
+Earlier completions cannot select copies. After the corresponding response installs
+canonical state, generation, source revision, selection epoch/primary and current
+editor context must still agree. A changed selection/document cannot be stolen;
+refusal, closure and replacement retire intent. Ancillary error text does not hide
+a real committed result. The resulting selected group supports the next drag.
+
+Group landing paint now shows unselected overwrite victims after all ghosts.
+Both copy and move exclude every selected original. Each visible row collects
+only scalar interval endpoints, sorts once and sweeps union intersections; no
+member-by-victim Cartesian product or persistent cache. There are at most two
+events per member/victim and two paint-local Vecs. These allocate during paint,
+not capture projection/pointer metadata updates or audio callbacks. A synthetic
+maximum-model sweep measured 32,768 events, 524,288 event-capacity bytes and
+131,072 output-capacity bytes in the debug source check; this is not a native
+frame-deadline guarantee. Separate actual full GPUI redraw measurements include
+unrelated layout/waveform work. The accent has no input handlers and is clipped
+to the visible row; outside invalidation/reentry retains the existing contract.
+
+Focused verification covers the three retained review failures, legal final-MAX
+cross-row frees, Session-inclusive MAX/MAX+1 clips and notes, disjoint Audio/MIDI
+cuts and held-note carry, ID exhaustion, enumeration versus discarded occurrences,
+preparation rollback, real mixed Track release/Service copy selection with NoteId
+holes, one Undo/Redo, subsequent dragging, deferred FIFO/refusal/stale selection,
+ancillary errors, passive highlights and outside/reentry. Source receipts remain
+separate from sole-merger prospective full qualification and root-owned optimized
+physical/listening acceptance. Root's finite native follow-up is: select mixed
+clips on two rows, Alt-drag over a third victim, confirm protected originals and
+victim accent, release, drag the selected copies again, then Undo/Redo both edits;
+also check Escape/outside reentry and unchanged waveform continuity. No app build,
+install or native interaction was performed by this source task.

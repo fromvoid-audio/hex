@@ -198,101 +198,15 @@ pub(crate) fn apply(
     if noop {
         return Ok(Created::None);
     }
-    // Protect ALL moving originals before carving any destination. Sequential
-    // single-clip overwrite commands could erase a later selected member.
     let selected = ids.into_iter().collect::<BTreeSet<_>>();
-    if !copy {
-        for row in &mut project.tracks {
-            row.content
-                .audio_clips
-                .retain(|c| !selected.contains(&c.id()));
-            row.content
-                .midi_clips
-                .retain(|c| !selected.contains(&c.id()));
-        }
-    }
-    // Copies keep selected originals physically present for capacity/ID checks.
-    // Protect both victim kinds while still carving unselected destinations.
-    let protected = |id| copy && selected.contains(&id);
-    // Clear old destination content first; incoming members may overlap each
-    // other in an existing valid project and must never erase one another.
-    for member in &planned {
-        match &member.content {
-            ClipGroupContent::Audio(c) => {
-                let end = c
-                    .start()
-                    .checked_add(c.duration())
-                    .ok_or(Invalid("group audio end overflow"))?;
-                crate::edit::overwrite_audio_interval_excluding(
-                    project,
-                    member.track,
-                    c.start(),
-                    end,
-                    protected,
-                )?;
-                crate::midi::overwrite_midi_in_frames_excluding(
-                    project,
-                    member.track,
-                    c.start(),
-                    end,
-                    protected,
-                )?;
-            }
-            ClipGroupContent::Midi(c) => {
-                let end = BeatTime::from_raw(
-                    c.start()
-                        .raw()
-                        .checked_add(c.length().raw())
-                        .ok_or(Invalid("group midi end overflow"))?,
-                );
-                crate::edit::overwrite_audio_in_beats_excluding(
-                    project,
-                    member.track,
-                    c.start(),
-                    end,
-                    protected,
-                )?;
-                crate::midi::overwrite_midi_interval_excluding(
-                    project,
-                    member.track,
-                    c.start(),
-                    end,
-                    protected,
-                )?;
-            }
-        }
-    }
-    for member in planned {
-        match member.content {
-            ClipGroupContent::Audio(c) => {
-                if copy {
-                    crate::clip_copy::append_audio(project, c, member.track)?;
-                } else {
-                    let clips = project.audio_clips_mut(member.track)?;
-                    clips
-                        .try_reserve(1)
-                        .map_err(|_| Invalid("could not reserve moved audio clips"))?;
-                    clips.push(c);
-                }
-            }
-            ClipGroupContent::Midi(c) => {
-                if copy {
-                    let start = c.start();
-                    crate::clip_copy::append_midi(project, c, member.track, start)?;
-                } else {
-                    let clips = &mut project.track_mut(member.track)?.content.midi_clips;
-                    clips
-                        .try_reserve(1)
-                        .map_err(|_| Invalid("could not reserve moved midi clips"))?;
-                    clips.push(c);
-                }
-            }
-        }
-    }
+    let created = batch::apply(project, planned, &selected, copy)?;
     Project::from_snapshot(project.snapshot())?;
-    Ok(Created::None)
+    Ok(created)
 }
 
 #[cfg(test)]
 #[path = "clip_group_tests.rs"]
 mod tests;
+
+#[path = "clip_group_batch.rs"]
+mod batch;

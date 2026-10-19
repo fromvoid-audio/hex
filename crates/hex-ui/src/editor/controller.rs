@@ -637,6 +637,7 @@ impl EditorView {
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     visible_change |= self.retire_pending_trim();
+                    visible_change |= self.pending_group_copy.take().is_some();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -648,12 +649,16 @@ impl EditorView {
         if !self.tuning.client.has_pending_requests() {
             while let Some(request) = self.pending_requests.pop_front() {
                 let resize_request = self.pending_trim_matches(&request);
+                let group_copy_request = self.pending_group_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
                             self.worker_requests_pending.saturating_add(1);
                         if resize_request {
                             self.trim_request_submitted();
+                        }
+                        if group_copy_request {
+                            self.group_copy_submitted();
                         }
                     }
                     Err(SubmitError::Full(request)) => {
@@ -668,6 +673,9 @@ impl EditorView {
                             self.export_pending = false;
                         }
                         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
+                        if group_copy_request {
+                            self.pending_group_copy = None;
+                        }
                         visible_change |=
                             replace_error(&mut self.error, "an export is already pending");
                     }
@@ -693,6 +701,9 @@ impl EditorView {
                             self.opening_project = false;
                         }
                         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
+                        if group_copy_request {
+                            self.pending_group_copy = None;
+                        }
                         if matches!(
                             &request,
                             Request::Edit(hex_project::Command::DuplicateClip(_))
@@ -705,6 +716,7 @@ impl EditorView {
             }
         }
         visible_change |= self.pump_device_gesture();
+        visible_change |= self.retire_abandoned_group_copy();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -1373,6 +1385,7 @@ impl EditorView {
 
     pub(super) fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
         let retired_trim = self.trim_request_complete(&event);
+        let group_copy_intent = self.group_copy_request_complete(&event);
         if event.project_replaced {
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
@@ -1850,6 +1863,12 @@ impl EditorView {
                 }
             } else if self.mode == super::EditorMode::Session {
                 self.select_session_scene(scene);
+            }
+        } else if let Some(hex_project::Created::Clips { first, last }) = event.created {
+            if let Some(intent) = group_copy_intent
+                && intent.is_current(self)
+            {
+                self.select_copied_group(first, last, intent.count);
             }
         } else if let Some(hex_project::Created::Track(track)) = event.created {
             self.midi_note_gesture = None;
@@ -2366,11 +2385,15 @@ impl EditorView {
             }
         }
         let resize_request = self.pending_trim_matches(&request);
+        let group_copy_request = self.pending_group_copy_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
                 if resize_request {
                     self.trim_request_submitted();
+                }
+                if group_copy_request {
+                    self.group_copy_submitted();
                 }
                 true
             }

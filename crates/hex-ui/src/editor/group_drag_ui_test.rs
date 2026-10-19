@@ -1101,3 +1101,311 @@ fn review_group_landing_paints_unselected_overwrite_victim(cx: &mut TestAppConte
     );
     visual.simulate_keystrokes("escape");
 }
+
+#[gpui::test]
+fn copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_copies(
+    cx: &mut TestAppContext,
+) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::from_quarters(8).unwrap(),
+            length: hex_project::BeatTime::ONE
+        })));
+    });
+    pump(&editor, &mut visual);
+    let midi = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .midi_clips()[0]
+            .id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
+            clip: midi,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::ONE,
+            pitch: 64,
+            channel: 2,
+            velocity: 91
+        })));
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddMidiTrack {
+            name: "copy row".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    let audio_track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[1].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::CopyClipTo {
+            clip: clips[0],
+            track: audio_track,
+            start: 48_000
+        })));
+    });
+    pump(&editor, &mut visual);
+    let audio = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(audio_track)
+            .unwrap()
+            .clips()[0]
+            .id()
+    });
+    // MIDI is born first in row order, then its NoteId, then the copied Audio
+    // ClipId: the actual response range contains a note hole.
+    let originals = [midi, audio];
+    let target = begin_group(&mut visual, &originals);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    visual.simulate_mouse_up(
+        target,
+        MouseButton::Left,
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+    );
+    pump(&editor, &mut visual);
+    let (copies, after) = editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert!(v.pending_group_copy.is_none());
+        let ids = v.selected_clip_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(
+            ids[1].value() > ids[0].value() + 1,
+            "actual copied note ID lies inside the ClipId endpoints"
+        );
+        assert!(ids.iter().all(|id| !originals.contains(id)));
+        let p = &v.state.as_ref().unwrap().project;
+        assert_eq!(p.clip(audio), before.clip(audio));
+        assert_eq!(p.midi_clip(midi), before.midi_clip(midi));
+        let new_midi = ids.iter().find_map(|id| p.midi_clip(*id)).unwrap();
+        assert_eq!(new_midi.notes().len(), 1);
+        assert_eq!(
+            (new_midi.notes()[0].pitch(), new_midi.notes()[0].velocity()),
+            (64, 91)
+        );
+        (ids, p.clone())
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let mut expected = before.snapshot();
+        expected.next_id = v.state.as_ref().unwrap().project.snapshot().next_id;
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), expected);
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, after)
+    });
+    let target = begin_group(&mut visual, &copies);
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        assert_eq!(p.clip(audio), before.clip(audio));
+        assert_eq!(p.midi_clip(midi), before.midi_clip(midi));
+        let copy_audio = copies.iter().find_map(|id| p.clip(*id)).unwrap();
+        assert_ne!(
+            copy_audio.start(),
+            after.clip(copy_audio.id()).unwrap().start()
+        );
+        assert_eq!(v.selected_clip_ids(), copies);
+    });
+}
+
+#[gpui::test]
+fn group_copy_actual_completion_does_not_steal_new_selection_and_keeps_ancillary_error(
+    cx: &mut TestAppContext,
+) {
+    for supersede in [false, true] {
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let target = begin_group(&mut visual, &clips[..2]);
+        visual.simulate_mouse_up(
+            target,
+            MouseButton::Left,
+            Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+        );
+        let mut event = editor.update(&mut visual, |v, _| next(&v.service));
+        assert!(matches!(event.created, Some(Created::Clips { .. })));
+        if supersede {
+            click(&mut visual, clips[2], false);
+        }
+        // This is a real committed worker response. Only ancillary presentation
+        // error is injected; model/Created/revision/request_complete stay real.
+        event.error = Some("post-commit observation unavailable".into());
+        editor.update(&mut visual, |v, cx| {
+            v.receive(event);
+            cx.notify();
+        });
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_group_copy.is_none());
+            assert_eq!(
+                v.error.as_deref(),
+                Some("post-commit observation unavailable")
+            );
+            let selected = v.selected_clip_ids();
+            if supersede {
+                assert_eq!(selected, vec![clips[2]]);
+            } else {
+                assert_eq!(selected.len(), 2);
+                assert!(selected.iter().all(|id| !clips.contains(id)));
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn group_copy_deferred_submission_counts_only_own_fifo_terminal_and_actual_refusal(
+    cx: &mut TestAppContext,
+) {
+    for refuse in [false, true] {
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        for (i, id) in clips[..2].iter().enumerate() {
+            click(&mut visual, *id, i != 0);
+        }
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+        editor.update(&mut visual, |v, cx| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            let command = Command::MoveClipsWithOverwrite {
+                clips: clips[..2].to_vec(),
+                anchor: clips[0],
+                track,
+                position: hex_project::ClipGroupPosition::Audio(if refuse {
+                    u64::MAX
+                } else {
+                    480_000
+                }),
+                copy: true,
+            };
+            let intent = super::super::group_copy::Pending::capture(v, &command).unwrap();
+            // Force the normal deferred queue route. The earlier REAL worker
+            // SaveCurrent refusal cannot change this untitled document revision.
+            v.pending_requests.push_back(Request::SaveCurrent);
+            assert!(v.enqueue(Request::Edit(command)));
+            v.pending_group_copy = Some(intent);
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(!v.pending_requests.is_empty());
+            v.tick(cx); // Both requests really enter Service here, not at enqueue.
+            assert_eq!(v.worker_requests_pending, 2);
+        });
+        let earlier = editor.update(&mut visual, |v, _| next_with_error(&v.service));
+        assert!(earlier.save_complete && earlier.error.is_some());
+        editor.update(&mut visual, |v, _| {
+            v.receive(earlier);
+            assert!(v.pending_group_copy.is_some());
+            assert_eq!(v.selected_clip_ids(), clips[..2]);
+        });
+        let own = editor.update(&mut visual, |v, _| next_with_error(&v.service));
+        if refuse {
+            assert!(own.error.is_some());
+            assert!(own.created.is_none());
+        } else {
+            assert!(own.error.is_none());
+            assert!(matches!(own.created, Some(Created::Clips { .. })));
+        }
+        editor.update(&mut visual, |v, cx| {
+            v.receive(own);
+            cx.notify();
+        });
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_group_copy.is_none());
+            assert_eq!(v.worker_requests_pending, 0);
+            if refuse {
+                assert_eq!(v.state.as_ref().unwrap().project, before);
+                assert_eq!(v.selected_clip_ids(), clips[..2]);
+            } else {
+                assert_eq!(v.selected_clip_ids().len(), 2);
+                assert!(v.selected_clip_ids().iter().all(|id| !clips.contains(id)));
+            }
+        });
+    }
+}
+fn next_with_error(service: &Service) -> Event {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(event) = service.try_event() {
+            return event;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[gpui::test]
+fn group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes(
+    cx: &mut TestAppContext,
+) {
+    for copy in [false, true] {
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        for (i, id) in clips[..2].iter().enumerate() {
+            click(&mut visual, *id, i != 0);
+        }
+        let down = visual
+            .debug_bounds(Box::leak(
+                format!("clip-drag-surface-{}", clips[1].value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        let target = visual
+            .debug_bounds(Box::leak(
+                format!("clip-name-{}", clips[2].value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        let modifiers = Modifiers {
+            alt: copy,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0), down.y),
+            MouseButton::Left,
+            modifiers,
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("clip-drop-overlap-0").unwrap();
+        assert!(bounds.contains(&target));
+        assert!(
+            visual.debug_bounds("clip-drop-overlap-1").is_none(),
+            "selected originals are protected, not victims"
+        );
+        visual.simulate_mouse_move(point(target.x, px(0.0)), MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("clip-drop-overlap-0").is_none());
+        visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("clip-drop-overlap-0").is_some());
+        // The passive layer has no handlers: normal authoritative drop still
+        // reaches the lane through the highlighted victim at this coordinate.
+        visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert!(v.active_clip_drag.is_none());
+        });
+    }
+}
