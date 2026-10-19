@@ -5109,13 +5109,13 @@ fn browser_arrows_selected_controls(cx: &mut TestAppContext) {
             if sample {
                 assert!(v.browser.playback_generation > before);
             } else {
-                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"));
+                assert_eq!(v.browser.tree.icon(&samples.join("a")), "▾");
             }
         });
         if !sample {
             visual.simulate_keystrokes("left");
             editor.read_with(&visual, |v, _| {
-                assert!(!(v.browser.tree.icon(&samples.join("a")) == "▾"))
+                assert_ne!(v.browser.tree.icon(&samples.join("a")), "▾")
             });
         }
     }
