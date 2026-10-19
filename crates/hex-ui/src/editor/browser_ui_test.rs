@@ -4938,62 +4938,9 @@ mod test_environment;
 #[path = "browser_picker_compact_ui_test.rs"]
 mod compact_picker;
 
-// Actual routed keyboard input over owned private files and the real Service.
-fn arrow_row_fixture(
-    cx: &mut TestAppContext,
-    sample: bool,
-) -> (
-    gpui::AnyWindowHandle,
-    gpui::Entity<EditorView>,
-    PreferencesTestDirectory,
-    std::path::PathBuf,
-) {
-    cx.update(super::super::bind_editor_keys);
-    let directory = PreferencesTestDirectory::new();
-    let samples = directory.0.join("samples");
-    std::fs::create_dir_all(&samples).unwrap();
-    if !sample {
-        std::fs::create_dir(samples.join("a")).unwrap();
-        std::fs::write(samples.join("a/child.hex"), []).unwrap();
-    }
-    std::fs::write(samples.join("loop.wav"), mono_pcm_wav(24)).unwrap();
-    let handle = *cx.add_window(|_, _| Empty);
-    let editor = cx
-        .update_window(handle, |_, window, cx| {
-            window.activate_window();
-            window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(
-                    window,
-                    cx,
-                    Service::new(48_000, 32, 8_000_000).unwrap(),
-                    &directory.0,
-                )
-            })
-        })
-        .unwrap();
-    editor.update(cx, |v, cx| {
-        v.browser.auto_audition = false;
-        v.refresh_sample_catalog(cx);
-        v.request_browser_scan(samples.clone(), cx);
-    });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let ready = editor.update(cx, |v, cx| {
-            v.tick(cx);
-            cx.notify();
-            v.state.is_some() && v.worker_requests_pending == 0 && v.pending_requests.is_empty()
-        });
-        if ready {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "real Service Init did not arrive"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    (handle, editor, directory, samples)
-}
+#[path = "browser_arrow_fixture_ui_test.rs"]
+mod arrow_fixture;
+use arrow_fixture::arrow_row_fixture;
 
 fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: bool, left: bool) {
     let (handle, editor, _directory, samples) = arrow_row_fixture(cx, sample);
