@@ -1,0 +1,109 @@
+{
+  "payloads": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2070,
+      "sha256": "0d6dc0470921a3da4b87e996b2551e181746eeb9c671e0ed4b711af639e4c371"
+    },
+    {
+      "path": "after-tests.rs",
+      "bytes": 15035,
+      "sha256": "0435b6122de7674fe7b48ad36609c527510c3b424f6ad82abaff3a26b67a8a27"
+    },
+    {
+      "path": "architecture.log",
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    {
+      "path": "before-tests.rs",
+      "bytes": 13800,
+      "sha256": "12d076ac8220d919676be261556cf675c3519dba27aecd96fa3d39fb07ae6b6e"
+    },
+    {
+      "path": "candidate-tests.rs",
+      "bytes": 15035,
+      "sha256": "0435b6122de7674fe7b48ad36609c527510c3b424f6ad82abaff3a26b67a8a27"
+    },
+    {
+      "path": "checks.json",
+      "bytes": 1314,
+      "sha256": "f3134e2305ab2496ab87898af3c2fee0a241d81c07d6df0def061b3124fe2edf"
+    },
+    {
+      "path": "controlled-orange-red.log",
+      "bytes": 3025,
+      "sha256": "83cbed502b6437896b8449abea4e83921f4e8e0fbc2cee5d6df1f6a69792e3f8"
+    },
+    {
+      "path": "controlled-orange-tests.rs",
+      "bytes": 14088,
+      "sha256": "6a53c3ef2940d933ccfb08ef31de99772d778c48c8bab1710ce8efa3b5eabf88"
+    },
+    {
+      "path": "controlled-orange.patch",
+      "bytes": 921,
+      "sha256": "9531196e4cf5a5a83bd0d5b304485149ffea77ce273088048debebe5fb457893"
+    },
+    {
+      "path": "dependency-patches.log",
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    {
+      "path": "device-layout.log",
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    {
+      "path": "diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gpui-patch.log",
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    {
+      "path": "owner.patch",
+      "bytes": 3552,
+      "sha256": "f03e333897916522948dbffd38809173e62fda2270a17f96f7f9c865d2774fce"
+    },
+    {
+      "path": "project-spectrum-green.log",
+      "bytes": 975,
+      "sha256": "b1fbb067a5631b841f95bf800ac42065f70238f6bbcf2b107a0ab13c3cea4ab7"
+    },
+    {
+      "path": "scope.json",
+      "bytes": 531,
+      "sha256": "b4f85ee7c20d1ed59afcd264bfb7ed2a77034ae021d4b81c4e09b6c324bd41e0"
+    },
+    {
+      "path": "source-commit.txt",
+      "bytes": 425,
+      "sha256": "b2cfb0beb872363d0941c6fe6fa4e89c0368b0d0f8217f65bb7189bcced4b712"
+    },
+    {
+      "path": "strict-checks.json",
+      "bytes": 2070,
+      "sha256": "28a4fd61bde842a3210e010d515462f0a93dbcb2fc4184b566fa51645c08e60d"
+    },
+    {
+      "path": "strict-ui.log",
+      "bytes": 2144,
+      "sha256": "f5586435c7a48bd7d5a30ce9a2f34461bbc19b94bfcdd021f6a26bfa73f2d255"
+    },
+    {
+      "path": "ui-style.log",
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    }
+  ]
+}
