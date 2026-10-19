@@ -457,3 +457,113 @@ fn search_empty_double_click_is_selection_only(cx: &mut TestAppContext) {
         assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
     });
 }
+
+fn invalidated_pair_caller(cx: &mut TestAppContext, invalidation: &str) {
+    cx.update(super::super::super::bind_editor_keys);
+    let (handle, editor, _directory, _samples) = toggle_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("kick hats");
+    visual.simulate_keystrokes("cmd-f");
+    let first = caret_point(&editor, visual, 4);
+    visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(first, MouseButton::Left, Modifiers::default());
+    match invalidation {
+        "keyboard" => visual.simulate_keystrokes("left"),
+        "text" => visual.simulate_input("x"),
+        "ime" => visual.update(|window, cx| {
+            let input = editor.read(cx).browser.search.clone();
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "İ🎛", Some(1..1), window, cx);
+                input.unmark_text(window, cx);
+            });
+        }),
+        "shift" => {
+            let at = caret_point(&editor, visual, 6);
+            let modifiers = Modifiers {
+                shift: true,
+                ..Default::default()
+            };
+            visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
+            visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
+        }
+        "drag" => {
+            let at = caret_point(&editor, visual, 6);
+            visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(at, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        }
+        _ => unreachable!(),
+    }
+    let at = caret_point(&editor, visual, 2);
+    let before = editor.read_with(visual, |view, cx| {
+        (
+            view.browser.search.read(cx).content.clone(),
+            view.browser.playback_generation,
+            view.browser.preview_preparations,
+            view.browser.tree.requests_started,
+        )
+    });
+    for down in [true, false] {
+        if down {
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+                first_mouse: false,
+            });
+        } else {
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+            });
+        }
+    }
+    assert_eq!(
+        selection(&editor, visual),
+        2..2,
+        "invalidated {invalidation} pair must use normal caret input"
+    );
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(
+            (
+                view.browser.search.read(cx).content.clone(),
+                view.browser.playback_generation,
+                view.browser.preview_preparations,
+                view.browser.tree.requests_started
+            ),
+            before
+        );
+        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+    });
+    double_click_at(visual, at, 3);
+    assert_eq!(
+        selection(&editor, visual),
+        0..before.0.encode_utf16().count(),
+        "fresh rapid3/4 pair remains valid"
+    );
+}
+
+#[gpui::test]
+fn search_invalidated_pair_keyboard(cx: &mut TestAppContext) {
+    invalidated_pair_caller(cx, "keyboard");
+}
+#[gpui::test]
+fn search_invalidated_pair_text(cx: &mut TestAppContext) {
+    invalidated_pair_caller(cx, "text");
+}
+#[gpui::test]
+fn search_invalidated_pair_ime(cx: &mut TestAppContext) {
+    invalidated_pair_caller(cx, "ime");
+}
+#[gpui::test]
+fn search_invalidated_pair_shift(cx: &mut TestAppContext) {
+    invalidated_pair_caller(cx, "shift");
+}
+#[gpui::test]
+fn search_invalidated_pair_drag(cx: &mut TestAppContext) {
+    invalidated_pair_caller(cx, "drag");
+}
