@@ -1,0 +1,24 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.83s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 14 tests
+test editor::project_directory::tests::project_directory_closed_window_does_not_receive_a_late_native_open ... ok
+test editor::project_directory::tests::project_directory_cancel_platform_error_and_invalid_load_preserve_document_and_preference ... ok
+test editor::project_directory::tests::project_directory_cancel_platform_error_and_save_failure_keep_original_files ... ok
+test editor::project_directory::tests::project_directory_dirty_open_cancel_save_as_cancel_and_dont_save_failure_keep_folder ... ok
+test editor::project_directory::tests::project_directory_existing_native_folder_preserves_case_and_bytes ... ok
+test editor::project_directory::tests::project_directory_ordinary_constructor_resolves_fourth_path_before_any_job ... ok
+test editor::project_directory::tests::project_directory_invalid_preferences_still_open_default_and_preserve_bytes ... ok
+test editor::project_directory::tests::project_directory_named_save_uses_actual_document_path_without_a_chooser ... ok
+test editor::project_directory::tests::project_directory_saved_folder_reaches_actual_open_request ... ok
+test editor::project_directory::tests::project_directory_owned_writer_persists_latest_success_after_view_drop ... ok
+test editor::project_directory::tests::project_directory_stale_preparation_clears_only_its_owned_open_intent ... ok
+test editor::project_directory::tests::project_directory_stale_save_response_cannot_save_into_the_replacement_document ... ok
+test editor::project_directory::tests::project_directory_successful_save_open_and_restart_share_one_native_folder ... ok
+test editor::project_directory::tests::project_directory_unset_missing_and_non_directory_fall_back_without_creating_paths ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 900 filtered out; finished in 2.80s
+

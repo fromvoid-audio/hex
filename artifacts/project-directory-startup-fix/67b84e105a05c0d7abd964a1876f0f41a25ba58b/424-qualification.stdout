@@ -1,0 +1,17 @@
+[1/8] ui-feature-clippy: running
+[1/8] ui-feature-clippy: passed
+[2/8] ui-default-clippy: running
+[2/8] ui-default-clippy: passed
+[3/8] architecture: running
+[3/8] architecture: passed
+[4/8] gpui: running
+[4/8] gpui: passed
+[5/8] style: running
+[5/8] style: passed
+[6/8] layout: running
+[6/8] layout: passed
+[7/8] fmt: running
+[7/8] fmt: passed
+[8/8] diff: running
+[8/8] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/project-directory-startup-424-qualification/summary.json

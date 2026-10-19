@@ -1,0 +1,23 @@
+[1/11] existing-folder: running
+[1/11] existing-folder: passed
+[2/11] dialogs: running
+[2/11] dialogs: passed
+[3/11] environment: running
+[3/11] environment: passed
+[4/11] ui-feature-clippy: running
+[4/11] ui-feature-clippy: passed
+[5/11] ui-default-clippy: running
+[5/11] ui-default-clippy: passed
+[6/11] architecture: running
+[6/11] architecture: passed
+[7/11] gpui: running
+[7/11] gpui: passed
+[8/11] style: running
+[8/11] style: passed
+[9/11] layout: running
+[9/11] layout: passed
+[10/11] fmt: running
+[10/11] fmt: passed
+[11/11] diff: running
+[11/11] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/project-directory-startup-424-fixture-checks/summary.json

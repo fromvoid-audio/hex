@@ -1,0 +1,14 @@
+{
+  "head": "67b84e105a05c0d7abd964a1876f0f41a25ba58b",
+  "tree": "99f4caaefd46325d3466298106867cc950c5917d",
+  "base": "1f08587bd389b007f20d29af2b0ef30c9b39870e",
+  "base_tree": "72a744669294039462befb5aaf5e937ccab45289",
+  "repro_commit": "ee9ac4c891843d918b32efc723210cfcc6064029",
+  "repro_tree": "20f49364a6788dbab03dce1d653e29ce02bd6331",
+  "branch": "source-fix/424-startup-writer-1f08587",
+  "files": [
+    "crates/hex-ui/src/editor/project_directory.rs",
+    "crates/hex-ui/src/editor/project_directory/tests.rs"
+  ],
+  "delta": "crates/hex-ui/src/editor/project_directory.rs      |  21 +-\n .../hex-ui/src/editor/project_directory/tests.rs   | 285 +++++++++++++++++++++\n 2 files changed, 305 insertions(+), 1 deletion(-)"
+}

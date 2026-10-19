@@ -1,0 +1,33 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 51.12s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+
+thread 'editor::project_directory::tests::project_directory_named_save_during_initial_load_persists_after_view_drop' (137214) panicked at crates/hex-ui/src/editor/project_directory/tests.rs:832:5:
+assertion `left == right` failed: successful named Save before startup preference completion must survive view destruction
+  left: Some("/tmp/hex-project-folder-ui-137213-0/Old Remembered Folder")
+ right: Some("/tmp/hex-project-folder-ui-137213-0/Named Save Before Preferences")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::project_directory::tests::project_directory_named_save_during_initial_load_persists_after_view_drop ... FAILED
+
+failures:
+
+failures:
+    editor::project_directory::tests::project_directory_named_save_during_initial_load_persists_after_view_drop
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 913 filtered out; finished in 0.47s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

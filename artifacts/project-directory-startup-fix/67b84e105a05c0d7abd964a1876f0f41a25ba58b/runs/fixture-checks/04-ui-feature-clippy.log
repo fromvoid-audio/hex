@@ -1,0 +1,15 @@
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+    Checking hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+    Checking hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+    Checking gpui v0.2.2 (/workspace/hex/third_party/gpui)
+    Checking hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+    Checking hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+    Checking hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Checking hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+    Checking hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+    Checking hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Checking hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Checking hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 28.96s

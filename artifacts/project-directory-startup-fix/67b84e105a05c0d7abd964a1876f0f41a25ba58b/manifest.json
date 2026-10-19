@@ -1,0 +1,772 @@
+{
+  "schema": 1,
+  "ticket": 2818,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/424",
+  "source": {
+    "head": "67b84e105a05c0d7abd964a1876f0f41a25ba58b",
+    "tree": "99f4caaefd46325d3466298106867cc950c5917d",
+    "base": "1f08587bd389b007f20d29af2b0ef30c9b39870e",
+    "base_tree": "72a744669294039462befb5aaf5e937ccab45289",
+    "repro_commit": "ee9ac4c891843d918b32efc723210cfcc6064029",
+    "repro_tree": "20f49364a6788dbab03dce1d653e29ce02bd6331",
+    "branch": "source-fix/424-startup-writer-1f08587",
+    "files": [
+      "crates/hex-ui/src/editor/project_directory.rs",
+      "crates/hex-ui/src/editor/project_directory/tests.rs"
+    ],
+    "delta": "crates/hex-ui/src/editor/project_directory.rs      |  21 +-\n .../hex-ui/src/editor/project_directory/tests.rs   | 285 +++++++++++++++++++++\n 2 files changed, 305 insertions(+), 1 deletion(-)"
+  },
+  "file_hashes": {
+    "crates/hex-ui/src/editor/project_directory.rs": {
+      "before_blob": "8fe045c3ffbefa770bb85c9d15925d21ff0989c0",
+      "before_sha256": "48b43856c953393827762dce0223726319aa88b3dc51795a5292e6add2162ad2",
+      "after_blob": "ab70d02b83e8fd0a1d16b962d80b7550e6b36e0a",
+      "after_sha256": "5549757de7db19e69b851de3f1b62f5cdd8be7f5dbb48412e10d21a819aa5df0"
+    },
+    "crates/hex-ui/src/editor/project_directory/tests.rs": {
+      "before_blob": "86586f78705f16775150c6f1b286063c0f637eed",
+      "before_sha256": "94471d774ac094474aab00bc2b8638b2d3c40040717072786575449ac3803490",
+      "after_blob": "0dca125c4a1dd12bc94bb0b914bfb530ee49ee1f",
+      "after_sha256": "347a8adcd57e9a5520eb9e41b0022e3c78521975422ff940a8914a06b18d72a1"
+    }
+  },
+  "runs": {
+    "condition-green": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 34.802,
+      "start_tree": {
+        "commit": "ee9ac4c891843d918b32efc723210cfcc6064029",
+        "content_sha256": "ad94e201e5b7e64222c870a6844e46ea02d61dce52ace2c55f943a48293eea23",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/project_directory.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "project_directory_named_save_during_initial_load_persists_after_view_drop",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:22:40Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-condition-green/01-named-save-startup-green.log",
+          "started_at": "2026-10-19T00:22:06Z",
+          "status": "passed",
+          "step_id": "named-save-startup-green"
+        }
+      ]
+    },
+    "custody-red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 35.92,
+      "start_tree": {
+        "commit": "1f08587bd389b007f20d29af2b0ef30c9b39870e",
+        "content_sha256": "c7fdaf234634d2d78f4c1301692e8191bb1bd192b976a396f0ce647855023901",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/project_directory.rs",
+          " M crates/hex-ui/src/editor/project_directory/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "project_directory_named_save_during_initial_load_persists_after_view_drop",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:13:48Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/project-directory-startup-424-custody-red/01-named-save-startup-custody-red.log",
+          "started_at": "2026-10-19T00:13:12Z",
+          "status": "failed",
+          "step_id": "named-save-startup-custody-red"
+        }
+      ]
+    },
+    "expanded": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 117.0,
+      "start_tree": {
+        "commit": "ee9ac4c891843d918b32efc723210cfcc6064029",
+        "content_sha256": "6852b1bbd42dbf4d8521aa6a29bedbba2d8300617f20219e235e956a5a33010a",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/project_directory.rs",
+          " M crates/hex-ui/src/editor/project_directory/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "editor::project_directory::tests::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:25:15Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-expanded/01-folders.log",
+          "started_at": "2026-10-19T00:24:37Z",
+          "status": "passed",
+          "step_id": "folders"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "editor::dialogs::ui_tests::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:25:58Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-expanded/02-dialogs.log",
+          "started_at": "2026-10-19T00:25:15Z",
+          "status": "passed",
+          "step_id": "dialogs"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "browser_test_environment_",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:26:33Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-expanded/03-environment.log",
+          "started_at": "2026-10-19T00:25:58Z",
+          "status": "passed",
+          "step_id": "environment"
+        }
+      ]
+    },
+    "fixture-checks": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 164.648,
+      "start_tree": {
+        "commit": "1f08587bd389b007f20d29af2b0ef30c9b39870e",
+        "content_sha256": "c7fdaf234634d2d78f4c1301692e8191bb1bd192b976a396f0ce647855023901",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/project_directory.rs",
+          " M crates/hex-ui/src/editor/project_directory/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "editor::project_directory::tests::",
+            "--",
+            "--skip",
+            "project_directory_named_save_during_initial_load_persists_after_view_drop",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:15:34Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/01-existing-folder.log",
+          "started_at": "2026-10-19T00:14:58Z",
+          "status": "passed",
+          "step_id": "existing-folder"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "editor::dialogs::ui_tests::",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:16:17Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/02-dialogs.log",
+          "started_at": "2026-10-19T00:15:34Z",
+          "status": "passed",
+          "step_id": "dialogs"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "browser_test_environment_",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:16:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/03-environment.log",
+          "started_at": "2026-10-19T00:16:17Z",
+          "status": "passed",
+          "step_id": "environment"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T00:17:19Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/04-ui-feature-clippy.log",
+          "started_at": "2026-10-19T00:16:50Z",
+          "status": "passed",
+          "step_id": "ui-feature-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T00:17:36Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/05-ui-default-clippy.log",
+          "started_at": "2026-10-19T00:17:19Z",
+          "status": "passed",
+          "step_id": "ui-default-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-19T00:17:36Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/06-architecture.log",
+          "started_at": "2026-10-19T00:17:36Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-19T00:17:36Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/07-gpui.log",
+          "started_at": "2026-10-19T00:17:36Z",
+          "status": "passed",
+          "step_id": "gpui"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-19T00:17:36Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/08-style.log",
+          "started_at": "2026-10-19T00:17:36Z",
+          "status": "passed",
+          "step_id": "style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-19T00:17:36Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/09-layout.log",
+          "started_at": "2026-10-19T00:17:36Z",
+          "status": "passed",
+          "step_id": "layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T00:17:42Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/10-fmt.log",
+          "started_at": "2026-10-19T00:17:36Z",
+          "status": "passed",
+          "step_id": "fmt"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T00:17:42Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-fixture-checks/11-diff.log",
+          "started_at": "2026-10-19T00:17:42Z",
+          "status": "passed",
+          "step_id": "diff"
+        }
+      ]
+    },
+    "original-red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 51.903,
+      "start_tree": {
+        "commit": "1f08587bd389b007f20d29af2b0ef30c9b39870e",
+        "content_sha256": "f813c2f4e52b24792ae6ba3422b450f556f543ba63fe582b4722e42c262ce146",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/project_directory.rs",
+          " M crates/hex-ui/src/editor/project_directory/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "project_directory_named_save_during_initial_load_persists_after_view_drop",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:10:29Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/project-directory-startup-424-original-red/01-named-save-startup-red.log",
+          "started_at": "2026-10-19T00:09:38Z",
+          "status": "failed",
+          "step_id": "named-save-startup-red"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 41.396,
+      "start_tree": {
+        "commit": "ee9ac4c891843d918b32efc723210cfcc6064029",
+        "content_sha256": "6852b1bbd42dbf4d8521aa6a29bedbba2d8300617f20219e235e956a5a33010a",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/project_directory.rs",
+          " M crates/hex-ui/src/editor/project_directory/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T00:27:20Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-qualification/01-ui-feature-clippy.log",
+          "started_at": "2026-10-19T00:26:58Z",
+          "status": "passed",
+          "step_id": "ui-feature-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T00:27:33Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-qualification/02-ui-default-clippy.log",
+          "started_at": "2026-10-19T00:27:20Z",
+          "status": "passed",
+          "step_id": "ui-default-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-19T00:27:33Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-qualification/03-architecture.log",
+          "started_at": "2026-10-19T00:27:33Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-19T00:27:33Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-qualification/04-gpui.log",
+          "started_at": "2026-10-19T00:27:33Z",
+          "status": "passed",
+          "step_id": "gpui"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-19T00:27:33Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-qualification/05-style.log",
+          "started_at": "2026-10-19T00:27:33Z",
+          "status": "passed",
+          "step_id": "style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-19T00:27:33Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-qualification/06-layout.log",
+          "started_at": "2026-10-19T00:27:33Z",
+          "status": "passed",
+          "step_id": "layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T00:27:39Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-qualification/07-fmt.log",
+          "started_at": "2026-10-19T00:27:33Z",
+          "status": "passed",
+          "step_id": "fmt"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T00:27:39Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/project-directory-startup-424-qualification/08-diff.log",
+          "started_at": "2026-10-19T00:27:39Z",
+          "status": "passed",
+          "step_id": "diff"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Ownerpatch only; canonical424frozenheadnotrewritten.",
+    "Oneproductioncondition+privatecfgtestfixture; finalprospectivefull21ownedbysolemerger.",
+    "New4nativecomponentcasespendingrootserial,noOSchooser/installedacceptance.",
+    "OriginalRED/oldfull21/native51receiptsremainhistorical."
+  ],
+  "payloads": {
+    "424-component.py": {
+      "bytes": 558,
+      "sha256": "5ad169b573bdf865574a0f2dd42649b52966aea7243efd3e40207ea5025387c0"
+    },
+    "424-condition-green.stdout": {
+      "bytes": 195,
+      "sha256": "1dc00302597b2c1678c8c01b8f266b4e0a6694cddf24b9ef2ec3104deddd5fc1"
+    },
+    "424-custody-red.stdout": {
+      "bytes": 203,
+      "sha256": "e82ac45af7d72963e817cbf6dd2d4482a8d80c16cd2e7eb3625d267036b7c040"
+    },
+    "424-expanded.stdout": {
+      "bytes": 252,
+      "sha256": "71ca8bec1d639e328093ccb5edbe64fc8fd045effa1648dcfd26165d4cf49351"
+    },
+    "424-final-evidence.py": {
+      "bytes": 8368,
+      "sha256": "11fffdc7db0a683e9af9ba5c1056e697087c543a10bb239210fd4a9774dca58b"
+    },
+    "424-final-source.json": {
+      "bytes": 735,
+      "sha256": "b3c27e6d935085d2d528941df5b7191f8e361d296bb5d71f3a3903a04a89e400"
+    },
+    "424-fixture-checks.stdout": {
+      "bytes": 684,
+      "sha256": "982d7d4c7dc796cd8bc4cc9bdf147f402e43c24ca71e747f5cc4cc3da3f6db2b"
+    },
+    "424-original-red.stdout": {
+      "bytes": 188,
+      "sha256": "2ab10db90258f0dd18f8068fdada95e92bb02721f0b56bac9c4697b91386f7f5"
+    },
+    "424-qualification.stdout": {
+      "bytes": 498,
+      "sha256": "ecc01d938b961eec463fed986a8821f9fbf2bb4180b666e32f96e2dd5184b63c"
+    },
+    "424-seal-repro.py": {
+      "bytes": 6193,
+      "sha256": "4311dcfe54429ecd992c5e1a51ad7c6097f347c18e1aa6854fb030928d0701fe"
+    },
+    "424-startup-tests.rs": {
+      "bytes": 8502,
+      "sha256": "75ddcca0efb8a3bcb140c6c1210a7c1b1e1fbd51d0941e1f09ec12c0ec1c3482"
+    },
+    "HANDOFF.md": {
+      "bytes": 3473,
+      "sha256": "1b95a34691a0039f068fd570ee6686b1b15e4ad448f598bc9651f67ecbfebeb0"
+    },
+    "NATIVE-REQUEST.md": {
+      "bytes": 1090,
+      "sha256": "c31e6c593f0092599299c339203f61e655e7bbbb61f5fea66d28dd5b2604017b"
+    },
+    "before-after-hashes.json": {
+      "bytes": 727,
+      "sha256": "c0042c86e6157b723fb3ddcad1ce04f74baca7e658fedce0eca55947feb4af21"
+    },
+    "owner.patch": {
+      "bytes": 13505,
+      "sha256": "5f78ff16a73b28851da50e69137b9076044540f22f2d388a8a0b53c430570d3d"
+    },
+    "production-only.patch": {
+      "bytes": 590,
+      "sha256": "a332ee702ccd9b458a23d6e0122c6366ef580430cbdcff67ce75533bc7d4d062"
+    },
+    "runs/condition-green/01-named-save-startup-green.log": {
+      "bytes": 574,
+      "sha256": "d242261bf180f0a6dcd8ac635e4b5ddb004bb230a3669793b029d756d743eafd"
+    },
+    "runs/condition-green/summary.json": {
+      "bytes": 10059,
+      "sha256": "35ca5bd175798f741c984413855ffda24ae76a37afefea7308b60112cbf93a0b"
+    },
+    "runs/custody-red/01-named-save-startup-custody-red.log": {
+      "bytes": 1323,
+      "sha256": "e6ed266b802f0c76737e608d7cbd3c549be4102ff2aeacb92d44229fe934db6a"
+    },
+    "runs/custody-red/summary.json": {
+      "bytes": 10320,
+      "sha256": "c9a9fc8d8a74ddb6e1f58bab72d88232bdc070240aeab4ca63299eea32a01801"
+    },
+    "runs/expanded/01-folders.log": {
+      "bytes": 2648,
+      "sha256": "ba6d6ab80b869e96a1f4d44999b35fe78c5068228b7bfc5473dcf2085c24deec"
+    },
+    "runs/expanded/02-dialogs.log": {
+      "bytes": 3763,
+      "sha256": "6d4df238f3e9eaf8e69fa3b635bb91239b39dd45da6ed4bb650c40a3a847d2b9"
+    },
+    "runs/expanded/03-environment.log": {
+      "bytes": 1145,
+      "sha256": "0c649e8d6712d4ef04df0c99155f278c64612669f598389ba4e91a4f1ca2a9bf"
+    },
+    "runs/expanded/summary.json": {
+      "bytes": 11574,
+      "sha256": "f3d292b65fb4fe93a853f47979dd42946700d79a689ca97a240605b05f6780a6"
+    },
+    "runs/fixture-checks/01-existing-folder.log": {
+      "bytes": 2149,
+      "sha256": "150f6931d71ef34bbbd7262d1f43e074cb74e7726c147f82c61878de3e74d0df"
+    },
+    "runs/fixture-checks/02-dialogs.log": {
+      "bytes": 3763,
+      "sha256": "07068b6ee48a1b1bc42e0efba1bb8b47d2e8f0327b2237770a488c838a31dcfb"
+    },
+    "runs/fixture-checks/03-environment.log": {
+      "bytes": 1145,
+      "sha256": "b3033fefc2adb5b539c1737355ac36d3b00d46178ed1bdf5cd11984c9b053701"
+    },
+    "runs/fixture-checks/04-ui-feature-clippy.log": {
+      "bytes": 1025,
+      "sha256": "1d5d8fd0d4b15295c93bcc35cf2f32469ce173064c234d1d959d9a9e1a314b7c"
+    },
+    "runs/fixture-checks/05-ui-default-clippy.log": {
+      "bytes": 621,
+      "sha256": "93cbcc136cce9ee1a39ce224c7da8e077da6e0224cc9fef0af260a58bc0f2ce0"
+    },
+    "runs/fixture-checks/06-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/fixture-checks/07-gpui.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/fixture-checks/08-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/fixture-checks/09-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/fixture-checks/10-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/fixture-checks/11-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/fixture-checks/summary.json": {
+      "bytes": 15705,
+      "sha256": "c010e71edf7ce57097d89e15e659c05463e03610b3dd6998430640e1917a6b36"
+    },
+    "runs/original-red/01-named-save-startup-red.log": {
+      "bytes": 1988,
+      "sha256": "3ce188db42accea10547b619be1cd2db9c42e055be54eec621ed3cf517e457d5"
+    },
+    "runs/original-red/summary.json": {
+      "bytes": 10300,
+      "sha256": "5f804adc382c09b22d6517984b2efc6c748a5f57d63fdddabb7334b8a844091f"
+    },
+    "runs/qualification/01-ui-feature-clippy.log": {
+      "bytes": 360,
+      "sha256": "d6a190699782099f1a0e5ab48d054b113e3890eeafa3a864fce03f407d4bf723"
+    },
+    "runs/qualification/02-ui-default-clippy.log": {
+      "bytes": 360,
+      "sha256": "1f04ab48963d4d296223c8cf7bee84c554204a038dce1b47ab9562b046197e50"
+    },
+    "runs/qualification/03-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/04-gpui.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/05-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/06-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/07-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/08-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 13332,
+      "sha256": "10bb451381e1fd9708405f04a0f0c7a2e1e573e8dd00b392901e7927c3774292"
+    }
+  }
+}

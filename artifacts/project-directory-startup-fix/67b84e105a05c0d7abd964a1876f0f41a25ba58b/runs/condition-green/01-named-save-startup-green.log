@@ -1,0 +1,11 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.05s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+test editor::project_directory::tests::project_directory_named_save_during_initial_load_persists_after_view_drop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 913 filtered out; finished in 0.41s
+
