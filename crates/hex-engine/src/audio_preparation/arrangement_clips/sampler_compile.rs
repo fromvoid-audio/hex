@@ -317,10 +317,6 @@ impl crate::AudioPreparationCustody {
     /// Construction-local only. Every new owner is installed directly into
     /// this SAME parent; immutable whole-parent inventory ends before mutation.
     #[cfg_attr(not(test), expect(dead_code, reason = "awaits Service integration"))]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "actual borrowed compiler inputs, no approval token"
-    )]
     pub(crate) fn compile_original_sampler_on_control(
         &mut self,
         editor: &hex_project::Editor,

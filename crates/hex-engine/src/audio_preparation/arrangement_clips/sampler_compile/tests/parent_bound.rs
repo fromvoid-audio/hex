@@ -593,3 +593,43 @@ fn parent_bound_opaque_context_refuses_before_any_move_or_cleanup() {
     drop(owner);
     assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+#[test]
+fn parent_bound_arithmetic_original_has_no_normal_authority_or_side_effects() {
+    let f = Fixture::new();
+    crate::owned_shared::reset_birth_count();
+    crate::owned_shared::reset_clone_count();
+    let ids = crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get());
+    let measured = allocation_counter::measure(|| {
+        AudioRootStorageLedger::arithmetic_cost_for_limits(
+            limits(),
+            usize::MAX,
+            usize::MAX,
+            |original| {
+                let inputs = Inputs {
+                    rows: &f.preparation.arrangement_clips,
+                    preparation: &f.preparation,
+                    editor: &f.editor,
+                    resources: &f.bank,
+                    previous: Some(&f.previous),
+                    original,
+                };
+                assert!(matches!(
+                    inputs.inspect(&f.transforms, limits()),
+                    Err(AudioStorageError::UnknownStorage)
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+    });
+    assert_eq!(measured.count_total, 0);
+    assert_eq!(measured.count_current, 0);
+    assert_eq!(crate::owned_shared::birth_count(), 0);
+    assert_eq!(crate::owned_shared::clone_count(), 0);
+    assert_eq!(
+        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
+        ids
+    );
+    assert!(!f.preparation.arrangement_clips.has_next());
+}
