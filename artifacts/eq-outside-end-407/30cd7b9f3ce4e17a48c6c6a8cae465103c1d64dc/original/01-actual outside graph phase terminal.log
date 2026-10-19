@@ -1,0 +1,31 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 58.89s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+outside_graph_end graph=Bounds { origin: Point { x: 805px, y: 435px }, size: Size { 430px × 158px } } outside=Point { x: 1425px, y: 210.5px } phases=[Begin, Change, Change] active_key=Some(GestureKey { generation: 0, token: 1 })
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_separate' (174493) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:1240:5:
+physical Ended over another panel must retire the original graph's key
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_separate ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_separate
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 936 filtered out; finished in 0.89s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

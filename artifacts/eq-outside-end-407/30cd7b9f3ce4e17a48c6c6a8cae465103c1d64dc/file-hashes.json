@@ -1,0 +1,20 @@
+{
+  "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+    "before_sha256": "9c7589e5b366b9f2910da5e57aad6d92dadc0aae558e903427eda26d9a6c66b8",
+    "after_sha256": "a9ad25a84d7269a0348aaf3679cbf9ac971c80b6d9f6c39968d72f82ddd48ad6",
+    "after_bytes": 49102,
+    "production_unchanged": false
+  },
+  "crates/hex-widgets/src/response_graph.rs": {
+    "before_sha256": "2eaf8eabf823dfd719d7dc07248f63e6ff802fdad33d76a665b02855a62d6640",
+    "after_sha256": "2eaf8eabf823dfd719d7dc07248f63e6ff802fdad33d76a665b02855a62d6640",
+    "after_bytes": 44778,
+    "production_unchanged": true
+  },
+  "crates/hex-widgets/src/response_graph/scroll.rs": {
+    "before_sha256": "e16c4a608fb533b0ccdd207ec4a7d2d948ce06cdf7e4f81cd9d603851eefd556",
+    "after_sha256": "e16c4a608fb533b0ccdd207ec4a7d2d948ce06cdf7e4f81cd9d603851eefd556",
+    "after_bytes": 10203,
+    "production_unchanged": true
+  }
+}
