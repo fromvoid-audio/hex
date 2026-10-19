@@ -151,9 +151,9 @@ class FilesystemIdentityTests(unittest.TestCase):
         self.assertEqual(asdict(restart.exact_identity(value, self.app)), value)
 
     def test_alternate_spelling_requires_same_filesystem_pins_model(self):
-        # Linux has no case-insensitive fixture volume. Model ONLY its lstat
-        # result for an alternate spelling; derive every accepted pin from the
-        # actual owned objects. This is not AppKit/native volume evidence.
+        # Model ONLY alternate-spelling lstat lookup using real owned pins.
+        # The unmocked oracle below follows this fixture filesystem's actual
+        # identity relationship; the model is not native-volume evidence.
         value = self.payload(); alias = self.root / 'Hex.app'
         value.update(bundle=str(alias), executable=str(alias/'Contents/MacOS/hex'))
         original = restart._path_pin
@@ -164,22 +164,40 @@ class FilesystemIdentityTests(unittest.TestCase):
             return case_insensitive_pin(path, **kwargs) if path == alias or alias in path.parents else original(path, **kwargs)
         with patch.object(restart, '_path_pin', side_effect=lookup):
             self.assertEqual(asdict(restart.exact_identity(value, self.app)), value)
-        with self.assertRaises(restart.RestartError):
-            restart.exact_identity(value, self.app)
+        if alias.exists():
+            self.assertTrue(alias.samefile(self.app))
+            self.assertTrue((alias/'Contents/MacOS/hex').samefile(self.executable))
+            self.assertEqual(asdict(restart.exact_identity(value, self.app)), value)
+        else:
+            with self.assertRaises(restart.RestartError):
+                restart.exact_identity(value, self.app)
 
     def test_distinct_case_sensitive_bundle_and_hardlinked_executable_refuse(self):
-        other = self.root/'Hex.app'; executable = other/'Contents/MacOS/hex'
-        executable.parent.mkdir(parents=True)
-        os.link(self.executable, executable)
-        value = self.payload(); value.update(bundle=str(other), executable=str(executable))
-        self.assertNotEqual(other.stat().st_ino, self.app.stat().st_ino)
-        self.assertEqual(executable.stat().st_ino, self.executable.stat().st_ino)
-        with self.assertRaisesRegex(restart.RestartError, 'another target'):
-            restart.exact_identity(value, self.app)
-        # Even honest pins for that second bundle cannot authorize our target.
-        value['bundle_inode'] = other.stat().st_ino
-        with self.assertRaises(restart.RestartError):
-            restart.exact_identity(value, self.app)
+        def assert_distinct_bundle_refuses(other):
+            executable = other/'Contents/MacOS/hex'
+            executable.parent.mkdir(parents=True)
+            os.link(self.executable, executable)
+            value = self.payload()
+            value.update(bundle=str(other), executable=str(executable))
+            self.assertFalse(other.samefile(self.app))
+            self.assertTrue(executable.samefile(self.executable))
+            with self.assertRaisesRegex(restart.RestartError, 'another target'):
+                restart.exact_identity(value, self.app)
+            # Honest pins for the distinct bundle still cannot authorize ours.
+            bundle = other.stat()
+            value.update(bundle_device=bundle.st_dev, bundle_inode=bundle.st_ino)
+            with self.assertRaisesRegex(restart.RestartError, 'another target'):
+                restart.exact_identity(value, self.app)
+
+        # A different parent guarantees a distinct actual bundle on either
+        # filesystem, without changing the supported Hex.app basename.
+        assert_distinct_bundle_refuses(self.root/'independent'/'Hex.app')
+        other = self.root/'Hex.app'
+        if other.exists():
+            self.assertTrue(other.samefile(self.app))
+        else:
+            # Retain the real case-only negative wherever it is representable.
+            assert_distinct_bundle_refuses(other)
 
     def test_pin_types_bounds_zero_inode_and_missing_extra_fields_refuse(self):
         good = self.payload()
