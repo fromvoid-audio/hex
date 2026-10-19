@@ -140,8 +140,10 @@ fixture changes a workspace API and verifies selective workspace cleanup.
 While holding the same lock, after validating target/repository ownership and
 before cleanup or compilation, full locked Cargo metadata identifies local path
 packages outside the workspace membership, including vendored registry patches.
-Their content identities include relative filenames, executable bits and file
-bytes, including manifests, build scripts and assets; mtimes are not identities.
+Their content identities include relative directory/file paths and entry types,
+executable bits and file bytes, including manifests, build scripts and assets;
+mtimes are not identities. Empty directories are inputs too: a build script can
+observe their presence even when Cargo does not rerun it automatically.
 Checkout-relative package keys survive worktree changes. External package keys
 retain their actual absolute path. The marker and summary record hashes and
 file/byte counts; hashing streams one file at a time. Only `.git` metadata and the
@@ -162,6 +164,20 @@ Failed cleanup preserves the prior marker. End-of-run content checks mark changi
 local inputs stale, including inputs outside the main Git inventory. The marker
 retains the initial identity so the next run invalidates any changed inputs.
 Release ownership and optimized artifact qualification remain separate.
+
+The v2 content digest domain-separates directory, regular-file and file-symlink
+records, length-prefixing relative paths. This intentionally changes prior local
+package hashes once; the existing changed-package path selectively invalidates
+their development artifacts and records the new identities. It is not a new
+owner schema, adoption policy or compatibility/migration reader. Unchanged v2
+inputs reuse their artifacts, including after empty-directory add/remove repairs.
+A missing legacy `path_dependencies` field retains its existing one-time local
+invalidation behavior. An explicitly present null/non-map/malformed field is a
+malformed owner: controlled refusal preserves the marker before mutation, while
+existing explicit `--adopt-target` recovery remains available after ownership
+inspection. No uncaught attribute error or implicit null-to-empty normalization
+may bypass that distinction.
+
 
 Each content traversal retains file/link and resolved-file identities plus each
 visited directory's identity and relevant entry inventory. After reading all

@@ -1393,6 +1393,25 @@ runpy.run_path(sys.argv[1], run_name='__main__')
     def test_real_cargo_empty_directory_remove_rebuilds_build_script(self):
         self._real_cargo_empty_directory_change(True)
 
+    def test_dependency_empty_directory_path_and_entry_type_are_persisted_inputs(self):
+        root, _, _ = self.path_dependency_fixture()
+        target = self.base / "outside-target"
+        original = local_ci.LocalCiRunner._dependency_content(root, target)
+        leaf = root / "a"
+        leaf.mkdir()
+        directory = local_ci.LocalCiRunner._dependency_content(root, target)
+        self.assertNotEqual(directory["sha256"], original["sha256"])
+        self.assertEqual((directory["files"], directory["bytes"]), (original["files"], original["bytes"]))
+        leaf.rename(root / "b")
+        renamed = local_ci.LocalCiRunner._dependency_content(root, target)
+        self.assertNotEqual(renamed["sha256"], directory["sha256"])
+        (root / "b").rmdir()
+        leaf.write_bytes(b"")
+        regular = local_ci.LocalCiRunner._dependency_content(root, target)
+        self.assertNotEqual(regular["sha256"], directory["sha256"])
+        leaf.unlink()
+        self.assertEqual(local_ci.LocalCiRunner._dependency_content(root, target), original)
+
 
 if __name__ == "__main__":
     unittest.main()
