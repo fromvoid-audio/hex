@@ -132,7 +132,7 @@ pub(crate) fn normalize(
             if created.len() == count {
                 return Err(SessionError::Invalid("audio import has extra results"));
             }
-            created.push(result.clone());
+            created.push(*result);
         }
     }
     if created.len() != count {

@@ -1196,7 +1196,7 @@ impl EditorView {
             // the cell body. Neighboring edges carry the same stable anchor.
             let top = self.console_insertion_strip(track_id, Some(scene_id), true, scene_id, cx);
             let bottom = self.console_insertion_strip(track_id, next_scene, false, scene_id, cx);
-            let cell = cell.child(top).child(bottom);
+            let cell = cell.children([top, bottom]);
             let cell = self.console_drop_surface(
                 cell,
                 hex_session::import_batch::ConsoleDestination::Cell {
@@ -1340,14 +1340,15 @@ impl EditorView {
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("+"));
-                row = row.child(self.console_drop_surface(
+                let cell = self.console_drop_surface(
                     cell,
                     ConsoleDestination::InsertScene {
                         track: id,
                         before: None,
                     },
                     cx,
-                ));
+                );
+                row = row.child(cell);
             }
         }
         row.child(div().flex_1().min_w_0()).child(

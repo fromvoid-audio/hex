@@ -644,3 +644,30 @@ fn console_release_hit_not_last_move_or_selection_owns_the_drop(cx: &mut TestApp
     receive_worker(&editor, cx);
     assert_eq!(*project(&editor, cx), *before);
 }
+
+#[gpui::test]
+fn console_browser_window_deactivation_cancels_ghost_without_late_import(cx: &mut TestAppContext) {
+    let (handle, editor, track, scene, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = project(&editor, cx);
+    let target = bounds(
+        &mut visual,
+        format!("console-cell-{}-{}", track.value(), scene.value()),
+    )
+    .center();
+    let drag = begin_browser(&mut visual, &editor);
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.deactivate_window();
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.active_browser_audio_drag.is_none(),
+            "window cancellation must retire Console Browser capture"
+        )
+    });
+    assert_retired(&drag);
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    receive_worker(&editor, cx);
+    assert_eq!(*project(&editor, cx), *before);
+}
