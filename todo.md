@@ -5293,3 +5293,19 @@ source handoff is separate from final integration/full CI/merge and delivery.
   owns final integration/full local CI; native/listening and practical musical
   acceptance remain open. Sampler395 stays with Source5; no shared compiler work
   was imported into this standalone Beats change.
+
+- 19 October 2026 — Pulse2831 / PR435 integration: add independent rendered-pitch
+  coverage for the registered Sine, FM4 and current-mode Vector generators in
+  Arrangement, Console, live input, tuning handoffs, seek/loop, WAV export and
+  nonzero-range bounce. The owner adds only two integration test files and the
+  owning audit document; no production tuning, registry, MTS or resource change.
+  Original focused 14-step qualification records 33 positive cases; an earlier
+  zero-match allocation invocation remains negative evidence, with the corrected
+  feature-enabled three positive callback cases kept separate. Root verified
+  exact cd3376b6 native component tests: ten Engine plus one Export, no ignores.
+  Merger verified all 118 original payload hashes and preserved the three source
+  files byte for byte while integrating qualified main. New exact prospective
+  FULL21 and final review remain pending; physical MIDI, installed MTS-client,
+  listening and full Sampler395 acceptance remain open. The historical ignored
+  keyboard profile is excluded explicitly from focused non-profile commands,
+  never counted as passing. This entry records integration evidence only.
