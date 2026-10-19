@@ -1,0 +1,44 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.55s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 18 tests
+group anchor=6 clip=5 delta=19215 actual=67215 expected=67215
+group anchor=6 clip=6 delta=19215 actual=115215 expected=115215
+group anchor=6 clip=7 delta=19215 actual=163215 expected=163215
+test editor::drag::group_drag_ui_test::dragging_nonprimary_selected_header_moves_all_three_clips_with_gaps_and_one_undo ... ok
+group capture profile total=128 selected=3 projection_ns_per_update=1690 full_gpui_redraw_ns=55482224 profile=debug/no_deadline_claim
+test editor::drag::group_drag_ui_test::copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_copies ... ok
+test editor::drag::group_drag_ui_test::group_capture_reenters_valid_lane_and_commits_only_current_projection ... ok
+group capture profile total=16384 selected=3 projection_ns_per_update=1453 full_gpui_redraw_ns=52957027 profile=debug/no_deadline_claim
+test editor::drag::group_drag_ui_test::group_capture_profiles_actual_redraw_separately_from_projection ... ok
+test editor::drag::group_drag_ui_test::group_capture_checks_source_allocation_and_selection_epoch ... ok
+test editor::drag::group_drag_ui_test::group_copy_deferred_submission_counts_only_own_fifo_terminal_and_actual_refusal ... ok
+
+thread 'editor::drag::group_drag_ui_test::group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory' (171599) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:29:9:
+Some("could not read media file: no such file or directory (os error 2)")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+retained editor test root after unacknowledged setup: "/tmp/hex-editor-test-171537-14"
+group_fixture_pre_ack_retention actual_refusal=true weak_expired=true disk_retained=true root="/tmp/hex-editor-test-171537-14"
+test editor::drag::group_drag_ui_test::group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory ... ok
+
+thread 'editor::drag::group_drag_ui_test::group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup' (171593) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:964:13:
+intentional post-ACK fixture unwind
+group_fixture_catalog_custody unwind=true actual_save=true same_root=true cleaned=true
+test editor::drag::group_drag_ui_test::group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup ... ok
+group_fixture_catalog_custody unwind=false actual_save=true same_root=true cleaned=true
+test editor::drag::group_drag_ui_test::group_fixture_same_root_survives_real_catalog_job_after_view_retirement ... ok
+test editor::drag::group_drag_ui_test::group_copy_actual_completion_does_not_steal_new_selection_and_keeps_ancillary_error ... ok
+test editor::drag::group_drag_ui_test::group_outside_lane_clears_all_previews_and_restores_originals ... ok
+test editor::drag::group_drag_ui_test::group_escape_and_actual_gpui_capture_loss_never_commit_any_member ... ok
+test editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes ... ok
+test editor::drag::group_drag_ui_test::group_pending_or_actual_revision_change_refuses_all_members_without_losing_independent_edit ... ok
+test editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim ... ok
+test editor::drag::group_drag_ui_test::mixed_audio_midi_group_uses_real_track_offsets_or_refuses_whole_vertical_move ... ok
+test editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release ... ok
+test editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 917 filtered out; finished in 8.01s
+

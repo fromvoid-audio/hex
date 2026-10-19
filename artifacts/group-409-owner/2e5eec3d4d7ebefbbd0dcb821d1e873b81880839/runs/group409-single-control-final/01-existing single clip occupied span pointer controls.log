@@ -1,0 +1,12 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.15s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+test editor::clip_drag_ui_test::rendered_clip_drop_highlights_only_occupied_audio_and_midi_spans ... ok
+test editor::clip_drag_ui_test::rendered_clip_drop_excludes_moved_source_but_highlights_copied_source ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 935 filtered out; finished in 0.66s
+

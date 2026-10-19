@@ -1,0 +1,14 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.74s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 3 tests
+test editor::tracks::overlap_tests::group_overlap_sweep_matches_independent_half_open_occupancy ... ok
+group_paint_sweep events=32768 event_capacity_bytes=524288 output_capacity_bytes=131072 elapsed_ns=18529584 debug_only/no_native_deadline; two paint-local Vecs, capture/update allocation unchanged
+test editor::tracks::overlap_tests::group_overlap_sweep_max_model_shape_reports_paint_storage_separately ... ok
+test editor::tracks::overlap_tests::drop_overlap_spans_clip_merge_and_ignore_exact_touches ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 934 filtered out; finished in 0.41s
+

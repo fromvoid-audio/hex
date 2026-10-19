@@ -1,0 +1,236 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.31s
+     Running unittests src/lib.rs (target/debug/deps/hex_project-36707f45c482d0ae)
+
+running 3 tests
+test audio_events::tests::split_move_overwrite_trim_and_range_clipboard_preserve_source_coordinates ... ok
+test edit::overwrite_tests::audio_overwrite_clip_limit_failure_preserves_candidate_exactly ... ok
+test edit::overwrite_tests::prepared_audio_overwrite_can_replace_fully_covered_clip_at_clip_limit ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.03s
+
+     Running tests/audio_clip_looping.rs (target/debug/deps/audio_clip_looping-eac785d63a81db3f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/audio_clip_source_phase.rs (target/debug/deps/audio_clip_source_phase-033c200bb92f9784)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/audio_domain.rs (target/debug/deps/audio_domain-680353a70b5182b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/clip_fades.rs (target/debug/deps/clip_fades-69df02ba9c9e561b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/clip_fragment.rs (target/debug/deps/clip_fragment-8ca7af56414570ba)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/clip_gain.rs (target/debug/deps/clip_gain-d1e72a4c2035fe1f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/clip_paint.rs (target/debug/deps/clip_paint-efcc9e1c9133a450)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/clip_paint_capacity.rs (target/debug/deps/clip_paint_capacity-6b588ecf341c3492)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/clip_trim.rs (target/debug/deps/clip_trim-96caa810423196dd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/duplicate.rs (target/debug/deps/duplicate-7204728ed0c1dc71)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/editing.rs (target/debug/deps/editing-4d65af31d6d7f885)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/gain_envelope.rs (target/debug/deps/gain_envelope-a08a6b645449b956)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/import.rs (target/debug/deps/import-da9c7e53be8f8c13)
+
+running 1 test
+test overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_history ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/insert_time.rs (target/debug/deps/insert_time-a7c5a291dea664e6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/loop_region.rs (target/debug/deps/loop_region-092d0cee2c9174d4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/midi.rs (target/debug/deps/midi-a03e8fe02c654c95)
+
+running 2 tests
+test midi_overwrite_rejects_unbounded_loop_expansion_without_mutating_project_or_history ... ok
+test midi_overwrite_splits_victim_and_retriggers_held_note_in_finite_right_fragment ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+     Running tests/midi_split.rs (target/debug/deps/midi_split-be0d1cb61e620cab)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/midi_trim.rs (target/debug/deps/midi_trim-d5905a4d77badf7a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/mix_controls.rs (target/debug/deps/mix_controls-99989ae4108e83ab)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/playable_routing.rs (target/debug/deps/playable_routing-c3711aae95750a4f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/prepared_batch_routing.rs (target/debug/deps/prepared_batch_routing-aff3fb1b75088b0e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/relative.rs (target/debug/deps/relative-f5e72edfb2a41914)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/return_tracks.rs (target/debug/deps/return_tracks-164a7ea94a1f2074)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/routing.rs (target/debug/deps/routing-e5ef2caa0372e3db)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/scene_editing.rs (target/debug/deps/scene_editing-ed19c89aec4d275f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/session.rs (target/debug/deps/session-d7047ea9dcab48d4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+     Running tests/session_audio.rs (target/debug/deps/session_audio-7b4b65a90c7e6772)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/snapshot.rs (target/debug/deps/snapshot-441d3a422722b27f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/solo.rs (target/debug/deps/solo-9cb35633abc1b450)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/split.rs (target/debug/deps/split-74de3f14fac4ad28)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/time_range.rs (target/debug/deps/time_range-836e3695dd392140)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running tests/timebase.rs (target/debug/deps/timebase-cf2b352acdfbcded)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/timebase_quantization.rs (target/debug/deps/timebase_quantization-aaf9717be8471161)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/track_insertion.rs (target/debug/deps/track_insertion-61773a06f37c24a1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/tuning.rs (target/debug/deps/tuning-ea8abe9487b3e25c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/validated_history.rs (target/debug/deps/validated_history-a75ad9f7010f7632)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/warp_projection.rs (target/debug/deps/warp_projection-8a061624ea3c3793)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

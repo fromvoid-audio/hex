@@ -1,0 +1,33 @@
+[1/16] all owning Project targets: running
+[1/16] all owning Project targets: passed
+[2/16] all actual drag controls and group worker cases: running
+[2/16] all actual drag controls and group worker cases: passed
+[3/16] existing clip selection input controls: running
+[3/16] existing clip selection input controls: passed
+[4/16] overlap independent model and rendered laws: running
+[4/16] overlap independent model and rendered laws: passed
+[5/16] canonical musical split PCM preservation: running
+[5/16] canonical musical split PCM preservation: passed
+[6/16] nested event overwrite PCM preservation: running
+[6/16] nested event overwrite PCM preservation: passed
+[7/16] strict Project all targets: running
+[7/16] strict Project all targets: passed
+[8/16] strict UI default all targets: running
+[8/16] strict UI default all targets: passed
+[9/16] strict rendered UI all targets: running
+[9/16] strict rendered UI all targets: passed
+[10/16] architecture guard: running
+[10/16] architecture guard: passed
+[11/16] gpui patch guard: running
+[11/16] gpui patch guard: passed
+[12/16] dependency patches guard: running
+[12/16] dependency patches guard: passed
+[13/16] UI style guard: running
+[13/16] UI style guard: passed
+[14/16] device layout guard: running
+[14/16] device layout guard: passed
+[15/16] format: running
+[15/16] format: passed
+[16/16] diff whitespace: running
+[16/16] diff whitespace: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-group409-clean-final/summary.json

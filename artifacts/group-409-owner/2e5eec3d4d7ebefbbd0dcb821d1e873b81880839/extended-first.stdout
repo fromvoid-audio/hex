@@ -1,0 +1,5 @@
+[1/2] extended complete batch model: running
+[1/2] extended complete batch model: passed
+[2/2] actual copied selection and worker UI: running
+[2/2] actual copied selection and worker UI: failed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-group409-extended-first/summary.json

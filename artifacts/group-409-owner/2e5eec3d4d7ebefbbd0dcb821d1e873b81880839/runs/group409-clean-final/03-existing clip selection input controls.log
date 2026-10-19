@@ -1,0 +1,13 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.19s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 3 tests
+test editor::clip_selection::tests::same_primary_membership_change_repaints_retained_audio_and_midi ... ok
+test editor::clip_selection::tests::shift_header_click_selects_five_mixed_clips_and_keeps_reverse_repeated_anchor ... ok
+test editor::clip_selection::tests::additive_clip_clicks_toggle_members_and_shift_on_other_track_starts_new_anchor ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 934 filtered out; finished in 1.92s
+

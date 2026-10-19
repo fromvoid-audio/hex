@@ -1,0 +1,17 @@
+{
+  "kind": "retained-root-verified-external-original-evidence-not-rerun-for-intake",
+  "source": "6fc5f1515e860878547547186a4eea10caa1dc63",
+  "diagnostic": "9b3b1f595c4e3a10bf22d0eb890dc5d2c49acc07",
+  "evidence_commit": "39d39d5497b3a5360681c31fe22dc0158aa39c20",
+  "ref": "evidence/source4-sampler-cloud-20261018",
+  "folder": "evidence/group-409/9b3b1f59-review-three-red",
+  "archive_bytes": 45402,
+  "archive_sha256": "0c481eefbc1df06b3bfad4ff0f08abc7dabe8e82e3aac60afb6e41470d274cf2",
+  "payload_count": 14,
+  "findings": [
+    "legal final-MAX refused at first intermediate split despite later cross-row frees",
+    "copy committed actual ClipIds but returned Created::None",
+    "actual group ghost overlapped unselected victim but no passive victim accent"
+  ],
+  "notes": "Original14 payloads independently verified by Root; this packet retains locator/history, not a fabricated new baseline execution. Fresh retained diagnostics are green in owning tests."
+}

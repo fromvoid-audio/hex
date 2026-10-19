@@ -1,0 +1,68 @@
+{
+  "source": "2e5eec3d4d7ebefbbd0dcb821d1e873b81880839",
+  "tree": "8dad6b3c5e9028293a6a1ae378ba7bb43f097e86",
+  "receipts": {
+    "group409-clean-final": {
+      "duration_seconds": 187.496,
+      "summary_sha256": "d077b6f9ed9315d0da90f15f08f2c2adbf9a628955e81076b0f36c9ab92d6faf",
+      "content_sha256": "c9133e0e39b699a90da63c1b88e7edad994d5914390e6c6d20131f3cfa2fae72",
+      "steps": 16
+    },
+    "group409-single-control-final": {
+      "duration_seconds": 76.322,
+      "summary_sha256": "ec77206c7d73ef1dda9b3dc3f05086729d2a2676a6909df8e0932e41237b0c63",
+      "content_sha256": "c9133e0e39b699a90da63c1b88e7edad994d5914390e6c6d20131f3cfa2fae72",
+      "steps": 2
+    }
+  },
+  "actual_test_counts": {
+    "01-all owning Project targets.log": {
+      "passed": 288,
+      "failed": 0,
+      "ignored": 0,
+      "result_blocks": 39
+    },
+    "02-all actual drag controls and group worker cases.log": {
+      "passed": 29,
+      "failed": 0,
+      "ignored": 0,
+      "result_blocks": 1
+    },
+    "03-existing clip selection input controls.log": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "result_blocks": 1
+    },
+    "04-overlap independent model and rendered laws.log": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "result_blocks": 1
+    },
+    "05-canonical musical split PCM preservation.log": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "result_blocks": 1
+    },
+    "06-nested event overwrite PCM preservation.log": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "result_blocks": 1
+    },
+    "01-existing single clip occupied span pointer controls.log": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "result_blocks": 1
+    },
+    "02-existing single clip real drag commit.log": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "result_blocks": 1
+    }
+  }
+}

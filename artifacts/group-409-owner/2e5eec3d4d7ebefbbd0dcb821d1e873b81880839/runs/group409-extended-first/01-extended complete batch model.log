@@ -1,0 +1,27 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.03s
+     Running unittests src/lib.rs (target/debug/deps/hex_project-36707f45c482d0ae)
+
+running 18 tests
+test clip_group::tests::capture_rejects_retained_musical_preview_shell_alias_then_recovers_without_clone_reset ... ok
+test clip_group::tests::canonical_subframe_midi_member_is_retained_in_whole_group_move ... ok
+test clip_group::tests::capture_source_witness_refuses_equal_replacement_and_cow_reorder_delete_without_strong_owner ... ok
+test clip_group::tests::capture_projection_matches_canonical_and_recovers_absolute_original_after_invalid_and_roundtrips ... ok
+test clip_group::tests::copy_overlap_preserves_midi_selected_originals ... ok
+test clip_group::tests::copy_overlap_preserves_audio_selected_originals ... ok
+test clip_group::tests::copy_overlap_preserves_mixed_selected_originals ... ok
+test clip_group::tests::group_copy_id_exhaustion_preserves_project_history_and_never_prepares ... ok
+test clip_group::tests::group_copy_disjoint_cuts_preserve_gaps_carry_and_fragment_ids_before_copies ... ok
+test clip_group::tests::identical_group_move_preserves_redo_and_canonical_data ... ok
+test clip_group::tests::invalid_group_members_or_vertical_fit_refuse_whole_edit_and_preserve_redo ... ok
+test clip_group::tests::left_bound_clamps_one_shared_delta_for_audio_and_midi_anchors ... ok
+test clip_group::tests::prepare_failure_preserves_complete_group_ids_project_and_both_history_stacks ... ok
+test clip_group::tests::mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step ... ok
+REVIEW_RESPONSE actual=Clips { first: ClipId(11), last: ClipId(12) } copied_ids=[ClipId(11), ClipId(12)]; history copy retained
+test clip_group::tests::review_group_copy_response_identifies_created_members ... ok
+test clip_group::tests::review_full_capacity_copy_accounts_later_mixed_victims_before_first_split ... ok
+test clip_group::tests::group_final_clip_capacity_includes_session_and_refusal_is_preparation_atomic ... ok
+test clip_group::tests::clip_limit_uses_complete_final_group_and_refuses_atomically_before_preparation ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 83 filtered out; finished in 0.11s
+

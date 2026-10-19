@@ -1,0 +1,23 @@
+commit 2e5eec3d4d7ebefbbd0dcb821d1e873b81880839
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 08:43:25 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 08:43:25 2026 +0000
+
+    Plan complete group overwrite and select committed copies
+
+commit 9b3b1f595c4e3a10bf22d0eb890dc5d2c49acc07
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 06:06:54 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 06:06:54 2026 +0000
+
+    Respect monotonic IDs in proposed capacity success oracle
+
+commit 40de93316600432869dfc0d9ee8ee1c4691f84a5
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 06:06:33 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 06:06:33 2026 +0000
+
+    Reproduce group drag capacity, copy response and victim highlight returns

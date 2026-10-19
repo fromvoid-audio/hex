@@ -1,0 +1,523 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.97s
+     Running unittests src/lib.rs (target/debug/deps/hex_project-36707f45c482d0ae)
+
+running 102 tests
+test audio_events::range_tests::range_move_and_insert_preserve_holes_and_source_coordinates_with_finite_capacity ... ok
+test audio_events::tests::canonical_events_undo_and_outer_splits_keep_the_full_retained_sequence ... ok
+test audio_events::tests::split_move_overwrite_trim_and_range_clipboard_preserve_source_coordinates ... ok
+test clip_clipboard::tests::overlapping_whole_members_survive_without_erasing_each_other ... ok
+test clip_clipboard::tests::multi_track_normal_and_ripple_keep_original_track_ids_and_refuse_overflow_atomically ... ok
+test clip_copy::tests::audio_copy_can_insert_new_track_and_undo_atomically ... ok
+test clip_copy::tests::audio_copy_replaces_only_destination_overlap_and_keeps_source_clip ... ok
+test clip_clipboard::tests::whole_copy_survives_source_removal_preserves_domains_gaps_fresh_ids_and_one_undo ... ok
+test clip_copy::tests::audio_copy_uses_fresh_id_and_preserves_source_metadata ... ok
+test clip_copy::tests::midi_copy_allocates_fresh_clip_and_note_ids_and_keeps_loop_metadata ... ok
+test clip_group::tests::canonical_subframe_midi_member_is_retained_in_whole_group_move ... ok
+test clip_group::tests::capture_rejects_retained_musical_preview_shell_alias_then_recovers_without_clone_reset ... ok
+test clip_group::tests::capture_projection_matches_canonical_and_recovers_absolute_original_after_invalid_and_roundtrips ... ok
+test clip_group::tests::capture_source_witness_refuses_equal_replacement_and_cow_reorder_delete_without_strong_owner ... ok
+test audio_events::range_tests::splitting_at_capacity_refuses_without_mutating_the_sequence ... ok
+test clip_group::tests::copy_overlap_preserves_audio_selected_originals ... ok
+test clip_group::tests::copy_overlap_preserves_midi_selected_originals ... ok
+test clip_group::tests::copy_overlap_preserves_mixed_selected_originals ... ok
+test clip_group::tests::group_copy_id_exhaustion_preserves_project_history_and_never_prepares ... ok
+test clip_group::tests::group_copy_disjoint_cuts_preserve_gaps_carry_and_fragment_ids_before_copies ... ok
+test audio_events::cropped_capacity_regression::delete_from_cropped_full_sequence_checks_final_capacity_and_undo ... ok
+test clip_group::tests::identical_group_move_preserves_redo_and_canonical_data ... ok
+test clip_group::tests::invalid_group_members_or_vertical_fit_refuse_whole_edit_and_preserve_redo ... ok
+test clip_group::tests::left_bound_clamps_one_shared_delta_for_audio_and_midi_anchors ... ok
+test clip_group::tests::mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step ... ok
+test clip_group::tests::prepare_failure_preserves_complete_group_ids_project_and_both_history_stacks ... ok
+test clip_group::tests::review_full_capacity_copy_accounts_later_mixed_victims_before_first_split ... ok
+test clip_group::tests::review_group_copy_response_identifies_created_members ... ok
+test conversion::tests::frame_count_uses_checked_positive_half_up_rounding ... ok
+test conversion::tests::metadata_requires_exact_duration_and_known_rate_specific_version ... ok
+test device::tests::canonical_chain_moves_effects_and_instrument_across_the_persisted_gap ... ok
+test device::tests::device_limit_and_allocator_high_water_are_enforced ... ok
+test device::tests::device_move_bypass_removal_and_failed_edits_are_atomic ... ok
+test device::tests::effect_insert_remove_and_instrument_recreate_keep_gap_consistent ... ok
+test device::tests::generic_device_commands_allocate_stable_ids_and_order ... ok
+test device::tests::instrument_slot_state_bypass_remove_insert_and_undo_are_atomic ... ok
+test device::tests::legacy_move_preflights_same_track_anchor_before_mutating_project ... ok
+test device::tests::opaque_identity_reservation_rejects_stale_edits_and_undo_never_reuses_ids ... ok
+test edit::overwrite_tests::audio_overwrite_clip_limit_failure_preserves_candidate_exactly ... ok
+test edit::overwrite_tests::prepared_audio_overwrite_can_replace_fully_covered_clip_at_clip_limit ... ok
+test edit::track_remove_tests::remove_tracks_invalid_selection_is_atomic_and_preserves_redo ... ok
+test edit::track_remove_tests::remove_tracks_preserves_survivors_cleans_references_and_undo_restores_everything ... ok
+test clip_group::tests::group_final_clip_capacity_includes_session_and_refusal_is_preparation_atomic ... ok
+test gain_touch::tests::epoch_only_history_persists_high_water_and_removal_restores_owner_value ... ok
+test gain_touch::tests::independent_ramp_and_pcm_oracle_preserves_base_outside_half_open_span ... ok
+test gain_touch::tests::later_pass_capacity_refusal_leaves_original_lane_history_and_redo_intact ... ok
+test gain_touch::tests::malformed_events_context_order_overlap_and_fragment_provenance_refuse ... ok
+test gain_touch::tests::project_capacity_counts_base_steps_and_endpoints_before_adoption ... ok
+test gain_touch::tests::refused_commands_never_prepare_mutate_history_clear_redo_or_consume_ids ... ok
+test gain_touch::tests::replacements_trim_flat_fragments_preserve_origin_and_resume_base_at_exact_end ... ok
+test gain_touch::tests::splice_clear_and_history_adopt_the_complete_lane_and_keep_epoch_high_water ... ok
+test gain_touch::tests::endpoints_and_fragment_costs_are_charged_before_replacement ... ok
+test gain_touch::tests::tiny_distinct_beats_remain_authored_without_frame_quantization ... ok
+test gain_touch::tests::two_loop_passes_splice_as_one_undo_step_with_later_pass_winning_overlap ... ok
+test gain_touch::tests::unsupported_fixture_transforms_refuse_without_losing_complete_lane ... ok
+test history::batch_tests::batch_prepares_once_and_one_undo_restores_all_commands ... ok
+test gain_touch::tests::splice_refuses_project_weighted_overflow_before_candidate_preparation ... ok
+test history::batch_tests::late_command_and_preparation_refusal_preserve_ids_and_redo ... ok
+test history::gain_touch_epoch_tests::ordinary_and_prepared_history_never_rewind_surviving_owner_epoch ... ok
+test history::batch_tests::empty_batch_preserves_redo_and_oversized_refuses_before_preparation ... ok
+test midi_playback::tests::descriptor_and_note_inputs_reject_invalid_ranges_and_overflow ... ok
+test midi_playback::tests::huge_loop_count_is_constant_time_and_unrepresentable_onsets_are_skipped ... ok
+test midi_playback::tests::intro_plays_once_and_notes_crossing_the_loop_seam_are_cut ... ok
+test midi_playback::tests::one_shot_projection_preserves_offsets_and_truncates_finite_end ... ok
+test midi_playback::tests::repeated_gate_is_cut_at_finite_arrangement_end ... ok
+test midi_playback::tests::source_start_after_loop_start_skips_chase_but_keeps_repeats ... ok
+test return_feeds::tests::candidates_keep_gain_identity_zero_removes_and_recreation_never_rewinds ... ok
+test return_feeds::tests::canonical_history_carries_identity_and_removal_cleans_both_ends ... ok
+test clip_group::tests::clip_limit_uses_complete_final_group_and_refuses_atomically_before_preparation ... ok
+test session::scene_command_tests::duplicate_scene_preflights_all_model_limits_and_id_exhaustion ... ok
+test session::scene_command_tests::move_scene_preserves_cell_identity_and_does_not_allocate_ids ... ok
+test split_tracks::tests::invalid_track_sets_and_boundary_cursor_are_atomic ... ok
+test split_tracks::tests::mixed_audio_midi_splits_are_one_undoable_edit ... ok
+test split_tracks::tests::project_apply_rejects_late_failure_without_partial_split ... ok
+test midi_playback::tests::constant_time_plans_match_independent_small_segment_walks ... ok
+test timebase::meter::copy_custody::tests::copied_meter_retains_actual_allocations_through_transfer_and_normal_cleanup ... ok
+test timebase::meter::copy_custody::tests::reserve_fill_and_panic_failures_keep_partial_copy_custody ... ok
+test timebase::pulses::tests::admitted_unrepresentable_vector_capacity_refuses_before_iteration ... ok
+test timebase::pulses::tests::block_partition_and_repeated_seek_queries_preserve_every_landmark ... ok
+test timebase::pulses::tests::distinct_same_frame_landmarks_and_quantized_tempo_seams_are_retained ... ok
+test timebase::pulses::tests::empty_reversed_zero_step_and_dense_budget_refusal_are_atomic ... ok
+test timebase::pulses::tests::lower_bound_query_matches_independent_forward_grid_enumeration_at_rounding_seams ... ok
+test timebase::pulses::tests::maximum_representable_beat_is_emitted_without_wrapping_or_extra_advance ... ok
+test timebase::pulses::tests::off_grid_start_and_explicit_origin_obey_half_open_frames ... ok
+test timebase::pulses::tests::tempo_seams_and_fragmentary_meter_positions_use_existing_laws ... ok
+test timebase::tempo::allocation_layout::tests::actual_overreserved_capacity_headers_and_timing_are_preserved ... ok
+test timebase::tempo::allocation_layout::tests::empty_spare_data_fixture_is_reported_without_relaxing_constructor_validation ... ok
+test timebase::tempo::allocation_layout::tests::multiplication_and_combined_overflow_refuse ... ok
+test timebase::tempo::copy_custody::tests::both_reserve_failures_and_late_copy_failure_retain_actual_destinations ... ok
+test timebase::tempo::copy_custody::tests::checked_growth_charges_old_allocations_only_when_replaced ... ok
+test timebase::tempo::copy_custody::tests::panic_keeps_partial_copy_and_payload_without_retry_or_cleanup ... ok
+test timebase::tempo::copy_custody::tests::transferred_timing_prefixes_and_spare_capacity_are_exact_and_not_double_charged ... ok
+test timebase::tempo::tests::ceil_ratio_checks_quotient_increment ... ok
+test split_tracks::tests::split_scales_to_one_hundred_mixed_tracks_in_one_history_step ... ok
+test timebase::tempo::tests::fixed_point_rounding_moves_exact_half_ties_later ... ok
+test timebase::tempo::tests::lower_bound_differs_from_latest_boundary_inverse_and_has_exact_sentinel ... ok
+test timebase::tempo::tests::deterministic_integer_probes_remain_minimal_across_sample_rates ... ok
+test timebase::tempo::tests::lower_bound_solves_exact_half_frame_and_tempo_boundary_crossings ... ok
+test timebase::tempo::tests::lower_bound_uses_logarithmic_prefix_search_for_1024_points ... ok
+test return_feeds::tests::complete_dag_bound_cycles_invalid_gain_and_global_ids_are_atomic ... ok
+test clip_group::tests::group_final_note_capacity_includes_session_and_real_preparation_refusal_keeps_ids ... ok
+test timebase::tempo::tests::lower_bound_matches_exhaustive_small_raw_domains_across_rates_and_tempos ... ok
+
+test result: ok. 102 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/audio_clip_looping.rs (target/debug/deps/audio_clip_looping-eac785d63a81db3f)
+
+running 2 tests
+test unchanged_or_stale_loop_edits_preserve_project_and_redo ... ok
+test disabling_audio_loop_resets_phase_and_undo_redo_restore_exact_state ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audio_clip_source_phase.rs (target/debug/deps/audio_clip_source_phase-033c200bb92f9784)
+
+running 2 tests
+test looping_source_phase_is_an_undoable_validated_edit ... ok
+test source_phase_rejects_interval_end_and_non_looping_clip_atomically ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audio_domain.rs (target/debug/deps/audio_domain-680353a70b5182b4)
+
+running 7 tests
+test invalid_pitch_markers_envelope_and_domain_caps_do_not_change_project_or_history ... ok
+test musical_endpoints_tempo_split_and_tail_to_zero_use_one_projection ... ok
+test negative_virtual_projection_half_ties_later_and_bounds_are_checked ... ok
+test copied_musical_edits_isolate_crop_placement_domain_and_history ... ok
+test lower_fade_resize_crops_musical_warp_events_without_changing_the_processing_root ... ok
+test transformed_split_and_crop_retain_source_phase_and_unsliced_root ... ok
+test neutral_metadata_edits_preserve_legacy_fades_and_musical_fade_switch_refuses_atomically ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/clip_fades.rs (target/debug/deps/clip_fades-69df02ba9c9e561b)
+
+running 5 tests
+test endpoint_laws_overlap_single_frames_and_large_domains ... ok
+test duplicate_and_move_preserve_domain_while_trim_reanchors_and_clamps ... ok
+test recursive_split_preserves_every_sample_of_original_envelope ... ok
+test malformed_domains_and_fade_commands_are_atomic_and_undoable ... ok
+test shaped_fades_have_independent_silent_endpoints_curves_and_split_continuity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/clip_fragment.rs (target/debug/deps/clip_fragment-8ca7af56414570ba)
+
+running 2 tests
+test preview_fragment_rejects_outside_ranges_and_destination_overflow ... ok
+test preview_moved_audio_fragment_keeps_source_phase_and_fade_domain ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/clip_gain.rs (target/debug/deps/clip_gain-d1e72a4c2035fe1f)
+
+running 3 tests
+test duplicate_clip_reconstruction_preserves_gain_and_independent_history ... ok
+test gain_survives_split_trim_and_arrangement_to_session_copy ... ok
+test gain_range_neutral_and_atomic_history_cover_both_audio_domains ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/clip_paint.rs (target/debug/deps/clip_paint-efcc9e1c9133a450)
+
+running 2 tests
+test clip_paint_refuses_invalid_stale_and_failed_preparation_without_partial_cuts ... ok
+test clip_paint_cuts_audio_and_midi_with_source_mapping_boundaries_and_one_undo ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/clip_paint_capacity.rs (target/debug/deps/clip_paint_capacity-6b588ecf341c3492)
+
+running 2 tests
+test clip_paint_capacity_admits_audio_split_plus_two_midi_replacements_at_limit ... ok
+test clip_paint_capacity_refuses_invalid_final_and_prepare_failure_atomically ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/clip_trim.rs (target/debug/deps/clip_trim-96caa810423196dd)
+
+running 7 tests
+test edge_trim_preview_noop_retains_fade_and_bounds_wrap_without_overflow ... ok
+test loop_split_keeps_source_region_and_advances_phase_recursively ... ok
+test edge_trim_preserves_one_shot_silent_tail_and_clamps_to_legal_edges ... ok
+test invalid_snapshot_phases_and_commands_are_rejected_without_history_changes ... ok
+test neutral_lower_resize_and_unchanged_or_source_clamped_edges_preserve_noop_history ... ok
+test looping_left_trim_and_extension_update_phase_and_right_trim_keeps_region ... ok
+test lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_history ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/duplicate.rs (target/debug/deps/duplicate-7204728ed0c1dc71)
+
+running 4 tests
+test missing_source_clip_is_rejected_without_mutation ... ok
+test duplicate_repeat_uses_current_source_and_ids_never_rewind_on_branch ... ok
+test duplicate_preserves_media_interval_and_undo_redo_identity ... ok
+test duplicate_overflow_and_clip_limit_refuse_atomically ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/editing.rs (target/debug/deps/editing-4d65af31d6d7f885)
+
+running 7 tests
+test ids_never_reuse_after_undo_branch_and_stale_commands_fail ... ok
+test history_capacity_and_noop_do_not_lose_redo ... ok
+test move_trim_and_history_restore_complete_content ... ok
+test deleting_track_restores_owned_clips_and_asset_references ... ok
+test rejected_edits_leave_project_and_redo_intact ... ok
+test source_and_timeline_intervals_are_checked ... ok
+test unchanged_move_preserves_order_and_redo_branch ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gain_envelope.rs (target/debug/deps/gain_envelope-a08a6b645449b956)
+
+running 3 tests
+test clip_only_edits_keep_lane_anchors_and_affected_paste_insert_refuse ... ok
+test edits_history_identity_owner_removal_and_manual_refusal_are_atomic ... ok
+test malformed_points_track_and_global_caps_preserve_history_and_redo ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/import.rs (target/debug/deps/import-da9c7e53be8f8c13)
+
+running 12 tests
+test imported_ids_are_not_reused_after_undo_branch ... ok
+test failed_audio_clip_insert_move_preserves_ids_order_and_redo ... ok
+test import_creates_complete_audio_track_as_one_undo_step ... ok
+test invalid_imports_are_atomic_and_keep_redo_branch ... ok
+test moving_audio_clip_to_new_hybrid_track_preserves_identity_and_is_one_undo_step ... ok
+test prepared_import_adds_audio_to_an_existing_midi_track_in_one_history_step ... ok
+test overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_history ... ok
+test prepared_import_keeps_source_and_project_frame_domains_in_one_history_step ... ok
+test prepared_import_rejects_bad_counts_versions_and_same_rate_conversion_atomically ... ok
+test prepared_track_drop_appends_and_invalid_anchor_or_overflow_is_atomic ... ok
+test prepared_track_drop_inserts_at_stable_anchor_with_clip_start_and_one_history_step ... ok
+test failed_capacity_check_is_atomic_and_does_not_erase_redo ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/insert_time.rs (target/debug/deps/insert_time-a7c5a291dea664e6)
+
+running 8 tests
+test insert_overflow_and_unavailable_rows_preserve_snapshot_and_prepare_failure_is_atomic ... ok
+test insert_materializes_midi_at_exact_frames_across_tempo_changes ... ok
+test inserted_midi_loop_carry_becomes_finite_retriggered_gates ... ok
+test insert_opens_full_silent_rectangle_and_only_shifts_selected_rows ... ok
+test inserting_empty_chunk_into_empty_rows_is_a_history_noop ... ok
+test loop_expansion_limit_refuses_insert_without_mutating_project ... ok
+test whole_midi_clip_keeps_source_ids_when_constant_tempo_shift_is_exact ... ok
+test clip_limit_refuses_split_insert_without_mutating_project ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/loop_region.rs (target/debug/deps/loop_region-092d0cee2c9174d4)
+
+running 3 tests
+test invalid_region_and_missing_toggle_preserve_redo_state ... ok
+test loop_region_accepts_maximum_exclusive_end ... ok
+test set_toggle_clear_and_history_are_atomic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/midi.rs (target/debug/deps/midi-a03e8fe02c654c95)
+
+running 21 tests
+test batch_update_and_remove_are_single_order_preserving_history_steps ... ok
+test batch_note_insert_preserves_input_order_expression_and_one_step_history ... ok
+test disabled_loop_markers_are_retained_and_source_can_differ_from_arrangement ... ok
+test duplicate_midi_clip_assigns_fresh_clip_and_every_note_id_across_history_branch ... ok
+test duplicate_refuses_overflow_of_the_duplicated_timeline_interval_atomically ... ok
+test invalid_batch_insertions_preserve_project_ids_and_redo ... ok
+test invalid_midi_note_edits_are_atomic_and_keep_redo ... ok
+test midi_notes_validate_clip_local_ranges_allow_overlap_and_roundtrip ... ok
+test midi_overwrite_rejects_unbounded_loop_expansion_without_mutating_project_or_history ... ok
+test midi_overwrite_splits_victim_and_retriggers_held_note_in_finite_right_fragment ... ok
+test batch_midi_edits_validate_every_target_before_mutation_and_preserve_redo ... ok
+test mixed_note_edit_compacts_then_appends_in_one_ordered_history_step ... ok
+test moving_midi_clip_to_new_hybrid_track_preserves_clip_and_note_ids_in_one_step ... ok
+test one_hybrid_track_accepts_both_clip_types_and_cross_type_moves_undo ... ok
+test invalid_mixed_note_batches_preserve_project_allocator_and_redo ... ok
+test source_changes_reject_invalidated_notes_without_consuming_history_or_ids ... ok
+test source_settings_are_atomic_keep_hidden_notes_and_duplicate_exactly ... ok
+test unchanged_sources_share_across_project_clones_and_note_edits_detach ... ok
+test snapshot_rejects_bad_global_ids_and_note_cap ... ok
+test mixed_batch_checks_final_global_cap_and_id_range_before_removing ... ok
+test batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/midi_split.rs (target/debug/deps/midi_split-be0d1cb61e620cab)
+
+running 5 tests
+test invalid_boundary_splits_preserve_project_and_redo ... ok
+test loop_split_materializes_carry_and_later_loop_onsets_without_repeating_the_carry ... ok
+test one_shot_split_materializes_a_carried_gate_into_a_finite_right_source ... ok
+test exhausted_id_space_refuses_split_without_mutating_history ... ok
+test split_refuses_project_clip_limit_and_note_duplication_limit ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/midi_trim.rs (target/debug/deps/midi_trim-d5905a4d77badf7a)
+
+running 4 tests
+test midi_trim_bounds_keep_nonempty_source_and_allow_silent_right_extension ... ok
+test midi_unchanged_resize_keeps_redo_and_source_identity ... ok
+test midi_loop_left_trim_advances_intro_and_rewinds_loop_phase_without_note_expansion ... ok
+test midi_trim_preserves_notes_source_and_history_and_can_reveal_them_again ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mix_controls.rs (target/debug/deps/mix_controls-99989ae4108e83ab)
+
+running 2 tests
+test balance_and_master_adjustments_are_canonical_bounded_and_undoable ... ok
+test snapshots_validate_and_roundtrip_mix_controls ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/playable_routing.rs (target/debug/deps/playable_routing-c3711aae95750a4f)
+
+running 4 tests
+test return_feed_mutation_checks_feedback_through_track_input_and_send ... ok
+test midi_bus_selection_supports_source_only_tracks_root_resolution_and_fanout ... ok
+test audio_inputs_validate_the_combined_graph_and_history_without_reusing_ids ... ok
+test snapshot_routes_refuse_colliding_ids_duplicates_and_excess_without_truncation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/prepared_batch_routing.rs (target/debug/deps/prepared_batch_routing-aff3fb1b75088b0e)
+
+running 4 tests
+test valid_final_midi_batch_clears_route_after_removing_instrument ... ok
+test batch_rejects_midi_destination_without_instrument_before_preparation ... ok
+test batch_rejects_return_feed_track_input_send_cycle_before_preparation ... ok
+test valid_final_audio_batch_can_pass_through_a_transient_cycle ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/relative.rs (target/debug/deps/relative-f5e72edfb2a41914)
+
+running 1 test
+test repeated_relative_edits_use_canonical_state_and_undo_individually ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/return_tracks.rs (target/debug/deps/return_tracks-164a7ea94a1f2074)
+
+running 6 tests
+test return_mix_controls_validate_and_share_single_step_history ... ok
+test return_sends_and_effect_chains_roundtrip_through_one_step_history ... ok
+test undo_branch_keeps_return_and_device_ids_below_the_allocator_highwater ... ok
+test malformed_return_and_send_snapshots_are_rejected ... ok
+test zero_send_is_omitted_and_return_removal_cascades_atomically ... ok
+test return_and_send_caps_and_command_validation_are_bounded ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/routing.rs (target/debug/deps/routing-e5ef2caa0372e3db)
+
+running 4 tests
+test canonical_sends_are_single_owned_and_removed_owners_become_stale ... ok
+test valid_proposal_is_not_admitted_and_refusal_preserves_ids_and_redo ... ok
+test cycles_duplicates_capabilities_and_capacity_refuse_before_adoption ... ok
+test exact_structural_edge_budget_is_checked_without_truncation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/scene_editing.rs (target/debug/deps/scene_editing-ed19c89aec4d275f)
+
+running 2 tests
+test move_scene_uses_stable_targets_and_invalid_moves_preserve_redo ... ok
+test duplicate_scene_copies_cells_with_fresh_ids_and_independent_sources ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/session.rs (target/debug/deps/session-d7047ea9dcab48d4)
+
+running 9 tests
+test missing_session_source_cell_cannot_be_moved_to_itself ... ok
+test invalid_occupied_cell_and_failed_source_shrink_leave_editor_state_unchanged ... ok
+test scene_and_session_ids_survive_undo_branches_without_reuse ... ok
+test note_batches_resolve_session_sources_and_snapshot_ids_are_global ... ok
+test session_copy_move_duplicate_stop_clear_and_deletes_preserve_ownership_rules ... ok
+test session_sources_are_independent_and_existing_note_commands_resolve_both_owners ... ok
+test snapshot_rejects_session_caps_before_constructing_cells_or_scenes ... ok
+test arrangement_to_session_copy_respects_combined_clip_limit_atomically ... ok
+test arrangement_to_session_copy_respects_combined_note_limit_atomically ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/session_audio.rs (target/debug/deps/session_audio-7b4b65a90c7e6772)
+
+running 7 tests
+test audio_session_cell_move_clear_scene_delete_and_track_delete_follow_history ... ok
+test invalid_audio_source_edits_preserve_project_history_and_redo_branch ... ok
+test arrangement_copy_and_scene_duplication_create_independent_audio_clip_ids ... ok
+test session_audio_is_available_on_hybrid_tracks_and_protects_referenced_assets ... ok
+test snapshots_reject_missing_audio_media_and_invalid_source_windows ... ok
+test stale_audio_clip_ids_and_exhausted_project_ids_refuse_without_mutation ... ok
+test arrangement_and_session_audio_share_the_global_clip_limit ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/snapshot.rs (target/debug/deps/snapshot-441d3a422722b27f)
+
+running 5 tests
+test rejects_invalid_rates_ids_and_high_water_marks ... ok
+test rejects_invalid_assets_tracks_and_clip_ranges ... ok
+test instrument_position_requires_a_present_slot_and_valid_effect_gap ... ok
+test snapshot_round_trip_preserves_order_case_ids_and_next_id ... ok
+test rejects_track_asset_and_clip_limit_overruns ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/solo.rs (target/debug/deps/solo-9cb35633abc1b450)
+
+running 3 tests
+test removing_a_soloed_track_and_undo_restore_the_exact_solo_state ... ok
+test additive_and_exclusive_solo_resolve_from_canonical_state ... ok
+test toggle_off_preserves_other_solos_and_invalid_ids_keep_history_unchanged ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/split.rs (target/debug/deps/split-74de3f14fac4ad28)
+
+running 4 tests
+test missing_clip_split_is_transactional ... ok
+test exhausted_id_space_refuses_split_without_state_or_history_changes ... ok
+test split_partitions_trimmed_one_shot_and_preserves_history_and_identity ... ok
+test invalid_split_positions_and_limits_leave_state_and_redo_untouched ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/time_range.rs (target/debug/deps/time_range-836e3695dd392140)
+
+running 16 tests
+test bounded_loop_capture_refuses_excessive_occurrences_without_editing ... ok
+test copy_time_range_at_its_origin_is_a_noop_that_keeps_redo ... ok
+test copy_time_range_to_copies_fragments_in_one_step_and_replaces_only_the_destination ... ok
+test cut_mixed_range_preserves_tails_and_one_undo_restores_exact_state ... ok
+test keyboard_multitrack_paste_uses_source_ids_across_inserted_rows ... ok
+test keyboard_one_row_paste_still_uses_the_current_target_track ... ok
+test keyboard_multitrack_ripple_insert_uses_source_ids_across_inserted_rows ... ok
+test malformed_destination_and_prepare_failure_preserve_project_and_redo ... ok
+test moving_to_same_origin_is_a_noop_that_keeps_redo ... ok
+test overlapping_move_captures_before_erasing_and_is_atomic ... ok
+test midi_paste_keeps_frame_alignment_across_a_tempo_change ... ok
+test paste_uses_fresh_ids_and_replaces_silence_in_the_whole_rectangle ... ok
+test repeated_midi_source_is_materialized_as_finite_selected_gates ... ok
+test pasted_audio_inherits_the_selected_fade_domain ... ok
+test source_anchored_paste_refuses_missing_tracks_without_changing_history ... ok
+test visual_time_range_copy_keeps_cross_track_destination_mapping ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/timebase.rs (target/debug/deps/timebase-cf2b352acdfbcded)
+
+running 6 tests
+test beat_time_ratio_and_snap_are_exact_and_round_ties_later ... ok
+test meter_map_rejects_bad_order_and_invalid_meter_values ... ok
+test meter_map_tracks_arbitrary_midbar_changes_and_fragmentary_bars ... ok
+test tempo_and_meter_commands_are_atomic_undoable_and_roundtrip_in_snapshots ... ok
+test tempo_map_converts_piecewise_at_multiple_rates_and_boundaries ... ok
+test tempo_map_validates_points_and_resolves_quantized_boundary_collisions_right_continuously ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/timebase_quantization.rs (target/debug/deps/timebase_quantization-aaf9717be8471161)
+
+running 2 tests
+test fractional_frame_prefixes_do_not_accumulate_whole_frame_truncation ... ok
+test dense_fractional_changes_keep_inverse_monotonic_and_frame_exact ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/track_insertion.rs (target/debug/deps/track_insertion-61773a06f37c24a1)
+
+running 1 test
+test insert_hybrid_track_preserves_order_and_is_one_undo_step ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/tuning.rs (target/debug/deps/tuning-ea8abe9487b3e25c)
+
+running 2 tests
+test rejected_tuning_preparation_and_atomic_batch_preserve_project_and_history ... ok
+test tuning_is_project_scoped_snapshotted_and_one_history_step ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/validated_history.rs (target/debug/deps/validated_history-a75ad9f7010f7632)
+
+running 2 tests
+test rejected_prepared_undo_and_redo_preserve_project_allocator_and_stack_order ... ok
+test rejected_preparation_preserves_ids_redo_and_history ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/warp_projection.rs (target/debug/deps/warp_projection-8a061624ea3c3793)
+
+running 3 tests
+test public_projection_rejects_degenerate_marker_shapes_without_panicking ... ok
+test canonical_marker_source_inverse_retains_piecewise_shape_and_loop_cycles ... ok
+test new_raw_stretch_maps_source_peaks_at_tempo_points_without_old_bitmap_distortion ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hex_project
+
+running 3 tests
+test crates/hex-project/src/clip_group_preview.rs - clip_group_preview::ClipGroupMovePreview (line 35) - compile fail ... ok
+test crates/hex-project/src/clip_group_preview.rs - clip_group_preview::ClipGroupMovePreview (line 30) - compile fail ... ok
+test crates/hex-project/src/clip_group_preview.rs - clip_group_preview::ClipGroupMovePreview (line 25) - compile fail ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

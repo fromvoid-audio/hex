@@ -1,0 +1,9 @@
+[1/4] real copied IDs include note hole: running
+[1/4] real copied IDs include note hole: passed
+[2/4] strict owning model all targets: running
+[2/4] strict owning model all targets: passed
+[3/4] strict UI all targets default: running
+[3/4] strict UI all targets default: passed
+[4/4] strict rendered UI all targets: running
+[4/4] strict rendered UI all targets: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-group409-strict-preflight/summary.json

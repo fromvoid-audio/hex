@@ -1,0 +1,353 @@
+{
+  "kind": "evidence-only-never-build-merge",
+  "source": "2e5eec3d4d7ebefbbd0dcb821d1e873b81880839",
+  "tree": "8dad6b3c5e9028293a6a1ae378ba7bb43f097e86",
+  "parent": "9b3b1f595c4e3a10bf22d0eb890dc5d2c49acc07",
+  "production": "6fc5f1515e860878547547186a4eea10caa1dc63",
+  "payloads": {
+    "CONSUMERS.md": {
+      "bytes": 2288,
+      "sha256": "859bf543188788be617e17e66a249a48019420928dc5dd1d1a6d98d1e05a8d4d"
+    },
+    "HANDOFF.md": {
+      "bytes": 4906,
+      "sha256": "2b4f059611c2fe7376afa66708c03201c53da1c18e6e80b3a0acab04b91e61a9"
+    },
+    "NATIVE-REQUEST.md": {
+      "bytes": 1732,
+      "sha256": "53cbe2bc65b6ee53e409f857daad15adfd34c0a0d59326a2a2ef5f7115274a28"
+    },
+    "clean-final.stdout": {
+      "bytes": 1513,
+      "sha256": "e14883ef8a4812ea3a05d213c2690953cffe29efff26062e8e6e36f45b7315c6"
+    },
+    "complete-functional-second.stdout": {
+      "bytes": 209,
+      "sha256": "190ebfe0231b8cac541423b059fc3d53327468a77748da8e2aaaf8978f99b920"
+    },
+    "complete-functional-third.stdout": {
+      "bytes": 321,
+      "sha256": "005126d9e8813ef07c03d3e7d2858811c71968ffc5fd5507f84e38f13bc1e97e"
+    },
+    "complete-functional.stdout": {
+      "bytes": 202,
+      "sha256": "fd16b20c8e868a806c731ce68542a422649cb22f27415af36179e44a4a730a7b"
+    },
+    "component-runner.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "extended-first.stdout": {
+      "bytes": 308,
+      "sha256": "95ef92a1987c87287a8085d42dbe7503825a38242d7898f59c3a060c368b5bd2"
+    },
+    "extracted-overwrite.stdout": {
+      "bytes": 228,
+      "sha256": "72b095c1cece9ea99a25a55daa43dfed0cb4b6bf7343ed7eac1c8d0d6287a407"
+    },
+    "file-hashes.json": {
+      "bytes": 4790,
+      "sha256": "60cd5dc201c40ece3931f3d44b84849887fccc5a81d8fe93c214437d8de22302"
+    },
+    "final-boundary-tests.stdout": {
+      "bytes": 322,
+      "sha256": "2c786072f7774829e281c93985917d87af8247e1f9cf1ebd9c3dd0157e64cd20"
+    },
+    "final-checks.json": {
+      "bytes": 1899,
+      "sha256": "767fd5b2e21aba6fc35524778446a61d52607bca27c500b4baad606a869815fc"
+    },
+    "github-readback.json": {
+      "bytes": 8913,
+      "sha256": "16dc16a65b719a786c5a32ba2900a32b1f7e0c6471d4467570b10cd1b57bbfb0"
+    },
+    "model-first.stdout": {
+      "bytes": 248,
+      "sha256": "f16850dd84f4fad52d718bf509b3e4c41bedd0547d80e3bb0b83a400cab1d580"
+    },
+    "model-second.stdout": {
+      "bytes": 249,
+      "sha256": "10c73a30dfe10f5f30cd066365201c5c98e2ea72adca33b894ec655adfd79068"
+    },
+    "original-review-negative-locator.json": {
+      "bytes": 972,
+      "sha256": "770542f7e28a4d53f63a7d1f4d5a5c46ac5ac452ddf4451393d83aaf43ae329d"
+    },
+    "owner.patch": {
+      "bytes": 86109,
+      "sha256": "8a2eb18d7f64742e57953959990bb471a4b39fcac851b52efdea476de9675553"
+    },
+    "production-plus-diagnostics.patch": {
+      "bytes": 94376,
+      "sha256": "905e1f107d45e2568a9970f66a256a72083682f2fc28a53288eb93e2d6f849b3"
+    },
+    "runs/group409-clean-final/01-all owning Project targets.log": {
+      "bytes": 32365,
+      "sha256": "59e8eff190069db65884c74bd6710afba1ee760e30a4ac80422be354e1ba42fe"
+    },
+    "runs/group409-clean-final/02-all actual drag controls and group worker cases.log": {
+      "bytes": 5116,
+      "sha256": "37502751ba8872948f215ccf1fa641c9797b1b88a08c88b7c507e494168bdf85"
+    },
+    "runs/group409-clean-final/03-existing clip selection input controls.log": {
+      "bytes": 805,
+      "sha256": "010b7fe7ee4b3f2baf0400f07cba91c22a86d0cbe95a36a685b1b1517caaadf7"
+    },
+    "runs/group409-clean-final/04-overlap independent model and rendered laws.log": {
+      "bytes": 965,
+      "sha256": "5d0844214ad664d3431989ba38875161f64a5e0ad3310472859ae634776d81a8"
+    },
+    "runs/group409-clean-final/05-canonical musical split PCM preservation.log": {
+      "bytes": 510,
+      "sha256": "f3d0fd6f42572e7d7569c1f5a93b7a7edc27c618ca597672d7591f1b3cf3f2a6"
+    },
+    "runs/group409-clean-final/06-nested event overwrite PCM preservation.log": {
+      "bytes": 384,
+      "sha256": "9cf784d02d2bfca6abe7a8c98ed6aa9547618ab4f33fdda330a68a6ff2565772"
+    },
+    "runs/group409-clean-final/07-strict Project all targets.log": {
+      "bytes": 72,
+      "sha256": "4f27ac380b22e1d975eee20ce727fa8cbc09061177f6253af0777fd4de7b7506"
+    },
+    "runs/group409-clean-final/08-strict UI default all targets.log": {
+      "bytes": 360,
+      "sha256": "18dd78972dfa672dec38d7794cd6f42eb93c17a7217fc002d6374b1e6ba85661"
+    },
+    "runs/group409-clean-final/09-strict rendered UI all targets.log": {
+      "bytes": 360,
+      "sha256": "37614c6426c48e4ede93734639a8120e5f38cf25898af941ea6865e4c774f621"
+    },
+    "runs/group409-clean-final/10-architecture guard.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/group409-clean-final/11-gpui patch guard.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/group409-clean-final/12-dependency patches guard.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/group409-clean-final/13-UI style guard.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/group409-clean-final/14-device layout guard.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/group409-clean-final/15-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/group409-clean-final/16-diff whitespace.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/group409-clean-final/summary.json": {
+      "bytes": 18360,
+      "sha256": "d077b6f9ed9315d0da90f15f08f2c2adbf9a628955e81076b0f36c9ab92d6faf"
+    },
+    "runs/group409-complete-functional/01-all project owning targets.log": {
+      "bytes": 1306,
+      "sha256": "5a9a0366ce125992dfd324f3c006ec017b51f3e4217fefd90c9661d09a797bf4"
+    },
+    "runs/group409-complete-functional/summary.json": {
+      "bytes": 12516,
+      "sha256": "4593d74fed4668486057c71ef2f3be676ed93219da1abfaf3fb6a62671a16c15"
+    },
+    "runs/group409-complete-functional-second/01-all project owning targets.log": {
+      "bytes": 573,
+      "sha256": "7a71523c953e681f777630430daba088563d372d6e1724af55461fec6d84a546"
+    },
+    "runs/group409-complete-functional-second/summary.json": {
+      "bytes": 12537,
+      "sha256": "c8e266a9fcebe5e75d3dde1289cce42e16385a78ea40bd4942dce0005a107991"
+    },
+    "runs/group409-complete-functional-third/01-all project owning targets.log": {
+      "bytes": 32331,
+      "sha256": "fc6c4e6e8e0b0fdb1527ba34a1fc2bbf16acd54fc3d0fc43eabcec7b65ddcc67"
+    },
+    "runs/group409-complete-functional-third/02-group rendered worker lifecycle and paint.log": {
+      "bytes": 4043,
+      "sha256": "1266f399b6df06e288908d9627113d1f40d90c0d71c7396817446fd8a1ed07b7"
+    },
+    "runs/group409-complete-functional-third/summary.json": {
+      "bytes": 12654,
+      "sha256": "75eb826a9b91ccc768e42a727411f306c7c5e898c2b04347c9c988cd834970fa"
+    },
+    "runs/group409-extended-first/01-extended complete batch model.log": {
+      "bytes": 2285,
+      "sha256": "c3362189a0173bd4396269b1c3340b9a5d2257826fe13186b26a98a489aa75ed"
+    },
+    "runs/group409-extended-first/02-actual copied selection and worker UI.log": {
+      "bytes": 732,
+      "sha256": "c369a4c03ff3d65e34855cd6bc7076fade32224304d1d10d2b916fac8aa672a5"
+    },
+    "runs/group409-extended-first/summary.json": {
+      "bytes": 12714,
+      "sha256": "376c72483571687bf82bf62635798f215664d7cc8cfa886a1901bbe250a4b13d"
+    },
+    "runs/group409-extracted-overwrite/01-existing single interval overwrite laws.log": {
+      "bytes": 8216,
+      "sha256": "95591adf994b5c9682a55ec5d8de41b4aeb4bd42abbaf29f5b72ba8b5543db6b"
+    },
+    "runs/group409-extracted-overwrite/summary.json": {
+      "bytes": 9971,
+      "sha256": "13e1d1e031a0f960a3ce2fd511e1a66fa1e80f4f6ee11c43556fd6a3ab83307a"
+    },
+    "runs/group409-final-boundary-tests/01-bounded MIDI occurrence admission.log": {
+      "bytes": 440,
+      "sha256": "1b39a1008ec87e181ab342a8bafb4fdd2e97d2566d989e0a2dcfccd2b3a6850b"
+    },
+    "runs/group409-final-boundary-tests/02-paint scalar sweep independent oracle.log": {
+      "bytes": 965,
+      "sha256": "b50deeb5b3db87b64066639822e9e921bf344b1cb75468bc1dfa26bf3df6c08b"
+    },
+    "runs/group409-final-boundary-tests/summary.json": {
+      "bytes": 12750,
+      "sha256": "55e245e1fc707a95c54a06e9fd7c35ee75afc973a0ef3b7bb63a40374c3f44cf"
+    },
+    "runs/group409-model-first/01-complete group model and diagnostic capacity response.log": {
+      "bytes": 845,
+      "sha256": "1126521bd10338d5d90499e233ead28d57131898ac1c085c9453fabb6447aaba"
+    },
+    "runs/group409-model-first/summary.json": {
+      "bytes": 10445,
+      "sha256": "a4a5baf6e06041b1124f012738c5aa191e0ea07ce5d34db8e79dff05d3d73b08"
+    },
+    "runs/group409-model-second/01-complete group model and diagnostic capacity response.log": {
+      "bytes": 1969,
+      "sha256": "3faf3a46eece0c296d4f73b265e63e8fcf31ec111a0fdd19408fbeed1af79688"
+    },
+    "runs/group409-model-second/summary.json": {
+      "bytes": 10446,
+      "sha256": "ae110eecdfba467671fab7b0fbff5e4bb6ffac211247af7e6b1562b1bbf57afc"
+    },
+    "runs/group409-single-control-final/01-existing single clip occupied span pointer controls.log": {
+      "bytes": 668,
+      "sha256": "22bcbdb0d79d354932d61de9f053f601498474c28d4ff5e592618f8dfdae3bb5"
+    },
+    "runs/group409-single-control-final/02-existing single clip real drag commit.log": {
+      "bytes": 553,
+      "sha256": "67434288affd578b5c5613c73664427f65ffc528e5fe963a20a7195edccd1e39"
+    },
+    "runs/group409-single-control-final/summary.json": {
+      "bytes": 10669,
+      "sha256": "ec77206c7d73ef1dda9b3dc3f05086729d2a2676a6909df8e0932e41237b0c63"
+    },
+    "runs/group409-strict-preflight/01-real copied IDs include note hole.log": {
+      "bytes": 581,
+      "sha256": "a5592463c33e5926d3f1e249ada89e7960541b7cd9e20c96976e0f4c7c56ff30"
+    },
+    "runs/group409-strict-preflight/02-strict owning model all targets.log": {
+      "bytes": 140,
+      "sha256": "ff127febe70d526585f186b33def5cc361777193b6a91225eb2e6934361ecfd6"
+    },
+    "runs/group409-strict-preflight/03-strict UI all targets default.log": {
+      "bytes": 890,
+      "sha256": "10033cdf2661f17268d5a30d6e639c23a003f82498ca9dae2451b908ac8e8a02"
+    },
+    "runs/group409-strict-preflight/04-strict rendered UI all targets.log": {
+      "bytes": 562,
+      "sha256": "49f367a4597d590dbc6f156be4d7c8699f87e93df5590fdc1af4b23d3e9cbee6"
+    },
+    "runs/group409-strict-preflight/summary.json": {
+      "bytes": 14362,
+      "sha256": "fabdfab62f54348db505699c1ef4931e7f0a663ba58114c06430a0c8112962b2"
+    },
+    "runs/group409-ui-first/01-group rendered worker and overlay.log": {
+      "bytes": 4131,
+      "sha256": "afc120284f127462acc8ebff48feb7a7c7d333acf26267afe60faa4d760a55ab"
+    },
+    "runs/group409-ui-first/summary.json": {
+      "bytes": 11585,
+      "sha256": "09c278ac1713e40129fd2f3825d7078a545d2e913c2ff17086e3ec9cee216b51"
+    },
+    "runs/group409-ui-second/01-actual copied selection and worker UI.log": {
+      "bytes": 3792,
+      "sha256": "829a4c2814525cd1f7bc890fe257c59dde3c7b8ba53a649a8321c5a7d137f7c6"
+    },
+    "runs/group409-ui-second/summary.json": {
+      "bytes": 12052,
+      "sha256": "7eab398aa3d4236bf96a2cb7d90a9a4aea7b730054fad4693d09251d76561b77"
+    },
+    "single-control-final.stdout": {
+      "bytes": 358,
+      "sha256": "6606e1e52322e9cba017fb5dca62738b5f9b66b58d99e8f785dd79a982f1abac"
+    },
+    "source/crates/hex-project/src/clip_group.rs": {
+      "bytes": 7998,
+      "sha256": "d568cb5bde7f4362f1b1030f79866d6f135e80a48fdec44c2a800ce4250a72f9"
+    },
+    "source/crates/hex-project/src/clip_group_batch.rs": {
+      "bytes": 14501,
+      "sha256": "23dfafb470bfea973f5f9ea6aade143b56a6421a3e92d524f8a404d629c06775"
+    },
+    "source/crates/hex-project/src/clip_group_tests.rs": {
+      "bytes": 47388,
+      "sha256": "9fbbff51034ce6656cd010b5390e4783f9498296d39a36d646db61ff2df8e9ee"
+    },
+    "source/crates/hex-project/src/edit.rs": {
+      "bytes": 92362,
+      "sha256": "b9724f70ec764677f055395e2b8022405268aa0c1595e5d15fc70426dbbb32b4"
+    },
+    "source/crates/hex-project/src/midi.rs": {
+      "bytes": 48666,
+      "sha256": "0ff89e9c191ba3ddcaa08255d75b1242d9d8fba9676cf988b2323fd6c5e6dede"
+    },
+    "source/crates/hex-ui/src/editor/clip_selection.rs": {
+      "bytes": 17757,
+      "sha256": "3c42dcbf6b0b2b87bde60ad3215f63f8fd7912e5cf3deaf415bc67a4d707d2dd"
+    },
+    "source/crates/hex-ui/src/editor/controller.rs": {
+      "bytes": 170623,
+      "sha256": "ec60e826003d1fda4dc1aa747ced71e6e024ff0db78b5c0ba058d2da9d2d0480"
+    },
+    "source/crates/hex-ui/src/editor/drag.rs": {
+      "bytes": 70640,
+      "sha256": "fa03acc5115b9e3ec6f1903244b4f0430decc82adec4fa07c808b0dff237c88d"
+    },
+    "source/crates/hex-ui/src/editor/group_copy.rs": {
+      "bytes": 4028,
+      "sha256": "072ab8fccb1c9e6a0e804d27a630bd5c15c95b635110ea4bd9ccd621ab06e4a9"
+    },
+    "source/crates/hex-ui/src/editor/group_drag_ui_test.rs": {
+      "bytes": 55070,
+      "sha256": "534aaf83f8a453767dd5c81e03d0d432c781ab9dbd8244c534a48256cfc2a0a3"
+    },
+    "source/crates/hex-ui/src/editor/mod.rs": {
+      "bytes": 58529,
+      "sha256": "3439164d84cf677a2d1b039a95d7eae9ece07942d103095187d0b21c65f9743f"
+    },
+    "source/crates/hex-ui/src/editor/tracks.rs": {
+      "bytes": 92298,
+      "sha256": "cb3058b820c3865cdc82f881189d3bb3694a614636775b219a2820d4e9425a6b"
+    },
+    "source/docs/group-clip-drag.md": {
+      "bytes": 12378,
+      "sha256": "51f049282dbde9ad73d3da67e0a2accf2d647e02186568e56bf688e912ad635d"
+    },
+    "source/todo.md": {
+      "bytes": 355783,
+      "sha256": "785ded9198d27debe4b510b66d1cd4c7067b9ddd4c4041e6e1b6e9f40d2c78bd"
+    },
+    "source-history.txt": {
+      "bytes": 879,
+      "sha256": "d2dfbec7f4a48412750cd81f209b57cbe928235f909dd343e196a36a8b3609eb"
+    },
+    "strict-preflight.stdout": {
+      "bytes": 486,
+      "sha256": "2bb912c4de91e531ad43ceab448cc93eb289f6d7615f8cc93e696c962d6440af"
+    },
+    "ui-first.stdout": {
+      "bytes": 205,
+      "sha256": "a6098a7e649ece31af96c04642dc3b1ea8832a6a39b455ce73de2d7eb661eade"
+    },
+    "ui-second.stdout": {
+      "bytes": 214,
+      "sha256": "66d88da953c1597fa97c16e2bd69c94b41be3d71213a9bdd0d59d6884ec00270"
+    }
+  }
+}
