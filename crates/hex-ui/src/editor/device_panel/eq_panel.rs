@@ -11,6 +11,8 @@ use hex_widgets::{
 
 mod axes;
 mod gestures;
+mod scroll_queue;
+pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
@@ -49,6 +51,8 @@ pub(super) struct Panel {
     focus_subscription: Option<Subscription>,
     pair_drag: Option<gestures::PairDrag>,
     slope_scroll: Option<gestures::SlopeScroll>,
+    scroll_queue: scroll_queue::Queue,
+    scroll_blur_subscription: Option<Subscription>,
     bank: u8,
     creation: Option<Creation>,
     creation_selection: Option<CreationSelection>,
@@ -142,6 +146,8 @@ pub(super) fn render_body(
                 focus_subscription: None,
                 pair_drag: None,
                 slope_scroll: None,
+                scroll_queue: Default::default(),
+                scroll_blur_subscription: None,
                 bank: 0,
                 creation: None,
                 creation_selection: None,
@@ -1072,6 +1078,11 @@ pub(super) fn spectrum_intent_for_test(view: &EditorView, device: DeviceId) -> (
         view.device_panel.eq_spectrum.enabled(device),
         panel.show_input,
     )
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn queued_scrolls_for_test(view: &EditorView, device: DeviceId) -> (usize, bool) {
+    scroll_queue::counts(view, device)
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]

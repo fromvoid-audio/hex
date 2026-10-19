@@ -1,5 +1,6 @@
 //! View-local analyzer intent; the existing audio client still owns the sole tap.
 use super::*;
+use gpui::Focusable;
 use hex_audio::spectrum_target::{SpectrumTarget, TargetError};
 
 const WAITING: &str = "spectrum waits for available current project audio";
@@ -384,8 +385,18 @@ pub(super) fn focus_listener(
                     cx.defer_in(window, |_, _, cx| cx.notify());
                 }
             });
+            let graph_focus = view.device_panel.eq_panels[&device]
+                .entity
+                .read(cx)
+                .focus_handle(cx);
+            let blur = cx.on_blur(&graph_focus, window, move |view, _, _| {
+                if view.project_generation == generation {
+                    super::scroll_queue::cancel_queued(view, device);
+                }
+            });
             if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
                 panel.focus_subscription = Some(subscription);
+                panel.scroll_blur_subscription = Some(blur);
             }
         });
     }

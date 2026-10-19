@@ -105,3 +105,50 @@ User-present optimized acceptance must check physical inertial vertical bursts
 produce one Undo, horizontal inertia navigates the chain, immediate deliberate
 wheel input works, and Option-Q at both gain boundaries reaches both Q limits
 with cancel/Shift/capture intact. No repeat unchanged old native11 is requested.
+
+## phased terminals, physical wheel ticks and pending node streams
+
+Physical Cancelled is now a distinct GPUI touch phase. The existing macOS input
+adapter preserves NSEventPhaseCancelled; the opted-in graph cancels rather than
+commits that edit, including terminals delivered outside the plot. Cancellation
+never adds a late history item. Fractional input that has not begun an edit may
+retire its phase metadata without acquiring focus; an actual begun edit still
+requires the existing focused-owner check, preserving blur cancellation.
+
+Optional wheel_ticks metadata carries known physical increments independently of
+content-line preferences. X11 normalizes its existing device increments, Wayland
+retains discrete/value120 information even alongside pixel deltas, and Windows
+retains WHEEL_DELTA fractions before configured line/character multipliers.
+Ordinary content scrolling continues to use the unchanged raw delta. Parameter
+input undoes preference inversion once. Unknown sources, macOS and continuous
+input without known ticks retain the existing Lines/24-pixel fractional fallback;
+there is no guessed universal divisor or changed content-scroll sensitivity.
+Apple's Cocoa Event Handling Guide documents ended/cancelled phases and separate
+scroll momentum; this source implementation is not native platform observation.
+
+When moving between cut nodes before a predecessor's terminal acknowledgement,
+the private EQ panel retains a FIFO of gesture streams under the existing UI
+request capacity (32). It stores a constant four-choice transformation and
+cumulative step identity per stream, preserving saturation and reversal without
+storing every delta or assuming the next node's initial value. Each successor
+begins through the same generic gesture client only after its predecessor's real
+matching successful Commit ACK and canonical installation. Generation, owner,
+variant, exact provider-patched state and revision must match. Stale deliveries,
+failed/cancelled/context-changed streams and later graph blur cannot replay edits
+against another context. Cancellation clears intent while retaining the graph's
+monotonic stream watermark, so a delayed old Begin cannot restore revoked work.
+A full FIFO visibly refuses a whole new stream without
+replacing an earlier one; Escape on that refused stream cancels queued intent
+while preserving already-submitted commits. No generic client, worker, Session,
+Engine or audio callback owner is added or reset early.
+
+Real Service/headless GPUI coverage includes held acknowledgements, A/B/C/A
+ordering, installed-state replay, before/after replay reversal, no-op history,
+whole-stream capacity refusal, active-window blur after physical Ended, stale
+stream delivery, removal/project/variant refusal and an accepted predecessor
+preserving another source edit while invalidating its queued successor. Synthetic
+adapter output and headless font metrics do not qualify AppKit, physical wheels,
+Windows, GPU pixels or user acceptance. The coordinator must qualify native
+compilation and changed event fixtures, then physical cancelled gestures, fine
+wheel steps and cross-node bursts in a delivered build; no app actions are
+performed by these source checks.

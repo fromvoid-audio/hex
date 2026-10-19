@@ -326,3 +326,138 @@ fn terminal_observer_does_not_late_commit_cancel_blur_missing_or_new_token(
         f.graph.update(cx, |g, cx| g.cancel(cx));
     }
 }
+
+#[gpui::test]
+fn four_review_unfocused_fractional_end_retires_metadata_before_unphased_input(
+    cx: &mut TestAppContext,
+) {
+    let (handle, f) = fixture(cx);
+    let mut v = VisualTestContext::from_window(handle, cx);
+    v.run_until_parked();
+    let inside = v.debug_bounds("terminal-graph").unwrap().center();
+    let other = v.debug_bounds("terminal-other").unwrap().center();
+    v.update(|window, app| assert!(!f.graph.read(app).focus.is_focused(window)));
+    send(&mut v, inside, TouchPhase::Started, 0.25, false);
+    assert!(f.events.borrow().is_empty());
+    assert!(
+        f.graph
+            .read_with(cx, |g, _| g.scroll.gesture.is_some_and(|s| !s.begun))
+    );
+    send(&mut v, other, TouchPhase::Ended, 0.0, false);
+    eprintln!(
+        "fractional outside Ended: active={} phased={}",
+        f.graph.read_with(cx, |g, _| g.scroll.active()),
+        f.graph.read_with(cx, |g, _| g.scroll.phased)
+    );
+    assert!(
+        !f.graph.read_with(cx, |g, _| g.scroll.active()),
+        "unbegun token must retire without taking focus"
+    );
+    assert!(!f.graph.read_with(cx, |g, _| g.scroll.phased));
+    assert!(f.events.borrow().is_empty());
+    send(&mut v, inside, TouchPhase::Moved, 1.0, false);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    v.run_until_parked();
+    assert_eq!(commits(&f), 1);
+    assert!(!f.graph.read_with(cx, |g, _| g.scroll.active()));
+}
+
+#[gpui::test]
+fn four_review_mac_cancelled_terminal_cancels_inside_and_outside_once(cx: &mut TestAppContext) {
+    for outside in [false, true] {
+        for units in [0.0, 0.25, 1.0] {
+            let cx = &mut cx.new_app();
+            let (handle, f) = fixture(cx);
+            let mut v = VisualTestContext::from_window(handle, cx);
+            v.run_until_parked();
+            let inside = v.debug_bounds("terminal-graph").unwrap().center();
+            let other = v.debug_bounds("terminal-other").unwrap().center();
+            send(&mut v, inside, TouchPhase::Started, units, false);
+            // Explicit adapter output, not a claim of native Mac execution.
+            send(
+                &mut v,
+                if outside { other } else { inside },
+                TouchPhase::Cancelled,
+                8.0,
+                false,
+            );
+            cx.executor().advance_clock(Duration::from_secs(1));
+            v.run_until_parked();
+            assert!(
+                !f.graph
+                    .read_with(cx, |g, _| g.scroll.active() || g.scroll.phased)
+            );
+            assert_eq!(commits(&f), 0);
+            assert_eq!(
+                f.events
+                    .borrow()
+                    .iter()
+                    .filter(|e| e.phase == ResponseGraphScrollPhase::Cancel)
+                    .count(),
+                usize::from(units == 1.0)
+            );
+            if outside {
+                assert!(matches!(
+                    f.outside.borrow().as_slice(),
+                    [TouchPhase::Cancelled]
+                ));
+                let parent = f.parent.borrow();
+                if units == 0.0 {
+                    // A zero start deliberately bubbles before the terminal.
+                    assert!(matches!(
+                        parent.as_slice(),
+                        [TouchPhase::Started, TouchPhase::Cancelled]
+                    ));
+                } else {
+                    assert!(matches!(parent.as_slice(), [TouchPhase::Cancelled]));
+                }
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn four_review_physical_ticks_ignore_content_preference_and_invert_once(cx: &mut TestAppContext) {
+    for inverted in [false, true] {
+        for (ticks, events, lines_per_tick, expected) in [
+            (0.25, 4, 3.0, 1),
+            (-1.0, 1, 7.0, -1),
+            (30.0, 1, 3.0, 16),
+            (-30.0, 1, 0.0, -16),
+            (1.0, 1, 0.0, 1),
+        ] {
+            let cx = &mut cx.new_app();
+            let (handle, f) = fixture(cx);
+            let mut v = VisualTestContext::from_window(handle, cx);
+            v.run_until_parked();
+            let inside = v.debug_bounds("terminal-graph").unwrap().center();
+            for _ in 0..events {
+                let native_ticks = if inverted { -ticks } else { ticks };
+                let event = ScrollWheelEvent {
+                    position: inside,
+                    delta: gpui::ScrollDelta::Lines(point(0.0, native_ticks * lines_per_tick)),
+                    wheel_ticks: Some(point(0.0, native_ticks)),
+                    direction_inverted_from_device: inverted,
+                    touch_phase: TouchPhase::Moved,
+                    ..Default::default()
+                };
+                // Opt-in helpers must never rewrite raw content-scroll input.
+                assert!(
+                    matches!(event.delta, gpui::ScrollDelta::Lines(d) if d.y == native_ticks * lines_per_tick)
+                );
+                assert_eq!(event.physical_wheel_ticks().unwrap().y, ticks);
+                assert_eq!(
+                    f32::from(event.physical_delta().pixel_delta(px(24.0)).y),
+                    ticks * lines_per_tick * 24.0
+                );
+                v.simulate_mouse_move(inside, None, Modifiers::default());
+                v.simulate_event(event);
+                v.run_until_parked();
+            }
+            cx.executor().advance_clock(Duration::from_millis(300));
+            v.run_until_parked();
+            assert_eq!(commits(&f), 1);
+            assert_eq!(f.events.borrow().last().unwrap().steps, expected);
+        }
+    }
+}

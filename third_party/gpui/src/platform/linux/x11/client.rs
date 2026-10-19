@@ -2219,6 +2219,7 @@ fn make_scroll_wheel_event(
         is_momentum: false,
         position,
         delta: ScrollDelta::Lines(delta),
+        wheel_ticks: Some(delta.map(|lines| lines / SCROLL_LINES)),
         modifiers,
         touch_phase: TouchPhase::default(),
     }

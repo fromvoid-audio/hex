@@ -208,3 +208,17 @@ remain unchanged. Only owner-opted-in parameter graph scrolling uses this bit to
 refuse inertial parameter steps/new history gestures after physical Ended. No new
 FFI, framework, timer, scroll system or production test-context change. Existing
 published baseline hashes verified; unrelated cumulative patch blocks preserved.
+
+19 October EQ terminal/tick metadata: preserve NSEventPhaseCancelled as an
+additive TouchPhase::Cancelled. Add optional wheel_ticks and an opt-in physical
+helper; retain X11 increments, Wayland discrete/value120 information (including
+frames also carrying pixel deltas), and Windows WHEEL_DELTA fractions before
+content-line preferences. Raw delta, content scrolling and unknown/Pixels
+fallback remain unchanged; macOS tick metadata stays None rather than guessing
+an undocumented tick law. Existing constructors/matches are audited together.
+Only the opted-in parameter graph uses this metadata; no native framework,
+FFI, callback owner, clock, timeout or general scrolling policy is introduced.
+Original archive/file hashes and unrelated cumulative patch blocks are retained;
+the cumulative patch is regenerated against hash-verified original source and
+applied back to verify every changed/added byte. Linux synthetic checks do not
+claim macOS/Windows compilation or physical device acceptance.

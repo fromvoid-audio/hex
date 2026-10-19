@@ -1305,3 +1305,777 @@ fn eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_s
         });
     }
 }
+
+#[gpui::test]
+fn four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let right = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(right, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 2
+    });
+    let before = editor.read_with(cx, |view, _| read(view, device));
+    let left = plot(&mut visual, device, 0.02, 0.5);
+    let right = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        left,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    // Submit the actual first-node Begin to the real Service; retain its actual
+    // acknowledgement instead of calling tick/receive. Virtual time is unadvanced.
+    editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
+    let held = editor.read_with(cx, |view, _| receive_service_event(&view.service));
+    assert!(held.error.is_none());
+    assert!(held.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    assert!(editor.read_with(cx, |view, _| view.worker_requests_pending > 0));
+    wheel(
+        &mut visual,
+        right,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    end_wheel(&mut visual, right);
+    eprintln!(
+        "before releasing actual first ACK: {:?}",
+        editor.read_with(cx, |view, _| view.device_panel.message.clone())
+    );
+    editor.update(cx, |view, _| {
+        view.receive(held);
+    });
+    pump_until(&editor, cx, settled);
+    let after = editor.read_with(cx, |view, _| read(view, device));
+    eprintln!(
+        "two-cut slopes before={:?} after={:?}",
+        before.nodes.iter().map(|n| n.slope).collect::<Vec<_>>(),
+        after.nodes.iter().map(|n| n.slope).collect::<Vec<_>>()
+    );
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 1;
+    expected.nodes[1].slope = 1;
+    assert_eq!(
+        after, expected,
+        "a consumed second-node burst must reach its own canonical parameter"
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes[1].slope == 0
+    });
+    assert_eq!(
+        editor.read_with(cx, |view, _| read(view, device).nodes[0].slope),
+        1
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == before
+    });
+}
+
+fn held_real_scroll_begin(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) -> Event {
+    editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
+    let event = editor.read_with(cx, |view, _| receive_service_event(&view.service));
+    assert!(event.error.is_none());
+    assert!(event.gesture_ack.as_ref().is_some_and(
+        |ack| ack.accepted && ack.phase == hex_session::device_gesture::GesturePhase::Begin
+    ));
+    event
+}
+
+#[gpui::test]
+fn four_review_three_cut_fifo_and_return_to_a_use_installed_state_and_four_undos(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for (x, count) in [(0.98, 2), (0.5, 3)] {
+        let p = plot(&mut visual, device, x, 0.5);
+        visual.simulate_click(p, Modifiers::default());
+        pump_until(&editor, cx, |v| {
+            settled(v) && read(v, device).nodes.len() == count
+        });
+    }
+    let third = editor.read_with(cx, |v, _| read(v, device).nodes[2].id);
+    editor.update(cx, |v, _| {
+        assert!(
+            v.enqueue(Request::SetDeviceParameter {
+                device,
+                parameter: third
+                    .parameter(hex_engine::eq::NodeParameter::Kind)
+                    .unwrap(),
+                value: ParameterValue::Choice(hex_engine::eq::NodeKind::LowCut as u32),
+            })
+        )
+    });
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    let c_y = (before.nodes[2].q / 0.1).ln() / (18.0_f32 / 0.1).ln();
+    let c = plot(&mut visual, device, 0.5, c_y);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let held = held_real_scroll_begin(&editor, cx);
+    for p in [b, c, a] {
+        wheel(
+            &mut visual,
+            p,
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Moved,
+            false,
+        );
+    }
+    end_wheel(&mut visual, a);
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (3, true)
+    );
+    assert_eq!(editor.read_with(cx, |v, _| read(v, device)), before);
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 2;
+    expected.nodes[1].slope = 1;
+    expected.nodes[2].slope = 1;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (0, false)
+    );
+    let after = expected.clone();
+    for index in [0, 2, 1, 0] {
+        expected.nodes[index].slope -= 1;
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    }
+    assert_eq!(expected, before);
+    for _ in 0..4 {
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump_until(&editor, cx, settled);
+    }
+    assert_eq!(editor.read_with(cx, |v, _| read(v, device)), after);
+}
+
+#[gpui::test]
+fn four_review_queued_saturation_keeps_reversal_before_and_after_replay(cx: &mut TestAppContext) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(b, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let held = held_real_scroll_begin(&editor, cx);
+    wheel(
+        &mut visual,
+        b,
+        gpui::ScrollDelta::Lines(point(0.0, 10.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    wheel(
+        &mut visual,
+        b,
+        gpui::ScrollDelta::Lines(point(0.0, -1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (1, true)
+    );
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    // Do not end physical B yet: replay must continue the SAME stream and
+    // preserve its original cumulative steps when subsequent input arrives.
+    pump_until(&editor, cx, |v| {
+        v.worker_requests_pending == 0
+            && v.device_gesture
+                .snapshot()
+                .is_some_and(|s| s.value == ParameterValue::Choice(2))
+    });
+    wheel(
+        &mut visual,
+        b,
+        gpui::ScrollDelta::Lines(point(0.0, -1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    end_wheel(&mut visual, b);
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 1;
+    expected.nodes[1].slope = 1;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    for index in [1, 0] {
+        expected.nodes[index].slope = 0;
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    }
+    assert_eq!(expected, before);
+}
+
+#[gpui::test]
+fn four_review_cancel_and_later_blur_retire_queued_streams_without_committing_them(
+    cx: &mut TestAppContext,
+) {
+    for blur_after_end in [false, true] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, _root, device) = node_window(cx, 0.02);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let b = plot(&mut visual, device, 0.98, 0.5);
+        visual.simulate_click(b, Modifiers::default());
+        pump_until(&editor, cx, |v| {
+            settled(v) && read(v, device).nodes.len() == 2
+        });
+        visual.run_until_parked();
+        let before = editor.read_with(cx, |v, _| read(v, device));
+        let a = plot(&mut visual, device, 0.02, 0.5);
+        let b = plot(&mut visual, device, 0.98, 0.5);
+        wheel(
+            &mut visual,
+            a,
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Started,
+            false,
+        );
+        let held = held_real_scroll_begin(&editor, cx);
+        wheel(
+            &mut visual,
+            b,
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Moved,
+            false,
+        );
+        if blur_after_end {
+            end_wheel(&mut visual, b);
+            assert_eq!(
+                editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+                (1, true)
+            );
+            visual.update(|window, _| window.blur());
+        } else {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.run_until_parked();
+        assert_eq!(
+            editor
+                .read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device))
+                .0,
+            0
+        );
+        editor.update(cx, |v, _| {
+            v.receive(held);
+        });
+        let mut expected = before.clone();
+        expected.nodes[0].slope = 1;
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+        assert_eq!(
+            editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+            (0, false)
+        );
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
+    }
+}
+
+#[gpui::test]
+fn four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue(
+    cx: &mut TestAppContext,
+) {
+    for mode in ["remove", "project", "variant", "source"] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, _root, device) = node_window(cx, 0.02);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let b = plot(&mut visual, device, 0.98, 0.5);
+        visual.simulate_click(b, Modifiers::default());
+        pump_until(&editor, cx, |v| {
+            settled(v) && read(v, device).nodes.len() == 2
+        });
+        visual.run_until_parked();
+        let before = editor.read_with(cx, |v, _| read(v, device));
+        let a = plot(&mut visual, device, 0.02, 0.5);
+        let b = plot(&mut visual, device, 0.98, 0.5);
+        wheel(
+            &mut visual,
+            a,
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Started,
+            false,
+        );
+        let held = held_real_scroll_begin(&editor, cx);
+        wheel(
+            &mut visual,
+            b,
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Moved,
+            false,
+        );
+        end_wheel(&mut visual, b);
+        assert_eq!(
+            editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+            (1, true)
+        );
+        let request = match mode {
+            "remove" => Request::Edit(Command::RemoveDevice(device)),
+            "project" => Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None,
+            },
+            "variant" => editor.read_with(cx, |v, _| Request::CompareDevice {
+                owner: hex_session::service::preset::Owner {
+                    project_generation: v.project_generation,
+                    revision: v.state.as_ref().unwrap().revision,
+                    device,
+                    class: NativeDeviceClass::Effect,
+                    type_id: hex_engine::eq::EQ_TYPE_ID,
+                },
+                expected: hex_project::DeviceVariant::A,
+                action: hex_project::DeviceComparisonAction::Switch,
+            }),
+            "source" => Request::SetDeviceParameter {
+                device,
+                parameter: before.nodes[1]
+                    .id
+                    .parameter(hex_engine::eq::NodeParameter::Frequency)
+                    .unwrap(),
+                value: ParameterValue::Float(1000.0),
+            },
+            _ => unreachable!(),
+        };
+        // Actual external control-plane race: the real Service processes this
+        // context change BEFORE the UI's now-released predecessor Commit.
+        // No synthetic Event, ACK, preview, or canonical project is installed.
+        editor.update(cx, |v, _| {
+            v.service.submit(request).unwrap();
+            v.receive(held);
+            assert!(v.pump_device_gesture());
+        });
+        let changed = editor.read_with(cx, |v, _| receive_service_event(&v.service));
+        assert!(
+            changed.error.is_none(),
+            "context {mode}: {:?}",
+            changed.error
+        );
+        let mut expected = changed.state.project.clone();
+        let mut expected_revision = changed.state.revision;
+        match mode {
+            "remove" => assert!(expected.device(device).is_none()),
+            "project" => assert_eq!(expected.tracks().len(), 0),
+            "variant" => assert_eq!(
+                expected.device(device).unwrap().active_variant(),
+                hex_project::DeviceVariant::B
+            ),
+            "source" => {
+                let current = EqState::decode(expected.device(device).unwrap().state()).unwrap();
+                assert_eq!(current.nodes[1].frequency_hz, 1000.0);
+                assert_eq!(current.nodes[1].slope, 0);
+            }
+            _ => unreachable!(),
+        }
+        let refused = editor.read_with(cx, |v, _| receive_service_event(&v.service));
+        assert!(refused.gesture_request);
+        let ack = refused.gesture_ack.as_ref().unwrap();
+        assert_eq!(ack.phase, hex_session::device_gesture::GesturePhase::Commit);
+        eprintln!(
+            "actual worker terminal {mode}: accepted={} reason={:?}",
+            ack.accepted, ack.reason
+        );
+        if mode == "source" {
+            // An unrelated parameter edit need not cancel the already-captured
+            // A command. It MUST invalidate queued B, preserving both real
+            // authored edits in their actual order without retargeting A.
+            assert!(ack.accepted && ack.reason.is_none());
+            let mut state = EqState::decode(expected.device(device).unwrap().state()).unwrap();
+            state.nodes[0].slope = 1;
+            let mut oracle = Editor::new(expected.as_ref().clone(), 2).unwrap();
+            oracle
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: state
+                        .encode()
+                        .unwrap()
+                        .with_host_metadata_from(expected.device(device).unwrap().state())
+                        .unwrap(),
+                })
+                .unwrap();
+            expected = Arc::new(oracle.project().clone());
+            expected_revision += 1;
+        } else {
+            assert!(!ack.accepted && ack.reason.is_some());
+        }
+        assert_eq!(refused.state.project, expected);
+        assert_eq!(refused.state.revision, expected_revision);
+        editor.update(cx, |v, _| {
+            v.receive(changed);
+            v.receive(refused);
+        });
+        visual.run_until_parked();
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project,
+                expected,
+                "no stale successor authored for {mode}"
+            );
+            assert_eq!(v.state.as_ref().unwrap().revision, expected_revision);
+            assert!(v.device_gesture.snapshot().is_none());
+            if v.state.as_ref().unwrap().project.device(device).is_some() {
+                assert_eq!(eq_panel::queued_scrolls_for_test(v, device), (0, false));
+                assert_eq!(read(v, device).nodes[1].slope, 0);
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn four_review_noop_predecessor_preserves_successor_and_does_not_add_history(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(b, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 3.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let held = held_real_scroll_begin(&editor, cx);
+    for p in [b, a, b] {
+        wheel(
+            &mut visual,
+            p,
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Moved,
+            false,
+        );
+    }
+    end_wheel(&mut visual, b);
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 3;
+    expected.nodes[1].slope = 2;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    for (index, slope) in [(1, 1), (1, 0), (0, 0)] {
+        expected.nodes[index].slope = slope;
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    }
+    assert_eq!(
+        expected, before,
+        "the saturated A→A no-op must not add an extra history item"
+    );
+}
+
+#[gpui::test]
+fn four_review_stream_capacity_refuses_whole_new_burst_and_preserves_accepted_history(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(b, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let held = held_real_scroll_begin(&editor, cx);
+    for index in 0..crate::editor::UI_REQUEST_CAPACITY {
+        wheel(
+            &mut visual,
+            if index % 2 == 0 { b } else { a },
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Moved,
+            false,
+        );
+    }
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (crate::editor::UI_REQUEST_CAPACITY, true)
+    );
+    // A new negative B stream would measurably undo its saturated value if it
+    // were partially admitted. Capacity must refuse it, not replace an older B.
+    wheel(
+        &mut visual,
+        b,
+        gpui::ScrollDelta::Lines(point(0.0, -1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    end_wheel(&mut visual, b);
+    assert!(editor.read_with(cx, |v, _| {
+        v.device_panel
+            .message
+            .as_deref()
+            .is_some_and(|s| s.contains("too many pending node edits"))
+    }));
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (crate::editor::UI_REQUEST_CAPACITY, true)
+    );
+    assert_eq!(editor.read_with(cx, |v, _| read(v, device)), before);
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 3;
+    expected.nodes[1].slope = 3;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (0, false)
+    );
+    for index in [1, 0, 1, 0, 1, 0] {
+        expected.nodes[index].slope -= 1;
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    }
+    assert_eq!(
+        expected, before,
+        "only the six actual value changes add history"
+    );
+}
+
+#[gpui::test]
+fn four_review_stale_cancel_cannot_discard_a_newer_queued_stream(cx: &mut TestAppContext) {
+    use hex_widgets::{ResponseGraphScrollEvent as Event, ResponseGraphScrollPhase as Phase};
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(b, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let graph = editor.read_with(cx, |v, _| eq_panel::graph_for_test(v, device));
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Event>::new()));
+    let captured = events.clone();
+    let _subscription = graph.update(cx, |_, cx| {
+        cx.subscribe(&graph, move |_, _, e: &Event, _| {
+            captured.borrow_mut().push(*e)
+        })
+    });
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let old = events
+        .borrow()
+        .iter()
+        .find(|e| e.phase == Phase::Change)
+        .copied()
+        .unwrap();
+    let held = held_real_scroll_begin(&editor, cx);
+    wheel(
+        &mut visual,
+        b,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    end_wheel(&mut visual, b);
+    // Controlled stale typed graph delivery, as in the existing stale-stream
+    // regression. No worker acknowledgement is fabricated or replaced.
+    graph.update(cx, |_, cx| {
+        cx.emit(Event {
+            phase: Phase::Cancel,
+            ..old
+        });
+        cx.emit(Event {
+            phase: Phase::Begin,
+            steps: 0,
+            ..old
+        });
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (1, true)
+    );
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 1;
+    expected.nodes[1].slope = 1;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    for index in [1, 0] {
+        expected.nodes[index].slope = 0;
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    }
+}
+
+#[gpui::test]
+fn four_review_escape_on_refused_overflow_stream_cancels_only_queued_context(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(b, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let held = held_real_scroll_begin(&editor, cx);
+    for index in 0..=crate::editor::UI_REQUEST_CAPACITY {
+        wheel(
+            &mut visual,
+            if index % 2 == 0 { b } else { a },
+            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+            gpui::TouchPhase::Moved,
+            false,
+        );
+    }
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (crate::editor::UI_REQUEST_CAPACITY, true)
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_eq!(
+        editor
+            .read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device))
+            .0,
+        0
+    );
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 1;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
+}
+
+#[gpui::test]
+fn four_review_blurred_queue_cannot_readmit_a_late_old_begin(cx: &mut TestAppContext) {
+    use hex_widgets::{ResponseGraphScrollEvent as Event, ResponseGraphScrollPhase as Phase};
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(b, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let graph = editor.read_with(cx, |v, _| eq_panel::graph_for_test(v, device));
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Event>::new()));
+    let captured = events.clone();
+    let _subscription = graph.update(cx, |_, cx| {
+        cx.subscribe(&graph, move |_, _, e: &Event, _| {
+            captured.borrow_mut().push(*e)
+        })
+    });
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let old = events
+        .borrow()
+        .iter()
+        .find(|e| e.phase == Phase::Begin)
+        .copied()
+        .unwrap();
+    let held = held_real_scroll_begin(&editor, cx);
+    wheel(
+        &mut visual,
+        b,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    end_wheel(&mut visual, b);
+    visual.update(|window, _| window.blur());
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (0, true)
+    );
+    // Controlled stale typed delivery after the real blur, using the actual old
+    // graph identity. Clearing intent must not reset its monotonic watermark.
+    graph.update(cx, |_, cx| cx.emit(old));
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (0, true)
+    );
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 1;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
+}
