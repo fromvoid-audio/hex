@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.31s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+HANDLE_RETAINED_TRACE midi=false left=false stretch=false enabled_warp=true view=Viewport { start: 174000, length: 24000 } audio_active=true midi_active=false pointer=Some(1740.0) preview=None canonical=Some(Clip { name: "clip", flavor: Muted, id: ClipId(4), asset: AssetId(3), start: 96000, duration: 96000, source_offset: 0, source_length: 96000, looping: true, source_phase: 0, fade: ClipFade { span: 96000, offset: 0, fade_in: 0, fade_out: 0, in_start: 0, out_end_offset: 0, in_curve: 0, out_curve: 0 }, gain: ClipGain(0), edit: Some(AudioClipEdit { domain: AudioClipDomain { events: None, source_offset: 0, source_length: 96000, source_phase: 0, looping: true, clock: Beats(BeatTime(17179869184)), pitch_cents: 0, sample_bpm: None, warp: Some(WarpSettings { mode: Beats { preserve: Transients, tail: Forward, decay: 100 }, markers: [WarpMarker { source_frame: 0, beat: BeatTime(0) }, WarpMarker { source_frame: 96000, beat: BeatTime(17179869184) }] }), warp_enabled: true, source_gain: [], fade: ClipFade { span: 96000, offset: 0, fade_in: 0, fade_out: 0, in_start: 0, out_end_offset: 0, in_curve: 0, out_curve: 0 }, fade_start: 0, fade_projection: Some(AudioFadeProjection { tempo: TempoMap { sample_rate: 48000, points: [TempoPoint { beat: BeatTime(0), tempo: Tempo(120000000) }], frame_prefix_q32: [0] }, origin_beat_raw: 17179869184, local_start_raw: 0 }) }, view_start: 0, view_end: 17179869184, musical_start: Some(BeatTime(17179869184)), placement: None }) }) error=None
+
+thread 'editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_warp_handle_leaves_view' (259083) panicked at crates/hex-ui/src/editor/resize_pan_tests.rs:1280:9:
+actual original handle must have left the rendered viewport
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_warp_handle_leaves_view ... FAILED
+
+failures:
+
+failures:
+    editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_warp_handle_leaves_view
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1057 filtered out; finished in 2.15s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,38 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.61s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+REAL_RESIZE_INTERIOR midi=true left=false original_handle_absent=true actual_pointer=1113.5 recorded=Some(1740.0) viewport=Viewport { start: 192000, length: 24000 }->Viewport { start: 195600, length: 24000 }
+
+thread 'editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_midi_handle_leaves_view' (258451) panicked at crates/hex-ui/src/editor/resize_pan_tests.rs:1253:9:
+assertion `left == right` failed: held pointer moved to safe interior after source handle unmounted; edge panning must stop
+  left: Viewport { start: 195600, length: 24000 }
+ right: Viewport { start: 192000, length: 24000 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_midi_handle_leaves_view ... FAILED
+REAL_RESIZE_INTERIOR midi=false left=false original_handle_absent=true actual_pointer=1113.5 recorded=Some(1740.0) viewport=Viewport { start: 192000, length: 24000 }->Viewport { start: 195600, length: 24000 }
+
+thread 'editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_audio_handle_leaves_view' (258450) panicked at crates/hex-ui/src/editor/resize_pan_tests.rs:1253:9:
+assertion `left == right` failed: held pointer moved to safe interior after source handle unmounted; edge panning must stop
+  left: Viewport { start: 195600, length: 24000 }
+ right: Viewport { start: 192000, length: 24000 }
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_audio_handle_leaves_view ... FAILED
+
+failures:
+
+failures:
+    editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_audio_handle_leaves_view
+    editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_midi_handle_leaves_view
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 1.07s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,58 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.93s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 18 tests
+resize review release midi=false outside=true point=Point { x: 1114px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+browser release edge=Right stretch=false child=browser-section-samples moved=true held=96000..176750 entry=Some((96000, 80750)) actual=Some((96000, 80750)) command=Some(TrimClipEdge { clip: ClipId(4), edge: Right, frame: 176750 })
+browser midi release edge=Right child=browser-section-samples accepted=BeatTime(4294967296)..BeatTime(14177687044) source=BeatTime(0)
+resize review release midi=true outside=true point=Point { x: 1114px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+browser release edge=Left stretch=false child=browser-audition-waveform moved=true held=111250..192000 entry=Some((111250, 80750)) actual=Some((111250, 80750)) command=Some(TrimClipEdge { clip: ClipId(4), edge: Left, frame: 111250 })
+test editor::trim::resize_release_tests::browser_release_review_generic_outside_still_cancels_audio_and_midi ... ok
+browser midi release edge=Left child=browser-section-samples accepted=BeatTime(7297149436)..BeatTime(14177687044) source=BeatTime(3002182140)
+original browser point=Point { x: 464px, y: 214px } actual region=Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } } midi=false: one accepted resize
+test editor::trim::resize_release_tests::browser_release_review_midi_edge_admits_existing_detail_or_browser_focus ... ok
+resize review release midi=false outside=false point=Point { x: 1072px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::browser_release_review_other_audio_track_cancels_without_edit ... ok
+browser midi release edge=Right child=browser-audition-waveform accepted=BeatTime(4294967296)..BeatTime(14177687044) source=BeatTime(0)
+original browser point=Point { x: 464px, y: 214px } actual region=Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } } midi=true: one accepted resize
+browser release edge=Right stretch=true child=browser-audition-waveform moved=false held=96000..207250 entry=Some((96000, 111250)) actual=Some((96000, 111250)) command=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 207250 })
+test editor::trim::resize_release_tests::browser_release_review_original_labeled_outside_point_commits_audio_and_midi ... ok
+resize review release midi=true outside=false point=Point { x: 835.5px, y: 344px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::browser_release_review_other_midi_track_cancels_without_edit ... ok
+browser release cancellation case=0: no command or pending owner
+browser midi release edge=Left child=browser-audition-waveform accepted=BeatTime(7297149436)..BeatTime(14177687044) source=BeatTime(3002182140)
+browser stationary modifier stretch=false command_on_release=false accepted_duration=84000
+test editor::trim::resize_release_tests::browser_release_commits_last_shown_midi_resize_with_one_history_step ... ok
+browser release cancellation case=1: no command or pending owner
+browser release edge=Left stretch=true child=browser-section-samples moved=true held=111250..192000 entry=Some((111250, 80750)) actual=Some((111250, 80750)) command=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 111250 })
+browser release cancellation case=2: no command or pending owner
+test editor::trim::resize_release_tests::browser_release_commits_last_shown_audio_resize_after_actual_child_routing ... ok
+browser stationary modifier stretch=false command_on_release=true accepted_duration=82671
+release edge=Right queued=1 desired=96000..172785 releasedwidth=251.5 heldwidth=251.5 accepted=96000..172785 command=Some(TrimClipEdge { clip: ClipId(4), edge: Right, frame: 172785 })
+browser release cancellation case=3: no command or pending owner
+test editor::trim::resize_release_tests::browser_resize_release_still_cancels_escape_stale_generation_and_foreign_focus ... ok
+test editor::trim::resize_release_tests::midi_resize_keeps_released_geometry_until_actual_worker_ack_and_one_history_step ... ok
+release edge=Left queued=1 desired=115215..192000 releasedwidth=252 heldwidth=252 accepted=115215..192000 command=Some(TrimClipEdge { clip: ClipId(4), edge: Left, frame: 115215 })
+test editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack ... ok
+browser stationary modifier stretch=true command_on_release=false accepted_duration=84000
+test editor::trim::resize_release_tests::release_audit_fast_audio_mouseup_uses_final_position_and_reverse ... ok
+test editor::trim::resize_release_tests::release_audit_fast_enabled_warp_trim_uses_final_position_and_reverse ... ok
+browser stationary modifier stretch=true command_on_release=true accepted_duration=82671
+test editor::trim::resize_release_tests::browser_resize_stationary_command_preview_and_release_use_the_last_timeline_point ... ok
+test editor::trim::resize_release_tests::pending_resize_correlates_real_fifo_acceptance_failure_and_deferred_submission ... ok
+browser release cancellation case=0: no command or pending owner
+test editor::trim::resize_release_tests::release_audit_fast_midi_mouseup_uses_final_position_and_reverse ... ok
+browser release cancellation case=1: no command or pending owner
+release edge=Right queued=1 desired=96000..211215 releasedwidth=377.5 heldwidth=377.5 accepted=96000..211215 command=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 211215 })
+browser release cancellation case=2: no command or pending owner
+browser release cancellation case=3: no command or pending owner
+test editor::trim::resize_release_tests::resize_escape_stale_generation_pending_refusal_and_no_motion_do_not_retain_a_commit ... ok
+test editor::trim::resize_release_tests::release_audit_fast_shift_mouseup_uses_final_position_and_reverse ... ok
+release edge=Left queued=1 desired=115215..192000 releasedwidth=252 heldwidth=252 accepted=115215..192000 command=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 115215 })
+test editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 1040 filtered out; finished in 15.17s
+

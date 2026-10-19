@@ -1,0 +1,30 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.20s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 4 tests
+REAL_RESIZE_INTERIOR midi=true left=false original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 192000, length: 24000 }->Viewport { start: 192000, length: 24000 }
+REAL_RESIZE_INTERIOR midi=false left=false original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 192000, length: 24000 }->Viewport { start: 192000, length: 24000 }
+REAL_RESIZE_INTERIOR midi=false left=false original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 192000, length: 24000 }->Viewport { start: 192000, length: 24000 }
+
+thread 'editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_warp_handle_leaves_view' (258874) panicked at crates/hex-ui/src/editor/resize_pan_tests.rs:1273:9:
+actual original handle must have left the rendered viewport
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_warp_handle_leaves_view ... FAILED
+REAL_RESIZE_INTERIOR midi=true left=true original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 72000, length: 24000 }->Viewport { start: 72000, length: 24000 }
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_midi_handle_leaves_view ... ok
+REAL_RESIZE_INTERIOR midi=false left=true original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 72000, length: 24000 }->Viewport { start: 72000, length: 24000 }
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_audio_handle_leaves_view ... ok
+REAL_RESIZE_INTERIOR midi=false left=true original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 72000, length: 24000 }->Viewport { start: 72000, length: 24000 }
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_shift_handle_leaves_view ... ok
+
+failures:
+
+failures:
+    editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_stops_after_original_warp_handle_leaves_view
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 6.81s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

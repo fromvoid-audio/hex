@@ -1,0 +1,202 @@
+{
+  "HANDOFF.md": {
+    "sha256": "36dcc1ef544cb0edf1825def831b769f2e6d4787e96d780fde73971eb9a023be",
+    "size": 3235
+  },
+  "controls-outer.log": {
+    "sha256": "903ea6640a576c81967e2e5ba68e8b20f242638bbfd47d6f71fecec7279e77b6",
+    "size": 241
+  },
+  "controls-v2-outer.log": {
+    "sha256": "a1766664505ae3394861adc69f80ab547c725cdeb47cccb2037910b093af5b17",
+    "size": 443
+  },
+  "final-outer.log": {
+    "sha256": "384e67dd5f0c094aa8911ba2708cf03af3f888badf6be631ea85bc8d4fecb2fe",
+    "size": 933
+  },
+  "green-outer.log": {
+    "sha256": "085447f55cef155bb43499f63e3f2b9103f4ab066de802f035b793f1df926ac0",
+    "size": 212
+  },
+  "orchestration/310-approved-guard-runner.py": {
+    "sha256": "ba6ab952481fde1bbea79d3168393b8ef8e0552d6fbc62ec710a3800ed1abd33",
+    "size": 71789
+  },
+  "orchestration/463-component.py": {
+    "sha256": "0fa0ba575fd999dc8b50d797ba71185a8f0afa39350539911821b3512adf13e5",
+    "size": 573
+  },
+  "orchestration/seal-463.py": {
+    "sha256": "13c8182263c2911692936b8511b9ad3e21d981b9aa301010031b146175900f3f",
+    "size": 5140
+  },
+  "protected-proof.json": {
+    "sha256": "c18aa2455a43dc7531088d70317c9e227b1cfbcfefa03c97f070292357a8d8c8",
+    "size": 1446
+  },
+  "red-outer.log": {
+    "sha256": "57fd73995b57fa0b81acd6ef30fe3d50ef6a0974a6c6a9151f09f86fd2e943c9",
+    "size": 212
+  },
+  "runs/controls-v2/01-all actual resize pan variants and controls.log": {
+    "sha256": "43e955a260d490216781aa712154e0b7f39a7ada12e014b81d99f94b9897cdb3",
+    "size": 8613
+  },
+  "runs/controls-v2/02-all actual resize release controls.log": {
+    "sha256": "eb51a13ec96289989267d840e59e7e6e49c88aacf89e76a6a552aa6d57e056d4",
+    "size": 6793
+  },
+  "runs/controls-v2/03-strict default UI.log": {
+    "sha256": "81d39030ec8f267225644e2eda2c0b7702a7b9a46bc14008c3a1ea770ea2b5e9",
+    "size": 887
+  },
+  "runs/controls-v2/04-strict feature UI.log": {
+    "sha256": "7ac57180e3fa71e549c4a3e316acb5e5e991028600d985a68d4e64b243bf934f",
+    "size": 494
+  },
+  "runs/controls-v2/summary.json": {
+    "sha256": "74b2da3ad7edeb49af60b3388839d782a845cdf127b4e14b3f979370dfc70feb",
+    "size": 15511
+  },
+  "runs/controls/01-enhanced source handle lifecycle both modes and directions.log": {
+    "sha256": "3d4ad1bab68992f3d20428f1b3b5cf489e636b4cf2904f0051965ca698b32dc4",
+    "size": 2681
+  },
+  "runs/controls/summary.json": {
+    "sha256": "b6df0ebe5118df8f2d441fded588cdc22aa048814965e0f4394dfbec9a85f263",
+    "size": 16033
+  },
+  "runs/final/01-all actual resize pan controls.log": {
+    "sha256": "ee23308521687940e6585c5ef1cedd259075f8fa9edac5913d82d1ce53b77c55",
+    "size": 8613
+  },
+  "runs/final/02-all actual resize release controls.log": {
+    "sha256": "6f0375da2e02175555d37c7b9d6cfadb18704018f72a78dfee984e733f6835d9",
+    "size": 6793
+  },
+  "runs/final/03-actual terminal FIFO controls.log": {
+    "sha256": "253d0e03c5588031ee5af90f616e897f18024d29dcd2504907511568b344913e",
+    "size": 2252
+  },
+  "runs/final/04-original trim pure controls.log": {
+    "sha256": "afc1ad1f85538bd88e44ab7cbd9b030d6c5e72f910c6eb64a52ab960ce2c4018",
+    "size": 1054
+  },
+  "runs/final/05-strict default UI.log": {
+    "sha256": "66f780912f751014139206bf624e6fc8da0da440b9dae5cb21c0ed20d7d72ffd",
+    "size": 360
+  },
+  "runs/final/06-strict feature UI.log": {
+    "sha256": "61ae0937beb65a502e1aaccbe758a0fd9da68a9c55d7c2b5a189d52e05be4615",
+    "size": 360
+  },
+  "runs/final/07-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "runs/final/08-UI style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "runs/final/09-GPUI provenance.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "runs/final/10-dependency provenance.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "runs/final/11-format.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final/12-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final/summary.json": {
+    "sha256": "6571a816c886fa1ee7b2c140eadaa5d356fe6f4b38136d490b89997e62010dba",
+    "size": 18751
+  },
+  "runs/green/01-same actual audio MIDI unmounted handle cases.log": {
+    "sha256": "3b309bd4667b92006cbd0b37ae6c774481aa7c8e672a876e365c8d84965ff009",
+    "size": 1517
+  },
+  "runs/green/summary.json": {
+    "sha256": "96bab6fe54ae61326c61952cdad5f5878917ea67c333b37c63a5b590193acd65",
+    "size": 13111
+  },
+  "runs/red/01-actual audio and MIDI unmounted handle pan RED.log": {
+    "sha256": "58d6619effe2c0e1a3a0d71640a609c499c9f290247684e3a07a5f3672eee4f2",
+    "size": 2712
+  },
+  "runs/red/summary.json": {
+    "sha256": "c56c0d84bd6981db9c1a2915154f6ff7a93a646cbbe1157572f595fe3d95cedf",
+    "size": 12971
+  },
+  "runs/warp-fixture-trace/01-actual permanent Warp retained handle discriminator.log": {
+    "sha256": "6108a0b34542f236aa7bd7d5d7c51c884207afa5324ae9a2ea2de439e5c826eb",
+    "size": 2570
+  },
+  "runs/warp-fixture-trace/summary.json": {
+    "sha256": "a66cc533d0415c2149f56dcac529907200bf24b48943867f1e71d294cbd1112e",
+    "size": 13584
+  },
+  "source-history.txt": {
+    "sha256": "46b7275587a475e02717066315854ce0b6855681bcfea40532e65847edf16c9b",
+    "size": 583
+  },
+  "source-identities.json": {
+    "sha256": "0cd99b2fb7a3f2a8af56d618905a1a3111aa3cc8509cd80a821e2c96b7e7903d",
+    "size": 1878
+  },
+  "source.patch": {
+    "sha256": "b7509b6e1bf253ee2973695b9e04644de1ce107837a0eb23f2f432205c4d59e3",
+    "size": 20903
+  },
+  "source/after/crates/hex-ui/src/editor/render.rs": {
+    "sha256": "fef05bb5d328876770736b11d43882e77c36e623efa36d470389a891561f0d49",
+    "size": 54154
+  },
+  "source/after/crates/hex-ui/src/editor/resize_pan_tests.rs": {
+    "sha256": "2fe2caf7cefebde12e55399f7121c1d6b7a831f111dfdc1fad02b42f65899e40",
+    "size": 58056
+  },
+  "source/after/crates/hex-ui/src/editor/trim.rs": {
+    "sha256": "76b3ab92483f3197fc4151952e6b0a6d860ce7139f400dd2f072e6002dd284fc",
+    "size": 68753
+  },
+  "source/after/docs/resize-edge-pan.md": {
+    "sha256": "e930529a4de8016d92d44eaec1959d2b17d7e29db78eae8691627eeefb7d9af7",
+    "size": 8273
+  },
+  "source/after/todo.md": {
+    "sha256": "22f0297bab9aa59989436dd6ef25adb2278e9fc6e664bee45fc7561eb5a94556",
+    "size": 401451
+  },
+  "source/before/crates/hex-ui/src/editor/render.rs": {
+    "sha256": "9d084ee7c4c2cfc1c5cdf1cca8ad7672c7d804066e4ef8f4444c6d662db98a55",
+    "size": 53012
+  },
+  "source/before/crates/hex-ui/src/editor/resize_pan_tests.rs": {
+    "sha256": "3a3089b7616c4e1bb3ccf28298e83f2caa42f522d6a4e91c4e91756fa2481b4f",
+    "size": 47786
+  },
+  "source/before/crates/hex-ui/src/editor/trim.rs": {
+    "sha256": "4a458731ffb3a70b6fb4eb65c527377bba3403d1bf9e404b589108bc0c6473b1",
+    "size": 69440
+  },
+  "source/before/docs/resize-edge-pan.md": {
+    "sha256": "7b19e2f4bec06e3182f18948225fc6339f6bc29363ba4086bb39e5586ab2d715",
+    "size": 7068
+  },
+  "source/before/todo.md": {
+    "sha256": "c1724fc69b72baee4bd7f3d43216638cf06c2a39e6a683da413871cd6e517e36",
+    "size": 400075
+  },
+  "warp-fixture-trace-outer.log": {
+    "sha256": "b496bd73756158a38ac44c763abc27e70b8da910131dc6aaaa47c22d9bafdc36",
+    "size": 237
+  }
+}

@@ -1,0 +1,9 @@
+[1/4] all actual resize pan variants and controls: running
+[1/4] all actual resize pan variants and controls: passed
+[2/4] all actual resize release controls: running
+[2/4] all actual resize release controls: passed
+[3/4] strict default UI: running
+[3/4] strict default UI: passed
+[4/4] strict feature UI: running
+[4/4] strict feature UI: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/463-resize-pan-controls-v2/summary.json
