@@ -1,0 +1,13 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 36.48s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+test editor::browser_input::name_case_ui_test::name_case_double_click_and_composition_keep_raw_unicode_selection ... ok
+test editor::browser_input::name_case_ui_test::name_case_paste_keyboard_clipboard_and_reopening_preserve_source ... ok
+test editor::browser_input::name_case_ui_test::name_case_marked_unicode_and_scrolled_caret_use_original_utf16 ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1071 filtered out; finished in 0.05s
+

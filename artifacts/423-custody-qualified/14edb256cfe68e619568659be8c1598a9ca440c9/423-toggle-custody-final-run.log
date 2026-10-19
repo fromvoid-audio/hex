@@ -1,0 +1,27 @@
+[1/13] all shared widget input controls: running
+[1/13] all shared widget input controls: passed
+[2/13] actual search toggle and custody cases: running
+[2/13] actual search toggle and custody cases: passed
+[3/13] actual shared name casing and IME controls: running
+[3/13] actual shared name casing and IME controls: passed
+[4/13] strict widgets: running
+[4/13] strict widgets: passed
+[5/13] strict UI default: running
+[5/13] strict UI default: passed
+[6/13] strict UI feature: running
+[6/13] strict UI feature: passed
+[7/13] architecture: running
+[7/13] architecture: passed
+[8/13] UI style: running
+[8/13] UI style: passed
+[9/13] GPUI patch: running
+[9/13] GPUI patch: passed
+[10/13] dependency provenance: running
+[10/13] dependency provenance: passed
+[11/13] device layout: running
+[11/13] device layout: passed
+[12/13] format: running
+[12/13] format: passed
+[13/13] diff: running
+[13/13] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/423-toggle-custody-final/summary.json

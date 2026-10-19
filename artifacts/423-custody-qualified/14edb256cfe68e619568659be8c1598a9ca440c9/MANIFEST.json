@@ -1,0 +1,130 @@
+{
+  "423-toggle-custody-final-run.log": {
+    "bytes": 1000,
+    "sha256": "d6e8385303c63ec117128054e8340542a7ff2d94c5654a871ac5fb068b36cdb1"
+  },
+  "423-toggle-custody-functional-run.log": {
+    "bytes": 253,
+    "sha256": "e5c25d562bdcec714ce1b7c634ddf8e56cea998bc59152d3459444be44870545"
+  },
+  "HANDOFF.md": {
+    "bytes": 4020,
+    "sha256": "871cc6d734c3b808710a37478e82b97c368af642fba403c7b4400cfec332f7a4"
+  },
+  "checks/423-toggle-custody-final/01-all shared widget input controls.log": {
+    "bytes": 8964,
+    "sha256": "939bc9d6796b607e15e6bf5886c4eb8712e4397c59aa9028a192eda8f61763a3"
+  },
+  "checks/423-toggle-custody-final/02-actual search toggle and custody cases.log": {
+    "bytes": 1829,
+    "sha256": "4e258200b50a331034fb9132f6b8b5d657f05fdad3cb4c58f8322b04c13812d3"
+  },
+  "checks/423-toggle-custody-final/03-actual shared name casing and IME controls.log": {
+    "bytes": 800,
+    "sha256": "4ea55cb893ee73c56d18c0338555a38439bbb623b514f38a0f5d060e92012267"
+  },
+  "checks/423-toggle-custody-final/04-strict widgets.log": {
+    "bytes": 317,
+    "sha256": "dc8d5c0b2e09b4d92945af34acbeef5a771660e649e762e299bbfbed7e3785a4"
+  },
+  "checks/423-toggle-custody-final/05-strict UI default.log": {
+    "bytes": 581,
+    "sha256": "13ea54b349344bd36ae9c5bc223d921f72a92e424ca9b2c8a5d2e7142e1def02"
+  },
+  "checks/423-toggle-custody-final/06-strict UI feature.log": {
+    "bytes": 451,
+    "sha256": "2af0bfdcabc5086ffc0db8ddafac322ff83ded9962cf5bc238d8b05fb2ff852f"
+  },
+  "checks/423-toggle-custody-final/07-architecture.log": {
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  "checks/423-toggle-custody-final/08-UI style.log": {
+    "bytes": 82,
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+  },
+  "checks/423-toggle-custody-final/09-GPUI patch.log": {
+    "bytes": 149,
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+  },
+  "checks/423-toggle-custody-final/10-dependency provenance.log": {
+    "bytes": 119,
+    "sha256": "9c0c3fd09b9b22707639566251a286248f3daf5eda36c9145e10c1f7cee736eb"
+  },
+  "checks/423-toggle-custody-final/11-device layout.log": {
+    "bytes": 84,
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+  },
+  "checks/423-toggle-custody-final/12-format.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/423-toggle-custody-final/13-diff.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/423-toggle-custody-final/summary.json": {
+    "bytes": 17550,
+    "sha256": "82f52b1e9e26580165417bb2b3db2d2f8d65fd42e2eeceb93a581e350e01b2b8"
+  },
+  "checks/469-upper-rail-oracle-423-toggle-custody-functional/01-actual search selection and toggle fixture custody.log": {
+    "bytes": 2161,
+    "sha256": "ce02414c1c3c4badb903f60a76e09fd8c0fd50b40154f09677615e6a4869b5cc"
+  },
+  "checks/469-upper-rail-oracle-423-toggle-custody-functional/summary.json": {
+    "bytes": 13529,
+    "sha256": "0565a4636c670c9fcce824b67fe91358cf57555dea15df30ce6605d461feabe1"
+  },
+  "component-wrapper.py": {
+    "bytes": 1849,
+    "sha256": "0a661b060ea60b4e4ac5c10856d4a0b470efeeeba770242d471431ed6d9aca3d"
+  },
+  "metadata.json": {
+    "bytes": 963,
+    "sha256": "22084c127b587e776fdbb7a4e60f2c89478d6b8792b1d1bc8d22fc18eb72723b"
+  },
+  "source/after/crates/hex-ui/src/editor/browser.rs": {
+    "bytes": 98145,
+    "sha256": "7ccb332815eb9464d000b0278255b76b5bd50cdd5008f86e47426a27e48cd2bd"
+  },
+  "source/after/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs": {
+    "bytes": 24985,
+    "sha256": "f8f03d5e50e162ee54ae6212bb10ae7f3b3be0b752e45ea91b30abb8d10aaef2"
+  },
+  "source/after/crates/hex-ui/src/editor/project_directory.rs": {
+    "bytes": 11017,
+    "sha256": "514bfce63f073cdd1eaffb61b6efc08e3a4e326c826ee3e8278014983b606fdb"
+  },
+  "source/after/docs/browser-places.md": {
+    "bytes": 18108,
+    "sha256": "bd1ce35aa6e403219b3932fba20cb206b78c9b7bc19eceb314eac752c8e05105"
+  },
+  "source/after/todo.md": {
+    "bytes": 407564,
+    "sha256": "bea2b0000a3cb6be0e2c55695e0b21ad5def3510124b4e1a70e5eb40f7fbf81a"
+  },
+  "source/before/crates/hex-ui/src/editor/browser.rs": {
+    "bytes": 97987,
+    "sha256": "29c4282e1da858e2c23e4f55ccaa07317a2cf2d1d4d651ae445a810461a12c4a"
+  },
+  "source/before/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs": {
+    "bytes": 21559,
+    "sha256": "c96a0f17c48108e2502900220a9e879d3d57f03a91b2a60055f620734ecb8606"
+  },
+  "source/before/crates/hex-ui/src/editor/project_directory.rs": {
+    "bytes": 10883,
+    "sha256": "5549757de7db19e69b851de3f1b62f5cdd8be7f5dbb48412e10d21a819aa5df0"
+  },
+  "source/before/docs/browser-places.md": {
+    "bytes": 17473,
+    "sha256": "59545ed6b4d8176c76bee674b3a7186d5d8ae020529a6e741a448c2d2e5245d9"
+  },
+  "source/before/todo.md": {
+    "bytes": 406532,
+    "sha256": "eda41454e3ab78f83adb111f0048c42a55c85431f4796d3769587a252c2f6cf1"
+  },
+  "source.patch": {
+    "bytes": 9420,
+    "sha256": "7159af5a2d88701a6860734eba140e983208ab2b07d23c1ef6ea1162a7635efa"
+  }
+}

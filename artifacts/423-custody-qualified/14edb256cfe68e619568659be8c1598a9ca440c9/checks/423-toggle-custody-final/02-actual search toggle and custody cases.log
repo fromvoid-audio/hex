@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 37.47s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 12 tests
+test editor::browser::ui_test::search_selection::search_empty_double_click_is_selection_only ... ok
+test editor::browser::ui_test::search_selection::search_invalidated_pair_drag ... ok
+test editor::browser::ui_test::search_selection::search_invalidated_pair_ime ... ok
+test editor::browser::ui_test::search_selection::search_double_click_toggles_against_selection_before_first_click ... ok
+test editor::browser::ui_test::search_selection::search_invalidated_pair_keyboard ... ok
+test editor::browser::ui_test::search_selection::search_focus_click_selects_query_and_replaces_after_real_workers ... ok
+test editor::browser::ui_test::search_selection::search_invalidated_pair_shift ... ok
+test editor::browser::ui_test::search_selection::search_invalidated_pair_text ... ok
+test editor::browser::ui_test::search_selection::search_keyboard_selection_keeps_combining_graphemes_whole ... ok
+toggle_fixture_custody same_root=true real_save=true all_four_preferences=true view_retired=true cleaned=true
+test editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop ... ok
+test editor::browser::ui_test::search_selection::search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins ... ok
+test editor::browser::ui_test::search_selection::search_selection_clipboard_ime_empty_and_long_query_keep_text_ownership ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 1062 filtered out; finished in 16.89s
+

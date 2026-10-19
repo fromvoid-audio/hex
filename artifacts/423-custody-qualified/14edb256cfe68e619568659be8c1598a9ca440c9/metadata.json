@@ -1,0 +1,35 @@
+{
+  "source": "14edb256cfe68e619568659be8c1598a9ca440c9",
+  "tree": "bf12b7ed8a10e05e1c0a1c0de36bf157a38554b4",
+  "base": "351fcb5be88c1072365c17ccbb79be37cecf75b5",
+  "files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser_search_selection_ui_test.rs",
+    "crates/hex-ui/src/editor/project_directory.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "runtime_unique": 95,
+  "counts": [
+    [
+      "80",
+      "0"
+    ],
+    [
+      "12",
+      "0"
+    ],
+    [
+      "3",
+      "0"
+    ]
+  ],
+  "duration_seconds": 181.731,
+  "summary_sha256": "82f52b1e9e26580165417bb2b3db2d2f8d65fd42e2eeceb93a581e350e01b2b8",
+  "behavior_block_equal": true,
+  "behavior_block_sha256": "574c6ccfb8d6a1114999d3b7915b22b0ebf45f8cfac85a6743521a663db1405c",
+  "test_only_delta": true,
+  "old_zero_match_evidence": "10b26cde2816311241eb3373ae3d4ff82c230378",
+  "root_structural_return_note": 29870,
+  "no_new_executed_race_claim": true
+}
