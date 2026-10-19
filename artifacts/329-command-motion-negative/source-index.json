@@ -1,0 +1,22 @@
+{
+  "source": "97a7cd8c3a8cc42b0d9115100f3b0147a671e6e5",
+  "tree": "b5987e45a970aa97493a7a021b50f6ebea665109",
+  "base": "1ce76812dfbcfdf5bde045e84b2c3d6b874dcf16",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail.rs",
+      "before_blob": "7ef60c9ac1223bb880dcd5d93e04d9c7af4b265d",
+      "after_blob": "7ef60c9ac1223bb880dcd5d93e04d9c7af4b265d",
+      "sha256": "a39f0a80c047bf8c39739537d1bb1ce941e4191916c926c1b512ebda9d23a848"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_bar_ui_tests.rs",
+      "before_blob": "375bebe05b1a78f52fbd29801f7b7bb39f29d774",
+      "after_blob": "f2afcfc3fbf8e2063b1f0e4c99efebc58dc00153",
+      "sha256": "c7490ee7056f0f7ddcead10625ea10da0cdda99281b872a2624de71d668fa4c7"
+    }
+  ],
+  "tested_dirty_parent": "1ce76812dfbcfdf5bde045e84b2c3d6b874dcf16",
+  "tested_content_sha256": "8f326902be14e745052136c20af2e0ad6e54d82d7dbcaf06141ec62af337ddf8",
+  "all_three_snapshot_differences_only_loop_enabled": true
+}
