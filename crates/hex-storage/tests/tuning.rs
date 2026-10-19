@@ -23,7 +23,7 @@ fn refuses(value: &Value) {
 }
 
 #[test]
-fn required_schema31_tuning_roundtrips_every_waveform_enabled_and_disabled() {
+fn required_schema32_tuning_roundtrips_every_waveform_enabled_and_disabled() {
     for enabled in [false, true] {
         for waveform in [Waveform::Triangle, Waveform::Square, Waveform::Saw] {
             let project = tuned(enabled, waveform);

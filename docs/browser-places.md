@@ -227,6 +227,50 @@ This state is transient editor layout; no new persisted format or global width
 quantization is introduced. Native physical drag/hover and accessibility inspection
 remain coordinator-owned acceptance, separate from headless scene/input tests.
 
+## repeated text double-click selection — pulse2817 / PR423
+
+First query focus click and Command-F still select all. In focused editable text,
+a double-click on a full selection collapses to the clicked caret; the next
+selects all again. Partial/collapsed selections double-click to select all. The
+local gesture remembers selection before the first click, so its ordinary caret
+placement cannot erase the toggle's starting state. Native 1/2 and rapid 3/4 click
+pairs share that policy; no timer/global mouse hook is added. Single clicks,
+Shift selection, held drag and release keep their usual semantics. Keyboard,
+text/IME replacement and focus entry invalidate stale gesture snapshots; worker
+completion/paint does not. Selection alone changes no query, preview or project.
+
+Shared name fields preserve original Unicode/raw paths and the presentation-only
+lowercase mapping; clipboard/IME ranges remain source UTF-16. Already edited
+numeric text uses the same toggle without reformatting its draft or emitting a
+value edit. Knob reset and nonediting numeric adjustment remain separate gestures.
+Rendered tests exercise actual down/up click counts, partial/drag/release,
+filesystem worker/tick/resize updates, Unicode composition and empty text. Native
+physical mouse/IME/accessibility acceptance remains coordinator-owned and open.
+
+### invalidated text double-click pairs
+
+A text/keyboard/IME update, Shift selection or drag invalidates the saved first
+click. If the platform subsequently sends an even click count, the shared policy
+returns no toggle and the field uses its normal caret/selection path. It never
+substitutes current selection for the discarded snapshot. Fresh rapid1/2 and3/4
+pairs still toggle from their own pre-gesture state. No text/query/value event,
+formatter, numeric knob reset or geometry policy changes.
+
+New bounded actual-caller regressions cover keyboard, text, IME, Shift and drag
+invalidation followed by click2, then a fresh3/4 pair. The shared pure policy
+covers both prior/current full-selection states. Original browser/name/numeric
+and physical input evidence remains source-bound; native click-count/IME and
+clipboard acceptance is separate from headless source checks.
+
+The new PR423 toggle fixture now precreates one existing test Environment and
+its samples/WAV before Service/browser startup, then injects that same Arc into
+the editor. Actual browser/home/root, all four preference paths and the catalog
+path correlate with that owner. A real catalog-save gate proves the same root
+survives view/caller retirement, saves successfully, then cleans up without
+recreation. No import or new PendingSetup is needed for this browser-only fixture;
+no production input policy changes. Original query/IME/double-pair/value-event
+assertions remain byte-identical. Older fixtures are not converted by this fix.
+
 ### keyboard row-action eligibility
 
 Left/Right operate only on a highlighted browser result. Clicking a source/Place

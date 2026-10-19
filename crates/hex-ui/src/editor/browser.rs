@@ -286,6 +286,11 @@ impl BrowserState {
         }
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_preferences_path(&self) -> &std::path::Path {
+        &self.preferences_path
+    }
+
     fn reset_results(&mut self) {
         self.selected_index = 0;
         self.results_focused = false;
