@@ -58,6 +58,7 @@ fn fixture() -> Project {
     s.import_provenance =
         Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![255, 0, 42]).unwrap());
     s.tracks[0].devices.push(hex_project::DeviceSnapshot {
+        comparison: None,
         id: s.next_id,
         bypassed: false,
         state: hex_lattice_contract::NativeDeviceState::new(
@@ -172,7 +173,16 @@ fn new_writer_uses_complete_schema_even_without_lanes_or_feeds() {
 }
 #[test]
 fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaque_states() {
-    let previous = fixture();
+    // Author a schema22-compatible baseline without changing ordinary fixtures.
+    let mut baseline = Editor::new(fixture(), 8).unwrap();
+    let track = baseline.project().tracks()[0].id();
+    baseline
+        .execute(Command::SetTrackColor {
+            track,
+            color: hex_project::ElementColor::Gray,
+        })
+        .unwrap();
+    let previous = baseline.project().clone();
     let mut snapshot = previous.snapshot();
     snapshot.tracks[0].gain_touch_epoch = 17;
     let project = Project::from_snapshot(snapshot).unwrap();

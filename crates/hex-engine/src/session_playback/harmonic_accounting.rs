@@ -71,6 +71,7 @@ fn inventory_shape(
         }
         for effect in 0..effect_count {
             track.devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if eq && effect + 1 == effect_count {
                     equalizer.clone()
@@ -115,6 +116,7 @@ fn inventory_shape(
         let mut devices = Vec::new();
         for _ in 0..hex_project::MAX_DEVICES_PER_TRACK {
             devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: utility.clone(),
                 bypassed: false,

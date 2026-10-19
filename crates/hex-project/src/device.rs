@@ -19,6 +19,7 @@ pub struct Device {
     pub(crate) id: DeviceId,
     pub(crate) state: NativeDeviceState,
     pub(crate) bypassed: bool,
+    pub(crate) comparison: Option<crate::DeviceComparison>,
 }
 impl Device {
     pub fn id(&self) -> DeviceId {
@@ -100,17 +101,21 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceState { device, state } => {
-            project.device_mut(device)?.state = state;
+            project.device_mut(device)?.replace_state(state)?;
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceStateWithIdentityReservation {
             device,
             expected_state,
+            expected_variant,
             state,
             expected_next_id,
             reserved_ids,
         } => {
             if project.next_id != expected_next_id
+                || project
+                    .device(device)
+                    .is_none_or(|entry| entry.active_variant() != expected_variant)
                 || project
                     .device(device)
                     .ok_or(Invalid("device no longer exists"))?
@@ -124,8 +129,29 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             let next = expected_next_id
                 .checked_add(reserved_ids)
                 .ok_or(Invalid("project identity space exhausted"))?;
-            project.device_mut(device)?.state = state;
+            project.device_mut(device)?.replace_state(state)?;
             project.next_id = next;
+            Ok(crate::Created::None)
+        }
+        Command::CompareDevice {
+            device,
+            expected,
+            action,
+        } => {
+            project.device_mut(device)?.compare(expected, action)?;
+            Ok(crate::Created::None)
+        }
+        Command::ReplaceDeviceComparison {
+            device,
+            state,
+            comparison,
+        } => {
+            if let Some(value) = &comparison {
+                value.validate(&state)?;
+            }
+            let target = project.device_mut(device)?;
+            target.state = state;
+            target.comparison = comparison;
             Ok(crate::Created::None)
         }
         Command::SetDeviceBypass { device, bypassed } => {
@@ -155,6 +181,7 @@ fn insert_instrument(
     }
     let id = DeviceId(project.allocate_id()?);
     project.track_mut(track)?.instrument = Some(Device {
+        comparison: None,
         id,
         state,
         bypassed: false,
@@ -203,6 +230,7 @@ fn insert(
     target.devices.insert(
         index,
         Device {
+            comparison: None,
             id,
             state,
             bypassed: false,
@@ -498,6 +526,72 @@ mod tests {
     }
 
     #[test]
+    fn opaque_identity_reservation_slot_switch_refuses_before_prepare() {
+        let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "track");
+        let device = device_id(&mut editor, track);
+        let command = Command::ReplaceDeviceStateWithIdentityReservation {
+            device,
+            expected_state: editor.project().device(device).unwrap().state().clone(),
+            expected_variant: crate::DeviceVariant::A,
+            state: state(vec![9]),
+            expected_next_id: editor.project().next_identity(),
+            reserved_ids: 1,
+        };
+        editor
+            .execute(Command::CompareDevice {
+                device,
+                expected: crate::DeviceVariant::A,
+                action: crate::DeviceComparisonAction::Switch,
+            })
+            .unwrap();
+        let before = editor.project().snapshot();
+        let calls = std::cell::Cell::new(0);
+        let result = editor.execute_prepared(command, |_| {
+            calls.set(calls.get() + 1);
+            Ok::<(), Invalid>(())
+        });
+        assert!(
+            result.is_err(),
+            "an A-origin edit must not retarget identical B"
+        );
+        assert_eq!(calls.get(), 0, "refuse before preparation");
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().device(device).unwrap().active_variant(),
+            crate::DeviceVariant::A
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), before);
+        // A fresh B-owned capture remains a valid identity-reserving edit.
+        let entry = editor.project().device(device).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceStateWithIdentityReservation {
+                device,
+                expected_state: entry.state().clone(),
+                expected_variant: entry.active_variant(),
+                state: state(vec![9]),
+                expected_next_id: editor.project().next_identity(),
+                reserved_ids: 1,
+            })
+            .unwrap();
+        assert_eq!(
+            editor.project().device(device).unwrap().active_variant(),
+            crate::DeviceVariant::B
+        );
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &state(vec![9])
+        );
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &state(vec![7])
+        );
+    }
+
+    #[test]
     fn opaque_identity_reservation_rejects_stale_edits_and_undo_never_reuses_ids() {
         let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
         let track = track_id(&mut editor, "track");
@@ -507,6 +601,7 @@ mod tests {
         let command = Command::ReplaceDeviceStateWithIdentityReservation {
             device,
             expected_state: expected.clone(),
+            expected_variant: crate::DeviceVariant::A,
             state: state(vec![9]),
             expected_next_id: first,
             reserved_ids: 41,
@@ -527,6 +622,7 @@ mod tests {
                 .execute(Command::ReplaceDeviceStateWithIdentityReservation {
                     device,
                     expected_state: expected,
+                    expected_variant: crate::DeviceVariant::A,
                     state: state(vec![10]),
                     expected_next_id: first + 41,
                     reserved_ids: u64::MAX

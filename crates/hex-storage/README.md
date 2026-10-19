@@ -2,8 +2,9 @@
 
 All new saves use one strict schema32 envelope requiring project tuning,
 the complete device-asset manifest (including empty lists), and an explicit
-`placement` field on each audio edit (`null` for ordinary placement). Every device has one
-bounded manifest entry. Superseded alpha schemas30 and31 refuse explicitly; there is
+`placement` field on each audio edit (`null` for ordinary placement). Every device
+has one bounded manifest entry with a required nullable A/B comparison and
+active/inactive asset bindings. Superseded alpha schemas30/31 refuse explicitly; there is
 no tuning-only/asset-only compatibility dispatch. Legacy writers and asset-unaware presets explicitly refuse these
 references. Storage preserves neutral identities and resolves them through the
 project model, without decoding device payloads or loading PCM. See
@@ -15,7 +16,7 @@ Versioned native project metadata serialization, create-new saves, and recoverab
 replacement of an existing project. Only validated canonical project snapshots
 enter or leave this boundary.
 
-The independent `preset` module also owns schema-1 native device-preset envelopes,
+The independent `preset` module also owns schema-2 native device-preset envelopes,
 bounded opaque payload persistence and create-new publication. It does not change
 project schema versions or interpret device codecs. Session provider validation,
 ownership and prepared admission govern applying a preset. See
@@ -162,8 +163,9 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema32: required audio-edit placement, complete device assets,
-project tuning and audition settings, schema28 audio events, schema27 inherited track colors/per-clip flavors,
+New saves use schema32: required audio-edit placement, complete device assets with
+active/inactive A/B bindings, project tuning and audition settings, schema28 audio
+events, schema27 inherited track colors/per-clip flavors,
 schema26 names, required fade-shape metadata and device host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
 and recording epochs with independent Arrangement clip names. All playback

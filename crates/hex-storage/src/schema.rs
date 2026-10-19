@@ -1185,6 +1185,7 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
     Ok(DeviceSnapshot {
         id: device.id,
         bypassed: device.bypassed,
+        comparison: None,
         state,
     })
 }

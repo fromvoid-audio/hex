@@ -17,6 +17,45 @@ artifacts/session-audio-model-storage-root-{tests,clippy}.log.
 Prepared engine/worker/UI integration and application build remain in progress;
 these model/storage checks do not establish a usable audio-cell workflow.
 
+## Console browser-drop source checkpoint (19 October 2026)
+
+Console (the Session clip grid) accepts one existing browser audio payload on a
+cell body, replacing only that cell after successful media preparation. Narrow
+four-logical-pixel row edges insert before/after the actual scene; the explicit
+bottom row appends a scene. Right-clicking a scene label inserts before that
+stable SceneId; the bottom row offers Add Scene even with no tracks or scenes.
+Existing toolbar Add Scene still appends. Targets capture TrackId/SceneId and
+project generation/revision, never current selection or a guessed newest ID.
+
+All browser placements use the existing AudioBatchImport/AudioBatchControl.
+Decode/preparation precedes a single candidate/batch, one graph preparation and
+one Undo entry including optional scene creation and occupied-cell replacement.
+Resident and VerifiedStreaming use the actual typed prepared Session clip to
+resolve its asset binding. Limits, retained old/new media budgets, validation and
+refusal remain in their existing owners. Undo restores authored contents and
+asset references while deliberately retaining the canonical ID allocator high-
+water mark; Redo restores the same clip and scene IDs. Failure preserves the old
+cell, model, media and history. No hidden Arrangement clip is created.
+
+Browser UI cleanup is payload-identity scoped: drop/rejection/outside release,
+Escape, view changes and canonical revision/project changes retire the matching
+ghost, target and scroll state. Root release cleanup is deferred until actual
+child drop dispatch has consumed the payload, and never clears Trim, clip or
+native-device captures. The worker control owns pending import cancellation;
+a retained drag object grants no admission authority. Console moves do not use
+retained Arrangement geometry. Arrangement clip payloads keep only the existing
+same-track, empty-existing-cell copy contract; cross-track, occupied or inserted-
+scene clip-copy payloads refuse explicitly rather than adding a new copy model.
+An explicit Stop cell is occupied for Arrangement copies too: both Audio and
+MIDI payloads refuse it before queueing, leaving the Stop marker and history intact.
+This does not change the separate atomic browser-audio replacement contract.
+
+Focused worker/model and rendered-event checks are source evidence. Native
+component verification, actual audio hardware/listening, physical drag/context
+acceptance and optimized installed delivery remain separate. Earlier dated
+contracts below are historical; current tracks are hybrid and historical-alpha
+migration work is not part of this change.
+
 ## Canonical source and persistence
 
 A Session audio clip owns a globally unique ClipId, its own name, an AssetId and
