@@ -181,6 +181,7 @@ mod ui_tests {
                 .unwrap();
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::new(model.project().clone()),
                 waveforms: old.waveforms.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),

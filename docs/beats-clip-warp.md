@@ -132,3 +132,45 @@ Preserve divisions, parameter sound changes, one Undo/Redo, split/copy and curre
 save/reopen. Physical listening/UI, exact final local CI and optimized delivery
 remain coordinator/merger work. Sampler admission and unrelated catalog features
 do not gate this bounded Beats repair.
+
+## Beats WSOLA quality follow-up — Pulse2847 / PR449
+
+The subsequent listening report reopened musical quality despite the earlier
+seam repair. The Beats-only replacement uses stereo-linked, transient-anchored
+waveform-similarity overlap-add. Physical attack exclusions remain separate from
+chosen Preserve groups. Selected boundaries follow the actual map; unselected
+attacks inside a fixed group retain native-relative pitch timing. A compressed
+next group can omit late material, but cannot accelerate or replay its attack.
+All tail modes share that first pass and bounded boundary treatment; Stop still
+produces exact silence after its available pass. Envelope100 does not gate each
+grain. Other Warp modes and Engine ownership remain unchanged.
+
+A broader independent test exposed severe added residual on27.5Hz at ordinary
+2:1 compression with the initial12ms search radius. A40ms radius found coherent
+phase without lengthening grains. Version11 therefore screens the entire wider
+bounded range using16 stereo points, fully scores eight separated finalists plus
+nominal/predicted positions, and refines multiple full-score winners before the
+final fractional search. Only fully scored statistics drive reconstruction.
+Both screening and full previous moments are computed once per grain. Every
+search stage remains charged; the concurrently live search reservation increases
+from4096 to8192 bytes inside the unchanged32MiB scratch ceiling. The work ceiling
+remains one billion units. Version11 invalidates earlier prepared-cache entries;
+selection/PCM identity with earlier versions is not claimed.
+
+Focused source checks pass43 Beats cases, including480 complete-Match bitwise
+comparisons of exhaustive versus exact-pruned scans,20 screened-versus-full
+stereo quality comparisons, seven chosen-group laws, and66 positive sub-bass
+rate/ratio/pitch combinations with six explicit out-of-range validation cases.
+Actual Engine preparation/cache/Undo/seek/partition cases and linear export pass.
+All54 default renders of the six authorised CC0 acoustic recordings complete;
+the16.82-second timpani2x cases consume897519062 Forward and840646204 Alternating
+work units. These are charged-work observations, not a broad throughput claim.
+Original failures and intermediate renders remain separate evidence.
+
+The original recordings have no asserted publisher BPM. A separately documented
+120BPM arrangement constructed from the authorised bass/snare recordings provides
+additional musical material; it is not a publisher loop or commercial reference.
+Fixed-gain comparisons and additional whole-file level matching retain exact
+settings and gains. Neither automated residual/RMS tests nor WAV generation
+constitutes hearing, Live parity, or user acceptance. Optimized native listening,
+representative mixed music and final integrated validation remain open.

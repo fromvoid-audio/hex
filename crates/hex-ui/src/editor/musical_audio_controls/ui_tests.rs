@@ -76,6 +76,7 @@ fn prepare_beats_fixture(editor: &gpui::Entity<EditorView>, clip: ClipId, cx: &m
             .unwrap();
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(model.project().clone()),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: old.audio_clip_waveforms.clone(),
@@ -222,6 +223,7 @@ fn bounded_audio_detail_fixture(
                 );
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: std::collections::BTreeMap::from([(asset, peaks)]),
                     audio_clip_waveforms: Default::default(),

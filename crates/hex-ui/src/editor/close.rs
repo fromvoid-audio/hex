@@ -30,7 +30,7 @@ impl EditorView {
             cx.notify();
             return false;
         }
-        if self.close_prompt_open {
+        if self.close_prompt_open || self.project_open.busy() || self.pending_open_path.is_some() {
             return false;
         }
         if !self.prepare_theme_window_close(window, cx) {
@@ -57,7 +57,7 @@ impl EditorView {
             cx.notify();
             return;
         }
-        if self.close_prompt_open {
+        if self.close_prompt_open || self.project_open.busy() || self.pending_open_path.is_some() {
             return;
         }
         if !self.prepare_theme_window_close(window, cx) {
@@ -243,6 +243,7 @@ mod window_tests {
                 editor.update(cx, |view, cx| {
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::new(hex_project::Project::new(48_000).expect("test project")),
                         waveforms: Default::default(),
                         audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -296,6 +297,7 @@ mod window_tests {
             if let Some(state) = view.state.as_ref() {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::clone(&state.project),
                     waveforms: state.waveforms.clone(),
                     audio_clip_waveforms: state.audio_clip_waveforms.clone(),
@@ -442,6 +444,7 @@ mod window_tests {
                     let state = &device_event.state;
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::clone(&state.project),
                         waveforms: state.waveforms.clone(),
                         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
