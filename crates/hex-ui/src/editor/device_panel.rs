@@ -161,6 +161,10 @@ pub(super) enum DevicePanelOwner {
 }
 
 impl DevicePanelState {
+    pub(super) fn add_menu_is_open(&self) -> bool {
+        self.add_menu_open
+    }
+
     /// A menu selecting another card restores that card only when a card owned
     /// focus. Nested numeric/text/graph and browser focus remain untouched.
     pub(super) fn comparison_return_focus(

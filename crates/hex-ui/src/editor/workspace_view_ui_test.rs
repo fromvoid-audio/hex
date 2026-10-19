@@ -642,3 +642,31 @@ fn workspace_three_returns_held_left_before_drag_preserves_capture(cx: &mut Test
         editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
     }
 }
+
+#[gpui::test]
+fn workspace_three_returns_plain_clip_click_retires_pending_pointer(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, _, _, clip) = super::clip_drag_ui_test::audio_project();
+    let (handle, editor) = super::clip_drag_ui_test::editor_window(cx, project, Default::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.read(cx).focus.focus(window);
+    });
+    visual.run_until_parked();
+    let name = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
+    let point = visual.debug_bounds(name).unwrap().center();
+    // No Tab or other keyboard event: the existing click path alone must retire.
+    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| assert!(v.pointer_down.is_some()));
+    visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.pointer_down.is_none(),
+            "ordinary clip click did not retire original press"
+        );
+        assert!(v.last_enqueued_edit.is_none());
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+}

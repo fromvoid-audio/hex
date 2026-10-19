@@ -409,7 +409,7 @@ fn workspace_three_returns_device_navigation_preserves_capture(cx: &mut TestAppC
         visual.simulate_mouse_down(start, button, Modifiers::default());
         visual.simulate_mouse_move(end, button, Modifiers::default());
         let (before, offset) = editor.read_with(&visual, |v, _| {
-            assert!(v.device_panel.navigation.test_gesture_active());
+            assert!(v.device_panel.navigation.is_active());
             (
                 v.state.as_ref().unwrap().clone(),
                 v.device_panel.navigation.scroll.offset(),
@@ -422,7 +422,7 @@ fn workspace_three_returns_device_navigation_preserves_capture(cx: &mut TestAppC
                 crate::editor::EditorMode::Session,
                 "overview={overview}"
             );
-            assert!(v.device_panel.navigation.test_gesture_active());
+            assert!(v.device_panel.navigation.is_active());
             assert_eq!(v.device_panel.navigation.scroll.offset(), offset);
             assert_eq!(v.state.as_ref().unwrap().project, before.project);
             assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
