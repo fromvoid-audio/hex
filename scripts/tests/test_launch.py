@@ -420,6 +420,57 @@ class LaunchTests(unittest.TestCase):
         prepare.assert_not_called()
 
 
+    def test_recreated_target_opt_in_forwards_only_inspected_identity_without_restart_or_tests(self):
+        authority={'owner_sha256':'e'*64,'target_identity':{'device':17,'inode':42}}
+        with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'command',side_effect=self.command), \
+                patch.object(launch.restart,'inspect_recreated_target',return_value=authority) as inspect, \
+                patch.object(launch.restart,'prepare',side_effect=AssertionError('no process control')), \
+                patch.object(launch.delivery,'assert_inactive') as inactive, \
+                patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}), \
+                patch.object(launch.ci,'LocalCiRunner',side_effect=AssertionError('tests not requested')):
+            launch.run_launch(self.root,argv=['--recover-release-target'])
+        inspect.assert_called_once();inactive.assert_called_once()
+        package=next(x for x in self.calls if x[0]=='sh')
+        self.assertIn('--build-only',package)
+        for flag,value in [('--expected-release-owner-sha256','e'*64),
+                           ('--expected-recreated-target-device','17'),('--expected-recreated-target-inode','42')]:
+            self.assertEqual(package[package.index(flag)+1],value)
+        self.assertEqual(sum(x[0]=='open' for x in self.calls),1)
+
+    def test_recreated_target_inspection_failure_or_running_raw_never_builds_or_opens(self):
+        for running in (False,True):
+            self.calls.clear();self.head_reads=0
+            self.raw_processes='123 /fixture/hex-desktop' if running else ''
+            with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'command',side_effect=self.command), \
+                    patch.object(launch.restart,'inspect_recreated_target',side_effect=launch.ci.TargetCacheError('foreign')) as inspect, \
+                    patch.object(launch.restart,'prepare') as force, patch.object(launch.delivery,'assert_inactive'):
+                with self.assertRaises((launch.LaunchError,launch.ci.TargetCacheError)):
+                    launch.run_launch(self.root,argv=['--recover-release-target'])
+            if running:inspect.assert_not_called()
+            force.assert_not_called()
+            self.assertFalse(any(x[0] in ('sh','open') for x in self.calls))
+
+    def test_recreated_target_cli_excludes_force_and_installed_only_but_allows_test(self):
+        for incompatible in ('--open','--force-restart'):
+            with patch.object(launch,'run_launch') as run, redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    launch.main(['--recover-release-target',incompatible])
+            self.assertEqual(error.exception.code,2);run.assert_not_called()
+        with patch.object(launch,'run_launch') as run:
+            self.assertEqual(launch.main(['--recover-release-target','--test']),0)
+        run.assert_called_once_with(argv=['--recover-release-target','--test'])
+
+    def test_recreated_target_flag_survives_ordinary_main_update_reexec(self):
+        with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'require_clean_main'), \
+                patch.object(launch,'checked',return_value='d'*40), \
+                patch.object(launch,'fetch_and_fast_forward',return_value=self.source), \
+                patch.object(launch.os,'execv',side_effect=OSError('fixture exec')) as reexec, \
+                patch.object(launch.restart,'inspect_recreated_target') as inspect:
+            with self.assertRaises(OSError):launch.run_launch(self.root,argv=['--recover-release-target'])
+        reexec.assert_called_once_with(launch.sys.executable,[launch.sys.executable,str(self.root/'launch'),'--recover-release-target'])
+        inspect.assert_not_called()
+
+
 class ForceRestartFlagTests(unittest.TestCase):
     def test_native_bundle_verification_failure_is_a_controlled_cli_refusal(self):
         with patch.object(launch,'run_launch',side_effect=launch.delivery.DeliveryError('sealed bundle mismatch')), \
@@ -439,6 +490,7 @@ class ForceRestartFlagTests(unittest.TestCase):
             with self.subTest(arguments=arguments), patch.object(launch, "run_launch") as run:
                 self.assertEqual(launch.main(list(arguments)), 0)
                 run.assert_called_once_with(argv=list(arguments))
+
 
 
 if __name__ == "__main__":

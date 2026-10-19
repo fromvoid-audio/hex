@@ -5792,3 +5792,23 @@ User rejected device-local automation editing. Remove its button, graph mode and
   prospective full qualification/review/merge, Root owns physical acceptance.
 - Frozen463 pointer-delivery and469 captured-release packets remain separate;
   neither their source nor historical evidence is replaced by this paint fix.
+
+## 19 October 2026 — Pulse2806 / PR412 explicit recreated release-target recovery
+
+- Root29797 accepts distinct `./launch --recover-release-target`; default and
+  automatic force-restart target identity/CAS protections remain. Never signals
+  an app. Initial and guarded mutation-boundary checks require configured/raw
+  executables inactive; normal latest-main build/install/open, tests opt-in.
+- Read-only inspection binds old regular bounded owner bytes, exact replacement
+  directory identity, same workspace/common repo, ancestor clean source and
+  retained package specs. Guard rechecks under existing lock before pending
+  marker/selective release clean/fresh identified build/ready. No stale artifact
+  qualification, blind marker deletion, shared-target test cleanup or new owner.
+- Source tests cover actual production Runner/private recreated directories,
+  fake Cargo compilation/identification, read-only inspection, explicit routing,
+  old automatic refusal, marker/target/source races, foreign/malformed metadata,
+  package changes, missing/symlink targets, busy lock and running-app refusal.
+  Original29786 causal diagnostic is retained; new fixture setup corrections
+  are distinct from product failures. Exact check receipts accompany handoff.
+- Root alone performs later real Mac recovery after safe app shutdown. Cloud
+  tests do not establish actual machine recovery, native qualification or merge.

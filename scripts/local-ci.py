@@ -285,6 +285,7 @@ class LocalCiRunner:
         }
         self.git_identity: dict[str, object] | None = None
         self.cargo_identity: dict[str, object] | None = None
+        self._lexical_cargo_target: Path | None = None
         self.target_lock: CargoTargetLock | None = None
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
@@ -438,6 +439,7 @@ class LocalCiRunner:
             target = Path(raw_target)
             if not target.is_absolute():
                 target = self.root / target
+            self._lexical_cargo_target = target.absolute()
             target = target.resolve()
             by_id = {
                 package["id"]: package
@@ -735,8 +737,98 @@ class LocalCiRunner:
         finally:
             os.close(descriptor)
 
+    def inspect_recreated_release_target(self) -> dict[str, object]:
+        """Read-only explicit recovery authority, while the target lock is held.
+
+        This never adopts an unknown/foreign owner or certifies its old artifact.
+        The caller must revalidate the returned hash and replacement identity at
+        the guarded mutation boundary; ordinary automatic restart stays stricter.
+        """
+        if self.target_lock is None or self.cargo_identity is None:
+            raise TargetCacheError("recreated-target inspection requires target ownership")
+        target = Path(str(self.cargo_identity["target_directory"]))
+        lexical = self._lexical_cargo_target
+        if lexical is None:
+            raise TargetCacheError("recreated target has no lexical path evidence")
+        for path in (lexical, *lexical.parents):
+            if path.is_symlink():
+                raise TargetCacheError("recreated target path contains a symlink")
+        identity = self._directory_identity(target)
+        if identity is None:
+            raise TargetCacheError("recreated target must exist")
+        _, dev_owner = target_state_paths(target, self.target_state_dir)
+        owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
+        try:
+            descriptor = os.open(owner, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("owner is not regular")
+                raw = stream.read(128 * 1024 + 1)
+            if len(raw) > 128 * 1024:
+                raise ValueError("owner exceeds bounded metadata size")
+            record = json.loads(raw)
+            workspace = {k: self.git_identity[k] for k in ("workspace_root", "git_common_dir")}
+            previous = record["source"]
+            old_identity = record["target_identity"]
+            def hex_string(value, size):
+                return (isinstance(value, str) and len(value) == size
+                        and all(c in "0123456789abcdef" for c in value))
+            if (type(record.get("schema_version")) is not int or record["schema_version"] != 1
+                    or record.get("profile") != "release"
+                    or record.get("state") not in {"pending", "ready"}
+                    or record.get("target_directory") != str(target)
+                    or record.get("workspace_owner") != workspace
+                    or not isinstance(old_identity, dict) or set(old_identity) != {"device", "inode"}
+                    or any(type(old_identity[k]) is not int or old_identity[k] < (1 if k == "inode" else 0)
+                           for k in ("device", "inode"))
+                    or old_identity == identity
+                    or not isinstance(previous, dict)
+                    or set(previous) != {"commit", "dirty", "dirty_files", "content_sha256"}
+                    or previous["dirty"] is not False or previous["dirty_files"] != []
+                    or not hex_string(previous["commit"], 40)
+                    or not hex_string(previous["content_sha256"], 64)):
+                raise ValueError("owner is not this repository's prior target")
+            scope = self._release_scope()
+            packages = record["packages"]
+            if (not isinstance(packages, list) or not packages
+                    or any(not isinstance(p, dict) or set(p) != {"name", "version", "spec"}
+                           or not all(isinstance(v, str) and v for v in p.values()) for p in packages)):
+                raise ValueError("invalid prior package scope")
+            names = {p["name"] for p in packages}
+            if len(names) != len(packages) or packages != [p for p in scope if p["name"] in names]:
+                raise ValueError("prior package ownership changed")
+            source = self.summary["start_tree"]
+            if not hex_string(source["commit"], 40):
+                raise ValueError("current source has no exact commit")
+            ancestry = subprocess.run(["git", "merge-base", "--is-ancestor", previous["commit"],
+                                      source["commit"]], cwd=self.root, env=self.env,
+                                     capture_output=True, check=False)
+            if ancestry.returncode != 0:
+                raise ValueError("prior owner source is not an ancestor of current source")
+            if record["state"] == "ready":
+                artifact = record["artifact"]
+                argv = record["build_argv"]
+                if (not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}
+                        or not isinstance(artifact["path"], str)
+                        or not Path(artifact["path"]).is_absolute()
+                        or ".." in Path(artifact["path"]).parts
+                        or target / "release" not in Path(artifact["path"]).parents
+                        or not hex_string(artifact["sha256"], 64)
+                        or not isinstance(argv, list) or not all(isinstance(a, str) for a in argv)
+                        or argv[:2] != ["cargo", "build"] or "--release" not in argv):
+                    raise ValueError("malformed historical release artifact")
+            if (not self._capture_repository_state("recovery_inspected_tree")
+                    or self.summary["recovery_inspected_tree"] != source
+                    or self._directory_identity(target) != identity):
+                raise ValueError("source or replacement changed during inspection")
+            return {"owner_sha256": hashlib.sha256(raw).hexdigest(), "target_identity": identity}
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+
     @contextmanager
-    def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None):
+    def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None,
+                        expected_recreated_target_identity: dict[str, int] | None = None,
+                        recovery_inactive_check=None):
         """Explicit release handoff; caller must identify its artifact before exit.
 
         Uses the dev driver's SAME target-wide lock, but a separate durable
@@ -760,6 +852,17 @@ class LocalCiRunner:
         lock.acquire()
         self.target_lock = lock
         try:
+            replacement = expected_recreated_target_identity
+            if replacement is not None:
+                if (not adopt or expected_owner_sha256 is None
+                        or not isinstance(replacement, dict) or set(replacement) != {"device", "inode"}
+                        or any(type(replacement[k]) is not int or replacement[k] < (1 if k == "inode" else 0)
+                               for k in ("device", "inode"))
+                        or not callable(recovery_inactive_check)):
+                    raise TargetCacheError("explicit recreated-target recovery requires identity, owner hash and inactivity check")
+                inspected = self.inspect_recreated_release_target()
+                if inspected != {"owner_sha256": expected_owner_sha256, "target_identity": replacement}:
+                    raise TargetCacheError("recreated target or owner changed since inspection")
             expected_owner_bytes = None
             if expected_owner_sha256 is not None:
                 if (not adopt or len(expected_owner_sha256) != 64
@@ -831,7 +934,8 @@ class LocalCiRunner:
                 # Automatic restart recovery retains the inspected owner, not
                 # manual adoption's permission to take over another target.
                 if expected_owner_sha256 is not None and (
-                        record["target_identity"] != identity or record["workspace_owner"] != workspace):
+                        (replacement is None and record["target_identity"] != identity)
+                        or record["workspace_owner"] != workspace):
                     raise TargetCacheError("release target identity/workspace changed since restart inspection; preserved unchanged")
                 old_scope = [(p["name"], p["version"]) for p in record["packages"]]
                 old_names = {name for name, _version in old_scope}
@@ -859,6 +963,13 @@ class LocalCiRunner:
                       "action": "reuse" if reuse else ("adopted" if adopt else "handoff"),
                       "cleanup_status": "not_needed", "previous_owner": record,
                       "malformed_previous_owner": malformed}
+            if replacement is not None:
+                # Last check before pending ownership/cleanup, under the SAME
+                # target lock. No process control is permitted by this callback.
+                recovery_inactive_check()
+                if self.inspect_recreated_release_target() != inspected:
+                    raise TargetCacheError("recreated target or owner changed before mutation")
+                report["explicit_recreated_target"] = inspected
             self.summary["release_target_cache"] = report
             self._write_release_owner(owner_path, pending)
             if not reuse and populated:

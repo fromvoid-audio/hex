@@ -431,6 +431,222 @@ class OwnershipTests(ReleaseFixture):
         self.assertEqual(keep.read_bytes(),b'external');self.assertIsNone(self.runner.target_lock)
 
 
+class RecreatedTargetTests(ReleaseFixture):
+    """Explicit authority is distinct from automatic restart and manual adoption."""
+    def setUp(self):
+        super().setUp()
+        tool = self.f.bin / 'git'
+        tool.write_text(tool.read_text().replace('deadbeef', self.source))
+        self.assertTrue(self.runner._capture_repository_state('start_tree'))
+        self.record.update(state='ready', artifact={'path':str(self.target/'release/hex'), 'sha256':'d'*64},
+                           build_argv=['cargo','build','--release'])
+        self.save()
+        self.retained = self.target.with_name('retained-original-target')
+        (self.target/'old-artifact').write_bytes(b'never qualify or erase old build')
+        self.target.rename(self.retained)
+        self.target.mkdir()
+        self.keep = self.target/'external-cache'
+        self.keep.write_bytes(b'preserve external data')
+
+    def inspect(self):
+        path, _ = fixtures.local_ci.target_state_paths(self.target, self.runner.target_state_dir)
+        lock = fixtures.local_ci.CargoTargetLock(path, {'operation':'fixture-inspection'})
+        lock.acquire(); self.runner.target_lock = lock
+        try:
+            return self.runner.inspect_recreated_release_target()
+        finally:
+            self.assertIsNone(lock.release()); self.runner.target_lock = None
+
+    def guard(self, authority, check=lambda: None):
+        return self.runner.guarded_release(adopt=True, expected_owner_sha256=authority['owner_sha256'],
+            expected_recreated_target_identity=authority['target_identity'], recovery_inactive_check=check)
+
+    def assert_preserved(self, raw, calls):
+        self.assertEqual(self.owner.read_bytes(), raw)
+        self.assertEqual(self.keep.read_bytes(), b'preserve external data')
+        self.assertEqual((self.retained/'old-artifact').read_bytes(), b'never qualify or erase old build')
+        self.assertNotIn('cargo clean', self.f.call_log.read_text()[len(calls):])
+        self.assertIsNone(self.runner.target_lock)
+
+    def test_explicit_inspection_and_real_guard_rebuild_ready_without_stale_artifact_reuse(self):
+        raw = self.owner.read_bytes(); authority = self.inspect()
+        self.assertEqual(authority['owner_sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(authority['target_identity'], self.runner._directory_identity(self.target))
+        self.assertNotEqual(authority['target_identity'], self.record['target_identity'])
+        self.assertEqual(self.owner.read_bytes(), raw)
+        inactive = Mock()
+        with self.guard(authority, inactive) as report:
+            self.assertEqual(report['state'],'pending')
+            self.assertEqual(report['previous_owner'], self.record)
+            self.assertEqual(report['cleanup_argv'][3],'release')
+            artifact = self.target/'release/fixture'; artifact.parent.mkdir(); artifact.write_bytes(b'fresh fixture')
+            argv = ['cargo','build','--release']
+            report.update(build_argv=argv,build_exit_code=0,
+                          artifact=self.runner.identify_release_artifact(artifact,argv))
+        inactive.assert_called_once_with()
+        ready=json.loads(self.owner.read_bytes())
+        self.assertEqual(ready['state'],'ready')
+        self.assertEqual(ready['target_identity'],authority['target_identity'])
+        self.assertEqual(ready['artifact']['sha256'],hashlib.sha256(b'fresh fixture').hexdigest())
+        self.assertEqual(self.keep.read_bytes(),b'preserve external data')
+        self.assertEqual((self.retained/'old-artifact').read_bytes(),b'never qualify or erase old build')
+        self.assertIsNone(self.runner.target_lock)
+
+    def test_default_and_force_owner_cas_still_refuse_recreated_target(self):
+        raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
+        with self.assertRaises(restart.RestartError):self.read()
+        for kwargs in ({}, {'adopt':True,'expected_owner_sha256':hashlib.sha256(raw).hexdigest()}):
+            with self.assertRaises(fixtures.local_ci.TargetCacheError):
+                with self.runner.guarded_release(**kwargs):self.fail('implicit adoption')
+        self.assert_preserved(raw,calls)
+
+    def test_changed_or_missing_replacement_after_inspection_refuses_before_mutation(self):
+        authority=self.inspect();raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
+        saved=self.target.with_name('inspected-replacement');self.target.rename(saved)
+        for exists in (False,True):
+            if exists:self.target.mkdir()
+            with self.assertRaises(fixtures.local_ci.TargetCacheError):
+                with self.guard(authority):self.fail('replacement race accepted')
+            self.assertEqual(self.owner.read_bytes(),raw)
+            self.assertNotIn('cargo clean',self.f.call_log.read_text()[len(calls):])
+            self.assertIsNone(self.runner.target_lock)
+        self.target.rmdir();saved.rename(self.target)
+        self.assert_preserved(raw,calls)
+
+    def test_owner_cas_change_after_inspection_refuses_before_mutation(self):
+        authority=self.inspect();raw=self.owner.read_bytes()+b'\n';self.owner.write_bytes(raw)
+        calls=self.f.call_log.read_text()
+        with self.assertRaises(fixtures.local_ci.TargetCacheError):
+            with self.guard(authority):self.fail('owner race accepted')
+        self.assert_preserved(raw,calls)
+
+    def test_foreign_source_packages_and_malformed_historical_owner_refuse(self):
+        import copy
+        original=copy.deepcopy(self.record)
+        mutations=[lambda r:r['workspace_owner'].update(workspace_root='/foreign'),
+                   lambda r:r['workspace_owner'].update(git_common_dir='/foreign'),
+                   lambda r:r['packages'][0].update(spec='foreign'),
+                   lambda r:r['packages'][0].update(version='other'),
+                   lambda r:r['packages'][0].update(name='other'),
+                   lambda r:r.update(packages=[]), lambda r:r.update(state='foreign'),
+                   lambda r:r['source'].update(dirty=True), lambda r:r['source'].update(commit='bad'),
+                   lambda r:r['source'].update(content_sha256='bad'),
+                   lambda r:r.update(target_identity={'device':True,'inode':1}),
+                   lambda r:r.update(target_identity={'device':1,'inode':0}),
+                   lambda r:r.update(target_identity=self.runner._directory_identity(self.target)),
+                   lambda r:r['artifact'].update(path='/outside/hex'),
+                   lambda r:r['artifact'].update(sha256='bad'),lambda r:r.update(build_argv='cargo')]
+        for change in mutations:
+            with self.subTest(change=mutations.index(change)):
+                self.record=copy.deepcopy(original);change(self.record);self.save()
+                raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
+                with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect()
+                self.assert_preserved(raw,calls)
+        for raw in (b'null',b'[]',b'{bad',b'x'*(128*1024+1)):
+            self.owner.write_bytes(raw);calls=self.f.call_log.read_text()
+            with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect()
+            self.assert_preserved(raw,calls)
+
+    def test_nonancestor_source_refuses_and_never_cleans(self):
+        raw=self.owner.read_bytes();calls=self.f.call_log.read_text();original=fixtures.local_ci.subprocess.run
+        def command(argv,**kwargs):
+            if argv[:3]==['git','merge-base','--is-ancestor']:
+                return subprocess.CompletedProcess(argv,1)
+            return original(argv,**kwargs)
+        with patch.object(fixtures.local_ci.subprocess,'run',side_effect=command):
+            with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'ancestor'):self.inspect()
+        self.assert_preserved(raw,calls)
+
+    def test_symlink_owner_or_target_and_held_lock_refuse(self):
+        raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
+        foreign=self.f.base/'foreign-marker';foreign.write_bytes(raw);self.owner.unlink();self.owner.symlink_to(foreign)
+        with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect()
+        self.assertEqual(foreign.read_bytes(),raw);self.owner.unlink();self.owner.write_bytes(raw)
+        moved=self.target.with_name('plain-replacement');self.target.rename(moved);self.target.symlink_to(moved,target_is_directory=True)
+        with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'symlink'):self.inspect()
+        self.target.unlink();moved.rename(self.target)
+        authority=self.inspect();path,_=fixtures.local_ci.target_state_paths(self.target,self.runner.target_state_dir)
+        lock=fixtures.local_ci.CargoTargetLock(path,{'operation':'other-job'});lock.acquire()
+        try:
+            with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'already in use'):
+                with self.guard(authority):self.fail('live job bypassed')
+        finally:self.assertIsNone(lock.release())
+        self.assert_preserved(raw,calls)
+
+    def test_last_boundary_rechecks_inactivity_owner_target_and_source(self):
+        for cause in ('running','marker','target','source'):
+            with self.subTest(cause=cause):
+                authority=self.inspect();raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
+                def check():
+                    if cause=='running':raise delivery.DeliveryError('running')
+                    if cause=='marker':self.owner.write_bytes(raw+b'\n')
+                    if cause=='target':self.target.rename(self.target.with_name('raced-target'));self.target.mkdir()
+                    if cause=='source':self.runner.env['FAKE_FILE_LIST']='new-source'
+                with self.assertRaises((fixtures.local_ci.TargetCacheError,delivery.DeliveryError)):
+                    with self.guard(authority,check):self.fail('boundary change accepted')
+                self.assertNotIn('cargo clean',self.f.call_log.read_text()[len(calls):])
+                self.assertIsNone(self.runner.target_lock)
+                self.assertEqual(self.owner.read_bytes(),raw+(b'\n' if cause=='marker' else b''))
+                self.owner.write_bytes(raw)
+                if cause=='target':self.target.rmdir();self.target.with_name('raced-target').rename(self.target)
+                self.runner.env['FAKE_FILE_LIST']=''
+
+    def test_missing_authority_or_inactivity_callback_cannot_relax_automatic_guard(self):
+        authority=self.inspect();raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
+        for replacement in (True,{}, {'device':0,'inode':True},authority['target_identity']):
+            with self.assertRaises(fixtures.local_ci.TargetCacheError):
+                with self.runner.guarded_release(adopt=True,expected_owner_sha256=authority['owner_sha256'],
+                    expected_recreated_target_identity=replacement):self.fail('incomplete authority accepted')
+        self.assert_preserved(raw,calls)
+
+    def test_explicit_launcher_inspection_never_constructs_controller_or_mutates_owner(self):
+        app=self.f.repo.resolve()/'artifacts/hex.app';raw=self.owner.read_bytes();check=Mock()
+        with patch.object(fixtures.local_ci,'LocalCiRunner',return_value=self.runner), \
+                patch.object(delivery,'assert_inactive') as inactive, \
+                patch.object(restart,'NativeController',side_effect=AssertionError('must not control app')):
+            authority=restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,check)
+        self.assertEqual(authority['owner_sha256'],hashlib.sha256(raw).hexdigest())
+        self.assertEqual(self.owner.read_bytes(),raw);self.assertEqual(inactive.call_count,2)
+        self.assertEqual(check.call_count,2);self.assertIsNone(self.runner.target_lock)
+        reports=list((self.f.repo/'artifacts/launch').glob('target-recovery-*/target-recovery-inspection.json'))
+        self.assertEqual(json.loads(reports[0].read_text())['status'],'inspected_only')
+
+    def test_inspection_raw_or_app_running_never_controls_app_or_mutates_owner(self):
+        app=self.f.repo.resolve()/'artifacts/hex.app';raw=self.owner.read_bytes()
+        for app_running in (True,False):
+            with patch.object(fixtures.local_ci,'LocalCiRunner',return_value=self.runner), \
+                    patch.object(delivery,'assert_inactive',side_effect=delivery.DeliveryError('running') if app_running else None), \
+                    patch.object(restart,'NativeController') as controller:
+                with self.assertRaises(delivery.DeliveryError):
+                    restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,
+                        Mock(side_effect=None if app_running else delivery.DeliveryError('raw running')))
+            controller.assert_not_called();self.assertEqual(self.owner.read_bytes(),raw)
+            self.assertIsNone(self.runner.target_lock)
+    def test_packaging_artifact_helper_forwards_authority_into_real_guard(self):
+        authority=self.inspect();inactive=Mock()
+        cargo=self.f.bin/'cargo';original=cargo.read_text()
+        # The owned executable emits a real Cargo-shaped artifact record and
+        # materializes that fixture file; metadata/clean stay the original fake.
+        prefix=('#!'+sys.executable+'\nimport os,sys,json\nfrom pathlib import Path\n'
+                'if sys.argv[1:2]==["build"]:\n'
+                ' p=Path(os.environ["CARGO_TARGET_DIR"])/"release/fixture"\n'
+                ' p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b"fresh packaged fixture")\n'
+                ' print(json.dumps({"reason":"compiler-artifact","executable":str(p),'
+                '"target":{"name":"hex-desktop"},"profile":{"opt_level":"3"}}));sys.exit(0)\n'
+                'os.execv("/bin/sh",["/bin/sh",str(Path(__file__).with_name("cargo-original")),*sys.argv[1:]])\n')
+        (cargo.with_name('cargo-original')).write_text(original.replace('tool=${0##*/}', 'tool=cargo'));cargo.write_text(prefix)
+        with delivery.optimized_artifact(self.runner,adopt=True,
+                expected_owner_sha256=authority['owner_sha256'],
+                expected_recreated_target_identity=authority['target_identity'],
+                recovery_inactive_check=inactive) as (binary,report):
+            self.assertEqual(binary.read_bytes(),b'fresh packaged fixture')
+            self.assertEqual(report['explicit_recreated_target'],authority)
+            self.assertIsNotNone(self.runner.target_lock)
+        inactive.assert_called_once_with()
+        self.assertEqual(json.loads(self.owner.read_bytes())['state'],'ready')
+        self.assertIsNone(self.runner.target_lock)
+
+
 class PreflightTests(ReleaseFixture):
     def prepare_fixture(self):
         # This repository already exists under our exclusively owned temporary

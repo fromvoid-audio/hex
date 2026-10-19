@@ -38,6 +38,27 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("temporary publication files preserved", errors.getvalue())
         activate.assert_not_called()
 
+    def test_recovery_mutation_boundary_refuses_configured_or_raw_app_without_control(self):
+        app=Path('/owned/hex.app')
+        for observed in ('3 /owned/hex.app/Contents/MacOS/hex', '4 /other/hex-desktop'):
+            with patch.object(delivery,'run',return_value=observed):
+                with self.assertRaisesRegex(delivery.DeliveryError,'running'):
+                    delivery.assert_recovery_inactive(app)
+        with patch.object(delivery,'run',return_value='5 /other/other-program'):
+            delivery.assert_recovery_inactive(app)
+
+    def test_recovery_cli_requires_complete_identity_owner_and_explicit_adoption(self):
+        base=['hex-test-build','--build-only','--candidate','a'*40,'--included','included.json','--checklist','list.md']
+        cases=[['--expected-recreated-target-device','1'],
+               ['--expected-recreated-target-inode','2'],
+               ['--expected-recreated-target-device','1','--expected-recreated-target-inode','2'],
+               ['--expected-recreated-target-device','-1','--expected-recreated-target-inode','2',
+                '--adopt-release-target','--expected-release-owner-sha256','e'*64]]
+        for args in cases:
+            with patch.object(delivery.sys,'argv',base+args), patch.object(delivery,'build') as build, redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:delivery.main()
+            self.assertEqual(error.exception.code,2);build.assert_not_called()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

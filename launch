@@ -197,6 +197,14 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
     except (delivery.DeliveryError, OSError, subprocess.CalledProcessError) as error:
         raise LaunchError(f"configured app is not inactive; replacement was not started: {error}") from error
 
+    if "--recover-release-target" in (argv or []):
+        authority = restart.inspect_recreated_target(root, app, source, ci, delivery,
+                                                     assert_no_raw_desktop_process)
+        identity = authority["target_identity"]
+        recovery_args = ["--adopt-release-target", "--expected-release-owner-sha256", authority["owner_sha256"],
+                         "--expected-recreated-target-device", str(identity["device"]),
+                         "--expected-recreated-target-inode", str(identity["inode"])]
+
     tested = "--test" in (argv or [])
     if tested:
         runner = ci.LocalCiRunner(root, mode="full")
@@ -239,8 +247,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="quit the verified stable development app; after a bounded normal-quit wait, "
                              "force it if necessary (unsaved work may be lost); recover matching owned "
                              "pending state, rebuild latest main, then start it; tests remain opt-in")
+    parser.add_argument("--recover-release-target", action="store_true",
+                        help="explicitly recover this repository's inspected recreated release target; "
+                             "requires hex already stopped, never signals an app; rebuild/install/open "
+                             "latest main normally, tests remain opt-in")
     arguments = list(sys.argv[1:] if argv is None else argv)
     options = parser.parse_args(arguments)
+    if options.recover_release_target and (options.open or options.force_restart):
+        parser.error("--recover-release-target cannot be combined with --open or --force-restart")
     if options.open and options.force_restart:
         parser.error("--force-restart cannot be combined with installed-only --open")
     try:
