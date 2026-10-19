@@ -5383,6 +5383,9 @@ sole merger owns prospective fullCI/merge, root optimized native acceptance.
 - Current32 comparison/tuning/asset manifest is qualified independently of unmerged456 placement; future composition must retain both required capabilities. No whole395/456/409/420/407/399/419 import.
 - Required new exact prospective full21 and fresh independent review pending; no physical provider listening, native Verified constructor, installed/user acceptance or merge claim.
 
+## 19 October 2026 — EQ local automation removal (#2855 / PR457)
+
+User rejected device-local automation editing. Remove its button, graph mode and point controls; retain ordinary stable-node parameter bindings, existing stored lane data/runtime evaluation and canonical history. Future central Arrange automation remains #2839/#2674, not implemented here. Actual rendered pre-change regression f31267b3 failed on the automate entry (original component 20261019T060051Z-73bfe14e, clean/stale=false). Targeted final source verification and native limits are recorded in live Pulse2855; sole merger owns prospective full21/review/merge. No app installation or user acceptance claimed.
 ### 2026-10-19 — PR325 stationary tag-column integration
 
 - Composed exact owner2e48c996 with qualified main447e042; fixed base toolbar/body column plus outward full-height tag editor and both stationary toggle controls.
@@ -5395,3 +5398,8 @@ sole merger owns prospective fullCI/merge, root optimized native acceptance.
 - Preserved all prior palette, full-snapshot legacy fixture, current32 comparison/assets/tuning and spectrum oracles. No production cache/randomness changes; original e301 UI negative remains distinct. New exact prospective full21 and fresh review required; no installed/native/user acceptance claim.
 
 - PR399 composition correction: first combined03335ecc failed before UI execution because the private color-picker ViewState literal lacked merged447 comparison_audio. Added only explicit None, preserving no-publication fixture intent. Original required-run negative sealed separately; corrected source needs its own full21.
+
+### 2026-10-19 — PR457 requested EQ-local editor removal integration
+
+- Composed owner96ad6ba7 with qualified main399/325/447, preserving ordinary node parameter keys, current spectrum/raw hit lifecycle, A/B state, history and stored automation data. Removed local automate route and point/page state; central Arrange automation remains separate.
+- Verified all21 immutable owner payloads and four owning source byte/blob/mode records; original rendered automate-entry RED and final27UI/strict component receipts remain source-bound. Sole conflict is append-only todo with both histories retained. Focused compile precedes new required exact full21/fresh review. No unmerged407/456 imports or native/installed/user acceptance claim.
