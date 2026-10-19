@@ -1,0 +1,30 @@
+{
+  "source": "3868167e841f685df34e6b02c3cfa85036840527",
+  "tree": "60358a0abe6537407ea1ae16c7c8979a13cbf4f3",
+  "parent": "7b5f85e22d86e5ed6975bb84b64d475ab07a6237",
+  "owner_ref": "refs/heads/owner/cloud6-419-paint-tab-7b5",
+  "canonical_pr": 419,
+  "pulse": 2813,
+  "canonical_preserved": "7b5f85e22d86e5ed6975bb84b64d475ab07a6237",
+  "prior_workspace_tests_and_fixture_unchanged": true,
+  "operator_source_unchanged": true,
+  "files": {
+    "crates/hex-ui/src/editor/workspace_view.rs": {
+      "before_sha256": "9a38556c3317044b36ea7b2cf96fe9b562fdc4243903d3fb9855ae7fececad20",
+      "after_sha256": "b3bdd663e85b814a6448d447e801cc3ac16bc5bca083f124bd9b7ddeb412b614"
+    },
+    "crates/hex-ui/src/editor/workspace_view_ui_test.rs": {
+      "before_sha256": "e1a4458fd405c1268752e7bc2891bafb2b11527df3e05d793c3bf927cb00319b",
+      "after_sha256": "79790e8ee138e8e76814a4a2784a0aebbbe305335161a14bd682fd3ae9021e77"
+    },
+    "docs/workspace-views.md": {
+      "before_sha256": "3dffbe0a39d8c5babd7e62755df83784902c9e0f192fc68c4593c845f864f846",
+      "after_sha256": "3f86dc2f7bc14b72971ca3528c8cbe8221a9b15d3b83bf0e750a5c2374cf1807"
+    },
+    "todo.md": {
+      "before_sha256": "a1fcc16c1b86dc1de3f09c92f3b7bd01b54b62e6854476f052f46297cbb52200",
+      "after_sha256": "62fe08b91e2214f8258da6260155e7bd571568c8b133999b2f477b0a6a2df190"
+    }
+  },
+  "qualification": "targeted PARTIAL; sole merger final full21/review/merge; no native"
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "run": "20261019T012132Z-72f9d68a",
+    "status": "failed",
+    "duration_seconds": 54.216,
+    "content_sha256": "711667c68c966d97601e83af051ddb376047964783f82cdb9ae1e04a7336847f",
+    "stale": false,
+    "summary_sha256": "a9850fd9acc0806dae59b22fd72e4891644c2be76906d1bc4c2f6729b65aaa15"
+  },
+  {
+    "run": "20261019T012235Z-68e48014",
+    "status": "partial",
+    "duration_seconds": 67.175,
+    "content_sha256": "7ece923c23d27103c7eb9f20d0b262051a95c2bf7edc721fd3517478333855a2",
+    "stale": false,
+    "summary_sha256": "8a0eae15b9462185baad8b1b353c7f592a725851a8036d53b1fc69122177379f"
+  },
+  {
+    "run": "20261019T012411Z-f0fe269e",
+    "status": "partial",
+    "duration_seconds": 25.815,
+    "content_sha256": "371ca5073ef0d1965f8374ec319ccbebbce4e328e60f9c3168d8527760058af1",
+    "stale": false,
+    "summary_sha256": "169cddd3ef4c99a1cab02fedc79d1090ee9e72c9d9344bedffddeb785283f6dd"
+  }
+]
