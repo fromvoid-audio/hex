@@ -1,0 +1,26 @@
+{
+  "crates/hex-ui/src/editor/device_panel.rs": {
+    "before_sha256": "1b340410d6ee32eea191454646720f0fd027f360505cd42e9a86cd6b43af6278",
+    "after_sha256": "cb55b565e646e6e2ba1d1a86513cc706be0bb3411adb01e2d94138d6a8380c33"
+  },
+  "crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs": {
+    "before_sha256": "76672d697e519d5002e60561bea1bc12be9a83f8dd29bb3b37d06ba29bf7de9c",
+    "after_sha256": "79676720f29c68b81d19b660044235a3103908bce4f80b5ed3efea2babd7be1b"
+  },
+  "crates/hex-ui/src/editor/gain_lane/mod.rs": {
+    "before_sha256": "e399e08520c1dfac9585b32812183e9d810e672794305ed13c9f1cc03124a955",
+    "after_sha256": "556de6c534750687688cefed7392d8f8db32a002e13bc4a778a9d247a35d38d2"
+  },
+  "crates/hex-ui/src/editor/workspace_view.rs": {
+    "before_sha256": "383e4dbf655f6285c7f0dec97de2f9ed4818535b69a9399431ed6ed485cd8572",
+    "after_sha256": "98694f0711e5a6ea8bb0d9c7136e19de0f53b70aa68462f669cd4b13d01edb82"
+  },
+  "docs/workspace-views.md": {
+    "before_sha256": "2998587ea00cded1a0480d2e39e4fedf879e79d1ac17caa0a25aa9bf9b9931ac",
+    "after_sha256": "f443eb1119ebd5a4819869d72919063fc7fd72a26fbd377817be6b904a779ac8"
+  },
+  "todo.md": {
+    "before_sha256": "5234f40dd6636d5ea840073167261b85926c069bcfdb1ecfb52d3b77d24381d5",
+    "after_sha256": "97ed2a6ba58c17d5906a266036a66e5d9a4e6a046e3d11dc2e5693dacc8dcd19"
+  }
+}

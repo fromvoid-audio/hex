@@ -1,0 +1,11 @@
+{
+  "crates/hex-ui/src/editor/workspace_view_ui_test.rs": "90d89cb85ccf7be5180c48c670281565ab0d8390e0f4004bd27c6119cbbbd7ec",
+  "crates/hex-ui/src/editor/device_panel/tests/operator_tab_tests.rs": "062d28e933822735ce49f069ee382e7d5df9467afb247237e6d194b60aeabd03",
+  "crates/hex-ui/src/editor/gain_lane/tests.rs": "ec8adbcd26d4e7888efc3227b6c71b8dcfd5fb413876e6fd5d07d9b613acea36",
+  "crates/hex-ui/src/editor/gain_lane/paint.rs": "1b2845fe044aca0f1748567d78a0ef806c61c6aa740b5fea2ab9f18f97bcfa6e",
+  "crates/hex-ui/src/editor/controller.rs": "ab3ec4660fd1948117a04e89dfd68be62bff18bfec7b9d58a78026e5fcd051ae",
+  "crates/hex-ui/src/editor/render.rs": "9d084ee7c4c2cfc1c5cdf1cca8ad7672c7d804066e4ef8f4444c6d662db98a55",
+  "crates/hex-ui/src/editor/tracks.rs": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9",
+  "original_navigation_test_body_unchanged_prefix": "76672d697e519d5002e60561bea1bc12be9a83f8dd29bb3b37d06ba29bf7de9c",
+  "executed_red_diagnostic_production_equals_base": true
+}

@@ -1,0 +1,15 @@
+commit 4bbe9dc24106095e6c542347796ace14b1fe4777
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 13:09:58 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 13:09:58 2026 +0000
+
+    fix: keep workspace Tab with actual visible menu and gain pointer owners
+
+commit 49469e7c5791f2f5fb548e1205cc16f0c31910f7
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 13:08:22 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 13:08:22 2026 +0000
+
+    test: reproduce orphaned add menu and held gain drag Tab ownership

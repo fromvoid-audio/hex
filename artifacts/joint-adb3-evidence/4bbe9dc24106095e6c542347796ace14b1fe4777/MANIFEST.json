@@ -1,0 +1,178 @@
+{
+  "HANDOFF.md": {
+    "sha256": "e09977ac094870fd8f865326ae9f09e8c8a7f2cd32c34b4d8e2a47b2c87e9b4c",
+    "size": 4528
+  },
+  "diagnostic.patch": {
+    "sha256": "8760af6dc1a88e73754d855a1c63c561097c42f96a998281840aa091392c3190",
+    "size": 9091
+  },
+  "final/01-workspace-navigation-gain-operator.log": {
+    "sha256": "b959b42d841ca50ac0324c99e92fe7328a8dbfe98fb139e9e85706781374ea8a",
+    "size": 5682
+  },
+  "final/02-ui-strict-feature.log": {
+    "sha256": "cb08a086b0b7f8b7c1dcc02be2e9757f834e7a54ce4bca23fd6c1371f018142a",
+    "size": 760
+  },
+  "final/03-ui-strict-default.log": {
+    "sha256": "59758d1dffb0da8697420f40d630768a7edeab4aaae26782f50f2cd516ed2136",
+    "size": 494
+  },
+  "final/04-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "final/05-gpui-patch.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "final/06-dependency-patches.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "final/07-ui-style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "final/08-device-layout.log": {
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9",
+    "size": 84
+  },
+  "final/09-fmt.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "final/10-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "final/summary.json": {
+    "sha256": "0153190853d3ba50a376520692e0beaf9c9e73e95278e350038c93dc8d02437a",
+    "size": 14240
+  },
+  "green/01-two-actual-ui-repros.log": {
+    "sha256": "c4443daca94205ec418570e0105a54e4bc85b09334c0fe6bbfe2d0c4788439c0",
+    "size": 717
+  },
+  "green/summary.json": {
+    "sha256": "f17ba019c289b084fff39d471452b26a86bd6cd114d7d07bacfe4bc05d331c7d",
+    "size": 10281
+  },
+  "orchestration/header-component.py": {
+    "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7",
+    "size": 520
+  },
+  "orchestration/seal-joint-adb3-final.py": {
+    "sha256": "987f3dac56d7e001cd2a52eb3c65372081ded462bd0a89b6cf77108c2979866b",
+    "size": 5994
+  },
+  "protected-proof.json": {
+    "sha256": "4dfc1976899dc07538bd239bba81df228db772d5eeb24ea2748d9fa332f9d131",
+    "size": 1006
+  },
+  "raw/diagnostic-sha.txt": {
+    "sha256": "4691d8e90b905b9ddafb2ebacb531cc6ce9210995280d5e0a126c4894677849f",
+    "size": 41
+  },
+  "raw/final-case-list.txt": {
+    "sha256": "6a20922ec7d137e65aa2ee6d9c6d9eb3abf908769319920939a644911e2f7661",
+    "size": 4350
+  },
+  "raw/github-readback.json": {
+    "sha256": "c6748f418c6df41fce28ee2b9896d6df45a56dda983e8de271fb198c6ae30a34",
+    "size": 12109
+  },
+  "red/01-two-actual-ui-repros.log": {
+    "sha256": "85370e54551d9a496f230b9c0a89ced0fbec72bbaaa7106e5ab5778df3246115",
+    "size": 1101
+  },
+  "red/summary.json": {
+    "sha256": "ff11b24dcfe8cc18ba3372b84fd3c2c3617f15c3a7ae9c65d81204e55eec6280",
+    "size": 9949
+  },
+  "red2/01-two-actual-ui-repros.log": {
+    "sha256": "c3a28a9f5966606f6f8ae2ddc16c17997ccba437335790d65797e3bfc4907ae2",
+    "size": 1142
+  },
+  "red2/summary.json": {
+    "sha256": "e57f6e59e2aab07e9dc56773d47343edbba9a59c418539e7d3f1558af2e2e37e",
+    "size": 9952
+  },
+  "red3/01-two-actual-ui-repros.log": {
+    "sha256": "90cfbbf5d4601fdf4f1f6c634a40684fa428079aff23397982edc87f46500a21",
+    "size": 754
+  },
+  "red3/summary.json": {
+    "sha256": "3c7b057506d1cd0102991dc39b6a45a5efa99c74aa83cdd93bec709aea4d0fb6",
+    "size": 9952
+  },
+  "red4/01-two-actual-ui-repros.log": {
+    "sha256": "d12e1cd0a5c00b63ea360d53c88508b4f3814d636619f441d117a338020e514f",
+    "size": 1802
+  },
+  "red4/summary.json": {
+    "sha256": "ff16505bd5e6643afd9af538641a17a502cfde6bd8ef39fea42403e4c705d892",
+    "size": 9952
+  },
+  "source-history.txt": {
+    "sha256": "a1e834af65679a5306b5b1c951cd67f0e27a3047f503c202400d1eec547b1bc9",
+    "size": 599
+  },
+  "source-identities.json": {
+    "sha256": "ff41287f7c2d36dc6d25ef341e0917f8979d4b43bfc07e5ac08466dd09b7b368",
+    "size": 1356
+  },
+  "source.patch": {
+    "sha256": "37db707e46bce670a626abee35fe296d5a45c82ce484ee4c0641fe94223039f6",
+    "size": 15546
+  },
+  "source/after/crates/hex-ui/src/editor/device_panel.rs": {
+    "sha256": "cb55b565e646e6e2ba1d1a86513cc706be0bb3411adb01e2d94138d6a8380c33",
+    "size": 92587
+  },
+  "source/after/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs": {
+    "sha256": "79676720f29c68b81d19b660044235a3103908bce4f80b5ed3efea2babd7be1b",
+    "size": 29172
+  },
+  "source/after/crates/hex-ui/src/editor/gain_lane/mod.rs": {
+    "sha256": "556de6c534750687688cefed7392d8f8db32a002e13bc4a778a9d247a35d38d2",
+    "size": 15317
+  },
+  "source/after/crates/hex-ui/src/editor/workspace_view.rs": {
+    "sha256": "98694f0711e5a6ea8bb0d9c7136e19de0f53b70aa68462f669cd4b13d01edb82",
+    "size": 2988
+  },
+  "source/after/docs/workspace-views.md": {
+    "sha256": "f443eb1119ebd5a4819869d72919063fc7fd72a26fbd377817be6b904a779ac8",
+    "size": 13086
+  },
+  "source/after/todo.md": {
+    "sha256": "97ed2a6ba58c17d5906a266036a66e5d9a4e6a046e3d11dc2e5693dacc8dcd19",
+    "size": 390433
+  },
+  "source/before/crates/hex-ui/src/editor/device_panel.rs": {
+    "sha256": "1b340410d6ee32eea191454646720f0fd027f360505cd42e9a86cd6b43af6278",
+    "size": 92425
+  },
+  "source/before/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs": {
+    "sha256": "76672d697e519d5002e60561bea1bc12be9a83f8dd29bb3b37d06ba29bf7de9c",
+    "size": 20786
+  },
+  "source/before/crates/hex-ui/src/editor/gain_lane/mod.rs": {
+    "sha256": "e399e08520c1dfac9585b32812183e9d810e672794305ed13c9f1cc03124a955",
+    "size": 15193
+  },
+  "source/before/crates/hex-ui/src/editor/workspace_view.rs": {
+    "sha256": "383e4dbf655f6285c7f0dec97de2f9ed4818535b69a9399431ed6ed485cd8572",
+    "size": 2917
+  },
+  "source/before/docs/workspace-views.md": {
+    "sha256": "2998587ea00cded1a0480d2e39e4fedf879e79d1ac17caa0a25aa9bf9b9931ac",
+    "size": 12106
+  },
+  "source/before/todo.md": {
+    "sha256": "5234f40dd6636d5ea840073167261b85926c069bcfdb1ecfb52d3b77d24381d5",
+    "size": 389408
+  }
+}

@@ -1,0 +1,30 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.97s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+
+thread 'editor::device_panel::tests::navigation_ui_tests::workspace_adb3_returns_gain_point_drag_keeps_tab_until_release_or_escape' (222404) panicked at crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs:660:13:
+assertion `left == right` failed: held gain point owns Tab; cancel=false
+  left: Session
+ right: Arrangement
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'editor::device_panel::tests::navigation_ui_tests::workspace_adb3_returns_removed_last_track_menu_does_not_own_tab' (222405) panicked at crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs:567:9:
+assertion `left == right` failed: a menu without a rendered owner must not own Tab
+  left: Arrangement
+ right: Session
+test editor::device_panel::tests::navigation_ui_tests::workspace_adb3_returns_removed_last_track_menu_does_not_own_tab ... FAILED
+test editor::device_panel::tests::navigation_ui_tests::workspace_adb3_returns_gain_point_drag_keeps_tab_until_release_or_escape ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::navigation_ui_tests::workspace_adb3_returns_gain_point_drag_keeps_tab_until_release_or_escape
+    editor::device_panel::tests::navigation_ui_tests::workspace_adb3_returns_removed_last_track_menu_does_not_own_tab
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1036 filtered out; finished in 0.91s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
