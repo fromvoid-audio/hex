@@ -5641,3 +5641,19 @@ User rejected device-local automation editing. Remove its button, graph mode and
 
 - Compose precise f16 owner return with actual qualified EQ main2dc7 using ordinary history. Retain both appended integration histories; only todo.md conflicts. Preserve all merged407 gesture/FIFO/Wayland behavior and 457 removal of local EQ automation.
 - Existing c385 full21 positives remain historical and review-blocked; new combined affected tests, exact full21 and fresh review of each canonical PR are required. Both PRs remain unmerged until their own authenticated merge readbacks. Physical keyboard/IME/fonts/pixels/listening and installed acceptance remain open.
+
+
+### 2026-10-19 — PR419/458 last-owner menu and held gain-point return
+
+- Preserve joint adb3 and both canonical histories. Actual GPUI plus Service
+  reproduced an invisible add-menu refusal after toolbar removal of the last
+  selected track, and a held gain-point drag incorrectly switching to Console.
+  Test-only diagnostic49469e7c and all earlier compiler-only/raw failures remain.
+- Reuse the actual rendered device owner and existing canonical owner_exists
+  query for menu visibility; retain raw menu preference without forced dismissal.
+  Add only a private pointer-draft query to the existing workspace refusal list.
+  No gesture lifecycle, focus operation, queue, model or worker policy changes.
+- New actual input tests preserve visible menu refusal and Undo/reselection;
+  gain release has exact one Undo/Redo, Escape authors nothing, duplicate release
+  does nothing, and an open lane alone permits normal Tab. Prospective full21,
+  fresh review/merge of BOTH PRs and physical acceptance remain outstanding.

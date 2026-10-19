@@ -29,10 +29,11 @@ impl EditorView {
             || self.context_menu.is_some()
             || (self.clip_view_open
                 && self.device_panel_active
-                && self.device_panel.add_menu_is_open())
+                && self.device_panel.add_menu_is_open(self.state.as_deref()))
             || self.send_menu_track.is_some()
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
+            || self.gain_lane.pointer_is_active()
             || self.sample_bpm_editing(cx)
             || self.close_prompt_open
             || self.opening_project

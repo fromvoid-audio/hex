@@ -102,12 +102,13 @@ Root's sole Mac lane may run this exact source once with:
 
 ```sh
 cargo test -p hex-ui --features ui-test-support --locked --lib -- \
-  --nocapture workspace_view_ui_test operator_tab_cycle workspace_four_returns_
+  --nocapture workspace_view_ui_test operator_tab_cycle workspace_four_returns_ \
+  workspace_adb3_returns_
 ```
 
-Expected on the current repaired source: **18 unique positive tests**, zero
+Expected on the current repaired source: **20 unique positive tests**, zero
 failures/ignored (15 workspace-module cases, 2 unchanged Operator traversal cases,
-and the separate hidden-device-menu case). Rust test filters form a union: the
+the separate hidden-device-menu case and 2 last-owner/gain-pointer regressions). Rust test filters form a union: the
 `workspace_four_returns_` filter repeats two workspace cases without executing
 them twice. The historical 11-case receipt above remains bound to its old source. The previous exact
 six-case native run remains historical; this checklist does not request its
@@ -195,3 +196,19 @@ runtime REDs and every historical receipt remain source-bound. Required combined
 full CI and fresh reviews of both canonical PRs remain merger-owned; physical
 keyboard/IME, native typography/pixels and installed acceptance remain open.
 This document does not dispatch a native job or claim delivery.
+
+
+## Last owner removal and held gain-point input
+
+The add-menu Tab refusal applies only while the device panel's actual rendered
+owner still exists in canonical state. Removing the selected last track leaves
+its menu preference intact, but the empty panel has no menu to own Tab. Undo and
+reselecting that track makes the retained menu visible and restores its local
+refusal. Existing hidden-panel and valid-owner behavior is unchanged.
+
+A gain-envelope point held by the pointer owns Tab until its existing release or
+Escape path retires the local draft. An open lane without a pointer draft does
+not block workspace switching. The actual Service tests verify no edit while
+holding, one release edit with exact Undo/Redo, cancellation without history, and
+no duplicate edit from a later MouseUp. These are source-bound GPUI/worker checks;
+physical input, fonts/pixels and installed acceptance remain Root-owned.
