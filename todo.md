@@ -5393,3 +5393,5 @@ sole merger owns prospective fullCI/merge, root optimized native acceptance.
 
 - Composed ownerd2dd90d4 over failed e301 with qualified main325/447; controlled Orange no-op now verifies cache reuse, then genuinely different Blue and Orange transitions verify invalidation and unchanged signal points. All21 owner payloads and exact before/after source snapshots verified.
 - Preserved all prior palette, full-snapshot legacy fixture, current32 comparison/assets/tuning and spectrum oracles. No production cache/randomness changes; original e301 UI negative remains distinct. New exact prospective full21 and fresh review required; no installed/native/user acceptance claim.
+
+- PR399 composition correction: first combined03335ecc failed before UI execution because the private color-picker ViewState literal lacked merged447 comparison_audio. Added only explicit None, preserving no-publication fixture intent. Original required-run negative sealed separately; corrected source needs its own full21.

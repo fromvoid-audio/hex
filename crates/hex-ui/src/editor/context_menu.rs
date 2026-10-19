@@ -540,6 +540,7 @@ mod tests {
                 editor.update(cx, |view, cx| {
                     view.state = Some(Arc::new(hex_session::service::ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::new(project),
                         waveforms: Default::default(),
                         audio_clip_waveforms: Default::default(),
