@@ -265,6 +265,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     let old = view.state.as_ref().unwrap();
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::clone(&old.project),
                         waveforms: BTreeMap::from([(asset, Arc::clone(&peaks))]),
                         audio_clip_waveforms: prepared,

@@ -62,6 +62,7 @@ fn event_drag_preview_cancel_and_revision_change_never_edit_outer_clip(cx: &mut 
         let state = view.state.as_ref().unwrap();
         let changed = hex_session::service::ViewState {
             canonical_audio_source: state.canonical_audio_source.clone(),
+            comparison_audio: None,
             project: state.project.clone(),
             waveforms: state.waveforms.clone(),
             audio_clip_waveforms: state.audio_clip_waveforms.clone(),
@@ -96,6 +97,7 @@ fn event_move_preview_and_release_use_snapped_inner_coordinates(cx: &mut TestApp
             .unwrap();
         let next = hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
@@ -158,6 +160,7 @@ fn selecting_an_off_grid_event_without_dragging_never_moves_audio(cx: &mut TestA
             .unwrap();
         view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
@@ -210,6 +213,7 @@ fn copying_after_an_outer_cut_uses_only_the_visible_inner_event(cx: &mut TestApp
         };
         view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
@@ -296,6 +300,7 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
             .unwrap();
         view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
             audio_clip_waveforms: Default::default(),
@@ -491,6 +496,7 @@ fn replace_event_project(view: &mut EditorView, project: hex_project::Project, r
     let state = view.state.as_ref().unwrap();
     view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         project: std::sync::Arc::new(project),
         waveforms: state.waveforms.clone(),
         audio_clip_waveforms: Default::default(),

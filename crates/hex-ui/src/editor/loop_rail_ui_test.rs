@@ -275,6 +275,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             .expect("external loop edit");
         view.state = Some(Arc::new(hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(history.project().clone()),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -310,6 +311,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
         let old = view.state.as_ref().unwrap();
         view.state = Some(Arc::new(hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
