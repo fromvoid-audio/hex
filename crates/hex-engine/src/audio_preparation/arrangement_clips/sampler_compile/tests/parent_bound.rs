@@ -32,6 +32,26 @@ fn parent_bound_nonempty_success_owns_context_and_children_from_birth_through_cl
             name: "parent bus".into(),
         })
         .unwrap();
+    // Exercise nonempty Return DSP/control ownership and actual send metadata,
+    // rather than only an empty Return chain's outer allocation.
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let return_track = editor.project().return_tracks()[0].id();
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetReturnSend {
+            track: editor.project().tracks()[0].id(),
+            return_track,
+            gain: 0.375,
+        })
+        .unwrap();
     // Force NEW loaded context/factory construction; no previous owner reuse.
     drop(previous);
     let original = original(&bank, &signal, &worker);
@@ -45,7 +65,13 @@ fn parent_bound_nonempty_success_owns_context_and_children_from_birth_through_cl
     assert_eq!(&preparation.arrangement_clips as *const _, destination);
     let project = preparation.arrangement_clips.root.project().unwrap();
     assert_eq!(project.tracks.len(), 1);
-    assert!(!project.return_buses.is_empty());
+    assert_eq!(project.return_buses.len(), 1);
+    assert_eq!(project.return_buses[0].device_chain.len(), 1);
+    assert_eq!(
+        project.return_buses[0].device_chain[0].device_type,
+        hex_devices::utility::UTILITY_TYPE_ID
+    );
+    assert_eq!(project.tracks[0].sends.len(), 1);
     assert_eq!(project.shared_contexts.owners().count(), 1);
     assert_eq!(
         project.tracks[0].instrument.as_ref().unwrap().spans.len(),
