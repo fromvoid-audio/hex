@@ -1,0 +1,33 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 59.00s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+actual Stop-cell copy submitted=true, canonical=Some(Stop), worker/UI error=Some(DisplayError { message: "project edit failed: session target cell is occupied", batch_member: None })
+
+thread 'editor::browser::console_drop_ui_test::console_arrangement_midi_stop_cell_refuses_before_worker_and_preserves_stop' (157714) panicked at crates/hex-ui/src/editor/console_drop_ui_test.rs:807:9:
+an explicit Stop cell is occupied: UI must refuse before enqueue, matching canonical ensure_empty
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::console_drop_ui_test::console_arrangement_midi_stop_cell_refuses_before_worker_and_preserves_stop ... FAILED
+test editor::browser::console_drop_ui_test::console_arrangement_midi_empty_cell_copies_real_source_once_and_protects_occupied_cells ... ok
+
+failures:
+
+failures:
+    editor::browser::console_drop_ui_test::console_arrangement_midi_stop_cell_refuses_before_worker_and_preserves_stop
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 877 filtered out; finished in 1.77s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

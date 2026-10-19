@@ -1,0 +1,22 @@
+{
+  "crates/hex-ui/src/editor/console_drop.rs": {
+    "before": "587be8b26f71a0682cdfd88c925bab2c6da8dca32eca44eaafa08094db13236a",
+    "after": "5bebeedd9fa8af4587f6ba292229c4f323c53e3be9219f3034b2789c1dc2d2b7",
+    "after_bytes": 7755
+  },
+  "crates/hex-ui/src/editor/console_drop_ui_test.rs": {
+    "before": "6240f9d35232fcb6b964dc4971bb442d98cf5b6aef34022992799970ced93de6",
+    "after": "92f515b92b1abf9ced6ec5cddd785d13f9a51639d72e8ea16e0721d9b5253c06",
+    "after_bytes": 34583
+  },
+  "docs/session-audio.md": {
+    "before": "cbf25884f6776e10e6c6974259ffcd0f5d555bc77b9671f2a15c1c4fe5216203",
+    "after": "19a53bf088c343383c4874135504a86a635ebf6c69355f2b94d0bdd9b976ba14",
+    "after_bytes": 16495
+  },
+  "todo.md": {
+    "before": "104caee2702732423ad6a331883eb48601fbdf4fc27f5a8e46bb2a2ea8ab945c",
+    "after": "f37cb955a69dda40d36edc2711f26db26ae22a802d217463ac993c2ffa8f7045",
+    "after_bytes": 350563
+  }
+}

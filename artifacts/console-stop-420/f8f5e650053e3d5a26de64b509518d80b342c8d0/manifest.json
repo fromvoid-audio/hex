@@ -1,0 +1,108 @@
+{
+  "kind": "evidence-only-never-build-merge",
+  "source": "f8f5e650053e3d5a26de64b509518d80b342c8d0",
+  "tree": "4d861d20d893a54e332b6660fa08e58790426f2e",
+  "expected_before": "44adc21330a62353e3250e6b1fb5c549e9d34a1b",
+  "payloads": {
+    "420-component.py": {
+      "bytes": 517,
+      "sha256": "4c4150e91001f478065e5dd719ec4513b73c2031fd037ecf5d80a8cf1d548e3b"
+    },
+    "HANDOFF.md": {
+      "bytes": 4669,
+      "sha256": "cb669750bdf27cc80ece1cdd36488e452ef9c2e9ec012553b387f1019833912a"
+    },
+    "all-console-green.stdout": {
+      "bytes": 260,
+      "sha256": "897af45398a77d4a7d288281998f5a5894987c49528ac692b60689b9ba8c73f1"
+    },
+    "baseline-44adc.stdout": {
+      "bytes": 257,
+      "sha256": "76e36f0367fbf7c38e264299922c0bd716063f98bdaaf0f5caa079a4ab2b87fb"
+    },
+    "clean-owner-qualification.stdout": {
+      "bytes": 662,
+      "sha256": "e41dfcbbb3a2c08b6eca16fa144664033bf06b181ca8a9c46f8cf43ba42637a2"
+    },
+    "owner-fix.patch": {
+      "bytes": 11705,
+      "sha256": "d6c34dab9c87ab4f50649408c04d3c0c219158e840bffe17aa515d40de889079"
+    },
+    "runs/all-console-green/01-all Console actual rendered browser and Arrangement drop cases.log": {
+      "bytes": 2006,
+      "sha256": "f223616908617833045ae3c42da59f063b2502efce28cdc280c37b06eb1a9ce1"
+    },
+    "runs/all-console-green/summary.json": {
+      "bytes": 10368,
+      "sha256": "51f2d8961aa77c68f5806e8815fe388432e44b51d0c19f75f8d9a61340270c33"
+    },
+    "runs/baseline-44adc/01-actual MIDI Arrangement pointer to Console Stop and empty copy.log": {
+      "bytes": 2148,
+      "sha256": "d9ca71c22feaab83514c29d83b620d223681db0ae46abe5ab4efdc315c1a8400"
+    },
+    "runs/baseline-44adc/summary.json": {
+      "bytes": 10027,
+      "sha256": "5a6b931605b2247941e7a5b90114139e454ae19fc3b1bce225f133e262e19a6b"
+    },
+    "runs/clean-owner-qualification/01-clean actual Stop and empty MIDI copy paths.log": {
+      "bytes": 922,
+      "sha256": "324dc793f50b2d162d73c52f8b4b11a3035ba2f9fa28a9269b6a56082b2a242d"
+    },
+    "runs/clean-owner-qualification/02-strict UI all targets.log": {
+      "bytes": 1025,
+      "sha256": "57ca851dc3800e48dcb5660e96871487ce64efe152933d9853424964360045ec"
+    },
+    "runs/clean-owner-qualification/03-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/clean-owner-qualification/04-GPUI patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/clean-owner-qualification/05-dependency patches.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/clean-owner-qualification/06-UI style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/clean-owner-qualification/07-device layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/clean-owner-qualification/08-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/clean-owner-qualification/09-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/clean-owner-qualification/summary.json": {
+      "bytes": 13508,
+      "sha256": "d9bf027b99dbcfed3332852720353fb4452cf0b5a7567a0a4bcb70925886c077"
+    },
+    "source/crates/hex-ui/src/editor/console_drop.rs": {
+      "bytes": 7755,
+      "sha256": "5bebeedd9fa8af4587f6ba292229c4f323c53e3be9219f3034b2789c1dc2d2b7"
+    },
+    "source/crates/hex-ui/src/editor/console_drop_ui_test.rs": {
+      "bytes": 34583,
+      "sha256": "92f515b92b1abf9ced6ec5cddd785d13f9a51639d72e8ea16e0721d9b5253c06"
+    },
+    "source/docs/session-audio.md": {
+      "bytes": 16495,
+      "sha256": "19a53bf088c343383c4874135504a86a635ebf6c69355f2b94d0bdd9b976ba14"
+    },
+    "source/todo.md": {
+      "bytes": 350563,
+      "sha256": "f37cb955a69dda40d36edc2711f26db26ae22a802d217463ac993c2ffa8f7045"
+    },
+    "source-before-after.json": {
+      "bytes": 923,
+      "sha256": "753c6c16de8d0d183dbe7b76a85c1ef7d5be6155f1e1b0fe686665adbd0b9960"
+    }
+  }
+}

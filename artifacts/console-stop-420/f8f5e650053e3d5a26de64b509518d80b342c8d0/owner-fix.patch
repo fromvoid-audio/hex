@@ -1,0 +1,279 @@
+diff --git a/crates/hex-ui/src/editor/console_drop.rs b/crates/hex-ui/src/editor/console_drop.rs
+index f7ce8dc7..ae09123e 100644
+--- a/crates/hex-ui/src/editor/console_drop.rs
++++ b/crates/hex-ui/src/editor/console_drop.rs
+@@ -5,7 +5,7 @@ use super::{
+ };
+ use crate::theme;
+ use gpui::{Context, Div, Stateful, prelude::*, rgb};
+-use hex_project::{Command, SceneId, SessionCellContent};
++use hex_project::{Command, SceneId};
+ use hex_session::{
+     import_batch::{AudioBatchDestination, ConsoleDestination},
+     import_batch_decode::AudioBatchContext,
+@@ -152,12 +152,7 @@ impl EditorView {
+                         scene,
+                     })
+                 }
+-                ClipPosition::Midi { .. }
+-                    if matches!(
+-                        state.project.session_cell(track, scene),
+-                        None | Some(SessionCellContent::Stop)
+-                    ) =>
+-                {
++                ClipPosition::Midi { .. } if state.project.session_cell(track, scene).is_none() => {
+                     Some(Command::CopyArrangementMidiToSession {
+                         source: drag.clip,
+                         scene,
+diff --git a/crates/hex-ui/src/editor/console_drop_ui_test.rs b/crates/hex-ui/src/editor/console_drop_ui_test.rs
+index e18bb6fc..72ff64db 100644
+--- a/crates/hex-ui/src/editor/console_drop_ui_test.rs
++++ b/crates/hex-ui/src/editor/console_drop_ui_test.rs
+@@ -690,3 +690,207 @@ fn console_browser_window_deactivation_cancels_ghost_without_late_import(cx: &mu
+     receive_worker(&editor, cx);
+     assert_eq!(*project(&editor, cx), *before);
+ }
++
++fn arrangement_midi_source(
++    cx: &mut TestAppContext,
++    editor: &gpui::Entity<EditorView>,
++    track: TrackId,
++) -> hex_project::ClipId {
++    use hex_project::BeatTime;
++    history(
++        editor,
++        cx,
++        Request::Edit(Command::PlaceMidiClip {
++            track,
++            start: BeatTime::ONE,
++            length: BeatTime::from_quarters(4).unwrap(),
++        }),
++    );
++    let clip = project(editor, cx).track(track).unwrap().midi_clips()[0].id();
++    for (start, pitch, channel, velocity) in
++        [(BeatTime::ZERO, 60, 3, 99), (BeatTime::ONE, 67, 2, 71)]
++    {
++        history(
++            editor,
++            cx,
++            Request::Edit(Command::AddMidiNote {
++                clip,
++                start,
++                duration: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
++                pitch,
++                channel,
++                velocity,
++            }),
++        );
++    }
++    clip
++}
++
++fn drop_actual_arrangement_midi(
++    cx: &mut TestAppContext,
++    handle: gpui::AnyWindowHandle,
++    editor: &gpui::Entity<EditorView>,
++    source: hex_project::ClipId,
++    track: TrackId,
++    scene: SceneId,
++) -> bool {
++    editor.update(cx, |view, cx| {
++        view.set_mode(EditorMode::Arrangement);
++        view.last_enqueued_edit = None;
++        cx.notify();
++    });
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.update(|window, _| window.activate_window());
++    visual.run_until_parked();
++    let source_bounds = bounds(&mut visual, format!("clip-drag-surface-{}", source.value()));
++    let down = source_bounds.center();
++    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(
++        point(down.x + px(12.0), down.y),
++        MouseButton::Left,
++        Modifiers::default(),
++    );
++    visual.run_until_parked();
++    editor.read_with(&visual, |view, _| {
++        let drag = view
++            .active_clip_drag
++            .as_ref()
++            .expect("real Arrangement pointer capture");
++        assert_eq!(drag.clip, source);
++        assert!(view.drag_start_is_current(drag));
++    });
++    assert!(visual.update(|_, app| app.has_active_drag()));
++    // The pinned420 source predates419's Tab binding. Use the SAME production
++    // mode setter as its toolbar, retaining the real native drag payload; do not
++    // manufacture a ClipDrag or claim this source has a keyboard binding.
++    editor.update(&mut visual, |view, cx| {
++        view.set_mode(EditorMode::Session);
++        cx.notify();
++    });
++    visual.run_until_parked();
++    let target = bounds(
++        &mut visual,
++        format!("console-cell-{}-{}", track.value(), scene.value()),
++    )
++    .center();
++    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++    let submitted = editor.read_with(&visual, |view, _| {
++        assert!(view.active_clip_drag.is_none(), "drop retires the visible clip ghost");
++        matches!(view.last_enqueued_edit, Some(Command::CopyArrangementMidiToSession { source: id, scene: target }) if id == source && target == scene)
++    });
++    assert!(
++        !visual.update(|_, app| app.has_active_drag()),
++        "actual GPUI drag ended"
++    );
++    receive_worker(editor, cx);
++    submitted
++}
++
++#[gpui::test]
++fn console_arrangement_midi_stop_cell_refuses_before_worker_and_preserves_stop(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, track, scene, _) = fixture(cx);
++    let source = arrangement_midi_source(cx, &editor, track);
++    history(
++        &editor,
++        cx,
++        Request::Edit(Command::SetSessionStopCell { track, scene }),
++    );
++    let before = project(&editor, cx);
++    let submitted = drop_actual_arrangement_midi(cx, handle, &editor, source, track, scene);
++    editor.read_with(cx, |view, _| {
++        eprintln!("actual Stop-cell copy submitted={submitted}, canonical={:?}, worker/UI error={:?}", view.state.as_ref().unwrap().project.session_cell(track, scene), view.error);
++        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), before.as_ref());
++        assert!(matches!(view.state.as_ref().unwrap().project.session_cell(track, scene), Some(hex_project::SessionCellContent::Stop)));
++        assert!(!submitted, "an explicit Stop cell is occupied: UI must refuse before enqueue, matching canonical ensure_empty");
++        assert!(view.error.as_ref().unwrap().contains("existing empty console cell"));
++        assert_eq!(view.worker_requests_pending, 0);
++        assert!(view.pending_requests.is_empty());
++    });
++}
++
++#[gpui::test]
++fn console_arrangement_midi_empty_cell_copies_real_source_once_and_protects_occupied_cells(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, track, scene, path) = fixture(cx);
++    let source = arrangement_midi_source(cx, &editor, track);
++    let before = project(&editor, cx);
++    assert!(drop_actual_arrangement_midi(
++        cx, handle, &editor, source, track, scene
++    ));
++    let after = project(&editor, cx);
++    let original = before.midi_clip(source).unwrap();
++    let Some(hex_project::SessionCellContent::Midi(copy)) = after.session_cell(track, scene) else {
++        panic!("actual canonical Session MIDI clip")
++    };
++    assert_ne!(copy.id(), source);
++    assert_eq!(copy.name(), original.name());
++    assert_eq!(copy.flavor(), original.flavor());
++    let a = original.source();
++    let b = copy.source();
++    assert_eq!(
++        (
++            a.source_length(),
++            a.source_start(),
++            a.loop_start(),
++            a.loop_end(),
++            a.looping()
++        ),
++        (
++            b.source_length(),
++            b.source_start(),
++            b.loop_start(),
++            b.loop_end(),
++            b.looping()
++        )
++    );
++    assert_eq!(a.notes().len(), 2);
++    assert_eq!(a.notes().len(), b.notes().len());
++    for (a, b) in a.notes().iter().zip(b.notes()) {
++        assert_ne!(a.id(), b.id());
++        assert_eq!(
++            (
++                a.start(),
++                a.duration(),
++                a.pitch(),
++                a.channel(),
++                a.velocity()
++            ),
++            (
++                b.start(),
++                b.duration(),
++                b.pitch(),
++                b.channel(),
++                b.velocity()
++            )
++        );
++    }
++    assert_eq!(after.midi_clip(source), before.midi_clip(source));
++    history(&editor, cx, Request::Undo);
++    restored(&project(&editor, cx), &before, after.next_identity());
++    history(&editor, cx, Request::Redo);
++    assert_eq!(project(&editor, cx), after);
++    // A real MIDI cell stays protected, then a real prepared Audio cell does too.
++    assert!(!drop_actual_arrangement_midi(
++        cx, handle, &editor, source, track, scene
++    ));
++    assert_eq!(project(&editor, cx), after);
++    history(
++        &editor,
++        cx,
++        Request::Edit(Command::ClearSessionCell { track, scene }),
++    );
++    history(&editor, cx, Request::ImportToSession { path, track, scene });
++    let audio_before = project(&editor, cx);
++    assert!(matches!(
++        audio_before.session_cell(track, scene),
++        Some(hex_project::SessionCellContent::Audio(_))
++    ));
++    assert!(!drop_actual_arrangement_midi(
++        cx, handle, &editor, source, track, scene
++    ));
++    assert_eq!(project(&editor, cx), audio_before);
++}
+diff --git a/docs/session-audio.md b/docs/session-audio.md
+index ef328f3c..20ae05b0 100644
+--- a/docs/session-audio.md
++++ b/docs/session-audio.md
+@@ -46,6 +46,9 @@ a retained drag object grants no admission authority. Console moves do not use
+ retained Arrangement geometry. Arrangement clip payloads keep only the existing
+ same-track, empty-existing-cell copy contract; cross-track, occupied or inserted-
+ scene clip-copy payloads refuse explicitly rather than adding a new copy model.
++An explicit Stop cell is occupied for Arrangement copies too: both Audio and
++MIDI payloads refuse it before queueing, leaving the Stop marker and history intact.
++This does not change the separate atomic browser-audio replacement contract.
+ 
+ Focused worker/model and rendered-event checks are source evidence. Native
+ component verification, actual audio hardware/listening, physical drag/context
+diff --git a/todo.md b/todo.md
+index e584770c..641b8bd9 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5268,3 +5268,21 @@ source handoff is separate from final integration/full CI/merge and delivery.
+   cover all source-row/glyph positions, separator scene paint/text non-paint, long
+   labels, open settings and repeated capture/expansion. Sole merger owns final full
+   candidate checks/merge; native physical interaction and delivery remain open.
++
++## console arrangement midi stop-cell admission — pulse2814 / pr420, 19 october2026
++
++The focused return on frozen44adc reproduces a real UI/model mismatch: an actual
++Arrangement MIDI drag released onto Console Stop queued a copy, then the Service
++refused the occupied cell. MIDI admission now matches Audio and the existing
++canonical empty-cell contract. Stop refuses locally, preserves the complete model
++and history, clears the ghost and queues nothing; browser sample replacement keeps
++its separate atomic contract. No Project/Session/queue/capture semantics changed.
++
++Two real GPUI/Service regressions cover Stop refusal and empty-cell copying with
++fresh IDs, full MIDI source/note payload preservation, one Undo/Redo, and occupied
++MIDI/prepared Audio protection. Baseline1pass1fail becomes2pass; the full focused
++Console set passes11/0ignored. Tests capture the real Arrangement pointer drag,
++use the existing production mode setter, and release over the real Console cell;
++the pinned source predates419's Tab binding. Exact-source strict checks/evidence
++are recorded in Pulse. Full prospective CI/merge belongs to the sole merger;
++changed native/physical acceptance and delivery remain coordinator-owned.
