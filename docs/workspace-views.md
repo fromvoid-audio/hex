@@ -190,7 +190,7 @@ restores Tab. No device insertion, source/track retargeting or new focus operati
 is introduced. The ordinary menu-toggle and native-entry close handlers remain
 unchanged; existing device/navigation controls retain their behavior.
 
-The checklist command above enumerates the current 18-case union; the evidence
+The checklist command above enumerates the current 20-case union; the evidence
 packet records every fully qualified match and actual result. The original two
 runtime REDs and every historical receipt remain source-bound. Required combined
 full CI and fresh reviews of both canonical PRs remain merger-owned; physical

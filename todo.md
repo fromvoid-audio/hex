@@ -5657,3 +5657,5 @@ User rejected device-local automation editing. Remove its button, graph mode and
   gain release has exact one Undo/Redo, Escape authors nothing, duplicate release
   does nothing, and an open lane alone permits normal Tab. Prospective full21,
   fresh review/merge of BOTH PRs and physical acceptance remain outstanding.
+
+- Merger integration note, 19 october2026: preserve complete4bbe owner runtime/tests and both canonical419/458 histories. Correct the one retained prose reference from18 to the actual20-case union already documented in the command/checklist; no runtime or test-oracle changes. New exact guarded changed cases/full21/fresh review of each PR remain required; oldadb3 green is historical/review-blocked, installed2eef unchanged.
