@@ -111,16 +111,20 @@ fn narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels(cx: &mut Tes
             let preview = editor.read_with(&visual, |v, _| {
                 v.loop_rail_gesture.unwrap().preview.unwrap()
             });
-            let held_scene = painted(&mut visual);
+            let held_scene = visual.debug_bounds("loop-rail-range").unwrap();
+            let held_quads = visual
+                .rendered_quad_paint_layers("loop-rail-range", false)
+                .len();
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             pump(&editor, &mut visual);
             let actual = region(&editor, &visual);
             let passed = whole
+                && held_quads > 0
                 && actual == preview
                 && actual.start() > original.start()
                 && actual.end() - actual.start() == original.end() - original.start();
             eprintln!(
-                "NARROW_CENTER viewport={length} requested_px={requested_width} actual_bounds={before:?} down={down:?} target={target:?} mode={mode} original={original:?} preview={preview:?} held_scene={held_scene:?} committed={actual:?} whole_pass={passed}"
+                "NARROW_CENTER viewport={length} requested_px={requested_width} actual_bounds={before:?} down={down:?} target={target:?} mode={mode} original={original:?} preview={preview:?} held_scene={held_scene:?} held_quads={held_quads} committed={actual:?} whole_pass={passed}"
             );
             if !passed {
                 failures.push((length, requested_width, mode, original, actual));
