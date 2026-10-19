@@ -1,0 +1,19 @@
+{
+  "crates/hex-ui/src/editor/mod.rs": "d7bf0116c537596440ca687a33861797306ac4cbe270dc57e6a3d2c78672e65c",
+  "crates/hex-ui/src/editor/loop_region.rs": "3d6de4f6730e980bcddb990f3253ad0625b6da4508b1f5d4c80b63a68beab567",
+  "crates/hex-ui/src/editor/transport.rs": "8e06ba000cbbf3020e62526919050d31d6cb188051fd9e77964b1ecf2d189ff6",
+  "crates/hex-ui/src/editor/controller.rs": "ab3ec4660fd1948117a04e89dfd68be62bff18bfec7b9d58a78026e5fcd051ae",
+  "crates/hex-ui/src/editor/musical_time.rs": "b75a9b0cc3f35eaf3f9f9897bf81685beec7db247c4b66049dcf21d1beef6028",
+  "crates/hex-project/src/lib.rs": "6adb95bbd91af4467c5d82deab1f2046a8373f746e75669dec9362847cc2ce6c",
+  "crates/hex-project/src/timebase/tempo.rs": "75068ec4a3bc93687c3a5e8d05562af1a314d48d4e6f9607958ebf9af8d58f5d",
+  "crates/hex-session/src/service.rs": "bbd463f9a6295ff51428d1c5a2f1c633113c00bfe67d836ebcc3936465321420",
+  "render_only_two_declared_callback_hunks": true,
+  "all_five_old_test_bodies_preserved_except_requested_command_click_mapping": true,
+  "preserved_ancestors": [
+    "2683942bcb355010ea3f397d3428213178ea8ad9",
+    "c525d0400a862d6e686948bf20410337db0001bb",
+    "a22e4ec11e6e5ed9143b91b77faa24d98e6e3ef5",
+    "c71e52263ba3941b877381ad121a3a3ca10ba484",
+    "b95994b392575fd8cb3ac9581fdd3e87e2ad98d4"
+  ]
+}

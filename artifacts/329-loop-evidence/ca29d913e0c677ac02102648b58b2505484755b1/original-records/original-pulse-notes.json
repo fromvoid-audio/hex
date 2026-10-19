@@ -1,0 +1,40 @@
+[
+  {
+    "created_at": "2026-10-18T15:16:24.036Z",
+    "generation": 1,
+    "id": 23948,
+    "note": {
+      "artifact_sha256": null,
+      "body": "Safecheckpoint perlatestroot: SAME329 published c525d0400a862d6e686948bf20410337db0001bb; cleanworktree. Live4079 TERMINALcargo0, actualnewloopbarUI3PASS0fail0ignored3.23s, compilerunusedimports3warningretained (notstrictClippy/ready). Unchangedprodtestonlyc71e52263ba3941b877381ad121a3a3ca10ba484 had3FAIL0pass0ignored actualCommandrepeat/wholebodymove/marker, earlierliteralcompilefailureseparate. Coreloop_rail.rs+newprivateUItests andsmalloldrailtestCommandclickmapping checkpoint; NOTready/sourcehandedoff, needsordinarymove/moremarker/tempo/math/focus/modifier cases, relevantold5,strictClippy/quick/docs/review. Noactive333/329jobs now. PrioritizeuserCommand-Lcorrection2735/346per23925 beforefurther2713sourceedits; no reset/discard orfeatureimports. RootobservedexternalappbaselineNOWf7bf/build4156515146, noourappoperations or329/333/346deliveryclaim.",
+      "expected_revision": 11,
+      "private_work_disclosure": null,
+      "request_id": "cloud6-2713-paused-checkpoint-command-l-priority",
+      "source_sha": "c525d0400a862d6e686948bf20410337db0001bb",
+      "ticket_id": 2713
+    },
+    "submitted_by": {
+      "connection_id": "oauth:c530ea4c5dfda1c03a06a33d77893691f72bc19701199ef58d3dcbd9e455547c",
+      "kind": "service",
+      "user_id": 1
+    }
+  },
+  {
+    "created_at": "2026-10-18T15:04:40.456Z",
+    "generation": 1,
+    "id": 23902,
+    "note": {
+      "artifact_sha256": null,
+      "body": "Recovered supportedStartTask/SAMEcanonicalPR329 branchpulse/task-2713-g1-58fda6b4d4c7, attached, cleanisolated /workspace/hex-loop-bar. Read fresh2713rev11 and completed2120history(PR41/nativeacceptedfinite10Oct); preserve originalhistory. One actualpublishedmainf7bf634a integration yields296b9b46/tree023f02bf;333/346 originalhandoffs unchanged/not imported. OWNFILES planned ONLY loop_rail.rs + existingloop_rail_ui_test.rs/newprivate nested loopbar tests/math + docs. Existing looprail body immediatelyenablesdisabledloop/doesnothingenabled, edgesresize; emptyrailpaintsdisabled range; no wholebodymove orbinarymarker. Actualrailcanvas handlescapture/bounds itself; canimplement modifiers/focus routing within private rail withoutmod/render/Source1tracks/Source5musical_time/contextmenu changes. Expectedbefore loop_rail.rs blob a00681b2f701defd019a66c21d52b8997f3e8f85, loop_rail_ui_test.rsbd246f4285e345182b06babb2a64467baef9828d. Need preserve future346's existingrailtesttoolbarhunk via merger, no wholefilecopy. NewCommandbodyclicktoggle &ordinarywholebodydrag withShiftoriginlengthsteps; canonicalbinarybeatmarkerincludesfractionalpowersif Qfixedpointrepresentationunambiguous. Corebeforetests next; source/full/nativephysicalclaimsnotyetsatisfied.",
+      "expected_revision": 11,
+      "private_work_disclosure": null,
+      "request_id": "cloud6-2713-intake-owned-looprail-20261018",
+      "source_sha": "296b9b46c7d5ded8b60e40ebeef1c435dc355115",
+      "ticket_id": 2713
+    },
+    "submitted_by": {
+      "connection_id": "oauth:c530ea4c5dfda1c03a06a33d77893691f72bc19701199ef58d3dcbd9e455547c",
+      "kind": "service",
+      "user_id": 1
+    }
+  }
+]

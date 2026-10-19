@@ -1,0 +1,40 @@
+commit ca29d913e0c677ac02102648b58b2505484755b1
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:15:14 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:15:14 2026 +0000
+
+    test: refuse duplicate loop release after commit or cancellation
+
+commit 57bae0c78d92cc220eaa8d3a4672844af01cccaa
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:12:06 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:12:06 2026 +0000
+
+    fix: route loop rail lifecycle input and qualify canonical gestures
+
+commit b95994b392575fd8cb3ac9581fdd3e87e2ad98d4
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:09:30 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:09:30 2026 +0000
+
+    test: preserve loop gesture qualification and lifecycle negatives
+
+commit ab0e078b74de12024e5128f5a77108928fcd3ab7
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:05:51 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:05:51 2026 +0000
+
+    test: cover loop marker ambiguity, tempo rounding and relative step bounds
+
+commit a22e4ec11e6e5ed9143b91b77faa24d98e6e3ef5
+Merge: c525d040 2683942b
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:03:01 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:03:01 2026 +0000
+
+    Merge remote-tracking branch 'origin/main' into pulse/task-2713-g1-58fda6b4d4c7

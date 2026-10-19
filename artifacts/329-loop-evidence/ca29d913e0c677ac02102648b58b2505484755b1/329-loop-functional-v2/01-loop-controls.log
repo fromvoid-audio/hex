@@ -1,0 +1,49 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.72s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 17 tests
+
+thread 'editor::loop_rail::loop_bar_ui_tests::loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit' (231513) panicked at crates/hex-ui/src/editor/loop_bar_ui_tests.rs:455:13:
+assertion `left == right` failed: escape
+  left: Snapshot { tuning: ProjectTuning { enabled: false, scale: Scale { count: 12, cents: [0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0, 1100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], root_key: 69, root_hz: 440.0, root_degree: 9, period_cents: 1200.0 }, audition: Audition { waveform: Triangle, level: 0.25, attack_ms: 10.0, release_ms: 900.0 } }, return_feeds: [], audio_feeds: [], midi_routes: [], import_provenance: None, sample_rate: 48000, next_id: 4, assets: [], tracks: [TrackSnapshot { color: Olive, gain_envelope: [], gain_touch_spans: [], gain_touch_epoch: 0, id: 1, name: "keep contents", gain: 1.0, balance: 0.0, muted: false, soloed: false, devices: [], instrument: Some(DeviceSnapshot { comparison: None, id: 2, bypassed: false, state: NativeDeviceState { type_id: DeviceTypeId { bytes: [104, 101, 120, 46, 105, 110, 115, 116, 114, 117, 109, 101, 110, 116, 46, 115, 105, 110, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], length: 19, valid: true }, state_version: 1, payload: [], input_gain_millidb: 0, output_gain_millidb: 0, asset_references: None } }), instrument_position: Some(0), content: Hybrid { audio_clips: [], midi_clips: [MidiClipSnapshot { name: "clip", flavor: Muted, id: 3, start_raw: 0, length_raw: 68719476736, source_length_raw: 68719476736, source_start_raw: 0, loop_start_raw: 0, loop_end_raw: 68719476736, looping: false, notes: [] }] }, sends: [] }], return_tracks: [], session: SessionSnapshot { scenes: [], cells: [] }, loop_region: Some(LoopRegion { start: 84000, end: 132000, enabled: false }), master_gain: 1.0, tempo_points: [TempoPoint { beat: BeatTime(0), tempo: Tempo(120000000) }], meter_points: [MeterPoint { beat: BeatTime(0), meter: Meter { numerator: 4, denominator: 4 } }] }
+ right: Snapshot { tuning: ProjectTuning { enabled: false, scale: Scale { count: 12, cents: [0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0, 1100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], root_key: 69, root_hz: 440.0, root_degree: 9, period_cents: 1200.0 }, audition: Audition { waveform: Triangle, level: 0.25, attack_ms: 10.0, release_ms: 900.0 } }, return_feeds: [], audio_feeds: [], midi_routes: [], import_provenance: None, sample_rate: 48000, next_id: 4, assets: [], tracks: [TrackSnapshot { color: Olive, gain_envelope: [], gain_touch_spans: [], gain_touch_epoch: 0, id: 1, name: "keep contents", gain: 1.0, balance: 0.0, muted: false, soloed: false, devices: [], instrument: Some(DeviceSnapshot { comparison: None, id: 2, bypassed: false, state: NativeDeviceState { type_id: DeviceTypeId { bytes: [104, 101, 120, 46, 105, 110, 115, 116, 114, 117, 109, 101, 110, 116, 46, 115, 105, 110, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], length: 19, valid: true }, state_version: 1, payload: [], input_gain_millidb: 0, output_gain_millidb: 0, asset_references: None } }), instrument_position: Some(0), content: Hybrid { audio_clips: [], midi_clips: [MidiClipSnapshot { name: "clip", flavor: Muted, id: 3, start_raw: 0, length_raw: 68719476736, source_length_raw: 68719476736, source_start_raw: 0, loop_start_raw: 0, loop_end_raw: 68719476736, looping: false, notes: [] }] }, sends: [] }], return_tracks: [], session: SessionSnapshot { scenes: [], cells: [] }, loop_region: Some(LoopRegion { start: 48000, end: 96000, enabled: false }), master_gain: 1.0, tempo_points: [TempoPoint { beat: BeatTime(0), tempo: Tempo(120000000) }], meter_points: [MeterPoint { beat: BeatTime(0), meter: Meter { numerator: 4, denominator: 4 } }] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::loop_rail::loop_bar_ui_tests::loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit ... FAILED
+test editor::loop_rail::loop_bar_ui_tests::marker_updates_after_actual_edge_resize_and_rounded_tempo_change ... ok
+
+thread 'editor::loop_rail::loop_bar_ui_tests::moving_body_recalculates_modifiers_without_changing_initial_origin' (231529) panicked at crates/hex-ui/src/editor/loop_bar_ui_tests.rs:545:9:
+assertion `left == right` failed
+  left: LoopRegion { start: 80000, end: 116000, enabled: false }
+ right: LoopRegion { start: 96000, end: 132000, enabled: false }
+test editor::loop_rail::loop_bar_ui_tests::moving_body_recalculates_modifiers_without_changing_initial_origin ... FAILED
+test editor::loop_rail::loop_bar_ui_tests::command_click_toggles_both_ways_and_preserves_content_history ... ok
+test editor::loop_rail::loop_bar_ui_tests::body_drag_and_shift_steps_preserve_full_length_original_origin_and_one_undo ... ok
+test editor::loop_rail::tests::binary_marker_refuses_ambiguous_subframe_musical_durations ... ok
+test editor::loop_rail::tests::length_steps_keep_relative_origin_ties_and_checked_timeline_bounds ... ok
+test editor::loop_rail::tests::musical_marker_uses_forward_rounding_across_tempo_points ... ok
+test editor::loop_rail::tests::visible_range_clips_loop_edges_to_zoomed_viewport ... ok
+test editor::loop_rail_ui_test::command_drag_uses_free_frames_and_zoomed_panned_coordinates ... ok
+test editor::loop_rail::loop_bar_ui_tests::musical_binary_marker_supports_fractional_durations_and_ignores_view_width ... ok
+test editor::loop_rail::loop_bar_ui_tests::shift_steps_reverse_from_initial_origin_across_grids_and_final_mouse_up ... ok
+test editor::loop_rail::loop_bar_ui_tests::ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open ... ok
+test editor::loop_rail_ui_test::loop_rail_drag_continues_outside_rail_without_starting_lane_selection ... ok
+test editor::loop_rail_ui_test::loop_rail_paint_previews_then_commits_adaptive_grid_range_disabled ... ok
+test editor::loop_rail_ui_test::stale_loop_state_cancels_preview_without_overwriting_the_new_range ... ok
+
+thread 'editor::loop_rail_ui_test::loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_disables' (231581) panicked at crates/hex-ui/src/editor/loop_rail_ui_test.rs:84:5:
+loop command did not publish expected project revision: (None, Some(0), Some(DisplayError { message: "project edit failed: no loop region is set", batch_member: None }), "project ready", false)
+test editor::loop_rail_ui_test::loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_disables ... FAILED
+
+failures:
+
+failures:
+    editor::loop_rail::loop_bar_ui_tests::loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit
+    editor::loop_rail::loop_bar_ui_tests::moving_body_recalculates_modifiers_without_changing_initial_origin
+    editor::loop_rail_ui_test::loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_disables
+
+test result: FAILED. 14 passed; 3 failed; 0 ignored; 0 measured; 1032 filtered out; finished in 25.23s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

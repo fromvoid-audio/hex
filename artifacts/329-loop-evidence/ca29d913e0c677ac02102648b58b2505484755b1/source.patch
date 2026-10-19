@@ -1,0 +1,1325 @@
+diff --git a/crates/hex-ui/src/editor/loop_bar_ui_tests.rs b/crates/hex-ui/src/editor/loop_bar_ui_tests.rs
+new file mode 100644
+index 00000000..375bebe0
+--- /dev/null
++++ b/crates/hex-ui/src/editor/loop_bar_ui_tests.rs
+@@ -0,0 +1,584 @@
++//! Real canonical worker + rendered loop-bar gestures, not user app interaction.
++use super::super::{EditorView, musical_time::SnapGrid, viewport::Viewport};
++use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
++use hex_project::{BeatTime, Command, LoopRegion, Tempo};
++use hex_session::service::{Event, Request, Service};
++use std::time::{Duration, Instant};
++fn next(service: &Service) -> Event {
++    let until = Instant::now() + Duration::from_secs(5);
++    loop {
++        if let Ok(event) = service.try_event() {
++            assert!(event.error.is_none(), "{:?}", event.error);
++            return event;
++        }
++        assert!(Instant::now() < until);
++        std::thread::sleep(Duration::from_millis(2));
++    }
++}
++fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
++    let until = Instant::now() + Duration::from_secs(5);
++    loop {
++        let done = editor.update(&mut *visual, |v, cx| {
++            if v.tick(cx) {
++                cx.notify();
++            }
++            v.worker_requests_pending == 0 && v.pending_requests.is_empty()
++        });
++        if done {
++            visual.run_until_parked();
++            return;
++        }
++        assert!(Instant::now() < until);
++        std::thread::sleep(Duration::from_millis(2));
++    }
++}
++fn fixture(
++    cx: &mut TestAppContext,
++    start: u64,
++    end: u64,
++    viewport: Viewport,
++) -> (gpui::AnyWindowHandle, Entity<EditorView>) {
++    cx.update(super::super::bind_editor_keys);
++    let service = Service::new(48_000, 32, 8_000_000).unwrap();
++    next(&service);
++    service
++        .submit(Request::Edit(Command::AddMidiTrack {
++            name: "keep contents".into(),
++        }))
++        .unwrap();
++    let event = next(&service);
++    let track = event.state.project.tracks()[0].id();
++    service
++        .submit(Request::Edit(Command::PlaceMidiClip {
++            track,
++            start: BeatTime::ZERO,
++            length: BeatTime::from_raw(16 << 32),
++        }))
++        .unwrap();
++    next(&service);
++    service
++        .submit(Request::Edit(Command::SetLoopRegion {
++            start,
++            end,
++            enabled: false,
++        }))
++        .unwrap();
++    let event = next(&service);
++    let handle = *cx.add_window(|_, _| gpui::Empty);
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.activate_window();
++            let editor = window.replace_root(cx, |window, cx| {
++                EditorView::new(window, cx, service, Err("offline loop bar test".into()))
++            });
++            editor.update(cx, |v, cx| {
++                v.state = Some(event.state);
++                v.viewport = Some(viewport);
++                v.focus.focus(window);
++                cx.notify();
++            });
++            editor
++        })
++        .unwrap();
++    (handle, editor)
++}
++fn at(visual: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
++    let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
++    point(
++        rail.left() + rail.size.width * fraction,
++        rail.top() + rail.size.height / 2.0,
++    )
++}
++fn region(editor: &Entity<EditorView>, visual: &VisualTestContext) -> LoopRegion {
++    editor.read_with(visual, |v, _| {
++        v.state.as_ref().unwrap().project.loop_region().unwrap()
++    })
++}
++fn click(visual: &mut VisualTestContext, p: gpui::Point<gpui::Pixels>, modifiers: Modifiers) {
++    visual.simulate_mouse_down(p, MouseButton::Left, modifiers);
++    visual.simulate_mouse_up(p, MouseButton::Left, modifiers);
++    visual.run_until_parked();
++}
++#[gpui::test]
++fn command_click_toggles_both_ways_and_preserves_content_history(cx: &mut TestAppContext) {
++    let (handle, editor) = fixture(
++        cx,
++        48_000,
++        144_000,
++        Viewport {
++            start: 0,
++            length: 384_000,
++        },
++    );
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let p = at(&mut visual, 0.25);
++    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++    let command = Modifiers {
++        platform: true,
++        ..Modifiers::default()
++    };
++    for enabled in [true, false, true] {
++        click(&mut visual, p, command);
++        pump(&editor, &mut visual);
++        let r = region(&editor, &visual);
++        assert_eq!(
++            (r.start(), r.end(), r.enabled()),
++            (48_000, 144_000, enabled)
++        );
++    }
++    visual.simulate_keystrokes("cmd-z");
++    pump(&editor, &mut visual);
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(
++            v.state.as_ref().unwrap().project.snapshot(),
++            before,
++            "one Undo reverses one toggle and contents persist"
++        )
++    });
++    visual.simulate_keystrokes("cmd-shift-z");
++    pump(&editor, &mut visual);
++    editor.read_with(&visual, |v, _| {
++        let snapshot = v.state.as_ref().unwrap().project.snapshot();
++        assert_eq!(
++            hex_project::Project::from_snapshot(snapshot.clone())
++                .unwrap()
++                .snapshot(),
++            snapshot
++        );
++    });
++}
++#[gpui::test]
++fn body_drag_and_shift_steps_preserve_full_length_original_origin_and_one_undo(
++    cx: &mut TestAppContext,
++) {
++    for viewport in [
++        Viewport {
++            start: 0,
++            length: 384_000,
++        },
++        Viewport {
++            start: 24_000,
++            length: 192_000,
++        },
++    ] {
++        let (handle, editor) = fixture(cx, 48_000, 96_000, viewport);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.run_until_parked();
++        let fraction = (72_000 - viewport.start) as f32 / viewport.length as f32;
++        let down = at(&mut visual, fraction);
++        let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
++        let step_px = rail.size.width * (48_000.0 / viewport.length as f32);
++        let target = point(down.x + step_px * 1.2, down.y);
++        let shift = Modifiers {
++            shift: true,
++            ..Modifiers::default()
++        };
++        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++        visual.simulate_mouse_down(down, MouseButton::Left, shift);
++        visual.simulate_mouse_move(target, MouseButton::Left, shift);
++        visual.run_until_parked();
++        editor.read_with(&visual, |v, _| {
++            let gesture = v.loop_rail_gesture.expect("body owns whole-range drag");
++            let p = gesture.preview.unwrap();
++            assert_eq!((p.start(), p.end(), p.enabled()), (96_000, 144_000, false));
++            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
++        });
++        visual.simulate_mouse_up(target, MouseButton::Left, shift);
++        pump(&editor, &mut visual);
++        assert_eq!(region(&editor, &visual).start(), 96_000);
++        visual.simulate_keystrokes("cmd-z");
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
++        });
++        // Shift uses the original origin in the reverse direction, with a zero lower bound.
++        let down = at(&mut visual, fraction);
++        let target = point(down.x - step_px * 1.2, down.y);
++        visual.simulate_mouse_down(down, MouseButton::Left, shift);
++        visual.simulate_mouse_move(target, MouseButton::Left, shift);
++        visual.simulate_mouse_up(target, MouseButton::Left, shift);
++        pump(&editor, &mut visual);
++        let r = region(&editor, &visual);
++        assert_eq!((r.start(), r.end()), (0, 48_000));
++    }
++}
++#[gpui::test]
++fn musical_binary_marker_supports_fractional_durations_and_ignores_view_width(
++    cx: &mut TestAppContext,
++) {
++    for (raw, expected) in [
++        (2_u64 << 32, true),
++        (4 << 32, true),
++        (3 << 32, false),
++        (1 << 31, true),
++        (1 << 30, true),
++    ] {
++        let end = (raw as u128 * 24_000 / (1u128 << 32)) as u64;
++        let (handle, editor) = fixture(
++            cx,
++            0,
++            end,
++            Viewport {
++                start: 0,
++                length: 384_000,
++            },
++        );
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.run_until_parked();
++        assert_eq!(
++            visual.debug_bounds("loop-binary-length-marker").is_some(),
++            expected,
++            "rawbeatduration={raw}"
++        );
++        editor.update(&mut visual, |v, cx| {
++            v.viewport = Some(Viewport {
++                start: 0,
++                length: 192_000,
++            });
++            cx.notify();
++        });
++        visual.run_until_parked();
++        assert_eq!(
++            visual.debug_bounds("loop-binary-length-marker").is_some(),
++            expected
++        );
++    }
++}
++
++#[gpui::test]
++fn ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open(
++    cx: &mut TestAppContext,
++) {
++    for grid in [SnapGrid::Off, SnapGrid::Quarter, SnapGrid::Adaptive] {
++        let (handle, editor) = fixture(
++            cx,
++            48_000,
++            120_000,
++            Viewport {
++                start: 0,
++                length: 384_000,
++            },
++        );
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        editor.update(&mut visual, |v, cx| {
++            v.snap_grid = grid;
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++        let down = at(&mut visual, 84_000.0 / 384_000.0);
++        // A plain body click is not an enable action or an edit.
++        click(&mut visual, down, Modifiers::default());
++        editor.read_with(&visual, |v, _| {
++            assert!(v.loop_rail_gesture.is_none());
++            assert!(v.pending_requests.is_empty());
++            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
++        });
++        let width = visual
++            .debug_bounds("arrangement-loop-rail")
++            .unwrap()
++            .size
++            .width;
++        let target = point(down.x + width * (30_000.0 / 384_000.0), down.y);
++        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++        let shown = editor.read_with(&visual, |v, _| {
++            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
++            let shown = v.loop_rail_gesture.unwrap().preview.unwrap();
++            assert_eq!(shown.end() - shown.start(), 72_000);
++            assert!(!shown.enabled());
++            match grid {
++                SnapGrid::Off => assert!(shown.start().abs_diff(78_000) <= 1),
++                SnapGrid::Quarter => assert_eq!(shown.start(), 72_000),
++                _ => assert!(shown.start() > 48_000),
++            }
++            shown
++        });
++        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++        pump(&editor, &mut visual);
++        assert_eq!(region(&editor, &visual), shown);
++        let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++        let revision = editor.update(&mut visual, |v, _| {
++            v.last_enqueued_edit = None;
++            v.state.as_ref().unwrap().revision
++        });
++        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |v, _| {
++            assert!(
++                v.last_enqueued_edit.is_none(),
++                "duplicate release cannot enqueue an edit"
++            );
++            assert!(v.loop_rail_gesture.is_none());
++            assert_eq!(v.state.as_ref().unwrap().revision, revision);
++            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
++        });
++        visual.simulate_keystrokes("cmd-z");
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
++        });
++        visual.simulate_keystrokes("cmd-shift-z");
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
++        });
++        if grid == SnapGrid::Off {
++            let directory = super::super::test_environment::Environment::new().unwrap();
++            let path = directory.root().join("loop.hex");
++            editor.update(&mut visual, |v, _| {
++                assert!(v.enqueue(Request::SaveNew(path.clone())))
++            });
++            pump(&editor, &mut visual);
++            assert!(path.is_file());
++            editor.update(&mut visual, |v, _| {
++                assert!(v.enqueue(Request::Open(path.clone())))
++            });
++            pump(&editor, &mut visual);
++            editor.read_with(&visual, |v, _| {
++                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
++                assert!(v.loop_rail_gesture.is_none());
++            });
++        }
++    }
++}
++
++#[gpui::test]
++fn shift_steps_reverse_from_initial_origin_across_grids_and_final_mouse_up(
++    cx: &mut TestAppContext,
++) {
++    for (viewport, grid) in [
++        (
++            Viewport {
++                start: 0,
++                length: 384_000,
++            },
++            SnapGrid::Quarter,
++        ),
++        (
++            Viewport {
++                start: 24_000,
++                length: 192_000,
++            },
++            SnapGrid::Sixteenth,
++        ),
++        (
++            Viewport {
++                start: 0,
++                length: 384_000,
++            },
++            SnapGrid::Off,
++        ),
++    ] {
++        let (handle, editor) = fixture(cx, 60_000, 96_000, viewport);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        editor.update(&mut visual, |v, cx| {
++            v.snap_grid = grid;
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let down = at(
++            &mut visual,
++            (78_000 - viewport.start) as f32 / viewport.length as f32,
++        );
++        let width = visual
++            .debug_bounds("arrangement-loop-rail")
++            .unwrap()
++            .size
++            .width;
++        let step = width * (36_000.0 / viewport.length as f32);
++        let shift = Modifiers {
++            shift: true,
++            ..Modifiers::default()
++        };
++        visual.simulate_mouse_down(down, MouseButton::Left, shift);
++        for (steps, expected) in [(1.2, 96_000), (-1.2, 24_000), (2.2, 132_000), (0.2, 60_000)] {
++            let target = point(down.x + step * steps, down.y);
++            visual.simulate_mouse_move(target, MouseButton::Left, shift);
++            editor.read_with(&visual, |v, _| {
++                let shown = v.loop_rail_gesture.unwrap().preview.unwrap();
++                assert_eq!((shown.start(), shown.end()), (expected, expected + 36_000));
++            });
++        }
++        // MouseUp at a new position resolves from the same capture, not last Move.
++        let final_point = point(down.x + step * 1.2, down.y);
++        visual.simulate_mouse_up(final_point, MouseButton::Left, shift);
++        pump(&editor, &mut visual);
++        let actual = region(&editor, &visual);
++        assert_eq!((actual.start(), actual.end()), (96_000, 132_000));
++        visual.simulate_keystrokes("cmd-z");
++        pump(&editor, &mut visual);
++        assert_eq!(
++            region(&editor, &visual),
++            LoopRegion::new(60_000, 96_000, false).unwrap()
++        );
++    }
++}
++
++#[gpui::test]
++fn loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit(cx: &mut TestAppContext) {
++    for cancel in ["escape", "blur", "alt", "control", "open"] {
++        let (handle, editor) = fixture(
++            cx,
++            48_000,
++            96_000,
++            Viewport {
++                start: 0,
++                length: 384_000,
++            },
++        );
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.run_until_parked();
++        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++        let directory = super::super::test_environment::Environment::new().unwrap();
++        let path = directory.root().join("captured-loop.hex");
++        if cancel == "open" {
++            editor.update(&mut visual, |v, _| {
++                assert!(v.enqueue(Request::SaveNew(path.clone())))
++            });
++            pump(&editor, &mut visual);
++        }
++        let down = at(&mut visual, 72_000.0 / 384_000.0);
++        let target = at(&mut visual, 110_000.0 / 384_000.0);
++        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++        assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_some()));
++        editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
++        let mut modifiers = Modifiers::default();
++        match cancel {
++            "escape" => visual.simulate_keystrokes("escape"),
++            "blur" => visual.update(|window, _| window.blur()),
++            "alt" => {
++                modifiers.alt = true;
++                visual.simulate_modifiers_change(modifiers);
++            }
++            "open" => {
++                editor.update(&mut visual, |v, _| {
++                    assert!(v.enqueue(Request::Open(path.clone())))
++                });
++                pump(&editor, &mut visual);
++            }
++            _ => {
++                modifiers.control = true;
++                visual.simulate_modifiers_change(modifiers);
++            }
++        }
++        visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
++        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |v, _| {
++            assert!(
++                v.last_enqueued_edit.is_none(),
++                "cancelled/late release cannot enqueue: {cancel}"
++            );
++            assert!(v.loop_rail_gesture.is_none(), "{cancel}");
++            assert_eq!(
++                v.state.as_ref().unwrap().project.snapshot(),
++                before,
++                "{cancel}"
++            );
++            assert!(v.pending_requests.is_empty() && v.worker_requests_pending == 0);
++        });
++    }
++}
++
++#[gpui::test]
++fn marker_updates_after_actual_edge_resize_and_rounded_tempo_change(cx: &mut TestAppContext) {
++    let (handle, editor) = fixture(
++        cx,
++        0,
++        48_000,
++        Viewport {
++            start: 0,
++            length: 384_000,
++        },
++    );
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    assert!(visual.debug_bounds("loop-binary-length-marker").is_some());
++    let start = at(&mut visual, 48_000.0 / 384_000.0);
++    let end = at(&mut visual, 72_000.0 / 384_000.0);
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++    assert!(visual.debug_bounds("loop-binary-length-marker").is_none());
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    pump(&editor, &mut visual);
++    assert_eq!(region(&editor, &visual).end(), 72_000);
++    assert!(visual.debug_bounds("loop-binary-length-marker").is_none());
++    editor.update(&mut visual, |v, _| {
++        assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
++            beat: BeatTime::ZERO,
++            tempo: Tempo::new(137_000_000).unwrap(),
++        })))
++    });
++    pump(&editor, &mut visual);
++    let (start_frame, end_frame) = editor.read_with(&visual, |v, _| {
++        let map = v.state.as_ref().unwrap().project.tempo_map();
++        (
++            map.beat_to_frame(BeatTime::from_raw(1 << 31)).unwrap(),
++            map.beat_to_frame(BeatTime::from_raw((1 << 31) + (2 << 32)))
++                .unwrap(),
++        )
++    });
++    editor.update(&mut visual, |v, _| {
++        assert!(v.enqueue(Request::Edit(Command::SetLoopRegion {
++            start: start_frame,
++            end: end_frame,
++            enabled: false,
++        })))
++    });
++    pump(&editor, &mut visual);
++    assert!(visual.debug_bounds("loop-binary-length-marker").is_some());
++}
++
++#[gpui::test]
++fn moving_body_recalculates_modifiers_without_changing_initial_origin(cx: &mut TestAppContext) {
++    let (handle, editor) = fixture(
++        cx,
++        60_000,
++        96_000,
++        Viewport {
++            start: 0,
++            length: 384_000,
++        },
++    );
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    editor.update(&mut visual, |v, cx| {
++        v.snap_grid = SnapGrid::Off;
++        cx.notify();
++    });
++    visual.run_until_parked();
++    let down = at(&mut visual, 78_000.0 / 384_000.0);
++    let target = at(&mut visual, 98_000.0 / 384_000.0);
++    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++    let ordinary = editor.read_with(&visual, |v, _| {
++        v.loop_rail_gesture.unwrap().preview.unwrap()
++    });
++    assert!(ordinary.start().abs_diff(80_000) <= 1);
++    let shift = Modifiers {
++        shift: true,
++        ..Modifiers::default()
++    };
++    visual.simulate_modifiers_change(shift);
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(
++            v.loop_rail_gesture.unwrap().preview.unwrap(),
++            LoopRegion::new(96_000, 132_000, false).unwrap()
++        );
++    });
++    visual.simulate_modifiers_change(Modifiers::default());
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.loop_rail_gesture.unwrap().preview.unwrap(), ordinary)
++    });
++    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++    pump(&editor, &mut visual);
++    assert_eq!(region(&editor, &visual), ordinary);
++    visual.simulate_keystrokes("cmd-z");
++    pump(&editor, &mut visual);
++    assert_eq!(
++        region(&editor, &visual),
++        LoopRegion::new(60_000, 96_000, false).unwrap()
++    );
++}
+diff --git a/crates/hex-ui/src/editor/loop_rail.rs b/crates/hex-ui/src/editor/loop_rail.rs
+index a00681b2..7ef60c9a 100644
+--- a/crates/hex-ui/src/editor/loop_rail.rs
++++ b/crates/hex-ui/src/editor/loop_rail.rs
+@@ -2,8 +2,8 @@
+ use super::{EditorMode, EditorView, ViewState, musical_time::GridLine, viewport::Viewport};
+ use crate::theme;
+ use gpui::{
+-    Bounds, Context, CursorStyle, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+-    canvas, div, prelude::*, px, relative, rgb,
++    Bounds, Context, CursorStyle, Div, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
++    MouseUpEvent, canvas, div, prelude::*, px, relative, rgb,
+ };
+ use hex_project::{Command, LoopRegion};
+ use hex_session::service::Request;
+@@ -15,6 +15,7 @@ const EDGE_HIT_PIXELS: f32 = 6.0;
+ #[derive(Clone, Copy, Debug)]
+ enum EditMode {
+     Paint { anchor: u64 },
++    Move { original: LoopRegion, anchor: u64 },
+     ResizeStart { fixed_end: u64, enabled: bool },
+     ResizeEnd { fixed_start: u64, enabled: bool },
+ }
+@@ -29,12 +30,16 @@ pub(super) struct LoopRailGesture {
+     timeline_width: f32,
+     mode: EditMode,
+     preview: Option<LoopRegion>,
++    pointer_down_x: f32,
++    last_pointer_x: f32,
++    moved: bool,
++    toggle_on_click: bool,
+ }
+ 
+ #[derive(Clone, Copy, Debug)]
+ enum Hover {
+     Paint,
+-    Activate,
++    Move,
+     Resize,
+ }
+ 
+@@ -43,7 +48,7 @@ impl EditorView {
+         &mut self,
+         bounds: Bounds<gpui::Pixels>,
+         x: f32,
+-        free: bool,
++        modifiers: Modifiers,
+         viewport: Viewport,
+         region: Option<LoopRegion>,
+     ) -> bool {
+@@ -66,6 +71,8 @@ impl EditorView {
+             || self.arrangement_pan.is_some()
+             || self.time_selection_gesture.is_some()
+             || self.time_range_move_gesture.is_some()
++            || modifiers.alt
++            || modifiers.control
+             || !x.is_finite()
+         {
+             return false;
+@@ -104,14 +111,10 @@ impl EditorView {
+                     enabled: region.enabled(),
+                 })
+             } else if frame >= region.start() && frame < region.end() {
+-                if !region.enabled() {
+-                    return self.enqueue(Request::Edit(Command::SetLoopRegion {
+-                        start: region.start(),
+-                        end: region.end(),
+-                        enabled: true,
+-                    }));
+-                }
+-                return true;
++                Some(EditMode::Move {
++                    original: region,
++                    anchor: frame,
++                })
+             } else {
+                 None
+             };
+@@ -125,13 +128,23 @@ impl EditorView {
+                     timeline_width,
+                     mode,
+                     preview: Some(region),
++                    pointer_down_x: x,
++                    last_pointer_x: x,
++                    moved: false,
++                    toggle_on_click: modifiers.platform,
+                 });
+                 return true;
+             }
+         }
+ 
+-        let Some(anchor) = snap_frame(self, &state.project, frame, viewport, timeline_width, free)
+-        else {
++        let Some(anchor) = snap_frame(
++            self,
++            &state.project,
++            frame,
++            viewport,
++            timeline_width,
++            modifiers.platform,
++        ) else {
+             return false;
+         };
+         self.loop_rail_gesture = Some(LoopRailGesture {
+@@ -143,11 +156,15 @@ impl EditorView {
+             timeline_width,
+             mode: EditMode::Paint { anchor },
+             preview: None,
++            pointer_down_x: x,
++            last_pointer_x: x,
++            moved: false,
++            toggle_on_click: false,
+         });
+         true
+     }
+ 
+-    fn update_loop_rail_gesture(&mut self, x: f32, free: bool) -> bool {
++    fn update_loop_rail_gesture(&mut self, x: f32, modifiers: Modifiers) -> bool {
+         let Some(mut gesture) = self.loop_rail_gesture.take() else {
+             return false;
+         };
+@@ -158,6 +175,9 @@ impl EditorView {
+             || gesture.generation != self.project_generation
+             || gesture.revision != state.revision
+             || gesture.loop_region != state.project.loop_region()
++            || gesture.viewport != self.visible_viewport(state.timeline_frames)
++            || modifiers.alt
++            || modifiers.control
+             || self.context_menu.is_some()
+             || self.opening_project
+             || self.close_prompt_open
+@@ -174,18 +194,51 @@ impl EditorView {
+             self.loop_rail_gesture = Some(gesture);
+             return true;
+         };
++        gesture.last_pointer_x = x;
++        gesture.moved |= (x - gesture.pointer_down_x).abs() > 3.0;
++        if let EditMode::Move { original, anchor } = gesture.mode {
++            let delta = i128::from(frame) - i128::from(anchor);
++            let start = if modifiers.shift {
++                stepped_start(original, delta)
++            } else {
++                let candidate = (i128::from(original.start()) + delta).clamp(
++                    0,
++                    i128::from(u64::MAX - (original.end() - original.start())),
++                ) as u64;
++                snap_frame(
++                    self,
++                    &state.project,
++                    candidate,
++                    gesture.viewport,
++                    gesture.timeline_width,
++                    modifiers.platform,
++                )
++                .map(|start| start.min(u64::MAX - (original.end() - original.start())))
++            };
++            gesture.preview = start.and_then(|start| {
++                LoopRegion::new(
++                    start,
++                    start.checked_add(original.end() - original.start())?,
++                    original.enabled(),
++                )
++                .ok()
++            });
++            self.loop_rail_gesture = Some(gesture);
++            return true;
++        }
+         let Some(frame) = snap_frame(
+             self,
+             &state.project,
+             frame,
+             gesture.viewport,
+             gesture.timeline_width,
+-            free,
++            modifiers.platform,
+         ) else {
+             self.loop_rail_gesture = Some(gesture);
+             return true;
+         };
+         gesture.preview = match gesture.mode {
++            EditMode::Move { .. } => gesture.preview,
+             EditMode::Paint { anchor } => {
+                 let start = anchor.min(frame);
+                 let end = anchor.max(frame);
+@@ -207,11 +260,11 @@ impl EditorView {
+         true
+     }
+ 
+-    fn finish_loop_rail_gesture(&mut self, x: f32, free: bool) -> bool {
++    fn finish_loop_rail_gesture(&mut self, x: f32, modifiers: Modifiers) -> bool {
+         if self.loop_rail_gesture.is_none() {
+             return false;
+         }
+-        self.update_loop_rail_gesture(x, free);
++        self.update_loop_rail_gesture(x, modifiers);
+         let Some(gesture) = self.loop_rail_gesture.take() else {
+             return true;
+         };
+@@ -225,10 +278,20 @@ impl EditorView {
+         {
+             return true;
+         }
++        if !gesture.moved && gesture.toggle_on_click && modifiers.platform {
++            let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
++            return true;
++        }
++        if matches!(gesture.mode, EditMode::Move { .. }) && !gesture.moved {
++            return true;
++        }
+         let Some(region) = gesture.preview else {
+             self.error = Some("loop region needs a non-empty time range".into());
+             return true;
+         };
++        if Some(region) == gesture.loop_region {
++            return true;
++        }
+         let _ = self.enqueue(Request::Edit(Command::SetLoopRegion {
+             start: region.start(),
+             end: region.end(),
+@@ -237,10 +300,22 @@ impl EditorView {
+         true
+     }
+ 
+-    fn cancel_loop_rail_gesture(&mut self) -> bool {
++    pub(super) fn cancel_loop_rail_gesture(&mut self) -> bool {
+         self.loop_rail_gesture.take().is_some()
+     }
+ 
++    pub(super) fn refresh_loop_rail_modifiers(
++        &mut self,
++        modifiers: Modifiers,
++        window: &gpui::Window,
++    ) -> bool {
++        if !self.focus.is_focused(window) {
++            return self.cancel_loop_rail_gesture();
++        }
++        self.loop_rail_gesture
++            .is_some_and(|gesture| self.update_loop_rail_gesture(gesture.last_pointer_x, modifiers))
++    }
++
+     fn loop_rail_hover(&self, x: f32, viewport: Viewport, bounds: Bounds<gpui::Pixels>) -> Hover {
+         let Some(region) = self
+             .state
+@@ -262,7 +337,7 @@ impl EditorView {
+         } else if super::seek::pointer_to_frame(x, left, width, viewport)
+             .is_some_and(|frame| frame >= region.start() && frame < region.end())
+         {
+-            Hover::Activate
++            Hover::Move
+         } else {
+             Hover::Paint
+         }
+@@ -305,14 +380,14 @@ pub(super) fn view(
+                 .cursor(view.loop_rail_cursor)
+                 .tooltip(|_, cx| {
+                     cx.new(|_| super::transport::MiniTooltip {
+-                        description: "drag to set loop · click range to enable · l toggles · cmd for free placement".into(),
++                        description: "drag empty rail to set loop · drag bar to move · shift steps loop length · cmd-click toggles · cmd-drag is free".into(),
+                     })
+                     .into()
+                 })
+                 .child(loop_grid_layer(grid, viewport))
+                 .children(
+                     shown_region
+-                        .and_then(|region| loop_region_bar(region, viewport)),
++                        .and_then(|region| loop_region_bar(region, viewport, &state.project)),
+                 )
+                 .child(
+                     canvas(
+@@ -328,14 +403,19 @@ pub(super) fn view(
+                                     {
+                                         return;
+                                     }
+-                                    let started = down_entity.update(cx, |view, _| {
+-                                        view.begin_loop_rail_gesture(
++                                    let started = down_entity.update(cx, |view, cx| {
++                                        if view.track_name.is_editing() || view.clip_name_edit.is_some()
++                                            || view.project_tempo_editing(cx) || view.gain_numeric_editing(cx)
++                                            || view.sample_bpm_editing(cx) { return false; }
++                                        let started = view.begin_loop_rail_gesture(
+                                             bounds,
+                                             f32::from(event.position.x),
+-                                            event.modifiers.platform,
++                                            event.modifiers,
+                                             viewport,
+                                             current_region,
+-                                        )
++                                        );
++                                        if started { view.focus.focus(window); }
++                                        started
+                                     });
+                                     if started {
+                                         cx.stop_propagation();
+@@ -359,7 +439,7 @@ pub(super) fn view(
+                                                     move_bounds,
+                                                 ) {
+                                                     Hover::Paint => CursorStyle::Crosshair,
+-                                                    Hover::Activate => CursorStyle::PointingHand,
++                                                    Hover::Move => CursorStyle::OpenHand,
+                                                     Hover::Resize => CursorStyle::ResizeLeftRight,
+                                                 }
+                                             } else {
+@@ -377,9 +457,10 @@ pub(super) fn view(
+                                         return;
+                                     }
+                                     let changed = move_entity.update(cx, |view, _| {
++                                        if !view.focus.is_focused(window) { return view.cancel_loop_rail_gesture(); }
+                                         view.update_loop_rail_gesture(
+                                             f32::from(event.position.x),
+-                                            event.modifiers.platform,
++                                            event.modifiers,
+                                         )
+                                     });
+                                     if changed {
+@@ -395,9 +476,10 @@ pub(super) fn view(
+                                         return;
+                                     }
+                                     let finished = up_entity.update(cx, |view, _| {
++                                        if !view.focus.is_focused(window) { return view.cancel_loop_rail_gesture(); }
+                                         view.finish_loop_rail_gesture(
+                                             f32::from(event.position.x),
+-                                            event.modifiers.platform,
++                                            event.modifiers,
+                                         )
+                                     });
+                                     if finished {
+@@ -426,12 +508,10 @@ fn snap_frame(
+     width: f32,
+     free: bool,
+ ) -> Option<u64> {
+-    let snap = if free {
+-        super::musical_time::SnapGrid::Off
+-    } else {
+-        view.snap_grid
+-    };
+-    snap.snap_frame(project, frame, viewport, width)
++    if free {
++        return Some(frame);
++    }
++    view.snap_grid.snap_frame(project, frame, viewport, width)
+ }
+ 
+ fn visible_region_pixels(
+@@ -485,7 +565,11 @@ fn loop_grid_layer(lines: &[GridLine], viewport: Viewport) -> Div {
+     div().absolute().inset_0().children(lines)
+ }
+ 
+-fn loop_region_bar(region: LoopRegion, viewport: Viewport) -> Option<Div> {
++fn loop_region_bar(
++    region: LoopRegion,
++    viewport: Viewport,
++    project: &hex_project::Project,
++) -> Option<Div> {
+     let viewport_end = viewport.end()?;
+     if viewport.length == 0 {
+         return None;
+@@ -510,10 +594,67 @@ fn loop_region_bar(region: LoopRegion, viewport: Viewport) -> Option<Div> {
+             } else {
+                 theme::PaletteRole::Muted
+             })))
+-            .opacity(if region.enabled() { 0.94 } else { 0.62 }),
++            .opacity(if region.enabled() { 0.94 } else { 0.62 })
++            .children(
++                (region.start() >= viewport.start && binary_duration(project, region)).then(|| {
++                    div()
++                        .debug_selector(|| "loop-binary-length-marker".into())
++                        .absolute()
++                        .left_0()
++                        .top(px(2.0))
++                        .size(px(5.0))
++                        .rounded_full()
++                        .bg(rgb(theme::color(theme::PaletteRole::Background)))
++                }),
++            ),
+     )
+ }
+ 
++/// Full-frame loop-length steps relative to the original start, including the
++/// origin when a further full negative/positive step would exceed checked bounds.
++fn stepped_start(region: LoopRegion, delta: i128) -> Option<u64> {
++    let length = region.end().checked_sub(region.start())?;
++    if length == 0 {
++        return None;
++    }
++    let magnitude = (delta.unsigned_abs() + u128::from(length) / 2) / u128::from(length);
++    let magnitude = i128::try_from(magnitude).ok()?;
++    let steps = if delta < 0 { -magnitude } else { magnitude };
++    let steps = steps.clamp(
++        -i128::from(region.start() / length),
++        i128::from((u64::MAX - region.end()) / length),
++    );
++    u64::try_from(i128::from(region.start()) + steps * i128::from(length)).ok()
++}
++
++/// Frame endpoints retain quantized musical intervals, not authored beat IDs.
++/// Accept exactly one binary Q32.32 duration whose canonical forward rounding can
++/// place its two beat endpoints at these stored frames (no pixel/epsilon test).
++fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
++    let map = project.tempo_map();
++    let interval = |frame: u64| -> Option<(u128, u128)> {
++        let first = map.beat_lower_bound_for_frame(frame).ok()?;
++        let after = map.beat_lower_bound_for_frame(frame.checked_add(1)?).ok()?;
++        (first < after && first < hex_project::TempoMap::BEAT_RANGE_SENTINEL)
++            .then_some((first, after.checked_sub(1)?))
++    };
++    let Some((start_lo, start_hi)) = interval(region.start()) else {
++        return false;
++    };
++    let Some((end_lo, end_hi)) = interval(region.end()) else {
++        return false;
++    };
++    let minimum = end_lo.saturating_sub(start_hi).max(1);
++    let maximum = end_hi.saturating_sub(start_lo);
++    minimum
++        .checked_next_power_of_two()
++        .is_some_and(|candidate| {
++            candidate <= maximum
++                && candidate < hex_project::TempoMap::BEAT_RANGE_SENTINEL
++                && candidate.checked_mul(2).is_none_or(|next| next > maximum)
++        })
++}
++
+ pub(super) fn cancel_stale(
+     view: &mut EditorView,
+     generation: u64,
+@@ -532,7 +673,7 @@ pub(super) fn cancel_stale(
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::visible_region_pixels;
++    use super::{binary_duration, stepped_start, visible_region_pixels};
+     use crate::editor::viewport::Viewport;
+     use hex_project::LoopRegion;
+ 
+@@ -548,4 +689,82 @@ mod tests {
+             Some((10.0, 110.0))
+         );
+     }
++
++    #[test]
++    fn binary_marker_refuses_ambiguous_subframe_musical_durations() {
++        let project = hex_project::Project::new(48_000).unwrap();
++        assert!(!binary_duration(
++            &project,
++            LoopRegion::new(0, 1, false).unwrap()
++        ));
++    }
++
++    #[test]
++    fn musical_marker_uses_forward_rounding_across_tempo_points() {
++        use hex_project::{BeatTime, Command, Editor, Project, Tempo};
++        let mut editor = Editor::new(Project::new(44_100).unwrap(), 8).unwrap();
++        for (beat, bpm) in [(0, 137_000_000), (2, 93_000_000)] {
++            editor
++                .execute(Command::SetTempoPoint {
++                    beat: BeatTime::from_raw(beat << 32),
++                    tempo: Tempo::new(bpm).unwrap(),
++                })
++                .unwrap();
++        }
++        let project = editor.project();
++        for start_raw in [0, 1 << 31, 1 << 32] {
++            for (length, expected) in [
++                (1 << 30, true),
++                (1 << 31, true),
++                (2 << 32, true),
++                (3 << 32, false),
++                (4 << 32, true),
++            ] {
++                let start = project
++                    .tempo_map()
++                    .beat_to_frame(BeatTime::from_raw(start_raw))
++                    .unwrap();
++                let end = project
++                    .tempo_map()
++                    .beat_to_frame(BeatTime::from_raw(start_raw + length))
++                    .unwrap();
++                assert_eq!(
++                    binary_duration(project, LoopRegion::new(start, end, true).unwrap()),
++                    expected,
++                    "start={start_raw}, duration={length}, frames={start}..{end}"
++                );
++            }
++        }
++        assert!(!binary_duration(
++            project,
++            LoopRegion::new(u64::MAX - 1, u64::MAX, false).unwrap()
++        ));
++    }
++
++    #[test]
++    fn length_steps_keep_relative_origin_ties_and_checked_timeline_bounds() {
++        let region = LoopRegion::new(65, 95, false).unwrap();
++        for (delta, expected) in [
++            (-1000, 5),
++            (-46, 5),
++            (-45, 5),
++            (-44, 35),
++            (-15, 35),
++            (-14, 65),
++            (14, 65),
++            (15, 95),
++            (44, 95),
++            (45, 125),
++        ] {
++            assert_eq!(stepped_start(region, delta), Some(expected));
++        }
++        let last = LoopRegion::new(u64::MAX - 65, u64::MAX - 35, true).unwrap();
++        assert_eq!(stepped_start(last, 1000), Some(u64::MAX - 35));
++        assert_eq!(stepped_start(last, i128::MAX), Some(u64::MAX - 35));
++        assert_eq!(stepped_start(region, i128::MIN), Some(5));
++    }
+ }
++
++#[cfg(all(test, feature = "ui-test-support"))]
++#[path = "loop_bar_ui_tests.rs"]
++mod loop_bar_ui_tests;
+diff --git a/crates/hex-ui/src/editor/loop_rail_ui_test.rs b/crates/hex-ui/src/editor/loop_rail_ui_test.rs
+index f233d85e..7c9e1bd8 100644
+--- a/crates/hex-ui/src/editor/loop_rail_ui_test.rs
++++ b/crates/hex-ui/src/editor/loop_rail_ui_test.rs
+@@ -1,6 +1,7 @@
+-use super::{EditorView, Viewport, clip_drag_ui_test};
++use super::{EditorView, Viewport};
+ use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+-use hex_project::{Command, Editor, LoopRegion};
++use hex_project::{BeatTime, Command, Editor, LoopRegion};
++use hex_session::service::{Event, Request, Service};
+ use std::{sync::Arc, thread, time::Duration};
+ 
+ const TIMELINE_FRAMES: u64 = 384_000;
+@@ -10,19 +11,59 @@ fn loop_editor(
+     initial: Option<LoopRegion>,
+ ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
+     cx.update(super::bind_editor_keys);
+-    let (mut project, _, _, _) = clip_drag_ui_test::audio_project();
++    let service = Service::new(48_000, 32, 8_000_000).unwrap();
++    fn next(service: &Service) -> Event {
++        let deadline = std::time::Instant::now() + Duration::from_secs(5);
++        loop {
++            if let Ok(event) = service.try_event() {
++                assert!(event.error.is_none(), "{:?}", event.error);
++                return event;
++            }
++            assert!(std::time::Instant::now() < deadline);
++            thread::sleep(Duration::from_millis(1));
++        }
++    }
++    next(&service);
++    service
++        .submit(Request::Edit(Command::AddMidiTrack {
++            name: "loop fixture".into(),
++        }))
++        .unwrap();
++    let event = next(&service);
++    let track = event.state.project.tracks()[0].id();
++    service
++        .submit(Request::Edit(Command::PlaceMidiClip {
++            track,
++            start: BeatTime::ZERO,
++            length: BeatTime::from_quarters(12).unwrap(),
++        }))
++        .unwrap();
++    let mut event = next(&service);
+     if let Some(region) = initial {
+-        let mut history = Editor::new(project, 8).expect("project history");
+-        history
+-            .execute(Command::SetLoopRegion {
++        service
++            .submit(Request::Edit(Command::SetLoopRegion {
+                 start: region.start(),
+                 end: region.end(),
+                 enabled: region.enabled(),
+-            })
+-            .expect("valid initial loop");
+-        project = history.project().clone();
++            }))
++            .unwrap();
++        event = next(&service);
+     }
+-    let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
++    let handle = *cx.add_window(|_, _| gpui::Empty);
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.activate_window();
++            let editor = window.replace_root(cx, |window, cx| {
++                EditorView::new(window, cx, service, Err("offline loop rail test".into()))
++            });
++            editor.update(cx, |view, cx| {
++                view.state = Some(event.state);
++                view.focus.focus(window);
++                cx.notify();
++            });
++            editor
++        })
++        .unwrap();
+     editor.update(cx, |view, window_cx| {
+         view.viewport = Some(Viewport {
+             start: 0,
+@@ -209,7 +250,7 @@ fn loop_rail_drag_continues_outside_rail_without_starting_lane_selection(cx: &mu
+ }
+ 
+ #[gpui::test]
+-fn loop_rail_click_activates_resizable_ends_preserve_enable_and_toolbar_disables(
++fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_disables(
+     cx: &mut TestAppContext,
+ ) {
+     let (handle, editor) = loop_editor(cx, Some(LoopRegion::new(48_000, 192_000, false).unwrap()));
+@@ -217,8 +258,12 @@ fn loop_rail_click_activates_resizable_ends_preserve_enable_and_toolbar_disables
+     visual.run_until_parked();
+ 
+     let midpoint = rail_point(&mut visual, 0.25);
+-    visual.simulate_mouse_down(midpoint, MouseButton::Left, Modifiers::default());
+-    visual.simulate_mouse_up(midpoint, MouseButton::Left, Modifiers::default());
++    let command = Modifiers {
++        platform: true,
++        ..Modifiers::default()
++    };
++    visual.simulate_mouse_down(midpoint, MouseButton::Left, command);
++    visual.simulate_mouse_up(midpoint, MouseButton::Left, command);
+     visual.run_until_parked();
+     wait_for_loop(cx, handle, &editor, Some((48_000, 192_000, true)));
+ 
+diff --git a/crates/hex-ui/src/editor/render.rs b/crates/hex-ui/src/editor/render.rs
+index ea78a039..e32281a6 100644
+--- a/crates/hex-ui/src/editor/render.rs
++++ b/crates/hex-ui/src/editor/render.rs
+@@ -471,6 +471,9 @@ impl Render for EditorView {
+             .on_modifiers_changed(move |event, window, cx| {
+                 modifier_entity.update(cx, |view, cx| {
+                     view.tuning.shift = event.modifiers.shift;
++                    if view.refresh_loop_rail_modifiers(event.modifiers, window) {
++                        cx.notify();
++                    }
+                     view.refresh_drag_modifiers(
+                         event.modifiers.platform,
+                         event.modifiers.alt,
+@@ -691,7 +694,8 @@ impl Render for EditorView {
+                 cx.notify();
+             }))
+             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+-                if view.cancel_project_spectrum_resize(cx)
++                if view.cancel_loop_rail_gesture()
++                    | view.cancel_project_spectrum_resize(cx)
+                     | view.cancel_trim_gesture(cx)
+                     | view.cancel_track_resize(cx)
+                 {
+diff --git a/docs/runtime.md b/docs/runtime.md
+index 0a16b860..c790e36b 100644
+--- a/docs/runtime.md
++++ b/docs/runtime.md
+@@ -444,16 +444,45 @@ contracts. This is Hex behavior, with no measured Live loop-parity claim.
+ 
+ ### Native Arrangement loop rail
+ 
+-The compact rail below the ruler is a GPUI view over this same canonical loop
+-region. A drag paints a local preview and dispatches one `SetLoopRegion` on
+-release; newly painted ranges start disabled. Command bypasses the active
+-adaptive snap grid for both anchor and endpoint. Resizing either visible edge
+-preserves the region's enabled flag. Clicking a disabled range enables it, while
+-L and the toolbar continue to toggle playback looping. The tooltip documents
+-these gestures and Command's free-placement modifier. Pointer capture remains
+-owned by the rail through release outside its bounds. Generation, project
+-revision or canonical loop-region changes discard the preview. No per-move
+-project edits or audio-thread state are introduced.
++The compact rail below the ruler is a GPUI view over the canonical frame-based
++loop region. Drag empty rail to preview a new disabled range, then dispatch one
++`SetLoopRegion` on release. Command bypasses the normal snap grid for free
++placement; visible edge resizing preserves the enabled flag.
++
++Command-click the bar body to toggle looping in either direction. A plain body
++click makes no edit; a body drag moves the complete range without changing its
++frame length or enabled flag. Shift overrides the normal grid with steps of the
++captured full loop length, rounded to the nearest whole step relative to its
++original start (half-step ties go away from the origin). Both directions retain
++that origin; if another complete step would exceed the timeline, the last legal
++step remains. Live modifier changes and final MouseUp use the same projection.
++L and the toolbar still toggle looping; Command-L still sets the selected clip.
++
++A small circle at the bar's actual start indicates a power-of-two musical beat
++duration. It uses the canonical tempo map's forward-rounded Q32.32 endpoint
++intervals, not pixel width or a floating epsilon. Two/four beats and unambiguous
++fractional binary lengths such as half/quarter beats qualify; three beats does
++not. If multiple binary durations fit a very short rounded interval, no marker
++is claimed. Tempo changes, edge resizing and zoom/pan update this presentation;
++when the real start is clipped off-screen, no false start marker is painted.
++
++The rail owns capture through release outside its bounds. Escape, focus loss
++at the next captured event, invalid modifiers, project generation/revision or
++canonical loop changes discard the preview. Root focus-path callbacks forward
++modifier changes and Escape to the same private rail state. Preview is local;
++only release/toggle submits canonical commands, with existing Undo/Redo and
++current-format project persistence. There is no new transport/audio owner or
++per-move model edit.
++
++Source verification for Pulse2713/PR329 uses actual GPUI pointer/key routing and
++real Service preparation/publication, plus independent tempo-rounding and
++relative-step bounds. Native physical keyboard/drag, transport listening and
++optimized delivery acceptance remain separate. A finite native checklist is:
++repeat Command-body clicks on/off; move both enabled/disabled ranges normally;
++Shift-step one-bar and other lengths both ways at two zooms; release with a newer
++pointer/modifier; resize both edges and paint empty rail; inspect two/four/three
++and fractional markers; Escape/focus cancellation and outside release; then
++Undo/Redo and reopen the saved project. Root alone schedules that native work.
+ 
+ The canonical mixer adds validated per-track balance (-1..=1) and master gain
+ (0..=2). Center balance is unity; this original Hex linear law attenuates only
+diff --git a/todo.md b/todo.md
+index ffaf90c1..468b8172 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5659,3 +5659,23 @@ User rejected device-local automation editing. Remove its button, graph mode and
+   fresh review/merge of BOTH PRs and physical acceptance remain outstanding.
+ 
+ - Merger integration note, 19 october2026: preserve complete4bbe owner runtime/tests and both canonical419/458 histories. Correct the one retained prose reference from18 to the actual20-case union already documented in the command/checklist; no runtime or test-oracle changes. New exact guarded changed cases/full21/fresh review of each PR remain required; oldadb3 green is historical/review-blocked, installed2eef unchanged.
++
++### 2026-10-19 — PR329 loop-bar gestures and musical marker
++
++- Continue original c525/2713 history after one main2683 composition; preserve
++  earlier c71e three executed negatives and separate literal compile failure.
++- Command-body click toggles on/off; ordinary body move preserves full length,
++  Shift uses nearest full-length steps relative to the captured original start.
++  Existing edge resize/empty-rail painting and Command-L/toolbar remain intact.
++- Mark two/four and unambiguous fractional binary musical lengths through exact
++  canonical forward-rounded endpoint intervals, not pixels; ambiguous subframe
++  intervals carry no marker. Include tempo seams, zoom and resize controls.
++- Real routed Escape/stationary-modifier negatives required narrow existing root
++  callbacks into private rail state; no new gesture owner/framework/vendor code.
++  Old rail fixture now initializes its actual Service project instead of only
++  overriding the displayed state. Twelve beats plus the existing two-second
++  Service horizon preserve its exact384000-frame viewport assertions.
++- Qualification covers original five rail cases, eight real-Service loop-bar
++  cases and four pure math cases, with save/open, Undo/Redo, both directions,
++  live modifiers/focus/cancel/Open invalidation. Native physical/listening and
++  merger's prospective full21/review/actual merge remain separate and open.

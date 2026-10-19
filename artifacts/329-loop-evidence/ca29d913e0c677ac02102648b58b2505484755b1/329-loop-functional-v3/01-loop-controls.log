@@ -1,0 +1,39 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.90s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 17 tests
+test editor::loop_rail::loop_bar_ui_tests::marker_updates_after_actual_edge_resize_and_rounded_tempo_change ... ok
+test editor::loop_rail::loop_bar_ui_tests::command_click_toggles_both_ways_and_preserves_content_history ... ok
+test editor::loop_rail::loop_bar_ui_tests::moving_body_recalculates_modifiers_without_changing_initial_origin ... ok
+test editor::loop_rail::loop_bar_ui_tests::body_drag_and_shift_steps_preserve_full_length_original_origin_and_one_undo ... ok
+test editor::loop_rail::loop_bar_ui_tests::loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit ... ok
+test editor::loop_rail::tests::binary_marker_refuses_ambiguous_subframe_musical_durations ... ok
+test editor::loop_rail::tests::length_steps_keep_relative_origin_ties_and_checked_timeline_bounds ... ok
+test editor::loop_rail::tests::musical_marker_uses_forward_rounding_across_tempo_points ... ok
+test editor::loop_rail::tests::visible_range_clips_loop_edges_to_zoomed_viewport ... ok
+test editor::loop_rail::loop_bar_ui_tests::musical_binary_marker_supports_fractional_durations_and_ignores_view_width ... ok
+
+thread 'editor::loop_rail_ui_test::command_drag_uses_free_frames_and_zoomed_panned_coordinates' (231966) panicked at crates/hex-ui/src/editor/loop_rail_ui_test.rs:208:9:
+assertion `left == right` failed
+  left: 480000
+ right: 384000
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::loop_rail_ui_test::command_drag_uses_free_frames_and_zoomed_panned_coordinates ... FAILED
+test editor::loop_rail::loop_bar_ui_tests::ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open ... ok
+test editor::loop_rail::loop_bar_ui_tests::shift_steps_reverse_from_initial_origin_across_grids_and_final_mouse_up ... ok
+test editor::loop_rail_ui_test::loop_rail_drag_continues_outside_rail_without_starting_lane_selection ... ok
+test editor::loop_rail_ui_test::loop_rail_paint_previews_then_commits_adaptive_grid_range_disabled ... ok
+test editor::loop_rail_ui_test::loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_disables ... ok
+test editor::loop_rail_ui_test::stale_loop_state_cancels_preview_without_overwriting_the_new_range ... ok
+
+failures:
+
+failures:
+    editor::loop_rail_ui_test::command_drag_uses_free_frames_and_zoomed_panned_coordinates
+
+test result: FAILED. 16 passed; 1 failed; 0 ignored; 0 measured; 1032 filtered out; finished in 7.49s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,32 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.13s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-f344a88576a04e42)
+
+running 1 test
+
+thread 'editor::loop_rail::tests::binary_marker_refuses_ambiguous_subframe_musical_durations' (231060) panicked at crates/hex-ui/src/editor/loop_rail.rs:695:9:
+assertion failed: !binary_duration(&project, LoopRegion::new(0, 1, false).unwrap())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::loop_rail::tests::binary_marker_refuses_ambiguous_subframe_musical_durations ... FAILED
+
+failures:
+
+failures:
+    editor::loop_rail::tests::binary_marker_refuses_ambiguous_subframe_musical_durations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 323 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,32 @@
+{
+  "crates/hex-ui/src/editor/loop_bar_ui_tests.rs": {
+    "before_exists": false,
+    "before_sha256": null,
+    "after_sha256": "56d78f0caaae1fee3b1a15a000153d766ed200cb2ca138a7dcd68600a01e5e70"
+  },
+  "crates/hex-ui/src/editor/loop_rail.rs": {
+    "before_exists": true,
+    "before_sha256": "c315dd0d77ca6abaff158773324c2f623496f78dfe27e1822cc234df2033e6b7",
+    "after_sha256": "a39f0a80c047bf8c39739537d1bb1ce941e4191916c926c1b512ebda9d23a848"
+  },
+  "crates/hex-ui/src/editor/loop_rail_ui_test.rs": {
+    "before_exists": true,
+    "before_sha256": "42d092676daf41aaf9bb22ae5bbe1bf978009aeab44652ef8f10173a31f61329",
+    "after_sha256": "1383336acb22f95e187c5ccf0b324e869d59758e357cb908702a21f4e007a298"
+  },
+  "crates/hex-ui/src/editor/render.rs": {
+    "before_exists": true,
+    "before_sha256": "9d084ee7c4c2cfc1c5cdf1cca8ad7672c7d804066e4ef8f4444c6d662db98a55",
+    "after_sha256": "f92976b0aca36a6328db4d3d1e481c1a28a569de068b6cf004289f600a61f5d2"
+  },
+  "docs/runtime.md": {
+    "before_exists": true,
+    "before_sha256": "15f4a9da3d8087aa7569acc1e95ad4426fcdc828fb31bbaca1453889fcceccfd",
+    "after_sha256": "f074582b2b6a7c6a15a51c990eee0ac7f86ad021d1eb7a06e57745d717004024"
+  },
+  "todo.md": {
+    "before_exists": true,
+    "before_sha256": "51d9c3d07d53bf0af0d9747faeb66d4449e3ea38a4e860b5e1d6115968068e33",
+    "after_sha256": "a288b338779fc8c460f2c0e2b4da5098bbac6cd54939060a141ffa9546060578"
+  }
+}
