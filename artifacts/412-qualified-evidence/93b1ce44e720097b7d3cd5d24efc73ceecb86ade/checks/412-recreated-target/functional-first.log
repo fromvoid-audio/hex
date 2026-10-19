@@ -1,0 +1,548 @@
+test_changed_or_missing_replacement_after_inspection_refuses_before_mutation (test_launch_restart.RecreatedTargetTests.test_changed_or_missing_replacement_after_inspection_refuses_before_mutation) ... ERROR
+test_default_and_force_owner_cas_still_refuse_recreated_target (test_launch_restart.RecreatedTargetTests.test_default_and_force_owner_cas_still_refuse_recreated_target) ... ERROR
+test_explicit_inspection_and_real_guard_rebuild_ready_without_stale_artifact_reuse (test_launch_restart.RecreatedTargetTests.test_explicit_inspection_and_real_guard_rebuild_ready_without_stale_artifact_reuse) ... ok
+test_explicit_launcher_inspection_never_constructs_controller_or_mutates_owner (test_launch_restart.RecreatedTargetTests.test_explicit_launcher_inspection_never_constructs_controller_or_mutates_owner) ... ok
+test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) ... 
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=0) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=1) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=2) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=3) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=4) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=5) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=6) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=7) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=8) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=9) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=10) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=11) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=12) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=13) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=14) ... ERROR
+  test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=15) ... ERROR
+test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) ... ERROR
+test_inspection_raw_or_app_running_never_controls_app_or_mutates_owner (test_launch_restart.RecreatedTargetTests.test_inspection_raw_or_app_running_never_controls_app_or_mutates_owner) ... ok
+test_last_boundary_rechecks_inactivity_owner_target_and_source (test_launch_restart.RecreatedTargetTests.test_last_boundary_rechecks_inactivity_owner_target_and_source) ... 
+  test_last_boundary_rechecks_inactivity_owner_target_and_source (test_launch_restart.RecreatedTargetTests.test_last_boundary_rechecks_inactivity_owner_target_and_source) (cause='marker') ... ERROR
+  test_last_boundary_rechecks_inactivity_owner_target_and_source (test_launch_restart.RecreatedTargetTests.test_last_boundary_rechecks_inactivity_owner_target_and_source) (cause='target') ... ERROR
+  test_last_boundary_rechecks_inactivity_owner_target_and_source (test_launch_restart.RecreatedTargetTests.test_last_boundary_rechecks_inactivity_owner_target_and_source) (cause='source') ... ERROR
+test_missing_authority_or_inactivity_callback_cannot_relax_automatic_guard (test_launch_restart.RecreatedTargetTests.test_missing_authority_or_inactivity_callback_cannot_relax_automatic_guard) ... ERROR
+test_nonancestor_source_refuses_and_never_cleans (test_launch_restart.RecreatedTargetTests.test_nonancestor_source_refuses_and_never_cleans) ... ERROR
+test_owner_cas_change_after_inspection_refuses_before_mutation (test_launch_restart.RecreatedTargetTests.test_owner_cas_change_after_inspection_refuses_before_mutation) ... ERROR
+test_symlink_owner_or_target_and_held_lock_refuse (test_launch_restart.RecreatedTargetTests.test_symlink_owner_or_target_and_held_lock_refuse) ... ERROR
+
+======================================================================
+ERROR: test_changed_or_missing_replacement_after_inspection_refuses_before_mutation (test_launch_restart.RecreatedTargetTests.test_changed_or_missing_replacement_after_inspection_refuses_before_mutation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 509, in test_changed_or_missing_replacement_after_inspection_refuses_before_mutation
+    with self.guard(authority):self.fail('replacement race accepted')
+         ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 861, in guarded_release
+    inspected = self.inspect_recreated_release_target()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 758, in inspect_recreated_release_target
+    raise TargetCacheError("recreated target must exist")
+local_ci.TargetCacheError: recreated target must exist
+
+======================================================================
+ERROR: test_default_and_force_owner_cas_still_refuse_recreated_target (test_launch_restart.RecreatedTargetTests.test_default_and_force_owner_cas_still_refuse_recreated_target)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 500, in test_default_and_force_owner_cas_still_refuse_recreated_target
+    with self.runner.guarded_release(**kwargs):self.fail('implicit adoption')
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 948, in guarded_release
+    raise TargetCacheError("release target identity/repository changed; explicit adoption required")
+local_ci.TargetCacheError: release target identity/repository changed; explicit adoption required
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=0)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 797, in inspect_recreated_release_target
+    raise ValueError("prior package ownership changed")
+ValueError: prior package ownership changed
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: prior package ownership changed
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=3)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 797, in inspect_recreated_release_target
+    raise ValueError("prior package ownership changed")
+ValueError: prior package ownership changed
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: prior package ownership changed
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=4)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 797, in inspect_recreated_release_target
+    raise ValueError("prior package ownership changed")
+ValueError: prior package ownership changed
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: prior package ownership changed
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=5)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 794, in inspect_recreated_release_target
+    raise ValueError("invalid prior package scope")
+ValueError: invalid prior package scope
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: invalid prior package scope
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=6)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=7)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=8)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=9)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=10)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=11)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=12)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 788, in inspect_recreated_release_target
+    raise ValueError("owner is not this repository's prior target")
+ValueError: owner is not this repository's prior target
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: owner is not this repository's prior target
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=13)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 817, in inspect_recreated_release_target
+    raise ValueError("malformed historical release artifact")
+ValueError: malformed historical release artifact
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: malformed historical release artifact
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=14)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 817, in inspect_recreated_release_target
+    raise ValueError("malformed historical release artifact")
+ValueError: malformed historical release artifact
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: malformed historical release artifact
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse) (change=15)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 817, in inspect_recreated_release_target
+    raise ValueError("malformed historical release artifact")
+ValueError: malformed historical release artifact
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 543, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: malformed historical release artifact
+
+======================================================================
+ERROR: test_foreign_source_packages_and_malformed_historical_owner_refuse (test_launch_restart.RecreatedTargetTests.test_foreign_source_packages_and_malformed_historical_owner_refuse)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 771, in inspect_recreated_release_target
+    previous = record["source"]
+               ~~~~~~^^^^^^^^^^
+TypeError: 'NoneType' object is not subscriptable
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 547, in test_foreign_source_packages_and_malformed_historical_owner_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: 'NoneType' object is not subscriptable
+
+======================================================================
+ERROR: test_last_boundary_rechecks_inactivity_owner_target_and_source (test_launch_restart.RecreatedTargetTests.test_last_boundary_rechecks_inactivity_owner_target_and_source) (cause='marker')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 586, in test_last_boundary_rechecks_inactivity_owner_target_and_source
+    with self.guard(authority,check):self.fail('boundary change accepted')
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 969, in guarded_release
+    raise TargetCacheError("recreated target or owner changed before mutation")
+local_ci.TargetCacheError: recreated target or owner changed before mutation
+
+======================================================================
+ERROR: test_last_boundary_rechecks_inactivity_owner_target_and_source (test_launch_restart.RecreatedTargetTests.test_last_boundary_rechecks_inactivity_owner_target_and_source) (cause='target')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 586, in test_last_boundary_rechecks_inactivity_owner_target_and_source
+    with self.guard(authority,check):self.fail('boundary change accepted')
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 969, in guarded_release
+    raise TargetCacheError("recreated target or owner changed before mutation")
+local_ci.TargetCacheError: recreated target or owner changed before mutation
+
+======================================================================
+ERROR: test_last_boundary_rechecks_inactivity_owner_target_and_source (test_launch_restart.RecreatedTargetTests.test_last_boundary_rechecks_inactivity_owner_target_and_source) (cause='source')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 821, in inspect_recreated_release_target
+    raise ValueError("source or replacement changed during inspection")
+ValueError: source or replacement changed during inspection
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 586, in test_last_boundary_rechecks_inactivity_owner_target_and_source
+    with self.guard(authority,check):self.fail('boundary change accepted')
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 968, in guarded_release
+    if self.inspect_recreated_release_target() != inspected:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: source or replacement changed during inspection
+
+======================================================================
+ERROR: test_missing_authority_or_inactivity_callback_cannot_relax_automatic_guard (test_launch_restart.RecreatedTargetTests.test_missing_authority_or_inactivity_callback_cannot_relax_automatic_guard)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 598, in test_missing_authority_or_inactivity_callback_cannot_relax_automatic_guard
+    with self.runner.guarded_release(adopt=True,expected_owner_sha256=authority['owner_sha256'],
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 860, in guarded_release
+    raise TargetCacheError("explicit recreated-target recovery requires identity, owner hash and inactivity check")
+local_ci.TargetCacheError: explicit recreated-target recovery requires identity, owner hash and inactivity check
+
+======================================================================
+ERROR: test_nonancestor_source_refuses_and_never_cleans (test_launch_restart.RecreatedTargetTests.test_nonancestor_source_refuses_and_never_cleans)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 805, in inspect_recreated_release_target
+    raise ValueError("prior owner source is not an ancestor of current source")
+ValueError: prior owner source is not an ancestor of current source
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 557, in test_nonancestor_source_refuses_and_never_cleans
+    with self.assertRaisesRegex(ci.TargetCacheError,'ancestor'):self.inspect()
+                                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: prior owner source is not an ancestor of current source
+
+======================================================================
+ERROR: test_owner_cas_change_after_inspection_refuses_before_mutation (test_launch_restart.RecreatedTargetTests.test_owner_cas_change_after_inspection_refuses_before_mutation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 520, in test_owner_cas_change_after_inspection_refuses_before_mutation
+    with self.guard(authority):self.fail('owner race accepted')
+         ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 863, in guarded_release
+    raise TargetCacheError("recreated target or owner changed since inspection")
+local_ci.TargetCacheError: recreated target or owner changed since inspection
+
+======================================================================
+ERROR: test_symlink_owner_or_target_and_held_lock_refuse (test_launch_restart.RecreatedTargetTests.test_symlink_owner_or_target_and_held_lock_refuse)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/local-ci.py", line 762, in inspect_recreated_release_target
+    descriptor = os.open(owner, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 40] Too many levels of symbolic links: '/tmp/tmp97ai5ba6/target-ownership/299fb447c64872961afafa4098718fbfc99cc7001e1d82d46848c4a88eb1082a.release-owner.json'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 563, in test_symlink_owner_or_target_and_held_lock_refuse
+    with self.assertRaises(ci.TargetCacheError):self.inspect()
+                                                ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 456, in inspect
+    return self.runner.inspect_recreated_release_target()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 824, in inspect_recreated_release_target
+    raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+local_ci.TargetCacheError: recreated release target inspection refused: [Errno 40] Too many levels of symbolic links: '/tmp/tmp97ai5ba6/target-ownership/299fb447c64872961afafa4098718fbfc99cc7001e1d82d46848c4a88eb1082a.release-owner.json'
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.418s
+
+FAILED (errors=26)

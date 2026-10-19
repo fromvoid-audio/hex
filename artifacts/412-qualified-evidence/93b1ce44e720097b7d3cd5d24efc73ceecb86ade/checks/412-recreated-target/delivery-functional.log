@@ -1,0 +1,9 @@
+test_recovery_cli_requires_complete_identity_owner_and_explicit_adoption (test_hex_test_build.DeliveryTests.test_recovery_cli_requires_complete_identity_owner_and_explicit_adoption) ... ok
+test_recovery_mutation_boundary_refuses_configured_or_raw_app_without_control (test_hex_test_build.DeliveryTests.test_recovery_mutation_boundary_refuses_configured_or_raw_app_without_control) ... ok
+test_recovery_removes_only_regular_finder_metadata_and_is_idempotent (test_hex_test_build.DeliveryTests.test_recovery_removes_only_regular_finder_metadata_and_is_idempotent) ... ok
+test_recovery_restores_backup_when_new_artifact_is_corrupt (test_hex_test_build.DeliveryTests.test_recovery_restores_backup_when_new_artifact_is_corrupt) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.012s
+
+OK

@@ -1,0 +1,26 @@
+test_packaging_artifact_helper_forwards_authority_into_real_guard (test_launch_restart.RecreatedTargetTests.test_packaging_artifact_helper_forwards_authority_into_real_guard) ... ERROR
+
+======================================================================
+ERROR: test_packaging_artifact_helper_forwards_authority_into_real_guard (test_launch_restart.RecreatedTargetTests.test_packaging_artifact_helper_forwards_authority_into_real_guard)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 638, in test_packaging_artifact_helper_forwards_authority_into_real_guard
+    with delivery.optimized_artifact(self.runner,adopt=True,
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/hex-test-build.py", line 70, in optimized_artifact
+    with runner.guarded_release(**recovery) as ownership:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/local-ci.py", line 842, in guarded_release
+    raise TargetCacheError(f"release preparation failed: {self.summary}")
+local_ci.TargetCacheError: release preparation failed: {'schema_version': 1, 'run_id': 'restart-preflight', 'mode': 'full', 'status': 'incomplete', 'repo_root': '/tmp/tmpfg_xeaim/repo', 'commit': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'dirty': False, 'dirty_files': [], 'started_at': '2026-10-19T17:43:18Z', 'ended_at': None, 'exit_code': None, 'invocation_argv': ['python3 -m unittest', 'discover', '-s', 'scripts/tests', '-p', 'test_launch_restart.py', '-k', 'packaging_artifact_helper', '-v'], 'steps': [], 'start_tree': {'commit': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'dirty': False, 'dirty_files': [], 'content_sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}, 'source_identity': {'workspace_root': '/tmp/tmpfg_xeaim/repo', 'git_common_dir': '/tmp/tmpfg_xeaim/repo/.git', 'commit': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'dirty': False, 'dirty_files': [], 'content_sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}, 'repository_commands': [['git', 'rev-parse', 'HEAD'], ['git', 'rev-parse', '--show-toplevel'], ['git', 'rev-parse', '--git-common-dir'], ['git', 'status', '--porcelain=v1', '--untracked-files=all'], ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z']], 'cargo_identity': {'manifest_path': '/tmp/tmpfg_xeaim/repo/Cargo.toml', 'workspace_root': '/tmp/tmpfg_xeaim/repo', 'target_directory': '/tmp/tmpfg_xeaim/repo/cargo-target', 'target_source': 'cargo metadata/config/default', 'configured_target_value': None, 'metadata_command': ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked', '--manifest-path', '/tmp/tmpfg_xeaim/repo/Cargo.toml'], 'workspace_packages': [{'id': 'fixture 0.1.0', 'name': 'fixture', 'version': '0.1.0', 'spec': 'fixture 0.1.0'}, {'id': 'other 0.1.0', 'name': 'other', 'version': '0.1.0', 'spec': 'other 0.1.0'}], 'lock_path': '/tmp/tmpfg_xeaim/target-ownership/db9b9e8dafb3f10a8c3ef097493e25c7ecd2fdf98ec57ae8eeec00c29c81742b.lock', 'owner_path': '/tmp/tmpfg_xeaim/target-ownership/db9b9e8dafb3f10a8c3ef097493e25c7ecd2fdf98ec57ae8eeec00c29c81742b.owner.json'}, 'recovery_inspected_tree': {'commit': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'dirty': False, 'dirty_files': [], 'content_sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}, 'cargo_metadata_error': 'Cargo metadata was incomplete or invalid: Expecting value: line 1 column 1 (char 0)'}
+
+----------------------------------------------------------------------
+Ran 1 test in 0.045s
+
+FAILED (errors=1)

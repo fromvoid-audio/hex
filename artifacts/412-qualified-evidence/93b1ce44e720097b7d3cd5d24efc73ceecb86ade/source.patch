@@ -1,0 +1,748 @@
+diff --git a/docs/local-ci.md b/docs/local-ci.md
+index a1cce9f8..6d077457 100644
+--- a/docs/local-ci.md
++++ b/docs/local-ci.md
+@@ -162,6 +162,16 @@ The packaging CLI exposes `--adopt-release-target` for that assertion; it does
+ not imply dev adoption or loosen any disk/profile/source checks. Direct Cargo
+ builds still do not participate in this cooperative lock.
+ 
++The launcher additionally exposes the narrower `--recover-release-target` path
++for an explicitly inspected **same-repository recreated directory**. Its optional
++replacement identity is valid only with exact old-owner SHA256, the same full
++workspace/common repository, ancestor clean source and unchanged retained package
++specifications. Under the target lock the guard checks those facts again, along
++with a required packaging inactivity check immediately before mutation. No
++replacement identity means the existing automatic expected-owner guard still
++requires the retained old target identity. This adds no owner format or general
++adoption permission; see `docs/test-builds.md` for refusal and race limits.
++
+ Before incompatible release cleanup, the guard durably writes a pending marker.
+ It invokes `cargo clean --profile release` for current workspace package IDs
+ only; it never clears the whole target. Failed cleanup, interrupted builds,
+diff --git a/docs/test-builds.md b/docs/test-builds.md
+index e017ceff..118baef4 100644
+--- a/docs/test-builds.md
++++ b/docs/test-builds.md
+@@ -81,6 +81,34 @@ The option remains test-free unless combined with `--test`; both flags survive
+ source update. It cannot be combined with installed-only `--open`. This is future
+ operator invocation, not permission for unattended force-quit during verification.
+ 
++`./launch --recover-release-target` is a separate explicit option for a recreated
++Cargo target whose retained release owner belongs to this exact checkout and
++common repository. Save and quit **both** the configured app and any raw
++`hex-desktop` first. This option never requests quit or force termination and is
++incompatible with `--force-restart` and `--open`. It still updates clean main,
++rebuilds, installs and opens normally; tests remain opt-in with `--test`.
++
++Read-only inspection under the existing activation/target locks binds the old
++owner bytes by SHA256 and the observed replacement directory device/inode. The
++old source must be a clean known ancestor of the fetched source, and retained
++package name/version/spec ownership must match the current locked workspace
++(new members are permitted). Missing, foreign, malformed, symlinked or unchanged
++targets refuse. Historical ready-artifact metadata is not reuse or qualification:
++the old executable need not remain in a recreated target and is never adopted as
++a new build. The owner marker stays untouched during inspection.
++
++At the guarded mutation boundary, under the same target-wide lock, packaging
++rechecks configured-app/raw-desktop inactivity, source, exact owner hash,
++replacement directory and package ownership. Races or a busy cooperative lock
++refuse before marker changes or cleanup. Success uses the ordinary pending
++handoff, selective workspace **release-only** clean, fresh optimized build,
++artifact verification and ready publication. It does not rewrite a marker to
++pretend a stale artifact is ready. Original automatic `--force-restart` recovery
++still requires the original target identity; it cannot silently adopt a replaced
++target. Uncooperative raw Cargo/external file writers do not honor these advisory
++locks: exclusive ownership remains an operator requirement, not a global
++filesystem/process-atomicity guarantee.
++
+ `./launch --open` verifies and opens the installed optimized app without Git, CI,
+ Cargo or replacement. It can activate an already running installed app. Missing or
+ unsupported installed artifacts direct the user to `./launch` to build the latest
+diff --git a/launch b/launch
+index 90f105dc..7f11d89c 100755
+--- a/launch
++++ b/launch
+@@ -197,6 +197,14 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
+     except (delivery.DeliveryError, OSError, subprocess.CalledProcessError) as error:
+         raise LaunchError(f"configured app is not inactive; replacement was not started: {error}") from error
+ 
++    if "--recover-release-target" in (argv or []):
++        authority = restart.inspect_recreated_target(root, app, source, ci, delivery,
++                                                     assert_no_raw_desktop_process)
++        identity = authority["target_identity"]
++        recovery_args = ["--adopt-release-target", "--expected-release-owner-sha256", authority["owner_sha256"],
++                         "--expected-recreated-target-device", str(identity["device"]),
++                         "--expected-recreated-target-inode", str(identity["inode"])]
++
+     tested = "--test" in (argv or [])
+     if tested:
+         runner = ci.LocalCiRunner(root, mode="full")
+@@ -239,8 +247,14 @@ def main(argv: list[str] | None = None) -> int:
+                         help="quit the verified stable development app; after a bounded normal-quit wait, "
+                              "force it if necessary (unsaved work may be lost); recover matching owned "
+                              "pending state, rebuild latest main, then start it; tests remain opt-in")
++    parser.add_argument("--recover-release-target", action="store_true",
++                        help="explicitly recover this repository's inspected recreated release target; "
++                             "requires hex already stopped, never signals an app; rebuild/install/open "
++                             "latest main normally, tests remain opt-in")
+     arguments = list(sys.argv[1:] if argv is None else argv)
+     options = parser.parse_args(arguments)
++    if options.recover_release_target and (options.open or options.force_restart):
++        parser.error("--recover-release-target cannot be combined with --open or --force-restart")
+     if options.open and options.force_restart:
+         parser.error("--force-restart cannot be combined with installed-only --open")
+     try:
+diff --git a/scripts/hex-test-build.py b/scripts/hex-test-build.py
+index 8223a575..2cda3506 100644
+--- a/scripts/hex-test-build.py
++++ b/scripts/hex-test-build.py
+@@ -53,7 +53,9 @@ def sha(path: Path) -> str:
+ 
+ @contextmanager
+ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False,
+-                       expected_owner_sha256: str | None = None):
++                       expected_owner_sha256: str | None = None,
++                       expected_recreated_target_identity: dict[str, int] | None = None,
++                       recovery_inactive_check=None):
+     """Build/identify only; shared by delivery and nonactivating review staging.
+ 
+     The target lock spans compilation, source validation and the caller's copy.
+@@ -62,6 +64,9 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
+     recovery = {"adopt": adopt}
+     if expected_owner_sha256 is not None:
+         recovery["expected_owner_sha256"] = expected_owner_sha256
++    if expected_recreated_target_identity is not None:
++        recovery.update(expected_recreated_target_identity=expected_recreated_target_identity,
++                        recovery_inactive_check=recovery_inactive_check)
+     with runner.guarded_release(**recovery) as ownership:
+         argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
+         log_path = runner.output_dir / "optimized-build.log"
+@@ -131,6 +136,16 @@ def assert_inactive(app: Path) -> None:
+                                 "no application was force-quit; disk replacement cannot reload a process")
+ 
+ 
++def assert_recovery_inactive(app: Path) -> None:
++    """Never quit; recheck both configured app and raw desktops before mutation."""
++    assert_inactive(app)
++    for line in run(["ps", "-ww", "-axo", "pid=,comm="]).splitlines():
++        fields = line.strip().split(None, 1)
++        if len(fields) == 2 and Path(fields[1].rstrip("/")).name.casefold() == "hex-desktop":
++            raise DeliveryError(f"raw hex-desktop is running (pid {fields[0]}); save, quit and retry; "
++                                "no process was terminated")
++
++
+ def inventory(app: Path, *, signed_payload: bool = False, include_receipt: bool = False) -> dict[str, str]:
+     result = {}
+     for path in sorted(app.rglob("*")):
+@@ -467,8 +482,22 @@ def build(args) -> dict:
+         runner.output_dir.mkdir(parents=True)
+         if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
+             raise DeliveryError(str(runner.summary))
++        replacement = None
++        device = getattr(args, "expected_recreated_target_device", None)
++        inode = getattr(args, "expected_recreated_target_inode", None)
++        if device is not None or inode is not None:
++            if (type(device) is not int or device < 0 or type(inode) is not int or inode <= 0
++                    or not getattr(args, "adopt_release_target", False)
++                    or not getattr(args, "expected_release_owner_sha256", None)):
++                raise DeliveryError("explicit recreated target requires both identity integers and owner CAS")
++            replacement = {"device": device, "inode": inode}
++        recovery = {}
++        if replacement is not None:
++            recovery = {"expected_recreated_target_identity": replacement,
++                        "recovery_inactive_check": lambda: assert_recovery_inactive(app)}
+         with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False),
+-                                expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None)) as (binary, release_ownership):
++                                expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
++                                **recovery) as (binary, release_ownership):
+             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
+             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
+             argv = release_ownership["build_argv"]
+@@ -543,7 +572,16 @@ def main() -> int:
+                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
+     parser.add_argument("--expected-release-owner-sha256",
+                         help="require this exact previously inspected owner under the release mutation lock")
++    parser.add_argument("--expected-recreated-target-device", type=int,
++                        help="explicit recovery: require this inspected replacement target device")
++    parser.add_argument("--expected-recreated-target-inode", type=int,
++                        help="explicit recovery: require this inspected replacement target inode")
+     args = parser.parse_args()
++    if args.expected_recreated_target_device is not None or args.expected_recreated_target_inode is not None:
++        if (args.expected_recreated_target_device is None or args.expected_recreated_target_device < 0
++                or args.expected_recreated_target_inode is None or args.expected_recreated_target_inode <= 0
++                or not args.expected_release_owner_sha256 or not args.adopt_release_target):
++            parser.error("recreated-target recovery requires device/inode, owner SHA256 and explicit adoption")
+     if args.expected_release_owner_sha256 and not args.adopt_release_target:
+         parser.error("--expected-release-owner-sha256 requires --adopt-release-target")
+     def interrupted(_signum, _frame):
+diff --git a/scripts/launch-restart.py b/scripts/launch-restart.py
+index e27fb7b8..3bdcdbdc 100644
+--- a/scripts/launch-restart.py
++++ b/scripts/launch-restart.py
+@@ -431,6 +431,48 @@ def recovery_hash(runner, ci, source: str, ancestor) -> str | None:
+         raise RestartError("malformed release ownership; no implicit operator adoption") from error
+ 
+ 
++def inspect_recreated_target(root: Path, app: Path, source: str, ci, delivery, assert_no_raw):
++    """Explicit read-only inspection; never construct a native process controller."""
++    delivery.assert_plain_path(app)
++    runner = ci.LocalCiRunner(root, adopt_target=False)
++    artifacts = root / "artifacts/launch"
++    artifacts.mkdir(parents=True, exist_ok=True)
++    output = Path(tempfile.mkdtemp(prefix="target-recovery-", dir=artifacts))
++    report = {"kind": "explicit recreated-target inspection; tests not run",
++              "candidate": source, "app": str(app), "status": "incomplete"}
++    try:
++        with delivery.activation_lock(app):
++            delivery.assert_inactive(app)
++            assert_no_raw(root)
++            frozen = delivery.validate_source(runner, source)
++            if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
++                raise RestartError("recreated-target prerequisites failed before mutation")
++            target = Path(runner.cargo_identity["target_directory"])
++            lock_path, _ = ci.target_state_paths(target, runner.target_state_dir)
++            lock = ci.CargoTargetLock(lock_path, {"operation": "explicit-target-recovery-inspection",
++                                                "workspace_root": str(root), "commit": source})
++            lock.acquire()
++            runner.target_lock = lock
++            try:
++                authority = runner.inspect_recreated_release_target()
++                delivery.assert_inactive(app)
++                assert_no_raw(root)
++                delivery.validate_source(runner, source, expected=frozen)
++                report.update(status="inspected_only", authority=authority, source=frozen)
++            finally:
++                error = lock.release()
++                runner.target_lock = None
++                if error:
++                    raise RestartError(error)
++        return authority
++    except BaseException as error:
++        report.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "refused",
++                      error=str(error))
++        raise
++    finally:
++        delivery.write_json(output / "target-recovery-inspection.json", report)
++
++
+ def prepare(root: Path, app: Path, source: str, ci, delivery, assert_no_raw,
+             *, controller_factory=NativeController) -> str | None:
+     """Inspect/quit/recover under existing exclusions; never write release ownership."""
+diff --git a/scripts/local-ci.py b/scripts/local-ci.py
+index bcfca6ad..01c4d833 100644
+--- a/scripts/local-ci.py
++++ b/scripts/local-ci.py
+@@ -285,6 +285,7 @@ class LocalCiRunner:
+         }
+         self.git_identity: dict[str, object] | None = None
+         self.cargo_identity: dict[str, object] | None = None
++        self._lexical_cargo_target: Path | None = None
+         self.target_lock: CargoTargetLock | None = None
+         self.target_owner_path: Path | None = None
+         self.target_owner_claimed = False
+@@ -438,6 +439,7 @@ class LocalCiRunner:
+             target = Path(raw_target)
+             if not target.is_absolute():
+                 target = self.root / target
++            self._lexical_cargo_target = target.absolute()
+             target = target.resolve()
+             by_id = {
+                 package["id"]: package
+@@ -735,8 +737,98 @@ class LocalCiRunner:
+         finally:
+             os.close(descriptor)
+ 
++    def inspect_recreated_release_target(self) -> dict[str, object]:
++        """Read-only explicit recovery authority, while the target lock is held.
++
++        This never adopts an unknown/foreign owner or certifies its old artifact.
++        The caller must revalidate the returned hash and replacement identity at
++        the guarded mutation boundary; ordinary automatic restart stays stricter.
++        """
++        if self.target_lock is None or self.cargo_identity is None:
++            raise TargetCacheError("recreated-target inspection requires target ownership")
++        target = Path(str(self.cargo_identity["target_directory"]))
++        lexical = self._lexical_cargo_target
++        if lexical is None:
++            raise TargetCacheError("recreated target has no lexical path evidence")
++        for path in (lexical, *lexical.parents):
++            if path.is_symlink():
++                raise TargetCacheError("recreated target path contains a symlink")
++        identity = self._directory_identity(target)
++        if identity is None:
++            raise TargetCacheError("recreated target must exist")
++        _, dev_owner = target_state_paths(target, self.target_state_dir)
++        owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
++        try:
++            descriptor = os.open(owner, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
++            with os.fdopen(descriptor, "rb") as stream:
++                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
++                    raise ValueError("owner is not regular")
++                raw = stream.read(128 * 1024 + 1)
++            if len(raw) > 128 * 1024:
++                raise ValueError("owner exceeds bounded metadata size")
++            record = json.loads(raw)
++            workspace = {k: self.git_identity[k] for k in ("workspace_root", "git_common_dir")}
++            previous = record["source"]
++            old_identity = record["target_identity"]
++            def hex_string(value, size):
++                return (isinstance(value, str) and len(value) == size
++                        and all(c in "0123456789abcdef" for c in value))
++            if (type(record.get("schema_version")) is not int or record["schema_version"] != 1
++                    or record.get("profile") != "release"
++                    or record.get("state") not in {"pending", "ready"}
++                    or record.get("target_directory") != str(target)
++                    or record.get("workspace_owner") != workspace
++                    or not isinstance(old_identity, dict) or set(old_identity) != {"device", "inode"}
++                    or any(type(old_identity[k]) is not int or old_identity[k] < (1 if k == "inode" else 0)
++                           for k in ("device", "inode"))
++                    or old_identity == identity
++                    or not isinstance(previous, dict)
++                    or set(previous) != {"commit", "dirty", "dirty_files", "content_sha256"}
++                    or previous["dirty"] is not False or previous["dirty_files"] != []
++                    or not hex_string(previous["commit"], 40)
++                    or not hex_string(previous["content_sha256"], 64)):
++                raise ValueError("owner is not this repository's prior target")
++            scope = self._release_scope()
++            packages = record["packages"]
++            if (not isinstance(packages, list) or not packages
++                    or any(not isinstance(p, dict) or set(p) != {"name", "version", "spec"}
++                           or not all(isinstance(v, str) and v for v in p.values()) for p in packages)):
++                raise ValueError("invalid prior package scope")
++            names = {p["name"] for p in packages}
++            if len(names) != len(packages) or packages != [p for p in scope if p["name"] in names]:
++                raise ValueError("prior package ownership changed")
++            source = self.summary["start_tree"]
++            if not hex_string(source["commit"], 40):
++                raise ValueError("current source has no exact commit")
++            ancestry = subprocess.run(["git", "merge-base", "--is-ancestor", previous["commit"],
++                                      source["commit"]], cwd=self.root, env=self.env,
++                                     capture_output=True, check=False)
++            if ancestry.returncode != 0:
++                raise ValueError("prior owner source is not an ancestor of current source")
++            if record["state"] == "ready":
++                artifact = record["artifact"]
++                argv = record["build_argv"]
++                if (not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}
++                        or not isinstance(artifact["path"], str)
++                        or not Path(artifact["path"]).is_absolute()
++                        or ".." in Path(artifact["path"]).parts
++                        or target / "release" not in Path(artifact["path"]).parents
++                        or not hex_string(artifact["sha256"], 64)
++                        or not isinstance(argv, list) or not all(isinstance(a, str) for a in argv)
++                        or argv[:2] != ["cargo", "build"] or "--release" not in argv):
++                    raise ValueError("malformed historical release artifact")
++            if (not self._capture_repository_state("recovery_inspected_tree")
++                    or self.summary["recovery_inspected_tree"] != source
++                    or self._directory_identity(target) != identity):
++                raise ValueError("source or replacement changed during inspection")
++            return {"owner_sha256": hashlib.sha256(raw).hexdigest(), "target_identity": identity}
++        except (OSError, KeyError, TypeError, ValueError) as error:
++            raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
++
+     @contextmanager
+-    def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None):
++    def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None,
++                        expected_recreated_target_identity: dict[str, int] | None = None,
++                        recovery_inactive_check=None):
+         """Explicit release handoff; caller must identify its artifact before exit.
+ 
+         Uses the dev driver's SAME target-wide lock, but a separate durable
+@@ -760,6 +852,17 @@ class LocalCiRunner:
+         lock.acquire()
+         self.target_lock = lock
+         try:
++            replacement = expected_recreated_target_identity
++            if replacement is not None:
++                if (not adopt or expected_owner_sha256 is None
++                        or not isinstance(replacement, dict) or set(replacement) != {"device", "inode"}
++                        or any(type(replacement[k]) is not int or replacement[k] < (1 if k == "inode" else 0)
++                               for k in ("device", "inode"))
++                        or not callable(recovery_inactive_check)):
++                    raise TargetCacheError("explicit recreated-target recovery requires identity, owner hash and inactivity check")
++                inspected = self.inspect_recreated_release_target()
++                if inspected != {"owner_sha256": expected_owner_sha256, "target_identity": replacement}:
++                    raise TargetCacheError("recreated target or owner changed since inspection")
+             expected_owner_bytes = None
+             if expected_owner_sha256 is not None:
+                 if (not adopt or len(expected_owner_sha256) != 64
+@@ -831,7 +934,8 @@ class LocalCiRunner:
+                 # Automatic restart recovery retains the inspected owner, not
+                 # manual adoption's permission to take over another target.
+                 if expected_owner_sha256 is not None and (
+-                        record["target_identity"] != identity or record["workspace_owner"] != workspace):
++                        (replacement is None and record["target_identity"] != identity)
++                        or record["workspace_owner"] != workspace):
+                     raise TargetCacheError("release target identity/workspace changed since restart inspection; preserved unchanged")
+                 old_scope = [(p["name"], p["version"]) for p in record["packages"]]
+                 old_names = {name for name, _version in old_scope}
+@@ -859,6 +963,13 @@ class LocalCiRunner:
+                       "action": "reuse" if reuse else ("adopted" if adopt else "handoff"),
+                       "cleanup_status": "not_needed", "previous_owner": record,
+                       "malformed_previous_owner": malformed}
++            if replacement is not None:
++                # Last check before pending ownership/cleanup, under the SAME
++                # target lock. No process control is permitted by this callback.
++                recovery_inactive_check()
++                if self.inspect_recreated_release_target() != inspected:
++                    raise TargetCacheError("recreated target or owner changed before mutation")
++                report["explicit_recreated_target"] = inspected
+             self.summary["release_target_cache"] = report
+             self._write_release_owner(owner_path, pending)
+             if not reuse and populated:
+diff --git a/scripts/tests/test_hex_test_build.py b/scripts/tests/test_hex_test_build.py
+index 62a88379..65f189f1 100644
+--- a/scripts/tests/test_hex_test_build.py
++++ b/scripts/tests/test_hex_test_build.py
+@@ -38,6 +38,27 @@ class DeliveryTests(unittest.TestCase):
+         self.assertIn("temporary publication files preserved", errors.getvalue())
+         activate.assert_not_called()
+ 
++    def test_recovery_mutation_boundary_refuses_configured_or_raw_app_without_control(self):
++        app=Path('/owned/hex.app')
++        for observed in ('3 /owned/hex.app/Contents/MacOS/hex', '4 /other/hex-desktop'):
++            with patch.object(delivery,'run',return_value=observed):
++                with self.assertRaisesRegex(delivery.DeliveryError,'running'):
++                    delivery.assert_recovery_inactive(app)
++        with patch.object(delivery,'run',return_value='5 /other/other-program'):
++            delivery.assert_recovery_inactive(app)
++
++    def test_recovery_cli_requires_complete_identity_owner_and_explicit_adoption(self):
++        base=['hex-test-build','--build-only','--candidate','a'*40,'--included','included.json','--checklist','list.md']
++        cases=[['--expected-recreated-target-device','1'],
++               ['--expected-recreated-target-inode','2'],
++               ['--expected-recreated-target-device','1','--expected-recreated-target-inode','2'],
++               ['--expected-recreated-target-device','-1','--expected-recreated-target-inode','2',
++                '--adopt-release-target','--expected-release-owner-sha256','e'*64]]
++        for args in cases:
++            with patch.object(delivery.sys,'argv',base+args), patch.object(delivery,'build') as build, redirect_stderr(io.StringIO()):
++                with self.assertRaises(SystemExit) as error:delivery.main()
++            self.assertEqual(error.exception.code,2);build.assert_not_called()
++
+     def setUp(self):
+         self.temp = tempfile.TemporaryDirectory()
+         self.root = Path(self.temp.name).resolve()
+diff --git a/scripts/tests/test_launch.py b/scripts/tests/test_launch.py
+index ba204e67..bdc95df4 100644
+--- a/scripts/tests/test_launch.py
++++ b/scripts/tests/test_launch.py
+@@ -420,6 +420,57 @@ class LaunchTests(unittest.TestCase):
+         prepare.assert_not_called()
+ 
+ 
++    def test_recreated_target_opt_in_forwards_only_inspected_identity_without_restart_or_tests(self):
++        authority={'owner_sha256':'e'*64,'target_identity':{'device':17,'inode':42}}
++        with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'command',side_effect=self.command), \
++                patch.object(launch.restart,'inspect_recreated_target',return_value=authority) as inspect, \
++                patch.object(launch.restart,'prepare',side_effect=AssertionError('no process control')), \
++                patch.object(launch.delivery,'assert_inactive') as inactive, \
++                patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}), \
++                patch.object(launch.ci,'LocalCiRunner',side_effect=AssertionError('tests not requested')):
++            launch.run_launch(self.root,argv=['--recover-release-target'])
++        inspect.assert_called_once();inactive.assert_called_once()
++        package=next(x for x in self.calls if x[0]=='sh')
++        self.assertIn('--build-only',package)
++        for flag,value in [('--expected-release-owner-sha256','e'*64),
++                           ('--expected-recreated-target-device','17'),('--expected-recreated-target-inode','42')]:
++            self.assertEqual(package[package.index(flag)+1],value)
++        self.assertEqual(sum(x[0]=='open' for x in self.calls),1)
++
++    def test_recreated_target_inspection_failure_or_running_raw_never_builds_or_opens(self):
++        for running in (False,True):
++            self.calls.clear();self.head_reads=0
++            self.raw_processes='123 /fixture/hex-desktop' if running else ''
++            with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'command',side_effect=self.command), \
++                    patch.object(launch.restart,'inspect_recreated_target',side_effect=launch.ci.TargetCacheError('foreign')) as inspect, \
++                    patch.object(launch.restart,'prepare') as force, patch.object(launch.delivery,'assert_inactive'):
++                with self.assertRaises((launch.LaunchError,launch.ci.TargetCacheError)):
++                    launch.run_launch(self.root,argv=['--recover-release-target'])
++            if running:inspect.assert_not_called()
++            force.assert_not_called()
++            self.assertFalse(any(x[0] in ('sh','open') for x in self.calls))
++
++    def test_recreated_target_cli_excludes_force_and_installed_only_but_allows_test(self):
++        for incompatible in ('--open','--force-restart'):
++            with patch.object(launch,'run_launch') as run, redirect_stderr(io.StringIO()):
++                with self.assertRaises(SystemExit) as error:
++                    launch.main(['--recover-release-target',incompatible])
++            self.assertEqual(error.exception.code,2);run.assert_not_called()
++        with patch.object(launch,'run_launch') as run:
++            self.assertEqual(launch.main(['--recover-release-target','--test']),0)
++        run.assert_called_once_with(argv=['--recover-release-target','--test'])
++
++    def test_recreated_target_flag_survives_ordinary_main_update_reexec(self):
++        with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'require_clean_main'), \
++                patch.object(launch,'checked',return_value='d'*40), \
++                patch.object(launch,'fetch_and_fast_forward',return_value=self.source), \
++                patch.object(launch.os,'execv',side_effect=OSError('fixture exec')) as reexec, \
++                patch.object(launch.restart,'inspect_recreated_target') as inspect:
++            with self.assertRaises(OSError):launch.run_launch(self.root,argv=['--recover-release-target'])
++        reexec.assert_called_once_with(launch.sys.executable,[launch.sys.executable,str(self.root/'launch'),'--recover-release-target'])
++        inspect.assert_not_called()
++
++
+ class ForceRestartFlagTests(unittest.TestCase):
+     def test_native_bundle_verification_failure_is_a_controlled_cli_refusal(self):
+         with patch.object(launch,'run_launch',side_effect=launch.delivery.DeliveryError('sealed bundle mismatch')), \
+@@ -441,5 +492,6 @@ class ForceRestartFlagTests(unittest.TestCase):
+                 run.assert_called_once_with(argv=list(arguments))
+ 
+ 
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/scripts/tests/test_launch_restart.py b/scripts/tests/test_launch_restart.py
+index f1080391..5a830538 100644
+--- a/scripts/tests/test_launch_restart.py
++++ b/scripts/tests/test_launch_restart.py
+@@ -431,6 +431,222 @@ class OwnershipTests(ReleaseFixture):
+         self.assertEqual(keep.read_bytes(),b'external');self.assertIsNone(self.runner.target_lock)
+ 
+ 
++class RecreatedTargetTests(ReleaseFixture):
++    """Explicit authority is distinct from automatic restart and manual adoption."""
++    def setUp(self):
++        super().setUp()
++        tool = self.f.bin / 'git'
++        tool.write_text(tool.read_text().replace('deadbeef', self.source))
++        self.assertTrue(self.runner._capture_repository_state('start_tree'))
++        self.record.update(state='ready', artifact={'path':str(self.target/'release/hex'), 'sha256':'d'*64},
++                           build_argv=['cargo','build','--release'])
++        self.save()
++        self.retained = self.target.with_name('retained-original-target')
++        (self.target/'old-artifact').write_bytes(b'never qualify or erase old build')
++        self.target.rename(self.retained)
++        self.target.mkdir()
++        self.keep = self.target/'external-cache'
++        self.keep.write_bytes(b'preserve external data')
++
++    def inspect(self):
++        path, _ = fixtures.local_ci.target_state_paths(self.target, self.runner.target_state_dir)
++        lock = fixtures.local_ci.CargoTargetLock(path, {'operation':'fixture-inspection'})
++        lock.acquire(); self.runner.target_lock = lock
++        try:
++            return self.runner.inspect_recreated_release_target()
++        finally:
++            self.assertIsNone(lock.release()); self.runner.target_lock = None
++
++    def guard(self, authority, check=lambda: None):
++        return self.runner.guarded_release(adopt=True, expected_owner_sha256=authority['owner_sha256'],
++            expected_recreated_target_identity=authority['target_identity'], recovery_inactive_check=check)
++
++    def assert_preserved(self, raw, calls):
++        self.assertEqual(self.owner.read_bytes(), raw)
++        self.assertEqual(self.keep.read_bytes(), b'preserve external data')
++        self.assertEqual((self.retained/'old-artifact').read_bytes(), b'never qualify or erase old build')
++        self.assertNotIn('cargo clean', self.f.call_log.read_text()[len(calls):])
++        self.assertIsNone(self.runner.target_lock)
++
++    def test_explicit_inspection_and_real_guard_rebuild_ready_without_stale_artifact_reuse(self):
++        raw = self.owner.read_bytes(); authority = self.inspect()
++        self.assertEqual(authority['owner_sha256'], hashlib.sha256(raw).hexdigest())
++        self.assertEqual(authority['target_identity'], self.runner._directory_identity(self.target))
++        self.assertNotEqual(authority['target_identity'], self.record['target_identity'])
++        self.assertEqual(self.owner.read_bytes(), raw)
++        inactive = Mock()
++        with self.guard(authority, inactive) as report:
++            self.assertEqual(report['state'],'pending')
++            self.assertEqual(report['previous_owner'], self.record)
++            self.assertEqual(report['cleanup_argv'][3],'release')
++            artifact = self.target/'release/fixture'; artifact.parent.mkdir(); artifact.write_bytes(b'fresh fixture')
++            argv = ['cargo','build','--release']
++            report.update(build_argv=argv,build_exit_code=0,
++                          artifact=self.runner.identify_release_artifact(artifact,argv))
++        inactive.assert_called_once_with()
++        ready=json.loads(self.owner.read_bytes())
++        self.assertEqual(ready['state'],'ready')
++        self.assertEqual(ready['target_identity'],authority['target_identity'])
++        self.assertEqual(ready['artifact']['sha256'],hashlib.sha256(b'fresh fixture').hexdigest())
++        self.assertEqual(self.keep.read_bytes(),b'preserve external data')
++        self.assertEqual((self.retained/'old-artifact').read_bytes(),b'never qualify or erase old build')
++        self.assertIsNone(self.runner.target_lock)
++
++    def test_default_and_force_owner_cas_still_refuse_recreated_target(self):
++        raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
++        with self.assertRaises(restart.RestartError):self.read()
++        for kwargs in ({}, {'adopt':True,'expected_owner_sha256':hashlib.sha256(raw).hexdigest()}):
++            with self.assertRaises(fixtures.local_ci.TargetCacheError):
++                with self.runner.guarded_release(**kwargs):self.fail('implicit adoption')
++        self.assert_preserved(raw,calls)
++
++    def test_changed_or_missing_replacement_after_inspection_refuses_before_mutation(self):
++        authority=self.inspect();raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
++        saved=self.target.with_name('inspected-replacement');self.target.rename(saved)
++        for exists in (False,True):
++            if exists:self.target.mkdir()
++            with self.assertRaises(fixtures.local_ci.TargetCacheError):
++                with self.guard(authority):self.fail('replacement race accepted')
++            self.assertEqual(self.owner.read_bytes(),raw)
++            self.assertNotIn('cargo clean',self.f.call_log.read_text()[len(calls):])
++            self.assertIsNone(self.runner.target_lock)
++        self.target.rmdir();saved.rename(self.target)
++        self.assert_preserved(raw,calls)
++
++    def test_owner_cas_change_after_inspection_refuses_before_mutation(self):
++        authority=self.inspect();raw=self.owner.read_bytes()+b'\n';self.owner.write_bytes(raw)
++        calls=self.f.call_log.read_text()
++        with self.assertRaises(fixtures.local_ci.TargetCacheError):
++            with self.guard(authority):self.fail('owner race accepted')
++        self.assert_preserved(raw,calls)
++
++    def test_foreign_source_packages_and_malformed_historical_owner_refuse(self):
++        import copy
++        original=copy.deepcopy(self.record)
++        mutations=[lambda r:r['workspace_owner'].update(workspace_root='/foreign'),
++                   lambda r:r['workspace_owner'].update(git_common_dir='/foreign'),
++                   lambda r:r['packages'][0].update(spec='foreign'),
++                   lambda r:r['packages'][0].update(version='other'),
++                   lambda r:r['packages'][0].update(name='other'),
++                   lambda r:r.update(packages=[]), lambda r:r.update(state='foreign'),
++                   lambda r:r['source'].update(dirty=True), lambda r:r['source'].update(commit='bad'),
++                   lambda r:r['source'].update(content_sha256='bad'),
++                   lambda r:r.update(target_identity={'device':True,'inode':1}),
++                   lambda r:r.update(target_identity={'device':1,'inode':0}),
++                   lambda r:r.update(target_identity=self.runner._directory_identity(self.target)),
++                   lambda r:r['artifact'].update(path='/outside/hex'),
++                   lambda r:r['artifact'].update(sha256='bad'),lambda r:r.update(build_argv='cargo')]
++        for change in mutations:
++            with self.subTest(change=mutations.index(change)):
++                self.record=copy.deepcopy(original);change(self.record);self.save()
++                raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
++                with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect()
++                self.assert_preserved(raw,calls)
++        for raw in (b'null',b'[]',b'{bad',b'x'*(128*1024+1)):
++            self.owner.write_bytes(raw);calls=self.f.call_log.read_text()
++            with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect()
++            self.assert_preserved(raw,calls)
++
++    def test_nonancestor_source_refuses_and_never_cleans(self):
++        raw=self.owner.read_bytes();calls=self.f.call_log.read_text();original=fixtures.local_ci.subprocess.run
++        def command(argv,**kwargs):
++            if argv[:3]==['git','merge-base','--is-ancestor']:
++                return subprocess.CompletedProcess(argv,1)
++            return original(argv,**kwargs)
++        with patch.object(fixtures.local_ci.subprocess,'run',side_effect=command):
++            with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'ancestor'):self.inspect()
++        self.assert_preserved(raw,calls)
++
++    def test_symlink_owner_or_target_and_held_lock_refuse(self):
++        raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
++        foreign=self.f.base/'foreign-marker';foreign.write_bytes(raw);self.owner.unlink();self.owner.symlink_to(foreign)
++        with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect()
++        self.assertEqual(foreign.read_bytes(),raw);self.owner.unlink();self.owner.write_bytes(raw)
++        moved=self.target.with_name('plain-replacement');self.target.rename(moved);self.target.symlink_to(moved,target_is_directory=True)
++        with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'symlink'):self.inspect()
++        self.target.unlink();moved.rename(self.target)
++        authority=self.inspect();path,_=fixtures.local_ci.target_state_paths(self.target,self.runner.target_state_dir)
++        lock=fixtures.local_ci.CargoTargetLock(path,{'operation':'other-job'});lock.acquire()
++        try:
++            with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'already in use'):
++                with self.guard(authority):self.fail('live job bypassed')
++        finally:self.assertIsNone(lock.release())
++        self.assert_preserved(raw,calls)
++
++    def test_last_boundary_rechecks_inactivity_owner_target_and_source(self):
++        for cause in ('running','marker','target','source'):
++            with self.subTest(cause=cause):
++                authority=self.inspect();raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
++                def check():
++                    if cause=='running':raise delivery.DeliveryError('running')
++                    if cause=='marker':self.owner.write_bytes(raw+b'\n')
++                    if cause=='target':self.target.rename(self.target.with_name('raced-target'));self.target.mkdir()
++                    if cause=='source':self.runner.env['FAKE_FILE_LIST']='new-source'
++                with self.assertRaises((fixtures.local_ci.TargetCacheError,delivery.DeliveryError)):
++                    with self.guard(authority,check):self.fail('boundary change accepted')
++                self.assertNotIn('cargo clean',self.f.call_log.read_text()[len(calls):])
++                self.assertIsNone(self.runner.target_lock)
++                self.assertEqual(self.owner.read_bytes(),raw+(b'\n' if cause=='marker' else b''))
++                self.owner.write_bytes(raw)
++                if cause=='target':self.target.rmdir();self.target.with_name('raced-target').rename(self.target)
++                self.runner.env['FAKE_FILE_LIST']=''
++
++    def test_missing_authority_or_inactivity_callback_cannot_relax_automatic_guard(self):
++        authority=self.inspect();raw=self.owner.read_bytes();calls=self.f.call_log.read_text()
++        for replacement in (True,{}, {'device':0,'inode':True},authority['target_identity']):
++            with self.assertRaises(fixtures.local_ci.TargetCacheError):
++                with self.runner.guarded_release(adopt=True,expected_owner_sha256=authority['owner_sha256'],
++                    expected_recreated_target_identity=replacement):self.fail('incomplete authority accepted')
++        self.assert_preserved(raw,calls)
++
++    def test_explicit_launcher_inspection_never_constructs_controller_or_mutates_owner(self):
++        app=self.f.repo.resolve()/'artifacts/hex.app';raw=self.owner.read_bytes();check=Mock()
++        with patch.object(fixtures.local_ci,'LocalCiRunner',return_value=self.runner), \
++                patch.object(delivery,'assert_inactive') as inactive, \
++                patch.object(restart,'NativeController',side_effect=AssertionError('must not control app')):
++            authority=restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,check)
++        self.assertEqual(authority['owner_sha256'],hashlib.sha256(raw).hexdigest())
++        self.assertEqual(self.owner.read_bytes(),raw);self.assertEqual(inactive.call_count,2)
++        self.assertEqual(check.call_count,2);self.assertIsNone(self.runner.target_lock)
++        reports=list((self.f.repo/'artifacts/launch').glob('target-recovery-*/target-recovery-inspection.json'))
++        self.assertEqual(json.loads(reports[0].read_text())['status'],'inspected_only')
++
++    def test_inspection_raw_or_app_running_never_controls_app_or_mutates_owner(self):
++        app=self.f.repo.resolve()/'artifacts/hex.app';raw=self.owner.read_bytes()
++        for app_running in (True,False):
++            with patch.object(fixtures.local_ci,'LocalCiRunner',return_value=self.runner), \
++                    patch.object(delivery,'assert_inactive',side_effect=delivery.DeliveryError('running') if app_running else None), \
++                    patch.object(restart,'NativeController') as controller:
++                with self.assertRaises(delivery.DeliveryError):
++                    restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,
++                        Mock(side_effect=None if app_running else delivery.DeliveryError('raw running')))
++            controller.assert_not_called();self.assertEqual(self.owner.read_bytes(),raw)
++            self.assertIsNone(self.runner.target_lock)
++    def test_packaging_artifact_helper_forwards_authority_into_real_guard(self):
++        authority=self.inspect();inactive=Mock()
++        cargo=self.f.bin/'cargo';original=cargo.read_text()
++        # The owned executable emits a real Cargo-shaped artifact record and
++        # materializes that fixture file; metadata/clean stay the original fake.
++        prefix=('#!'+sys.executable+'\nimport os,sys,json\nfrom pathlib import Path\n'
++                'if sys.argv[1:2]==["build"]:\n'
++                ' p=Path(os.environ["CARGO_TARGET_DIR"])/"release/fixture"\n'
++                ' p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b"fresh packaged fixture")\n'
++                ' print(json.dumps({"reason":"compiler-artifact","executable":str(p),'
++                '"target":{"name":"hex-desktop"},"profile":{"opt_level":"3"}}));sys.exit(0)\n'
++                'os.execv("/bin/sh",["/bin/sh",str(Path(__file__).with_name("cargo-original")),*sys.argv[1:]])\n')
++        (cargo.with_name('cargo-original')).write_text(original.replace('tool=${0##*/}', 'tool=cargo'));cargo.write_text(prefix)
++        with delivery.optimized_artifact(self.runner,adopt=True,
++                expected_owner_sha256=authority['owner_sha256'],
++                expected_recreated_target_identity=authority['target_identity'],
++                recovery_inactive_check=inactive) as (binary,report):
++            self.assertEqual(binary.read_bytes(),b'fresh packaged fixture')
++            self.assertEqual(report['explicit_recreated_target'],authority)
++            self.assertIsNotNone(self.runner.target_lock)
++        inactive.assert_called_once_with()
++        self.assertEqual(json.loads(self.owner.read_bytes())['state'],'ready')
++        self.assertIsNone(self.runner.target_lock)
++
++
+ class PreflightTests(ReleaseFixture):
+     def prepare_fixture(self):
+         # This repository already exists under our exclusively owned temporary
+diff --git a/todo.md b/todo.md
+index 8e6012c3..d86728aa 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5792,3 +5792,23 @@ User rejected device-local automation editing. Remove its button, graph mode and
+   prospective full qualification/review/merge, Root owns physical acceptance.
+ - Frozen463 pointer-delivery and469 captured-release packets remain separate;
+   neither their source nor historical evidence is replaced by this paint fix.
++
++## 19 October 2026 — Pulse2806 / PR412 explicit recreated release-target recovery
++
++- Root29797 accepts distinct `./launch --recover-release-target`; default and
++  automatic force-restart target identity/CAS protections remain. Never signals
++  an app. Initial and guarded mutation-boundary checks require configured/raw
++  executables inactive; normal latest-main build/install/open, tests opt-in.
++- Read-only inspection binds old regular bounded owner bytes, exact replacement
++  directory identity, same workspace/common repo, ancestor clean source and
++  retained package specs. Guard rechecks under existing lock before pending
++  marker/selective release clean/fresh identified build/ready. No stale artifact
++  qualification, blind marker deletion, shared-target test cleanup or new owner.
++- Source tests cover actual production Runner/private recreated directories,
++  fake Cargo compilation/identification, read-only inspection, explicit routing,
++  old automatic refusal, marker/target/source races, foreign/malformed metadata,
++  package changes, missing/symlink targets, busy lock and running-app refusal.
++  Original29786 causal diagnostic is retained; new fixture setup corrections
++  are distinct from product failures. Exact check receipts accompany handoff.
++- Root alone performs later real Mac recovery after safe app shutdown. Cloud
++  tests do not establish actual machine recovery, native qualification or merge.

@@ -1,0 +1,7 @@
+test_packaging_artifact_helper_forwards_authority_into_real_guard (test_launch_restart.RecreatedTargetTests.test_packaging_artifact_helper_forwards_authority_into_real_guard) ... building optimized hex...
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.181s
+
+OK

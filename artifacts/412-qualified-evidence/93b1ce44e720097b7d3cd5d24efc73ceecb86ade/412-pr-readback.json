@@ -1,0 +1,86 @@
+{
+  "pr": {
+    "url": "https://github.com/PORTALSURFER/hex/pull/412",
+    "number": 412,
+    "state": "open",
+    "merged": false,
+    "mergeable": true,
+    "draft": false,
+    "body": "A recreated Cargo target leaves a valid release-owner marker bound to its former inode. Add explicit `./launch --recover-release-target` for this repository's inspected replacement target, requiring Hex already stopped and never requesting quit/force. It updates clean main and uses the normal selective release clean, fresh optimized build and verified installation/start; tests remain opt-in.\n\nRead-only inspection binds exact old-owner SHA256 and replacement directory identity. Under the existing target lock the guard rechecks full workspace/common repository, clean ancestor source, package specs, marker/target/source stability and configured/raw app inactivity before mutation. Historical artifact metadata is never reused as qualification. Default and automatic force-restart identity guards remain unchanged. The flag is incompatible with --open/--force-restart.\n\nSource 93b1ce44e720097b7d3cd5d24efc73ceecb86ade; tree eb710dec297aee864a0743fd02116a9ffbae32f8. Delta on 8d6d9233, the single ordinary main4a078dae integration preserving original canonical412 linkage/history. Ten focused Python/test/documentation files; no Swift/compiler/native-app changes.\n\nValidation: clean exact-source component 9/9 PASS, 22.336s. Complete Python suite: 239 total, 237 passed, two existing macOS-signature skips. Includes twelve new real-Runner/private-filesystem recovery tests and fixture Cargo artifact/ready path, race/foreign/malformed/busy/running-app refusal, CLI routing, Python3.9 grammar and existing architecture/style/vendor/provenance/layout/fmt/diff guards. Original diagnostic and test-harness setup failures preserved separately.\n\nOutstanding: merger's prospective full21 and fresh review/merge; Root's actual Mac recovery. No native app was built, installed, launched or signalled here. Cooperative locks do not cover arbitrary external writers/raw Cargo.",
+    "title": "Recover explicitly inspected recreated release targets without quitting apps",
+    "base": "main",
+    "base_sha": "4a078dae29cce9f955d95590a5be830c3ca9fafd",
+    "head": "pulse/task-2806-g1-cae2640db8be",
+    "head_sha": "93b1ce44e720097b7d3cd5d24efc73ceecb86ade",
+    "head_repo_id": 1411367674,
+    "head_repo_full_name": "PORTALSURFER/hex",
+    "merge_commit_sha": "8279943c1fd39a2f981e832f7f5507c1a09dc4b0",
+    "user": {
+      "login": "pulse-iocore-portalsurfer[bot]",
+      "name": "pulse-iocore-portalsurfer[bot]",
+      "email": null,
+      "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+      "id": 340736319
+    },
+    "requested_reviewers": [
+      {
+        "login": "PORTALSURFER",
+        "name": "PORTALSURFER",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 41680373
+      }
+    ],
+    "requested_team_reviewers": null,
+    "diff": null,
+    "comments": null,
+    "created_at": "2026-10-18T15:57:59Z",
+    "updated_at": "2026-10-19T17:46:44Z",
+    "closed_at": null,
+    "merged_at": null,
+    "commits": 3,
+    "changed_files": 10,
+    "additions": 556,
+    "deletions": 4,
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/412",
+    "display_title": "Recover explicitly inspected recreated release targets without quitting apps"
+  },
+  "issue": {
+    "issue": {
+      "url": "https://github.com/PORTALSURFER/hex/pull/412",
+      "title": "Recover explicitly inspected recreated release targets without quitting apps",
+      "issue_number": 412,
+      "body": "A recreated Cargo target leaves a valid release-owner marker bound to its former inode. Add explicit `./launch --recover-release-target` for this repository's inspected replacement target, requiring Hex already stopped and never requesting quit/force. It updates clean main and uses the normal selective release clean, fresh optimized build and verified installation/start; tests remain opt-in.\n\nRead-only inspection binds exact old-owner SHA256 and replacement directory identity. Under the existing target lock the guard rechecks full workspace/common repository, clean ancestor source, package specs, marker/target/source stability and configured/raw app inactivity before mutation. Historical artifact metadata is never reused as qualification. Default and automatic force-restart identity guards remain unchanged. The flag is incompatible with --open/--force-restart.\n\nSource 93b1ce44e720097b7d3cd5d24efc73ceecb86ade; tree eb710dec297aee864a0743fd02116a9ffbae32f8. Delta on 8d6d9233, the single ordinary main4a078dae integration preserving original canonical412 linkage/history. Ten focused Python/test/documentation files; no Swift/compiler/native-app changes.\n\nValidation: clean exact-source component 9/9 PASS, 22.336s. Complete Python suite: 239 total, 237 passed, two existing macOS-signature skips. Includes twelve new real-Runner/private-filesystem recovery tests and fixture Cargo artifact/ready path, race/foreign/malformed/busy/running-app refusal, CLI routing, Python3.9 grammar and existing architecture/style/vendor/provenance/layout/fmt/diff guards. Original diagnostic and test-harness setup failures preserved separately.\n\nOutstanding: merger's prospective full21 and fresh review/merge; Root's actual Mac recovery. No native app was built, installed, launched or signalled here. Cooperative locks do not cover arbitrary external writers/raw Cargo.",
+      "state": "open",
+      "user": {
+        "login": "pulse-iocore-portalsurfer[bot]",
+        "name": "pulse-iocore-portalsurfer[bot]",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 340736319
+      },
+      "assignees": [
+        {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 41680373
+        }
+      ],
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": 1,
+      "created_at": "2026-10-18T15:57:59Z",
+      "updated_at": "2026-10-19T17:46:44Z",
+      "closed_at": null,
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/412",
+      "display_title": "Recover explicitly inspected recreated release targets without quitting apps"
+    },
+    "url": "https://github.com/PORTALSURFER/hex/pull/412",
+    "title": "Recover explicitly inspected recreated release targets without quitting apps",
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/412",
+    "display_title": "Recover explicitly inspected recreated release targets without quitting apps"
+  }
+}

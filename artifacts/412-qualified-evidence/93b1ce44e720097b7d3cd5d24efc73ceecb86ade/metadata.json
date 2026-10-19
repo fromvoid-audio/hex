@@ -1,0 +1,25 @@
+{
+  "source": "93b1ce44e720097b7d3cd5d24efc73ceecb86ade",
+  "tree": "eb710dec297aee864a0743fd02116a9ffbae32f8",
+  "base": "8d6d92333843149dd48c02909d0b46b2b04e7d59",
+  "files": [
+    "docs/local-ci.md",
+    "docs/test-builds.md",
+    "launch",
+    "scripts/hex-test-build.py",
+    "scripts/launch-restart.py",
+    "scripts/local-ci.py",
+    "scripts/tests/test_hex_test_build.py",
+    "scripts/tests/test_launch.py",
+    "scripts/tests/test_launch_restart.py",
+    "todo.md"
+  ],
+  "summary_sha256": "a10764c44c00220c80807c70f9dfb3f66531185f5b826743bdfb9a5ee62dc932",
+  "component_stages": 9,
+  "python_total": 239,
+  "python_passed": 237,
+  "old_native_skips": 2,
+  "new_recovery_functions": 12,
+  "baseline_evidence": "15c0f152f43416506b453fbdd927de392ad3b6d9",
+  "no_native_or_full21_claim": true
+}

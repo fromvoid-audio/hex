@@ -1,0 +1,19 @@
+[1/9] complete Python regressions and private Cargo fixtures: running
+[1/9] complete Python regressions and private Cargo fixtures: passed
+[2/9] changed source Python39 grammar: running
+[2/9] changed source Python39 grammar: passed
+[3/9] architecture: running
+[3/9] architecture: passed
+[4/9] UI style: running
+[4/9] UI style: passed
+[5/9] GPUI patch: running
+[5/9] GPUI patch: passed
+[6/9] dependency provenance: running
+[6/9] dependency provenance: passed
+[7/9] device layout: running
+[7/9] device layout: passed
+[8/9] format: running
+[8/9] format: passed
+[9/9] diff: running
+[9/9] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/412-recreated-target-final/summary.json

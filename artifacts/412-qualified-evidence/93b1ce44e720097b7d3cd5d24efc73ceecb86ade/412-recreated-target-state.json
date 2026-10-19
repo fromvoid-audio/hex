@@ -1,0 +1,10 @@
+{
+  "head": "8d6d92333843149dd48c02909d0b46b2b04e7d59",
+  "evidence": "15c0f152f43416506b453fbdd927de392ad3b6d9",
+  "ref": "evidence/412-recreated-target-8d6d9233-20261019",
+  "archive": "artifacts/hex412-recreated-target-8d6d9233-diagnostic.tar.gz",
+  "archive_bytes": 39686,
+  "archive_sha256": "8e0510be9788c1721cfe0a08bf445cc9eddb8bce8a404be7c720d80a9201b6c1",
+  "manifest_sha256": "72e52adaab009d0f827420e66bb4edb91446c3d24611e13256b540f69698de18",
+  "payloads": 9
+}
