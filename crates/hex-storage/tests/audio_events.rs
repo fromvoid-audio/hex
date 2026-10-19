@@ -49,7 +49,7 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["version"], 31);
+    assert_eq!(value["version"], 32);
     for mutate in 0..4 {
         let mut bad = value.clone();
         match mutate {

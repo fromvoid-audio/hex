@@ -5293,3 +5293,18 @@ source handoff is separate from final integration/full CI/merge and delivery.
   owns final integration/full local CI; native/listening and practical musical
   acceptance remain open. Sampler395 stays with Source5; no shared compiler work
   was imported into this standalone Beats change.
+
+- 19 October 2026 — Pulse2854 / PR456: extracted the audio-only placement model
+  prerequisite for clip-local looping2843 on pinned main2eef. Once retains its
+  consumed cursor through silent tails; Repeat normalizes only on explicit
+  activation. Borrowed checked projections use absolute tempo endpoints and
+  retained roots; operation-only resize shares checked metadata preview and the
+  existing overwrite/history transaction. Current format32 requires placement
+  (including null), tuning and device manifests; format31 refuses explicitly.
+  Targeted checks pass284 Project,123 Storage and5 existing Session-conversion
+  cases, strict relevant Clippy, architecture, formatting and diff checks. Audio
+  Session-copy refusal preserves bindings/history; ordinary copy still works.
+  No MIDI Once ancestry, Engine/resource/custody, UI or export changes. Final
+  combined-tree/full21 and A/B format composition belong to the sole merger;
+  clip-loop audio preparation, waveforms, handles, rounded painting, playback/
+  export and native/physical delivery remain open under parent2843/PR445.

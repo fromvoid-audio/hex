@@ -2049,6 +2049,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid("unsupported alpha project format 30"));
         }
         if header.version == 31 {
+            return Err(StorageError::Invalid("unsupported alpha project format 31"));
+        }
+        if header.version == 32 {
             return tuning::decode(bytes);
         }
         if header.version == 29 {
