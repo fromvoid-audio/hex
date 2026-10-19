@@ -943,6 +943,7 @@ mod tests {
             // independently of the ordinary revision gate.
             view.state = Some(Arc::new(hex_session::service::ViewState {
                 canonical_audio_source: old.canonical_audio_source.clone(),
+                comparison_audio: old.comparison_audio.clone(),
                 project: Arc::new(hex_project::Project::from_snapshot(snapshot).unwrap()),
                 waveforms: old.waveforms.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
