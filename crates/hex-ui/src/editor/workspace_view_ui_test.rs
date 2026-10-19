@@ -16,6 +16,71 @@ fn next(service: &Service) -> Event {
 }
 use std::time::{Duration, Instant};
 
+#[gpui::test]
+fn workspace_review_tab_preserves_active_track_resize(cx: &mut TestAppContext) {
+    let (_files, handle, editor) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let track = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
+    let selector = Box::leak(format!("track-height-resize-{}", track.value()).into_boxed_str());
+    let point = visual.debug_bounds(selector).unwrap().center();
+    let to = point + gpui::point(gpui::px(0.0), gpui::px(12.0));
+    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| assert!(v.track_resize_active()));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, EditorMode::Arrangement);
+        assert!(v.track_resize_active());
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| assert!(!v.track_resize_active()));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+}
+
+#[gpui::test]
+fn workspace_review_toolbar_console_returns_tab_to_workspace(cx: &mut TestAppContext) {
+    let (_files, handle, editor) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    let track = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
+    let selector =
+        Box::leak(format!("arrangement-track-header-{}", track.value()).into_boxed_str());
+    let header = visual.debug_bounds(selector).unwrap();
+    visual.simulate_click(
+        header.origin + gpui::point(gpui::px(12.0), gpui::px(9.0)),
+        Modifiers::default(),
+    );
+    visual
+        .update(|window, cx| editor.read_with(cx, |v, _| assert!(v.track_header_focused(window))));
+    // Header selection precedes the view switch and has its own selection policy.
+    let selection = editor.read_with(&visual, |v, _| (v.selected_clip_ids(), v.time_selection));
+    let console = visual
+        .debug_bounds("show console view · tab")
+        .unwrap()
+        .center();
+    visual.simulate_click(console, Modifiers::default());
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+    visual.update(|window, cx| {
+        editor.read_with(cx, |v, _| {
+            assert!(v.focus.is_focused(window) || v.track_header_focused(window));
+        })
+    });
+    visual.simulate_keystrokes("tab");
+    visual.update(|window, cx| editor.read_with(cx, |v, _| assert!(v.focus.is_focused(window))));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, EditorMode::Arrangement);
+        assert_eq!((v.selected_clip_ids(), v.time_selection), selection);
+        assert_eq!(v.state.as_ref().unwrap().project, before.project);
+        assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+    });
+}
+
 fn fixture(
     cx: &mut TestAppContext,
 ) -> (

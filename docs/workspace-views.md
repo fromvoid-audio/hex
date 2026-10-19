@@ -12,7 +12,7 @@ the next Tab reciprocal when the prior header has left the rendered tree. The
 handler bubbles; it is neither a global binding nor a capture listener. Modified
 Tab and held-key repeats do not switch. Focused text/rename/search, numeric
 controls, device/Operator controls and detail editors retain their own Tab
-handling. Modal/popup/draft state and active clip/time/loop gestures refuse the
+handling. Modal/popup/draft state and active track-resize/clip/time/loop gestures refuse the
 switch even if the workspace still retains focus. Musical typing does not claim
 Tab.
 
@@ -43,6 +43,24 @@ in `set_mode`; the final switch retains that state. Headless GPUI evidence is no
 physical keyboard, IME, accessibility, native display, audio or optimized-app
 acceptance. Exact-source full repository qualification belongs to the merger.
 
+The 19 october2026 review regression reproduced Tab switching to Console during
+an actual rendered track-height resize. The workspace guard now leaves that
+capture active until release; Tab switches normally afterward. A separate actual
+header-click → toolbar Console → Tab sequence already returned correctly before
+repair. Its initial selection assertion captured state before the header click,
+which legitimately changes clip selection; the corrected test captures it after
+that click, checks the actual workspace/header focus route and retains the full
+project, revision and pending-request assertions. No toolbar handler or selection
+policy changed. The original two-failure log is retained as one product failure
+and one fixture expectation failure, rather than two product regressions.
+
+The corrected two cases, four original workspace cases and two unchanged Operator
+traversal cases pass together: **8 unique tests, zero failed/ignored**. The earlier
+six-case source and native receipts remain evidence for their original source;
+they do not verify this later resize guard. Strict checks and the immutable
+repair packet are recorded with the source handoff. Final prospective-tree full
+qualification, merge and user acceptance remain separate.
+
 ## Finite native request and user checklist
 
 Root's sole Mac lane may run this exact source once with:
@@ -52,8 +70,10 @@ cargo test -p hex-ui --features ui-test-support --locked --lib -- \
   --nocapture workspace_view_ui_test operator_tab_cycle
 ```
 
-Expected: **6 unique positive tests**, zero failures/ignored (4 new workspace
-cases and 2 unchanged Operator traversal cases). Preserve the actual case list,
+Expected on the repaired source: **8 unique positive tests**, zero failures/ignored
+(6 workspace cases and 2 unchanged Operator traversal cases). The previous exact
+six-case native run remains historical; this checklist does not request its
+automatic repetition or dispatch a new native job. Preserve the actual case list,
 exit status, source/tree, raw log/hash and bounded fixture startup evidence; a
 zero-match result does not qualify. This is a targeted command, not full CI.
 No app installation, launch, quit, real audio device or user-library operation is
@@ -64,7 +84,8 @@ Tab both directions from timeline and track header; verify names, viewport,
 clip/time/scene/cell selection and panel visibility after returning; verify Tab
 continues local traversal in Operator/numeric controls and never switches while
 renaming, searching, composing IME text or using a dialog/popup. Confirm modified
-Tab and an active drag do not switch, and transport/project history remain
+Tab and an active drag, including track-height/header-width resizing, do not
+switch, and transport/project history remain
 unchanged. Check the compact label and neighboring toolbar controls at supported
 small and large window widths. Root coordinates this separately; source passing
 or merging does not mark it complete.

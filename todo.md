@@ -5148,3 +5148,20 @@ clicks, inert hover, focus and resize state across those widths. Targeted result
 and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
 full CI/integration/merge; optimized native drag/hover/optical acceptance remains
 open. No installed app, persisted schema or user files changed.
+
+## workspace Tab review repair — pulse2813 / PR419, 19 october2026
+
+The actual rendered track-height resize reproduced Tab changing views while its
+capture was active. One existing workspace guard now blocks Tab during track
+resizing; release completes the capture and subsequent Tab works normally.
+Header click → toolbar Console → Tab already returned correctly: no toolbar
+production change was needed. Corrected the new test to capture selection after
+the header click, retaining actual focus, full project/revision and zero queued
+request assertions. Original failure logs distinguish the product red from the
+misplaced fixture selection expectation. All four original workspace and two
+Operator cases are retained: the combined targeted run passed 8 unique cases,
+zero failed/ignored. Strict UI feature/all-target and repository guard results
+are recorded in the immutable repair handoff. Prior source/native six-case
+evidence remains historical. This source repair is unmerged; final combined full
+qualification and merge belong to the sole merger, with physical input/IME,
+display and delivered-app acceptance still open. No Mac/app operations occurred.

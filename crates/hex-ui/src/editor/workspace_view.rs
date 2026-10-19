@@ -38,6 +38,7 @@ impl EditorView {
             || self.export_dialog_open
             || self.save_dialog_open
             || self.preset_dialog_open
+            || self.track_resize_active()
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
