@@ -1,0 +1,18 @@
+{
+  "source": "baf16c106871ace4925870ee972969ed69dfe6d9",
+  "tree": "d7bdcd744e279504a7f0e49015f169f75d0d1ea4",
+  "parent": "8bb8efd10e96e52329bf34527ea2dd5cb12b494f",
+  "base": "67dea11d5f6ed2b4429e5b2ec577566d4346b450",
+  "final_summary_sha256": "72b68cc95b933aaef2287982f2cee0be8dd1682d639f93a08b8a5fef4e881dec",
+  "final_duration_seconds": 127.515,
+  "content_sha256": "e9afc19f71162c121be6e94fb63ac7f9dff5bef697a317b20c0fe0075791ff33",
+  "steps_executed": 13,
+  "zero_match_steps": 1,
+  "supplement_summary_sha256": "d57506e952da8e428acd06b6c0c0d6783734f47fc98f2fd36f8238c43c0301a9",
+  "supplement_duration_seconds": 46.518,
+  "unique_cases": 89,
+  "ignored": 0,
+  "canonical_head_unchanged": "8724e3edd639c864600ed4a1dabc9ebcfb76cc8d",
+  "assignee_readback": "PORTALSURFER",
+  "reviewer_readback": "PORTALSURFER"
+}

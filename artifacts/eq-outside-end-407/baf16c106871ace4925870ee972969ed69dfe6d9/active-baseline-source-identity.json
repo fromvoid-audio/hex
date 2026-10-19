@@ -1,0 +1,8 @@
+{
+  "commit": "a02c456e48a100f289485e9a91341c89255e5b84",
+  "tree": "150f22276ec26021e4a3f2329f15b22050fd7fdd",
+  "parent": "8bb8efd10e96e52329bf34527ea2dd5cb12b494f",
+  "only_changed_file": "crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs",
+  "changes": "16 test-only insertions, exact production8bb",
+  "outcome": "0PASS1FAIL0ignored, active Blur1Commit left1/right0, Cancel/Missing/NewToken controls preserved"
+}

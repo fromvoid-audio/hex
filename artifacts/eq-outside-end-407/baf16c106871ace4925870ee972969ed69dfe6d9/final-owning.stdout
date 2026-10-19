@@ -1,0 +1,25 @@
+[1/12] eq-node-gestures: running
+[1/12] eq-node-gestures: passed
+[2/12] eq-mouse-boundary: running
+[2/12] eq-mouse-boundary: passed
+[3/12] all-widgets: running
+[3/12] all-widgets: passed
+[4/12] widgets-strict: running
+[4/12] widgets-strict: passed
+[5/12] ui-feature-strict: running
+[5/12] ui-feature-strict: passed
+[6/12] architecture: running
+[6/12] architecture: passed
+[7/12] gpui-patch: running
+[7/12] gpui-patch: passed
+[8/12] dependency-patches: running
+[8/12] dependency-patches: passed
+[9/12] ui-style: running
+[9/12] ui-style: passed
+[10/12] device-layout: running
+[10/12] device-layout: passed
+[11/12] fmt: running
+[11/12] fmt: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-eq407-final-owning/summary.json

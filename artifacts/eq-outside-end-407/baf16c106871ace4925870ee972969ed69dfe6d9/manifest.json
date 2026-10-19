@@ -1,0 +1,179 @@
+{
+  "kind": "source-owner-component-handoff-not-full-ci-never-build-merge-evidence",
+  "source": "baf16c106871ace4925870ee972969ed69dfe6d9",
+  "tree": "d7bdcd744e279504a7f0e49015f169f75d0d1ea4",
+  "payloads": {
+    "HANDOFF.md": {
+      "bytes": 5187,
+      "sha256": "393648aaaa0e3129f9a06251e34da027c317c3d71f0b67d796dc00ef7514aa21"
+    },
+    "active-baseline-source-identity.json": {
+      "bytes": 431,
+      "sha256": "d9cffb0591a4d2cc7e9f6b1d0fe34490d5c07f62f1bd397b5f23204c058b7f83"
+    },
+    "active-baseline.patch": {
+      "bytes": 1538,
+      "sha256": "347d5d2b0fb92bf8a23d2b39beb672cb0f3acee96b2deaf15f310e2c2e1b18bc"
+    },
+    "active-blur-baseline.stdout": {
+      "bytes": 196,
+      "sha256": "23ca961ac49dbcb90f98ef63e9d9cbc484a02673df61729660eb8ef41e6ba0c9"
+    },
+    "component-runner.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "file-hashes.json": {
+      "bytes": 1125,
+      "sha256": "c64f7a9c5c407ff3931d3ed3866a1f8c413c17766364d6dc92685d528048e766"
+    },
+    "final-gesture-filter.stdout": {
+      "bytes": 180,
+      "sha256": "c459d5647904068fcf39561725eb4ff9985e00a0cb70d5a039c391c93ba73f01"
+    },
+    "final-owning.stdout": {
+      "bytes": 797,
+      "sha256": "c1aaaad7a07d179b2d4d1da17f8d1314a927bd087891142c193ca6c9535cb402"
+    },
+    "focus-active-window.stdout": {
+      "bytes": 238,
+      "sha256": "b31d1a8f36b90996f98680bbab2bfcdaef4dbd4173c2e3e04d39f2a589ec7d29"
+    },
+    "focus-correction-applied.stdout": {
+      "bytes": 182,
+      "sha256": "03006457643327f5e6f22f91a087351a00c3f12f07a3269c598a512ab738cd64"
+    },
+    "focus-correction.patch": {
+      "bytes": 2280,
+      "sha256": "489b343faf47cfe0212964ffe81a301d8ad9d013a0922a77a071e9b939c2248a"
+    },
+    "focus-correction.stdout": {
+      "bytes": 174,
+      "sha256": "ec0eac37f7bb45431764930bcb33a9b8f458192038b354e68692ac6f5293e3d8"
+    },
+    "full-outside-repair.patch": {
+      "bytes": 20903,
+      "sha256": "3e264f301ec0c54c04f73a6b198fe24712c62d691ccdecfae39c3c82596ae922"
+    },
+    "preactivation-fixture.rs": {
+      "bytes": 11886,
+      "sha256": "25d95a2c3f6cd48e0938c651922ad78bfa17299588146e82280261ed50a977d1"
+    },
+    "qualification.json": {
+      "bytes": 821,
+      "sha256": "5d5133f2bc62f560e1c2d7d27954a887b59c3024cd48afb99ee0828fe71f6fc5"
+    },
+    "runs/eq407-active-blur-baseline/01-active-blur-invalidation.log": {
+      "bytes": 1346,
+      "sha256": "32749fdf8b442d86653ec57640d07286f6e42ae4ce255617e5fade634fe8806f"
+    },
+    "runs/eq407-active-blur-baseline/summary.json": {
+      "bytes": 9694,
+      "sha256": "c4e153eb00ebe961f2df9ab9f3576509f6d1327bf77ef216510bf3d5ab0be13c"
+    },
+    "runs/eq407-final-gesture-filter/01-eq-node-gestures.log": {
+      "bytes": 6476,
+      "sha256": "90958be0b3aaad5b966c8e6a6794aaae4aef1113cbb04eef79374caf278d0222"
+    },
+    "runs/eq407-final-gesture-filter/summary.json": {
+      "bytes": 9669,
+      "sha256": "d57506e952da8e428acd06b6c0c0d6783734f47fc98f2fd36f8238c43c0301a9"
+    },
+    "runs/eq407-final-owning/01-eq-node-gestures.log": {
+      "bytes": 455,
+      "sha256": "3106b671bc91f5f1a1f258291906c0f736fce787d83c0995989d03f60cc54edc"
+    },
+    "runs/eq407-final-owning/02-eq-mouse-boundary.log": {
+      "bytes": 728,
+      "sha256": "c73dad7154ebba0ff497c5bc090b81f8e8b48859818f2cb9d694939aab3f10eb"
+    },
+    "runs/eq407-final-owning/03-all-widgets.log": {
+      "bytes": 7073,
+      "sha256": "1c2ad08f2439ffbbd32728314ce7ed848b0f48f0a78f5b5fb721d911f39064ff"
+    },
+    "runs/eq407-final-owning/04-widgets-strict.log": {
+      "bytes": 200,
+      "sha256": "43404ed9839e3e036c8f1c04c14434a303120eac5eca62f885278c77815b6158"
+    },
+    "runs/eq407-final-owning/05-ui-feature-strict.log": {
+      "bytes": 887,
+      "sha256": "fce2a550dbf4debbb661457094836cd3b94ee0eb7dbc7710c7e45fc331dcab67"
+    },
+    "runs/eq407-final-owning/06-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/eq407-final-owning/07-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/eq407-final-owning/08-dependency-patches.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/eq407-final-owning/09-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/eq407-final-owning/10-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/eq407-final-owning/11-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/eq407-final-owning/12-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/eq407-final-owning/summary.json": {
+      "bytes": 15257,
+      "sha256": "72b68cc95b933aaef2287982f2cee0be8dd1682d639f93a08b8a5fef4e881dec"
+    },
+    "runs/eq407-focus-active-window/01-widget-terminal.log": {
+      "bytes": 1005,
+      "sha256": "e7bde6065cb3de65a95abe5e47f2c30fd6f2e7df0458750b5968f2680aba6e99"
+    },
+    "runs/eq407-focus-active-window/02-real-ui-outside.log": {
+      "bytes": 1011,
+      "sha256": "e1291a7fe09afa31dcf32e00c5c80b7b3074ccdc5706df450fe518d32788da96"
+    },
+    "runs/eq407-focus-active-window/summary.json": {
+      "bytes": 10791,
+      "sha256": "c9d4b81110b8dfeabb86524cd0170ec8ca51a1b8a49f58743893127932b12fa6"
+    },
+    "runs/eq407-focus-correction/01-widget-terminal.log": {
+      "bytes": 1526,
+      "sha256": "ae2a6b2ef63fc69a15ad4df0d503a256a18697078403f7bcc53556c7dd79701d"
+    },
+    "runs/eq407-focus-correction/summary.json": {
+      "bytes": 10151,
+      "sha256": "9d793bd9b344260f1d6f466a28710a803a5caa0fc2b18694e9c13d940a865859"
+    },
+    "runs/eq407-focus-correction-applied/01-widget-terminal.log": {
+      "bytes": 1625,
+      "sha256": "51b1144e2c8599d5eaffcd6365a7699c2a2e7c166a8be05456cdb7d57db59941"
+    },
+    "runs/eq407-focus-correction-applied/summary.json": {
+      "bytes": 10721,
+      "sha256": "2d0521dad9cd222be7d670d4bd27f6479c66cd7c2a11321571c1cda8071de9ba"
+    },
+    "source/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+      "bytes": 49102,
+      "sha256": "a9ad25a84d7269a0348aaf3679cbf9ac971c80b6d9f6c39968d72f82ddd48ad6"
+    },
+    "source/crates/hex-widgets/src/response_graph/scroll.rs": {
+      "bytes": 11088,
+      "sha256": "0dd4d8cbc4dd35a87dc61e0c99508fd40326217a2d3ad777c9a996790f523aba"
+    },
+    "source/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs": {
+      "bytes": 12083,
+      "sha256": "6a4704d57c99389c4587b6ceb78896bf2433bc31b200e7e844137fe61be679a0"
+    },
+    "source/crates/hex-widgets/src/response_graph.rs": {
+      "bytes": 45333,
+      "sha256": "c6dac01a103874a61755989d0a8123261dadc2ac3d3933b4b73c6db7b00ac213"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+    "after_sha256": "a9ad25a84d7269a0348aaf3679cbf9ac971c80b6d9f6c39968d72f82ddd48ad6",
+    "after_bytes": 49102,
+    "before_sha256": "9c7589e5b366b9f2910da5e57aad6d92dadc0aae558e903427eda26d9a6c66b8",
+    "before_bytes": 43869
+  },
+  "crates/hex-widgets/src/response_graph.rs": {
+    "after_sha256": "c6dac01a103874a61755989d0a8123261dadc2ac3d3933b4b73c6db7b00ac213",
+    "after_bytes": 45333,
+    "before_sha256": "2eaf8eabf823dfd719d7dc07248f63e6ff802fdad33d76a665b02855a62d6640",
+    "before_bytes": 44778
+  },
+  "crates/hex-widgets/src/response_graph/scroll.rs": {
+    "after_sha256": "0dd4d8cbc4dd35a87dc61e0c99508fd40326217a2d3ad777c9a996790f523aba",
+    "after_bytes": 11088,
+    "before_sha256": "e16c4a608fb533b0ccdd207ec4a7d2d948ce06cdf7e4f81cd9d603851eefd556",
+    "before_bytes": 10203
+  },
+  "crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs": {
+    "after_sha256": "6a4704d57c99389c4587b6ceb78896bf2433bc31b200e7e844137fe61be679a0",
+    "after_bytes": 12083,
+    "before_sha256": null,
+    "before_bytes": null
+  }
+}
