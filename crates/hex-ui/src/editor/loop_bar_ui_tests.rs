@@ -299,6 +299,21 @@ fn ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open(
         pump(&editor, &mut visual);
         assert_eq!(region(&editor, &visual), shown);
         let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let revision = editor.update(&mut visual, |v, _| {
+            v.last_enqueued_edit = None;
+            v.state.as_ref().unwrap().revision
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                v.last_enqueued_edit.is_none(),
+                "duplicate release cannot enqueue an edit"
+            );
+            assert!(v.loop_rail_gesture.is_none());
+            assert_eq!(v.state.as_ref().unwrap().revision, revision);
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
+        });
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -429,6 +444,7 @@ fn loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit(cx: &mut TestA
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_some()));
+        editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
         let mut modifiers = Modifiers::default();
         match cancel {
             "escape" => visual.simulate_keystrokes("escape"),
@@ -449,8 +465,13 @@ fn loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit(cx: &mut TestA
             }
         }
         visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
+            assert!(
+                v.last_enqueued_edit.is_none(),
+                "cancelled/late release cannot enqueue: {cancel}"
+            );
             assert!(v.loop_rail_gesture.is_none(), "{cancel}");
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot(),
