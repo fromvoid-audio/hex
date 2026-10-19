@@ -66,6 +66,18 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
             .as_ref()
             .unwrap()
             .clone();
+        let before_comparison_save = run(&service, Request::SaveNew(folder.join("before.hex")));
+        assert!(
+            Arc::ptr_eq(
+                before_comparison_save
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap(),
+                &source
+            ),
+            "a save before comparison must retain the actual preparation source too"
+        );
         let target = crate::service::preset::Owner {
             project_generation: 1,
             ..owner(&initial, device, NativeDeviceClass::Instrument)
