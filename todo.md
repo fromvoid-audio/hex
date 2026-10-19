@@ -5987,3 +5987,24 @@ prospective full CI/integration; native physical mouse/IME acceptance stays open
   Focused seven cases pass without rerunning the unchanged original negative.
   Exact source component checks precede sole-merger full21/fresh review/merge;
   no native/app/physical output or user acceptance is inferred.
+
+### 2026-10-19 — PR329 loop-bar gestures and musical marker
+
+- Continue original c525/2713 history after one main2683 composition; preserve
+  earlier c71e three executed negatives and separate literal compile failure.
+- Command-click anywhere on the bar (including endpoints) toggles on/off;
+  ordinary body move preserves full length,
+  Shift uses nearest full-length steps relative to the captured original start.
+  Existing edge resize/empty-rail painting and Command-L/toolbar remain intact.
+- Mark two/four and unambiguous fractional binary musical lengths through exact
+  canonical forward-rounded endpoint intervals, not pixels; ambiguous subframe
+  intervals carry no marker. Include tempo seams, zoom and resize controls.
+- Real routed Escape/stationary-modifier negatives required narrow existing root
+  callbacks into private rail state; no new gesture owner/framework/vendor code.
+  Old rail fixture now initializes its actual Service project instead of only
+  overriding the displayed state. Twelve beats plus the existing two-second
+  Service horizon preserve its exact384000-frame viewport assertions.
+- Qualification covers original five rail cases, eight real-Service loop-bar
+  cases and four pure math cases, with save/open, Undo/Redo, both directions,
+  live modifiers/focus/cancel/Open invalidation. Native physical/listening and
+  merger's prospective full21/review/actual merge remain separate and open.
