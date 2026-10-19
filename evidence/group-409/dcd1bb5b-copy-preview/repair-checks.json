@@ -1,0 +1,177 @@
+{
+  "head": "dcd1bb5b4dbf4d2d02dedf412045f10cbd82c0a0",
+  "tree": "14a54dfba9eee11a4ab13b8184d3c5aa1aa475ea",
+  "steps": [
+    {
+      "name": "final-project",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-project",
+        "--locked",
+        "--lib",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "expected_tests": 93,
+      "passed": true,
+      "seconds": 0.305081345999497,
+      "log": "final-project.log",
+      "sha256": "d63d34dd8606a59bd58fe3fc92abe7a65db89ecc0e22f31f6b088bf990651dbd"
+    },
+    {
+      "name": "final-group-ui",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "group_drag_ui_test",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "expected_tests": 7,
+      "passed": true,
+      "seconds": 25.987851593003143,
+      "log": "final-group-ui.log",
+      "sha256": "fde78a56727eeb105025709beeb241eb7f4021ac025a994f0ac9ab54dedb9dc9"
+    },
+    {
+      "name": "final-single-ui",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "--",
+        "rendered_audio_clip_drag_starts_previews_and_commits_a_move",
+        "option_drag_copies_audio_clip_and_modifier_changes_apply_without_pointer_motion",
+        "command_modifier_temporarily_bypasses_beat_anchored_midi_drag_snap",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "expected_tests": 3,
+      "passed": true,
+      "seconds": 21.477154677995713,
+      "log": "final-single-ui.log",
+      "sha256": "936cd3ea7215b5a738b32c7e887939061597ae6f23964f3a434e5eafa77ceaed"
+    },
+    {
+      "name": "strict-project-ui",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-project",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "seconds": 26.331676942994818,
+      "log": "strict-project-ui.log",
+      "sha256": "a63954783f149d63ecbf8eb5e8928fc0dd67ba36689146406b3df4a347cb1283"
+    },
+    {
+      "name": "architecture",
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "seconds": 0.047133700994891115,
+      "log": "architecture.log",
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    {
+      "name": "gpui-patch",
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "seconds": 0.04240459999709856,
+      "log": "gpui-patch.log",
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    {
+      "name": "dependency-patches",
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "seconds": 0.039110236990381964,
+      "log": "dependency-patches.log",
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    {
+      "name": "ui-style",
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "seconds": 0.09814456501044333,
+      "log": "ui-style.log",
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    {
+      "name": "device-layout",
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "seconds": 0.230192403003457,
+      "log": "device-layout.log",
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    {
+      "name": "format",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "seconds": 5.292074423996382,
+      "log": "format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "status": "PASS",
+  "source_clean": true
+}

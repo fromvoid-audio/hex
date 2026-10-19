@@ -1,0 +1,175 @@
+{
+  "source": "dcd1bb5b4dbf4d2d02dedf412045f10cbd82c0a0",
+  "files": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 1933,
+      "sha256": "bb5f5e717cac5d21bd3b0d5f11f1d75e17005bb0196ccb62dda0dcef0aa56397"
+    },
+    {
+      "path": "after-copy-green.log",
+      "bytes": 592,
+      "sha256": "da3e036688bcec7f593eb659c992ed832b70c3278ceef6fe7b9ee8788189ccc3"
+    },
+    {
+      "path": "after-copy-history-highwater-red.log",
+      "bytes": 32449,
+      "sha256": "20e78836419814f912a9739241750757aa1203d2bae9fe55481391601ca9d591"
+    },
+    {
+      "path": "after-group-ui.log",
+      "bytes": 2438,
+      "sha256": "ad3ba7033dc33ba39a54e28da7e7945de5e3b8352364e31421e25ae730b1cb37"
+    },
+    {
+      "path": "architecture.log",
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    {
+      "path": "before-copy-red.log",
+      "bytes": 2993,
+      "sha256": "5c9e1073aa4fff8b954ac8b9afbcf57b22cd4971d9bc4a37487680602748198b"
+    },
+    {
+      "path": "before-outside-red.log",
+      "bytes": 2750,
+      "sha256": "0e66326270b0f623fa7d2856a2b203002b6d1d9a9b38ded0f7aeb512b9c1d502"
+    },
+    {
+      "path": "before-vertical-red.log",
+      "bytes": 1585,
+      "sha256": "170c74457e28e7d087c36520f9231a75c74d6ec59a214b8f590f8b6d07f28173"
+    },
+    {
+      "path": "cost-compile.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "cost-initial-snapshot-api-error.log",
+      "bytes": 1170,
+      "sha256": "a269735e11bf97a74e751c21d612bf6fa13301a177c60dd162beafef05de50b2"
+    },
+    {
+      "path": "dependency-patches.log",
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    {
+      "path": "device-layout.log",
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    {
+      "path": "final-group-ui.log",
+      "bytes": 1525,
+      "sha256": "fde78a56727eeb105025709beeb241eb7f4021ac025a994f0ac9ab54dedb9dc9"
+    },
+    {
+      "path": "final-project.log",
+      "bytes": 10063,
+      "sha256": "d63d34dd8606a59bd58fe3fc92abe7a65db89ecc0e22f31f6b088bf990651dbd"
+    },
+    {
+      "path": "final-single-ui.log",
+      "bytes": 813,
+      "sha256": "936cd3ea7215b5a738b32c7e887939061597ae6f23964f3a434e5eafa77ceaed"
+    },
+    {
+      "path": "format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gpui-patch.log",
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    {
+      "path": "initial-test-history-api-compile-error.log",
+      "bytes": 871,
+      "sha256": "3743989547b72ea87d1bac6521d1491ba873a3d841216816397f6c9c43fc1de9"
+    },
+    {
+      "path": "preview-cost.log",
+      "bytes": 519,
+      "sha256": "b54498af59d13bbd6ea983d73ebf84f900a299a1089fcf648aa53d9ac8f55c70"
+    },
+    {
+      "path": "repair-checks.json",
+      "bytes": 4474,
+      "sha256": "bc4297439bcccf7bdc8c1f35e73b2ce94116685a7e623590a54629e47dfd62d6"
+    },
+    {
+      "path": "repair-only.patch",
+      "bytes": 25363,
+      "sha256": "3bff0040588e4e5facaf4598225bae16be51f1b6be463a0c0dbb419a5501f32c"
+    },
+    {
+      "path": "source/crates/hex-project/src/clip_group.rs",
+      "bytes": 10971,
+      "sha256": "158a0097f8af6efd286f99aaf352d0fe6797a6756703e17d0d78419efd519eb5"
+    },
+    {
+      "path": "source/crates/hex-project/src/clip_group_tests.rs",
+      "bytes": 20349,
+      "sha256": "57d600c0135b7a14d8af020ca391d091860d630694279fe75175fe2d17eb4083"
+    },
+    {
+      "path": "source/crates/hex-project/src/edit.rs",
+      "bytes": 91150,
+      "sha256": "90e025f08b7a6f528a57ca29b9ac0ee41a70f5d36b9c2e1ad6257de335327694"
+    },
+    {
+      "path": "source/crates/hex-project/src/midi.rs",
+      "bytes": 47088,
+      "sha256": "4d2549e914712ddddd28cd0a36468b5e59b3a17f1390492b0787d41a7bc95c23"
+    },
+    {
+      "path": "source/crates/hex-ui/src/editor/drag.rs",
+      "bytes": 67622,
+      "sha256": "2d1b2c49828bcbc7bc8c6ba50b07f5066bef95bad32f0e8f05fc2d301fee1ea5"
+    },
+    {
+      "path": "source/crates/hex-ui/src/editor/drag_autoscroll.rs",
+      "bytes": 16063,
+      "sha256": "7f3cf79f19f4a9d2f767cd199920252ae28e86467255a42d6edf5b9bb0209498"
+    },
+    {
+      "path": "source/crates/hex-ui/src/editor/group_drag_ui_test.rs",
+      "bytes": 24135,
+      "sha256": "d69a0386bf0f86ac0951f3e75a1e2377878742032c244082da21fe851396e656"
+    },
+    {
+      "path": "source/docs/group-clip-drag.md",
+      "bytes": 5334,
+      "sha256": "b1412b251c637148d2fee5f21d6ec8d8437eab97d08035f988644b2fea40c682"
+    },
+    {
+      "path": "source/todo.md",
+      "bytes": 341174,
+      "sha256": "84221ef5fe6aa1d41ec4d8fb7dd2813aac2b979b2a9957ea1428db4f832d6487"
+    },
+    {
+      "path": "source-ledger.json",
+      "bytes": 1975,
+      "sha256": "51f0654e0dc36ed5108c60a6f3f1edc64bf5f56a5199de36702a00bb731bb064"
+    },
+    {
+      "path": "strict-project-ui.log",
+      "bytes": 2072,
+      "sha256": "a63954783f149d63ecbf8eb5e8928fc0dd67ba36689146406b3df4a347cb1283"
+    },
+    {
+      "path": "ui-style.log",
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    {
+      "path": "verify-repair.py",
+      "bytes": 2133,
+      "sha256": "43c546bcd0779360a6531718d118fbe3225d330c1b2f1c2296858c068151bbef"
+    }
+  ]
+}
