@@ -1692,3 +1692,187 @@ fn beats_alternating_preparation_reverses_safe_chirp_tail_and_undo_preserves_rev
         "executed actual Alternating protected WSOLA chirp native preparation/cache/Undo/retained revisions/seek/partition: AltHz={reversed} ForwardHz={normal}"
     );
 }
+
+fn preview_matches_preparation(
+    editor: &Editor,
+    clip: hex_project::ClipId,
+    media: &BTreeMap<hex_project::AssetId, Audio>,
+) -> bool {
+    let metadata = validate_clip_warp_preview(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+    );
+    let actual = crate::PreparedRevision::prepare_with_audio_transforms(
+        editor.project(),
+        media,
+        Arc::new(crate::SineTable::new()),
+        None,
+        &AudioTransformPreparation::default(),
+    );
+    assert_eq!(
+        metadata.is_ok(),
+        actual.is_ok(),
+        "metadata={metadata:?} actual_error={:?}",
+        actual.as_ref().err()
+    );
+    if let (Err(expected), Err(actual)) = (&metadata, &actual) {
+        assert_eq!(expected, actual);
+    }
+    metadata.is_ok()
+}
+#[test]
+fn warp_preview_admission_matches_actual_preparation_pitch_modes_tempo_and_rounding() {
+    for pitch in [-1_200, 0, 1_200] {
+        for mode in [
+            None,
+            Some(WarpMode::RePitch),
+            Some(WarpMode::Beats {
+                preserve: hex_project::BeatsPreserve::Transients,
+                tail: BeatsTail::Forward,
+                decay: 100,
+            }),
+        ] {
+            for end in [499, 500, 1_000, 8_000, 64_000, 64_001] {
+                let (mut editor, clip, media) = fixture(false);
+                let settings = default_audio_warp(
+                    editor.project().clip(clip).unwrap(),
+                    editor.project().tempo_map(),
+                    mode.unwrap_or(WarpMode::RePitch),
+                )
+                .unwrap();
+                editor
+                    .execute(Command::SetAudioClipWarp {
+                        clip,
+                        settings: Some(settings),
+                    })
+                    .unwrap();
+                editor
+                    .execute(Command::SetAudioClipPitch { clip, cents: pitch })
+                    .unwrap();
+                editor
+                    .execute(Command::SetTempoPoint {
+                        beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+                        tempo: Tempo::new(90_000_000).unwrap(),
+                    })
+                    .unwrap();
+                editor
+                    .execute(Command::StretchAudioClipEdge {
+                        clip,
+                        edge: hex_project::TrimEdge::Right,
+                        frame: end,
+                    })
+                    .unwrap();
+                if mode.is_none() {
+                    editor
+                        .execute(Command::SetAudioClipWarp {
+                            clip,
+                            settings: None,
+                        })
+                        .unwrap();
+                }
+                preview_matches_preparation(&editor, clip, &media);
+            }
+        }
+    }
+}
+#[test]
+fn warp_preview_admission_nonuniform_markers_and_subframe_errors_match_actual_preparation() {
+    for (middle, pitch) in [
+        (BeatTime::ONE.raw() / 2, 0),
+        (BeatTime::ONE.raw() / 2, 2_400),
+        (1, 0),
+    ] {
+        let (mut editor, clip, media) = fixture(false);
+        let mut settings = default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            WarpMode::Beats {
+                preserve: hex_project::BeatsPreserve::Transients,
+                tail: BeatsTail::Forward,
+                decay: 100,
+            },
+        )
+        .unwrap();
+        settings.markers.insert(
+            1,
+            hex_project::WarpMarker {
+                source_frame: 1_600,
+                beat: BeatTime::from_raw(middle),
+            },
+        );
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: pitch })
+            .unwrap();
+        let valid = preview_matches_preparation(&editor, clip, &media);
+        assert_eq!(
+            valid,
+            middle > 1 && pitch == 0,
+            "nonuniform first segment or subframe projection must control admission"
+        );
+    }
+    let (editor, clip, media) = fixture(false);
+    assert!(
+        preview_matches_preparation(&editor, clip, &media),
+        "untouched resident audio needs no warp map"
+    );
+}
+#[test]
+fn warp_preview_valid_endpoints_can_be_disconnected_by_marker_tempo_crossings() {
+    // A slow-source second marker interval first traverses 30bpm, then moves
+    // entirely beyond the 480bpm point. Its maximum stretch drops, so validity
+    // is NOT globally monotonic in the requested right-edge frame.
+    let (mut seed, clip, media) = fixture(false);
+    let mut settings = default_audio_warp(
+        seed.project().clip(clip).unwrap(),
+        seed.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    settings.markers.insert(
+        1,
+        hex_project::WarpMarker {
+            source_frame: 7_600,
+            beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+        },
+    );
+    seed.execute(Command::SetAudioClipWarp {
+        clip,
+        settings: Some(settings),
+    })
+    .unwrap();
+    seed.execute(Command::SetTempoPoint {
+        beat: BeatTime::ZERO,
+        tempo: Tempo::new(30_000_000).unwrap(),
+    })
+    .unwrap();
+    seed.execute(Command::SetTempoPoint {
+        beat: BeatTime::ONE,
+        tempo: Tempo::new(480_000_000).unwrap(),
+    })
+    .unwrap();
+    for (end, expected) in [(3_200, true), (32_000, false), (34_200, true)] {
+        let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
+        editor
+            .execute(Command::StretchAudioClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Right,
+                frame: end,
+            })
+            .unwrap();
+        assert_eq!(
+            preview_matches_preparation(&editor, clip, &media),
+            expected,
+            "endpoint {end}"
+        );
+    }
+}
