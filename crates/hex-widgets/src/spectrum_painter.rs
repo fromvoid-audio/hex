@@ -61,6 +61,14 @@ fn valid_points(points: &[[f32; 2]]) -> bool {
         && points.windows(2).all(|p| p[0][0] <= p[1][0])
 }
 
+fn paintable(layer: &Layer<'_>, pass: Pass) -> bool {
+    valid_points(layer.points)
+        && layer.color <= 0xffffff
+        && f32::from(layer.stroke_width).is_finite()
+        && (0.0..=4.0).contains(&f32::from(layer.stroke_width))
+        && (pass != Pass::Fill || layer.points.iter().any(|p| p[1] != 0.0))
+}
+
 fn secant(a: [f32; 2], b: [f32; 2]) -> f32 {
     let dx = b[0] - a[0];
     if dx <= f32::EPSILON {
@@ -136,17 +144,18 @@ where
     {
         return;
     }
-    let alpha = fill_alpha(count);
+    // Input admission counts every layer; only visible fills spend the ink budget.
+    let alpha = fill_alpha(if pass == Pass::Fill {
+        layers
+            .clone()
+            .filter(|layer| paintable(layer, pass))
+            .count()
+    } else {
+        count
+    });
     window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {
         for layer in layers {
-            if !valid_points(layer.points)
-                || layer.color > 0xffffff
-                || !f32::from(layer.stroke_width).is_finite()
-                || !(0.0..=4.0).contains(&f32::from(layer.stroke_width))
-            {
-                continue;
-            }
-            if pass == Pass::Fill && layer.points.iter().all(|p| p[1] == 0.0) {
+            if !paintable(&layer, pass) {
                 continue;
             }
             let mut path = match pass {
