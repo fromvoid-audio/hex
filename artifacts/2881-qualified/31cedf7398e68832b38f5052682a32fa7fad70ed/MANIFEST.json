@@ -1,0 +1,126 @@
+{
+  "2881-diagnostic.py": {
+    "bytes": 1075,
+    "sha256": "a79e9ee02233f4dfe51467fc3b30577ebdea131c109bff16e8be47ae6cae4214"
+  },
+  "2881-final.py": {
+    "bytes": 1889,
+    "sha256": "a4b87dce18d5414472f4c51f07e9e0d848c08bacf871b61efbb13663aa5abd64"
+  },
+  "2881-handoff.md": {
+    "bytes": 3990,
+    "sha256": "3a4ec9e4a9509fb6de8eb79c8d176b7c7560060b8bb3eccd940c07091a865218"
+  },
+  "GIT-OBJECTS.json": {
+    "bytes": 6429,
+    "sha256": "cf79a29344033173184d5eb390269edbef679d63bb73de677e412048433bad45"
+  },
+  "checks/01-architecture.log": {
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  "checks/02-UI style.log": {
+    "bytes": 82,
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+  },
+  "checks/03-GPUI patch.log": {
+    "bytes": 149,
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+  },
+  "checks/04-dependency provenance.log": {
+    "bytes": 119,
+    "sha256": "9c0c3fd09b9b22707639566251a286248f3daf5eda36c9145e10c1f7cee736eb"
+  },
+  "checks/05-device layout.log": {
+    "bytes": 84,
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+  },
+  "checks/06-format.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/07-diff.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/08-all EQ UI controls.log": {
+    "bytes": 20602,
+    "sha256": "01006d65b7a0b8f7f86500ff8aff0a26b5b621f84828996e5c5ea323d38263f6"
+  },
+  "checks/09-prepared seek controls.log": {
+    "bytes": 1511,
+    "sha256": "65d79bf92e283a5552f83f7797df490f14ad423470745d63bcc7d51e994a7a8b"
+  },
+  "checks/10-device comparison controls.log": {
+    "bytes": 4326,
+    "sha256": "47b25b0f93b0c3920cff0ecdc67a8583cc4701dc3aaea8a2b94b14ef1245102f"
+  },
+  "checks/11-shortcut text controls.log": {
+    "bytes": 1040,
+    "sha256": "252f8e3536525897ee85982ba1814285a6464d4d99dfe5c3b8b36e5734cd1744"
+  },
+  "checks/12-strict UI default.log": {
+    "bytes": 249,
+    "sha256": "8dae4106e55b0720da59df56258553df2457b9637c383e3d520fe36f426feb5f"
+  },
+  "checks/13-strict UI feature.log": {
+    "bytes": 249,
+    "sha256": "46939eb69d6af4edfeb6e87c27c21d26e781a0ff1da9b74b50e9ca2b81ba122e"
+  },
+  "checks/summary.json": {
+    "bytes": 17768,
+    "sha256": "de0d96ad086e602625c6adf63cdf6f4213ec033e291824f2504e68e72b027937"
+  },
+  "diagnostics/2881-held-node-real-output-v3/08-actual held EQ pointer and Space diagnostics.log": {
+    "bytes": 1701,
+    "sha256": "60b1f3d3a75273c9ecca79acd7d21a97c3f5e2624b79e370d5c32b9fe4119da0"
+  },
+  "diagnostics/2881-held-node-real-output-v3/summary.json": {
+    "bytes": 15753,
+    "sha256": "e393ab8f10fc9163717cc1491e4dea5181ef2c3571b5271d1953aa799276672d"
+  },
+  "diagnostics/2881-preview-project-state-diagnostic/08-actual held EQ pointer and Space diagnostics.log": {
+    "bytes": 1579,
+    "sha256": "466f7065fc263bade9ccc778284125707bbd3a32b710526326d79489e3a94137"
+  },
+  "diagnostics/2881-preview-project-state-diagnostic/summary.json": {
+    "bytes": 15570,
+    "sha256": "f6ec83f273fb13698d39bbd87c29d71482e4fbf1e077f1dc40203b10ea58aee1"
+  },
+  "diagnostics/2881-preview-seek-first-functional/08-actual held EQ pointer and Space diagnostics.log": {
+    "bytes": 1684,
+    "sha256": "de4d05cd664f1e43ff04ce654c500c8c50babf8572edadc8ee2dcf2b1d69a929"
+  },
+  "diagnostics/2881-preview-seek-first-functional/summary.json": {
+    "bytes": 16168,
+    "sha256": "1dfacc27651c1ecf66ab45b59239a37e71821f9958a45d6ff12d9a9f6e658c42"
+  },
+  "diagnostics/2881-preview-seek-lifecycle-functional/08-actual held EQ pointer and Space diagnostics.log": {
+    "bytes": 1170,
+    "sha256": "c51f75a7e801ce1dc9502183ef11322c09072fed7807386888f5863b500ea2b4"
+  },
+  "diagnostics/2881-preview-seek-lifecycle-functional/summary.json": {
+    "bytes": 15949,
+    "sha256": "0143be0d0ca5bb916a4818d1ecd18d4e12c74d18e38a57baf08728eeaec61e48"
+  },
+  "diagnostics/2881-preview-seek-lifecycle-v2/08-actual held EQ pointer and Space diagnostics.log": {
+    "bytes": 1878,
+    "sha256": "cdcd18f81075927dbdf513bac794145e7c5fc6574234b25d62c2429b4122dec2"
+  },
+  "diagnostics/2881-preview-seek-lifecycle-v2/summary.json": {
+    "bytes": 15870,
+    "sha256": "fcbb93357f3e5cf94b28e06fab8d120d953bd782074fdefc09b697dd494bc362"
+  },
+  "diagnostics/2881-preview-seek-lifecycle-v3/08-actual held EQ pointer and Space diagnostics.log": {
+    "bytes": 1678,
+    "sha256": "4351a45933c28764aba9b3749bbfd9cec1fb3e0f0420987c833055b3b77c7af6"
+  },
+  "diagnostics/2881-preview-seek-lifecycle-v3/summary.json": {
+    "bytes": 15666,
+    "sha256": "19c90662cec5886b9ed79fa6ddf236e3ec88c69dee988a0100c5dd1eae703751"
+  },
+  "metadata.json": {
+    "bytes": 1256,
+    "sha256": "e4f2901d084c71bcfaa21b33fb9d2dddff7a6c02ae2743f121e10a87793adea1"
+  }
+}

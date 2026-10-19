@@ -1,0 +1,26 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 36.15s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 4 tests
+ACTUAL_HELD_SEEK_RACE published=false action=sequence
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_space_key_routes_transport_without_retiring_pointer_or_edit ... ok
+ACTUAL_HELD_SEEK_RACE published=false action=cancel
+ACTUAL_HELD_SEEK_RACE published=false action=commit
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_position_survives_real_preview_ack_and_repeated_completed_frames ... ok
+ACTUAL_HELD_SEEK_RACE published=false action=project
+ACTUAL_HELD_SEEK_RACE published=false action=device
+ACTUAL_HELD_SEEK_RACE published=false action=pause
+ACTUAL_HELD_SEEK_RACE published=true action=sequence
+ACTUAL_HELD_SEEK_RACE published=true action=cancel
+ACTUAL_HELD_SEEK_RACE published=true action=commit
+ACTUAL_HELD_SEEK_RACE published=true action=project
+ACTUAL_HELD_SEEK_RACE published=true action=device
+ACTUAL_HELD_SEEK_RACE published=true action=pause
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callback_custody ... ok
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_space_reaches_real_prepared_output_and_callback_without_release ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 26.72s
+

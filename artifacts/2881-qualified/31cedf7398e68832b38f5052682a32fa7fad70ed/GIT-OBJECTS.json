@@ -1,0 +1,161 @@
+{
+  "base": "faf65f33418e55660a474d7dc53e51ae43d21716",
+  "source": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+  "tree": "a542dc040be7eec13e9539ce07efbfa595c139d6",
+  "files": [
+    "crates/hex-ui/src/editor/arrangement_seek.rs",
+    "crates/hex-ui/src/editor/arrangement_seek_tests.rs",
+    "crates/hex-ui/src/editor/controller.rs",
+    "crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs",
+    "crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs",
+    "crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs",
+    "crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs",
+    "docs/prepared-seek-cancellation.md",
+    "todo.md"
+  ],
+  "objects": [
+    {
+      "label": "before",
+      "commit": "faf65f33418e55660a474d7dc53e51ae43d21716",
+      "path": "crates/hex-ui/src/editor/arrangement_seek.rs",
+      "blob": "2fe29d97aadd31a209d4bb09e1726d6b63161de6",
+      "sha256": "a1b2862121ab730a559d964c2739ff9bea5a079a6b0fba94e501ddc2a9f43e59",
+      "bytes": 29804
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "crates/hex-ui/src/editor/arrangement_seek.rs",
+      "blob": "64d82e39a3d7ab5d51f458a37d8e3b9d4b8aef04",
+      "sha256": "2bb7d792d421a80eb17699f9815aacb4f56ba74e263cb425cb08b04f19dfba25",
+      "bytes": 38033
+    },
+    {
+      "label": "before",
+      "commit": "faf65f33418e55660a474d7dc53e51ae43d21716",
+      "path": "crates/hex-ui/src/editor/arrangement_seek_tests.rs",
+      "blob": "35c4a65c574517a43b21b5f2bd6379fa391f3538",
+      "sha256": "cfc169479fc27929290f80bc6099e14813c8f67adcc5d9676081516f6334ad0c",
+      "bytes": 16930
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "crates/hex-ui/src/editor/arrangement_seek_tests.rs",
+      "blob": "cbdde69f0355a51bb1a2c66fa37c4ced0b31ef09",
+      "sha256": "0255222b8d92fcc7bafb6dfd587b3f14027aabf04c1e130572d57b14fccb6eb3",
+      "bytes": 17008
+    },
+    {
+      "label": "before",
+      "commit": "faf65f33418e55660a474d7dc53e51ae43d21716",
+      "path": "crates/hex-ui/src/editor/controller.rs",
+      "blob": "40b853a8457c92aa05c913ae9f88e35e8a200c88",
+      "sha256": "ab3ec4660fd1948117a04e89dfd68be62bff18bfec7b9d58a78026e5fcd051ae",
+      "bytes": 184486
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "crates/hex-ui/src/editor/controller.rs",
+      "blob": "00bb548024c34824347181e0f4064bd8e658a934",
+      "sha256": "b5d8106f74bfe3200db409bf4f5614d9ce03930830206cda3a27d0973249a92c",
+      "bytes": 185780
+    },
+    {
+      "label": "before",
+      "commit": "faf65f33418e55660a474d7dc53e51ae43d21716",
+      "path": "crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs",
+      "blob": "28f452d6d900afecd8746ab47d1892e846fd577a",
+      "sha256": "e1988a280d12598d34b05a91f7a3020e3d6a9b88fac0327959a77e74eca520a3",
+      "bytes": 86383
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs",
+      "blob": "4f6863b520825eec8fd210adfeeddd0ce8e3a4b8",
+      "sha256": "6cba987977f58c56034ad32f38a75aae90727be1dcafd4cb47c4ab2caf4fa61b",
+      "bytes": 86426
+    },
+    {
+      "label": "before",
+      "commit": "faf65f33418e55660a474d7dc53e51ae43d21716",
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs",
+      "blob": "d34eb8d9c3ccdc4bbdeda32bed685606731e351a",
+      "sha256": "a71211557555fb9333d015cdb7282b188348e3cbc4f621a7e624550479e4f35a",
+      "bytes": 67489
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs",
+      "blob": "b11185099c90d811314b8cf52def3d0d96dadbd6",
+      "sha256": "18b20b34f107838e1382a94ef274b5d18b0eec61648b68a4f75efd8431ebe6b5",
+      "bytes": 67511
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs",
+      "blob": "9b9a5d4144aa79f78bf1ece20eff9b443c2b3efb",
+      "sha256": "8c82b5d7681417e09947b78a326a9e932e6d2ec88173ae948c0e108e31acfd2f",
+      "bytes": 28890
+    },
+    {
+      "label": "before",
+      "commit": "faf65f33418e55660a474d7dc53e51ae43d21716",
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs",
+      "blob": "d91468844480a2b0014a1ae71352385ee674ff61",
+      "sha256": "eb98f6673132428419e26e3ae9ec8359aaa6bb71c60afa7efcf8661b5db1b3e4",
+      "bytes": 37595
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs",
+      "blob": "7cf5c54292cc66b8fa36e4ae375e816fa8df7e36",
+      "sha256": "03ffd5ed023967f50a23f62147e992433e40d14a8c622cbc6e5b540b5bf12003",
+      "bytes": 37657
+    },
+    {
+      "label": "before",
+      "commit": "faf65f33418e55660a474d7dc53e51ae43d21716",
+      "path": "docs/prepared-seek-cancellation.md",
+      "blob": "8379256f1621aa32b150fe65f06eb06aae4f41c7",
+      "sha256": "58ed162496d1cc33224ca7d009bb05a2b5951f520a38cc8ca145a387bceb3437",
+      "bytes": 4878
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "docs/prepared-seek-cancellation.md",
+      "blob": "2aa78dc842f1cf51dd7ae3b500f4372ec56248c4",
+      "sha256": "4b0e427ce410f264a7720f76b16d962dcefa95bec6b8d5d2f8b2471d5bb3bbc4",
+      "bytes": 7412
+    },
+    {
+      "label": "before",
+      "commit": "faf65f33418e55660a474d7dc53e51ae43d21716",
+      "path": "todo.md",
+      "blob": "0d13bff7677c6f9ce1d4ec6f2f0aee044690b01d",
+      "sha256": "db87f5e600cf19ad051025c6f83371a15a73b1d0a374fcec39641eb8d0c71654",
+      "bytes": 404654
+    },
+    {
+      "label": "after",
+      "commit": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+      "path": "todo.md",
+      "blob": "6e55e6bd302904186b1611b6e8e2b8867d6b5444",
+      "sha256": "844bcdf6ad63f46d2fdea69faa438565627e12ca81da566492a1fa5b711cc0be",
+      "bytes": 405775
+    }
+  ],
+  "absent": [
+    {
+      "label": "before",
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs"
+    }
+  ],
+  "archived_git_source_bytes": 0
+}

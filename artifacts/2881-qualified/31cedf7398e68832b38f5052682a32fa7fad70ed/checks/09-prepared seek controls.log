@@ -1,0 +1,20 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 35.84s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 10 tests
+test editor::arrangement_seek::tests::prepared_revision_selects_analytic_or_preroll_route ... ok
+test editor::arrangement_seek::tests::exact_active_all_arrangement_snapshot_captures_fresh_fence ... ok
+test editor::arrangement_seek::tests::faulted_or_shutdown_audio_cannot_admit_a_prepared_seek ... ok
+test editor::arrangement_seek::tests::queued_play_intent_controls_the_next_toggle_and_seek ... ok
+test editor::arrangement_seek::tests::route_gate_rejects_pending_or_non_arrangement_owners ... ok
+test editor::arrangement_seek::tests::second_spacebar_cancels_pending_stateful_play_instead_of_restarting_it ... ok
+test editor::arrangement_seek::tests::verified_seek_uses_direct_route_only_for_current_applied_candidate ... ok
+test editor::arrangement_seek::tests::invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal ... ok
+test editor::arrangement_seek::tests::route_gate_refuses_audio_or_revision_mismatch ... ok
+test editor::arrangement_seek::tests::stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_terminal ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 1059 filtered out; finished in 0.01s
+

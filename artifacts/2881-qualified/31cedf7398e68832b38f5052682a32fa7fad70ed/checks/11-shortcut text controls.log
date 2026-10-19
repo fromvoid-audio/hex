@@ -1,0 +1,15 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 39.43s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 5 tests
+test editor::device_panel::tests::shortcut_text_tests::plain_and_shift_s_still_solo_outside_numeric_text_edit ... ok
+test editor::device_panel::tests::shortcut_text_tests::numeric_text_owns_uppercase_space_and_direct_solo_actions ... ok
+test editor::device_panel::tests::shortcut_text_tests::typed_units_do_not_mutate_canonical_solo_or_history ... ok
+test editor::device_panel::tests::shortcut_text_tests::typed_units_keep_every_character_without_editor_shortcuts ... ok
+test editor::device_panel::tests::shortcut_text_tests::numeric_clipboard_cancel_commit_and_single_undo_preserve_owner ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1064 filtered out; finished in 6.16s
+

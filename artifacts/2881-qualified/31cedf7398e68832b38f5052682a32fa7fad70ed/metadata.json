@@ -1,0 +1,35 @@
+{
+  "source": "31cedf7398e68832b38f5052682a32fa7fad70ed",
+  "tree": "a542dc040be7eec13e9539ce07efbfa595c139d6",
+  "base": "faf65f33418e55660a474d7dc53e51ae43d21716",
+  "summary_sha256": "de0d96ad086e602625c6adf63cdf6f4213ec033e291824f2504e68e72b027937",
+  "duration_seconds": 276.821,
+  "counts": [
+    [
+      "60",
+      "0"
+    ],
+    [
+      "10",
+      "0"
+    ],
+    [
+      "20",
+      "0"
+    ],
+    [
+      "5",
+      "0"
+    ]
+  ],
+  "runtime_executions": 95,
+  "emitted_names": 95,
+  "runtime_unique_names": 95,
+  "steps": 13,
+  "native_acceptance": false,
+  "full21": false,
+  "confirmed_scope": "Held mouse EQ-node prepared-playback refusal. Preview identity+prepared Arc+view metadata preserved UI-privately.",
+  "remaining": "Original report interpretation clarification and native framebuffer flicker unproven; no closure/installed claim.",
+  "negative_receipt_limit": "Original actual output negative receipt dirtyc70 two test files later committed557738f1; production faf65. Exact clean final current receipt independent. E0593/E0502 compile errors and closed-pane/project-new-output lifecycle fixture failures separate from product negatives.",
+  "earlier_evidence": "8f809b6b5e5a73aa4505b8bddde6ff3f1132a9df (not recursively packed)"
+}
