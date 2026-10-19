@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "/tmp/seal-456-phase-final.py", line 20, in <module>
+    try:b=subprocess.check_output(['git','show',base+':'+p],cwd=r,stderr=subprocess.DEVNULL)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 466, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['git', 'show', '1c2d57de4c03979cefd5e35479f0e3df628798cf:crates/hex-storage/src/schema/audio_edit.rs']' returned non-zero exit status 128.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/tmp/seal-456-phase-final.py", line 22, in <module>
+    assert p.endswith('device_comparison.rs');continue
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

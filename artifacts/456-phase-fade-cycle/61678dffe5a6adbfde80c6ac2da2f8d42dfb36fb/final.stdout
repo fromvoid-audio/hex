@@ -1,0 +1,25 @@
+[1/12] all-project: running
+[1/12] all-project: passed
+[2/12] all-storage: running
+[2/12] all-storage: passed
+[3/12] retained-placement-ui: running
+[3/12] retained-placement-ui: passed
+[4/12] project-strict: running
+[4/12] project-strict: passed
+[5/12] storage-strict: running
+[5/12] storage-strict: passed
+[6/12] architecture: running
+[6/12] architecture: passed
+[7/12] gpui-patch: running
+[7/12] gpui-patch: passed
+[8/12] dependency-patches: running
+[8/12] dependency-patches: passed
+[9/12] ui-style: running
+[9/12] ui-style: passed
+[10/12] device-layout: running
+[10/12] device-layout: passed
+[11/12] format: running
+[11/12] format: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-456-phase-final/summary.json

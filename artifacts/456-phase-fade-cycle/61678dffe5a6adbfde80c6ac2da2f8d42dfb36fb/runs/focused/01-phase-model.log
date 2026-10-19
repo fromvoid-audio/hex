@@ -1,0 +1,17 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.90s
+     Running tests/audio_view.rs (target/debug/deps/audio_view-da3321c9018e3eb3)
+
+running 3 tests
+phase=0 root=-4294967296 fade_start=8589934592 anchor=4294967296 stored=4294967296 age=36000 gain=0.7500156 expected=0.7500156
+phase=0 root=-4294967296 fade_start=8589934592 anchor=4294967296 stored=4294967296 age=36000 gain=0.7500156 expected=0.7500156
+phase=0 root=-4294967296 fade_start=8589934592 anchor=4294967296 stored=4294967296 age=36000 gain=0.7500156 expected=0.7500156
+phase=2147483648 root=-6442450944 fade_start=8589934592 anchor=2147483648 stored=2147483648 age=24000 gain=0.50001043 expected=0.50001043
+phase=2147483648 root=-6442450944 fade_start=8589934592 anchor=2147483648 stored=2147483648 age=24000 gain=0.50001043 expected=0.50001043
+phase=2147483648 root=-6442450944 fade_start=8589934592 anchor=2147483648 stored=2147483648 age=24000 gain=0.50001043 expected=0.50001043
+test review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit ... ok
+test review_phase_repeat_cycle_end_refuses_at_or_before_start_without_history_change ... ok
+test review_phase_musical_cycle_boundary_is_exact_or_refused_without_once_restriction ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+

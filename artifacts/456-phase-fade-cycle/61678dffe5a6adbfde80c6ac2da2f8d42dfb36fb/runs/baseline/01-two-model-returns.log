@@ -1,0 +1,28 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.08s
+     Running tests/audio_view.rs (target/debug/deps/audio_view-da3321c9018e3eb3)
+
+running 2 tests
+phase=0 root=-4294967296 fade_start=8589934592 anchor=4294967296 stored=4294967296 age=36000 gain=0.7500156 expected=0.7500156
+phase=0 root=-4294967296 fade_start=8589934592 anchor=4294967296 stored=4294967296 age=36000 gain=0.7500156 expected=0.7500156
+phase=0 root=-4294967296 fade_start=8589934592 anchor=4294967296 stored=4294967296 age=36000 gain=0.7500156 expected=0.7500156
+
+thread 'review_phase_repeat_cycle_end_refuses_at_or_before_start_without_history_change' (198302) panicked at crates/hex-project/tests/audio_view.rs:1656:21:
+Repeat cannot normalize an invalid requested boundary: mode=Repeat phase=6000 delta=-1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+phase=2147483648 root=-6442450944 fade_start=8589934592 anchor=2147483648 stored=4294967296 age=24000 gain=0.7500156 expected=0.50001043
+
+thread 'review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit' (198301) panicked at crates/hex-project/tests/audio_view.rs:1567:13:
+actual projected envelope age phase=2147483648
+test review_phase_repeat_cycle_end_refuses_at_or_before_start_without_history_change ... FAILED
+test review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit ... FAILED
+
+failures:
+
+failures:
+    review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit
+    review_phase_repeat_cycle_end_refuses_at_or_before_start_without_history_change
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p hex-project --test audio_view`

@@ -1,0 +1,5 @@
+f3301002ce36c693956c707410fddcd55c640d7195f846a2883d930b540441d6  crates/hex-project/src/audio_edit/commands.rs
+862f9caaf3f6e8f5a5e4f6a0ef2692a5fffa86ebb5ccdefa1de181c3f3da342a  crates/hex-project/src/audio_edit/view.rs
+5cd3116aee576d2af7bcd6d38e8f037fbc992884cfe5341b9464dd4b8f235880  crates/hex-project/tests/audio_view.rs
+df6bd4ad644560bb6b1fc939fdb5390a912a1aa2c6589455311c55c918924f25  crates/hex-storage/tests/audio_view.rs
+01b1d9c353a58164b5fa607d6893857ba292d14a182e51fd7f63b43590cdccd1  todo.md

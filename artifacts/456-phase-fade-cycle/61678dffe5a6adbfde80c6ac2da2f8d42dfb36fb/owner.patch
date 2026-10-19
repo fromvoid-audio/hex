@@ -1,0 +1,416 @@
+diff --git a/crates/hex-project/src/audio_edit/commands.rs b/crates/hex-project/src/audio_edit/commands.rs
+index e2887002..b45cce1c 100644
+--- a/crates/hex-project/src/audio_edit/commands.rs
++++ b/crates/hex-project/src/audio_edit/commands.rs
+@@ -341,14 +341,19 @@ pub(crate) fn set_clip_fade_envelope(
+         .clone()
+         .ok_or(Invalid("audio domain is missing"))?;
+     let edit = Arc::make_mut(&mut owned_edit);
++    let projection = if edit.musical_start.is_some() {
++        Some(AudioFadeProjection {
++            tempo: tempo.clone(),
++            origin_beat_raw: edit.projection_origin()? + i128::from(edit.view_start),
++            local_start_raw: edit.view_start,
++        })
++    } else {
++        None
++    };
+     let domain = Arc::make_mut(&mut edit.domain);
+     domain.fade = fade;
+     domain.fade_start = edit.view_start;
+-    domain.fade_projection = edit.musical_start.map(|beat| AudioFadeProjection {
+-        tempo: tempo.clone(),
+-        origin_beat_raw: i128::from(beat.raw()),
+-        local_start_raw: edit.view_start,
+-    });
++    domain.fade_projection = projection;
+     clip.edit = Some(owned_edit);
+     project_clip(clip, tempo)
+ }
+diff --git a/crates/hex-project/src/audio_edit/view.rs b/crates/hex-project/src/audio_edit/view.rs
+index 2ac03f13..86b7f38f 100644
+--- a/crates/hex-project/src/audio_edit/view.rs
++++ b/crates/hex-project/src/audio_edit/view.rs
+@@ -343,6 +343,9 @@ pub fn preview_view_resize(
+             if old.is_none() {
+                 return Err(Invalid("first repeat boundary requires a captured cycle"));
+             }
++            if placement.mode == AudioViewMode::Repeat && delta <= 0 {
++                return Err(Invalid("repeat boundary must follow clip start"));
++            }
+             let cycle = u64::try_from(delta + i128::from(placement.cycle_phase))
+                 .ok()
+                 .filter(|n| *n > 0)
+diff --git a/crates/hex-project/tests/audio_view.rs b/crates/hex-project/tests/audio_view.rs
+index 627ebaf7..a10a8fdc 100644
+--- a/crates/hex-project/tests/audio_view.rs
++++ b/crates/hex-project/tests/audio_view.rs
+@@ -1508,3 +1508,238 @@ fn session_audio_binding_keeps_ordinary_copy_and_refuses_unrepresented_placement
+     expected.next_id = e.project().snapshot().next_id;
+     assert_eq!(e.project().snapshot(), expected);
+ }
++
++#[test]
++fn review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit() {
++    for phase in [0, Q / 2] {
++        let (mut setup, clip) = beat_fixture();
++        setup
++            .execute(Command::SetTempoPoint {
++                beat: beat(3 * Q / 2),
++                tempo: Tempo::new(60_000_000).unwrap(),
++            })
++            .unwrap();
++        let mut snapshot = setup.project().snapshot();
++        snapshot.tracks[0].audio_clips_mut().unwrap()[0]
++            .edit
++            .as_mut()
++            .unwrap()
++            .placement
++            .as_mut()
++            .unwrap()
++            .cycle_phase = phase;
++        let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
++        let before = e.project().snapshot();
++        let authored = e.project().tempo_map().clone();
++        let fade = ClipFade::new(e.project().clip(clip).unwrap().duration(), 0, 48_000, 0).unwrap();
++        e.execute(Command::SetClipFadeEnvelope { clip, fade })
++            .unwrap();
++        let faded = e.project().snapshot();
++        let check = |project: &Project| {
++            let c = project.clip(clip).unwrap();
++            let edit = c.audio_edit().unwrap();
++            let projection = AudioViewProjection::new(c, project.tempo_map()).unwrap();
++            let expected_origin = projection.root_origin() + i128::from(edit.domain.fade_start);
++            let delta = i128::from(3 * Q - edit.domain.fade_start);
++            let age = u64::try_from(
++                hex_project::audio_projection_frame(&authored, expected_origin + delta).unwrap()
++                    - hex_project::audio_projection_frame(&authored, expected_origin).unwrap(),
++            )
++            .unwrap();
++            let frame = edit.root_frame_at(3 * Q, project.tempo_map()).unwrap();
++            let actual = edit
++                .projected_fade(project.tempo_map())
++                .unwrap()
++                .gain_at(frame)
++                .unwrap();
++            let expected = fade.gain_at(age);
++            eprintln!(
++                "phase={phase} root={} fade_start={} anchor={} stored={} age={age} gain={actual} expected={expected}",
++                projection.root_origin(),
++                edit.domain.fade_start,
++                expected_origin,
++                edit.domain
++                    .fade_projection
++                    .as_ref()
++                    .unwrap()
++                    .origin_beat_raw
++            );
++            assert!(
++                (actual - expected).abs() < 1e-6,
++                "actual projected envelope age phase={phase}"
++            );
++            assert_eq!(
++                edit.domain
++                    .fade_projection
++                    .as_ref()
++                    .unwrap()
++                    .origin_beat_raw,
++                expected_origin
++            );
++            assert_eq!(
++                edit.domain
++                    .fade_projection
++                    .as_ref()
++                    .unwrap()
++                    .local_start_raw,
++                edit.domain.fade_start
++            );
++            assert_eq!(edit.placement.unwrap().cycle_phase, phase);
++        };
++        check(e.project());
++        e.execute(Command::SetTempoPoint {
++            beat: beat(Q),
++            tempo: Tempo::new(90_000_000).unwrap(),
++        })
++        .unwrap();
++        check(e.project());
++        let changed = e.project().snapshot();
++        assert!(e.undo());
++        assert_eq!(e.project().snapshot(), faded);
++        assert!(e.undo());
++        assert_eq!(e.project().snapshot(), before);
++        assert!(!e.undo());
++        assert!(e.redo());
++        assert_eq!(e.project().snapshot(), faded);
++        assert!(e.redo());
++        assert_eq!(e.project().snapshot(), changed);
++        check(e.project());
++    }
++}
++
++#[test]
++fn review_phase_repeat_cycle_end_refuses_at_or_before_start_without_history_change() {
++    for mode in [AudioViewMode::Repeat, AudioViewMode::Once] {
++        for phase in [0, 6_000] {
++            for delta in [-1i64, 0, 1] {
++                let (mut setup, clip) = frame_fixture(mode);
++                let track = setup.project().tracks()[0].id();
++                setup
++                    .execute(Command::MoveClip {
++                        clip,
++                        track,
++                        start: 12_000,
++                    })
++                    .unwrap();
++                let mut snapshot = setup.project().snapshot();
++                snapshot.tracks[0].audio_clips_mut().unwrap()[0]
++                    .edit
++                    .as_mut()
++                    .unwrap()
++                    .placement
++                    .as_mut()
++                    .unwrap()
++                    .cycle_phase = phase;
++                let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
++                e.execute(Command::SetAudioClipGain { clip, millidb: 200 })
++                    .unwrap();
++                let redo = e.project().snapshot();
++                assert!(e.undo());
++                let before = e.project().snapshot();
++                let old_origin = AudioViewProjection::new(
++                    e.project().clip(clip).unwrap(),
++                    e.project().tempo_map(),
++                )
++                .unwrap()
++                .root_origin();
++                let target = u64::try_from(12_000i64 + delta).unwrap();
++                let command = Command::ResizeAudioClipView {
++                    clip,
++                    operation: AudioViewResizeOperation::CycleEnd {
++                        project_frame: target,
++                    },
++                };
++                let result = e.execute(command);
++                let must_refuse = (mode == AudioViewMode::Repeat && delta <= 0)
++                    || i128::from(phase) + i128::from(delta) <= 0;
++                if must_refuse {
++                    assert!(
++                        result.is_err(),
++                        "Repeat cannot normalize an invalid requested boundary: mode={mode:?} phase={phase} delta={delta}"
++                    );
++                    assert_eq!(e.project().snapshot(), before);
++                    assert!(!e.can_undo());
++                    assert!(e.can_redo());
++                    assert!(e.redo());
++                    assert_eq!(e.project().snapshot(), redo);
++                } else {
++                    result.unwrap();
++                    let c = e.project().clip(clip).unwrap();
++                    let p = AudioViewProjection::new(c, e.project().tempo_map()).unwrap();
++                    assert_eq!(p.logical_first_boundary(), i128::from(target));
++                    assert_eq!(p.root_origin(), old_origin);
++                    assert_eq!(p.outer_frame_bounds(), (12_000, 60_000));
++                    assert_eq!(
++                        c.audio_edit().unwrap().placement.unwrap().cycle_phase,
++                        phase
++                    );
++                    if mode == AudioViewMode::Once && delta <= 0 {
++                        assert_eq!(p.occurrence_count(), 0);
++                    }
++                    let after = e.project().snapshot();
++                    assert!(e.undo());
++                    assert_eq!(e.project().snapshot(), before);
++                    assert!(e.redo());
++                    assert_eq!(e.project().snapshot(), after);
++                }
++            }
++        }
++    }
++}
++
++#[test]
++fn review_phase_musical_cycle_boundary_is_exact_or_refused_without_once_restriction() {
++    for mode in [AudioViewMode::Repeat, AudioViewMode::Once] {
++        for delta in [-1i64, 0, 1] {
++            let (setup, clip) = beat_fixture();
++            let mut snapshot = setup.project().snapshot();
++            snapshot.tracks[0].audio_clips_mut().unwrap()[0]
++                .edit
++                .as_mut()
++                .unwrap()
++                .placement
++                .as_mut()
++                .unwrap()
++                .mode = mode;
++            let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
++            let before = e.project().snapshot();
++            let start = e.project().clip(clip).unwrap().start();
++            let target = u64::try_from(i128::from(start) + i128::from(delta)).unwrap();
++            let old =
++                AudioViewProjection::new(e.project().clip(clip).unwrap(), e.project().tempo_map())
++                    .unwrap();
++            let old_origin = old.root_origin();
++            let old_outer = old.outer_frame_bounds();
++            let result = e.execute(Command::ResizeAudioClipView {
++                clip,
++                operation: AudioViewResizeOperation::CycleEnd {
++                    project_frame: target,
++                },
++            });
++            if mode == AudioViewMode::Repeat && delta <= 0 {
++                assert!(result.is_err());
++                assert_eq!(e.project().snapshot(), before);
++                assert!(!e.can_undo());
++            } else {
++                result.unwrap();
++                let c = e.project().clip(clip).unwrap();
++                let p = AudioViewProjection::new(c, e.project().tempo_map()).unwrap();
++                assert_eq!(p.logical_first_boundary(), i128::from(target));
++                assert_eq!(p.root_origin(), old_origin);
++                assert_eq!(p.outer_frame_bounds(), old_outer);
++                assert_eq!(
++                    c.audio_edit().unwrap().placement.unwrap().cycle_phase,
++                    Q / 2
++                );
++                if delta <= 0 {
++                    assert_eq!(p.occurrence_count(), 0);
++                }
++                let after = e.project().snapshot();
++                assert!(e.undo());
++                assert_eq!(e.project().snapshot(), before);
++                assert!(e.redo());
++                assert_eq!(e.project().snapshot(), after);
++            }
++        }
++    }
++}
+diff --git a/crates/hex-storage/tests/audio_view.rs b/crates/hex-storage/tests/audio_view.rs
+index e3fbc57d..460f0afb 100644
+--- a/crates/hex-storage/tests/audio_view.rs
++++ b/crates/hex-storage/tests/audio_view.rs
+@@ -299,3 +299,98 @@ fn projection_codec_matches_signed_model_endpoints_and_refuses_malformed_origins
+         );
+     }
+ }
++
++#[test]
++fn phased_musical_fade_preserves_authored_age_across_tempo_and_current_codec() {
++    use hex_project::{BeatTime, Tempo, audio_projection_frame};
++    const Q: u64 = 1 << 32;
++    for mode in [AudioViewMode::Once, AudioViewMode::Repeat] {
++        let (project, clip) = fixture(mode);
++        let mut editor = Editor::new(project, 16).unwrap();
++        editor
++            .execute(Command::SetAudioClipMusical {
++                clip,
++                enabled: true,
++            })
++            .unwrap();
++        editor
++            .execute(Command::SetTempoPoint {
++                beat: BeatTime::from_raw(Q / 4),
++                tempo: Tempo::new(60_000_000).unwrap(),
++            })
++            .unwrap();
++        let authored = editor.project().tempo_map().clone();
++        let fade = ClipFade::new(
++            editor.project().clip(clip).unwrap().duration(),
++            0,
++            48_000,
++            0,
++        )
++        .unwrap();
++        editor
++            .execute(Command::SetClipFadeEnvelope { clip, fade })
++            .unwrap();
++        for changed in [false, true] {
++            if changed {
++                editor
++                    .execute(Command::SetTempoPoint {
++                        beat: BeatTime::from_raw(Q / 8),
++                        tempo: Tempo::new(90_000_000).unwrap(),
++                    })
++                    .unwrap();
++            }
++            let bytes = hex_storage::encode(editor.project()).unwrap();
++            let loaded = hex_storage::decode(&bytes).unwrap();
++            assert_eq!(loaded.snapshot(), editor.project().snapshot());
++            let source = editor.project().clip(clip).unwrap().audio_edit().unwrap();
++            let edit = loaded.clip(clip).unwrap().audio_edit().unwrap();
++            assert!(edit.placement.unwrap().cycle_phase > 0);
++            assert_eq!(
++                edit.domain.fade_projection.as_ref().unwrap().tempo,
++                authored
++            );
++            let root = AudioViewProjection::new(loaded.clip(clip).unwrap(), loaded.tempo_map())
++                .unwrap()
++                .root_origin();
++            let anchor = root + i128::from(edit.domain.fade_start);
++            assert_eq!(
++                edit.domain
++                    .fade_projection
++                    .as_ref()
++                    .unwrap()
++                    .origin_beat_raw,
++                anchor
++            );
++            let probe = edit.view_start + edit.placement.unwrap().cycle_phase + Q / 2;
++            let delta = i128::from(probe - edit.domain.fade_start);
++            let age = u64::try_from(
++                audio_projection_frame(&authored, anchor + delta).unwrap()
++                    - audio_projection_frame(&authored, anchor).unwrap(),
++            )
++            .unwrap();
++            let frame = edit.root_frame_at(probe, loaded.tempo_map()).unwrap();
++            let actual = edit
++                .projected_fade(loaded.tempo_map())
++                .unwrap()
++                .gain_at(frame)
++                .unwrap();
++            assert!((actual - fade.gain_at(age)).abs() < 1e-6);
++            let (_, length, _, _) = edit.projected_domain(loaded.tempo_map()).unwrap();
++            for position in [0, length / 4, length / 2, length - 1] {
++                assert_eq!(
++                    edit.projected_fade(loaded.tempo_map())
++                        .unwrap()
++                        .gain_at(position)
++                        .unwrap()
++                        .to_bits(),
++                    source
++                        .projected_fade(editor.project().tempo_map())
++                        .unwrap()
++                        .gain_at(position)
++                        .unwrap()
++                        .to_bits()
++                );
++            }
++        }
++    }
++}
+diff --git a/todo.md b/todo.md
+index 0fbf8897..cb89f435 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5562,3 +5562,22 @@ User rejected device-local automation editing. Remove its button, graph mode and
+ - New guarded affected default/feature tests and current-format Storage roundtrips, exact full21 and fresh review remain pending. Historical770 and2918 failures are retained; no native full445 playback, physical loop, audio, installation or user acceptance claim.
+ 
+ - First guarded current integration focused run passed default four cases but feature test-target compilation failed E0063 in the single reconstructed ViewState fixture. Carry comparison_audio from the existing old state, matching the current Group409 fixture pattern and preserving all captured scalar freshness oracles. Original exact failure remains; model/Storage phases were not run. Fresh corrected affected qualification and full21/review are still required.
++
++### 2026-10-19 — PR456 phased fade origin and Repeat boundary review return
++
++- Preserve the combined current1c2 placement32/A/B/tuning/both-slot-asset source,
++  original13bd cfg/codec repair, f5 compile negative and mechanical fixture carry.
++  Two actual canonical model regressions reproduce the previously source-backed
++  phase fade-age and before-start Repeat-boundary findings; zero-phase control
++  and original22 placement cases remain intact.
++- Fade authoring reuses the existing projection_origin plus its existing local
++  fade_start, retaining the frozen authored tempo map. Repeat CycleEnd refuses a
++  requested at/before-start boundary before cycle normalization; Once retains
++  valid exhausted cursors and earlier logical boundaries. No guessed DSP law,
++  schema/version/legacy reader, rendering/export or Engine/resource change.
++- New independent curve-age, frame/beat boundary/refusal, exact history and
++  current-format frozen-envelope roundtrip cases precede source handoff. Existing
++  malformed/range, phase/source/fade, ordinary trim and current-format integrity
++  assertions remain. New combined full21/fresh review/actual merge are merger
++  work; old1c2 receipt does not qualify the changed source. Native/installed
++  listening and parent445 full runtime/waveform acceptance remain open.

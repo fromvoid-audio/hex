@@ -1,0 +1,27 @@
+{
+  "crates/hex-project/src/audio_edit/commands.rs": {
+    "before_sha256": "f3301002ce36c693956c707410fddcd55c640d7195f846a2883d930b540441d6",
+    "after_sha256": "0856cd728f09025e2a3632e84b8762d3c233729b85f4e4c474be94931cd17d8e",
+    "bytes": 14546
+  },
+  "crates/hex-project/src/audio_edit/view.rs": {
+    "before_sha256": "862f9caaf3f6e8f5a5e4f6a0ef2692a5fffa86ebb5ccdefa1de181c3f3da342a",
+    "after_sha256": "13009a146c067872bd7d39fb4dcaf7aad678af2d2eedc404b460a7cfcfcf6038",
+    "bytes": 18809
+  },
+  "crates/hex-project/tests/audio_view.rs": {
+    "before_sha256": "5cd3116aee576d2af7bcd6d38e8f037fbc992884cfe5341b9464dd4b8f235880",
+    "after_sha256": "affbc03ffd098d50e8c8ab0786dcee51264f56f30fc9bf8b0e4e1136ec27a83e",
+    "bytes": 59930
+  },
+  "crates/hex-storage/tests/audio_view.rs": {
+    "before_sha256": "df6bd4ad644560bb6b1fc939fdb5390a912a1aa2c6589455311c55c918924f25",
+    "after_sha256": "fe88c64f34cbb2c4d6f9f579b699a3fa206bb1f04fc203e0cca3ffb986fa1a5e",
+    "bytes": 15063
+  },
+  "todo.md": {
+    "before_sha256": "01b1d9c353a58164b5fa607d6893857ba292d14a182e51fd7f63b43590cdccd1",
+    "after_sha256": "1ba752af4bd0159815272e4c0826f98640866823789d655fb4fa7a5dcba9b1e1",
+    "bytes": 380780
+  }
+}

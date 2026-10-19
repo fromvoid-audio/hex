@@ -1,0 +1,29 @@
+{
+  "baseline": {
+    "commit": "89bf57c731e33159763766274c6eae9802581af6",
+    "dirty": false,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 4.457,
+    "content_sha256": "d626586e6b6c0e1283c4747c52e913be0deeb5ee5d041a2859ae8527001c64c1",
+    "summary_sha256": "b4f38bf4b96fe22393142e1efaa223528f9ad5cdbf94958d5c2d311c8d884e37"
+  },
+  "focused": {
+    "commit": "89bf57c731e33159763766274c6eae9802581af6",
+    "dirty": true,
+    "stale": false,
+    "status": "passed",
+    "duration_seconds": 11.762,
+    "content_sha256": "a90bd7bb2615d94f96bbeaf3a62e2b36f840dab67544ad215c8876a143a9ce5f",
+    "summary_sha256": "0f1be32716c656151d5299c0644ae5d0d014b000c61dfa93a48bacc1681e22fa"
+  },
+  "final": {
+    "commit": "61678dffe5a6adbfde80c6ac2da2f8d42dfb36fb",
+    "dirty": false,
+    "stale": false,
+    "status": "passed",
+    "duration_seconds": 94.618,
+    "content_sha256": "2fe1af739a23368dd550af6ab6282e716816983400ae0820e3732c4de7f89209",
+    "summary_sha256": "97c72c79785f50fcb4fcc5e5fc042dbe854acbed35a4b2a9e185dcdf433d7f48"
+  }
+}

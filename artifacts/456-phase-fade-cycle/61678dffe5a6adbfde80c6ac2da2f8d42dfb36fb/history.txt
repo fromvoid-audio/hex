@@ -1,0 +1,15 @@
+commit 61678dffe5a6adbfde80c6ac2da2f8d42dfb36fb
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 12:09:01 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 12:09:01 2026 +0000
+
+    fix(project): anchor phased fades and refuse invalid Repeat boundaries
+
+commit 89bf57c731e33159763766274c6eae9802581af6
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 12:05:10 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 12:05:10 2026 +0000
+
+    test(project): expose phased fade age and Repeat boundary admission

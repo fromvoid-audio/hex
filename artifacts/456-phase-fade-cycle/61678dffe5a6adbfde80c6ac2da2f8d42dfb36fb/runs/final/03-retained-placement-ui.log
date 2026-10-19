@@ -1,0 +1,22 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.55s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 7 tests
+test editor::arrangement_audio_panel::tests::gain_steps_use_db_units_and_refuse_the_bounds ... ok
+test editor::arrangement_audio_panel::tests::invalid_edges_and_overflow_refuse_without_partial_command ... ok
+test editor::arrangement_audio_panel::tests::controls_map_to_typed_clip_edits_and_loop_toggle ... ok
+test editor::arrangement_audio_panel::tests::review_play_start_uses_retained_source_looping_independent_of_placement_mode ... ok
+test editor::arrangement_audio_panel::tests::review_placed_mode_only_change_invalidates_captured_control ... ok
+test editor::arrangement_audio_panel::tests::review_placed_repeat_loop_control_dispatches_off ... ok
+test editor::arrangement_audio_panel::tests::review_placed_once_loop_control_dispatches_on ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 982 filtered out; finished in 0.83s
+

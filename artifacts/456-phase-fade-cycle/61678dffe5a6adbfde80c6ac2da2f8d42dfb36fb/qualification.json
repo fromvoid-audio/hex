@@ -1,0 +1,14 @@
+{
+  "source": "61678dffe5a6adbfde80c6ac2da2f8d42dfb36fb",
+  "tree": "bcea7176f2c8185cabe9fad5306a91cc6d40e771",
+  "base": "1c2d57de4c03979cefd5e35479f0e3df628798cf",
+  "steps": 12,
+  "duration_seconds": 94.618,
+  "summary_sha256": "97c72c79785f50fcb4fcc5e5fc042dbe854acbed35a4b2a9e185dcdf433d7f48",
+  "content_sha256": "2fe1af739a23368dd550af6ab6282e716816983400ae0820e3732c4de7f89209",
+  "test_invocations": 463,
+  "project": 324,
+  "storage": 132,
+  "ui_feature": 7,
+  "kind": "source component only; no full21/native/merge"
+}

@@ -1,0 +1,6 @@
+{
+  "crates/hex-project/src/audio_edit.rs": "2439a18e84bfbf6b16118c01e9cf59c4bef2e06af258042dcedcc562fc0e0f01",
+  "crates/hex-storage/src/audio_edit.rs": "675e98bd74351f0c5842e9cd89b9def015d72efe8b46a99e6775b07659e3f87f",
+  "crates/hex-ui/src/editor/arrangement_audio_panel.rs": "0360197e527f33a185e6275bc3b72499af360f4c6971e0ff6588d3805caca785",
+  "crates/hex-project/src/device_comparison.rs": "4c40e55dd9a56549e4983ebcbefc10a811af6f27d95d48a44692d5b980733487"
+}
