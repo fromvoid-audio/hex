@@ -1,0 +1,25 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+    Finished `test` profile [unoptimized] target(s) in 59.05s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+empty_track_fixture SAME root, four preferences, actual catalog save, retired view/caller and final cleanup verified
+test editor::track_keyboard_ui_test::empty_track_fixture_catalog_job_owns_same_root_after_view_and_caller_drop ... ok
+test editor::track_keyboard_ui_test::command_t_uses_existing_add_track_and_one_canonical_undo ... ok
+test editor::track_keyboard_ui_test::command_t_preserves_browser_and_clip_name_text_focus ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1089 filtered out; finished in 0.83s
+

@@ -1,0 +1,27 @@
+{
+  "source": "345ae8d139ad7b341015311d7547ada638ccace3",
+  "tree": "68ffd05cf4a2136845f8a233d3b64632d481a0f8",
+  "canonical": "c2063e8ea2748bffc05a145c886421bc882b76ab",
+  "qualification_composition_base": "ad758ba0468aceabdcdedca1dab241b154161d29",
+  "ordinary_main_parent": "57acc3717eefaab8b22848287e131d62fd37abfc",
+  "owner_delta_files": [
+    {
+      "path": "crates/hex-ui/src/editor/track_keyboard_ui_test.rs",
+      "before_blob": "029cb7b5773a2bbe878f5c682be7226b00690947",
+      "after_blob": "a9040b36c07a1ac8a8f841e7401c91da357faa9b",
+      "sha256": "7a774ea4a63da70a15e262ca1ad405cb6e76cf8d0c225ae7b517548c122b50a6"
+    }
+  ],
+  "behavior_proof": {
+    "command_t_uses_existing_add_track_and_one_canonical_undo": {
+      "unchanged_tail_bytes": 2939,
+      "sha256": "93cb386fc2d2520b81c08b56ec0e72573a40e6c1a303ee24ff43388247fed257"
+    },
+    "command_t_preserves_browser_and_clip_name_text_focus": {
+      "unchanged_tail_bytes": 892,
+      "sha256": "78b1347e892b98d1a1e276b51698cba33148ed5a66a3b45f3043dfb36fb8b37e"
+    }
+  },
+  "tested_dirty_parent": "ad758ba0468aceabdcdedca1dab241b154161d29",
+  "tested_content_sha256": "86067590fa561342f173c824f9aae94300aa49e0412b91fdbe0511c6d9f91dab"
+}
