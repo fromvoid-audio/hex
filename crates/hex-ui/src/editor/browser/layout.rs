@@ -594,7 +594,13 @@ impl EditorView {
             .h_full()
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(
+                if self.browser.layout.sidebar_drag.is_some() {
+                    theme::PaletteRole::Secondary
+                } else {
+                    theme::PaletteRole::Border
+                },
+            )))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
             .child(
                 canvas(
@@ -606,12 +612,13 @@ impl EditorView {
                                 && event.button == MouseButton::Left
                                 && bounds.contains(&event.position)
                             {
-                                down_entity.update(cx, |view, _| {
+                                down_entity.update(cx, |view, cx| {
                                     view.browser.layout.sidebar_drag = Some((
                                         f32::from(event.position.x),
                                         sidebar_width,
                                         sidebar_width == PICKER_MIN_WIDTH,
                                     ));
+                                    cx.notify();
                                 });
                             }
                         });
@@ -622,7 +629,9 @@ impl EditorView {
                             }
                             move_entity.update(cx, |view, cx| {
                                 if !event.dragging() {
-                                    view.browser.layout.sidebar_drag = None;
+                                    if view.browser.layout.sidebar_drag.take().is_some() {
+                                        cx.notify();
+                                    }
                                 } else if let Some((start, initial, locked)) =
                                     view.browser.layout.sidebar_drag
                                 {
@@ -641,8 +650,10 @@ impl EditorView {
                         let up_entity = entity.clone();
                         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
                             if phase.bubble() && event.button == MouseButton::Left {
-                                up_entity.update(cx, |view, _| {
-                                    view.browser.layout.sidebar_drag = None;
+                                up_entity.update(cx, |view, cx| {
+                                    if view.browser.layout.sidebar_drag.take().is_some() {
+                                        cx.notify();
+                                    }
                                 });
                             }
                         });

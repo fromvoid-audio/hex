@@ -138,6 +138,15 @@ impl EditorView {
         let current = self.mode == EditorMode::Session
             && self.drag_start_is_current(drag)
             && !self.edit_pending();
+        // This receiver owns one Console clip, not a mapping of a selection.
+        // Release the shared group borrow before retiring its exact UI payload.
+        let multiple = drag.group.borrow().ids.len() > 1;
+        if multiple {
+            self.clear_clip_drag(drag.project_generation, drag.clip);
+            self.error = Some("selected clips require an arrangement target".into());
+            cx.notify();
+            return;
+        }
         let command = if current
             && let ConsoleDestination::Cell { track, scene } = target
             && track == drag.source_track

@@ -401,6 +401,14 @@ pub enum Command {
         track: TrackId,
         start: u64,
     },
+    /// Move/copy one selected Arrangement group with a single prepared history edit.
+    MoveClipsWithOverwrite {
+        clips: Vec<ClipId>,
+        anchor: ClipId,
+        track: TrackId,
+        position: crate::ClipGroupPosition,
+        copy: bool,
+    },
     /// Atomically insert a hybrid track before a stable anchor/end and move an
     /// existing audio clip there, preserving its ID and source metadata.
     MoveClipToNewTrack {
@@ -731,6 +739,12 @@ pub enum Created {
     Device(DeviceId),
     Asset(AssetId),
     Clip(ClipId),
+    /// Actual Arrangement clip births in this inclusive range are copies from
+    /// one group command. Filter committed clips; note-ID holes are permitted.
+    Clips {
+        first: ClipId,
+        last: ClipId,
+    },
     Note(NoteId),
     Scene(crate::SceneId),
     SessionClip(ClipId),
@@ -1099,6 +1113,35 @@ pub(crate) fn split_clip_at_tempo(
     Ok((left, right))
 }
 
+/// Crop one retained interval through the existing typed split law.
+pub(crate) fn retained_audio_fragment(
+    victim: &Clip,
+    start: u64,
+    end: u64,
+    id: ClipId,
+    tempo: &crate::TempoMap,
+) -> Result<Clip, Invalid> {
+    let original_end = victim
+        .start
+        .checked_add(victim.duration)
+        .ok_or(Invalid("timeline end overflow"))?;
+    if start < victim.start || start >= end || end > original_end {
+        return Err(Invalid(
+            "retained audio interval is outside its source clip",
+        ));
+    }
+    let mut retained = if start > victim.start {
+        split_clip_at_tempo(victim, start, id, tempo)?.1
+    } else {
+        victim.clone()
+    };
+    if end < original_end {
+        retained = split_clip_at_tempo(&retained, end, id, tempo)?.0;
+    }
+    retained.id = id;
+    Ok(retained)
+}
+
 struct AudioOverwriteFragments {
     left: Option<Clip>,
     right: Option<Clip>,
@@ -1110,6 +1153,16 @@ pub(crate) fn overwrite_audio_interval(
     start: u64,
     end: u64,
     excluded: ClipId,
+) -> Result<(), Invalid> {
+    overwrite_audio_interval_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_audio_interval_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: u64,
+    end: u64,
+    excluded: impl Fn(ClipId) -> bool,
 ) -> Result<(), Invalid> {
     if start >= end {
         return Err(Invalid("overwrite interval must be positive"));
@@ -1128,7 +1181,7 @@ pub(crate) fn overwrite_audio_interval(
         .try_reserve_exact(snapshot.len())
         .map_err(|_| Invalid("could not reserve overwrite fragment storage"))?;
     for victim in snapshot {
-        if victim.id == excluded {
+        if excluded(victim.id) {
             continue;
         }
         let victim_end = victim
@@ -1141,18 +1194,26 @@ pub(crate) fn overwrite_audio_interval(
         let keeps_left = victim.start < start;
         let keeps_right = victim_end > end;
         let left = keeps_left
-            .then(|| split_clip_at_tempo(&victim, start, victim.id, project.tempo_map()))
-            .transpose()?
-            .map(|parts| parts.0);
+            .then(|| {
+                retained_audio_fragment(
+                    &victim,
+                    victim.start,
+                    start,
+                    victim.id,
+                    project.tempo_map(),
+                )
+            })
+            .transpose()?;
         let right_id = if keeps_left && keeps_right {
             ClipId(0)
         } else {
             victim.id
         };
         let right = keeps_right
-            .then(|| split_clip_at_tempo(&victim, end, right_id, project.tempo_map()))
-            .transpose()?
-            .map(|parts| parts.1);
+            .then(|| {
+                retained_audio_fragment(&victim, end, victim_end, right_id, project.tempo_map())
+            })
+            .transpose()?;
         fragments.push((victim.id, AudioOverwriteFragments { left, right }));
     }
     if fragments.is_empty() {
@@ -1228,10 +1289,20 @@ pub(crate) fn overwrite_audio_in_beats(
     end: crate::BeatTime,
     excluded: ClipId,
 ) -> Result<(), Invalid> {
+    overwrite_audio_in_beats_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_audio_in_beats_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: crate::BeatTime,
+    end: crate::BeatTime,
+    excluded: impl Fn(ClipId) -> bool,
+) -> Result<(), Invalid> {
     let start_frame = project.tempo_map().beat_to_frame(start)?;
     let end_frame = project.tempo_map().beat_to_frame(end)?;
     if start_frame < end_frame {
-        overwrite_audio_interval(project, track, start_frame, end_frame, excluded)?;
+        overwrite_audio_interval_excluding(project, track, start_frame, end_frame, excluded)?;
     }
     Ok(())
 }
@@ -2085,6 +2156,13 @@ impl Project {
                 self.audio_clips_mut(track)?.push(moved);
                 Ok(Created::None)
             }
+            Command::MoveClipsWithOverwrite {
+                clips,
+                anchor,
+                track,
+                position,
+                copy,
+            } => crate::clip_group::apply(self, clips, anchor, track, position, copy),
             Command::MoveClipWithOverwrite { clip, track, start } => {
                 let mut incoming = self
                     .clip(clip)

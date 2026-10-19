@@ -2226,6 +2226,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             last_pointer: Rc::new(Cell::new(None)),
         };
         let clip_drag = ClipDrag {
+            group: Default::default(),
             project_generation: view.project_generation,
             revision: current.revision.saturating_add(1),
             source_track: track,
@@ -4924,6 +4925,9 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
         assert!(view.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "browser_resize_feedback_ui_test.rs"]
+mod resize_feedback;
 
 #[path = "browser_tag_editor_geometry_ui_test.rs"]
 mod tag_editor_geometry;
