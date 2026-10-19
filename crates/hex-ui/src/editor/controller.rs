@@ -4379,7 +4379,9 @@ mod comparison_source_binding_tests {
         // Actual worker-minted binding; AppliedAudioSource below is a nonowning
         // protocol fixture, not proof that a native constructor/callback ran.
         let service = hex_session::service::Service::new(48_000, 16, 0).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let receive = || loop {
+            assert!(Instant::now() < deadline, "bounded comparison worker");
             match service.try_event() {
                 Ok(event) => break event,
                 Err(std::sync::mpsc::TryRecvError::Empty) => std::thread::yield_now(),

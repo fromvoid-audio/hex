@@ -1018,6 +1018,19 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
     let state = Arc::clone(&initial.state);
     let track = state.project.tracks()[0].id();
     let device = state.project.tracks()[0].instrument().unwrap().id();
+    let keyboard = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+    keyboard.set_key(0, Some((60, 100, 1))).unwrap();
+    service
+        .submit(Request::PrepareComputerKeyboard {
+            project_generation: 0,
+            revision: state.revision,
+            request_id: 1,
+            track,
+            input: keyboard.clone(),
+        })
+        .unwrap();
+    initial = receive_service_event(&service);
+    assert!(initial.error.is_none());
     let source = state.canonical_audio_source.as_ref().unwrap().clone();
     let prepared = initial
         .playback
@@ -1030,8 +1043,9 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,
-            Err("audio output is open or still shutting down")
-                if std::time::Instant::now() < deadline =>
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && std::time::Instant::now() < deadline =>
             {
                 std::thread::yield_now()
             }
@@ -1054,6 +1068,11 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
+        view.computer_keyboard.enabled = true;
+        view.computer_keyboard.input = Some(keyboard.clone());
+        view.computer_keyboard.target = Some((0, state.revision, track));
+        view.computer_keyboard.request_id = 1;
+        assert!(view.computer_keyboard.key_down("a", false));
         view.audio_admission.canonical_revision(ProjectRevision {
             generation: 0,
             revision: state.revision,
@@ -1124,6 +1143,15 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
     );
     editor.update(cx, |view, cx| {
         view.tick(cx);
+        assert!(
+            !keyboard.is_cancelled(),
+            "comparison-only authoring must preserve held keyboard input"
+        );
+        assert!(Arc::ptr_eq(
+            view.computer_keyboard.input.as_ref().unwrap(),
+            &keyboard
+        ));
+        assert!(view.computer_keyboard.held()[0].is_some());
         let current = view.state.as_ref().unwrap().clone();
         assert_eq!(view.applied_project_revision(), Some(current.revision));
         assert_eq!(
