@@ -1410,3 +1410,69 @@ fn group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_mode
         });
     }
 }
+
+#[gpui::test]
+fn integration_group_console_refuses_partial_primary_copy(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.enqueue(Request::Edit(Command::AddScene {
+            name: "group target".into(),
+        })));
+        cx.notify();
+    });
+    pump(&editor, &mut visual);
+    let (track, scene, before) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project.tracks()[0].id(),
+            project.scenes()[0].id(),
+            project.snapshot(),
+        )
+    });
+    begin_group(&mut visual, &clips);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let drag = view
+            .active_clip_drag
+            .as_ref()
+            .expect("actual group pointer capture");
+        assert_eq!(drag.group.borrow().ids.len(), 3);
+        assert_eq!(view.selected_clip_ids(), clips);
+        assert!(view.drag_start_is_current(drag));
+    });
+    assert!(visual.update(|_, app| app.has_active_drag()));
+    editor.update(&mut visual, |view, cx| {
+        view.last_enqueued_edit = None;
+        view.set_mode(super::super::EditorMode::Session);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let selector =
+        Box::leak(format!("console-cell-{}-{}", track.value(), scene.value()).into_boxed_str());
+    let target = visual
+        .debug_bounds(selector)
+        .expect("actual Console target")
+        .center();
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let submitted = editor.read_with(&visual, |view, _| view.last_enqueued_edit.clone());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        eprintln!(
+            "actual selected={} submitted={submitted:?} cell={:?} error={:?}",
+            clips.len(),
+            state.project.session_cell(track, scene),
+            view.error
+        );
+        assert!(
+            submitted.is_none(),
+            "unsupported group Console drop must not enqueue a primary-only copy"
+        );
+        assert_eq!(state.project.snapshot(), before);
+        assert!(view.active_clip_drag.is_none());
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+}
