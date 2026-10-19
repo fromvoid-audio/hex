@@ -1,0 +1,23 @@
+{
+  "source": "65aa67397577aaf304bed83d9757cd443e15245b",
+  "tree": "35fdad1d960f52fa71d97add42bbcdc743bf20f1",
+  "kind": "read-repro-proposal-only",
+  "payloads": {
+    "PROPOSAL.md": {
+      "bytes": 6988,
+      "sha256": "86731596a7854f7c55cec20c9844e5b30e96eb13e4a14ee8a6a10c8c5ddd99f9"
+    },
+    "configured-override-red.log": {
+      "bytes": 1312,
+      "sha256": "e02e8a123e69de3dea9e197a46dbbb1bc06e5435063c80d8cb9e3291d7c36582"
+    },
+    "initial-harness-missing-config.log": {
+      "bytes": 1637,
+      "sha256": "ae9b2a1d0007ba39adb99774d6b7931a42e8e71818110ccfce07450db3b7f429"
+    },
+    "repro.py": {
+      "bytes": 1287,
+      "sha256": "e69e0c666927ac8c8828dcf24c1e957aab1f41c2231444dbf91048ecaab8d373"
+    }
+  }
+}
