@@ -665,6 +665,9 @@ fn console_browser_window_deactivation_cancels_ghost_without_late_import(cx: &mu
     let (handle, editor, track, scene, _) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    visual.update(|window, _| assert!(window.is_window_active(), "real active precondition"));
     let before = project(&editor, cx);
     let target = bounds(
         &mut visual,
@@ -675,6 +678,7 @@ fn console_browser_window_deactivation_cancels_ghost_without_late_import(cx: &mu
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.deactivate_window();
     visual.run_until_parked();
+    visual.update(|window, _| assert!(!window.is_window_active(), "actual inactive transition"));
     editor.read_with(cx, |view, _| {
         assert!(
             view.active_browser_audio_drag.is_none(),
