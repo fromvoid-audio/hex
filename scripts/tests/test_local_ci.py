@@ -37,7 +37,7 @@ case "$tool $*" in
   git\ ls-files*) printf '%s\\0' "$FAKE_FILE_LIST"; exit 0 ;;
   'cargo metadata'*)
     case "$FAIL_MATCH" in *metadata*) echo "metadata unavailable" >&2; exit 9 ;; esac
-    printf '{"target_directory":"%s","workspace_root":"%s","workspace_members":["fixture 0.1.0","other 0.1.0"],"packages":[{"id":"fixture 0.1.0","name":"fixture","version":"0.1.0"},{"id":"other 0.1.0","name":"other","version":"0.1.0"}]}\\n' "$FAKE_METADATA_TARGET" "$FAKE_WORKSPACE_ROOT"
+    printf '{"target_directory":"%s","workspace_root":"%s","workspace_members":["fixture 0.1.0","other 0.1.0"],"packages":[{"id":"fixture 0.1.0","name":"fixture","version":"0.1.0","manifest_path":"%s/Cargo.toml"},{"id":"other 0.1.0","name":"other","version":"0.1.0","manifest_path":"%s/other/Cargo.toml"}]}\\n' "$FAKE_METADATA_TARGET" "$FAKE_WORKSPACE_ROOT" "$FAKE_WORKSPACE_ROOT" "$FAKE_WORKSPACE_ROOT"
     exit 0 ;;
 esac
 case "$tool $*" in
@@ -65,7 +65,7 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.bin = self.base / "bin"
         self.bin.mkdir()
         self.call_log = self.base / "calls.log"
-        for name in ("git", "python3", "cargo", "first", "second", "bad"):
+        for name in ("git", "python3", "cargo", "rustc", "first", "second", "bad"):
             tool = self.bin / name
             tool.write_text(FAKE_TOOL)
             tool.chmod(0o755)
@@ -688,7 +688,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         root = self.base / "real-workspace"
         api = root / "crates/fixture-api"
         app = root / "crates/fixture-app"
-        helper = root / "external-helper"
+        helper = self.base / "shared-external-helper"
         for directory in (api / "src", app / "src", helper / "src"):
             directory.mkdir(parents=True)
         (root / "Cargo.toml").write_text(
@@ -710,7 +710,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         (app / "Cargo.toml").write_text(
             '[package]\nname = "fixture-app"\nversion = "0.1.0"\nedition = "2021"\n'
             '[dependencies]\nfixture-api = { path = "../fixture-api" }\n'
-            'external-helper = { path = "../../external-helper" }\n',
+            f'external-helper = {{ path = {json.dumps(str(helper))} }}\n',
             encoding="utf-8",
         )
         (app / "src/main.rs").write_text(

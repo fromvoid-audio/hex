@@ -7,6 +7,13 @@ plugin-release. Unoptimized debug executables are only appropriate for a
 specific stated debugging need. Do not create uniquely named review apps for
 future testing or delete historical review bundles.
 
+An explicitly requested development delivery may use `--dev-profile` with a
+resolved scoped merge report. Its receipt says `scoped-dev-ci`, not `full-ci`;
+the plan is recomputed against current source/dependencies. Beta/stable/native
+qualification keeps the full-audit requirement. Edit/quick/custom-component
+reports never qualify. This adds no staging/publishing command or automation.
+See [development-workflow.md](development-workflow.md).
+
 ## launch modes
 
 `./launch` is the standard update-and-start path. It requires a clean local `main`,

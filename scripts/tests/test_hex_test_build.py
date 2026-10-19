@@ -819,7 +819,43 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual({str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}, dev)
             self.assertEqual(command([str(base / "release-a-retained-binary")]), "16")
             self.assertEqual(command([str(base / "release-b-retained-binary")]), "B string API 9")
-            build(root, "release-a-reuse", "16")
+            build(root, "release-a-normal-tool", "16")
+            reused = build(root, "release-a-reuse", "16")
+            self.assertEqual(reused["cleanup_status"], "not_needed")
+            # Same checkout/source edit must invoke Cargo and change the actual
+            # executable, retaining the known build cache rather than cleaning.
+            (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 10 }\n')
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "same checkout changed behavior"])
+            incremental = build(root, "release-a-incremental", "19")
+            self.assertEqual(incremental["cleanup_status"], "not_needed")
+            self.assertNotEqual(incremental["source"], reused["source"])
+            self.assertNotEqual(incremental["artifact"]["sha256"], reused["artifact"]["sha256"])
+            changed_config = build(root, "release-a-config", "19", {**env, "RUSTFLAGS": "--cfg release_fixture_changed"})
+            self.assertEqual(changed_config["cleanup_status"], "passed")
+            configured_dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
+            self.assertEqual({name: configured_dependencies[name] for name in dependencies}, dependencies)
+            dependencies = configured_dependencies
+            build(root, "release-a-normal-config", "19")
+            original_main = (root / "app/src/main.rs").read_text()
+            (root / "app/src/main.rs").write_text("invalid Rust source")
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "actual failed build"])
+            failed = runner(root, "release-a-failed")
+            with self.assertRaises(delivery.DeliveryError):
+                with delivery.optimized_artifact(failed, package="fixture-app"):
+                    self.fail("failed Cargo build yielded an artifact")
+            owner = json.loads(Path(incremental["owner_path"]).read_text())
+            self.assertEqual(owner["state"], "pending")
+            (root / "app/src/main.rs").write_text(original_main)
+            (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 7 }\n')
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "restore behavior"])
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "pending"):
+                with delivery.optimized_artifact(runner(root, "pending-refused"), package="fixture-app"):
+                    self.fail("pending state was silently reused")
+            with delivery.optimized_artifact(runner(root, "pending-explicit"), package="fixture-app", adopt=True) as (binary, _):
+                self.assertEqual(command([str(binary)]), "16")
             # Cargo cannot select the old removed/renamed member from this graph.
             (other / "api/Cargo.toml").write_text('[package]\nname="renamed-api"\nversion="0.1.0"\nedition="2021"\n')
             (other / "app/Cargo.toml").write_text(manifest.replace('fixture-api={path=', 'fixture-api={package="renamed-api",path='))
