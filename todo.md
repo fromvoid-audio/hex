@@ -5774,6 +5774,54 @@ User rejected device-local automation editing. Remove its button, graph mode and
   This is separate from Pulse2867's new outside-source-track release requirement.
 
 
+### 2026-10-19 — Pulse2860 / PR462 clip-local resize feedback
+
+- Actual completed-scene normal/Shift audio resize added accent borders on all
+  four source-lane edges; MIDI retained its ordinary right divider. Preserve the
+  original two paint failures and MIDI positive control.
+- Remove only the nine-line TrimDrag lane styling callback. Preserve clip-local
+  preview/handles/waveform, selection, header/hue strip, drop/command/capture and
+  ordinary non-resize styles. This explicit newer exception overrides2711's older
+  general track-outline request during clip resizing.
+- Real Service/GPUI scene controls cover both edges and selected/other-selected
+  source origins, commits/Undo/Redo and logical Escape/stale/focus cancellation.
+  Separate inherited preview-disappearance failure2871/473 remains open; its
+  original failed assertions and evidence14f are preserved without ignore/pass. Retain
+  the separate controls-row/header-click fixture failure and corrected name-hit
+  setup. Exact source-bound receipts and limitations are in Pulse; merger owns
+  prospective full qualification/review/merge, Root owns physical acceptance.
+- Frozen463 pointer-delivery and469 captured-release packets remain separate;
+  neither their source nor historical evidence is replaced by this paint fix.
+
+
+## 19 october 2026 — pulse2872 / pr474 current warning cleanup
+
+- Current canonical baseline is `d303cbf4` / main `53ad3087` tree `f6c31b50`.
+  Rust 1.94.0 x86_64 Linux reproduced 46 vendored block missing-ABI warnings,
+  duplicate Engine/Warp `profile` and `profile.dwp` outputs, and fail-closed PCM
+  Unknown under the installed Clippy workspace wrapper. These are distinct from
+  Cargo cleanup package-qualifier notices and the historical native395 errors
+  (reported cleared in intermediate cfg(test) source; production promotion stays
+  native-owner work).
+- Spell the existing C ABI explicitly in block, retain the complete original
+  archive/license inventory and exact reverse provenance guard, deny missing_abi
+  in the real dependency compile. Name the Warp example `warp_profile`; preserve
+  both profiling implementations and Engine's existing command.
+- Qualify only the pinned ordinary official Clippy installation for the existing
+  declared-layout gate, checking actual args independently from info queries;
+  all other unsupported inputs and evidence-write failure remain Unknown.
+  Four real build-script policy tests and three new private installation/args
+  tests cover positive/default/strict and refusal paths; old PCM tests remain.
+- Original five-stage baseline passed. Workspace no-run reproduced collisions
+  then failed ENOSPC; preserve that infrastructure negative. Guarded cleanup of
+  seven owned dev packages reclaimed space, preserving dependency/release artifacts.
+  Subsequent independent workspace test-build/strict checks passed; final exact
+  source matrix and immutable receipts are retained in Pulse, not inferred here.
+- No warning suppression, lint weakening, unfinished-feature deletion, native
+  Audio-owner edit, full21 merge claim or application operation. Native/release
+  qualification and source-specific final integration remain explicitly separate.
+
+
 ### 2026-10-19 — Pulse2867 / PR469 captured resize release
 
 - Actual same-window release over another track rejected the captured audio/MIDI

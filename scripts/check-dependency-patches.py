@@ -67,14 +67,22 @@ def check():
             assert sha((vendor / path).read_bytes()) == manifest["patched_files"].get(path, original), path
         patched = (vendor / "src/lib.rs").read_text()
         assert patched.count(new) == 1
-        original = patched.replace(new, old, 1)
+        # Explicit C is the previous implicit ABI, including macro-expanded callbacks.
+        # Reverse this exact finite delta before checking the published archive hash.
+        if name == "block":
+            assert patched.count('extern "C" ') == 10
+            assert not re.search(r'extern\s+(?:fn|\{)', patched)
+            original = patched.replace('extern "C" ', 'extern ')
+        else:
+            original = patched
+        original = original.replace(new, old, 1)
         assert sha(original.encode()) == manifest["original_files"]["src/lib.rs"]
         diff = "".join(difflib.unified_diff(
             original.splitlines(keepends=True), patched.splitlines(keepends=True),
-            fromfile="a/src/lib.rs", tofile="b/src/lib.rs",
+            fromfile="a/src/lib.rs", tofile="b/src/lib.rs", n=0 if name == "block" else 3,
         ))
         assert (vendor / "hex-patches.diff").read_text() == diff
-    print("dependency patches passed: pinned baselines, exact opaque-marker/visibility deltas, excluded native dependencies")
+    print("dependency patches passed: pinned baselines, exact opaque-marker/C-ABI/visibility deltas, excluded native dependencies")
 
 
 if __name__ == "__main__":
