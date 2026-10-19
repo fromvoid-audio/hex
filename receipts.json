@@ -1,0 +1,242 @@
+[
+  {
+    "run": "20261019T005450Z-3e2a77ab",
+    "status": "failed",
+    "duration_seconds": 4.464,
+    "content_sha256": "c213797e3d1b7811d7fec4b6d07addacb711fdbde9d945a7e9f80f25ec26c4d4",
+    "stale": false,
+    "summary_sha256": "2f7a7d30065cc4487d21499bf8066e8849b3cfc451671722b544f1dac7eba90f",
+    "steps": [
+      {
+        "step_id": "overlap-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T005542Z-9650d012",
+    "status": "failed",
+    "duration_seconds": 254.347,
+    "content_sha256": "116fa269641d83bce387c2b8e27e15a7773ef5d895a61d7ef127f23846f30bf4",
+    "stale": false,
+    "summary_sha256": "67d216ec4c88d039fa45256644498e589a6eb3634e08ab1872ae0419e80f4bc7",
+    "steps": [
+      {
+        "step_id": "placed-control-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T010024Z-3a93e46e",
+    "status": "failed",
+    "duration_seconds": 21.512,
+    "content_sha256": "ace1455b6ea7b1750e18d875f0afc7353a93493785b90bc021918e0a76094b9d",
+    "stale": false,
+    "summary_sha256": "8e4822a8e6c3ba2b01579c27d5070df8caacafb1c4f9946d5a31eadc1944271e",
+    "steps": [
+      {
+        "step_id": "placed-control-visible-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T010051Z-46933536",
+    "status": "failed",
+    "duration_seconds": 50.548,
+    "content_sha256": "39c7776327fe6795fcdb57100550a17d2d3fc705cbe57487d992c40c2dd8f2ed",
+    "stale": false,
+    "summary_sha256": "1aec75213a48406a168ea6c3a4a68b9ab4d6555d5f96acf4d45d5e50af4a176e",
+    "steps": [
+      {
+        "step_id": "placed-control-visible-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T010220Z-598fb48c",
+    "status": "failed",
+    "duration_seconds": 3.99,
+    "content_sha256": "421542689ca808bf5a6eb4b99bcc431b25694b313c8006b654528109d400fd6b",
+    "stale": false,
+    "summary_sha256": "e65e660ada9a874e5713248c9c3df64c0a9e2f81d7c5d39ab74f93b1bfaae133",
+    "steps": [
+      {
+        "step_id": "audio-model",
+        "status": "failed",
+        "exit_code": 101
+      },
+      {
+        "step_id": "current-audio-codec",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "session-binding",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "actual-returns",
+        "status": "not_run",
+        "exit_code": null
+      }
+    ]
+  },
+  {
+    "run": "20261019T010253Z-9d850a43",
+    "status": "partial",
+    "duration_seconds": 34.416,
+    "content_sha256": "4798f2549e8221c1fd3c76166115cc0ee704db771844aa770e74531f0bc4eafb",
+    "stale": false,
+    "summary_sha256": "4e402b82c0a103691d0770617d59565e23b06fc7e583a71a1814c4c021b34abf",
+    "steps": [
+      {
+        "step_id": "audio-model",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "current-audio-codec",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "session-binding",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "actual-returns",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T010348Z-4acdc09d",
+    "status": "partial",
+    "duration_seconds": 14.457,
+    "content_sha256": "4798f2549e8221c1fd3c76166115cc0ee704db771844aa770e74531f0bc4eafb",
+    "stale": false,
+    "summary_sha256": "6018582c41f9e2b61b2082b95225ac06d8e0b876404b2202fad2649a3f7df4b2",
+    "steps": [
+      {
+        "step_id": "strict-model",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T010434Z-4a935468",
+    "status": "partial",
+    "duration_seconds": 0.67,
+    "content_sha256": "4798f2549e8221c1fd3c76166115cc0ee704db771844aa770e74531f0bc4eafb",
+    "stale": false,
+    "summary_sha256": "2071681f9f0287daaceb7dc4be2a0624dd27e1185d027c08e59c44a9c983ed69",
+    "steps": [
+      {
+        "step_id": "architecture",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "ui-style",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "touched-fmt",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "diff-check",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T011008Z-914e0d61",
+    "status": "failed",
+    "duration_seconds": 63.844,
+    "content_sha256": "f81c196778d790aa753d057bfbe86ab247822f71d0b4fdc30afa0c0788bcbd43",
+    "stale": false,
+    "summary_sha256": "a2110ad1a04afec88fda074c83901685646143ddf2c8347ccd66b2b5733792a3",
+    "steps": [
+      {
+        "step_id": "placed-controls-green",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T011222Z-cc1108c7",
+    "status": "partial",
+    "duration_seconds": 48.582,
+    "content_sha256": "242a72ee82362cdfcc1b63b08411f4940fc665249831b67ca44f8a51a9bf5c2e",
+    "stale": false,
+    "summary_sha256": "cbb438275271ff6275adbb317ce1d4a9dccb719d9e8f4a07343079f6d7115cfd",
+    "steps": [
+      {
+        "step_id": "placed-controls-green",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T011338Z-243b9b17",
+    "status": "partial",
+    "duration_seconds": 119.705,
+    "content_sha256": "7b75b55566c5906b970203199a2842cde771dce4e0e0a32a2fd59e7f44b3628d",
+    "stale": false,
+    "summary_sha256": "714bbefe6cb6497f5a39539df734b71266c88a47dd819ea89c29bbc9a3b7d3f7",
+    "steps": [
+      {
+        "step_id": "strict-ui",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T011551Z-a431d72b",
+    "status": "partial",
+    "duration_seconds": 0.626,
+    "content_sha256": "7b75b55566c5906b970203199a2842cde771dce4e0e0a32a2fd59e7f44b3628d",
+    "stale": false,
+    "summary_sha256": "6ce7044239939ea7abac9c716002a39f932719d5c75679db7193367f9cddbddd",
+    "steps": [
+      {
+        "step_id": "architecture",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "ui-style",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "touched-fmt",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "diff-check",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  }
+]

@@ -1,0 +1,40 @@
+{
+  "source": "a6061328082d7adac31b9feded24ce027466165b",
+  "tree": "af17a6f83019e46b53ebf7b73388fd9f2d127e36",
+  "parent": "2918cc495c1f6d1ec43e9b99b93ee0e759a5ec4c",
+  "owner_ref": "refs/heads/owner/cloud6-456-review-2918",
+  "canonical_pr": 456,
+  "pulse": 2854,
+  "canonical_head_untouched": "2918cc495c1f6d1ec43e9b99b93ee0e759a5ec4c",
+  "status": "owner repair ready for merger intake; prospective full21/review/merge pending",
+  "files": {
+    "crates/hex-project/src/audio_edit/view.rs": {
+      "before_sha256": "a6e8d4b1f0ab5ff0b7ca86618c74237b755c149ff333b3e71f084580b5f2f709",
+      "after_sha256": "862f9caaf3f6e8f5a5e4f6a0ef2692a5fffa86ebb5ccdefa1de181c3f3da342a"
+    },
+    "crates/hex-project/tests/audio_view.rs": {
+      "before_sha256": "40018436d81cff5f510840cbcb6c170157b06dd66704d955c67b7ba73973064b",
+      "after_sha256": "5cd3116aee576d2af7bcd6d38e8f037fbc992884cfe5341b9464dd4b8f235880"
+    },
+    "crates/hex-session/tests/returns.rs": {
+      "before_sha256": "67a67de19a7670b02388e674ea2bc830231213f11c073e40ae7bb509f8f2b021",
+      "after_sha256": "3c2fa1b2e19a011a6e266bc986909c020ee7fb9e596e4fd92e018ba116a69709"
+    },
+    "crates/hex-ui/src/editor/arrangement_audio_panel.rs": {
+      "before_sha256": "21f52a0b7698f318721a326d3d2ea6b468e980d010bcec815cab782be4609b7b",
+      "after_sha256": "040624dc50c68ade9a1eaf73297fea9e0b79eff0cb93bd94bd30faa3d626e12c"
+    },
+    "docs/audio-view-model.md": {
+      "before_sha256": "a8bec87bd9361abcb2126fb691ff8b9dd15a9452902e97b5f3b473a2b91581a4",
+      "after_sha256": "02edaa9c95f185d5f68787c1efa82adfa09aec5c531129ffae9bed23ea713362"
+    },
+    "todo.md": {
+      "before_sha256": "40f9a92cf811d00c134d56f2541bf314def57492f1ba6b0076f3084bff0eafde",
+      "after_sha256": "77eb49268812c611184f4777c5c6a0cffbcc216bc465775bcd19b704b24b8727"
+    }
+  },
+  "model37_and_strict_model_bytes_preserved": true,
+  "ui_source_tests_unchanged_after_final7_pass": true,
+  "ui7_before_prose": true,
+  "native": "none new; old23/412 and553 history not relabeled"
+}
