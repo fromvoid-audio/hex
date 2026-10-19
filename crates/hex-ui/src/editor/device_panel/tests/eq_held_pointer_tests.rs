@@ -228,14 +228,14 @@ fn pump_output(
     std::thread::yield_now();
 }
 
-#[gpui::test]
-fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
+fn attach_actual_output(
+    editor: &gpui::Entity<EditorView>,
     cx: &mut TestAppContext,
+    visual: &mut VisualTestContext,
+) -> (
+    hex_audio::WorkerPreparedOutput,
+    hex_audio::worker_fixture::HeadlessBackend,
 ) {
-    use std::sync::atomic::Ordering::Acquire;
-    let _output_guard = graph_layout_tests::status_fixture_guard();
-    let (handle, editor, _environment, device) = held_node_window(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
     let (mut output, mut backend) = graph_layout_tests::headless_status_output();
     let client = output.take_client().unwrap();
     editor.update(cx, |view, cx| {
@@ -265,6 +265,18 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
             "fixture never installed actual canonical output"
         );
     }
+    (output, backend)
+}
+
+#[gpui::test]
+fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::Ordering::Acquire;
+    let _output_guard = graph_layout_tests::status_fixture_guard();
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (mut output, mut backend) = attach_actual_output(&editor, cx, &mut visual);
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.current_seek_requires_preroll(),
@@ -375,4 +387,252 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
     });
     backend.close();
     drop(output);
+}
+
+fn preview_is_applied(view: &EditorView) -> bool {
+    use std::sync::atomic::Ordering::Acquire;
+    let Some(snapshot) = view.device_gesture.snapshot() else {
+        return false;
+    };
+    view.worker_requests_pending == 0
+        && view.pending_requests.is_empty()
+        && view.pending_playback.is_none()
+        && view.pending_resident_publication.is_none()
+        && view.playback_candidates.is_empty()
+        && view.audible_playback.as_ref().is_some_and(|audible| {
+            audible.device_preview_identity.is_some_and(|identity| {
+                identity.key == snapshot.key && identity.sequence == snapshot.sequence
+            }) && view
+                .audio
+                .as_ref()
+                .unwrap()
+                .control
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire)
+                == audible.audio_revision
+        })
+}
+
+fn pump_actual_until(
+    editor: &gpui::Entity<EditorView>,
+    cx: &mut TestAppContext,
+    visual: &mut VisualTestContext,
+    output: &mut hex_audio::WorkerPreparedOutput,
+    backend: &mut hex_audio::worker_fixture::HeadlessBackend,
+    ready: impl Fn(&EditorView) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        pump_output(editor, cx, output, backend);
+        visual.run_until_parked();
+        if editor.read_with(cx, |view, _| ready(view)) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual output/worker did not settle: {}",
+            editor.read_with(cx, |view, _| format!("{:?}", view.error))
+        );
+    }
+}
+
+#[gpui::test]
+fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callback_custody(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::arrangement_seek::SeekStage;
+    use std::sync::atomic::Ordering::Acquire;
+    let _output_guard = graph_layout_tests::status_fixture_guard();
+    for published in [false, true] {
+        for action in ["sequence", "cancel", "commit", "project", "pause"] {
+            eprintln!("ACTUAL_HELD_SEEK_RACE published={published} action={action}");
+            let (handle, editor, _environment, device) = held_node_window(cx);
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            let (mut output, mut backend) = attach_actual_output(&editor, cx, &mut visual);
+            let before = editor.read_with(cx, |view, _| read(view, device));
+            let before_project = editor.read_with(cx, |view, _| {
+                format!("{:?}", view.state.as_ref().unwrap().project)
+            });
+            let start = plot(&mut visual, device, 0.5, 0.5);
+            let first = plot(&mut visual, device, 0.62, 0.7);
+            visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(first, Some(MouseButton::Left), Modifiers::default());
+            pump_actual_until(
+                &editor,
+                cx,
+                &mut visual,
+                &mut output,
+                &mut backend,
+                preview_is_applied,
+            );
+            visual.simulate_keystrokes("space");
+            let (request_id, identity) = editor.read_with(cx, |view, _| {
+                let pending = view.prepared_seek.as_ref().expect("actual seek admitted");
+                assert_eq!(pending.stage, SeekStage::Preparing);
+                (
+                    pending.request_id,
+                    pending.device_preview_identity.expect("preview retained"),
+                )
+            });
+            if published {
+                // Run the real preparation/publication workers but deliberately
+                // withhold callback blocks until the exact revision is queued.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    editor.update(cx, |view, cx| {
+                        if view.tick(cx) {
+                            cx.notify();
+                        }
+                    });
+                    let control = output.publication.control().unwrap();
+                    control.reclaim();
+                    control.poll_resident_publication();
+                    if editor.read_with(cx, |view, _| {
+                        view.prepared_seek
+                            .as_ref()
+                            .is_some_and(|seek| matches!(seek.stage, SeekStage::Published { .. }))
+                    }) {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "actual seek publication did not complete"
+                    );
+                    std::thread::yield_now();
+                }
+                editor.read_with(cx, |view, _| {
+                    let candidate = view
+                        .playback_candidates
+                        .iter()
+                        .find(|candidate| candidate.seek_request_id == Some(request_id))
+                        .unwrap();
+                    assert_eq!(candidate.device_preview_identity, Some(identity));
+                });
+            }
+            let generation = editor.read_with(cx, |view, _| view.project_generation);
+            match action {
+                "sequence" => {
+                    let next = plot(&mut visual, device, 0.71, 0.6);
+                    visual.simulate_mouse_move(next, Some(MouseButton::Left), Modifiers::default());
+                    editor.read_with(cx, |view, _| {
+                        let snapshot = view.device_gesture.snapshot().unwrap();
+                        assert_eq!(snapshot.key, identity.key);
+                        assert!(snapshot.sequence > identity.sequence);
+                    });
+                }
+                "cancel" => visual.simulate_keystrokes("escape"),
+                "commit" => {
+                    visual.simulate_mouse_up(first, MouseButton::Left, Modifiers::default())
+                }
+                "project" => editor.update(cx, |view, _| {
+                    assert!(view.enqueue(Request::NewWithAudioMode {
+                        mode: hex_session::DocumentAudioMode::Resident,
+                        reservation: None
+                    }));
+                }),
+                "pause" => visual.simulate_keystrokes("space"),
+                _ => unreachable!(),
+            }
+            if action == "sequence" {
+                pump_actual_until(
+                    &editor,
+                    cx,
+                    &mut visual,
+                    &mut output,
+                    &mut backend,
+                    |view| {
+                        view.audio
+                            .as_ref()
+                            .unwrap()
+                            .control
+                            .status()
+                            .unwrap()
+                            .playing
+                            .load(Acquire)
+                            && view.prepared_seek.is_none()
+                            && view.latched_seek_intent.is_none()
+                    },
+                );
+                editor.read_with(cx, |view, _| {
+                    let audible = view.audible_playback.as_ref().unwrap();
+                    let current = audible
+                        .device_preview_identity
+                        .expect("seek remains a preview");
+                    let snapshot = view.device_gesture.snapshot().unwrap();
+                    assert_eq!(
+                        (current.key, current.sequence),
+                        (snapshot.key, snapshot.sequence)
+                    );
+                    assert_ne!(current.sequence, identity.sequence);
+                    assert_eq!(
+                        read(view, device),
+                        before,
+                        "no held edit committed by Space"
+                    );
+                });
+                visual.simulate_keystrokes("space");
+                visual.simulate_keystrokes("escape");
+            }
+            pump_actual_until(
+                &editor,
+                cx,
+                &mut visual,
+                &mut output,
+                &mut backend,
+                |view| {
+                    settled(view)
+                        && view.prepared_seek.is_none()
+                        && view.latched_seek_intent.is_none()
+                        && view.pending_playback.is_none()
+                        && view.pending_resident_publication.is_none()
+                        && view.playback_candidates.is_empty()
+                        && (action != "project" || view.project_generation > generation)
+                },
+            );
+            assert!(
+                !backend.status().unwrap().playing.load(Acquire),
+                "stale seek must not start after {action}"
+            );
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    !view
+                        .playback_candidates
+                        .iter()
+                        .any(|candidate| candidate.seek_request_id == Some(request_id))
+                );
+                assert!(
+                    view.audible_playback
+                        .as_ref()
+                        .is_none_or(|audible| audible.seek_request_id != Some(request_id)),
+                    "old seek must not become current"
+                );
+                if action == "commit" {
+                    assert_ne!(read(view, device), before);
+                } else if action != "project" && action != "pause" {
+                    assert_eq!(
+                        format!("{:?}", view.state.as_ref().unwrap().project),
+                        before_project
+                    );
+                }
+            });
+            if action == "commit" {
+                editor.update(cx, |view, _| {
+                    assert!(view.enqueue(Request::Undo));
+                });
+                pump_actual_until(&editor, cx, &mut visual, &mut output, &mut backend, settled);
+                editor.read_with(cx, |view, _| assert_eq!(read(view, device), before));
+            }
+            if action == "pause" {
+                visual.simulate_keystrokes("escape");
+                pump_actual_until(&editor, cx, &mut visual, &mut output, &mut backend, settled);
+            }
+            editor.update(cx, |view, _| {
+                let _ = view.audio.take();
+            });
+            backend.close();
+            drop(output);
+        }
+    }
 }

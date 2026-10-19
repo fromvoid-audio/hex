@@ -890,6 +890,13 @@ impl EditorView {
         visible_change |= self.tick_prepared_arrangement_seek();
         visible_change |= self.tick_scrub();
         visible_change |= self.poll_resident_publication();
+        // Snapshot private source eligibility before borrowing the audio client
+        // for publication/telemetry. No UI event can change this owner during
+        // this synchronous tick; the callback still checks its runtime fence.
+        let current_seek_source = self.prepared_seek.as_ref().and_then(|seek| {
+            self.seek_publication_is_current(seek.request_id, seek.device_preview_identity)
+                .then_some((seek.request_id, seek.device_preview_identity))
+        });
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self
                 .worker_requests_pending
@@ -1102,20 +1109,26 @@ impl EditorView {
             rejected_revision.map(|(revision, _)| revision),
         );
         if let Some(candidate) = audible {
-            let source = applied_tuning_candidate_source(
-                &candidate,
-                self.project_generation,
-                self.state.as_ref().map(|s| s.revision),
-                self.tuning.client.snapshot().map(|s| (s.key, s.sequence)),
-            )
-            .unwrap_or_else(|| {
-                applied_candidate_source(
+            let source = if candidate.seek_request_id.is_some_and(|request_id| {
+                current_seek_source != Some((request_id, candidate.device_preview_identity))
+            }) {
+                AppliedCandidateSource::SupersededPreview
+            } else {
+                applied_tuning_candidate_source(
                     &candidate,
                     self.project_generation,
-                    self.state.as_ref().map(|state| state.revision),
-                    active_gesture,
+                    self.state.as_ref().map(|s| s.revision),
+                    self.tuning.client.snapshot().map(|s| (s.key, s.sequence)),
                 )
-            });
+                .unwrap_or_else(|| {
+                    applied_candidate_source(
+                        &candidate,
+                        self.project_generation,
+                        self.state.as_ref().map(|state| state.revision),
+                        active_gesture,
+                    )
+                })
+            };
             if source == AppliedCandidateSource::Current {
                 if candidate.tuning_preview_identity.is_some() {
                     self.tuning.broadcast.observe(

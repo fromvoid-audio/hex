@@ -277,7 +277,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|state| state.revision == revision)
-            && !self.edit_pending()
+            && !self.gain_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open
             && self.recovery.generation().is_none()
@@ -293,12 +293,14 @@ impl EditorView {
     fn active_seek_preview(&self) -> Option<DevicePreviewIdentity> {
         let state = self.state.as_ref()?;
         let snapshot = self.device_gesture.snapshot()?;
-        (!self.device_gesture.has_pending_terminal()).then_some(DevicePreviewIdentity {
-            project_generation: self.project_generation,
-            canonical_revision: state.revision,
-            key: snapshot.key,
-            sequence: snapshot.sequence,
-        })
+        (!self.device_gesture.has_pending_terminal()
+            && snapshot.key.generation == self.project_generation)
+            .then_some(DevicePreviewIdentity {
+                project_generation: self.project_generation,
+                canonical_revision: state.revision,
+                key: snapshot.key,
+                sequence: snapshot.sequence,
+            })
     }
 
     // A preview seek remains a preview, even after its fresh runtime applies.
@@ -321,6 +323,23 @@ impl EditorView {
                         })
                 }
             }
+    }
+
+    pub(super) fn seek_publication_is_current(
+        &self,
+        request_id: u64,
+        preview: Option<DevicePreviewIdentity>,
+    ) -> bool {
+        self.prepared_seek.as_ref().is_some_and(|pending| {
+            pending.request_id == request_id
+                && !pending.cancelled
+                && pending.device_preview_identity == preview
+                && self.seek_source_is_current(
+                    pending.project_generation,
+                    pending.project_revision,
+                    preview,
+                )
+        })
     }
 
     pub(super) fn current_seek_requires_preroll(&self) -> Option<bool> {
@@ -540,7 +559,8 @@ impl EditorView {
                 .prepared_revision
                 .as_ref()
                 .is_none_or(|prepared| !Arc::ptr_eq(prepared, &intent.prepared_revision))
-            || self.edit_pending()
+            || self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
             || self.opening_project
             || self.close_prompt_open
             || self.recovery.generation().is_some()
@@ -747,7 +767,8 @@ impl EditorView {
             && routes.count == state.project.tracks().len()
             && routes.capability == hex_engine::SessionCapabilityStatus::Available
             && super::arrangement_seek::routes_are_current(&entries[..routes.count], &state.project)
-            && !self.edit_pending()
+            && self.worker_requests_pending == 0
+            && self.pending_requests.is_empty()
             && !self.opening_project
             && !self.close_prompt_open
             && self.recovery.generation().is_none()
