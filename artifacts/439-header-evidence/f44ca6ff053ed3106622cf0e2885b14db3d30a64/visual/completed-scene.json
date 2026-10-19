@@ -1,0 +1,244 @@
+{
+  "source": "f44ca6ff053ed3106622cf0e2885b14db3d30a64",
+  "evidence": "completed GPUI scene bounds and quad fills; captions below derived from canonical fixture values, not captured glyphs; no-op Linux shaping/no native GPU framebuffer",
+  "scene": [
+    {
+      "id": "track-mute-1",
+      "bounds": [
+        1154.0,
+        235.0,
+        62.0,
+        18.0
+      ],
+      "background": {
+        "tag": "Solid",
+        "color_space": "Srgb",
+        "solid": "#f06449ff",
+        "gradient_angle_or_pattern_height": 0.0,
+        "colors": [
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          },
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          }
+        ],
+        "pad": 0
+      }
+    },
+    {
+      "id": "track-solo-1",
+      "bounds": [
+        1218.0,
+        235.0,
+        28.0,
+        18.0
+      ],
+      "background": {
+        "tag": "Solid",
+        "color_space": "Srgb",
+        "solid": "#242222ff",
+        "gradient_angle_or_pattern_height": 0.0,
+        "colors": [
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          },
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          }
+        ],
+        "pad": 0
+      }
+    },
+    {
+      "id": "track-arm-unavailable-1",
+      "bounds": [
+        1248.0,
+        235.0,
+        28.0,
+        18.0
+      ],
+      "background": {
+        "tag": "Solid",
+        "color_space": "Srgb",
+        "solid": "#24222273",
+        "gradient_angle_or_pattern_height": 0.0,
+        "colors": [
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          },
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          }
+        ],
+        "pad": 0
+      }
+    },
+    {
+      "id": "track-volume-1",
+      "bounds": [
+        1154.0,
+        255.0,
+        60.0,
+        18.0
+      ],
+      "background": null
+    },
+    {
+      "id": "track-pan-1",
+      "bounds": [
+        1216.0,
+        255.0,
+        60.0,
+        18.0
+      ],
+      "background": null
+    },
+    {
+      "id": "track-volume-1-slider",
+      "bounds": [
+        1155.0,
+        256.0,
+        58.0,
+        16.0
+      ],
+      "background": {
+        "tag": "Solid",
+        "color_space": "Srgb",
+        "solid": "#191717ff",
+        "gradient_angle_or_pattern_height": 0.0,
+        "colors": [
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          },
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          }
+        ],
+        "pad": 0
+      }
+    },
+    {
+      "id": "track-volume-1-bar-fill",
+      "bounds": [
+        1155.0,
+        256.0,
+        36.0,
+        16.0
+      ],
+      "background": {
+        "tag": "Solid",
+        "color_space": "Srgb",
+        "solid": "#70e8e359",
+        "gradient_angle_or_pattern_height": 0.0,
+        "colors": [
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          },
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          }
+        ],
+        "pad": 0
+      }
+    },
+    {
+      "id": "track-volume-1-value",
+      "bounds": [
+        1155.0,
+        256.0,
+        58.0,
+        16.0
+      ],
+      "background": {
+        "tag": "Solid",
+        "color_space": "Srgb",
+        "solid": "#191717ff",
+        "gradient_angle_or_pattern_height": 0.0,
+        "colors": [
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          },
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          }
+        ],
+        "pad": 0
+      }
+    },
+    {
+      "id": "track-pan-1-slider",
+      "bounds": [
+        1217.0,
+        256.0,
+        58.0,
+        16.0
+      ],
+      "background": {
+        "tag": "Solid",
+        "color_space": "Srgb",
+        "solid": "#191717ff",
+        "gradient_angle_or_pattern_height": 0.0,
+        "colors": [
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          },
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          }
+        ],
+        "pad": 0
+      }
+    },
+    {
+      "id": "track-pan-1-bar-fill",
+      "bounds": [
+        1246.0,
+        256.0,
+        0.0,
+        16.0
+      ],
+      "background": null
+    },
+    {
+      "id": "track-pan-1-value",
+      "bounds": [
+        1217.0,
+        256.0,
+        58.0,
+        16.0
+      ],
+      "background": {
+        "tag": "Solid",
+        "color_space": "Srgb",
+        "solid": "#191717ff",
+        "gradient_angle_or_pattern_height": 0.0,
+        "colors": [
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          },
+          {
+            "color": "#00000000",
+            "percentage": 0.0
+          }
+        ],
+        "pad": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0599]: no method named `on_click` found for struct `gpui::Div` in the current scope
+   --> crates/hex-ui/src/editor/tracks.rs:949:18
+    |
+948 |               let utilities = div()
+    |  _____________________________-
+949 | |                 .on_click(|_, _, cx| cx.stop_propagation())
+    | |                 -^^^^^^^^ method not found in `gpui::Div`
+    | |_________________|
+    |
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/tracks.rs:949:34
+    |
+949 |                 .on_click(|_, _, cx| cx.stop_propagation())
+    |                                  ^^  -- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+949 |                 .on_click(|_, _, cx: /* Type */| cx.stop_propagation())
+    |                                    ++++++++++++
+
+error[E0599]: no method named `on_click` found for struct `gpui::Div` in the current scope
+    --> crates/hex-ui/src/editor/tracks.rs:1078:26
+     |
+1077 | /                     div()
+1078 | |                         .on_click(|_, _, cx| cx.stop_propagation())
+     | |                         -^^^^^^^^ method not found in `gpui::Div`
+     | |_________________________|
+     |
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/tracks.rs:1078:42
+     |
+1078 |                         .on_click(|_, _, cx| cx.stop_propagation())
+     |                                          ^^  -- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1078 |                         .on_click(|_, _, cx: /* Type */| cx.stop_propagation())
+     |                                            ++++++++++++
+
+Some errors have detailed explanations: E0282, E0599.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `hex-ui` (lib test) due to 4 previous errors

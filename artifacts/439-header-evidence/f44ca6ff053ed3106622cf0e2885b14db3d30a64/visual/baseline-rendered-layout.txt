@@ -1,0 +1,1 @@
+reference requires a centered value across the filled bar, not a separate narrow value field: Bounds { origin: Point { x: 1130px, y: 252.5px }, size: Size { 86px × 21px } } Bounds { origin: Point { x: 1169px, y: 254px }, size: Size { 46px × 18px } }

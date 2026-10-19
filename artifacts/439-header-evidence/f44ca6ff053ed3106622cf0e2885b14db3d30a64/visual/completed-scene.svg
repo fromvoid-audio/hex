@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="488" height="152" viewBox="0 0 122 38"><desc>GPUI observed header-control scene subset reconstruction at 4x. Exact observed bounds and quad colors; canonical caption labels are plotted at field centers, not native glyph capture. Recording arm disabled. Not a screenshot.</desc><style>@font-face{font-family:ioskeley;src:url(ioskeley-mono-regular.ttf)} text{font-family:ioskeley,monospace;font-size:9px;text-anchor:middle;dominant-baseline:central}</style>
+<rect x="0.0" y="0.0" width="62.0" height="18.0" rx="1" fill="#f06449" fill-opacity="1.000000"/>
+<rect x="64.0" y="0.0" width="28.0" height="18.0" rx="1" fill="#242222" fill-opacity="1.000000"/>
+<rect x="94.0" y="0.0" width="28.0" height="18.0" rx="1" fill="#242222" fill-opacity="0.450980"/>
+<rect x="1.0" y="21.0" width="58.0" height="16.0" rx="1" fill="#191717" fill-opacity="1.000000"/>
+<rect x="1.0" y="21.0" width="36.0" height="16.0" rx="1" fill="#70e8e3" fill-opacity="0.349020"/>
+<rect x="1.0" y="21.0" width="58.0" height="16.0" rx="1" fill="#191717" fill-opacity="1.000000"/>
+<rect x="63.0" y="21.0" width="58.0" height="16.0" rx="1" fill="#191717" fill-opacity="1.000000"/>
+<rect x="63.0" y="21.0" width="58.0" height="16.0" rx="1" fill="#191717" fill-opacity="1.000000"/>
+<text x="31.0" y="9.0" fill="#2f2c2c">1</text>
+<text x="78.0" y="9.0" fill="#d8d8d8">s</text>
+<text x="108.0" y="9.0" fill="#777777">○</text>
+<text x="30.0" y="29.0" fill="#e0e0e0">-6.0 db</text>
+<text x="92.0" y="29.0" fill="#e0e0e0">c</text>
+</svg>

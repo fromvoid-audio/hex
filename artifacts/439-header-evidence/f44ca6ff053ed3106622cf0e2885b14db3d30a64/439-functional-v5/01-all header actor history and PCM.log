@@ -1,0 +1,21 @@
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.83s
+     Running tests/track_gain_gesture.rs (target/debug/deps/track_gain_gesture-e641b247a37d7390)
+
+running 11 tests
+test header_mix_targets_refuse_nonfinite_out_of_range_and_removed_owners ... ok
+test cancel_restores_latest_canonical_without_discarding_intervening_edit ... ok
+test audio_preview_preserves_balance_mute_and_postfader_return_and_save_finalizes_once ... ok
+test header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit ... ok
+test invalid_final_gain_and_deleted_target_refuse_without_mutating_canonical_state ... ok
+test no_op_commit_has_no_history_and_new_automation_retires_the_gesture ... ok
+test held_gain_changes_pcm_before_commit_and_commits_one_undo_step ... ok
+test header_return_gain_previews_real_bus_pcm_and_preserves_current_save_open_and_history ... ok
+test verified_streaming_refuses_track_gain_begin_without_preview_or_history_change ... ok
+test track_gain_coalesces_backlog_and_reserves_final_absolute_value ... ok
+track_gain_worker_profile tracks=1 instruments=1 midi_notes=8 accepted=64 p50_us=2183 p95_us=3361 max_us=4388 polling_ms=1 physical_audio=false
+track_gain_worker_profile tracks=24 instruments=24 midi_notes=192 accepted=64 p50_us=4356 p95_us=5433 max_us=6584 polling_ms=1 physical_audio=false
+test track_gain_worker_profile_covers_populated_projects_and_retains_one_history_step ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.33s
+

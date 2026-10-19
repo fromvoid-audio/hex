@@ -1,0 +1,2271 @@
+diff --git a/crates/hex-session/src/device_gesture.rs b/crates/hex-session/src/device_gesture.rs
+index 0d9135ed..0b83d956 100644
+--- a/crates/hex-session/src/device_gesture.rs
++++ b/crates/hex-session/src/device_gesture.rs
+@@ -22,6 +22,12 @@ pub enum GestureTarget {
+     TrackGain {
+         track: TrackId,
+     },
++    TrackBalance {
++        track: TrackId,
++    },
++    ReturnGain {
++        return_track: ReturnId,
++    },
+     DeviceParameter {
+         device: DeviceId,
+         parameter: ParameterId,
+@@ -821,6 +827,8 @@ struct Active {
+ #[derive(Clone, Copy)]
+ enum ActiveKind {
+     TrackGain,
++    TrackBalance,
++    ReturnGain,
+     Device {
+         class: NativeDeviceClass,
+         type_id: DeviceTypeId,
+@@ -1095,6 +1103,16 @@ impl GestureMachine {
+                             Some(second_value),
+                         )
+                     }
++                    GestureTarget::TrackBalance { track } => (
++                        ActiveKind::TrackBalance,
++                        ParameterValue::Float(static_track_balance(session, track)?),
++                        None,
++                    ),
++                    GestureTarget::ReturnGain { return_track } => (
++                        ActiveKind::ReturnGain,
++                        ParameterValue::Float(static_return_gain(session, return_track)?),
++                        None,
++                    ),
+                     GestureTarget::TrackGain { track } => (
+                         ActiveKind::TrackGain,
+                         ParameterValue::Float(static_track_gain(session, track)?),
+@@ -1225,6 +1243,12 @@ impl GestureMachine {
+             .as_ref()
+             .ok_or(SessionError::Invalid("device gesture is no longer active"))?;
+         match (snapshot.target, active.kind) {
++            (GestureTarget::TrackBalance { track }, ActiveKind::TrackBalance) => {
++                static_track_balance(session, track)?;
++            }
++            (GestureTarget::ReturnGain { return_track }, ActiveKind::ReturnGain) => {
++                static_return_gain(session, return_track)?;
++            }
+             (GestureTarget::TrackGain { track }, ActiveKind::TrackGain) => {
+                 static_track_gain(session, track)?;
+             }
+@@ -1424,6 +1448,12 @@ fn preview_target(
+     previous: Option<&PreparedRevision>,
+ ) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
+     match target {
++        GestureTarget::TrackBalance { track } => {
++            session.preview_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
++        }
++        GestureTarget::ReturnGain { return_track } => {
++            session.preview_return_gain(return_track, mix_value(value, 0.0, 2.0)?, previous)
++        }
+         GestureTarget::TrackGain { track } => {
+             session.preview_track_gain(track, track_gain_value(value)?, previous)
+         }
+@@ -1448,6 +1478,12 @@ fn commit_target(
+     previous: Option<&PreparedRevision>,
+ ) -> Result<Arc<PreparedRevision>, SessionError> {
+     match target {
++        GestureTarget::TrackBalance { track } => {
++            session.commit_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
++        }
++        GestureTarget::ReturnGain { return_track } => {
++            session.commit_return_gain(return_track, mix_value(value, 0.0, 2.0)?, previous)
++        }
+         GestureTarget::TrackGain { track } => {
+             session.commit_track_gain(track, track_gain_value(value)?, previous)
+         }
+@@ -1511,6 +1547,48 @@ fn commit_pair_target(
+     }
+ }
+ 
++fn static_track_balance(session: &Session, track: TrackId) -> Result<f32, SessionError> {
++    require_resident_mix(session)?;
++    session
++        .project()
++        .track(track)
++        .map(hex_project::Track::balance)
++        .ok_or(SessionError::Invalid(
++            "track balance target no longer exists",
++        ))
++}
++
++fn static_return_gain(session: &Session, id: ReturnId) -> Result<f32, SessionError> {
++    require_resident_mix(session)?;
++    session
++        .project()
++        .return_tracks()
++        .iter()
++        .find(|track| track.id() == id)
++        .map(hex_project::ReturnTrack::gain)
++        .ok_or(SessionError::Invalid("return gain target no longer exists"))
++}
++
++fn require_resident_mix(session: &Session) -> Result<(), SessionError> {
++    if session.audio_mode() != crate::DocumentAudioMode::Resident {
++        return Err(SessionError::Invalid(
++            "held mixer controls require resident audio mode",
++        ));
++    }
++    Ok(())
++}
++
++fn mix_value(value: ParameterValue, min: f32, max: f32) -> Result<f32, SessionError> {
++    match value {
++        ParameterValue::Float(value) if value.is_finite() && (min..=max).contains(&value) => {
++            Ok(value)
++        }
++        _ => Err(SessionError::Invalid(
++            "mixer value must be finite and within its range",
++        )),
++    }
++}
++
+ fn static_track_gain(session: &Session, track: TrackId) -> Result<f32, SessionError> {
+     if session.audio_mode() != crate::DocumentAudioMode::Resident {
+         return Err(SessionError::Invalid(
+diff --git a/crates/hex-session/src/lib.rs b/crates/hex-session/src/lib.rs
+index 7f4ee8d0..0753a69a 100644
+--- a/crates/hex-session/src/lib.rs
++++ b/crates/hex-session/src/lib.rs
+@@ -817,23 +817,31 @@ impl Session {
+         track: hex_project::TrackId,
+         gain: f32,
+         previous: Option<&hex_engine::PreparedRevision>,
++    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
++        self.preview_mix_command(Command::Gain { track, gain }, previous)
++    }
++
++    // Finite mixer callers only. This does not admit arbitrary UI commands.
++    fn preview_mix_command(
++        &self,
++        command: Command,
++        previous: Option<&hex_engine::PreparedRevision>,
+     ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+         let mut preview = Editor::new(self.project().clone(), 1)?;
+         let media = self.media_bank();
+         let sine_table = self.sine_table();
+-        let (_, prepared) =
+-            preview.execute_prepared(Command::Gain { track, gain }, |candidate| {
+-                prepare_with_waveforms(
+-                    candidate,
+-                    &media,
+-                    Arc::clone(&sine_table),
+-                    previous.map(|artifact| artifact.session().as_ref()),
+-                    &self.audio_transforms,
+-                    &self.audio_clip_waveforms,
+-                )
+-                .map(Arc::new)
+-                .map_err(SessionError::from)
+-            })?;
++        let (_, prepared) = preview.execute_prepared(command, |candidate| {
++            prepare_with_waveforms(
++                candidate,
++                &media,
++                Arc::clone(&sine_table),
++                previous.map(|artifact| artifact.session().as_ref()),
++                &self.audio_transforms,
++                &self.audio_clip_waveforms,
++            )
++            .map(Arc::new)
++            .map_err(SessionError::from)
++        })?;
+         Ok((Arc::new(preview.project().clone()), prepared))
+     }
+ 
+@@ -848,6 +856,44 @@ impl Session {
+             .map(|(_, prepared)| prepared)
+     }
+ 
++    fn preview_track_balance(
++        &self,
++        track: hex_project::TrackId,
++        balance: f32,
++        previous: Option<&hex_engine::PreparedRevision>,
++    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
++        self.preview_mix_command(Command::Balance { track, balance }, previous)
++    }
++
++    fn commit_track_balance(
++        &mut self,
++        track: hex_project::TrackId,
++        balance: f32,
++        previous: Option<&hex_engine::PreparedRevision>,
++    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
++        self.command_prepared_revision(Command::Balance { track, balance }, previous)
++            .map(|(_, prepared)| prepared)
++    }
++
++    fn preview_return_gain(
++        &self,
++        return_track: hex_project::ReturnId,
++        gain: f32,
++        previous: Option<&hex_engine::PreparedRevision>,
++    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
++        self.preview_mix_command(Command::ReturnGain { return_track, gain }, previous)
++    }
++
++    fn commit_return_gain(
++        &mut self,
++        return_track: hex_project::ReturnId,
++        gain: f32,
++        previous: Option<&hex_engine::PreparedRevision>,
++    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
++        self.command_prepared_revision(Command::ReturnGain { return_track, gain }, previous)
++            .map(|(_, prepared)| prepared)
++    }
++
+     /// Prepare a sparse return-send overlay without changing canonical project
+     /// state, dirty metadata or history.
+     pub fn preview_return_send(
+diff --git a/crates/hex-session/tests/track_gain_gesture.rs b/crates/hex-session/tests/track_gain_gesture.rs
+index f35293c5..f0a0fd31 100644
+--- a/crates/hex-session/tests/track_gain_gesture.rs
++++ b/crates/hex-session/tests/track_gain_gesture.rs
+@@ -665,4 +665,319 @@ fn verified_streaming_refuses_track_gain_begin_without_preview_or_history_change
+     let restored = request(&service, Request::Undo);
+     assert!(restored.error.is_none());
+     assert_eq!(restored.state.project, before.state.project);
++    let bus_event = edit(
++        &service,
++        Command::AddReturnTrack {
++            name: "streamed bus".into(),
++        },
++    );
++    let Some(Created::ReturnTrack(bus)) = bus_event.created else {
++        panic!("return")
++    };
++    for (token, target) in [
++        GestureTarget::TrackBalance { track },
++        GestureTarget::ReturnGain { return_track: bus },
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        let refused = request(
++            &service,
++            Request::DeviceGesture(GestureRequest::Begin {
++                key: GestureKey {
++                    generation: key.generation,
++                    token: token as u64 + 2,
++                },
++                target,
++            }),
++        );
++        assert!(!refused.gesture_ack.as_ref().unwrap().accepted);
++        assert!(
++            refused
++                .gesture_ack
++                .as_ref()
++                .unwrap()
++                .reason
++                .as_deref()
++                .unwrap()
++                .contains("resident")
++        );
++        assert!(
++            refused.active_device_gesture.is_none()
++                && refused.device_preview.is_none()
++                && refused.playback.is_none()
++        );
++        assert_eq!(refused.state.project, bus_event.state.project);
++        assert_eq!(refused.state.revision, bus_event.state.revision);
++    }
++    let changed = edit(
++        &service,
++        Command::ReturnGain {
++            return_track: bus,
++            gain: 0.5,
++        },
++    );
++    assert_eq!(changed.state.project.return_tracks()[0].gain(), 0.5);
++    assert!(changed.playback.is_none());
++    assert_eq!(
++        request(&service, Request::Undo).state.project,
++        bus_event.state.project
++    );
++}
++
++#[test]
++fn header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit() {
++    let (service, track, other) = fixture();
++    let base = edit(&service, Command::Gain { track, gain: 0.75 });
++    let canonical = base.state.project.clone();
++    let revision = base.state.revision;
++    let reference = pcm(base);
++    assert!(reference.iter().flatten().any(|x| x.abs() > 1e-5));
++    let key = GestureKey {
++        generation: 0,
++        token: 1,
++    };
++    let begun = request(
++        &service,
++        Request::DeviceGesture(GestureRequest::Begin {
++            key,
++            target: GestureTarget::TrackBalance { track },
++        }),
++    );
++    assert!(begun.gesture_ack.unwrap().accepted);
++    for (sequence, balance) in [-1.0_f32, -0.25, 0.0, 0.75, 1.0].into_iter().enumerate() {
++        let event = change(&service, key, sequence as u64 + 1, balance);
++        assert!(
++            event.gesture_ack.as_ref().unwrap().accepted,
++            "{:?}",
++            event.error
++        );
++        assert_eq!(event.state.project, canonical);
++        assert_eq!(event.state.revision, revision);
++        assert_eq!(
++            event
++                .device_preview
++                .as_ref()
++                .unwrap()
++                .state
++                .project
++                .track(track)
++                .unwrap()
++                .balance(),
++            balance
++        );
++        let frames = pcm(event);
++        for (actual, original) in frames.iter().zip(&reference) {
++            for (channel, factor) in [1.0 - balance.max(0.0), 1.0 + balance.min(0.0)]
++                .into_iter()
++                .enumerate()
++            {
++                assert!((actual[channel] - original[channel] * factor).abs() < 1e-6);
++            }
++        }
++    }
++    let committed = request(
++        &service,
++        Request::DeviceGesture(GestureRequest::Commit {
++            key,
++            sequence: 6,
++            value: ParameterValue::Float(0.75),
++        }),
++    );
++    assert!(committed.gesture_ack.unwrap().accepted);
++    assert_eq!(committed.state.revision, revision + 1);
++    let accepted = committed.state.project.clone();
++    assert_eq!(accepted.track(other).unwrap().balance(), 0.0);
++    assert_eq!(request(&service, Request::Undo).state.project, canonical);
++    assert_eq!(request(&service, Request::Redo).state.project, accepted);
++    let key = GestureKey {
++        generation: 0,
++        token: 2,
++    };
++    assert!(
++        request(
++            &service,
++            Request::DeviceGesture(GestureRequest::Begin {
++                key,
++                target: GestureTarget::TrackBalance { track }
++            })
++        )
++        .gesture_ack
++        .unwrap()
++        .accepted
++    );
++    assert!(change(&service, key, 1, -0.5).gesture_ack.unwrap().accepted);
++    let canceled = request(
++        &service,
++        Request::DeviceGesture(GestureRequest::Cancel { key }),
++    );
++    assert!(canceled.gesture_ack.unwrap().accepted);
++    assert_eq!(canceled.state.project, accepted);
++    assert_eq!(
++        request(&service, Request::Undo).state.project,
++        canonical,
++        "cancel creates no undo step"
++    );
++}
++
++#[test]
++fn header_return_gain_previews_real_bus_pcm_and_preserves_current_save_open_and_history() {
++    let (service, track, _) = fixture();
++    let Some(Created::ReturnTrack(bus)) = edit(
++        &service,
++        Command::AddReturnTrack {
++            name: "header bus".into(),
++        },
++    )
++    .created
++    else {
++        panic!("return")
++    };
++    edit(
++        &service,
++        Command::SetReturnSend {
++            track,
++            return_track: bus,
++            gain: 1.0,
++        },
++    );
++    let direct = pcm(edit(
++        &service,
++        Command::ReturnGain {
++            return_track: bus,
++            gain: 0.0,
++        },
++    ));
++    assert!(direct.iter().flatten().any(|x| x.abs() > 1e-5));
++    let base = edit(
++        &service,
++        Command::ReturnGain {
++            return_track: bus,
++            gain: 1.0,
++        },
++    );
++    let canonical = base.state.project.clone();
++    let revision = base.state.revision;
++    let key = GestureKey {
++        generation: 0,
++        token: 1,
++    };
++    assert!(
++        request(
++            &service,
++            Request::DeviceGesture(GestureRequest::Begin {
++                key,
++                target: GestureTarget::ReturnGain { return_track: bus }
++            })
++        )
++        .gesture_ack
++        .unwrap()
++        .accepted
++    );
++    for (sequence, gain) in [0.0, 0.25, 1.0, 2.0].into_iter().enumerate() {
++        let event = change(&service, key, sequence as u64 + 1, gain);
++        assert!(
++            event.gesture_ack.as_ref().unwrap().accepted,
++            "{:?}",
++            event.error
++        );
++        assert_eq!(event.state.project, canonical);
++        assert_eq!(
++            event
++                .device_preview
++                .as_ref()
++                .unwrap()
++                .state
++                .project
++                .return_tracks()[0]
++                .gain(),
++            gain
++        );
++        for (actual, original) in pcm(event).iter().flatten().zip(direct.iter().flatten()) {
++            assert!(
++                (actual - original * (1.0 + gain)).abs() < 1e-6,
++                "direct plus independent return contribution"
++            );
++        }
++    }
++    let committed = request(
++        &service,
++        Request::DeviceGesture(GestureRequest::Commit {
++            key,
++            sequence: 5,
++            value: ParameterValue::Float(0.25),
++        }),
++    );
++    assert!(committed.gesture_ack.unwrap().accepted);
++    assert_eq!(committed.state.revision, revision + 1);
++    let accepted = committed.state.project.clone();
++    assert_eq!(request(&service, Request::Undo).state.project, canonical);
++    assert_eq!(request(&service, Request::Redo).state.project, accepted);
++    let path =
++        std::env::temp_dir().join(format!("hex439-return-{}-current.hex", std::process::id()));
++    assert!(!path.exists());
++    let saved = request(&service, Request::SaveNew(path.clone()));
++    assert!(saved.error.is_none(), "{:?}", saved.error);
++    assert!(!saved.state.unsaved);
++    edit(
++        &service,
++        Command::ReturnGain {
++            return_track: bus,
++            gain: 1.5,
++        },
++    );
++    let reopened = request(&service, Request::Open(path.clone()));
++    assert!(reopened.error.is_none(), "{:?}", reopened.error);
++    assert_eq!(reopened.state.project, accepted);
++    std::fs::remove_file(path).unwrap();
++}
++
++#[test]
++fn header_mix_targets_refuse_nonfinite_out_of_range_and_removed_owners() {
++    let (service, track, _) = fixture();
++    let Some(Created::ReturnTrack(bus)) =
++        edit(&service, Command::AddReturnTrack { name: "bus".into() }).created
++    else {
++        panic!("return")
++    };
++    for (index, target) in [
++        GestureTarget::TrackBalance { track },
++        GestureTarget::ReturnGain { return_track: bus },
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        let key = GestureKey {
++            generation: 0,
++            token: index as u64 + 1,
++        };
++        let begun = request(
++            &service,
++            Request::DeviceGesture(GestureRequest::Begin { key, target }),
++        );
++        assert!(begun.gesture_ack.unwrap().accepted);
++        let canonical = begun.state.project.clone();
++        for (seq, value) in [f32::NAN, f32::INFINITY, -2.0, 3.0].into_iter().enumerate() {
++            let rejected = change(&service, key, seq as u64 + 1, value);
++            assert!(!rejected.gesture_ack.unwrap().accepted);
++            assert!(rejected.device_preview.is_none());
++            assert_eq!(rejected.state.project, canonical);
++        }
++        let command = match target {
++            GestureTarget::TrackBalance { track } => Command::RemoveTrack(track),
++            GestureTarget::ReturnGain { return_track } => Command::RemoveReturnTrack(return_track),
++            _ => unreachable!(),
++        };
++        let removed = edit(&service, command);
++        let stale = request(
++            &service,
++            Request::DeviceGesture(GestureRequest::Commit {
++                key,
++                sequence: 5,
++                value: ParameterValue::Float(0.5),
++            }),
++        );
++        assert!(!stale.gesture_ack.unwrap().accepted);
++        assert_eq!(stale.state.project, removed.state.project);
++    }
+ }
+diff --git a/crates/hex-ui/src/editor/device_panel.rs b/crates/hex-ui/src/editor/device_panel.rs
+index e3c9fed9..cdfd4a9a 100644
+--- a/crates/hex-ui/src/editor/device_panel.rs
++++ b/crates/hex-ui/src/editor/device_panel.rs
+@@ -255,6 +255,11 @@ pub(super) fn control_style() -> ControlStyle {
+     theme::device_style(theme::DeviceStyleRole::Control)
+ }
+ 
++// Reuse the canonical device-side balance display/parser for track mixer fields.
++pub(super) fn balance_spec(spec: NumericSpec) -> NumericSpec {
++    numeric_display::NumericDisplayCodec::Balance.apply(spec)
++}
++
+ pub(super) fn device_layout_style() -> ControlStyle {
+     theme::device_style(theme::DeviceStyleRole::Layout)
+ }
+@@ -780,7 +785,10 @@ fn render_track(
+         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
+         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
+         GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
+-        GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
++        GestureTarget::ReturnSend { .. }
++        | GestureTarget::TrackGain { .. }
++        | GestureTarget::TrackBalance { .. }
++        | GestureTarget::ReturnGain { .. } => false,
+     }) || stale_keys.iter().any(|key| {
+         matches!(
+             view.device_panel.controls.get(key),
+diff --git a/crates/hex-ui/src/editor/device_panel/gesture_adapter.rs b/crates/hex-ui/src/editor/device_panel/gesture_adapter.rs
+index bdb34337..195eb29f 100644
+--- a/crates/hex-ui/src/editor/device_panel/gesture_adapter.rs
++++ b/crates/hex-ui/src/editor/device_panel/gesture_adapter.rs
+@@ -45,6 +45,20 @@ pub fn commit_owned_numeric_edit(
+         || view.device_gesture.has_pending_terminal()
+     {
+         let command = match target {
++            GestureTarget::TrackBalance { track } => Request::Edit(Command::Balance {
++                track,
++                balance: match value {
++                    ParameterValue::Float(balance) => balance,
++                    _ => return Err("track balance requires a float value"),
++                },
++            }),
++            GestureTarget::ReturnGain { return_track } => Request::Edit(Command::ReturnGain {
++                return_track,
++                gain: match value {
++                    ParameterValue::Float(gain) => gain,
++                    _ => return Err("return gain requires a float value"),
++                },
++            }),
+             GestureTarget::TrackGain { track } => Request::Edit(Command::Gain {
+                 track,
+                 gain: match value {
+diff --git a/crates/hex-ui/src/editor/device_panel/parameter_rows.rs b/crates/hex-ui/src/editor/device_panel/parameter_rows.rs
+index 3e6f554a..b84eb6b8 100644
+--- a/crates/hex-ui/src/editor/device_panel/parameter_rows.rs
++++ b/crates/hex-ui/src/editor/device_panel/parameter_rows.rs
+@@ -213,7 +213,10 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx:
+                     second,
+                 } => device == key.device && (first == key.parameter || second == key.parameter),
+                 GestureTarget::DeviceParameterSnapshot { device } => device == key.device,
+-                GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
++                GestureTarget::ReturnSend { .. }
++                | GestureTarget::TrackGain { .. }
++                | GestureTarget::TrackBalance { .. }
++                | GestureTarget::ReturnGain { .. } => false,
+             })
+         || view
+             .device_panel
+diff --git a/crates/hex-ui/src/editor/device_panel/return_view.rs b/crates/hex-ui/src/editor/device_panel/return_view.rs
+index c1dc8f91..3a564df2 100644
+--- a/crates/hex-ui/src/editor/device_panel/return_view.rs
++++ b/crates/hex-ui/src/editor/device_panel/return_view.rs
+@@ -63,7 +63,10 @@ pub(super) fn render(
+         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
+         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
+         GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
+-        GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
++        GestureTarget::ReturnSend { .. }
++        | GestureTarget::TrackGain { .. }
++        | GestureTarget::TrackBalance { .. }
++        | GestureTarget::ReturnGain { .. } => false,
+     }) || stale_keys.iter().any(|key| {
+         matches!(
+             view.device_panel.controls.get(key),
+diff --git a/crates/hex-ui/src/editor/return_tracks.rs b/crates/hex-ui/src/editor/return_tracks.rs
+index 9f713963..32740160 100644
+--- a/crates/hex-ui/src/editor/return_tracks.rs
++++ b/crates/hex-ui/src/editor/return_tracks.rs
+@@ -103,8 +103,8 @@ impl EditorView {
+         )
+     }
+ 
+-    pub(super) fn return_tracks_view(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+-        let Some(state) = self.state.as_ref() else {
++    pub(super) fn return_tracks_view(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
++        let Some(state) = self.state.as_ref().cloned() else {
+             return div()
+                 .id("pinned-return-tracks-empty")
+                 .h(px(0.0))
+@@ -178,8 +178,68 @@ impl EditorView {
+             let id = track.id();
+             let selected = self.focused_return == Some(id);
+             let name = track.name().to_owned();
+-            let gain = track.gain();
+             let muted = track.muted();
++            let (active_background, active_text) = super::track_gain::activator_colors(!muted);
++            let gain = track.gain();
++            let gain_control = if self.document_audio_mode
++                == hex_session::DocumentAudioMode::Resident
++            {
++                div()
++                    .w(px(82.0))
++                    .flex()
++                    .flex_shrink_0()
++                    .child(self.return_volume(track, cx))
++            } else {
++                // Preserve the real explicit command path when held previews are unavailable.
++                div()
++                    .flex()
++                    .items_center()
++                    .gap(px(3.0))
++                    .child(
++                        return_button(
++                            format!("return-gain-down-{}", id.value()),
++                            "−",
++                            "decrease return gain",
++                        )
++                        .on_click(cx.listener(move |view, _, _, cx| {
++                            super::device_panel::enqueue_return_edit(
++                                view,
++                                Command::ReturnGain {
++                                    return_track: id,
++                                    gain: (gain - 0.1).clamp(0.0, 2.0),
++                                },
++                                cx,
++                            );
++                            cx.notify();
++                        })),
++                    )
++                    .child(
++                        div()
++                            .w(px(32.0))
++                            .text_xs()
++                            .text_right()
++                            .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
++                            .child(theme::text(format!("{:.0}%", gain * 100.0))),
++                    )
++                    .child(
++                        return_button(
++                            format!("return-gain-up-{}", id.value()),
++                            "+",
++                            "increase return gain",
++                        )
++                        .on_click(cx.listener(move |view, _, _, cx| {
++                            super::device_panel::enqueue_return_edit(
++                                view,
++                                Command::ReturnGain {
++                                    return_track: id,
++                                    gain: (gain + 0.1).clamp(0.0, 2.0),
++                                },
++                                cx,
++                            );
++                            cx.notify();
++                        })),
++                    )
++            };
+             let row = div()
+                 .id(ElementId::Name(
+                     format!("return-track-{}", id.value()).into(),
+@@ -217,56 +277,21 @@ impl EditorView {
+                             }
+                         })),
+                 )
+-                .child(
+-                    return_button(
+-                        format!("return-gain-down-{}", id.value()),
+-                        "−",
+-                        "decrease return gain",
+-                    )
+-                    .on_click(cx.listener(move |view, _, _, cx| {
+-                        super::device_panel::enqueue_return_edit(
+-                            view,
+-                            Command::ReturnGain {
+-                                return_track: id,
+-                                gain: (gain - 0.1).clamp(0.0, 2.0),
+-                            },
+-                            cx,
+-                        );
+-                        cx.notify();
+-                    })),
+-                )
+-                .child(
+-                    div()
+-                        .w(px(32.0))
+-                        .text_xs()
+-                        .text_right()
+-                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+-                        .child(theme::text(format!("{:.0}%", gain * 100.0))),
+-                )
+-                .child(
+-                    return_button(
+-                        format!("return-gain-up-{}", id.value()),
+-                        "+",
+-                        "increase return gain",
+-                    )
+-                    .on_click(cx.listener(move |view, _, _, cx| {
+-                        super::device_panel::enqueue_return_edit(
+-                            view,
+-                            Command::ReturnGain {
+-                                return_track: id,
+-                                gain: (gain + 0.1).clamp(0.0, 2.0),
+-                            },
+-                            cx,
+-                        );
+-                        cx.notify();
+-                    })),
+-                )
++                .child(gain_control)
+                 .child(
+                     return_button(
+                         format!("return-mute-{}", id.value()),
+                         if muted { "○" } else { "●" },
+-                        "toggle return mute",
++                        if muted {
++                            "activate return"
++                        } else {
++                            "deactivate return"
++                        },
+                     )
++                    .w(px(28.0))
++                    .h(px(18.0))
++                    .bg(rgb(active_background))
++                    .text_color(rgb(active_text))
+                     .on_click(cx.listener(move |view, _, _, cx| {
+                         super::device_panel::enqueue_return_edit(
+                             view,
+diff --git a/crates/hex-ui/src/editor/track_gain.rs b/crates/hex-ui/src/editor/track_gain.rs
+index f9ef67a6..bad06576 100644
+--- a/crates/hex-ui/src/editor/track_gain.rs
++++ b/crates/hex-ui/src/editor/track_gain.rs
+@@ -3,7 +3,7 @@ use super::{EditorView, device_panel};
+ use crate::theme;
+ use gpui::{Context, Div, Entity, Subscription, div, prelude::*, px};
+ use hex_lattice_contract::ParameterValue;
+-use hex_project::{Track, TrackId};
++use hex_project::{ReturnId, ReturnTrack, Track, TrackId};
+ use hex_session::device_gesture::GestureTarget;
+ use hex_widgets::{
+     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
+@@ -19,6 +19,31 @@ pub(super) struct Controls {
+     generation: u64,
+     revision: Option<u64>,
+     bindings: BTreeMap<TrackId, Binding>,
++    mixer: BTreeMap<MixerKey, Binding>,
++}
++
++#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++enum MixerKey {
++    Balance(TrackId),
++    ReturnGain(ReturnId),
++}
++impl MixerKey {
++    fn target(self) -> GestureTarget {
++        match self {
++            Self::Balance(track) => GestureTarget::TrackBalance { track },
++            Self::ReturnGain(return_track) => GestureTarget::ReturnGain { return_track },
++        }
++    }
++    fn current(self, view: &EditorView) -> bool {
++        view.state.as_ref().is_some_and(|state| match self {
++            Self::Balance(track) => state.project.track(track).is_some(),
++            Self::ReturnGain(id) => state
++                .project
++                .return_tracks()
++                .iter()
++                .any(|track| track.id() == id),
++        })
++    }
+ }
+ 
+ struct Binding {
+@@ -28,6 +53,21 @@ struct Binding {
+     _observation: Subscription,
+ }
+ 
++/// Mixer activators share palette resolution without adding project state.
++pub(super) fn activator_colors(active: bool) -> (u32, u32) {
++    let background = theme::color(if active {
++        theme::PaletteRole::Primary
++    } else {
++        theme::PaletteRole::Raised
++    });
++    let preferred = theme::color(if active {
++        theme::PaletteRole::Surface
++    } else {
++        theme::PaletteRole::Muted
++    });
++    (background, theme::readable_text(background, preferred))
++}
++
+ fn automated(track: &Track) -> bool {
+     !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
+ }
+@@ -64,6 +104,24 @@ fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
+             binding.entity.update(cx, |control, cx| control.cancel(cx));
+         }
+     }
++    let stale = view
++        .track_gain_controls
++        .mixer
++        .keys()
++        .copied()
++        .filter(|key| {
++            view.track_gain_controls.generation != view.project_generation || !key.current(view)
++        })
++        .collect::<Vec<_>>();
++    for key in stale {
++        if let Some(binding) = view.track_gain_controls.mixer.remove(&key) {
++            if device_panel::owns_numeric_gesture(view, key.target(), &binding.lease) {
++                let _ = view.cancel_device_gesture();
++            }
++            binding.lease.set(None);
++            binding.entity.update(cx, |control, cx| control.cancel(cx));
++        }
++    }
+     view.track_gain_controls.generation = view.project_generation;
+     view.track_gain_controls.revision = view.state.as_ref().map(|state| state.revision);
+ }
+@@ -82,6 +140,12 @@ pub(super) fn controls_for_finalize(
+                 binding.entity.clone(),
+             )
+         })
++        .chain(
++            view.track_gain_controls
++                .mixer
++                .iter()
++                .map(|(key, binding)| (key.target(), binding.entity.clone())),
++        )
+         .collect()
+ }
+ 
+@@ -92,8 +156,8 @@ impl EditorView {
+         if automated(track) {
+             return div()
+                 .flex_1()
+-                .min_w(px(86.0))
+-                .h(px(21.0))
++                .min_w(px(60.0))
++                .h(px(18.0))
+                 .flex()
+                 .items_center()
+                 .justify_center()
+@@ -128,7 +192,7 @@ impl EditorView {
+             let entity = cx.new(|cx| {
+                 NumericControl::from_config(
+                     cx,
+-                    config.with_appearance(NumericControlAppearance::CompactSlider),
++                    config.with_appearance(NumericControlAppearance::FilledSlider),
+                 )
+             });
+             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
+@@ -207,9 +271,147 @@ impl EditorView {
+             let _ = control.set_external_value(f64::from(active.unwrap_or(track.gain())), cx);
+         });
+         div()
++            .flex()
++            .flex_1()
++            .min_w(px(60.0))
++            .h(px(18.0))
++            .child(binding.entity.clone())
++    }
++}
++
++impl EditorView {
++    pub(super) fn track_pan(&mut self, track: &Track, cx: &mut Context<Self>) -> Div {
++        let Ok(spec) = NumericSpec::new(-1.0, 1.0, 0.0, NumericScale::Bipolar, 2, None::<&str>)
++        else {
++            return div();
++        };
++        self.mixer_control(
++            MixerKey::Balance(track.id()),
++            format!("track-pan-{}", track.id().value()),
++            "track pan · original stereo balance",
++            device_panel::balance_spec(spec),
++            track.balance(),
++            cx,
++        )
++    }
++
++    pub(super) fn return_volume(&mut self, track: &ReturnTrack, cx: &mut Context<Self>) -> Div {
++        let Ok(spec) = NumericSpec::new(
++            0.0,
++            2.0,
++            1.0,
++            NumericScale::LinearAmplitudeDecibels,
++            1,
++            Some("db"),
++        ) else {
++            return div();
++        };
++        self.mixer_control(
++            MixerKey::ReturnGain(track.id()),
++            format!("return-volume-{}", track.id().value()),
++            "return volume · db",
++            spec,
++            track.gain(),
++            cx,
++        )
++    }
++
++    fn mixer_control(
++        &mut self,
++        key: MixerKey,
++        id: String,
++        label: &str,
++        spec: NumericSpec,
++        canonical: f32,
++        cx: &mut Context<Self>,
++    ) -> Div {
++        retire_stale(self, cx);
++        let target = key.target();
++        let generation = self.project_generation;
++        if let std::collections::btree_map::Entry::Vacant(entry) =
++            self.track_gain_controls.mixer.entry(key)
++        {
++            let Ok(config) = NumericControlConfig::new(
++                id,
++                theme::text(label),
++                NumericControlKind::HorizontalSlider,
++                spec,
++                f64::from(canonical),
++                device_panel::control_style(),
++            ) else {
++                return div();
++            };
++            let entity = cx.new(|cx| {
++                NumericControl::from_config(
++                    cx,
++                    config.with_appearance(NumericControlAppearance::FilledSlider),
++                )
++            });
++            let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
++            let captured = lease.clone();
++            let subscription = cx.subscribe(
++                &entity,
++                move |view, control, event: &NumericControlEvent, cx| {
++                    if generation != view.project_generation || !key.current(view) {
++                        return;
++                    }
++                    if event.phase == NumericEventPhase::Begin
++                        && (view.document_audio_mode != hex_session::DocumentAudioMode::Resident
++                            || view.gain_recorder.blocks_edits()
++                            || view.edit_pending())
++                    {
++                        view.error = Some(
++                            "finish the current edit · held mixer controls require resident audio"
++                                .into(),
++                        );
++                        control.update(cx, |control, cx| control.cancel(cx));
++                        cx.notify();
++                        return;
++                    }
++                    if let Err(reason) = device_panel::dispatch_bound_numeric_gesture(
++                        view,
++                        target,
++                        &captured,
++                        event.phase,
++                        ParameterValue::Float(event.value as f32),
++                    ) {
++                        view.error = Some(reason.into());
++                        control.update(cx, |control, cx| control.cancel(cx));
++                    }
++                    cx.notify();
++                },
++            );
++            let observation = cx.observe(&entity, |_, _, cx| cx.notify());
++            entry.insert(Binding {
++                entity,
++                lease,
++                _subscription: subscription,
++                _observation: observation,
++            });
++        }
++        let active = self
++            .device_gesture
++            .snapshot()
++            .filter(|active| active.target == target)
++            .and_then(|active| match active.value {
++                ParameterValue::Float(value) => Some(value),
++                _ => None,
++            });
++        let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
++            && !self.gain_recorder.blocks_edits()
++            && !self.opening_project
++            && !self.close_prompt_open;
++        let binding = &self.track_gain_controls.mixer[&key];
++        binding.entity.update(cx, |control, cx| {
++            control.set_enabled(enabled, cx);
++            let _ = control.set_external_style(device_panel::control_style(), cx);
++            let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);
++        });
++        div()
++            .flex()
+             .flex_1()
+-            .min_w(px(86.0))
+-            .h(px(21.0))
++            .min_w(px(60.0))
++            .h(px(18.0))
+             .child(binding.entity.clone())
+     }
+ }
+diff --git a/crates/hex-ui/src/editor/track_gain/tests.rs b/crates/hex-ui/src/editor/track_gain/tests.rs
+index ba01689d..2c217659 100644
+--- a/crates/hex-ui/src/editor/track_gain/tests.rs
++++ b/crates/hex-ui/src/editor/track_gain/tests.rs
+@@ -231,6 +231,50 @@ fn verified_streaming_keeps_explicit_functional_gain_controls(cx: &mut TestAppCo
+         );
+         assert!(view.device_gesture.snapshot().is_none());
+     });
++    editor.update(cx, |view, _| {
++        view.enqueue(hex_session::service::Request::Edit(
++            Command::AddReturnTrack {
++                name: "streamed bus".into(),
++            },
++        ))
++    });
++    pump(&editor, cx, |view| {
++        view.worker_requests_pending == 0
++            && !view
++                .state
++                .as_ref()
++                .unwrap()
++                .project
++                .return_tracks()
++                .is_empty()
++    });
++    editor.update(cx, |view, cx| {
++        view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
++        cx.notify();
++    });
++    visual.run_until_parked();
++    let id = editor.read_with(cx, |view, _| {
++        view.state.as_ref().unwrap().project.return_tracks()[0].id()
++    });
++    assert!(
++        visual
++            .debug_bounds(Box::leak(
++                format!("return-volume-{}", id.value()).into_boxed_str()
++            ))
++            .is_none()
++    );
++    let up = visual
++        .debug_bounds(Box::leak(
++            format!("return-gain-up-{}", id.value()).into_boxed_str(),
++        ))
++        .unwrap()
++        .center();
++    visual.simulate_mouse_down(up, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
++    pump(&editor, cx, |view| {
++        view.worker_requests_pending == 0
++            && view.state.as_ref().unwrap().project.return_tracks()[0].gain() > 1.0
++    });
+ }
+ 
+ #[gpui::test]
+@@ -417,7 +461,11 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
+                 assert!(slider.left() >= width_handle.right());
+                 assert!(slider.right() <= header.right());
+                 assert!(slider.bottom() <= height_handle.top());
+-                assert!(rail.size.width >= px(36.0) && rail.right() <= field.left());
++                assert!(rail.size.width >= px(58.0));
++                assert_eq!(
++                    rail, field,
++                    "one filled field replaces the old separate rail/readout"
++                );
+                 for prefix in [
+                     "gain-lane-show",
+                     "track-mute",
+@@ -427,7 +475,12 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
+                     let control = bounds(&mut visual, prefix, track);
+                     assert!(control.left() >= header.left() && control.right() <= header.right());
+                     assert!(control.bottom() <= height_handle.top());
+-                    assert!(control.right() <= slider.left() || control.left() >= slider.right());
++                    assert!(
++                        control.right() <= slider.left()
++                            || control.left() >= slider.right()
++                            || control.bottom() <= slider.top()
++                            || control.top() >= slider.bottom()
++                    );
+                 }
+             }
+             editor.read_with(&visual, |view, _| {
+@@ -530,3 +583,234 @@ fn header_volume_automation_envelope_shows_auto_without_edit(cx: &mut TestAppCon
+ fn header_volume_recorded_touch_lane_shows_auto_without_edit(cx: &mut TestAppContext) {
+     automation_readout_owns_gain(cx, true);
+ }
++
++#[gpui::test]
++fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAppContext) {
++    #[cfg(target_os = "macos")]
++    {
++        cx.use_native_text_system().unwrap();
++        cx.update(|app| crate::theme::load_fonts(app).unwrap());
++    }
++    let (_browser, mut visual, _editor, [track, _]) = actor_fixture(cx);
++    let bounds = |visual: &mut VisualTestContext, suffix: &str| {
++        visual
++            .debug_bounds(Box::leak(
++                format!("track-volume-{}{suffix}", track.value()).into_boxed_str(),
++            ))
++            .unwrap()
++    };
++    let whole = bounds(&mut visual, "");
++    let field = bounds(&mut visual, "-value");
++    assert!(
++        field.size.width >= whole.size.width - px(4.0),
++        "reference requires a centered value across the filled bar, not a separate narrow value field: {whole:?} {field:?}"
++    );
++    assert_eq!(field.center().x, whole.center().x);
++    assert!(field.size.height >= px(16.0));
++    let header = self::bounds(&mut visual, "arrangement-track-header", track);
++    let pan = self::bounds(&mut visual, "track-pan", track);
++    let activator = self::bounds(&mut visual, "track-mute", track);
++    let solo = self::bounds(&mut visual, "track-solo", track);
++    let arm = self::bounds(&mut visual, "track-arm-unavailable", track);
++    assert_eq!(activator.top(), solo.top());
++    assert_eq!(solo.top(), arm.top());
++    assert_eq!(whole.top(), pan.top());
++    assert!((activator.left() - whole.left()).abs() <= px(1.0));
++    assert!(activator.bottom() <= whole.top());
++    assert_eq!(arm.right(), pan.right());
++    for rect in [whole, pan, activator, solo, arm] {
++        assert!(rect.left() >= header.left() && rect.right() <= header.right());
++        assert!(rect.top() >= header.top() && rect.bottom() <= header.bottom());
++    }
++    let mut scene = Vec::new();
++    for suffix in [
++        "track-mute",
++        "track-solo",
++        "track-arm-unavailable",
++        "track-volume",
++        "track-pan",
++    ] {
++        let id = Box::leak(format!("{suffix}-{}", track.value()).into_boxed_str());
++        let rect = visual.debug_bounds(id).unwrap();
++        scene.push(serde_json::json!({"id": id, "bounds": [f32::from(rect.left()), f32::from(rect.top()), f32::from(rect.size.width), f32::from(rect.size.height)], "background": visual.rendered_background(id)}));
++    }
++    for prefix in ["track-volume", "track-pan"] {
++        for suffix in ["slider", "bar-fill", "value"] {
++            let id = Box::leak(format!("{prefix}-{}-{suffix}", track.value()).into_boxed_str());
++            let rect = visual.debug_bounds(id).unwrap();
++            let background = visual.rendered_background(id);
++            if suffix == "slider" || (prefix == "track-volume" && suffix == "bar-fill") {
++                assert!(background.is_some());
++            }
++            scene.push(serde_json::json!({"id":id, "bounds":[f32::from(rect.left()), f32::from(rect.top()),f32::from(rect.size.width),f32::from(rect.size.height)], "background":background}));
++        }
++    }
++    let activator_id = Box::leak(format!("track-mute-{}", track.value()).into_boxed_str());
++    let solo_id = Box::leak(format!("track-solo-{}", track.value()).into_boxed_str());
++    assert_eq!(
++        visual.rendered_background(activator_id),
++        Some(gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Primary)).into())
++    );
++    assert_ne!(
++        visual.rendered_background(activator_id),
++        visual.rendered_background(solo_id)
++    );
++    println!(
++        "HEX439_RENDERED_SCENE {}",
++        serde_json::to_string(&scene).unwrap()
++    );
++}
++
++#[gpui::test]
++fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
++    cx: &mut TestAppContext,
++) {
++    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
++    let pan = bounds(&mut visual, "track-pan", track);
++    let field = visual
++        .debug_bounds(Box::leak(
++            format!("track-pan-{}-value", track.value()).into_boxed_str(),
++        ))
++        .unwrap();
++    assert!(field.left() >= pan.left() && field.right() <= pan.right());
++    let start = field.center();
++    let end = point(start.x + px(20.0), start.y);
++    drag(&mut visual, start, end);
++    pump(&editor, cx, |view| {
++        view.worker_requests_pending == 0
++            && view.device_gesture.snapshot().is_none()
++            && view
++                .state
++                .as_ref()
++                .unwrap()
++                .project
++                .track(track)
++                .unwrap()
++                .balance()
++                > 0.0
++    });
++    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
++    visual.simulate_keystrokes("escape");
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    pump(&editor, cx, |view| {
++        view.worker_requests_pending == 0 && view.device_gesture.snapshot().is_none()
++    });
++    assert_eq!(
++        editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone()),
++        before
++    );
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_input("25 l");
++    visual.simulate_keystrokes("enter");
++    pump(&editor, cx, |view| {
++        view.worker_requests_pending == 0
++            && view.device_gesture.snapshot().is_none()
++            && view
++                .state
++                .as_ref()
++                .unwrap()
++                .project
++                .track(track)
++                .unwrap()
++                .balance()
++                == -0.25
++    });
++    editor.read_with(cx, |view, _| {
++        let project = &view.state.as_ref().unwrap().project;
++        assert_eq!(project.track(other).unwrap().balance(), 0.0);
++        assert!(!project.track(track).unwrap().soloed());
++        assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
++    });
++    for prefix in ["track-mute", "track-solo"] {
++        let hit = bounds(&mut visual, prefix, track).center();
++        visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_up(hit, MouseButton::Left, Modifiers::default());
++        pump(&editor, cx, |view| view.worker_requests_pending == 0);
++    }
++    editor.read_with(cx, |view, _| {
++        let track = view.state.as_ref().unwrap().project.track(track).unwrap();
++        assert!(track.muted() && track.soloed());
++    });
++    assert!(
++        visual
++            .debug_bounds(Box::leak(
++                format!("track-arm-unavailable-{}", track.value()).into_boxed_str()
++            ))
++            .is_some()
++    );
++    let name = bounds(&mut visual, "track-name", track).center();
++    visual.simulate_mouse_down(name, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(name, MouseButton::Left, Modifiers::default());
++    editor.read_with(cx, |view, _| assert_eq!(view.selected_track, Some(track)));
++}
++
++#[gpui::test]
++fn return_header_filled_gain_commits_and_keyboard_invalid_draft_blocks_owner_transition(
++    cx: &mut TestAppContext,
++) {
++    let (_browser, mut visual, editor, _) = actor_fixture(cx);
++    editor.update(cx, |view, _| {
++        view.enqueue(hex_session::service::Request::Edit(
++            Command::AddReturnTrack { name: "bus".into() },
++        ))
++    });
++    pump(&editor, cx, |view| {
++        view.worker_requests_pending == 0
++            && !view
++                .state
++                .as_ref()
++                .unwrap()
++                .project
++                .return_tracks()
++                .is_empty()
++    });
++    visual.run_until_parked();
++    let id = editor.read_with(cx, |view, _| {
++        view.state.as_ref().unwrap().project.return_tracks()[0].id()
++    });
++    let selector = Box::leak(format!("return-volume-{}-value", id.value()).into_boxed_str());
++    let field = visual.debug_bounds(selector).unwrap().center();
++    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
++    visual.simulate_input("-12 db");
++    visual.simulate_keystrokes("enter");
++    let expected = 10.0_f32.powf(-12.0 / 20.0);
++    pump(&editor, cx, |view| {
++        view.worker_requests_pending == 0
++            && view.device_gesture.snapshot().is_none()
++            && (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
++                < 1e-6
++    });
++    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
++    visual.simulate_input("+100 db");
++    editor.update(cx, |view, cx| {
++        assert!(!super::device_panel::finalize_controls(view, cx))
++    });
++    editor.read_with(cx, |view, _| {
++        assert!(
++            (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
++                < 1e-6
++        )
++    });
++    visual.simulate_keystrokes("escape");
++    visual.run_until_parked();
++    let mute_id = Box::leak(format!("return-mute-{}", id.value()).into_boxed_str());
++    let on = visual.rendered_background(mute_id).unwrap();
++    assert_eq!(
++        on,
++        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Primary)).into()
++    );
++    let hit = visual.debug_bounds(mute_id).unwrap().center();
++    visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(hit, MouseButton::Left, Modifiers::default());
++    pump(&editor, cx, |view| {
++        view.worker_requests_pending == 0
++            && view.state.as_ref().unwrap().project.return_tracks()[0].muted()
++    });
++    visual.run_until_parked();
++    assert_ne!(visual.rendered_background(mute_id).unwrap(), on);
++}
+diff --git a/crates/hex-ui/src/editor/tracks.rs b/crates/hex-ui/src/editor/tracks.rs
+index 5b007628..5ea84618 100644
+--- a/crates/hex-ui/src/editor/tracks.rs
++++ b/crates/hex-ui/src/editor/tracks.rs
+@@ -928,7 +928,7 @@ impl EditorView {
+                     .opacity(0.2)
+             }))
+             .debug_selector(|| format!("track-name-{}", track_id.value()))
+-            .w(px(self.track_header_width() - 10.0))
++            .w_full()
+             .flex_shrink_0()
+             .min_w_0()
+             .h(px(18.0))
+@@ -944,153 +944,306 @@ impl EditorView {
+                 .into()
+             });
+         let live_volume = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+-        let track_controls = div()
+-            .id(("arrangement-track-controls", track_id.value()))
+-            .debug_selector(move || format!("track-controls-{}", track_id.value()))
+-            .on_click(|_, _, cx| cx.stop_propagation())
+-            .flex()
+-            .items_center()
+-            .gap_1()
+-            .when(live_volume, |row| row.w_full().gap(px(1.0)))
+-            .child(
+-                button(
+-                    "a",
+-                    "show track gain automation",
+-                    ("gain-lane", track_id.value()),
+-                )
+-                .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
+-                .on_click(cx.listener(move |view, _, window, cx| {
+-                    view.show_gain_lane(track_id, window, cx);
+-                })),
+-            )
+-            .when(live_volume, |row| row.child(self.track_volume(track, cx)))
+-            // VerifiedStreaming keeps its functional explicit controls until
+-            // the typed transient-source route can make held drags audible.
+-            .when(!live_volume, |row| {
+-                row.child(
+-                    button("+", "increase track gain", ("gain-up", track_id.value()))
+-                        .debug_selector(move || format!("track-gain-up-{}", track_id.value()))
+-                        .on_click(cx.listener(move |view, _, window, cx| {
+-                            if view
+-                                .state
+-                                .as_ref()
+-                                .and_then(|state| state.project.track(track_id))
+-                                .is_some_and(|track| {
+-                                    !track.gain_envelope().is_empty()
+-                                        || !track.gain_lane().spans().is_empty()
+-                                })
+-                            {
+-                                view.show_gain_lane(track_id, window, cx);
+-                            }
+-                            view.gain_by(track_id, 0.1);
+-                            cx.notify();
+-                        })),
++        let header_content = if live_volume {
++            let (active_background, active_text) =
++                super::track_gain::activator_colors(!track.muted());
++            let (solo_background, solo_text) = super::track_gain::activator_colors(track.soloed());
++            let utilities = div()
++                .id(("track-header-utilities", track_id.value()))
++                .on_click(|_, _, cx| cx.stop_propagation())
++                .flex()
++                .gap(px(2.0))
++                .child(
++                    button(
++                        "a",
++                        "show track gain automation",
++                        ("gain-lane", track_id.value()),
++                    )
++                    .h(px(18.0))
++                    .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
++                    .on_click(cx.listener(move |view, _, window, cx| {
++                        view.show_gain_lane(track_id, window, cx)
++                    })),
+                 )
+                 .child(
+-                    button("−", "decrease track gain", ("gain-down", track_id.value()))
+-                        .debug_selector(move || format!("track-gain-down-{}", track_id.value()))
+-                        .on_click(cx.listener(move |view, _, window, cx| {
+-                            if view
+-                                .state
+-                                .as_ref()
+-                                .and_then(|state| state.project.track(track_id))
+-                                .is_some_and(|track| {
+-                                    !track.gain_envelope().is_empty()
+-                                        || !track.gain_lane().spans().is_empty()
+-                                })
+-                            {
+-                                view.show_gain_lane(track_id, window, cx);
+-                            }
+-                            view.gain_by(track_id, -0.1);
++                    button(
++                        "↗",
++                        "edit return sends",
++                        ("track-return-sends", track_id.value()),
++                    )
++                    .h(px(18.0))
++                    .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
++                    .on_click(cx.listener(move |view, _, _, cx| {
++                        let next = if view.send_menu_track == Some(track_id) {
++                            None
++                        } else {
++                            Some(track_id)
++                        };
++                        if next != view.send_menu_track
++                            && !super::device_panel::finalize_controls(view, cx)
++                        {
+                             cx.notify();
+-                        })),
+-                )
++                            return;
++                        }
++                        view.send_menu_track = next;
++                        cx.notify();
++                    })),
++                );
++            let activator = button(
++                "",
++                if track.muted() {
++                    "activate track"
++                } else {
++                    "deactivate track"
++                },
++                ("track-mute", track_id.value()),
++            )
++            .debug_selector(move || format!("track-mute-{}", track_id.value()))
++            .flex_1()
++            .min_w_0()
++            .h(px(18.0))
++            .bg(rgb(active_background))
++            .text_color(rgb(active_text))
++            .child(theme::text((track_index + 1).to_string()))
++            .on_click(cx.listener(move |view, _, _, cx| {
++                view.toggle_mute(track_id);
++                cx.notify();
++            }));
++            let solo = button(
++                "s",
++                "solo track · s · cmd+click additive",
++                ("track-solo", track_id.value()),
++            )
++            .debug_selector(move || format!("track-solo-{}", track_id.value()))
++            .w(px(28.0))
++            .h(px(18.0))
++            .bg(rgb(solo_background))
++            .text_color(rgb(solo_text))
++            .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
++                view.toggle_solo(track_id, !event.modifiers().platform);
++                cx.notify();
++            }));
++            let arm = div()
++                .id(("track-arm-unavailable", track_id.value()))
++                .debug_selector(move || format!("track-arm-unavailable-{}", track_id.value()))
++                .w(px(28.0))
++                .h(px(18.0))
++                .flex_shrink_0()
++                .flex()
++                .items_center()
++                .justify_center()
++                .text_xs()
++                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
++                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
++                .cursor(gpui::CursorStyle::Arrow)
++                .opacity(0.45)
++                .tooltip(|_, cx| {
++                    cx.new(|_| ClipTooltip {
++                        name: "recording unavailable · planned for hex 0.2".into(),
++                    })
++                    .into()
++                })
++                .child(theme::text("○"));
++            div()
++                .id(("arrangement-track-controls", track_id.value()))
++                .debug_selector(move || format!("track-controls-{}", track_id.value()))
++                .w_full()
++                .flex()
++                .items_center()
++                .gap(px(2.0))
+                 .child(
+                     div()
+-                        .w(px(34.0))
+-                        .text_xs()
+-                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+-                        .child(theme::text(
+-                            if track.gain_envelope().is_empty()
+-                                && track.gain_lane().spans().is_empty()
+-                            {
+-                                format!("{:.0}%", track.gain() * 100.0)
+-                            } else {
+-                                "auto".into()
+-                            },
+-                        )),
++                        .flex_1()
++                        .min_w_0()
++                        .flex()
++                        .flex_col()
++                        .gap(px(2.0))
++                        .child(track_name_view)
++                        .child(utilities),
+                 )
+-            })
+-            .child(
+-                button(
+-                    "●",
+-                    if track.muted() {
+-                        "unmute track"
+-                    } else {
+-                        "mute track"
+-                    },
+-                    ("track-mute", track_id.value()),
++                .child(
++                    div()
++                        .id(("track-header-mixer", track_id.value()))
++                        .on_click(|_, _, cx| cx.stop_propagation())
++                        .w(px(122.0))
++                        .flex_shrink_0()
++                        .flex()
++                        .flex_col()
++                        .gap(px(2.0))
++                        .child(
++                            div()
++                                .w_full()
++                                .flex()
++                                .gap(px(2.0))
++                                .child(activator)
++                                .child(solo)
++                                .child(arm),
++                        )
++                        .child(
++                            div()
++                                .w_full()
++                                .flex()
++                                .gap(px(2.0))
++                                .child(self.track_volume(track, cx))
++                                .child(self.track_pan(track, cx)),
++                        ),
+                 )
+-                .debug_selector(move || format!("track-mute-{}", track_id.value()))
+-                .text_color(rgb(if track.muted() {
+-                    theme::color(theme::PaletteRole::Primary)
+-                } else {
+-                    theme::color(theme::PaletteRole::Muted)
+-                }))
+-                .on_click(cx.listener(move |view, _, _, cx| {
+-                    view.toggle_mute(track_id);
+-                    cx.notify();
+-                })),
+-            )
+-            .child(
+-                button(
+-                    "s",
+-                    "solo track · s · cmd+click additive",
+-                    ("track-solo", track_id.value()),
++        } else {
++            let track_controls = div()
++                .id(("arrangement-track-controls", track_id.value()))
++                .debug_selector(move || format!("track-controls-{}", track_id.value()))
++                .on_click(|_, _, cx| cx.stop_propagation())
++                .flex()
++                .items_center()
++                .gap_1()
++                .when(live_volume, |row| row.w_full().gap(px(1.0)))
++                .child(
++                    button(
++                        "a",
++                        "show track gain automation",
++                        ("gain-lane", track_id.value()),
++                    )
++                    .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
++                    .on_click(cx.listener(move |view, _, window, cx| {
++                        view.show_gain_lane(track_id, window, cx);
++                    })),
+                 )
+-                .debug_selector(move || format!("track-solo-{}", track_id.value()))
+-                .text_color(rgb(if track.soloed() {
+-                    theme::color(theme::PaletteRole::Primary)
+-                } else {
+-                    theme::color(theme::PaletteRole::Muted)
+-                }))
+-                .on_click(cx.listener(
+-                    move |view, event: &gpui::ClickEvent, _, cx| {
+-                        view.toggle_solo(track_id, !event.modifiers().platform);
++                .when(live_volume, |row| row.child(self.track_volume(track, cx)))
++                // VerifiedStreaming keeps its functional explicit controls until
++                // the typed transient-source route can make held drags audible.
++                .when(!live_volume, |row| {
++                    row.child(
++                        button("+", "increase track gain", ("gain-up", track_id.value()))
++                            .debug_selector(move || format!("track-gain-up-{}", track_id.value()))
++                            .on_click(cx.listener(move |view, _, window, cx| {
++                                if view
++                                    .state
++                                    .as_ref()
++                                    .and_then(|state| state.project.track(track_id))
++                                    .is_some_and(|track| {
++                                        !track.gain_envelope().is_empty()
++                                            || !track.gain_lane().spans().is_empty()
++                                    })
++                                {
++                                    view.show_gain_lane(track_id, window, cx);
++                                }
++                                view.gain_by(track_id, 0.1);
++                                cx.notify();
++                            })),
++                    )
++                    .child(
++                        button("−", "decrease track gain", ("gain-down", track_id.value()))
++                            .debug_selector(move || format!("track-gain-down-{}", track_id.value()))
++                            .on_click(cx.listener(move |view, _, window, cx| {
++                                if view
++                                    .state
++                                    .as_ref()
++                                    .and_then(|state| state.project.track(track_id))
++                                    .is_some_and(|track| {
++                                        !track.gain_envelope().is_empty()
++                                            || !track.gain_lane().spans().is_empty()
++                                    })
++                                {
++                                    view.show_gain_lane(track_id, window, cx);
++                                }
++                                view.gain_by(track_id, -0.1);
++                                cx.notify();
++                            })),
++                    )
++                    .child(
++                        div()
++                            .w(px(34.0))
++                            .text_xs()
++                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
++                            .child(theme::text(
++                                if track.gain_envelope().is_empty()
++                                    && track.gain_lane().spans().is_empty()
++                                {
++                                    format!("{:.0}%", track.gain() * 100.0)
++                                } else {
++                                    "auto".into()
++                                },
++                            )),
++                    )
++                })
++                .child(
++                    button(
++                        "●",
++                        if track.muted() {
++                            "unmute track"
++                        } else {
++                            "mute track"
++                        },
++                        ("track-mute", track_id.value()),
++                    )
++                    .debug_selector(move || format!("track-mute-{}", track_id.value()))
++                    .text_color(rgb(if track.muted() {
++                        theme::color(theme::PaletteRole::Primary)
++                    } else {
++                        theme::color(theme::PaletteRole::Muted)
++                    }))
++                    .on_click(cx.listener(move |view, _, _, cx| {
++                        view.toggle_mute(track_id);
+                         cx.notify();
+-                    },
+-                )),
+-            )
+-            .child(
+-                button(
+-                    "↗",
+-                    "edit return sends",
+-                    ("track-return-sends", track_id.value()),
++                    })),
+                 )
+-                .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
+-                .text_color(rgb(theme::color(
+-                    if self.send_menu_track == Some(track_id) {
+-                        theme::PaletteRole::Secondary
+-                    } else {
+-                        theme::PaletteRole::Muted
+-                    },
+-                )))
+-                .on_click(cx.listener(move |view, _, _, cx| {
+-                    let next = if view.send_menu_track == Some(track_id) {
+-                        None
++                .child(
++                    button(
++                        "s",
++                        "solo track · s · cmd+click additive",
++                        ("track-solo", track_id.value()),
++                    )
++                    .debug_selector(move || format!("track-solo-{}", track_id.value()))
++                    .text_color(rgb(if track.soloed() {
++                        theme::color(theme::PaletteRole::Primary)
+                     } else {
+-                        Some(track_id)
+-                    };
+-                    if next != view.send_menu_track
+-                        && !super::device_panel::finalize_controls(view, cx)
+-                    {
++                        theme::color(theme::PaletteRole::Muted)
++                    }))
++                    .on_click(cx.listener(
++                        move |view, event: &gpui::ClickEvent, _, cx| {
++                            view.toggle_solo(track_id, !event.modifiers().platform);
++                            cx.notify();
++                        },
++                    )),
++                )
++                .child(
++                    button(
++                        "↗",
++                        "edit return sends",
++                        ("track-return-sends", track_id.value()),
++                    )
++                    .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
++                    .text_color(rgb(theme::color(
++                        if self.send_menu_track == Some(track_id) {
++                            theme::PaletteRole::Secondary
++                        } else {
++                            theme::PaletteRole::Muted
++                        },
++                    )))
++                    .on_click(cx.listener(move |view, _, _, cx| {
++                        let next = if view.send_menu_track == Some(track_id) {
++                            None
++                        } else {
++                            Some(track_id)
++                        };
++                        if next != view.send_menu_track
++                            && !super::device_panel::finalize_controls(view, cx)
++                        {
++                            cx.notify();
++                            return;
++                        }
++                        view.send_menu_track = next;
+                         cx.notify();
+-                        return;
+-                    }
+-                    view.send_menu_track = next;
+-                    cx.notify();
+-                })),
+-            );
++                    })),
++                );
++            div()
++                .id(("streaming-track-controls", track_id.value()))
++                .w_full()
++                .flex()
++                .flex_col()
++                .child(track_name_view)
++                .child(track_controls)
++        };
+         let header_focus = self.track_header_focus(track_id, cx);
+         let click_focus = header_focus.clone();
+         let header = div()
+@@ -1127,8 +1280,7 @@ impl EditorView {
+                 theme::color(theme::PaletteRole::Surface)
+             }))
+             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+-            .child(track_name_view)
+-            .child(track_controls)
++            .child(header_content)
+             .children(self.track_resize_handles(track_id, cx))
+             .relative()
+             .child(
+diff --git a/crates/hex-widgets/src/numeric_control.rs b/crates/hex-widgets/src/numeric_control.rs
+index 109b5f4a..ba3b3eaa 100644
+--- a/crates/hex-widgets/src/numeric_control.rs
++++ b/crates/hex-widgets/src/numeric_control.rs
+@@ -81,6 +81,9 @@ pub enum NumericControlAppearance {
+     InlineValue,
+     /// A rail and editable readout for a compact mixer/header row.
+     CompactSlider,
++    /// One filled mixer field with centered editable text and horizontal scrubbing.
++    /// Bipolar specs fill from the marked center; other scales fill from the left.
++    FilledSlider,
+     DeviceMeters,
+ }
+ 
+@@ -604,7 +607,12 @@ impl NumericControl {
+         let shift = event.modifiers.shift;
+         let primary_delta = match (press.target, self.kind) {
+             (PressTarget::Control, NumericControlKind::HorizontalSlider) => delta_x,
+-            // Rectangular readouts always scrub vertically, independent of the
++            (PressTarget::Value, NumericControlKind::HorizontalSlider)
++                if self.appearance == NumericControlAppearance::FilledSlider =>
++            {
++                delta_x
++            }
++            // Other rectangular readouts scrub vertically, independent of the
+             // track/dial presentation their owner uses.
+             _ => -delta_y,
+         };
+@@ -1350,6 +1358,72 @@ impl gpui::Render for NumericControl {
+                     style,
+                     self.value_mouse_down_listener(cx),
+                 )),
++            (NumericControlKind::HorizontalSlider, NumericControlAppearance::FilledSlider) => {
++                let bipolar = self.spec.scale() == crate::NumericScale::Bipolar;
++                let origin = if bipolar { 0.5 } else { 0.0 };
++                let fill_id = format!("{}-bar-fill", self.id);
++                let center_id = format!("{}-bar-center", self.id);
++                let slider_id = format!("{}-slider", self.id);
++                div()
++                    .id(self.id.clone())
++                    .flex()
++                    .w_full()
++                    .min_w(px(60.0))
++                    .h(px(18.0))
++                    .track_focus(&self.focus)
++                    .key_context(key_context)
++                    .child(
++                        div()
++                            .debug_selector(move || slider_id.clone())
++                            .relative()
++                            .flex_1()
++                            .min_w_0()
++                            .h_full()
++                            .overflow_hidden()
++                            .rounded(px(crate::CONTROL_CORNER_RADIUS))
++                            .bg(rgb(style.rail))
++                            .child(
++                                div()
++                                    .debug_selector(move || fill_id.clone())
++                                    .absolute()
++                                    .left(relative(value.min(origin)))
++                                    .w(relative((value - origin).abs()))
++                                    .h_full()
++                                    .bg(rgb(if enabled { style.accent } else { style.muted }))
++                                    .opacity(0.35),
++                            )
++                            .when(bipolar, |bar| {
++                                bar.child(
++                                    div()
++                                        .debug_selector(move || center_id.clone())
++                                        .absolute()
++                                        .left(relative(0.5))
++                                        .w(px(1.0))
++                                        .h_full()
++                                        .bg(rgb(style.muted))
++                                        .opacity(0.6),
++                                )
++                            })
++                            .child(
++                                value_field_sized(
++                                    self.id.clone(),
++                                    value_text,
++                                    ValueFieldPresentation {
++                                        invalid: self.invalid_text,
++                                        editing: self.editing,
++                                        enabled,
++                                        style,
++                                        width: px(60.0),
++                                        height: px(18.0),
++                                    },
++                                    self.value_mouse_down_listener(cx),
++                                )
++                                .relative()
++                                .w_full()
++                                .h_full(),
++                            ),
++                    )
++            }
+             (NumericControlKind::HorizontalSlider, NumericControlAppearance::CompactSlider) => {
+                 div()
+                     .id(self.id.clone())
+@@ -1729,7 +1803,7 @@ fn value_field_sized(
+     child: NumericTextElement,
+     presentation: ValueFieldPresentation,
+     on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+-) -> impl IntoElement {
++) -> gpui::Stateful<gpui::Div> {
+     let ValueFieldPresentation {
+         invalid,
+         editing,
+diff --git a/crates/hex-widgets/src/numeric_control/compact_slider_tests.rs b/crates/hex-widgets/src/numeric_control/compact_slider_tests.rs
+index 2523bf4b..468932bf 100644
+--- a/crates/hex-widgets/src/numeric_control/compact_slider_tests.rs
++++ b/crates/hex-widgets/src/numeric_control/compact_slider_tests.rs
+@@ -161,3 +161,209 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
+         assert_eq!(control.value(), 75.0);
+     });
+ }
++
++#[gpui::test]
++fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestAppContext) {
++    cx.update(bind_numeric_control_keys);
++    for bipolar in [false, true] {
++        let handle = *cx.add_window(|_, _| Empty);
++        let (control, root) = cx
++            .update_window(handle, |_, window, cx| {
++                let spec = if bipolar {
++                    NumericSpec::new(
++                        -1.0,
++                        1.0,
++                        0.0,
++                        crate::NumericScale::Bipolar,
++                        2,
++                        None::<&str>,
++                    )
++                    .unwrap()
++                } else {
++                    NumericSpec::new(
++                        0.0,
++                        2.0,
++                        1.0,
++                        crate::NumericScale::LinearAmplitudeDecibels,
++                        1,
++                        None::<&str>,
++                    )
++                    .unwrap()
++                };
++                let control = cx.new(|cx| {
++                    NumericControl::from_config(
++                        cx,
++                        NumericControlConfig::new(
++                            "filled-volume",
++                            "volume",
++                            NumericControlKind::HorizontalSlider,
++                            spec.clone(),
++                            spec.default(),
++                            STYLE,
++                        )
++                        .unwrap()
++                        .with_appearance(NumericControlAppearance::FilledSlider),
++                    )
++                });
++                let root = window.replace_root(cx, |_, _| Root {
++                    control: control.clone(),
++                    width: 60.0,
++                });
++                (control, root)
++            })
++            .unwrap();
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.simulate_resize(size(px(400.0), px(140.0)));
++        for width in [60.0, 86.0, 168.0] {
++            root.update(cx, |root, cx| {
++                root.width = width;
++                cx.notify();
++            });
++            for value in if bipolar {
++                [-1.0, 0.0, 1.0]
++            } else {
++                [0.0, 1.0, 2.0]
++            } {
++                control.update(cx, |control, cx| {
++                    control.set_external_value(value, cx).unwrap()
++                });
++                visual.run_until_parked();
++                let slot = visual.debug_bounds("compact-slot").unwrap();
++                let bar = visual.debug_bounds("filled-volume-slider").unwrap();
++                let field = visual.debug_bounds("filled-volume-value").unwrap();
++                let fill = visual.debug_bounds("filled-volume-bar-fill").unwrap();
++                assert_eq!(
++                    bar.size.width,
++                    px(width - 2.0),
++                    "retain shared focus-marker inset"
++                );
++                assert_eq!(field, bar, "text and bar must occupy one combined field");
++                assert!(bar.right() <= slot.right() && bar.bottom() <= slot.bottom());
++                assert!(fill.left() >= bar.left() && fill.right() <= bar.right());
++                if bipolar {
++                    let center = visual.debug_bounds("filled-volume-bar-center").unwrap();
++                    assert_eq!(center.left(), bar.center().x);
++                    if value < 0.0 {
++                        assert_eq!(fill.right(), center.left());
++                    }
++                    if value > 0.0 {
++                        assert_eq!(fill.left(), center.left());
++                    }
++                    if value == 0.0 {
++                        assert_eq!(fill.size.width, px(0.0));
++                    }
++                } else if value == 0.0 {
++                    assert_eq!(fill.size.width, px(0.0));
++                } else if value == 2.0 {
++                    assert_eq!(fill.size.width, bar.size.width);
++                }
++            }
++        }
++    }
++}
++
++#[gpui::test]
++fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecycle(
++    cx: &mut TestAppContext,
++) {
++    cx.update(bind_numeric_control_keys);
++    let handle = *cx.add_window(|_, _| Empty);
++    let control = cx
++        .update_window(handle, |_, window, cx| {
++            let control = cx.new(|cx| {
++                NumericControl::from_config(
++                    cx,
++                    NumericControlConfig::new(
++                        "filled-edit",
++                        "volume",
++                        NumericControlKind::HorizontalSlider,
++                        NumericSpec::new(
++                            0.0,
++                            2.0,
++                            1.0,
++                            crate::NumericScale::LinearAmplitudeDecibels,
++                            1,
++                            None::<&str>,
++                        )
++                        .unwrap(),
++                        1.0,
++                        STYLE,
++                    )
++                    .unwrap()
++                    .with_appearance(NumericControlAppearance::FilledSlider),
++                )
++            });
++            window.replace_root(cx, |_, _| Root {
++                control: control.clone(),
++                width: 86.0,
++            });
++            control
++        })
++        .unwrap();
++    let events = Rc::new(RefCell::new(Vec::new()));
++    let captured = events.clone();
++    let _subscription = cx.update(|app| {
++        app.subscribe(&control, move |_, event, _| {
++            captured.borrow_mut().push(*event)
++        })
++    });
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.simulate_resize(size(px(400.0), px(140.0)));
++    let field = visual.debug_bounds("filled-edit-value").unwrap();
++    let start = field.center();
++    let end = point(start.x + px(20.0), start.y);
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    assert!(control.read_with(cx, |c, _| c.value()) > 1.0);
++    assert_eq!(
++        events.borrow().iter().map(|e| e.phase).collect::<Vec<_>>(),
++        [
++            NumericEventPhase::Begin,
++            NumericEventPhase::Change,
++            NumericEventPhase::Commit
++        ]
++    );
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_input("-6 db");
++    visual.simulate_keystrokes("enter");
++    assert!((control.read_with(cx, |c, _| c.value()) - 10.0_f64.powf(-6.0 / 20.0)).abs() < 1e-12);
++    let accepted = control.read_with(cx, |c, _| c.value());
++    for draft in ["+100 db", "NaN", "∞", "é"] {
++        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
++        visual.simulate_input(draft);
++        visual.simulate_keystrokes("enter");
++        control.read_with(cx, |c, _| {
++            assert!(c.is_editing());
++            assert!(c.invalid_text);
++            assert_eq!(c.value(), accepted);
++        });
++        visual.simulate_keystrokes("escape");
++    }
++    events.borrow_mut().clear();
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
++    visual.simulate_keystrokes("escape");
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    assert_eq!(control.read_with(cx, |c, _| c.value()), accepted);
++    assert!(
++        events
++            .borrow()
++            .iter()
++            .any(|e| e.phase == NumericEventPhase::Cancel)
++    );
++    assert!(
++        !events
++            .borrow()
++            .iter()
++            .any(|e| e.phase == NumericEventPhase::Commit)
++    );
++    events.borrow_mut().clear();
++    control.update(cx, |c, cx| c.set_enabled(false, cx));
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    assert!(events.borrow().is_empty());
++}
+diff --git a/docs/track-header-volume.md b/docs/track-header-volume.md
+index 9b4d6564..17390d35 100644
+--- a/docs/track-header-volume.md
++++ b/docs/track-header-volume.md
+@@ -52,3 +52,54 @@ Automation-owned headers show `auto` instead of the unrelated static gain/dB
+ value. Both authored envelopes and recorded touch spans retain their existing
+ edit refusal; the readout has no gain drag binding. Bounded rendered Service
+ fixtures verify both indications and unchanged Project/history after pointer drag.
++
++## reference-composed mixer fields — Pulse2835 / PR439
++
++The supported resident header component places a compact name/automation/send
++column beside two mixer rows. The upper row contains a numbered track activator,
++Solo and a clearly disabled recording-availability indication. The lower row has
++one centered, filled dB field and one bipolar balance field. Both use the shared
++`NumericControl::FilledSlider` appearance: click to type, drag horizontally,
++Shift for fine motion, Enter to validate and Escape to cancel. The fill is a
++parameter position, never an audio meter; balance fills outward from a marked
++center and retains Hex's existing stereo-balance law and l/r/c input codec.
++Standard and CompactSlider geometry elsewhere stays unchanged. The 176×44px
++minimum header remains usable; width/height resizing and native font shaping
++have separate finite checks, rather than an imported PR431 sizing implementation.
++
++Track pan and Return gain use additive typed targets in the existing worker
++numeric-gesture protocol. Their overlays prepare through the same finite mixer
++command path as track gain, without canonical history edits until commit. The
++existing generation/token/sequence, cancellation, rebase and terminal handling
++remain shared. Canonical Balance and ReturnGain commands enforce their existing
++ranges; one completed gesture creates one Undo step. Automation-owned track gain
++still reads `auto`, and gain-recording/edit barriers remain effective. Return
++rows reuse the filled gain style and actual mute command without changing pinned
++placement or importing the separate PR438 row-unification work. VerifiedStreaming
++retains the original explicit +/- gain controls for both kinds of track; held
++mixer targets refuse that mode rather than acknowledge an inaudible preview.
++
++This is a supported-controls component, not full Pulse2835 acceptance. Recording
++arm/input capture is absent and remains deferred to Pulse26 / version0.2; the
++circle has no arm state or enabled action. Return buses currently have no pan or
++Solo model/commands, so no fake controls are shown. No recording, routing, schema,
++DSP or native input feature is added by this presentation change. The user rejected
++PR331's earlier appearance; its source/history evidence is preserved and does not
++count as acceptance of this visual refinement.
++
++The source tests retain a real pre-change rendered-layout failure (separate
++86px rail/root and46px value field), completed GPUI scene bounds/paint evidence,
++actual mouse/text input and real Service PCM/history/current-save round trips.
++Linux's deterministic GPUI test platform has no GPU framebuffer and uses no-op
++text shaping; scene evidence is not a native screenshot or a Live parity claim.
++The reference-composition case opts into bundled Ioskeley native shaping on macOS.
++
++Root's later optimized native checklist: compare the supplied crop against the
++actual two-row header at minimum/wide widths and short/tall rows; inspect centered
++dB/l-r-c text, bipolar center, fill contrast, activator/Solo state and disabled
++recording tooltip. Drag and type normal-track gain/pan and Return gain while
++listening, release/Undo/Redo, then Cancel; save/reopen. Check name selection,
++automation/send buttons, resize edges, invalid/IME text and shortcut isolation.
++Verify Return rows remain pinned and streaming retains real +/- controls. Record
++actual source/build and font/visual/audio observations separately; no app action
++or installation is performed by the source executor.
+diff --git a/scripts/check-ui-style.py b/scripts/check-ui-style.py
+index 2aa099f3..9eefb9e9 100644
+--- a/scripts/check-ui-style.py
++++ b/scripts/check-ui-style.py
+@@ -150,7 +150,17 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
+             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/waveform_header_ui_test.rs'
+             and suffix.startswith('gpui::canvas(')
+         )
+-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas:
++        # Header mixer composition uses typed controls; each caption is checked
++        # separately at its theme::text boundary. Keep variable names file-local.
++        header_mixer_component = (
++            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
++            and suffix.startswith(('utilities)', 'activator)', 'solo)', 'arm)',
++                                   'self.track_pan(', 'header_content)'))
++        ) or (
++            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
++            and suffix.startswith(('self.return_volume(', 'gain_control)'))
++        )
++        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component:
+             line = source.count('\n', 0, match.start()) + 1
+             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
+     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
+diff --git a/todo.md b/todo.md
+index 8be4cfbe..bc8f0325 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5753,3 +5753,17 @@ User rejected device-local automation editing. Remove its button, graph mode and
+ 
+ - Compose complete429ba3b5 owner return over6a8d with actual qualified main2683942b (BOTH419/458 authenticated merged, exact935.723s full21). Only three appended todo conflict regions; retain both histories, original phase/fade/CycleEnd/cfg/codec and private comparison fixture carry. Preserve all current workspace/menu/gain-pointer/header/407/413/main source.
+ - All35 Length owner payloads and six before/after Git blobs verified. Actual ordinary control PASS/four placed Length-minus REDs and fixture compile-only negative remain source-bound. New current guarded six actual Length Service cases, prospective full21 and fresh review required before canonical456 merge. Keep current32 placement+tuning+required nullable A/B with BOTH asset slots; no unmerged native395/whole445 import or physical/runtime/listening/delivery claim.
++
++## reference track-header mixer component — Pulse2835 / PR439, 19 october2026
++
++Additive shared filled numeric fields replace the rejected separate resident
++rail/readout composition. Track activator/Solo, gain/pan and Return gain/mute
++retain canonical commands; TrackBalance/ReturnGain reuse existing worker gesture
++custody, transient prepared previews, Cancel and one-step history. Standard widget
++appearances, automation-owned `auto`, streaming +/- and pinned Return placement
++remain. See docs/track-header-volume.md for exact scope and evidence limits.
++Recording arm is disabled/unavailable and remains Pulse26's deferred0.2 dependency;
++Return pan/Solo have no current model and are omitted. Full2835 acceptance and
++optimized native visual/listening checks stay open. No PR438/431 implementation,
++recording backend, codec, new DSP or native app action is included. Final current
++candidate checks/review/merge belong to the sole merger.

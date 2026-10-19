@@ -1,0 +1,8 @@
+crates/hex-ui/src/editor/return_tracks.rs:190: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/return_tracks.rs:279: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/tracks.rs:1075: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/tracks.rs:1091: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/tracks.rs:1092: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/tracks.rs:1093: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/tracks.rs:1101: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/tracks.rs:1296: route text through theme::text or add an explicit view component

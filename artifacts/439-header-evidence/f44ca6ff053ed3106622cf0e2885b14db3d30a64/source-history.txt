@@ -1,0 +1,24 @@
+commit f44ca6ff053ed3106622cf0e2885b14db3d30a64
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:59:43 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:59:43 2026 +0000
+
+    Share activator contrast and register only the new typed header components
+
+commit 6953c41624cc9bdb8009e90a14462ada19778654
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:54:33 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:54:33 2026 +0000
+
+    Compose filled header mixer controls with canonical pan and Return gain gestures
+
+commit fb4cb8be3896b73c8ebda76027bbcbfbd02622ec
+Merge: ce38ef26 9d1d0f0b
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 14:32:17 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 14:32:17 2026 +0000
+
+    Merge remote-tracking branch 'origin/main' into pulse/task-2835-g1-decc6ba9bc1a

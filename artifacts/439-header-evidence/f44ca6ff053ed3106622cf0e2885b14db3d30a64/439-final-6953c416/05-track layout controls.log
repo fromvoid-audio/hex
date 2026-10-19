@@ -1,0 +1,15 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.21s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 5 tests
+test editor::track_layout_ui_test::empty_project_main_header_width_handle_uses_current_window_limit ... ok
+test editor::track_layout_ui_test::header_width_edges_align_every_timeline_layer_and_preserve_frame_coordinates ... ok
+test editor::track_layout_ui_test::bottom_edge_resizes_only_its_row_with_controls_and_lane_aligned ... ok
+test editor::track_layout_ui_test::resize_capture_cancels_on_escape_lost_button_window_change_and_stale_revision ... ok
+test editor::track_layout_ui_test::variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_ids ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1046 filtered out; finished in 1.89s
+

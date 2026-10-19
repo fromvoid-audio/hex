@@ -1,0 +1,98 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0308]: `if` and `else` have incompatible types
+    --> crates/hex-ui/src/editor/tracks.rs:1249:13
+     |
+ 947 |             let header_content = if live_volume {
+     |  ________________________________-
+ 948 | |               let utilities = div()
+ 949 | |                   .flex()
+ 950 | |                   .gap(px(2.0))
+...    |
+1058 | | /             div()
+1059 | | |                 .id(("arrangement-track-controls", track_id.value()))
+1060 | | |                 .debug_selector(move || format!("track-controls-{}", track_id.value()))
+1061 | | |                 .w_full()
+...    | |
+1099 | | |                         ),
+1100 | | |                 )
+     | | |_________________- expected because of this
+...    |
+1249 | | /             div()
+1250 | | |                 .w_full()
+1251 | | |                 .flex()
+1252 | | |                 .flex_col()
+1253 | | |                 .child(track_name_view)
+1254 | | |                 .child(track_controls)
+     | | |______________________________________^ expected `Stateful<Div>`, found `Div`
+1255 | |           };
+     | |___________- `if` and `else` have incompatible types
+     |
+     = note: expected struct `gpui::Stateful<gpui::Div>`
+                found struct `gpui::Div`
+
+error[E0004]: non-exhaustive patterns: `hex_session::device_gesture::GestureTarget::TrackBalance { .. }` and `hex_session::device_gesture::GestureTarget::ReturnGain { .. }` not covered
+   --> crates/hex-ui/src/editor/device_panel/parameter_rows.rs:206:43
+    |
+206 |             .is_some_and(|snapshot| match snapshot.target {
+    |                                           ^^^^^^^^^^^^^^^ patterns `hex_session::device_gesture::GestureTarget::TrackBalance { .. }` and `hex_session::device_gesture::GestureTarget::ReturnGain { .. }` not covered
+    |
+note: `hex_session::device_gesture::GestureTarget` defined here
+   --> crates/hex-session/src/device_gesture.rs:21:1
+    |
+ 21 | pub enum GestureTarget {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 25 |     TrackBalance {
+    |     ------------ not covered
+...
+ 28 |     ReturnGain {
+    |     ---------- not covered
+    = note: the matched value is of type `hex_session::device_gesture::GestureTarget`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern, a match arm with multiple or-patterns as shown, or multiple match arms
+    |
+216 ~                 GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
+217 ~                 hex_session::device_gesture::GestureTarget::TrackBalance { .. } | hex_session::device_gesture::GestureTarget::ReturnGain { .. } => todo!(),
+    |
+
+error[E0004]: non-exhaustive patterns: `hex_session::device_gesture::GestureTarget::TrackBalance { .. }` and `hex_session::device_gesture::GestureTarget::ReturnGain { .. }` not covered
+  --> crates/hex-ui/src/editor/device_panel/return_view.rs:62:74
+   |
+62 |     let stale_target_has_work = active_target.is_some_and(|target| match target {
+   |                                                                          ^^^^^^ patterns `hex_session::device_gesture::GestureTarget::TrackBalance { .. }` and `hex_session::device_gesture::GestureTarget::ReturnGain { .. }` not covered
+   |
+note: `hex_session::device_gesture::GestureTarget` defined here
+  --> crates/hex-session/src/device_gesture.rs:21:1
+   |
+21 | pub enum GestureTarget {
+   | ^^^^^^^^^^^^^^^^^^^^^^
+...
+25 |     TrackBalance {
+   |     ------------ not covered
+...
+28 |     ReturnGain {
+   |     ---------- not covered
+   = note: the matched value is of type `hex_session::device_gesture::GestureTarget`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern, a match arm with multiple or-patterns as shown, or multiple match arms
+   |
+66 ~         GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
+67 ~         hex_session::device_gesture::GestureTarget::TrackBalance { .. } | hex_session::device_gesture::GestureTarget::ReturnGain { .. } => todo!(),
+   |
+
+error[E0596]: cannot borrow `*self` as mutable, as it is behind a `&` reference
+   --> crates/hex-ui/src/editor/return_tracks.rs:223:32
+    |
+223 |                         .child(self.return_volume(&track, cx)),
+    |                                ^^^^ `self` is a `&` reference, so it cannot be borrowed as mutable
+    |
+help: consider changing this to be a mutable reference
+    |
+106 |     pub(super) fn return_tracks_view(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    |                                       +++
+
+Some errors have detailed explanations: E0004, E0308, E0596.
+For more information about an error, try `rustc --explain E0004`.
+error: could not compile `hex-ui` (lib test) due to 4 previous errors

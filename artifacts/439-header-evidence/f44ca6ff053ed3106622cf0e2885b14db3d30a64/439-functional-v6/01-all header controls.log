@@ -1,0 +1,20 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.91s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 9 tests
+HEX439_RENDERED_SCENE [{"id":"track-mute-1","bounds":[1154.0,235.0,62.0,18.0],"background":{"tag":"Solid","color_space":"Srgb","solid":"#f06449ff","gradient_angle_or_pattern_height":0.0,"colors":[{"color":"#00000000","percentage":0.0},{"color":"#00000000","percentage":0.0}],"pad":0}},{"id":"track-solo-1","bounds":[1218.0,235.0,28.0,18.0],"background":{"tag":"Solid","color_space":"Srgb","solid":"#242222ff","gradient_angle_or_pattern_height":0.0,"colors":[{"color":"#00000000","percentage":0.0},{"color":"#00000000","percentage":0.0}],"pad":0}},{"id":"track-arm-unavailable-1","bounds":[1248.0,235.0,28.0,18.0],"background":{"tag":"Solid","color_space":"Srgb","solid":"#24222273","gradient_angle_or_pattern_height":0.0,"colors":[{"color":"#00000000","percentage":0.0},{"color":"#00000000","percentage":0.0}],"pad":0}},{"id":"track-volume-1","bounds":[1154.0,255.0,60.0,18.0],"background":null},{"id":"track-pan-1","bounds":[1216.0,255.0,60.0,18.0],"background":null}]
+test editor::track_gain::tests::header_volume_is_one_filled_numeric_field_not_a_separate_rail ... ok
+test editor::track_gain::tests::header_volume_recorded_touch_lane_shows_auto_without_edit ... ok
+test editor::track_gain::tests::header_volume_automation_envelope_shows_auto_without_edit ... ok
+test editor::track_gain::tests::verified_streaming_keeps_explicit_functional_gain_controls ... ok
+test editor::track_gain::tests::header_volume_text_commit_uses_canonical_gain_and_automation_refuses_drag ... ok
+test editor::track_gain::tests::header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands ... ok
+test editor::track_gain::tests::return_header_filled_gain_commits_and_keyboard_invalid_draft_blocks_owner_transition ... ok
+test editor::track_gain::tests::volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cancels ... ok
+test editor::track_gain::tests::volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_controls ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1042 filtered out; finished in 2.96s
+

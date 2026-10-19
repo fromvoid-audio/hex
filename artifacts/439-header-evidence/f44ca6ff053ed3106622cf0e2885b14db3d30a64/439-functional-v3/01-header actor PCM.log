@@ -1,0 +1,10 @@
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+     Running tests/track_gain_gesture.rs (target/debug/deps/track_gain_gesture-e641b247a37d7390)
+
+running 2 tests
+test header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit ... ok
+test header_return_gain_previews_real_bus_pcm_and_preserves_current_save_open_and_history ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.05s
+

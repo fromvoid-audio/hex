@@ -1,0 +1,40 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling proc-macro-error2 v2.0.1 (/workspace/hex/third_party/proc-macro-error2)
+   Compiling xattr v0.2.3 (/workspace/hex/third_party/xattr)
+   Compiling zed-async-tar v0.5.0-zed
+   Compiling stacksafe-macro v0.1.4
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling stacksafe v0.1.4
+   Compiling gpui_http_client v0.2.2
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling mts-esp-master-adapter v0.1.0 (/workspace/hex/third_party/mts-esp-master)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-mts v0.1.0 (/workspace/hex/crates/hex-mts)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 09s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+
+thread 'editor::track_gain::tests::header_volume_is_one_filled_numeric_field_not_a_separate_rail' (239410) panicked at crates/hex-ui/src/editor/track_gain/tests.rs:542:5:
+reference requires a centered value across the filled bar, not a separate narrow value field: Bounds { origin: Point { x: 1130px, y: 252.5px }, size: Size { 86px × 21px } } Bounds { origin: Point { x: 1169px, y: 254px }, size: Size { 46px × 18px } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::track_gain::tests::header_volume_is_one_filled_numeric_field_not_a_separate_rail ... FAILED
+
+failures:
+
+failures:
+    editor::track_gain::tests::header_volume_is_one_filled_numeric_field_not_a_separate_rail
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1048 filtered out; finished in 0.39s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

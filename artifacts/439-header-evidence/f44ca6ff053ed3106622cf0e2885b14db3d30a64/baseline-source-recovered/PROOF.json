@@ -1,0 +1,7 @@
+{
+  "base": "fb4cb8be3896b73c8ebda76027bbcbfbd02622ec",
+  "content_sha256": "9ad91909f9160128a242c129c3d67ec8a987459d6d123a7f11dec17dfa5715f3",
+  "exact_initial_test_bytes_recovered_and_full_repository_digest_matches": true,
+  "changed_only": "crates/hex-ui/src/editor/track_gain/tests.rs",
+  "test_file_sha256": "6c05d4c04be5dedb3b8f6200a722588d026c015ceca22563698e316a2d3795bb"
+}

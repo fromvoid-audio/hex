@@ -1,0 +1,37 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.86s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 9 tests
+
+thread 'editor::track_gain::tests::header_volume_is_one_filled_numeric_field_not_a_separate_rail' (240533) panicked at crates/hex-ui/src/editor/track_gain/tests.rs:555:5:
+reference requires a centered value across the filled bar, not a separate narrow value field: Bounds { origin: Point { x: 1154px, y: 255px }, size: Size { 60px × 18px } } Bounds { origin: Point { x: 1155px, y: 256px }, size: Size { 6px × 16px } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::track_gain::tests::header_volume_is_one_filled_numeric_field_not_a_separate_rail ... FAILED
+test editor::track_gain::tests::header_volume_automation_envelope_shows_auto_without_edit ... ok
+test editor::track_gain::tests::header_volume_recorded_touch_lane_shows_auto_without_edit ... ok
+test editor::track_gain::tests::verified_streaming_keeps_explicit_functional_gain_controls ... ok
+test editor::track_gain::tests::header_volume_text_commit_uses_canonical_gain_and_automation_refuses_drag ... ok
+test editor::track_gain::tests::header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands ... ok
+
+thread 'editor::track_gain::tests::volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_controls' (240568) panicked at crates/hex-ui/src/editor/track_gain/tests.rs:420:17:
+assertion failed: rail.size.width >= px(58.0)
+test editor::track_gain::tests::volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_controls ... FAILED
+test editor::track_gain::tests::return_header_filled_gain_commits_and_keyboard_invalid_draft_blocks_owner_transition ... ok
+
+thread 'editor::track_gain::tests::volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cancels' (240563) panicked at crates/hex-ui/src/editor/track_gain/tests.rs:110:9:
+gesture did not settle: None, 0
+test editor::track_gain::tests::volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cancels ... FAILED
+
+failures:
+
+failures:
+    editor::track_gain::tests::header_volume_is_one_filled_numeric_field_not_a_separate_rail
+    editor::track_gain::tests::volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cancels
+    editor::track_gain::tests::volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_controls
+
+test result: FAILED. 6 passed; 3 failed; 0 ignored; 0 measured; 1042 filtered out; finished in 6.92s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

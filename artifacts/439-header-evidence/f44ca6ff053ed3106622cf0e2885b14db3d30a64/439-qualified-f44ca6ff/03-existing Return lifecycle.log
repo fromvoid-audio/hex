@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running tests/returns.rs (target/debug/deps/returns-a360c13d34baf09e)
+
+running 6 tests
+test removing_return_with_active_parameter_gesture_cancels_stale_owner ... ok
+test return_send_gesture_cancel_rebases_after_same_target_and_unrelated_edits ... ok
+test rejected_send_gesture_values_and_removed_targets_never_change_canonical_state ... ok
+test eq_eight_processes_on_regular_and_return_device_chains ... ok
+test return_send_gesture_previews_transiently_and_save_barrier_commits_once ... ok
+test return_workflow_routes_pcm_edits_devices_history_and_current_schema_roundtrip ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+

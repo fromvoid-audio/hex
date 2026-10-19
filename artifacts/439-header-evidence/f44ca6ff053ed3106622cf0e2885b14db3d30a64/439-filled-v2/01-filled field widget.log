@@ -1,0 +1,22 @@
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.61s
+     Running unittests src/lib.rs (target/debug/deps/hex_widgets-ba49dcf5db2a657f)
+
+running 2 tests
+
+thread 'numeric_control::compact_slider_tests::filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill' (239685) panicked at crates/hex-widgets/src/numeric_control/compact_slider_tests.rs:235:17:
+assertion `left == right` failed
+  left: 58px
+ right: 60px
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test numeric_control::compact_slider_tests::filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill ... FAILED
+test numeric_control::compact_slider_tests::filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecycle ... ok
+
+failures:
+
+failures:
+    numeric_control::compact_slider_tests::filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 78 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p hex-widgets --lib`

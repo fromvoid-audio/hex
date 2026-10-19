@@ -1,0 +1,509 @@
+{
+  "cargo_identity": {
+    "configured_target_value": null,
+    "lock_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.lock",
+    "manifest_path": "/workspace/hex/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/workspace/hex/Cargo.toml"
+    ],
+    "owner_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.owner.json",
+    "target_directory": "/workspace/hex/target",
+    "target_source": "cargo metadata/config/default",
+    "workspace_packages": [
+      {
+        "id": "path+file:///workspace/hex/crates/hex-mts#0.1.0",
+        "name": "hex-mts",
+        "spec": "path+file:///workspace/hex/crates/hex-mts#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-tuning#0.1.0",
+        "name": "hex-tuning",
+        "spec": "path+file:///workspace/hex/crates/hex-tuning#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-dsp#0.1.0",
+        "name": "hex-dsp",
+        "spec": "path+file:///workspace/hex/crates/hex-dsp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-midi#0.1.0",
+        "name": "hex-midi",
+        "spec": "path+file:///workspace/hex/crates/hex-midi#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-clap-scan#0.1.0",
+        "name": "hex-clap-scan",
+        "spec": "path+file:///workspace/hex/crates/hex-clap-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0",
+        "name": "hex-plugin-scan",
+        "spec": "path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-warp#0.1.0",
+        "name": "hex-warp",
+        "spec": "path+file:///workspace/hex/crates/hex-warp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-diagnostics#0.1.0",
+        "name": "hex-diagnostics",
+        "spec": "path+file:///workspace/hex/crates/hex-diagnostics#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-session#0.1.0",
+        "name": "hex-session",
+        "spec": "path+file:///workspace/hex/crates/hex-session#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-engine#0.1.0",
+        "name": "hex-engine",
+        "spec": "path+file:///workspace/hex/crates/hex-engine#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-devices#0.1.0",
+        "name": "hex-devices",
+        "spec": "path+file:///workspace/hex/crates/hex-devices#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-lattice#0.1.0",
+        "name": "hex-lattice",
+        "spec": "path+file:///workspace/hex/crates/hex-lattice#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0",
+        "name": "hex-lattice-contract",
+        "spec": "path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-project#0.1.0",
+        "name": "hex-project",
+        "spec": "path+file:///workspace/hex/crates/hex-project#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-export#0.1.0",
+        "name": "hex-export",
+        "spec": "path+file:///workspace/hex/crates/hex-export#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-media#0.1.0",
+        "name": "hex-media",
+        "spec": "path+file:///workspace/hex/crates/hex-media#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-storage#0.1.0",
+        "name": "hex-storage",
+        "spec": "path+file:///workspace/hex/crates/hex-storage#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-stream#0.1.0",
+        "name": "hex-stream",
+        "spec": "path+file:///workspace/hex/crates/hex-stream#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-library#0.1.0",
+        "name": "hex-library",
+        "spec": "path+file:///workspace/hex/crates/hex-library#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-cli#0.1.0",
+        "name": "hex-cli",
+        "spec": "path+file:///workspace/hex/crates/hex-cli#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-desktop#0.1.0",
+        "name": "hex-desktop",
+        "spec": "path+file:///workspace/hex/crates/hex-desktop#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-audio#0.1.0",
+        "name": "hex-audio",
+        "spec": "path+file:///workspace/hex/crates/hex-audio#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-ui#0.1.0",
+        "name": "hex-ui",
+        "spec": "path+file:///workspace/hex/crates/hex-ui#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-preferences#0.1.0",
+        "name": "hex-preferences",
+        "spec": "path+file:///workspace/hex/crates/hex-preferences#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-widgets#0.1.0",
+        "name": "hex-widgets",
+        "spec": "path+file:///workspace/hex/crates/hex-widgets#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/workspace/hex"
+  },
+  "commit": "6953c41624cc9bdb8009e90a14462ada19778654",
+  "dirty": false,
+  "dirty_files": [],
+  "disk_headroom": {
+    "checked_at": "2026-10-19T14:54:57Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 1206267904,
+        "probed_path": "/workspace/hex",
+        "requested_path": "/workspace/hex",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 1206267904,
+        "probed_path": "/workspace/hex/target",
+        "requested_path": "/workspace/hex/target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 172.036,
+  "end_tree": {
+    "commit": "6953c41624cc9bdb8009e90a14462ada19778654",
+    "content_sha256": "438a418cacd0aba46b8fccedea7ef83b0791ec587cdccc4fdb147214d2faddf5",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "ended_at": "2026-10-19T14:57:49Z",
+  "exit_code": 1,
+  "invocation_argv": [
+    "/tmp/header-component.py",
+    "439-final-6953c416",
+    "[ [\"format\", [\"cargo\", \"fmt\", \"--all\", \"--check\"]], [\"header actor PCM and history\", [\"cargo\", \"test\", \"-p\", \"hex-session\", \"--test\", \"track_gain_gesture\", \"--\", \"--nocapture\"]], [\"existing Return lifecycle\", [\"cargo\", \"test\", \"-p\", \"hex-session\", \"--test\", \"returns\", \"--\", \"--nocapture\"]], [\"real header controls and paint\", [\"cargo\", \"test\", \"-p\", \"hex-ui\", \"--features\", \"ui-test-support\", \"track_gain::tests\", \"--\", \"--nocapture\"]], [\"track layout controls\", [\"cargo\", \"test\", \"-p\", \"hex-ui\", \"--features\", \"ui-test-support\", \"track_layout_ui_test\", \"--\", \"--nocapture\"]], [\"shared widgets\", [\"cargo\", \"test\", \"-p\", \"hex-widgets\", \"--\", \"--nocapture\"]], [\"Session strict\", [\"cargo\", \"clippy\", \"-p\", \"hex-session\", \"--all-targets\", \"--\", \"-D\", \"warnings\"]], [\"UI widgets default strict\", [\"cargo\", \"clippy\", \"-p\", \"hex-ui\", \"-p\", \"hex-widgets\", \"--all-targets\", \"--\", \"-D\", \"warnings\"]], [\"UI feature strict\", [\"cargo\", \"clippy\", \"-p\", \"hex-ui\", \"--all-targets\", \"--features\", \"ui-test-support\", \"--\", \"-D\", \"warnings\"]], [\"architecture\", [\"python3\", \"scripts/check-architecture.py\"]], [\"UI style\", [\"python3\", \"scripts/check-ui-style.py\"]], [\"vendor provenance\", [\"python3\", \"scripts/check-gpui-patch.py\"]], [\"diff\", [\"git\", \"diff\", \"--check\"]] ]"
+  ],
+  "mode": "component",
+  "repo_root": "/workspace/hex",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "header-width-return-439-final-6953c416",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "6953c41624cc9bdb8009e90a14462ada19778654",
+    "content_sha256": "438a418cacd0aba46b8fccedea7ef83b0791ec587cdccc4fdb147214d2faddf5",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "6953c41624cc9bdb8009e90a14462ada19778654",
+    "content_sha256": "438a418cacd0aba46b8fccedea7ef83b0791ec587cdccc4fdb147214d2faddf5",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "started_at": "2026-10-19T14:54:57Z",
+  "status": "failed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-19T14:55:04Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/01-format.log",
+      "started_at": "2026-10-19T14:54:57Z",
+      "status": "passed",
+      "step_id": "format"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-session",
+        "--test",
+        "track_gain_gesture",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-19T14:55:07Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/02-header actor PCM and history.log",
+      "started_at": "2026-10-19T14:55:04Z",
+      "status": "passed",
+      "step_id": "header actor PCM and history"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-session",
+        "--test",
+        "returns",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-19T14:55:07Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/03-existing Return lifecycle.log",
+      "started_at": "2026-10-19T14:55:07Z",
+      "status": "passed",
+      "step_id": "existing Return lifecycle"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "track_gain::tests",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-19T14:55:53Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/04-real header controls and paint.log",
+      "started_at": "2026-10-19T14:55:07Z",
+      "status": "passed",
+      "step_id": "real header controls and paint"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "track_layout_ui_test",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-19T14:56:38Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/05-track layout controls.log",
+      "started_at": "2026-10-19T14:55:53Z",
+      "status": "passed",
+      "step_id": "track layout controls"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-widgets",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-19T14:56:41Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/06-shared widgets.log",
+      "started_at": "2026-10-19T14:56:38Z",
+      "status": "passed",
+      "step_id": "shared widgets"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-session",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T14:56:54Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/07-Session strict.log",
+      "started_at": "2026-10-19T14:56:41Z",
+      "status": "passed",
+      "step_id": "Session strict"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "-p",
+        "hex-widgets",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T14:57:20Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/08-UI widgets default strict.log",
+      "started_at": "2026-10-19T14:56:54Z",
+      "status": "passed",
+      "step_id": "UI widgets default strict"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T14:57:49Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/09-UI feature strict.log",
+      "started_at": "2026-10-19T14:57:20Z",
+      "status": "passed",
+      "step_id": "UI feature strict"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": "2026-10-19T14:57:49Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/10-architecture.log",
+      "started_at": "2026-10-19T14:57:49Z",
+      "status": "passed",
+      "step_id": "architecture"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": "2026-10-19T14:57:49Z",
+      "error": null,
+      "exit_code": 1,
+      "log": "artifacts/local-ci/header-width-return-439-final-6953c416/11-UI style.log",
+      "started_at": "2026-10-19T14:57:49Z",
+      "status": "failed",
+      "step_id": "UI style"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "vendor provenance"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "diff"
+    }
+  ],
+  "target_cache": {
+    "action": "reuse",
+    "cleanup_argv": null,
+    "cleanup_status": "not_needed",
+    "current_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex"
+    },
+    "target_identity_before": {
+      "device": 27,
+      "inode": 9223372036855999389
+    }
+  },
+  "verification_status": "failed"
+}

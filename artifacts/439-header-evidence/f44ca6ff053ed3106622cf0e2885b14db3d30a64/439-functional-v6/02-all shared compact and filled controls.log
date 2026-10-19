@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running unittests src/lib.rs (target/debug/deps/hex_widgets-ba49dcf5db2a657f)
+
+running 3 tests
+test numeric_control::compact_slider_tests::compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text ... ok
+test numeric_control::compact_slider_tests::filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill ... ok
+test numeric_control::compact_slider_tests::filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecycle ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.04s
+

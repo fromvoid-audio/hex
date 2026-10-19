@@ -1,0 +1,24 @@
+{
+  "crates/hex-project/src/lib.rs": "652469c58b271ded5be4a80a44bbeb2cd950ee6d64733fd5a6596c93db74c10c",
+  "crates/hex-project/src/edit.rs": "0e3eef0230c80e1b790e2ed0dadb23f6dcaebdaab7da46c6bc834841496a06e9",
+  "crates/hex-project/src/returns.rs": "353c58621c849269dddae155eeba3ab7e2f3ca8b270ff4e2e08e24da4b6f5f4c",
+  "crates/hex-engine/src/lib.rs": "a5b335f41cd339c3a6eb45355341b99bd033bceb27fcc91160909062390684c3",
+  "crates/hex-engine/src/compile.rs": "2c084bec8044ce558f2aa1435bc3c3404196846b0c72e4928f7efb65297d9cbe",
+  "crates/hex-audio/src/lib.rs": "8ed52d9251d6d68ec384f2fd53ecffaac4d52383cb93fedca1a9df678b67e167",
+  "crates/hex-session/src/service.rs": "bbd463f9a6295ff51428d1c5a2f1c633113c00bfe67d836ebcc3936465321420",
+  "crates/hex-ui/src/editor/mod.rs": "d7bf0116c537596440ca687a33861797306ac4cbe270dc57e6a3d2c78672e65c",
+  "crates/hex-ui/src/editor/render.rs": "9d084ee7c4c2cfc1c5cdf1cca8ad7672c7d804066e4ef8f4444c6d662db98a55",
+  "crates/hex-ui/src/editor/controller.rs": "ab3ec4660fd1948117a04e89dfd68be62bff18bfec7b9d58a78026e5fcd051ae",
+  "crates/hex-ui/src/editor/track_layout.rs": "3defef83ba07da86f10c65b520e5e0396830825b99869f114af06fc09dca42c7",
+  "crates/hex-widgets/src/numeric_text.rs": "30a1a199f60bc9e9f10b869828c50d342a602f1f5c9fedc3fe254319a4806295",
+  "crates/hex-widgets/src/text_case.rs": "1b3bd21b72791d5a15e10e45daaac6288a525eeab1782dc5a45f35169f6d016e",
+  "crates/hex-widgets/src/style.rs": "51872dc1013a6705fc56a55c925dde0c7f30d83d49f8b1f8f5985f42a6500288",
+  "scripts/local-ci.py": "864bf57008c9f4d333db395e374557bb5cf52218eda4cf34ac087867120f7587",
+  "checker_only_file_local_component_registration": true,
+  "preserved_ancestors": [
+    "fb4cb8be3896b73c8ebda76027bbcbfbd02622ec",
+    "ce38ef26fb40382cd7c4629ca4cda7a44b7a339d",
+    "9d1d0f0bbd14fcbc2ff0eecb975f52db65a12aa2"
+  ],
+  "integrated_before_tree_equals_actual_main": true
+}

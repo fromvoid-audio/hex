@@ -1,0 +1,19 @@
+--- a/crates/hex-ui/src/editor/track_gain/tests.rs
++++ b/crates/hex-ui/src/editor/track_gain/tests.rs
+@@ -530,3 +530,16 @@
+ fn header_volume_recorded_touch_lane_shows_auto_without_edit(cx: &mut TestAppContext) {
+     automation_readout_owns_gain(cx, true);
+ }
++
++#[gpui::test]
++fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAppContext) {
++    let (_browser, mut visual, _editor, [track, _]) = actor_fixture(cx);
++    let bounds = |visual: &mut VisualTestContext, suffix: &str| {
++        visual.debug_bounds(Box::leak(format!("track-volume-{}{suffix}", track.value()).into_boxed_str())).unwrap()
++    };
++    let whole = bounds(&mut visual, "");
++    let field = bounds(&mut visual, "-value");
++    assert!(field.size.width >= whole.size.width - px(4.0), "reference requires a centered value across the filled bar, not a separate narrow value field: {whole:?} {field:?}");
++    assert_eq!(field.center().x, whole.center().x);
++    assert!(field.size.height >= px(16.0));
++}
