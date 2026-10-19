@@ -27,6 +27,7 @@ mod clip_fragment;
 mod conversion;
 mod device;
 mod device_comparison;
+mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
 mod device_assets;
 pub use device::{
@@ -479,6 +480,7 @@ pub struct Project {
     pub(crate) session: SessionGrid,
     pub(crate) loop_region: Option<LoopRegion>,
     pub(crate) master_gain: f32,
+    pub(crate) main_devices: Vec<Device>,
     pub(crate) tempo_map: TempoMap,
     pub(crate) meter_map: MeterMap,
 }
@@ -501,6 +503,7 @@ impl Project {
             session: SessionGrid::default(),
             loop_region: None,
             master_gain: 1.0,
+            main_devices: Vec::new(),
             tempo_map: TempoMap::constant(sample_rate, Tempo::new(120_000_000)?)?,
             meter_map: MeterMap::common_time(),
         })
@@ -527,6 +530,7 @@ impl Project {
             session,
             loop_region,
             master_gain,
+            main_devices,
             tempo_map,
             meter_map,
         } = self;
@@ -541,6 +545,7 @@ impl Project {
             && returns == &other.returns
             && session == &other.session
             && loop_region == &other.loop_region
+            && main_devices == &other.main_devices
             && master_gain == &other.master_gain
             && tempo_map == &other.tempo_map
             && meter_map == &other.meter_map
@@ -639,6 +644,11 @@ impl Project {
     pub fn loop_region(&self) -> Option<LoopRegion> {
         self.loop_region
     }
+    /// Effect-only singleton Main chain; never a regular track or clip destination.
+    pub fn main_devices(&self) -> &[Device] {
+        &self.main_devices
+    }
+
     /// Linear master output gain in the inclusive range 0..=2.
     pub fn master_gain(&self) -> f32 {
         self.master_gain
@@ -730,6 +740,7 @@ impl Project {
             .iter()
             .flat_map(|track| track.devices().iter().chain(track.instrument.iter()))
             .chain(self.returns.iter().flat_map(|track| track.devices.iter()))
+            .chain(self.main_devices.iter())
             .find(|device| device.id() == id)
     }
     pub(crate) fn device_mut(&mut self, id: DeviceId) -> Result<&mut Device, Invalid> {
@@ -747,6 +758,7 @@ impl Project {
                     .iter_mut()
                     .find_map(|track| track.devices.iter_mut().find(|device| device.id == id))
             })
+            .or_else(|| self.main_devices.iter_mut().find(|device| device.id == id))
             .ok_or(Invalid("device no longer exists"))
     }
     pub(crate) fn clip_mut(&mut self, id: ClipId) -> Result<&mut Clip, Invalid> {

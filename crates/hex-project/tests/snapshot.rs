@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 fn valid_snapshot() -> Snapshot {
     Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),

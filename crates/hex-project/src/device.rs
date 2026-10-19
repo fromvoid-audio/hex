@@ -79,6 +79,12 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                     })
             {
                 project.returns[track].devices.remove(index);
+            } else if let Some(index) = project
+                .main_devices
+                .iter()
+                .position(|device| device.id == id)
+            {
+                project.main_devices.remove(index);
             } else {
                 return Err(Invalid("device no longer exists"));
             }

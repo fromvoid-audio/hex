@@ -102,6 +102,17 @@ pub enum Command {
         destination: ReturnId,
         gain: f32,
     },
+    /// Insert an opaque effect state on the singleton Main bus. Preparation
+    /// validates provider class before a Session history transaction commits.
+    InsertMainDevice {
+        before: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Reorder within Main; cross-owner moves retain their existing commands.
+    MoveMainDevice {
+        device: DeviceId,
+        before: Option<DeviceId>,
+    },
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
@@ -1442,6 +1453,9 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
+                crate::main_devices::apply(self, main_command)
+            }
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
