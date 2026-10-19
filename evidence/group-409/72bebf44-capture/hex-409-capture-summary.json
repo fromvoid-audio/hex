@@ -1,0 +1,9 @@
+{
+  "head": "72bebf44f5c050cc19d106ddd6bcb3b5be27c386",
+  "tree": "ed69c739b4cfa2c1b642013997de43f5fd46c347",
+  "payloads": 78,
+  "archive_bytes": 288867,
+  "archive_sha256": "0f028a3f58faf2f11ecbe76396255a1d261df6beb00361fb4dd6b4e05f4c9196",
+  "manifest_sha256": "10b5700fb6f09b6c854363f63295bf655400ac0ba3864779bcf72e1ab9a93754",
+  "checks_sha256": "499241874d64ee100b6e1bc3c5963c4391e47a7adcdae7303b3325a5cd31205c"
+}
