@@ -5820,3 +5820,40 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - No warning suppression, lint weakening, unfinished-feature deletion, native
   Audio-owner edit, full21 merge claim or application operation. Native/release
   qualification and source-specific final integration remain explicitly separate.
+
+## 19 October 2026 — Pulse2806 / PR412 explicit recreated release-target recovery
+
+- Root29797 accepts distinct `./launch --recover-release-target`; default and
+  automatic force-restart target identity/CAS protections remain. Never signals
+  an app. Initial and guarded mutation-boundary checks require configured/raw
+  executables inactive; normal latest-main build/install/open, tests opt-in.
+- Read-only inspection binds old regular bounded owner bytes, exact replacement
+  directory identity, same workspace/common repo, ancestor clean source and
+  retained package specs. Guard rechecks under existing lock before pending
+  marker/selective release clean/fresh identified build/ready. No stale artifact
+  qualification, blind marker deletion, shared-target test cleanup or new owner.
+- Source tests cover actual production Runner/private recreated directories,
+  fake Cargo compilation/identification, read-only inspection, explicit routing,
+  old automatic refusal, marker/target/source races, foreign/malformed metadata,
+  package changes, missing/symlink targets, busy lock and running-app refusal.
+  Original29786 causal diagnostic is retained; new fixture setup corrections
+  are distinct from product failures. Exact check receipts accompany handoff.
+- Root alone performs later real Mac recovery after safe app shutdown. Cloud
+  tests do not establish actual machine recovery, native qualification or merge.
+
+## 19 October 2026 — Pulse2806 / PR412 three-path recovery return
+
+- Root29859 accepts three reproduced supported-path repairs on exactc670, keeping
+  merged474 and all413 guards. recover+test uses a retained fresh invocation-owned
+  verification target via runner env only; no old dev-owner adoption/rewrite,
+  original inspected release target/environment still used for packaging.
+- Plain validated app-parent creation/revalidation supports configured new paths;
+  symlink/non-directory parents still refuse. Same-identity explicit retry allows
+  exact own PENDING only, never unchanged READY, with all ownerCAS/source/package/
+  identity/inactivity/lock/final checks before normal clean/freshbuild/ready.
+- Three actual new baseline errors retained: stale devowner stops real verification
+  Runner; missingparent activationlock FileNotFound; failed guardedconsumer leaves
+  pending that explicit reinspection refuses. New source tests prove each path,
+  real stale devmarker preservation/fresh target claim, unchanged release env,
+  realguardedconsumerfailure then actual packaging helper/fakeCargo freshartifact
+  ready, parent negative controls and unchanged READY refusal. No native actions.
