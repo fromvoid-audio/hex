@@ -291,6 +291,7 @@ mod tests {
                 editor.update(cx, |view, _| {
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::new(Project::new(48_000).expect("project")),
                         waveforms: Default::default(),
                         audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -333,6 +334,7 @@ mod tests {
             let current = view.state.as_ref().expect("state");
             let dirty = ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),

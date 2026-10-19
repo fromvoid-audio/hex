@@ -17,11 +17,12 @@ const ATTACK: ParameterId = ParameterId::from_static(3);
 const RELEASE: ParameterId = ParameterId::from_static(4);
 const KNEE: ParameterId = ParameterId::from_static(5);
 const OUTPUT: ParameterId = ParameterId::from_static(6);
-const PARAMETERS: [ParameterId; 4] = [THRESHOLD, RATIO, KNEE, OUTPUT];
+const MIX: ParameterId = ParameterId::from_static(7);
+const PARAMETERS: [ParameterId; 5] = [THRESHOLD, RATIO, KNEE, OUTPUT, MIX];
 
 pub(super) struct PreviewCache {
     state: NativeDeviceState,
-    values: [ParameterValue; 4],
+    values: [ParameterValue; 5],
     curve: Result<CompressorTransferCurve, String>,
 }
 
@@ -44,7 +45,7 @@ fn preview(
     state: &NativeDeviceState,
     device_view: &NativeDeviceView,
 ) -> Result<CompressorTransferCurve, String> {
-    let mut values = [ParameterValue::Float(0.0); 4];
+    let mut values = [ParameterValue::Float(0.0); 5];
     for (index, id) in PARAMETERS.iter().enumerate() {
         let parameter = device_view
             .parameters
@@ -120,7 +121,11 @@ pub(super) fn render_body(
             parameter,
             presentation,
             ControlText {
-                codec: (id == RATIO).then_some(NumericDisplayCodec::Ratio),
+                codec: match id {
+                    RATIO => Some(NumericDisplayCodec::Ratio),
+                    MIX => Some(NumericDisplayCodec::Percent),
+                    _ => None,
+                },
                 ..ControlText::default()
             },
         ),
@@ -132,6 +137,7 @@ pub(super) fn render_body(
     let threshold = control(THRESHOLD, ControlPresentation::InlineValue);
     let output = control(OUTPUT, ControlPresentation::InlineValue);
     let knee = control(KNEE, ControlPresentation::InlineValue);
+    let mix = control(MIX, ControlPresentation::InlineValue);
     let mut graph = div()
         .id(ElementId::Name(
             format!("compressor-transfer-{}", device.value()).into(),
@@ -183,7 +189,7 @@ pub(super) fn render_body(
                 .flex_shrink_0()
                 .text_size(px(7.0))
                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text("in -60…0 db · out -66…24 db")),
+                .child(theme::text("static · in -60…0 db · out -66…24 db")),
         )
         .child(
             div()
@@ -193,7 +199,7 @@ pub(super) fn render_body(
                 .items_center()
                 .justify_between()
                 .child(field("knee", knee))
-                .child(theme::text("static curve")),
+                .child(field("mix", mix)),
         );
     let main = crate::device_composition::plot_column(toolbar, graph, footer).text_size(px(8.0));
     crate::device_composition::split_body(rail, main)

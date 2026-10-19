@@ -232,6 +232,7 @@ mod ui_tests {
             let filename = format!("{}.HEX", "Long Project Name ".repeat(30));
             view.state = Some(Arc::new(hex_session::service::ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
