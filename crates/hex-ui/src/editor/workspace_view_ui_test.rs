@@ -554,6 +554,7 @@ fn workspace_review_tab_preserves_held_middle_pan_until_release_or_cancel(cx: &m
                 pan
             );
             assert_eq!(v.viewport, viewport);
+            assert_eq!((v.selected_clip_ids(), v.time_selection), selection);
             assert_eq!(v.state.as_ref().unwrap().project, before.project);
             assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
             assert_eq!(v.worker_requests_pending, 0);
@@ -571,7 +572,13 @@ fn workspace_review_tab_preserves_held_middle_pan_until_release_or_cancel(cx: &m
         editor.read_with(&visual, |v, _| {
             assert!(v.arrangement_pan.is_none());
             assert_eq!(v.viewport, viewport);
-            assert_eq!((v.selected_clip_ids(), v.time_selection), selection);
+            if retirement == 1 {
+                // Existing Escape cancels the selected range as well as pan.
+                assert_eq!(v.selected_clip_ids(), selection.0);
+                assert!(v.time_selection.is_none());
+            } else {
+                assert_eq!((v.selected_clip_ids(), v.time_selection), selection);
+            }
             assert_eq!(v.state.as_ref().unwrap().project, before.project);
             assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
             assert_eq!(v.worker_requests_pending, 0);
