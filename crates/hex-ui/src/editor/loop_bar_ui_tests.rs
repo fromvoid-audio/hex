@@ -1,8 +1,6 @@
 //! Real canonical worker + rendered loop-bar gestures, not user app interaction.
 use super::super::{EditorView, musical_time::SnapGrid, viewport::Viewport};
-use gpui::{
-    AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px,
-};
+use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
 use hex_project::{BeatTime, Command, LoopRegion, Tempo};
 use hex_session::service::{Event, Request, Service};
 use std::time::{Duration, Instant};
@@ -69,6 +67,7 @@ fn fixture(
     let handle = *cx.add_window(|_, _| gpui::Empty);
     let editor = cx
         .update_window(handle, |_, window, cx| {
+            window.activate_window();
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline loop bar test".into()))
             });
@@ -245,4 +244,320 @@ fn musical_binary_marker_supports_fractional_durations_and_ignores_view_width(
             expected
         );
     }
+}
+
+#[gpui::test]
+fn ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open(
+    cx: &mut TestAppContext,
+) {
+    for grid in [SnapGrid::Off, SnapGrid::Quarter, SnapGrid::Adaptive] {
+        let (handle, editor) = fixture(
+            cx,
+            48_000,
+            120_000,
+            Viewport {
+                start: 0,
+                length: 384_000,
+            },
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |v, cx| {
+            v.snap_grid = grid;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let down = at(&mut visual, 84_000.0 / 384_000.0);
+        // A plain body click is not an enable action or an edit.
+        click(&mut visual, down, Modifiers::default());
+        editor.read_with(&visual, |v, _| {
+            assert!(v.loop_rail_gesture.is_none());
+            assert!(v.pending_requests.is_empty());
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        let width = visual
+            .debug_bounds("arrangement-loop-rail")
+            .unwrap()
+            .size
+            .width;
+        let target = point(down.x + width * (30_000.0 / 384_000.0), down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        let shown = editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            let shown = v.loop_rail_gesture.unwrap().preview.unwrap();
+            assert_eq!(shown.end() - shown.start(), 72_000);
+            assert!(!shown.enabled());
+            match grid {
+                SnapGrid::Off => assert!(shown.start().abs_diff(78_000) <= 1),
+                SnapGrid::Quarter => assert_eq!(shown.start(), 72_000),
+                _ => assert!(shown.start() > 48_000),
+            }
+            shown
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        assert_eq!(region(&editor, &visual), shown);
+        let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+        if grid == SnapGrid::Off {
+            let directory = super::super::test_environment::Environment::new().unwrap();
+            let path = directory.root().join("loop.hex");
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::SaveNew(path.clone())))
+            });
+            pump(&editor, &mut visual);
+            assert!(path.is_file());
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Open(path.clone())))
+            });
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
+                assert!(v.loop_rail_gesture.is_none());
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn shift_steps_reverse_from_initial_origin_across_grids_and_final_mouse_up(
+    cx: &mut TestAppContext,
+) {
+    for (viewport, grid) in [
+        (
+            Viewport {
+                start: 0,
+                length: 384_000,
+            },
+            SnapGrid::Quarter,
+        ),
+        (
+            Viewport {
+                start: 24_000,
+                length: 192_000,
+            },
+            SnapGrid::Sixteenth,
+        ),
+        (
+            Viewport {
+                start: 0,
+                length: 384_000,
+            },
+            SnapGrid::Off,
+        ),
+    ] {
+        let (handle, editor) = fixture(cx, 60_000, 96_000, viewport);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |v, cx| {
+            v.snap_grid = grid;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let down = at(
+            &mut visual,
+            (78_000 - viewport.start) as f32 / viewport.length as f32,
+        );
+        let width = visual
+            .debug_bounds("arrangement-loop-rail")
+            .unwrap()
+            .size
+            .width;
+        let step = width * (36_000.0 / viewport.length as f32);
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, shift);
+        for (steps, expected) in [(1.2, 96_000), (-1.2, 24_000), (2.2, 132_000), (0.2, 60_000)] {
+            let target = point(down.x + step * steps, down.y);
+            visual.simulate_mouse_move(target, MouseButton::Left, shift);
+            editor.read_with(&visual, |v, _| {
+                let shown = v.loop_rail_gesture.unwrap().preview.unwrap();
+                assert_eq!((shown.start(), shown.end()), (expected, expected + 36_000));
+            });
+        }
+        // MouseUp at a new position resolves from the same capture, not last Move.
+        let final_point = point(down.x + step * 1.2, down.y);
+        visual.simulate_mouse_up(final_point, MouseButton::Left, shift);
+        pump(&editor, &mut visual);
+        let actual = region(&editor, &visual);
+        assert_eq!((actual.start(), actual.end()), (96_000, 132_000));
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        assert_eq!(
+            region(&editor, &visual),
+            LoopRegion::new(60_000, 96_000, false).unwrap()
+        );
+    }
+}
+
+#[gpui::test]
+fn loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit(cx: &mut TestAppContext) {
+    for cancel in ["escape", "blur", "alt", "control", "open"] {
+        let (handle, editor) = fixture(
+            cx,
+            48_000,
+            96_000,
+            Viewport {
+                start: 0,
+                length: 384_000,
+            },
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let directory = super::super::test_environment::Environment::new().unwrap();
+        let path = directory.root().join("captured-loop.hex");
+        if cancel == "open" {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::SaveNew(path.clone())))
+            });
+            pump(&editor, &mut visual);
+        }
+        let down = at(&mut visual, 72_000.0 / 384_000.0);
+        let target = at(&mut visual, 110_000.0 / 384_000.0);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_some()));
+        let mut modifiers = Modifiers::default();
+        match cancel {
+            "escape" => visual.simulate_keystrokes("escape"),
+            "blur" => visual.update(|window, _| window.blur()),
+            "alt" => {
+                modifiers.alt = true;
+                visual.simulate_modifiers_change(modifiers);
+            }
+            "open" => {
+                editor.update(&mut visual, |v, _| {
+                    assert!(v.enqueue(Request::Open(path.clone())))
+                });
+                pump(&editor, &mut visual);
+            }
+            _ => {
+                modifiers.control = true;
+                visual.simulate_modifiers_change(modifiers);
+            }
+        }
+        visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.loop_rail_gesture.is_none(), "{cancel}");
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before,
+                "{cancel}"
+            );
+            assert!(v.pending_requests.is_empty() && v.worker_requests_pending == 0);
+        });
+    }
+}
+
+#[gpui::test]
+fn marker_updates_after_actual_edge_resize_and_rounded_tempo_change(cx: &mut TestAppContext) {
+    let (handle, editor) = fixture(
+        cx,
+        0,
+        48_000,
+        Viewport {
+            start: 0,
+            length: 384_000,
+        },
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("loop-binary-length-marker").is_some());
+    let start = at(&mut visual, 48_000.0 / 384_000.0);
+    let end = at(&mut visual, 72_000.0 / 384_000.0);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    assert!(visual.debug_bounds("loop-binary-length-marker").is_none());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(region(&editor, &visual).end(), 72_000);
+    assert!(visual.debug_bounds("loop-binary-length-marker").is_none());
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(137_000_000).unwrap(),
+        })))
+    });
+    pump(&editor, &mut visual);
+    let (start_frame, end_frame) = editor.read_with(&visual, |v, _| {
+        let map = v.state.as_ref().unwrap().project.tempo_map();
+        (
+            map.beat_to_frame(BeatTime::from_raw(1 << 31)).unwrap(),
+            map.beat_to_frame(BeatTime::from_raw((1 << 31) + (2 << 32)))
+                .unwrap(),
+        )
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: start_frame,
+            end: end_frame,
+            enabled: false,
+        })))
+    });
+    pump(&editor, &mut visual);
+    assert!(visual.debug_bounds("loop-binary-length-marker").is_some());
+}
+
+#[gpui::test]
+fn moving_body_recalculates_modifiers_without_changing_initial_origin(cx: &mut TestAppContext) {
+    let (handle, editor) = fixture(
+        cx,
+        60_000,
+        96_000,
+        Viewport {
+            start: 0,
+            length: 384_000,
+        },
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, cx| {
+        v.snap_grid = SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let down = at(&mut visual, 78_000.0 / 384_000.0);
+    let target = at(&mut visual, 98_000.0 / 384_000.0);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    let ordinary = editor.read_with(&visual, |v, _| {
+        v.loop_rail_gesture.unwrap().preview.unwrap()
+    });
+    assert!(ordinary.start().abs_diff(80_000) <= 1);
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_modifiers_change(shift);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.loop_rail_gesture.unwrap().preview.unwrap(),
+            LoopRegion::new(96_000, 132_000, false).unwrap()
+        );
+    });
+    visual.simulate_modifiers_change(Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.loop_rail_gesture.unwrap().preview.unwrap(), ordinary)
+    });
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(region(&editor, &visual), ordinary);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    assert_eq!(
+        region(&editor, &visual),
+        LoopRegion::new(60_000, 96_000, false).unwrap()
+    );
 }

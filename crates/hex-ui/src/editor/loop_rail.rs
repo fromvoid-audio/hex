@@ -650,7 +650,9 @@ fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
     minimum
         .checked_next_power_of_two()
         .is_some_and(|candidate| {
-            candidate <= maximum && candidate < hex_project::TempoMap::BEAT_RANGE_SENTINEL
+            candidate <= maximum
+                && candidate < hex_project::TempoMap::BEAT_RANGE_SENTINEL
+                && candidate.checked_mul(2).is_none_or(|next| next > maximum)
         })
 }
 
@@ -692,7 +694,10 @@ mod tests {
     #[test]
     fn binary_marker_refuses_ambiguous_subframe_musical_durations() {
         let project = hex_project::Project::new(48_000).unwrap();
-        assert!(!binary_duration(&project, LoopRegion::new(0, 1, false).unwrap()));
+        assert!(!binary_duration(
+            &project,
+            LoopRegion::new(0, 1, false).unwrap()
+        ));
     }
 
     #[test]
@@ -700,26 +705,58 @@ mod tests {
         use hex_project::{BeatTime, Command, Editor, Project, Tempo};
         let mut editor = Editor::new(Project::new(44_100).unwrap(), 8).unwrap();
         for (beat, bpm) in [(0, 137_000_000), (2, 93_000_000)] {
-            editor.execute(Command::SetTempoPoint {
-                beat: BeatTime::from_raw(beat << 32), tempo: Tempo::new(bpm).unwrap(),
-            }).unwrap();
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: BeatTime::from_raw(beat << 32),
+                    tempo: Tempo::new(bpm).unwrap(),
+                })
+                .unwrap();
         }
         let project = editor.project();
         for start_raw in [0, 1 << 31, 1 << 32] {
-            for (length, expected) in [(1 << 30, true), (1 << 31, true), (2 << 32, true), (3 << 32, false), (4 << 32, true)] {
-                let start = project.tempo_map().beat_to_frame(BeatTime::from_raw(start_raw)).unwrap();
-                let end = project.tempo_map().beat_to_frame(BeatTime::from_raw(start_raw + length)).unwrap();
-                assert_eq!(binary_duration(project, LoopRegion::new(start, end, true).unwrap()), expected,
-                    "start={start_raw}, duration={length}, frames={start}..{end}");
+            for (length, expected) in [
+                (1 << 30, true),
+                (1 << 31, true),
+                (2 << 32, true),
+                (3 << 32, false),
+                (4 << 32, true),
+            ] {
+                let start = project
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_raw(start_raw))
+                    .unwrap();
+                let end = project
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_raw(start_raw + length))
+                    .unwrap();
+                assert_eq!(
+                    binary_duration(project, LoopRegion::new(start, end, true).unwrap()),
+                    expected,
+                    "start={start_raw}, duration={length}, frames={start}..{end}"
+                );
             }
         }
-        assert!(!binary_duration(project, LoopRegion::new(u64::MAX - 1, u64::MAX, false).unwrap()));
+        assert!(!binary_duration(
+            project,
+            LoopRegion::new(u64::MAX - 1, u64::MAX, false).unwrap()
+        ));
     }
 
     #[test]
     fn length_steps_keep_relative_origin_ties_and_checked_timeline_bounds() {
         let region = LoopRegion::new(65, 95, false).unwrap();
-        for (delta, expected) in [(-1000, 5), (-46, 5), (-45, 5), (-44, 35), (-15, 35), (-14, 65), (14, 65), (15, 95), (44, 95), (45, 125)] {
+        for (delta, expected) in [
+            (-1000, 5),
+            (-46, 5),
+            (-45, 5),
+            (-44, 35),
+            (-15, 35),
+            (-14, 65),
+            (14, 65),
+            (15, 95),
+            (44, 95),
+            (45, 125),
+        ] {
             assert_eq!(stepped_start(region, delta), Some(expected));
         }
         let last = LoopRegion::new(u64::MAX - 65, u64::MAX - 35, true).unwrap();
