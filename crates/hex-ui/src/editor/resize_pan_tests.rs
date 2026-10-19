@@ -1179,3 +1179,105 @@ fn audio_event_outside_release_only_owns_focus_during_its_actual_gesture(cx: &mu
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
+
+#[gpui::test]
+fn resize_edge_pan_stops_after_original_audio_handle_leaves_view(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, false);
+}
+#[gpui::test]
+fn resize_edge_pan_stops_after_original_midi_handle_leaves_view(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, true);
+}
+fn check_edge_pan_after_original_handle_leaves_view(cx: &mut TestAppContext, midi: bool) {
+    for left in [false, true] {
+        let viewport = Viewport {
+            start: if left { 90_000 } else { 174_000 },
+            length: 24_000,
+        };
+        let (handle, editor, track, clip, _files) = fixture(cx, midi, Some(viewport));
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let down = capture(&mut visual, clip, midi, left);
+        let edge = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            point(
+                px(if left {
+                    lane.left + 3.0
+                } else {
+                    lane.left + lane.width - 3.0
+                }),
+                down.y,
+            )
+        });
+        visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let now = Instant::now();
+        let selector = Box::leak(
+            format!(
+                "{}clip-trim-{}-{}",
+                if midi { "midi-" } else { "" },
+                if left { "left" } else { "right" },
+                clip.value()
+            )
+            .into_boxed_str(),
+        );
+        for step in 0..24 {
+            held_tick(&editor, &mut visual, now + Duration::from_millis(step * 50));
+            if visual.debug_bounds(selector).is_none() {
+                break;
+            }
+        }
+        assert!(
+            visual.debug_bounds(selector).is_none(),
+            "actual original handle must have left the rendered viewport"
+        );
+        let (edge_view, center) = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            (
+                v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+                point(px(lane.left + lane.width / 2.0), down.y),
+            )
+        });
+        visual.simulate_mouse_move(center, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        held_tick(&editor, &mut visual, now + Duration::from_secs(2));
+        let stopped = editor.read_with(&visual, |v, _| {
+            let recorded = if midi { v.active_midi_trim_drag.as_ref().unwrap().last_pointer_x.get() } else { v.active_trim_drag.as_ref().unwrap().last_pointer_x.get() };
+            let view = v.visible_viewport(v.state.as_ref().unwrap().timeline_frames);
+            println!("REAL_RESIZE_INTERIOR midi={midi} left={left} original_handle_absent=true actual_pointer={} recorded={recorded:?} viewport={edge_view:?}->{view:?}", f32::from(center.x));
+            view
+        });
+        assert_eq!(
+            stopped, edge_view,
+            "held pointer moved to safe interior after source handle unmounted; edge panning must stop"
+        );
+        assert!(
+            editor.read_with(&visual, |v, _| if midi {
+                v.active_midi_trim_drag.is_some()
+            } else {
+                v.active_trim_drag.is_some()
+            }),
+            "resize remains captured while panning stops"
+        );
+        visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+            v.state.as_ref().unwrap().project.snapshot()
+        });
+        assert_ne!(after, before);
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
