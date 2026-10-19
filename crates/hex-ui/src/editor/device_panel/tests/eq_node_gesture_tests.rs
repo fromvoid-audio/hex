@@ -1161,3 +1161,147 @@ fn eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_st
     }
     assert_eq!(completed, 2);
 }
+
+#[gpui::test]
+fn eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_separate(
+    cx: &mut TestAppContext,
+) {
+    use gpui::Focusable;
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |view, _| read(view, device));
+    let graph = editor.read_with(cx, |view, _| eq_panel::graph_for_test(view, device));
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<
+        hex_widgets::ResponseGraphScrollEvent,
+    >::new()));
+    let captured = events.clone();
+    let _subscription = graph.update(cx, |_, cx| {
+        cx.subscribe(
+            &graph,
+            move |_, _, event: &hex_widgets::ResponseGraphScrollEvent, _| {
+                captured.borrow_mut().push(*event)
+            },
+        )
+    });
+    let position = plot(&mut visual, device, 0.02, 0.5);
+    wheel(
+        &mut visual,
+        position,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    wheel(
+        &mut visual,
+        position,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view
+                .device_gesture
+                .snapshot()
+                .is_some_and(|snapshot| snapshot.value == ParameterValue::Choice(2))
+    });
+    let key = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap().key);
+    assert!(visual.update(|window, cx| graph.read(cx).focus_handle(cx).is_focused(window)));
+    let outside = visual
+        .debug_bounds("session-scenes-header")
+        .expect("actual other panel header")
+        .center();
+    let graph_bounds = visual
+        .debug_bounds(selector("eq-response", device))
+        .unwrap();
+    assert!(!graph_bounds.contains(&outside));
+    // No click, focus transition, fabricated graph callback or synthetic terminal:
+    // ordinary GPUI hit testing now points at the separate Session panel.
+    visual.simulate_mouse_move(outside, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.update(|window, cx| graph.read(cx).focus_handle(cx).is_focused(window)));
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap().key),
+        key
+    );
+    end_wheel(&mut visual, outside);
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+    });
+    eprintln!(
+        "outside_graph_end graph={graph_bounds:?} outside={outside:?} phases={:?} active_key={:?}",
+        events.borrow().iter().map(|e| e.phase).collect::<Vec<_>>(),
+        editor.read_with(cx, |view, _| view.device_gesture.snapshot().map(|s| s.key))
+    );
+    assert!(
+        editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()),
+        "physical Ended over another panel must retire the original graph's key"
+    );
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|e| e.phase == hex_widgets::ResponseGraphScrollPhase::Commit)
+            .count(),
+        1
+    );
+    let after = editor.read_with(cx, |view, _| read(view, device));
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 2;
+    assert_eq!(after, expected);
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .all(|e| e.gesture_id == events.borrow()[0].gesture_id)
+    );
+    // Returning with a deliberate unphased wheel is a NEW gesture, with its
+    // existing quiet fallback; two Undo/Redo steps prove the histories separate.
+    visual.simulate_mouse_move(position, None, Modifiers::default());
+    wheel(
+        &mut visual,
+        position,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    visual.run_until_parked();
+    pump_until(&editor, cx, settled);
+    let next = editor.read_with(cx, |view, _| read(view, device));
+    expected.nodes[0].slope = 3;
+    assert_eq!(next, expected);
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|e| e.phase == hex_widgets::ResponseGraphScrollPhase::Begin)
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|e| e.phase == hex_widgets::ResponseGraphScrollPhase::Commit)
+            .count(),
+        2
+    );
+    for expected in [&after, &before] {
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == *expected
+        });
+    }
+    for expected in [&after, &next] {
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == *expected
+        });
+    }
+}
