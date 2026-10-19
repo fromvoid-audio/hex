@@ -97,57 +97,24 @@ impl EditorView {
         };
 
         if let Some(region) = region
-            && let Some((start_x, end_x)) =
-                visible_region_pixels(region, viewport, timeline_left, timeline_width)
+            && let Some(mode) = region_edit_mode(region, viewport, bounds, x)
         {
-            let start_visible = region.start() >= viewport.start;
-            let end_visible = viewport.end().is_some_and(|end| region.end() <= end);
-            let start_distance = if start_visible {
-                (x - start_x).abs()
-            } else {
-                f32::INFINITY
-            };
-            let end_distance = if end_visible {
-                (x - end_x).abs()
-            } else {
-                f32::INFINITY
-            };
-            let mode = if start_distance <= EDGE_HIT_PIXELS && start_distance <= end_distance {
-                Some(EditMode::ResizeStart {
-                    fixed_end: region.end(),
-                    enabled: region.enabled(),
-                })
-            } else if end_distance <= EDGE_HIT_PIXELS {
-                Some(EditMode::ResizeEnd {
-                    fixed_start: region.start(),
-                    enabled: region.enabled(),
-                })
-            } else if frame >= region.start() && frame < region.end() {
-                Some(EditMode::Move {
-                    original: region,
-                    anchor: frame,
-                })
-            } else {
-                None
-            };
-            if let Some(mode) = mode {
-                self.loop_rail_gesture = Some(LoopRailGesture {
-                    generation: self.project_generation,
-                    revision: state.revision,
-                    loop_region: Some(region),
-                    viewport,
-                    timeline_left,
-                    timeline_width,
-                    mode,
-                    preview: Some(region),
-                    pointer_down: position,
-                    last_pointer: position,
-                    moved: false,
-                    click_disqualified: false,
-                    toggle_on_click: modifiers.platform,
-                });
-                return true;
-            }
+            self.loop_rail_gesture = Some(LoopRailGesture {
+                generation: self.project_generation,
+                revision: state.revision,
+                loop_region: Some(region),
+                viewport,
+                timeline_left,
+                timeline_width,
+                mode,
+                preview: Some(region),
+                pointer_down: position,
+                last_pointer: position,
+                moved: false,
+                click_disqualified: false,
+                toggle_on_click: modifiers.platform,
+            });
+            return true;
         }
 
         let Some(anchor) = snap_frame(
@@ -220,6 +187,11 @@ impl EditorView {
         gesture.click_disqualified |= gesture.moved
             || (f32::from(position.y) - f32::from(gesture.pointer_down.y)).abs() > 3.0;
         if let EditMode::Move { original, anchor } = gesture.mode {
+            if !gesture.moved {
+                gesture.preview = Some(original);
+                self.loop_rail_gesture = Some(gesture);
+                return true;
+            }
             let delta = i128::from(frame) - i128::from(anchor);
             let start = if modifiers.shift {
                 stepped_start(original, delta)
@@ -347,22 +319,10 @@ impl EditorView {
         else {
             return Hover::Paint;
         };
-        let left = f32::from(bounds.origin.x);
-        let width = f32::from(bounds.size.width);
-        let Some((start_x, end_x)) = visible_region_pixels(region, viewport, left, width) else {
-            return Hover::Paint;
-        };
-        let start_edge = region.start() >= viewport.start && (x - start_x).abs() <= EDGE_HIT_PIXELS;
-        let end_edge = viewport.end().is_some_and(|end| region.end() <= end)
-            && (x - end_x).abs() <= EDGE_HIT_PIXELS;
-        if start_edge || end_edge {
-            Hover::Resize
-        } else if super::seek::pointer_to_frame(x, left, width, viewport)
-            .is_some_and(|frame| frame >= region.start() && frame < region.end())
-        {
-            Hover::Move
-        } else {
-            Hover::Paint
+        match region_edit_mode(region, viewport, bounds, x) {
+            Some(EditMode::Move { .. }) => Hover::Move,
+            Some(EditMode::ResizeStart { .. } | EditMode::ResizeEnd { .. }) => Hover::Resize,
+            Some(EditMode::Paint { .. }) | None => Hover::Paint,
         }
     }
 }
@@ -537,6 +497,53 @@ fn snap_frame(
         return Some(frame);
     }
     view.snap_grid.snap_frame(project, frame, viewport, width)
+}
+
+// Share the exact hit budget between hover and capture. Narrow bars retain a
+// central body; the full outside endpoint radius remains usable at every width.
+fn region_edit_mode(
+    region: LoopRegion,
+    viewport: Viewport,
+    bounds: Bounds<gpui::Pixels>,
+    x: f32,
+) -> Option<EditMode> {
+    let left = f32::from(bounds.origin.x);
+    let width = f32::from(bounds.size.width);
+    let frame = super::seek::pointer_to_frame(x, left, width, viewport)?;
+    let (start_x, end_x) = visible_region_pixels(region, viewport, left, width)?;
+    let radius = if end_x > start_x && x >= start_x && x <= end_x {
+        EDGE_HIT_PIXELS.min((end_x - start_x) / 3.0)
+    } else {
+        EDGE_HIT_PIXELS
+    };
+    let start_distance = if region.start() >= viewport.start {
+        (x - start_x).abs()
+    } else {
+        f32::INFINITY
+    };
+    let end_distance = if viewport.end().is_some_and(|end| region.end() <= end) {
+        (x - end_x).abs()
+    } else {
+        f32::INFINITY
+    };
+    if start_distance <= radius && start_distance <= end_distance {
+        Some(EditMode::ResizeStart {
+            fixed_end: region.end(),
+            enabled: region.enabled(),
+        })
+    } else if end_distance <= radius {
+        Some(EditMode::ResizeEnd {
+            fixed_start: region.start(),
+            enabled: region.enabled(),
+        })
+    } else if frame >= region.start() && frame < region.end() {
+        Some(EditMode::Move {
+            original: region,
+            anchor: frame,
+        })
+    } else {
+        None
+    }
 }
 
 fn visible_region_pixels(
