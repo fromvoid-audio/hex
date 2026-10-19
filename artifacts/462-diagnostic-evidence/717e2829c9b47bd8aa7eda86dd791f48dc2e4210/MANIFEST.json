@@ -1,0 +1,142 @@
+{
+  "READ-ME.md": {
+    "sha256": "3195f331b26c660d4bf4db02d7a6602cf961a08dbbe588eda8d56691b61321a6",
+    "size": 3553
+  },
+  "baseline-cancel-diagnostic-outer.log": {
+    "sha256": "1694bf874504c03a30ac531dc37bd9a16126fe1173e940f90bd4a0a4bb364196",
+    "size": 287
+  },
+  "baseline-scene-probe-outer.log": {
+    "sha256": "9b9eec92ff7e2bc37f1570580c9454eedc8cd977ccea5ca4f526cd1ca4fcf4d2",
+    "size": 255
+  },
+  "checkpoint.patch": {
+    "sha256": "b3c5fca242c412b29df39043ef141ba200c2feaa082c4da5acc005ab6e16b9e3",
+    "size": 11438
+  },
+  "diagnostic-source/after-green-v3-wip.patch": {
+    "sha256": "3bb5016c990ac92a9d360d39da8b52b7d189b031f1d41a6020eb732f45afadd6",
+    "size": 16665
+  },
+  "diagnostic-source/baseline-scene-probe-tests.rs": {
+    "sha256": "c3056e901381c165dd1caeb443daa3ffe3246bd8a7f063b0daa794ba12f44dd6",
+    "size": 61308
+  },
+  "diagnostic-source/baseline-scene-probe-tracks.rs": {
+    "sha256": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9",
+    "size": 92710
+  },
+  "green-outer.log": {
+    "sha256": "a49ba2dc8dc498e2b998cb9a776d17d4f84b5ffca4cd751b3aec606eea1e97c4",
+    "size": 212
+  },
+  "green-v2-outer.log": {
+    "sha256": "aea3739b3e75d6f28442edf0b95f8374886004b5f25904b41fe88191ccacc5a2",
+    "size": 215
+  },
+  "green-v3-outer.log": {
+    "sha256": "ec3cf77ec5709b5d737614545f998d7a1e2def8dadfc72405d0c5ddb05a017f3",
+    "size": 215
+  },
+  "orchestration/310-approved-guard-runner.py": {
+    "sha256": "ba6ab952481fde1bbea79d3168393b8ef8e0552d6fbc62ec710a3800ed1abd33",
+    "size": 71789
+  },
+  "orchestration/462-component.py": {
+    "sha256": "8d68cbac7e1f83ceac41ce39347666f812c1325e94e9d5d4c05ea4f660db17cd",
+    "size": 575
+  },
+  "orchestration/seal-462-diagnostic.py": {
+    "sha256": "eab6119254e9e707583fb123d0d4d44c0e0614e075cc8254891448c3b3f880cb",
+    "size": 4857
+  },
+  "protected-proof.json": {
+    "sha256": "3cd5bc5b03b8d395a57667c89b15dcb4017db6b62b7dd9ba57568646b98c8ba3",
+    "size": 1223
+  },
+  "red-outer.log": {
+    "sha256": "56945da327ae9e97f2622ea37fc2e84c21d2606b6891acfab0ae0d87797a683e",
+    "size": 192
+  },
+  "runs/baseline-cancel-diagnostic/01-same expanded cancellation baseline unrelated paint assertions excluded.log": {
+    "sha256": "195ed2e1ce6a395d225c7c6f76967682b8f21d764c80df06755cc78e1611be12",
+    "size": 7246
+  },
+  "runs/baseline-cancel-diagnostic/summary.json": {
+    "sha256": "6acbdb50980de324370a94977676fc14768c1ba3b21f43b6450794254d0f91fc",
+    "size": 13150
+  },
+  "runs/baseline-scene-probe/01-same MIDI focus baseline scene paint versus debug metadata.log": {
+    "sha256": "026443810c9997ba8bf79bd8cd7778a53756e362d436e199da8750f91dff5067",
+    "size": 2304
+  },
+  "runs/baseline-scene-probe/summary.json": {
+    "sha256": "e9a1e989764d9c92676a30d386e59ed7b8f84aa3a1b95604e4729b4ff970781f",
+    "size": 13093
+  },
+  "runs/green-v2/01-actual completed scene resize paint controls.log": {
+    "sha256": "a8fcff7d27c35844a3c61091fbb9b6d043dd0685f406cfdbec968bd8813529d3",
+    "size": 9652
+  },
+  "runs/green-v2/summary.json": {
+    "sha256": "46f77b81db39c2e9ca0231674af9d1aab021ea484a9e4cbcdce9ff5b11352a71",
+    "size": 13139
+  },
+  "runs/green-v3/01-actual completed scene resize paint controls.log": {
+    "sha256": "e276e4a1f906855c9ee1bae238cc08656055e7399e97ca00ae0248ad8b73c0bb",
+    "size": 14016
+  },
+  "runs/green-v3/summary.json": {
+    "sha256": "90aedb0894cba844a203afbf0f2177e4039801ad03311ed9c9ded3f15d9327b4",
+    "size": 13139
+  },
+  "runs/green/01-actual completed scene resize paint controls.log": {
+    "sha256": "eccc6b674719cd8a1cad02f37a87e2f293f50c98f3b974ce553f659d27f9bb5f",
+    "size": 2508
+  },
+  "runs/green/summary.json": {
+    "sha256": "8a3ab7d8186e4eb8ae1be8fe8f911a035056d88ee40ecd53ff4e8dbe3334dbce",
+    "size": 13130
+  },
+  "runs/red/01-actual completed scene resize paint.log": {
+    "sha256": "2cc97f23201c7090031a7f98f38e02bc04ac99653243b4299eab0840b207f108",
+    "size": 4292
+  },
+  "runs/red/summary.json": {
+    "sha256": "d2a6a758c10eb1290ba6e530cbb5421291851e8fa2bfd202ea7db6db84d7c02a",
+    "size": 12923
+  },
+  "source-history.txt": {
+    "sha256": "fb2a00a1b5a848a11949665d4ed818c8c60472e7876498f00c61c893e88232f3",
+    "size": 602
+  },
+  "source-identities.json": {
+    "sha256": "2791f39b86a19edf179835b87ba22adb1cc2fd87291507bc17913988af28eed1",
+    "size": 1171
+  },
+  "source/before/crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "sha256": "a78f3c1d063c0cf3b5314919774ebe25ec015ba7f89b468a35c0ad1f7acb21e7",
+    "size": 51601
+  },
+  "source/before/crates/hex-ui/src/editor/tracks.rs": {
+    "sha256": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9",
+    "size": 92710
+  },
+  "source/checkpoint-UNQUALIFIED/crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "sha256": "98667b07d6f5f90660c54f308f2e1af8e6e222daba6574a7268ae095ed04556c",
+    "size": 61580
+  },
+  "source/checkpoint-UNQUALIFIED/crates/hex-ui/src/editor/tracks.rs": {
+    "sha256": "bdd41b0ac2505a77399f18c657bec9dbe6b856a45d2fd37a060db09a94e11d9e",
+    "size": 92365
+  },
+  "source/first-painted-red/crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "sha256": "2b81cdcb8808fca4882e1c2656715ff906de656ff256a281a5007e5bcf578aab",
+    "size": 57165
+  },
+  "source/first-painted-red/crates/hex-ui/src/editor/tracks.rs": {
+    "sha256": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9",
+    "size": 92710
+  }
+}

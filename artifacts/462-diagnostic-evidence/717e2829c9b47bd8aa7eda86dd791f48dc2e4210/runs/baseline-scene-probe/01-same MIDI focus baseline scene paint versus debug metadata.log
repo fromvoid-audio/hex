@@ -1,0 +1,24 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.02s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+RESIZE_LANE_SCENE midi=true shift=false edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+PAINT_CANCEL_SCENE midi=true shift=false case=2 selected_other=false preview=Some(Bounds { origin: Point { x: 604.5px, y: 278px }, size: Size { 273px × 44px } })
+FOCUS_BASELINE_PAINT debug=Some(Bounds { origin: Point { x: 604.5px, y: 278px }, size: Size { 273px × 44px } }) border=Some((Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 }, Edges { top: 2px (scaled), right: 2px (scaled), bottom: 2px (scaled), left: 2px (scaled) }, Bounds { origin: Point { x: 1209px (scaled), y: 558px (scaled) }, size: Size { 2px (scaled) × 84px (scaled) } })) background=Some(Solid(Hsla { h: 0.19767441, s: 0.1699605, l: 0.50392157, a: 1.0 })) gpui_drag=false
+
+thread 'editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane' (265528) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1494:17:
+assertion failed: visual.debug_bounds(preview).is_none()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane ... FAILED
+
+failures:
+
+failures:
+    editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1057 filtered out; finished in 0.88s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
