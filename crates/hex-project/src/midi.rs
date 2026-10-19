@@ -79,12 +79,13 @@ pub struct MidiClip {
     pub(crate) length: BeatTime,
     pub(crate) source: Arc<MidiSource>,
 }
-/// Metadata-only edge candidate. Notes, IDs and source/loop bounds are retained.
+/// Metadata-only edge candidate. A silent source prefix is materialized only on commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiClipTrim {
     start: BeatTime,
     length: BeatTime,
     source_start: BeatTime,
+    source_prefix: BeatTime,
 }
 impl MidiClipTrim {
     pub fn start(self) -> BeatTime {
@@ -95,6 +96,11 @@ impl MidiClipTrim {
     }
     pub fn source_start(self) -> BeatTime {
         self.source_start
+    }
+    /// Silent time prepended to a one-shot source; authored source coordinates
+    /// move by this amount while their absolute musical placement stays fixed.
+    pub fn source_prefix(self) -> BeatTime {
+        self.source_prefix
     }
 }
 
@@ -107,8 +113,8 @@ impl MidiClip {
     }
     /// Preview an edge edit in O(1) metadata work without copying authored notes.
     /// Right extension may expose silence for a one-shot. Left edits preserve the
-    /// exclusive end and advance/rewind the source marker; loop-phase rewinds
-    /// remain in the loop, while an intro can only rewind to source zero.
+    /// exclusive end and advance/rewind the source marker. A one-shot may grow
+    /// a silent source prefix; loop-phase and intro rewinds retain their law.
     pub fn preview_edge_trim(
         &self,
         edge: crate::TrimEdge,
@@ -121,14 +127,25 @@ impl MidiClip {
             .checked_add(self.length.raw())
             .ok_or(Invalid("midi timeline end overflow"))?;
         let source_start = self.source_start().raw();
-        let (new_start, new_end, new_source) = match edge {
-            crate::TrimEdge::Right => (start, beat.raw().clamp(start + 1, u64::MAX), source_start),
+        let (new_start, new_end, new_source, prefix) = match edge {
+            crate::TrimEdge::Right => (
+                start,
+                beat.raw().clamp(start + 1, u64::MAX),
+                source_start,
+                0,
+            ),
             crate::TrimEdge::Left => {
                 let in_loop = self.looping() && source_start >= self.loop_start().raw();
                 let min_start = if in_loop {
                     0
-                } else {
+                } else if self.looping() {
                     start.saturating_sub(source_start)
+                } else {
+                    // Reserve room for the entire retained source, including
+                    // notes currently outside the visible one-shot window.
+                    start
+                        .saturating_sub(source_start)
+                        .saturating_sub(u64::MAX - self.source_length().raw())
                 };
                 let max_start = if self.looping() {
                     end - 1
@@ -148,7 +165,7 @@ impl MidiClip {
                         - i128::from(start);
                     loop_start + phase.rem_euclid(i128::from(period)) as u64
                 } else if new_start < start {
-                    source_start - (start - new_start)
+                    source_start.saturating_sub(start - new_start)
                 } else {
                     let advanced = u128::from(source_start) + u128::from(new_start - start);
                     if self.looping() && advanced >= u128::from(self.loop_end().raw()) {
@@ -160,20 +177,33 @@ impl MidiClip {
                         advanced as u64
                     }
                 };
-                (new_start, end, source)
+                let prefix = if self.looping() {
+                    0
+                } else {
+                    start.saturating_sub(new_start).saturating_sub(source_start)
+                };
+                (new_start, end, source, prefix)
             }
+        };
+        let shifted = |value: BeatTime| {
+            value
+                .raw()
+                .checked_add(prefix)
+                .map(BeatTime::from_raw)
+                .ok_or(Invalid("midi source prefix overflow"))
         };
         let preview = MidiClipTrim {
             start: BeatTime::from_raw(new_start),
             length: BeatTime::from_raw(new_end - new_start),
             source_start: BeatTime::from_raw(new_source),
+            source_prefix: BeatTime::from_raw(prefix),
         };
         validate_clip(preview.start, preview.length)?;
         validate_source(
-            self.source_length(),
+            shifted(self.source_length())?,
             preview.source_start,
-            self.loop_start(),
-            self.loop_end(),
+            shifted(self.loop_start())?,
+            shifted(self.loop_end())?,
             self.looping(),
         )?;
         Ok(preview)
@@ -440,6 +470,25 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .iter_mut()
                 .find(|item| item.id == clip)
                 .ok_or(Invalid("midi clip no longer exists"))?;
+            if preview.source_prefix != BeatTime::ZERO {
+                let shifted = |value: BeatTime| {
+                    value
+                        .raw()
+                        .checked_add(preview.source_prefix.raw())
+                        .map(BeatTime::from_raw)
+                        .ok_or(Invalid("midi source prefix overflow"))
+                };
+                // This is the existing private history/preparation candidate.
+                // Detach only this source; other Arrangement/Session owners and
+                // the previous history state keep their original coordinates.
+                let source = Arc::make_mut(&mut target.source);
+                source.source_length = shifted(source.source_length)?;
+                source.loop_start = shifted(source.loop_start)?;
+                source.loop_end = shifted(source.loop_end)?;
+                for note in &mut source.notes {
+                    note.start = shifted(note.start)?;
+                }
+            }
             target.start = preview.start;
             target.length = preview.length;
             if target.source_start() != preview.source_start {
