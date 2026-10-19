@@ -1,0 +1,62 @@
+{
+  "base": "fbc56de4566ebf07d71e534cc3385d9bf800d602",
+  "source": "78f445cc8642dd7041429b1e0c28a2f3bd823f94",
+  "tree": "84d375444703f10257c9dd2f228d4083dbef1768",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/loop_bar_ui_tests.rs",
+      "before_blob": "a9984c3fa5171575efde77f97dada96b96bbb0a7",
+      "after_blob": "324f11b745a28258ec15127848162a2f368e9154",
+      "sha256": "7efd5cc032f6b9cf1bbd7c87b74e29b32c1bb2e1ea43cf21a80ca0d45a359ed2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail.rs",
+      "before_blob": "adba9e1e711caad1497cfdfcbe7b0706796621c7",
+      "after_blob": "d25754098e902d4b6ec04de285c16980d303cf80",
+      "sha256": "5881143560095b2dfb0bdb4314c3a76d59c2f5c03bb4983bcee5ae140fe343b1"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail/review_ui_tests.rs",
+      "before_blob": null,
+      "after_blob": "b829509d620e29a383c3a8eb95b7468b11901a00",
+      "sha256": "a5ff2c760ea64cc27839007a122e53f080d074682becb60d5c888a39ac8d579d"
+    },
+    {
+      "path": "docs/runtime.md",
+      "before_blob": "4bf2454c03b80bd32bdbd3940d2db9b7f9ee782a",
+      "after_blob": "92e61a8314c0e6ce98a4c2ec7e36558c66683791",
+      "sha256": "637bea054e8480adf91d7ad0281af25a95e20f8260caa198784b3c72bce3c930"
+    },
+    {
+      "path": "todo.md",
+      "before_blob": "55f8e37fe0fb7a0d79096a4b3e6e6e5e97f6453c",
+      "after_blob": "dda67150498d71d265a1dc0a0276b09e8b3303f9",
+      "sha256": "f929a9643579e339a29840e0a0e79546f87851dca41343bc0bcba774f68d02c0"
+    }
+  ],
+  "unchanged_proof": {
+    "release": {
+      "bytes": 1392,
+      "sha256": "71c965c45c0648c87e143b29489c33420cdf1222443242aa8ac77242d884dfad"
+    },
+    "resize_projection": {
+      "bytes": 1173,
+      "sha256": "86a76158056237a2699ee6fadaa000a1db3888a8fb41d6447723a9495e40f4a7"
+    },
+    "render_input": {
+      "bytes": 8194,
+      "sha256": "3d743fc802b5370ada4a3fc917e5d5856f1e9dabb8db33758228bf47d12585d2"
+    },
+    "old_behavior_prefix": {
+      "bytes": 27986,
+      "sha256": "664b263a660bb46cc7060c48de08ac64e755350dd2912ae8758b9b3d7013ad05"
+    },
+    "first_implementation_tests_unchanged_prefix": {
+      "bytes": 12178,
+      "sha256": "2c725500c5b087ebe69ec4ecab6e24d8524bc432727fd3e9d24180445792bd70"
+    }
+  },
+  "tested_dirty_parent": "48d92515d398613b04a35231b7c8d04774951ed8",
+  "tested_content_sha256": "089a88aaafef2161f09f1b735ec032963a84582cb8f37766cd900f47f84d18b9",
+  "distinct_runtime_passed": 36
+}
