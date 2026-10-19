@@ -5368,3 +5368,20 @@ source handoff is separate from final integration/full CI/merge and delivery.
 - Preserved constructor/privateEnvironment, projectOpen/name/folder/changelogfocus code; mod conflict retained ONLYworkspace modules plus existingtest_environment. Rootkey hook remains bubbling and existing labels/set_mode preserve completedtime selections.
 - Track-resize and clip-paint captures now refuse workspace Tab, normal end restores switching. All9 sourcefocused cases are component evidence, no workerACK/nativephysical proof; originalOperator tests unchanged.
 - New exact prospective full21/freshreview pending, no merge, installation or human acceptance claim; no unqualified399/407/409/420/456/447 imports.
+
+### 2026-10-19 — PR419 owned Open and ruler-capture repair
+
+- On exact failed integration2df27623, two real GPUI regressions reproduced Tab
+  switching during selected-project confirmation and held ruler scrub. Original
+  negative full21 and the unrelated Source1 header-width failure stay preserved.
+- Workspace Tab now checks existing project-Open ownership and a read-only scrub
+  activity query; no Open/seek/transport lifecycle or global focus policy changes.
+  The synthetic pending-path fixture is replaced with the actual picker lifetime,
+  while a valid disposable selected-project confirmation proves the path-to-intent
+  transition and unchanged Project/revision before cancellation.
+- All11 focused workspace/unchanged Operator cases pass, zero ignored. Real ruler
+  down/move/Tab retains capture; release/refusal and Escape permit later Tab.
+  Offline bounded fixtures start with private paths before browser workers.
+- Owner patch remains unmerged pending sole-merger combined qualification/review.
+  Prior native receipts are historical; no new native/app/physical acceptance is
+  claimed. Staffing handoff ends this lane after the frozen source/evidence packet.

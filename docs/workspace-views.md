@@ -12,7 +12,8 @@ the next Tab reciprocal when the prior header has left the rendered tree. The
 handler bubbles; it is neither a global binding nor a capture listener. Modified
 Tab and held-key repeats do not switch. Focused text/rename/search, numeric
 controls, device/Operator controls and detail editors retain their own Tab
-handling. Modal/popup/draft state and active track-resize/clip-paint/clip/time/loop gestures refuse the
+handling. Modal/popup/draft state, an owned project-Open intent, and active
+track-resize/clip-paint/clip/time/loop/ruler gestures refuse the
 switch even if the workspace still retains focus. Musical typing does not claim
 Tab.
 
@@ -72,6 +73,29 @@ The real pointer/key routing and canonical command application are automated
 component evidence; they do not claim a real worker acknowledgement or physical
 mouse/keyboard acceptance. The failing baseline is retained separately.
 
+### 19 october2026 — Open lifetime and ruler capture review
+
+Two additional rendered regressions failed against the exact integration source:
+Tab switched to Console during a selected-project confirmation and while the
+left ruler scrub was held. The synthetic `unused.hex` pending-path fixture had
+missed the real ownership transition: rendering consumes `pending_open_path`
+into the existing `project_open` intent before Open completes. The guard now
+checks that owner's `busy()` state as well as the pending path. The retained-root
+modal fixture uses the real picker lifetime; an additional test creates a valid
+disposable project, selects it, verifies the actual pending confirmation and
+consumed path, and checks unchanged project/revision before canceling it.
+
+A read-only scrub activity query protects the existing gesture, including a
+released final target until its established admission/refusal retires it. No seek
+or Open lifecycle changed. Actual ruler mouse routing uses the existing offline
+seek-ack gate; both release with its normal unsupported-output refusal and Escape
+retire the target, after which Tab switches normally. No OS audio device opens.
+All **11 unique focused cases pass, zero failed/ignored**: nine workspace cases
+and the two unchanged Operator cases. The two baseline failures and earlier
+integration failure remain separate evidence; the unrelated header-width failure
+belongs to its source owner. Final combined qualification and physical acceptance
+remain open.
+
 ## Finite native request and user checklist
 
 Root's sole Mac lane may run this exact source once with:
@@ -81,14 +105,25 @@ cargo test -p hex-ui --features ui-test-support --locked --lib -- \
   --nocapture workspace_view_ui_test operator_tab_cycle
 ```
 
-Expected on the repaired source: **9 unique positive tests**, zero failures/ignored
-(7 workspace cases and 2 unchanged Operator traversal cases). The previous exact
+Expected on the repaired source: **11 unique positive tests**, zero failures/ignored
+(9 workspace cases and 2 unchanged Operator traversal cases). The previous exact
 six-case native run remains historical; this checklist does not request its
 automatic repetition or dispatch a new native job. Preserve the actual case list,
 exit status, source/tree, raw log/hash and bounded fixture startup evidence; a
 zero-match result does not qualify. This is a targeted command, not full CI.
 No app installation, launch, quit, real audio device or user-library operation is
 part of it.
+
+If Root requests only the newly changed review cases, the bounded command is:
+
+```sh
+cargo test -p hex-ui --features ui-test-support --locked --lib -- --nocapture \
+  workspace_review_tab_preserves_selected_open_confirmation_until_cancel \
+  workspace_review_tab_preserves_held_ruler_until_release_or_cancel
+```
+
+Expect exactly **2 unique tests, zero ignored**; this does not request automatic
+repetition of the unchanged earlier cases or dispatch native work.
 
 On a separately qualified optimized delivery, user-present acceptance remains:
 Tab both directions from timeline and track header; verify names, viewport,

@@ -325,7 +325,9 @@ fn workspace_tab_respects_modifiers_and_retained_root_modal_state(cx: &mut TestA
                     4 => v.opening_project = true,
                     5 => v.theme_settings.open = true,
                     6 => v.tuning.open = true,
-                    _ => v.pending_open_path = Some(std::path::PathBuf::from("unused.hex")),
+                    _ => {
+                        assert!(v.start_open_picker().is_some());
+                    }
                 }
                 cx.notify();
             })
@@ -340,13 +342,122 @@ fn workspace_tab_respects_modifiers_and_retained_root_modal_state(cx: &mut TestA
             v.opening_project = false;
             v.theme_settings.open = false;
             v.tuning.open = false;
-            v.pending_open_path = None;
+            if guard == 7 {
+                assert!(v.project_open.busy());
+                v.cancel_open_after_save();
+            }
             assert_eq!(v.worker_requests_pending, 0);
             cx.notify();
         });
     }
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+}
+
+#[gpui::test]
+fn workspace_review_tab_preserves_selected_open_confirmation_until_cancel(cx: &mut TestAppContext) {
+    let (files, handle, editor) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let directory = files
+        .wav("open-location.wav", 48_000, 8)
+        .parent()
+        .unwrap()
+        .to_owned();
+    let target = directory.join("selected.hex");
+    let saved = Service::new(48_000, 8, 8_000_000).unwrap();
+    next(&saved);
+    saved.submit(Request::SaveNew(target.clone())).unwrap();
+    next(&saved);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    assert!(before.unsaved);
+    editor.update(&mut visual, |v, cx| {
+        v.choose_project(target, hex_session::DocumentAudioMode::Resident);
+        assert!(v.pending_open_path.is_some());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(cx.has_pending_prompt());
+    visual.update(|window, cx| {
+        editor.update(cx, |v, _| {
+            assert!(
+                v.pending_open_path.is_none(),
+                "render transferred the selected path into its owned intent"
+            );
+            assert!(v.project_open.busy());
+            assert!(!v.opening_project);
+            v.focus.focus(window);
+        })
+    });
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, EditorMode::Arrangement);
+        assert!(v.project_open.busy());
+        assert_eq!(v.state.as_ref().unwrap().project, before.project);
+        assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+    cx.simulate_prompt_answer("cancel");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(!v.project_open.busy()));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+}
+
+#[gpui::test]
+fn workspace_review_tab_preserves_held_ruler_until_release_or_cancel(cx: &mut TestAppContext) {
+    for cancel in [false, true] {
+        let (_files, handle, editor) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        // Existing scrub tests hold the real seek-ack gate while exercising
+        // pointer coalescing offline. No OS audio device is constructed.
+        editor.update(&mut visual, |v, _| v.pending_seek_ticket = Some(1));
+        let bounds = visual.debug_bounds("timeline-ruler").unwrap();
+        let start = bounds.center();
+        let end = start + gpui::point(gpui::px(10.0), gpui::px(0.0));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        editor.update(&mut visual, |v, _| {
+            assert!(v.update_scrub(f32::from(end.x), false))
+        });
+        visual.simulate_keystrokes("tab");
+        editor.update(&mut visual, |v, _| {
+            assert_eq!(v.mode, EditorMode::Arrangement);
+            assert!(
+                v.update_scrub(f32::from(end.x), false),
+                "held target still belongs to ruler capture"
+            );
+            assert_eq!(v.worker_requests_pending, 0);
+        });
+        if cancel {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        editor.update(&mut visual, |v, _| {
+            v.pending_seek_ticket = None;
+            if cancel {
+                assert!(!v.tick_scrub());
+            } else {
+                assert!(
+                    v.tick_scrub(),
+                    "released final target follows existing offline refusal"
+                );
+                assert!(
+                    v.error
+                        .as_deref()
+                        .is_some_and(|e| e.contains("audio output"))
+                );
+            }
+            assert!(
+                !v.cancel_scrub(),
+                "release/refusal or Escape retired the future target"
+            );
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+    }
 }
 
 #[gpui::test]

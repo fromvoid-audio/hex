@@ -33,6 +33,7 @@ impl EditorView {
             || self.sample_bpm_editing(cx)
             || self.close_prompt_open
             || self.opening_project
+            || self.project_open.busy()
             || self.pending_open_path.is_some()
             || self.pending_new_mode.is_some()
             || self.export_dialog_open
@@ -49,6 +50,7 @@ impl EditorView {
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.loop_rail_gesture.is_some()
+            || self.scrub_active()
         {
             return false;
         }
