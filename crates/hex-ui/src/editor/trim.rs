@@ -855,25 +855,6 @@ impl EditorView {
                     data: Rc::new(RefCell::new(None)),
                 })
             })
-            .on_drag_move::<MidiTrimDrag>(move |event, _, cx| {
-                let Some(drag) = event.dragged_item().downcast_ref::<MidiTrimDrag>() else {
-                    return;
-                };
-                let current = drag_entity.update(cx, |view, _| view.midi_trim_drag_current(drag));
-                if !current {
-                    replace_midi_trim_preview(&drag.preview, None);
-                    drag_entity.update(cx, |view, cx| {
-                        view.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
-                    });
-                    return;
-                }
-                let pointer_x = f32::from(event.event.position.x);
-                drag.last_pointer_x.set(Some(pointer_x));
-                drag.snap_modifier.set(event.event.modifiers.platform);
-                drag_entity.update(cx, |view, cx| {
-                    view.update_midi_trim_preview(drag, pointer_x, cx)
-                });
-            })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1001,24 +982,41 @@ impl EditorView {
                     data: payload.preview.clone(),
                 })
             })
-            .on_drag_move::<TrimDrag>(move |event, _, cx| {
-                let Some(drag) = event.dragged_item().downcast_ref::<TrimDrag>() else {
-                    return;
-                };
-                let current = drag_entity.update(cx, |view, _| view.trim_drag_current(drag));
-                if !current {
-                    replace_audio_trim_preview(&drag.preview, None);
-                    drag_entity.update(cx, |view, cx| {
-                        view.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
-                    });
-                    return;
-                }
-                let pointer_x = f32::from(event.event.position.x);
-                drag.last_pointer_x.set(Some(pointer_x));
-                drag.snap_modifier.set(event.event.modifiers.platform);
-                drag.stretch_modifier.set(event.event.modifiers.shift);
-                drag_entity.update(cx, |view, cx| view.update_trim_preview(drag, pointer_x, cx));
-            })
+    }
+
+    pub(super) fn refresh_trim_pointer(
+        &mut self,
+        drag: &TrimDrag,
+        event: &gpui::MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.trim_drag_current(drag) {
+            replace_audio_trim_preview(&drag.preview, None);
+            self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
+            return;
+        }
+        let pointer_x = f32::from(event.position.x);
+        drag.last_pointer_x.set(Some(pointer_x));
+        drag.snap_modifier.set(event.modifiers.platform);
+        drag.stretch_modifier.set(event.modifiers.shift);
+        self.update_trim_preview(drag, pointer_x, cx);
+    }
+
+    pub(super) fn refresh_midi_trim_pointer(
+        &mut self,
+        drag: &MidiTrimDrag,
+        event: &gpui::MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.midi_trim_drag_current(drag) {
+            replace_midi_trim_preview(&drag.preview, None);
+            self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+            return;
+        }
+        let pointer_x = f32::from(event.position.x);
+        drag.last_pointer_x.set(Some(pointer_x));
+        drag.snap_modifier.set(event.modifiers.platform);
+        self.update_midi_trim_preview(drag, pointer_x, cx);
     }
 
     pub(super) fn cancel_trim_gesture(&mut self, cx: &mut Context<Self>) -> bool {
