@@ -190,6 +190,12 @@ impl<'a> crate::AudioRootStorageLedger<'a> {
         &mut self,
         value: &'a std::path::PathBuf,
     ) -> Result<(), crate::AudioStorageError> {
+        self.mutate(|ledger| ledger.path_backing(value))
+    }
+    pub(crate) fn path_backing(
+        &mut self,
+        value: &'a std::path::PathBuf,
+    ) -> Result<(), crate::AudioStorageError> {
         if !cfg!(any(
             all(
                 target_arch = "x86_64",
@@ -201,13 +207,11 @@ impl<'a> crate::AudioRootStorageLedger<'a> {
         {
             return Err(crate::AudioStorageError::UnknownStorage);
         }
-        self.mutate(|ledger| {
-            ledger.bytes(
-                crate::audio_storage::Owner::exclusive(value),
-                crate::audio_storage::Location("unix-path-buffer", 0),
-                value.capacity(),
-            )
-        })
+        self.bytes(
+            crate::audio_storage::Owner::exclusive(value),
+            crate::audio_storage::Location("unix-path-buffer", 0),
+            value.capacity(),
+        )
     }
     /// Actual capacity-visible entry backing. Inline entry fields are included
     /// here; owned children still require their module's traversal. The inline

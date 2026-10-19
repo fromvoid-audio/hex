@@ -9,16 +9,20 @@ impl<'a> AudioRootStorageLedger<'a> {
         &mut self,
         audio: &'a crate::Audio,
     ) -> Result<(), AudioStorageError> {
-        self.mutate(|ledger| {
-            let handle = audio
-                .native_handle
-                .map(|h| h.get())
-                .ok_or(AudioStorageError::UnknownStorage)?;
-            if ledger.skip_observed_shared_field(audio) {
-                return Ok(());
-            }
-            ledger.resident(audio, Owner::exclusive(audio), handle)
-        })
+        self.mutate(|ledger| ledger.embedded_native_audio(audio))
+    }
+    pub(crate) fn embedded_native_audio(
+        &mut self,
+        audio: &'a crate::Audio,
+    ) -> Result<(), AudioStorageError> {
+        let handle = audio
+            .native_handle
+            .map(|h| h.get())
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        if self.skip_observed_shared_field(audio) {
+            return Ok(());
+        }
+        self.resident(audio, Owner::exclusive(audio), handle)
     }
     /// Actual native source field embedded in an already charged parent.
     /// Validate its closed constructor, then visit that SAME physical field at

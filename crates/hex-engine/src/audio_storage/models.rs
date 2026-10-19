@@ -17,6 +17,8 @@ fn observation(value: &dyn Any) -> Option<MidiSourceStorageObservation<'_>> {
 }
 fn source(value: &dyn Any) -> Owner<'_> {
     Owner {
+        body_field: None,
+        shared_field: None,
         vec_field: None,
         domain: OwnerDomain::CanonicalMidiSource,
         value,
@@ -30,6 +32,8 @@ fn source(value: &dyn Any) -> Owner<'_> {
 }
 fn field(value: &dyn Any) -> Owner<'_> {
     Owner {
+        body_field: None,
+        shared_field: None,
         vec_field: None,
         domain: OwnerDomain::CanonicalMidiField,
         value,
@@ -193,7 +197,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| ledger.project_midi_sources(project))
     }
-    fn project_midi_sources(
+    pub(crate) fn project_midi_sources(
         &mut self,
         project: &'a hex_project::Project,
     ) -> Result<(), AudioStorageError> {

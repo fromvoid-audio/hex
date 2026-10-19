@@ -518,3 +518,138 @@ fn actual_reserved_file_slots_charge_spare_body_and_distinct_consent_path() {
 fn stale_main_job_identity_refuses_before_foreign_parent_render() {
     exercise(false, Case::WrongIdentity);
 }
+
+#[test]
+fn typed_file_projection_visits_two_occupied_slots_and_rejects_omission_foreign_body_and_failed_job()
+ {
+    use hex_engine::sampler_host_fields::{FileJobFields, FileSlotsFields, VecRef};
+    let dir = Scratch::new();
+    let paths = [dir.0.join("one.wav"), dir.0.join("two.wav")];
+    let mut slots = Vec::with_capacity(5);
+    for path in &paths {
+        fs::write(path, b"unchanged original").unwrap();
+        let consent = hex_export::Publication::confirmed_save(path).unwrap();
+        let staged = StagedWavFile::begin_on_control(path, 48_000, 257, &consent).unwrap();
+        slots.push(MainControlFileJob::reserve_on_control(staged).unwrap());
+    }
+    let fields = ReservedFileSlots { slots: &slots };
+    let limits = AudioStorageLedgerReservation {
+        data_rows: 32,
+        handle_rows: 4,
+        root_rows: 4,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let collect = |limits| {
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(limits)?;
+        ledger.borrow_sampler_file_slots_fields_on_control(&fields)?;
+        ledger.summary()
+    };
+    let summary = collect(limits).unwrap();
+    assert_eq!(slots.len(), 2);
+    assert!(slots.capacity() > slots.len());
+    // ONE backing includes both occupied and spare bodies/copy/encoding, plus
+    // three DISTINCT path allocations per job (destination/temp/consent).
+    assert_eq!(summary.data_allocations, 7);
+    let path_bytes: usize = (0..2)
+        .map(|i| {
+            let job = fields.file(i).unwrap();
+            let hex_engine::sampler_host_fields::PublicationFields::Replace { path, .. } =
+                job.staged.publication
+            else {
+                panic!("real consent required")
+            };
+            job.staged.destination.capacity() + job.staged.temporary.capacity() + path.capacity()
+        })
+        .sum();
+    assert_eq!(
+        summary.data_bytes,
+        slots.capacity() * size_of::<MainControlFileJob>() + path_bytes
+    );
+    assert!(summary.require_complete().is_err());
+    for (retained, peak, ok) in [
+        (
+            summary.retained_bytes,
+            summary.construction_peak_bytes,
+            true,
+        ),
+        (
+            summary.retained_bytes - 1,
+            summary.construction_peak_bytes,
+            false,
+        ),
+        (
+            summary.retained_bytes,
+            summary.construction_peak_bytes - 1,
+            false,
+        ),
+    ] {
+        let result = collect(AudioStorageLedgerReservation {
+            max_retained_bytes: retained,
+            max_construction_peak_bytes: peak,
+            ..limits
+        });
+        if ok {
+            assert_eq!(result.unwrap(), summary);
+        } else {
+            assert_eq!(result, Err(AudioStorageError::ReservationExceeded));
+        }
+    }
+    struct Invalid<'a> {
+        actual: &'a ReservedFileSlots<'a>,
+        foreign: &'a ReservedFileSlots<'a>,
+        omit: bool,
+    }
+    impl<'a> FileSlotsFields<'a> for Invalid<'a> {
+        fn slots(&self) -> VecRef<'a> {
+            self.actual.slots()
+        }
+        fn file(&self, i: usize) -> Result<FileJobFields<'a>, AudioStorageError> {
+            if self.omit && i == 1 {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            if !self.omit && i == 1 {
+                self.foreign.file(0)
+            } else {
+                self.actual.file(i)
+            }
+        }
+    }
+    let foreign_slots = vec![
+        MainControlFileJob::create_new_on_control(&dir.0.join("foreign.wav"), 48_000, 257).unwrap(),
+    ];
+    let foreign = ReservedFileSlots {
+        slots: &foreign_slots,
+    };
+    for omit in [true, false] {
+        let invalid = Invalid {
+            actual: &fields,
+            foreign: &foreign,
+            omit,
+        };
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(limits).unwrap();
+        assert_eq!(
+            ledger.borrow_sampler_file_slots_fields_on_control(&invalid),
+            Err(if omit {
+                AudioStorageError::UnknownStorage
+            } else {
+                AudioStorageError::SourceMismatch
+            })
+        );
+        assert!(
+            ledger.summary().is_err(),
+            "partial failed inventory is unusable"
+        );
+    }
+    slots[1].phase = Phase::FilePending;
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits).unwrap();
+    assert_eq!(
+        MainControlFileJob::visit_reserved_slots_storage_on_control(&slots, &mut ledger),
+        Err(AudioStorageError::UnknownStorage)
+    );
+    drop(ledger);
+    drop(slots);
+    for path in &paths {
+        assert_eq!(fs::read(path).unwrap(), b"unchanged original");
+    }
+}

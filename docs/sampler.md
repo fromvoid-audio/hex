@@ -1784,13 +1784,39 @@ buffer. Exact and each-minus-one tests cover this selected metadata quote and
 preserved disposable destination/scratch cleanup. Selected bytes confer no
 constructor/retirement permission.
 
-Joining those outer File rows to the unchanged inner compiler's original ledger
-correctly refuses: its mandatory typed input walk does not yet include the File
-slots or other host roots. The original desired whole-union positive failure is
-retained; the separate required-refusal regression is not passing whole-union
-construction. A typed host-operand representation across the existing crate
-layers remains unresolved. No generic ledger/binding rule was relaxed, no public
-host projection type introduced, and actual Service dispatch remains disabled
-until that mandatory union, normal startup/transport and source association are
-verified. Full native/frontier/seek/mixed/offline/CapturedMix/Stems requirements
-and the complete native-library goal remain open.
+At checkpoint `f574`, joining those outer File rows to the unchanged inner
+compiler's original ledger correctly refused: its mandatory input walk did not
+include File slots or other host roots. That desired whole-union failure and the
+separate required-refusal regression remain preserved. Primary decision 28256
+now selects audited internal, finite borrowed host projections; public visibility
+is not a hostile-consumer sealing claim or an admission certificate.
+
+The first implemented producers are real reserved File slots and captured
+canonical sources. Engine drives every occupied File Vec index, checks actual
+body containment, charges capacity (including spare inline copy/encoding/staged
+bodies) once, and separately observes destination/temp/consent allocations.
+Export and Session project exhaustive fields; failed/pending jobs refuse. The
+captured-source traversal observes the actual paired outer owner, actual nested
+Project and each original resident binding, including a target retained after
+current/history pruning. Foreign fields and unknown children refuse. Borrowed
+physical identities support non-static fields without `Any` in the projection
+interface, unsafe code, reconstructed pointers or caller-supplied byte totals.
+Legacy shared and new borrowed observations use the same actual Arc reference;
+body equality alone grants no lineage, child-absence or retirement proof.
+
+A source architecture guard restricts these internal projections and producer
+accessors to enumerated owning modules. This is an audited-producer policy,
+independent of the Cargo dependency guard, rather than language-level exclusion
+of arbitrary downstream trait implementations. Selected producer tests preserve
+exact/each-minus-one budgets, physical alias accounting, missing/foreign records,
+unknown storage and failed partial-ledger refusal. Ledger row sizes are quoted
+from their changed actual layouts; no byte ceiling is raised.
+
+Complete worker/family/native projections, the Audio same-parent facade and the
+mandatory host walk before original-input binding are still unfinished. Inner
+binding, closure and public summary refusal have not been weakened. Actual
+Service dispatch remains disabled until the whole union, normal startup/typed
+transport and source association are verified. Full native/frontier/seek/mixed/
+offline/CapturedMix/Stems requirements and the complete native-library goal stay
+open. These selected metadata components do not qualify playable Sampler or
+native publication.

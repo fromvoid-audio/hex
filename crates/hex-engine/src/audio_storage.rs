@@ -81,6 +81,8 @@ impl<T> PrivateVecField for Vec<T> {}
 #[derive(Clone, Copy)]
 pub(crate) struct Owner<'a> {
     domain: OwnerDomain,
+    body_field: Option<&'a dyn crate::sampler_host_fields::BodyLayout>,
+    shared_field: Option<&'a dyn crate::sampler_host_fields::SharedLayout>,
     vec_field: Option<&'a (dyn PrivateVecField + 'a)>,
     value: &'a dyn Any,
     compare: fn(&dyn Any, &dyn Any) -> bool,
@@ -89,6 +91,8 @@ pub(crate) struct Owner<'a> {
 impl<'a> Owner<'a> {
     pub(crate) fn exclusive<T: 'static>(value: &'a T) -> Self {
         Self {
+            body_field: None,
+            shared_field: None,
             vec_field: None,
             domain: OwnerDomain::Exclusive,
             value,
@@ -105,6 +109,8 @@ impl<'a> Owner<'a> {
     pub(crate) fn exclusive_vec<T>(value: &'a Vec<T>) -> Self {
         Self {
             domain: OwnerDomain::ExclusiveVec,
+            body_field: None,
+            shared_field: None,
             vec_field: Some(value), // the REAL lifetime-bound Vec field
             value: &(),             // unused in this domain; never identity/provenance
             compare: |_, _| false,
@@ -113,6 +119,8 @@ impl<'a> Owner<'a> {
     }
     pub(crate) fn shared<T: 'static + ?Sized>(value: &'a Arc<T>) -> Self {
         Self {
+            body_field: None,
+            shared_field: Some(value),
             vec_field: None,
             domain: OwnerDomain::Shared,
             value,
@@ -130,6 +138,8 @@ impl<'a> Owner<'a> {
     }
     pub(crate) fn device_payload(value: &'a hex_lattice_contract::NativeDeviceState) -> Self {
         Self {
+            body_field: None,
+            shared_field: None,
             vec_field: None,
             domain: OwnerDomain::DevicePayload,
             value,
@@ -152,6 +162,8 @@ impl<'a> Owner<'a> {
         value: &'a hex_lattice_contract::NativeDeviceState,
     ) -> Self {
         Self {
+            body_field: None,
+            shared_field: None,
             vec_field: None,
             domain: OwnerDomain::DeviceAssetReferences,
             value,
@@ -171,9 +183,65 @@ impl<'a> Owner<'a> {
             },
         }
     }
+    pub(crate) fn borrowed_body<T: crate::sampler_host_fields::BodyLayout>(value: &'a T) -> Self {
+        Self {
+            domain: OwnerDomain::Exclusive,
+            body_field: Some(value),
+            shared_field: None,
+            vec_field: None,
+            value: &(),
+            compare: |_, _| false,
+            counts: None,
+        }
+    }
+    pub(crate) fn borrowed_body_ref(value: &'a dyn crate::sampler_host_fields::BodyLayout) -> Self {
+        Self {
+            domain: OwnerDomain::Exclusive,
+            body_field: Some(value),
+            shared_field: None,
+            vec_field: None,
+            value: &(),
+            compare: |_, _| false,
+            counts: None,
+        }
+    }
+    pub(crate) fn borrowed_shared(value: &'a dyn crate::sampler_host_fields::SharedLayout) -> Self {
+        Self {
+            domain: OwnerDomain::Shared,
+            body_field: None,
+            shared_field: Some(value),
+            vec_field: None,
+            value: &(),
+            compare: |_, _| false,
+            counts: None,
+        }
+    }
+    fn actual_counts(self) -> Result<Option<(usize, usize)>, AudioStorageError> {
+        if let Some(shared) = self.shared_field {
+            return Ok(Some(shared.counts()));
+        }
+        self.counts
+            .map(|counts| counts(self.value).ok_or(AudioStorageError::UnknownStorage))
+            .transpose()
+    }
+    fn allocation_address(self) -> Option<*const ()> {
+        self.shared_field.map(|field| field.allocation_address())
+    }
     fn same(self, other: Self) -> bool {
         if self.domain != other.domain {
             return false;
+        }
+        if self.shared_field.is_some() || other.shared_field.is_some() {
+            return self
+                .allocation_address()
+                .zip(other.allocation_address())
+                .is_some_and(|(a, b)| a == b);
+        }
+        match (self.body_field, other.body_field) {
+            (Some(a), Some(b)) => return std::ptr::addr_eq(a, b),
+            (Some(a), None) => return std::ptr::addr_eq(a, other.value),
+            (None, Some(b)) => return std::ptr::addr_eq(self.value, b),
+            _ => {}
         }
         match (self.vec_field, other.vec_field) {
             (Some(a), Some(b)) => std::ptr::addr_eq(a, b),
@@ -676,9 +744,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     pub(crate) fn validate_closed_shared_handles(&self) -> Result<(), AudioStorageError> {
         self.summary()?;
         for row in &self.data {
-            if let Some(counts) = row.owner.counts {
-                let (strong, weak) =
-                    counts(row.owner.value).ok_or(AudioStorageError::UnknownStorage)?;
+            if let Some((strong, weak)) = row.owner.actual_counts()? {
                 let declared = self
                     .handles
                     .iter()
@@ -709,7 +775,7 @@ impl<'a> AudioRootStorageLedger<'a> {
             .iter()
             .enumerate()
             .filter(|(index, row)| {
-                row.owner.counts.is_some()
+                (row.owner.counts.is_some() || row.owner.shared_field.is_some())
                     && !self.data[..*index]
                         .iter()
                         .any(|old| old.owner.same(row.owner))
@@ -795,6 +861,42 @@ impl<'a> AudioRootStorageLedger<'a> {
             None,
         )?;
         self.observe_handle_at(anchor, field, Location("handle-field", 0))
+    }
+    // Actual non-static paired metadata projection. Same normal ledger DATA
+    // and physical handle fields as the existing static visitor; no adoption.
+    pub(crate) fn sampler_shared_field(
+        &mut self,
+        allocation: &'a dyn crate::sampler_host_fields::SharedLayout,
+        parts: Option<(usize, usize)>,
+        field: Owner<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let (payload, overhead) = parts.ok_or(AudioStorageError::UnknownStorage)?;
+        if allocation.counts().1 != 0 {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        let owner = Owner::borrowed_shared(allocation);
+        self.data(
+            owner,
+            Location("shared-owner", 0),
+            Declaration {
+                bytes: payload
+                    .checked_add(overhead)
+                    .ok_or(AudioStorageError::Overflow)?,
+                capacity: 1,
+                element_bytes: payload,
+                overhead,
+            },
+            None,
+        )?;
+        if self.arithmetic.is_none()
+            && self
+                .handles
+                .iter()
+                .any(|row| row.field.same(field) && row.location == Location("handle-field", 0))
+        {
+            return Ok(());
+        }
+        self.observe_handle_at(owner, field, Location("handle-field", 0))
     }
     pub(crate) fn growth(&mut self, bytes: usize) -> Result<(), AudioStorageError> {
         self.growth = self

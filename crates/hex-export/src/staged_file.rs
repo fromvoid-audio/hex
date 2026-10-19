@@ -76,6 +76,37 @@ impl StagedWavFile {
         })
     }
 
+    /// Internal audited projection of this real reserved File. Footprint only;
+    /// no source lineage, completeness or admission is conferred by this view.
+    pub fn sampler_fields_on_control(
+        &self,
+    ) -> Result<hex_engine::sampler_host_fields::StagedFileFields<'_>, hex_engine::AudioStorageError>
+    {
+        let Self {
+            writer,
+            destination,
+            temporary_path,
+            publication,
+            sample_rate: _,
+            frames: _,
+            data_bytes: _,
+            phase,
+        } = self;
+        if *phase != Phase::Writing {
+            return Err(hex_engine::AudioStorageError::UnknownStorage);
+        }
+        Ok(hex_engine::sampler_host_fields::StagedFileFields {
+            body: hex_engine::sampler_host_fields::BodyRef::of(self),
+            writer: writer
+                .as_ref()
+                .ok_or(hex_engine::AudioStorageError::UnknownStorage)?
+                .sampler_fields()?,
+            destination,
+            temporary: temporary_path,
+            publication: publication.sampler_fields(),
+        })
+    }
+
     /// Actual owned path backings only. The caller must separately visit the
     /// real enclosing slot body/capacity, including the inline encoding buffer.
     /// This is not a renderer/source/whole-application storage declaration.

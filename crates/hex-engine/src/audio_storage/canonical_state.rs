@@ -67,7 +67,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| ledger.project_native_states(project))
     }
-    fn project_native_states(
+    pub(crate) fn project_native_states(
         &mut self,
         project: &'a hex_project::Project,
     ) -> Result<(), AudioStorageError> {

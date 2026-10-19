@@ -30,6 +30,7 @@ use std::{fmt, sync::Arc};
 
 mod audio_candidate;
 mod audio_storage;
+pub mod sampler_host_fields;
 pub use audio_candidate::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
     AudioCandidateControlBlock, AudioCandidateControlProgress, AudioCandidateDisposalPhase,

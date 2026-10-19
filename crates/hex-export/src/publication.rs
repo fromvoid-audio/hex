@@ -17,6 +17,20 @@ pub enum Publication {
 }
 
 impl Publication {
+    pub(super) fn sampler_fields(&self) -> hex_engine::sampler_host_fields::PublicationFields<'_> {
+        use hex_engine::sampler_host_fields::{BodyRef, PublicationFields};
+        match self {
+            Self::CreateNew => PublicationFields::CreateNew,
+            Self::Replace(consent) => {
+                let OverwriteConsent { path, metadata } = consent;
+                PublicationFields::Replace {
+                    body: BodyRef::of(consent),
+                    path,
+                    metadata,
+                }
+            }
+        }
+    }
     pub(super) fn visit_path_storage_on_control<'a>(
         &'a self,
         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,

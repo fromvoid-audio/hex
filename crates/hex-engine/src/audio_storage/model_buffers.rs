@@ -34,7 +34,10 @@ impl<'a> AudioRootStorageLedger<'a> {
             name.capacity(),
         )
     }
-    fn project_exclusive_buffers(&mut self, project: &'a Project) -> Result<(), AudioStorageError> {
+    pub(crate) fn project_exclusive_buffers(
+        &mut self,
+        project: &'a Project,
+    ) -> Result<(), AudioStorageError> {
         let buffers = project.storage_buffers_on_control();
         self.vec(buffers.tracks())?;
         self.vec(buffers.returns())?;

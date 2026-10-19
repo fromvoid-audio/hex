@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from sampler_host_policy import repository_violations
+
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
     'hex-mts': {'hex-tuning'},
@@ -67,7 +69,7 @@ BUILD_BOUNDARIES = {'coremidi': {'hex-midi'}, 'sha2': {'hex-stream'}}
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT))
 packages = {p['name']: p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
-errors = []
+errors = repository_violations(ROOT)
 for name, package in packages.items():
     if name not in ALLOWED:
         errors.append(f'{name}: register a purpose and dependency policy before adding this crate')

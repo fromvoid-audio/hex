@@ -101,6 +101,45 @@ pub struct MainControlFileJob {
     phase: Phase,
     first_panic: Option<Box<dyn Any + Send>>,
 }
+// Kept inside the actual owner module; no allocated projection list and no
+// constructor outside this producer. Engine drives every occupied Vec index.
+struct ReservedFileSlots<'a> {
+    slots: &'a Vec<MainControlFileJob>,
+}
+impl<'a> hex_engine::sampler_host_fields::FileSlotsFields<'a> for ReservedFileSlots<'a> {
+    fn slots(&self) -> hex_engine::sampler_host_fields::VecRef<'a> {
+        hex_engine::sampler_host_fields::VecRef::of(self.slots)
+    }
+    fn file(
+        &self,
+        index: usize,
+    ) -> Result<hex_engine::sampler_host_fields::FileJobFields<'a>, AudioStorageError> {
+        let job = self
+            .slots
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        let MainControlFileJob {
+            file,
+            identity,
+            copy,
+            pending,
+            phase,
+            first_panic,
+        } = job;
+        if *phase != Phase::Unbound
+            || identity.is_some()
+            || pending.is_some()
+            || first_panic.is_some()
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        Ok(hex_engine::sampler_host_fields::FileJobFields {
+            body: hex_engine::sampler_host_fields::BodyRef::of(job),
+            copy,
+            staged: file.sampler_fields_on_control()?,
+        })
+    }
+}
 impl MainControlFileJob {
     /// Join ACTUAL worker-local reserved slot storage before compiler birth.
     /// Vec capacity covers the inline File/job/PCM/encoding buffers, including
@@ -110,19 +149,8 @@ impl MainControlFileJob {
         slots: &'a Vec<Self>,
         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
-        if slots.iter().any(|job| {
-            job.phase != Phase::Unbound
-                || job.identity.is_some()
-                || job.pending.is_some()
-                || job.first_panic.is_some()
-        }) {
-            return Err(AudioStorageError::UnknownStorage);
-        }
-        ledger.borrow_metadata_vec_backing_on_control(slots)?;
-        for job in slots {
-            job.file.visit_path_storage_on_control(ledger)?;
-        }
-        Ok(())
+        let fields = ReservedFileSlots { slots };
+        ledger.borrow_sampler_file_slots_fields_on_control(&fields)
     }
     /// Concrete CreateNew File entry point for the existing Desktop adapter,
     /// which deliberately has no dependency on the exporter crate. The host

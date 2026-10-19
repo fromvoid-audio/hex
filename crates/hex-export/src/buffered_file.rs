@@ -39,6 +39,28 @@ impl BufferedWavFile {
         })
     }
 
+    pub(super) fn sampler_fields(
+        &self,
+    ) -> Result<hex_engine::sampler_host_fields::WavWriterFields<'_>, hex_engine::AudioStorageError>
+    {
+        let Self {
+            file,
+            encoding: _,
+            frames: _,
+            written,
+            phase,
+            encoded,
+        } = self;
+        if *phase != Phase::Writing || *written != 0 {
+            return Err(hex_engine::AudioStorageError::UnknownStorage);
+        }
+        Ok(hex_engine::sampler_host_fields::WavWriterFields {
+            body: hex_engine::sampler_host_fields::BodyRef::of(self),
+            file,
+            encoded,
+        })
+    }
+
     pub(super) fn written(&self) -> u64 {
         self.written
     }
