@@ -536,7 +536,10 @@ fn region_edit_mode(
             fixed_start: region.start(),
             enabled: region.enabled(),
         })
-    } else if frame >= region.start() && frame < region.end() {
+    } else if (frame >= region.start() && frame < region.end())
+        || (end_x > start_x && x >= start_x && x <= end_x)
+    {
+        // A visible body remains a body when frame rounding reaches its end.
         Some(EditMode::Move {
             original: region,
             anchor: frame,

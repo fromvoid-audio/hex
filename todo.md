@@ -5992,7 +5992,8 @@ prospective full CI/integration; native physical mouse/IME acceptance stays open
 
 - Continue original c525/2713 history after one main2683 composition; preserve
   earlier c71e three executed negatives and separate literal compile failure.
-- Command-click anywhere on the bar (including endpoints) toggles on/off; ordinary body move preserves full length,
+- Command-click anywhere on the bar (including endpoints) toggles on/off;
+  ordinary body move preserves full length,
   Shift uses nearest full-length steps relative to the captured original start.
   Existing edge resize/empty-rail painting and Command-L/toolbar remain intact.
 - Mark two/four and unambiguous fractional binary musical lengths through exact

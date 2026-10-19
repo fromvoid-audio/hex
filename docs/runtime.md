@@ -449,10 +449,15 @@ loop region. Drag empty rail to preview a new disabled range, then dispatch one
 `SetLoopRegion` on release. Command bypasses the normal snap grid for free
 placement; visible edge resizing preserves the enabled flag.
 
-Command-click anywhere on the bar, including its endpoint hit regions, to toggle looping in either direction. A plain body
-click makes no edit; a body drag moves the complete range without changing its
-frame length or enabled flag. Shift overrides the normal grid with steps of the
-captured full loop length, rounded to the nearest whole step relative to its
+Command-click anywhere on the bar, including its endpoint hit regions, to toggle
+looping in either direction. A plain body click makes no edit; a body drag moves
+the complete range without changing its frame length or enabled flag. Until horizontal travel exceeds the existing 3px
+threshold, held body previews retain the original range, including off-grid ranges
+and modifier refreshes; vertical travel still disqualifies a Command click. Narrow
+bars reserve their central third for moving: inside the visible bar each endpoint
+has at most one third of its width (up to 6px), while outside capture retains the
+full 6px. Hover and capture use the same resolver. Shift overrides the normal
+grid with steps of the captured full loop length, rounded to the nearest whole step relative to its
 original start (half-step ties go away from the origin). Both directions retain
 that origin; if another complete step would exceed the timeline, the last legal
 step remains. Live modifier changes and final MouseUp use the same projection.
@@ -478,7 +483,9 @@ Source verification for Pulse2713/PR329 uses actual GPUI pointer/key routing and
 real Service preparation/publication, plus independent tempo-rounding and
 relative-step bounds. Native physical keyboard/drag, transport listening and
 optimized delivery acceptance remain separate. A finite native checklist is:
-repeat Command clicks on the body and both endpoints on/off; move both enabled/disabled ranges normally;
+repeat Command clicks on the body and both endpoints on/off; move both
+enabled/disabled ranges normally, including 12/8/1px bars at two zooms; hold an
+off-grid bar with only vertical travel and inspect stable preview;
 Shift-step one-bar and other lengths both ways at two zooms; release with a newer
 pointer/modifier; resize both edges and paint empty rail; inspect two/four/three
 and fractional markers; Escape/focus cancellation and outside release; then

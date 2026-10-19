@@ -269,3 +269,54 @@ fn hit_budget_preserves_outside_capture_clipped_bodies_and_wide_edges() {
     };
     assert_eq!(kind(wide, clipped_end, 400.0), "move");
 }
+
+#[gpui::test]
+fn minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end(cx: &mut TestAppContext) {
+    let viewport = Viewport {
+        start: 0,
+        length: 300,
+    };
+    let (handle, editor) = fixture(cx, 100, 101, viewport);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, cx| {
+        v.snap_grid = SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
+    let bar = painted(&mut visual);
+    let down = point(bar.left() + bar.size.width * 0.6, rail.center().y);
+    let frame = crate::editor::seek::pointer_to_frame(
+        f32::from(down.x),
+        f32::from(rail.left()),
+        f32::from(rail.size.width),
+        viewport,
+    )
+    .unwrap();
+    assert_eq!(frame, 101, "real body pointer rounds to the exclusive end");
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(matches!(
+            v.loop_rail_gesture.unwrap().mode,
+            super::super::EditMode::Move { .. }
+        ))
+    });
+    let target = point(down.x + px(18.0), down.y);
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let preview = editor.read_with(&visual, |v, _| {
+        v.loop_rail_gesture.unwrap().preview.unwrap()
+    });
+    painted(&mut visual);
+    assert!(preview.start() > 100);
+    assert_eq!(preview.end() - preview.start(), 1);
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(region(&editor, &visual), preview);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    assert_eq!(
+        region(&editor, &visual),
+        LoopRegion::new(100, 101, false).unwrap()
+    );
+}
