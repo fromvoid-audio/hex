@@ -1,0 +1,581 @@
+From 143ced6b916a90e6f26fcb6ac9530bb4214ce305 Mon Sep 17 00:00:00 2001
+From: PORTALSURFER <wsvasek@gmail.com>
+Date: Mon, 19 Oct 2026 05:57:38 +0000
+Subject: [PATCH] fix(launcher): bind configured restart target to filesystem
+ identity
+
+---
+ docs/test-builds.md                          |  11 ++
+ scripts/launch-restart.py                    |  54 +++++-
+ scripts/launch-restart.swift                 | 128 ++++++++++---
+ scripts/tests/test_launch_restart.py         | 192 ++++++++++++++++++-
+ scripts/tests/test_launch_restart_compile.py |  31 ++-
+ 5 files changed, 378 insertions(+), 38 deletions(-)
+
+diff --git a/docs/test-builds.md b/docs/test-builds.md
+index 54d6f221..e017ceff 100644
+--- a/docs/test-builds.md
++++ b/docs/test-builds.md
+@@ -51,6 +51,17 @@ an app by name or PID alone: bundle URL, executable, development identifier and
+ launch time are rechecked before every request, with the installed signature and
+ sealed inventory verified as well. Multiple processes, a replacement identity,
+ unverifiable app or busy activation/build lock refuse without retargeting.
++The supported persistent `HEX_DEV_APP_PATH` setting is used by this opt-in path
++with the same validation as the default target. `Hex.app` casing is accepted only
++when the actual filesystem proves the configured bundle and native executable
++have the captured device/inode identities. Separate case-sensitive bundles never
++match just because their names differ only in case. Observed native path strings,
++PID, launch time and identifier remain part of the exact process identity; all
++nine private protocol fields travel together. Symlinks and changed bundle or
++executable inodes refuse, including replacement while the helper compiles.
++Linux tests cover owned filesystem objects and a labeled case-insensitive lookup
++model; actual Swift compilation, AppKit casing and running-process behavior still
++require source-specific macOS qualification.
+ Ctrl-C stops further escalation, recovery and launch. A cancelled normal quit
+ can still be followed by force under this explicit option; omit the option to
+ retain the ordinary save-and-quit guard.
+diff --git a/scripts/launch-restart.py b/scripts/launch-restart.py
+index d4f9f787..e27fb7b8 100644
+--- a/scripts/launch-restart.py
++++ b/scripts/launch-restart.py
+@@ -30,16 +30,49 @@ class Identity:
+     bundle: str
+     executable: str
+     identifier: str
++    bundle_device: int
++    bundle_inode: int
++    executable_device: int
++    executable_inode: int
++
++
++def _path_pin(path: Path, *, directory: bool) -> tuple[int, int]:
++    if not path.is_absolute():
++        raise RestartError("application identity path must be absolute")
++    for component in (path, *path.parents):
++        if component.is_symlink():
++            raise RestartError("application identity path contains a symlink")
++    try:
++        info = path.lstat()
++    except OSError as error:
++        raise RestartError("application filesystem identity is unavailable") from error
++    kind = stat.S_ISDIR if directory else stat.S_ISREG
++    if (not kind(info.st_mode) or not 0 <= info.st_dev <= (1 << 64) - 1
++            or not 0 < info.st_ino <= (1 << 64) - 1):
++        raise RestartError("application filesystem identity is ambiguous")
++    return info.st_dev, info.st_ino
++
++
++def _filesystem_identity(bundle: Path, executable: Path) -> tuple[int, int, int, int]:
++    return (*_path_pin(bundle, directory=True), *_path_pin(executable, directory=False))
+ 
+ 
+ def exact_identity(value: dict, app: Path) -> Identity:
++    pin_fields = ("bundle_device", "bundle_inode", "executable_device", "executable_inode")
+     if (not isinstance(value, dict) or set(value) != set(Identity.__dataclass_fields__)
+-            or type(value["pid"]) is not int or value["pid"] <= 0
++            or type(value["pid"]) is not int or not 0 < value["pid"] <= (1 << 31) - 1
+             or not isinstance(value["started"], str) or not value["started"]
+-            or value["bundle"] != str(app)
+-            or value["executable"] != str(app / "Contents/MacOS/hex")
+-            or value["identifier"] != "org.portalsurfer.hex.dev"):
++            or any(not isinstance(value[key], str) or not Path(value[key]).is_absolute()
++                   for key in ("bundle", "executable"))
++            or value["identifier"] != "org.portalsurfer.hex.dev"
++            or any(type(value[key]) is not int or not 0 <= value[key] <= (1 << 64) - 1
++                   or (key.endswith("inode") and value[key] == 0) for key in pin_fields)):
+         raise RestartError("refusing an ambiguous or unrelated development process")
++    pins = tuple(value[key] for key in pin_fields)
++    target = _filesystem_identity(app, app / "Contents/MacOS/hex")
++    observed = _filesystem_identity(Path(value["bundle"]), Path(value["executable"]))
++    if pins != target or observed != target or target != _filesystem_identity(app, app / "Contents/MacOS/hex"):
++        raise RestartError("application filesystem identity changed or belongs to another target")
+     return Identity(**value)
+ 
+ 
+@@ -56,8 +89,11 @@ class NativeController:
+     def disk_identity(self):
+         self.delivery.verify(self.app)
+         executable = self.app / "Contents/MacOS/hex"
+-        info = executable.stat()
+-        return (info.st_dev, info.st_ino, self.delivery.sha(executable))
++        pins = _filesystem_identity(self.app, executable)
++        digest = self.delivery.sha(executable)
++        if pins != _filesystem_identity(self.app, executable):
++            raise RestartError("installed application changed while sealed")
++        return (*pins, digest)
+ 
+     def _compiler_identity(self):
+         # System toolchains may legitimately have multiple hard links. Private
+@@ -251,11 +287,15 @@ class NativeController:
+         try:
+             if operation != "snapshot" and (self.seal is None or self.disk_identity() != self.seal):
+                 raise RestartError("installed application changed; no termination requested")
++            if expected is not None:
++                exact_identity(asdict(expected), self.app)
+             binary = self._prepare_helper()
+             # Compilation may be cold/slow. Repeat the installed seal check at
+             # the actual operation boundary, before even invoking the helper.
+             if operation != "snapshot" and self.disk_identity() != self.seal:
+                 raise RestartError("installed application changed; no termination requested")
++            if expected is not None:
++                exact_identity(asdict(expected), self.app)
+             argv = [str(binary), operation, str(self.app)]
+             if expected is not None:
+                 argv.append(json.dumps(asdict(expected), separators=(",", ":")))
+@@ -394,8 +434,6 @@ def recovery_hash(runner, ci, source: str, ancestor) -> str | None:
+ def prepare(root: Path, app: Path, source: str, ci, delivery, assert_no_raw,
+             *, controller_factory=NativeController) -> str | None:
+     """Inspect/quit/recover under existing exclusions; never write release ownership."""
+-    if "HEX_DEV_APP_PATH" in os.environ:
+-        raise RestartError("--force-restart requires the repository-configured stable app path")
+     delivery.assert_plain_path(app)
+     app.parent.mkdir(parents=True, exist_ok=True)
+     runner = ci.LocalCiRunner(root, adopt_target=False)
+diff --git a/scripts/launch-restart.swift b/scripts/launch-restart.swift
+index ceb4dbe3..594f649d 100644
+--- a/scripts/launch-restart.swift
++++ b/scripts/launch-restart.swift
+@@ -1,5 +1,6 @@
+ // Internal launcher adapter. Never opens an application or targets one by name.
+ import AppKit
++import Darwin
+ import Foundation
+ 
+ struct Identity: Codable, Equatable {
+@@ -8,19 +9,77 @@ struct Identity: Codable, Equatable {
+     let bundle: String
+     let executable: String
+     let identifier: String
++    let bundle_device: UInt64
++    let bundle_inode: UInt64
++    let executable_device: UInt64
++    let executable_inode: UInt64
+ }
+ 
+-func identity(_ app: NSRunningApplication) throws -> Identity {
++struct FilePin: Equatable {
++    let device: UInt64
++    let inode: UInt64
++}
++
++// No resolving symlinks or case-folding paths into trust. On a case-insensitive
++// volume, different spellings qualify only when lstat proves the same object.
++func checkPath(_ path: String, allowMissing: Bool = false) throws {
++    guard path.hasPrefix("/") else {
++        throw Failure.message("application identity path must be absolute")
++    }
++    // Inspect raw lexical prefixes BEFORE Foundation can standardize a URL.
++    // In particular, link/../target must not hide a traversed symlink.
++    var prefix = ""
++    for part in path.split(separator: "/") {
++        prefix += "/" + part
++        var info = stat()
++        let result = lstat(prefix, &info)
++        if result != 0 {
++            guard allowMissing, errno == ENOENT else {
++                throw Failure.message("application identity path is unavailable")
++            }
++        } else if info.st_mode & S_IFMT == S_IFLNK {
++            throw Failure.message("application identity path contains a symlink")
++        }
++    }
++}
++
++func filePin(_ path: String, directory: Bool) throws -> FilePin {
++    try checkPath(path)
++    var info = stat()
++    guard lstat(path, &info) == 0,
++          info.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG),
++          let device = UInt64(exactly: info.st_dev),
++          let inode = UInt64(exactly: info.st_ino), inode > 0 else {
++        throw Failure.message("application filesystem identity is unavailable")
++    }
++    return FilePin(device: device, inode: inode)
++}
++
++func targetPins(_ target: String) throws -> (FilePin, FilePin) {
++    return (try filePin(target, directory: true),
++            try filePin(target + "/Contents/MacOS/hex", directory: false))
++}
++
++func identity(_ app: NSRunningApplication, target: String) throws -> Identity {
+     guard !app.isTerminated, let date = app.launchDate,
+           let bundle = app.bundleURL, let executable = app.executableURL,
+-          let identifier = app.bundleIdentifier else {
++          let identifier = app.bundleIdentifier, identifier == "org.portalsurfer.hex.dev" else {
+         throw Failure.message("application identity is unavailable")
+     }
++    let pins = try targetPins(target)
++    guard try filePin(bundle.path, directory: true) == pins.0,
++          try filePin(executable.path, directory: false) == pins.1 else {
++        throw Failure.message("application does not match the configured filesystem target")
++    }
++    let after = try targetPins(target)
++    guard pins.0 == after.0, pins.1 == after.1 else {
++        throw Failure.message("application filesystem identity changed")
++    }
+     return Identity(pid: app.processIdentifier,
+                     started: String(format: "%.9f", date.timeIntervalSince1970),
+-                    bundle: bundle.standardizedFileURL.path,
+-                    executable: executable.standardizedFileURL.path,
+-                    identifier: identifier)
++                    bundle: bundle.path, executable: executable.path, identifier: identifier,
++                    bundle_device: pins.0.device, bundle_inode: pins.0.inode,
++                    executable_device: pins.1.device, executable_inode: pins.1.inode)
+ }
+ 
+ enum Failure: Error { case message(String) }
+@@ -31,33 +90,48 @@ do {
+           ["snapshot", "quit", "force"].contains(args[1]) else {
+         throw Failure.message("invalid internal app-control request")
+     }
+-    let target = URL(fileURLWithPath: args[2]).standardizedFileURL
+-    guard target.path.hasPrefix("/"), target.lastPathComponent == "hex.app" else {
++    let target = args[2]
++    guard target.hasPrefix("/"), target.split(separator: "/").last?.lowercased() == "hex.app" else {
+         throw Failure.message("not the configured development bundle")
+     }
+-    let apps = NSWorkspace.shared.runningApplications.filter {
+-        $0.bundleURL?.standardizedFileURL == target
+-    }
+-    if args[1] == "snapshot" {
+-        guard args.count == 3 else { throw Failure.message("unexpected snapshot identity") }
+-        let data = try JSONEncoder().encode(try apps.map(identity))
+-        print(String(decoding: data, as: UTF8.self))
++    // A missing target may be a first install. It cannot authorize an operation.
++    try checkPath(target, allowMissing: true)
++    let exists = FileManager.default.fileExists(atPath: target)
++    if !exists {
++        guard args[1] == "snapshot", args.count == 3 else {
++            throw Failure.message("configured development bundle is absent")
++        }
++        print("[]")
+     } else {
+-        guard args.count == 4 else { throw Failure.message("missing exact process identity") }
+-        let expected = try JSONDecoder().decode(Identity.self, from: Data(args[3].utf8))
+-        guard apps.count == 1, let app = apps.first,
+-              expected.bundle == target.path,
+-              expected.executable == target.appendingPathComponent("Contents/MacOS/hex").path,
+-              expected.identifier == "org.portalsurfer.hex.dev",
+-              try identity(app) == expected else {
+-            throw Failure.message("application identity changed; no termination requested")
++        let pins = try targetPins(target)
++        let apps = try NSWorkspace.shared.runningApplications.filter { app in
++            guard let bundle = app.bundleURL else { return false }
++            // A different installed bundle is not ours. Identity errors for the
++            // matching target must refuse rather than silently report absence.
++            guard (try? filePin(bundle.path, directory: true)) == pins.0 else { return false }
++            _ = try identity(app, target: target)
++            return true
+         }
+-        // Re-read immediately before the native request. No PID/name-only signal.
+-        guard try identity(app) == expected else {
+-            throw Failure.message("application identity changed; no termination requested")
++        if args[1] == "snapshot" {
++            guard args.count == 3 else { throw Failure.message("unexpected snapshot identity") }
++            let data = try JSONEncoder().encode(try apps.map { try identity($0, target: target) })
++            print(String(decoding: data, as: UTF8.self))
++        } else {
++            guard args.count == 4 else { throw Failure.message("missing exact process identity") }
++            let expected = try JSONDecoder().decode(Identity.self, from: Data(args[3].utf8))
++            guard apps.count == 1, let app = apps.first,
++                  expected.pid > 0, !expected.started.isEmpty,
++                  expected.bundle_inode > 0, expected.executable_inode > 0,
++                  try identity(app, target: target) == expected else {
++                throw Failure.message("application identity changed; no termination requested")
++            }
++            // Re-read target and observed pins immediately before the native request.
++            guard try identity(app, target: target) == expected else {
++                throw Failure.message("application identity changed; no termination requested")
++            }
++            let accepted = args[1] == "quit" ? app.terminate() : app.forceTerminate()
++            print(accepted ? "true" : "false")
+         }
+-        let accepted = args[1] == "quit" ? app.terminate() : app.forceTerminate()
+-        print(accepted ? "true" : "false")
+     }
+ } catch {
+     FileHandle.standardError.write(Data("app control refused: \(error)\n".utf8))
+diff --git a/scripts/tests/test_launch_restart.py b/scripts/tests/test_launch_restart.py
+index ac9eaace..42a8d225 100644
+--- a/scripts/tests/test_launch_restart.py
++++ b/scripts/tests/test_launch_restart.py
+@@ -31,7 +31,7 @@ class OwnedProcess:
+         self.child = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, text=True)
+         assert self.child.stdout.readline().strip() == 'ready'
+         self.identity = restart.Identity(self.child.pid, str(time.monotonic_ns()), str(app),
+-                                         str(app/'Contents/MacOS/hex'), 'org.portalsurfer.hex.dev')
++                                         str(app/'Contents/MacOS/hex'), 'org.portalsurfer.hex.dev', 1, 2, 1, 3)
+         self.requests = []
+ 
+     def snapshot(self):
+@@ -127,6 +127,164 @@ class LifecycleTests(unittest.TestCase):
+ 
+ 
+ 
++class FilesystemIdentityTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name).resolve()
++        self.app = self.root / 'hex.app'
++        self.executable = self.app / 'Contents/MacOS/hex'
++        self.executable.parent.mkdir(parents=True)
++        self.executable.write_bytes(b'owned fixture executable')
++        self.delivery = Mock()
++        self.delivery.sha.side_effect = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
++
++    def payload(self):
++        bundle = self.app.lstat(); executable = self.executable.lstat()
++        return dict(pid=123, started='fixture-start', bundle=str(self.app),
++                    executable=str(self.executable), identifier='org.portalsurfer.hex.dev',
++                    bundle_device=bundle.st_dev, bundle_inode=bundle.st_ino,
++                    executable_device=executable.st_dev, executable_inode=executable.st_ino)
++
++    def test_actual_target_pins_and_observed_strings_are_preserved(self):
++        value = self.payload()
++        self.assertEqual(asdict(restart.exact_identity(value, self.app)), value)
++
++    def test_alternate_spelling_requires_same_filesystem_pins_model(self):
++        # Linux has no case-insensitive fixture volume. Model ONLY its lstat
++        # result for an alternate spelling; derive every accepted pin from the
++        # actual owned objects. This is not AppKit/native volume evidence.
++        value = self.payload(); alias = self.root / 'Hex.app'
++        value.update(bundle=str(alias), executable=str(alias/'Contents/MacOS/hex'))
++        original = restart._path_pin
++        def case_insensitive_pin(path, **kwargs):
++            relative = path.relative_to(alias)
++            return original(self.app / relative, **kwargs)
++        def lookup(path, **kwargs):
++            return case_insensitive_pin(path, **kwargs) if path == alias or alias in path.parents else original(path, **kwargs)
++        with patch.object(restart, '_path_pin', side_effect=lookup):
++            self.assertEqual(asdict(restart.exact_identity(value, self.app)), value)
++        with self.assertRaises(restart.RestartError):
++            restart.exact_identity(value, self.app)
++
++    def test_distinct_case_sensitive_bundle_and_hardlinked_executable_refuse(self):
++        other = self.root/'Hex.app'; executable = other/'Contents/MacOS/hex'
++        executable.parent.mkdir(parents=True)
++        os.link(self.executable, executable)
++        value = self.payload(); value.update(bundle=str(other), executable=str(executable))
++        self.assertNotEqual(other.stat().st_ino, self.app.stat().st_ino)
++        self.assertEqual(executable.stat().st_ino, self.executable.stat().st_ino)
++        with self.assertRaisesRegex(restart.RestartError, 'another target'):
++            restart.exact_identity(value, self.app)
++        # Even honest pins for that second bundle cannot authorize our target.
++        value['bundle_inode'] = other.stat().st_ino
++        with self.assertRaises(restart.RestartError):
++            restart.exact_identity(value, self.app)
++
++    def test_pin_types_bounds_zero_inode_and_missing_extra_fields_refuse(self):
++        good = self.payload()
++        for field in ('bundle_device','bundle_inode','executable_device','executable_inode'):
++            for invalid in (True, False, -1, 1 << 64, '1', 1.0, None):
++                with self.subTest(field=field,value=invalid), self.assertRaises(restart.RestartError):
++                    restart.exact_identity({**good, field:invalid}, self.app)
++            missing = dict(good); del missing[field]
++            with self.assertRaises(restart.RestartError): restart.exact_identity(missing,self.app)
++        for field in ('bundle_inode','executable_inode'):
++            with self.assertRaises(restart.RestartError): restart.exact_identity({**good,field:0},self.app)
++        with self.assertRaises(restart.RestartError): restart.exact_identity({**good,'extra':1},self.app)
++        for pid in (True, 0, -1, 1 << 31):
++            with self.assertRaises(restart.RestartError): restart.exact_identity({**good,'pid':pid},self.app)
++
++    def test_zero_device_and_uint64_limit_are_representable_protocol_values(self):
++        # Boundary model; not a claim about this host's actual device/inode IDs.
++        for pins in ((0,1,0,2), ((1 << 64)-1,)*4):
++            value = self.payload()
++            value.update(zip(('bundle_device','bundle_inode','executable_device','executable_inode'),pins))
++            with patch.object(restart,'_filesystem_identity',return_value=pins):
++                self.assertEqual(asdict(restart.exact_identity(value,self.app)),value)
++
++    def test_symlink_bundle_parent_executable_and_traversed_dotdot_refuse(self):
++        good = self.payload(); alias = self.root/'alias'; alias.symlink_to(self.root, target_is_directory=True)
++        for bundle, executable in ((alias/'hex.app',alias/'hex.app/Contents/MacOS/hex'),
++                                   (self.app,alias/'hex.app/Contents/MacOS/hex'),
++                                   (alias/'..'/self.root.name/'hex.app', self.executable)):
++            value = {**good,'bundle':str(bundle),'executable':str(executable)}
++            with self.subTest(bundle=bundle), self.assertRaises(restart.RestartError):
++                restart.exact_identity(value,self.app)
++        saved=self.root/'saved'; self.executable.rename(saved); self.executable.symlink_to(saved)
++        with self.assertRaisesRegex(restart.RestartError,'symlink'): restart.exact_identity(good,self.app)
++
++    def test_bundle_and_executable_inode_replacements_refuse_old_snapshot(self):
++        good=self.payload()
++        saved=self.root/'old-executable'; self.executable.rename(saved)
++        self.executable.write_bytes(saved.read_bytes())
++        with self.assertRaisesRegex(restart.RestartError,'identity changed'):
++            restart.exact_identity(good,self.app)
++        self.executable.unlink(); saved.rename(self.executable)
++        old=self.root/'old-bundle'; self.app.rename(old)
++        self.executable.parent.mkdir(parents=True)
++        os.link(old/'Contents/MacOS/hex', self.executable)
++        with self.assertRaisesRegex(restart.RestartError,'identity changed'):
++            restart.exact_identity(good,self.app)
++
++    def test_invalid_process_strings_and_nonregular_targets_refuse(self):
++        good=self.payload()
++        for key,value in (('started',''),('started',None),('identifier','other.app'),
++                          ('bundle','relative/hex.app'),('executable',None)):
++            with self.subTest(key=key,value=value),self.assertRaisesRegex(restart.RestartError,'ambiguous'):
++                restart.exact_identity({**good,key:value},self.app)
++        saved=self.root/'saved';self.executable.rename(saved);self.executable.mkdir()
++        with self.assertRaisesRegex(restart.RestartError,'ambiguous'):restart.exact_identity(good,self.app)
++        self.executable.rmdir();saved.rename(self.executable)
++        self.delivery.verify.side_effect=RuntimeError('foreign signature')
++        with self.assertRaisesRegex(RuntimeError,'foreign signature'):
++            restart.NativeController(self.root,self.app,self.root,self.delivery)
++
++    def test_target_change_between_observed_and_final_read_refuses(self):
++        good=self.payload(); pins=tuple(good[k] for k in ('bundle_device','bundle_inode','executable_device','executable_inode'))
++        changed=(pins[0],pins[1]+1,*pins[2:])
++        with patch.object(restart,'_filesystem_identity',side_effect=[pins,pins,changed]):
++            with self.assertRaisesRegex(restart.RestartError,'identity changed'):
++                restart.exact_identity(good,self.app)
++
++    def test_installed_seal_tracks_bundle_inode_even_if_executable_is_same_hardlink(self):
++        controller=restart.NativeController(self.root,self.app,self.root,self.delivery)
++        seal=controller.seal
++        old=self.root/'old-bundle';self.app.rename(old)
++        self.executable.parent.mkdir(parents=True);os.link(old/'Contents/MacOS/hex',self.executable)
++        self.assertNotEqual(controller.disk_identity(),seal)
++        self.assertEqual(controller.disk_identity()[2:],seal[2:])
++        with patch.object(controller,'_prepare_helper') as compile:
++            with self.assertRaisesRegex(restart.RestartError,'changed'): controller.call('force')
++            compile.assert_not_called()
++
++    def test_changed_request_identity_refuses_before_compile_and_after_compile(self):
++        good=restart.exact_identity(self.payload(),self.app)
++        for during_compile in (False,True):
++            controller=restart.NativeController(self.root,self.app,self.root,self.delivery)
++            wrong=replace(good,bundle_inode=good.bundle_inode+1)
++            with patch.object(controller,'_prepare_helper') as compile, patch.object(controller,'_run_owned') as operation:
++                if during_compile:
++                    # Same disk seal check is not enough if native identity pins
++                    # change; exercise the second actual protocol validation.
++                    original=restart.exact_identity
++                    count=[0]
++                    def validate(value,app):
++                        count[0]+=1
++                        if count[0]==2: value={**value,'bundle_inode':wrong.bundle_inode}
++                        return original(value,app)
++                    with patch.object(restart,'exact_identity',side_effect=validate):
++                        with self.assertRaises(restart.RestartError): controller.call('quit',good)
++                    compile.assert_called_once()
++                else:
++                    with self.assertRaises(restart.RestartError): controller.call('quit',wrong)
++                    compile.assert_not_called()
++                operation.assert_not_called()
++                with self.assertRaisesRegex(restart.RestartError,'closed'):
++                    controller._prepare_helper = restart.NativeController._prepare_helper.__get__(controller)
++                    controller._prepare_helper()
++
++
+ class ReleaseFixture(unittest.TestCase):
+     def setUp(self):
+         self.f = fixtures.LocalCiRunnerTests(); self.f.setUp(); self.addCleanup(self.f.tearDown)
+@@ -250,6 +408,36 @@ class PreflightTests(ReleaseFixture):
+         self.assertEqual(len(reports),2)
+         self.assertTrue(all(json.loads(p.read_text())['status']=='ready_for_build' for p in reports))
+ 
++    def test_supported_configured_override_uses_same_verified_preflight(self):
++        self.prepare_fixture()
++        config=self.f.repo/'scripts/hex-test-build.json'; config.parent.mkdir(parents=True,exist_ok=True)
++        config.write_text('{"app_path":"artifacts/hex.app"}')
++        self.app=self.f.repo/'configured/Hex.app'
++        raw=self.owner.read_bytes()
++        with patch.dict(os.environ,{'HEX_DEV_APP_PATH':str(self.app)}):
++            self.assertEqual(launch.configured_app(self.f.repo),self.app)
++            self.assertEqual(self.prepare(),hashlib.sha256(raw).hexdigest())
++        self.factory.assert_called_once()
++        self.controller.request.assert_not_called()
++        self.assertEqual(self.owner.read_bytes(),raw)
++        self.assertIsNone(self.runner.target_lock)
++
++    def test_configured_override_does_not_bypass_alias_or_foreign_owner_refusal(self):
++        self.prepare_fixture();raw=self.owner.read_bytes()
++        self.app.parent.mkdir(parents=True)
++        alias=self.f.repo/'alias-parent';alias.symlink_to(self.app.parent,target_is_directory=True)
++        original=self.app;self.app=alias/'hex.app'
++        with patch.dict(os.environ,{'HEX_DEV_APP_PATH':str(self.app)}):
++            with self.assertRaisesRegex(delivery.DeliveryError,'symlink'):self.prepare()
++        self.app=original;self.record['workspace_owner']['workspace_root']='/foreign';self.save()
++        foreign=self.owner.read_bytes()
++        with patch.dict(os.environ,{'HEX_DEV_APP_PATH':str(self.app)}):
++            with self.assertRaises(restart.RestartError):self.prepare()
++        self.factory.assert_not_called()
++        self.assertEqual(self.owner.read_bytes(),foreign)
++        self.assertIsNone(self.runner.target_lock)
++        self.owner.write_bytes(raw)
++
+     def test_first_install_absent_bundle_does_not_claim_close_hex(self):
+         self.prepare_fixture();self.owner.unlink()
+         self.assertIsNone(self.prepare());self.controller.request.assert_not_called()
+@@ -296,7 +484,7 @@ class PreflightTests(ReleaseFixture):
+     def test_interrupt_preserves_install_workspace_pending_owner_and_releases_locks(self):
+         self.prepare_fixture();workspace=delivery.install_workspace(self.app);workspace.mkdir(parents=True)
+         metadata=workspace/'.DS_Store';metadata.write_bytes(b'Finder');raw=self.owner.read_bytes()
+-        identity=restart.Identity(123,'start',str(self.app),str(self.app/'Contents/MacOS/hex'),'org.portalsurfer.hex.dev')
++        identity=restart.Identity(123,'start',str(self.app),str(self.app/'Contents/MacOS/hex'),'org.portalsurfer.hex.dev', 1, 2, 1, 3)
+         self.controller.snapshot.return_value=[identity]
+         with patch.object(restart,'stop_exact',side_effect=KeyboardInterrupt):
+             with self.assertRaises(KeyboardInterrupt):self.prepare()
+diff --git a/scripts/tests/test_launch_restart_compile.py b/scripts/tests/test_launch_restart_compile.py
+index 59a28349..18f9ad25 100644
+--- a/scripts/tests/test_launch_restart_compile.py
++++ b/scripts/tests/test_launch_restart_compile.py
+@@ -47,6 +47,14 @@ class CompiledHelperTests(unittest.TestCase):
+             ' pathlib.Path(' + repr(str(self.root/'compiler-child-pid')) + ').write_text(str(child.pid))\n'
+             'time.sleep(config.get("sleep",0))\n'
+             'if config.get("fail"): print("fixture compiler refused",file=sys.stderr);sys.exit(7)\n'
++            'if config.get("change_installed"):\n'
++            ' app=pathlib.Path(' + repr(str(self.app)) + ');exe=app/"Contents/MacOS/hex"\n'
++            ' kind=config["change_installed"]\n'
++            ' if kind=="bundle":\n'
++            '  old=app.with_name("old-bundle");app.rename(old);exe.parent.mkdir(parents=True);os.link(old/"Contents/MacOS/hex",exe)\n'
++            ' elif kind=="inode":\n'
++            '  old=exe.with_name("old-executable");exe.rename(old);exe.write_bytes(old.read_bytes())\n'
++            ' else: exe.write_bytes(b"different installed bytes")\n'
+             'out=pathlib.Path(sys.argv[sys.argv.index("-o")+1])\n'
+             'if config.get("missing"): sys.exit(0)\n'
+             'if config.get("symlink"): out.symlink_to(config["symlink"]);sys.exit(0)\n'
+@@ -273,7 +281,10 @@ class CompiledHelperTests(unittest.TestCase):
+     def test_snapshot_quit_force_all_use_same_binary_and_repeat_installed_seal_after_compile(self):
+         self.controller.snapshot()
+         self.controller.seal=(1,2,'sealed')
+-        identity=restart.Identity(123,'fixture',str(self.app),str(self.app/'Contents/MacOS/hex'),'org.portalsurfer.hex.dev')
++        executable=self.app/'Contents/MacOS/hex'; executable.parent.mkdir(parents=True)
++        executable.write_bytes(b'fixture executable')
++        identity=restart.Identity(123,'fixture',str(self.app),str(executable),'org.portalsurfer.hex.dev',
++                                  *restart._filesystem_identity(self.app, executable))
+         with patch.object(self.controller,'disk_identity',return_value=self.controller.seal) as seal:
+             self.assertTrue(self.controller.request('quit',identity))
+             self.assertTrue(self.controller.request('force',identity))
+@@ -293,6 +304,24 @@ class CompiledHelperTests(unittest.TestCase):
+         self.assertEqual(self.calls(self.native_log),[])
+         self.assertFalse(list(self.output.glob('native-helper-*')))
+ 
++    def test_actual_installed_replacements_during_compile_never_start_native_operation(self):
++        for kind in ('bundle','inode','content'):
++            with self.subTest(kind=kind):
++                app=self.app;exe=app/'Contents/MacOS/hex'
++                exe.parent.mkdir(parents=True,exist_ok=True);exe.write_bytes(b'original fixture bytes')
++                output=self.root/('replacement-'+kind);output.mkdir(mode=0o700)
++                delivery=Mock();delivery.sha.side_effect=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
++                controller=restart.NativeController(self.root,app,output,delivery)
++                pins=(app.stat().st_dev,app.stat().st_ino,exe.stat().st_dev,exe.stat().st_ino)
++                expected=restart.Identity(123,'fixture',str(app),str(exe),'org.portalsurfer.hex.dev',*pins)
++                self.configure(change_installed=kind)
++                with self.assertRaisesRegex(restart.RestartError,'installed application changed'):
++                    controller.request('quit',expected)
++                self.assertEqual(self.calls(self.native_log),[])
++                self.assertFalse(list(output.glob('native-helper-*')))
++                with self.assertRaisesRegex(restart.RestartError,'closed'):controller.snapshot()
++        self.assertEqual(len(self.calls(self.compiler_log)),3)
++
+     def test_missing_compiler_refuses_without_fallback_or_native_operation(self):
+         with patch.object(restart,'SWIFTC',str(self.root/'missing-compiler')):
+             with self.assertRaisesRegex(restart.RestartError,'toolchain unavailable'):self.controller.snapshot()
+-- 
+2.52.0
+

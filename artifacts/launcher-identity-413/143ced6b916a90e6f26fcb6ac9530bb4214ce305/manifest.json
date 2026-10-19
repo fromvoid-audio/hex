@@ -1,0 +1,144 @@
+{
+  "kind": "immutable-evidence-only-never-build-or-merge",
+  "source": "143ced6b916a90e6f26fcb6ac9530bb4214ce305",
+  "tree": "0cec6a73daf72ace6f9750589cdb0f6b3d6f397a",
+  "parent": "65aa67397577aaf304bed83d9757cd443e15245b",
+  "payloads": {
+    "413-grammar-check.py": {
+      "bytes": 429,
+      "sha256": "89a318f0c18097395b515e3665006b3960912923e90ad4f02c4efa1663c9a524"
+    },
+    "413-parent-red.py": {
+      "bytes": 730,
+      "sha256": "33b5a012c150ead387b6191016bec850519b0bc52687b7b920bfd96da08c307e"
+    },
+    "413-path-component.py": {
+      "bytes": 1083,
+      "sha256": "eeacb55fff86a30ce755c1f3945fd6ae109a9890ebb866961dd861e0bf03e0f2"
+    },
+    "413-path-repro.py": {
+      "bytes": 1287,
+      "sha256": "e69e0c666927ac8c8828dcf24c1e957aab1f41c2231444dbf91048ecaab8d373"
+    },
+    "413-scope-proof.py": {
+      "bytes": 2204,
+      "sha256": "c517de77de6d4157be67ff298133cec59c44793a0a2ea70880bb3a7df2c5fa7f"
+    },
+    "HANDOFF.md": {
+      "bytes": 3664,
+      "sha256": "dd8c58ee7a692100f68badb984d02b56c952da7d440eba8d53f2a7ca9567245c"
+    },
+    "NATIVE-REQUEST.md": {
+      "bytes": 3275,
+      "sha256": "64d1de16aadedea9dbba6e55f3448656372642de249306c06f478d6c1b27ac74"
+    },
+    "all-first.log": {
+      "bytes": 16841,
+      "sha256": "f45171f1fb016496ec6d565c76d020dfc5c33a8d5b3897672fc05ea51c19c301"
+    },
+    "compile-first.log": {
+      "bytes": 5813,
+      "sha256": "9404f544cd4f5f674767d76f336a8bd6266b8d5a526c4808f7c7e1eb6ff63dd9"
+    },
+    "component/01-launcher-tests.log": {
+      "bytes": 16841,
+      "sha256": "9617641cdc0c618c9ef159353b2a67944e9a509399d7a126836988d593e48127"
+    },
+    "component/02-python39-grammar.log": {
+      "bytes": 97,
+      "sha256": "85a75a54ec4cd578a7336ab02fd28f72093a320bb24ae9179c55aa0585dce49c"
+    },
+    "component/03-scope-proof.log": {
+      "bytes": 2891,
+      "sha256": "d394d8dd5cb58b3e58e57397cd10696876cd121799d20de7eb115fcc1a32c841"
+    },
+    "component/04-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "component/05-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "component/06-dependency-patches.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "component/07-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "component/08-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "component/09-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "component/10-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "component/summary.json": {
+      "bytes": 5979,
+      "sha256": "aba09ef0908205c7597cc0706a62e302a51907e85e83afae4a2223992b589c3a"
+    },
+    "configured-override-red.log": {
+      "bytes": 1312,
+      "sha256": "e02e8a123e69de3dea9e197a46dbbb1bc06e5435063c80d8cb9e3291d7c36582"
+    },
+    "final-component.stdout": {
+      "bytes": 653,
+      "sha256": "458074f8f36c3d23652e3831e29619cac345deb6df4d865cf2cfb800aa48fa2b"
+    },
+    "initial-harness-missing-config.log": {
+      "bytes": 1637,
+      "sha256": "ae9b2a1d0007ba39adb99774d6b7931a42e8e71818110ccfce07450db3b7f429"
+    },
+    "owner.mbox": {
+      "bytes": 33923,
+      "sha256": "9c70fad8e516452947422f2741041941a4651f1b855df885e26c9097e8385ccb"
+    },
+    "owner.patch": {
+      "bytes": 33309,
+      "sha256": "26cd87ad11911cf1e5dab12e1674420f051002ff4746a9f989d89078d5365c68"
+    },
+    "parent-final-regressions-red.log": {
+      "bytes": 2281,
+      "sha256": "c9ead11d3f36d7bc4038887b086bd4d744a9ced4981d2d307ac9a8d503805e0f"
+    },
+    "restart-first.log": {
+      "bytes": 5729,
+      "sha256": "520821daa33d9b479aa4d0329f412f4476614a578721cd3e2aefb212c832551f"
+    },
+    "scope-proof.json": {
+      "bytes": 2891,
+      "sha256": "d394d8dd5cb58b3e58e57397cd10696876cd121799d20de7eb115fcc1a32c841"
+    },
+    "source/docs/test-builds.md": {
+      "bytes": 17529,
+      "sha256": "0c55bb46685b80b993a3f6ac612f6f25c67077c8a44769dc32aaa7f9f72c35f9"
+    },
+    "source/scripts/launch-restart.py": {
+      "bytes": 25843,
+      "sha256": "32fb012f6aff296e67ac80cde74c42126cc808d743687ddff9a93c214d541dae"
+    },
+    "source/scripts/launch-restart.swift": {
+      "bytes": 6155,
+      "sha256": "d8af1a75fb822a8d73896c0fc4d064bd3d824255114a9f158b9ed05cac512c22"
+    },
+    "source/scripts/tests/test_launch_restart.py": {
+      "bytes": 30411,
+      "sha256": "389d58b232e0c2d6c1d47a4d1fdd280faa000b5fb75188423e2a65628230524b"
+    },
+    "source/scripts/tests/test_launch_restart_compile.py": {
+      "bytes": 32737,
+      "sha256": "1adde03f917e02679d4908b83d2a4b6ba767abf6bd33f876fc6b5ab948110be1"
+    },
+    "source-ledger.json": {
+      "bytes": 1725,
+      "sha256": "08317d47f78000ab831a1b40a4f791b5e13adb508eaa2cfe9f3562ebb9f7d124"
+    }
+  }
+}

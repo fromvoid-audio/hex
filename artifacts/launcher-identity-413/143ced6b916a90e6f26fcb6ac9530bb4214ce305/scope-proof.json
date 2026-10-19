@@ -1,0 +1,56 @@
+{
+  "source_parent": "65aa67397577aaf304bed83d9757cd443e15245b",
+  "changed_old_python_functions": [
+    "call",
+    "disk_identity",
+    "exact_identity",
+    "prepare"
+  ],
+  "new_python_functions": [
+    "_filesystem_identity",
+    "_path_pin"
+  ],
+  "all_75_original_test_ids_retained": true,
+  "total_unique_test_ids": 89,
+  "tests": {
+    "scripts/tests/test_launch.py": {
+      "original": 25,
+      "final": 25,
+      "added": []
+    },
+    "scripts/tests/test_launch_restart.py": {
+      "original": 20,
+      "final": 33,
+      "added": [
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_actual_target_pins_and_observed_strings_are_preserved",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_alternate_spelling_requires_same_filesystem_pins_model",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_bundle_and_executable_inode_replacements_refuse_old_snapshot",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_changed_request_identity_refuses_before_compile_and_after_compile",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_distinct_case_sensitive_bundle_and_hardlinked_executable_refuse",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_installed_seal_tracks_bundle_inode_even_if_executable_is_same_hardlink",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_invalid_process_strings_and_nonregular_targets_refuse",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_pin_types_bounds_zero_inode_and_missing_extra_fields_refuse",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_symlink_bundle_parent_executable_and_traversed_dotdot_refuse",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_target_change_between_observed_and_final_read_refuses",
+        "scripts/tests/test_launch_restart.py:FilesystemIdentityTests.test_zero_device_and_uint64_limit_are_representable_protocol_values",
+        "scripts/tests/test_launch_restart.py:PreflightTests.test_configured_override_does_not_bypass_alias_or_foreign_owner_refusal",
+        "scripts/tests/test_launch_restart.py:PreflightTests.test_supported_configured_override_uses_same_verified_preflight"
+      ]
+    },
+    "scripts/tests/test_launch_restart_compile.py": {
+      "original": 30,
+      "final": 31,
+      "added": [
+        "scripts/tests/test_launch_restart_compile.py:CompiledHelperTests.test_actual_installed_replacements_during_compile_never_start_native_operation"
+      ]
+    }
+  },
+  "untouched": [
+    "launch",
+    "scripts/local-ci.py",
+    "scripts/hex-test-build.py",
+    "scripts/hex-test-build.json"
+  ],
+  "strict_helper_compiler_process_recovery_functions_byte_identical": true,
+  "prepare_only_change_remove_blanket_environment_guard": true
+}

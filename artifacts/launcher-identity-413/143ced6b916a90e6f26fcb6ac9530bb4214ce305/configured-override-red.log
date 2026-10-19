@@ -1,0 +1,20 @@
+test_configured_override_reaches_verified_preflight (__main__.SupportedConfiguredPath.test_configured_override_reaches_verified_preflight) ... REFUSAL: no controller construction, owner unchanged, no target lock
+ERROR
+
+======================================================================
+ERROR: test_configured_override_reaches_verified_preflight (__main__.SupportedConfiguredPath.test_configured_override_reaches_verified_preflight)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/413-path-repro.py", line 16, in test_configured_override_reaches_verified_preflight
+    self.prepare()
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 235, in prepare
+    return restart.prepare(self.f.repo,self.app,self.source,fixtures.local_ci,delivery,self.raw,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/launch-restart.py", line 398, in prepare
+    raise RestartError("--force-restart requires the repository-configured stable app path")
+hex_launch_restart.RestartError: --force-restart requires the repository-configured stable app path
+
+----------------------------------------------------------------------
+Ran 1 test in 0.011s
+
+FAILED (errors=1)

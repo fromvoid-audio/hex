@@ -1,0 +1,21 @@
+[1/10] launcher-tests: running
+[1/10] launcher-tests: passed
+[2/10] python39-grammar: running
+[2/10] python39-grammar: passed
+[3/10] scope-proof: running
+[3/10] scope-proof: passed
+[4/10] architecture: running
+[4/10] architecture: passed
+[5/10] gpui-patch: running
+[5/10] gpui-patch: passed
+[6/10] dependency-patches: running
+[6/10] dependency-patches: passed
+[7/10] ui-style: running
+[7/10] ui-style: passed
+[8/10] device-layout: running
+[8/10] device-layout: passed
+[9/10] format: running
+[9/10] format: passed
+[10/10] diff: running
+[10/10] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/launcher-path-413-143ced6b/summary.json

@@ -1,0 +1,30 @@
+test_actual_target_pins_and_observed_strings_are_preserved (test_launch_restart.FilesystemIdentityTests.test_actual_target_pins_and_observed_strings_are_preserved) ... ERROR
+test_supported_configured_override_uses_same_verified_preflight (test_launch_restart.PreflightTests.test_supported_configured_override_uses_same_verified_preflight) ... ERROR
+
+======================================================================
+ERROR: test_actual_target_pins_and_observed_strings_are_preserved (test_launch_restart.FilesystemIdentityTests.test_actual_target_pins_and_observed_strings_are_preserved)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 151, in test_actual_target_pins_and_observed_strings_are_preserved
+    self.assertEqual(asdict(restart.exact_identity(value, self.app)), value)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "65aa:scripts/launch-restart.py", line 42, in exact_identity
+restart_parent_65aa.RestartError: refusing an ambiguous or unrelated development process
+
+======================================================================
+ERROR: test_supported_configured_override_uses_same_verified_preflight (test_launch_restart.PreflightTests.test_supported_configured_override_uses_same_verified_preflight)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 406, in test_supported_configured_override_uses_same_verified_preflight
+    self.assertEqual(self.prepare(),hashlib.sha256(raw).hexdigest())
+                     ^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 380, in prepare
+    return restart.prepare(self.f.repo,self.app,self.source,fixtures.local_ci,delivery,self.raw,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "65aa:scripts/launch-restart.py", line 398, in prepare
+restart_parent_65aa.RestartError: --force-restart requires the repository-configured stable app path
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.009s
+
+FAILED (errors=2)

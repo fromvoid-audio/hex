@@ -1,0 +1,24 @@
+test_configured_override_reaches_verified_preflight (__main__.SupportedConfiguredPath.test_configured_override_reaches_verified_preflight) ... ERROR
+
+======================================================================
+ERROR: test_configured_override_reaches_verified_preflight (__main__.SupportedConfiguredPath.test_configured_override_reaches_verified_preflight)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/413-path-repro.py", line 11, in test_configured_override_reaches_verified_preflight
+    self.assertEqual(t.launch.configured_app(self.f.repo), self.app)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/launch", line 106, in configured_app
+    config = json.loads((root / "scripts/hex-test-build.json").read_text())
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1027, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmp_4owv8qo/repo/scripts/hex-test-build.json'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.009s
+
+FAILED (errors=1)
