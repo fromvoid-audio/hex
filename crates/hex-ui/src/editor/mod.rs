@@ -23,6 +23,10 @@ mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
 
+#[cfg(test)]
+mod test_environment;
+
+pub(crate) mod changelog;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
@@ -76,6 +80,7 @@ mod musical_time;
 mod output_meter_ui_test;
 mod overview;
 mod play_intent;
+mod project_directory;
 mod project_recovery;
 mod project_spectrum;
 mod recent_projects;
@@ -105,6 +110,7 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
@@ -328,6 +334,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     theme::load_fonts(cx)?;
     bind_editor_keys(cx);
     menus::install(cx, &[]);
+    dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
             cx.quit();
@@ -341,8 +348,10 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
+    changelog::bind_keys(cx);
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
+    device_panel::bind_keyboard_keys(cx);
     clip_name::bind_keys(cx);
     tuning::library::bind_keys(cx);
     track_name::bind_keys(cx);
@@ -544,6 +553,7 @@ pub(super) struct EditorView {
     gain_lane: gain_lane::GainLane,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
+    track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
@@ -601,6 +611,7 @@ pub(super) struct EditorView {
     session_capability_message: Option<String>,
     play_intent: play_intent::Tracker,
     opening_project: bool,
+    project_open: dialogs::project_open::State,
     pending_open_path: Option<std::path::PathBuf>,
     pending_open_mode: Option<hex_session::DocumentAudioMode>,
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
@@ -660,6 +671,7 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
@@ -698,8 +710,12 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
+    #[cfg(test)]
+    test_environment: Arc<test_environment::Environment>,
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
+    project_directory: project_directory::State,
+    changelog: changelog::State,
     theme_settings: theme_settings::ThemeSettingsState,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
@@ -737,15 +753,37 @@ impl EditorView {
         service: Service,
         output: Result<crate::EditorAudio, String>,
     ) -> Self {
-        Self::new_with_browser_preferences_path(
-            window,
-            cx,
-            service,
-            output,
-            browser::default_preferences_path(),
-            recent_projects::default_preferences_path(),
-            theme_settings::default_preferences_path(),
-        )
+        #[cfg(not(test))]
+        {
+            Self::new_with_browser_preferences_path(
+                window,
+                cx,
+                service,
+                output,
+                browser::default_preferences_path(),
+                recent_projects::default_preferences_path(),
+                theme_settings::default_preferences_path(),
+            )
+        }
+        #[cfg(test)]
+        {
+            Self::new_with_browser_paths(
+                window,
+                cx,
+                service,
+                output,
+                (
+                    std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
+                ),
+                test_environment::Inputs {
+                    defaults: [true; 4],
+                    ..Default::default()
+                },
+            )
+        }
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -757,14 +795,21 @@ impl EditorView {
         preferences_path: std::path::PathBuf,
         recent_projects_path: std::path::PathBuf,
     ) -> Self {
-        Self::new_with_browser_preferences_path(
+        Self::new_with_browser_paths(
             window,
             cx,
             service,
             output,
-            preferences_path,
-            recent_projects_path,
-            theme_settings::default_preferences_path(),
+            (
+                preferences_path,
+                recent_projects_path,
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+            ),
+            test_environment::Inputs {
+                defaults: [false, false, true, true],
+                ..Default::default()
+            },
         )
     }
 
@@ -789,13 +834,30 @@ impl EditorView {
         )
     }
 
-    /// Bound discovery before any browser worker starts; never change process settings.
+    /// Bound all filesystem discovery before any worker starts.
     #[cfg(all(test, feature = "ui-test-support"))]
     fn new_for_test_with_browser_directory(
         window: &mut Window,
         cx: &mut Context<Self>,
         service: Service,
         directory: &std::path::Path,
+    ) -> Self {
+        Self::new_for_test_with_project_preferences(
+            window,
+            cx,
+            service,
+            directory,
+            directory.join("project-directory.json"),
+        )
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_project_preferences(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        directory: &std::path::Path,
+        project_preferences: std::path::PathBuf,
     ) -> Self {
         Self::new_with_browser_paths(
             window,
@@ -806,8 +868,12 @@ impl EditorView {
                 directory.join("browser.json"),
                 directory.join("recent-projects.json"),
                 directory.join("theme.json"),
+                project_preferences,
             ),
-            Some(directory.join("samples")),
+            test_environment::Inputs {
+                directory: Some(directory.join("samples")),
+                ..Default::default()
+            },
         )
     }
 
@@ -829,9 +895,13 @@ impl EditorView {
                 preferences_path,
                 recent_projects_path,
                 theme_preferences_path,
+                project_directory::default_preferences_path(),
             ),
-            #[cfg(all(test, feature = "ui-test-support"))]
-            None,
+            #[cfg(test)]
+            test_environment::Inputs {
+                defaults: [false, false, false, true],
+                ..Default::default()
+            },
         )
     }
 
@@ -840,12 +910,26 @@ impl EditorView {
         cx: &mut Context<Self>,
         service: Service,
         output: Result<crate::EditorAudio, String>,
-        paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
-        #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
+        paths: (
             std::path::PathBuf,
-        >,
+            std::path::PathBuf,
+            std::path::PathBuf,
+            std::path::PathBuf,
+        ),
+        #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
-        let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
+        #[cfg(test)]
+        let test_environment = test_environment::Environment::new()
+            .expect("could not create private editor test environment; no ambient fallback");
+        #[cfg(test)]
+        let paths = test_environment.resolve_paths(paths, test_paths.defaults);
+
+        let (
+            preferences_path,
+            recent_projects_path,
+            theme_preferences_path,
+            project_directory_path,
+        ) = paths;
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
             Err(error) => (
@@ -960,8 +1044,18 @@ impl EditorView {
             }
         });
         focus.focus(window);
-        let browser = browser::BrowserState::new(cx, preferences_path);
+        let browser = browser::BrowserState::new(
+            cx,
+            preferences_path,
+            #[cfg(test)]
+            Some(
+                test_paths
+                    .home
+                    .unwrap_or_else(|| test_environment.home.clone()),
+            ),
+        );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
+        let project_directory = project_directory::State::new(project_directory_path);
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
@@ -984,6 +1078,7 @@ impl EditorView {
             gain_lane: gain_lane::GainLane::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
+            track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
@@ -1042,6 +1137,7 @@ impl EditorView {
             session_capability_message: None,
             play_intent: play_intent::Tracker::default(),
             opening_project: false,
+            project_open: dialogs::project_open::State::default(),
             pending_open_path: None,
             pending_open_mode: None,
             requested_audio_mode: None,
@@ -1102,6 +1198,7 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
             active_midi_trim_drag: None,
@@ -1131,8 +1228,12 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
+            #[cfg(test)]
+            test_environment,
             browser,
             recent_projects,
+            project_directory,
+            changelog: changelog::State::new(cx),
             theme_settings,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
@@ -1145,13 +1246,14 @@ impl EditorView {
             pending_time_range_move: None,
             suppress_cursor_click: false,
         };
-        #[cfg(all(test, feature = "ui-test-support"))]
-        if let Some(directory) = test_browser_directory {
+        #[cfg(test)]
+        if let Some(directory) = test_paths.directory {
             view.browser.directory = directory.clone();
             view.browser.places = vec![directory];
         }
         view.browser_scan_initial(cx);
         view.start_recent_projects_load(cx);
+        view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
         view
     }
@@ -1351,6 +1453,8 @@ impl EditorView {
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        // Only a current resize owner may extend the transient display extent.
+        let horizon = horizon.max(self.trim_display_end().unwrap_or(0));
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)

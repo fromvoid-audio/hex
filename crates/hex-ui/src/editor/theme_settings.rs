@@ -215,6 +215,10 @@ pub(super) struct ThemeSettingsState {
 }
 
 impl ThemeSettingsState {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_path(&self) -> &std::path::Path {
+        &self.path
+    }
     pub(super) fn new(path: PathBuf, window: &Window, cx: &mut Context<EditorView>) -> Self {
         let colors = theme::preferences();
         Self {
@@ -252,35 +256,29 @@ impl ThemeSettingsState {
     }
 }
 
+#[cfg(not(test))]
 pub(super) fn default_preferences_path() -> PathBuf {
-    #[cfg(test)]
-    {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "hex-ui-test-theme-{}-{}.json",
-            std::process::id(),
-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-    #[cfg(not(test))]
-    {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
-        hex_preferences::theme_preferences_path(&home)
-    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    hex_preferences::theme_preferences_path(&home)
 }
 
 impl EditorView {
     pub(super) fn start_theme_preferences_load(&mut self, cx: &mut Context<Self>) {
         let path = self.theme_settings.path.clone();
         let generation = self.theme_settings.load_generation;
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::load_theme_preferences(&path) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::load_theme_preferences(&path)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.theme_preferences_loaded(generation, result, cx);
@@ -732,11 +730,17 @@ impl EditorView {
         let path = self.theme_settings.path.clone();
         let window_handle = self.theme_settings.window;
         let editor_focus = self.focus.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::save_theme_preferences(&path, &colors) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::save_theme_preferences(&path, &colors)
+                })
                 .await;
             let closed = this
                 .update(cx, |view, cx| {

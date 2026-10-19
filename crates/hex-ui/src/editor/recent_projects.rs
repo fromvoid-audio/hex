@@ -15,6 +15,10 @@ pub(super) struct RecentProjectsState {
 }
 
 impl RecentProjectsState {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_path(&self) -> &Path {
+        &self.path
+    }
     pub(super) fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -28,34 +32,28 @@ impl RecentProjectsState {
     }
 }
 
+#[cfg(not(test))]
 pub(super) fn default_preferences_path() -> PathBuf {
-    #[cfg(test)]
-    {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "hex-ui-test-recent-{}-{}.json",
-            std::process::id(),
-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-    #[cfg(not(test))]
-    {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
-        hex_preferences::recent_projects_path(&home)
-    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    hex_preferences::recent_projects_path(&home)
 }
 
 impl EditorView {
     pub(super) fn start_recent_projects_load(&mut self, cx: &mut Context<Self>) {
         let path = self.recent_projects.path.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::load_recent_projects(&path) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::load_recent_projects(&path)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.recent_projects_loaded(result, cx);
@@ -144,11 +142,17 @@ impl EditorView {
         };
         self.recent_projects.save_in_flight = true;
         let path = self.recent_projects.path.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::save_recent_projects(&path, &projects) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::save_recent_projects(&path, &projects)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.recent_projects_saved(result, cx);
@@ -346,7 +350,12 @@ mod tests {
             assert_eq!(view.pending_open_path.as_ref(), Some(&first));
             assert!(!view.opening_project);
             view.open_recent_project(&stale_menu_action);
-            assert!(view.opening_project, "second click confirms the same path");
+            assert!(
+                !view.opening_project,
+                "another click must not bypass confirmation"
+            );
+            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert!(view.pending_requests.is_empty());
             let pending_count = view.pending_requests.len();
             view.opening_project = true;
             view.open_recent_project(&OpenRecentProject {
