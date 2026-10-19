@@ -74,7 +74,7 @@ struct RuntimeSlot {
     preparation_metadata_pending: bool,
     phase: Phase,
     archive: usize,
-    life: Arc<Life>,
+    life: hex_engine::SharedMetadata<Life>,
     anchors: Option<AudioCandidateAnchors>,
     domains: Vec<AudioCandidateDomainToken>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
@@ -97,7 +97,7 @@ impl RuntimeSlot {
             preparation_metadata_pending: false,
             phase: Phase::Vacant,
             archive: 0,
-            life: Arc::new(Life {
+            life: hex_engine::SharedMetadata::new_on_control(Life {
                 incarnation: AtomicU64::new(0),
                 live: AtomicBool::new(false),
                 revision: AtomicU64::new(0),
@@ -155,7 +155,7 @@ pub(super) struct Work {
 /// is installed before these handles can leave Control for the existing queue.
 struct Claims {
     root: CandidateRoot,
-    life: Arc<Life>,
+    life: hex_engine::SharedMetadata<Life>,
     stamp: Stamp,
     successor_dependency: bool,
     resources: RootResourceWitness,
@@ -165,7 +165,7 @@ struct Claims {
 // the ownership-transfer tail neither clones nor destroys them.
 struct ClaimHandles {
     root: CandidateRoot,
-    life: Arc<Life>,
+    life: hex_engine::SharedMetadata<Life>,
 }
 #[derive(Clone, Copy)]
 pub(in crate::candidate_custody) struct Header {
@@ -270,9 +270,13 @@ impl Bank {
         {
             return Err("invalid constructor publication reservation");
         }
+        let life_bytes =
+            hex_engine::sampler_host_fields::SharedMetadataRef::constructor_bytes::<Life>()
+                .map_err(|_| "constructor lifecycle payload layout is unknown")?;
         // Reject impossible caller requests BEFORE reserving, initializing or
         // allocating per-cell lifecycle payloads. Actual capacities are checked
-        // again below; opaque Arc headers remain bounded RESOURCE groups.
+        // again below. Every fresh lifecycle allocation includes its qualified
+        // sized payload and pinned Arc header; no raw Arc is adopted later.
         let declared = [
             reservation
                 .runtime_slots
@@ -292,9 +296,7 @@ impl Bank {
             reservation
                 .receipt_rows
                 .checked_mul(std::mem::size_of::<Option<Box<dyn Any + Send>>>()),
-            reservation
-                .runtime_slots
-                .checked_mul(std::mem::size_of::<Life>()),
+            reservation.runtime_slots.checked_mul(life_bytes),
             reservation
                 .runtime_slots
                 .checked_mul(std::mem::size_of::<Option<BankDrop>>()),
@@ -360,7 +362,7 @@ impl Bank {
             work.failed_payloads
                 .capacity()
                 .checked_mul(std::mem::size_of::<Option<Box<dyn Any + Send>>>()),
-            bank.slots.len().checked_mul(std::mem::size_of::<Life>()),
+            bank.slots.len().checked_mul(life_bytes),
             work.banks
                 .capacity()
                 .checked_mul(std::mem::size_of::<Option<BankDrop>>()),
@@ -837,7 +839,7 @@ impl super::Custody {
             }
             Some(std::array::from_fn(|_| ClaimHandles {
                 root: root.clone(),
-                life: Arc::clone(&slot.life),
+                life: slot.life.clone(),
             }))
         } else {
             None

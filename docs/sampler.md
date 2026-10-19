@@ -1888,3 +1888,25 @@ visits, demonstrates four omission negatives and repeated-field dedup. This
 record cannot outlive its source borrows. It is not complete worker inventory,
 legacy outer Arc qualification, a whole-constructor quote or publication proof.
 The native same-parent facade and complete Service admission remain open.
+
+#### Native publication Life constructor provenance (19 October 2026)
+
+The existing per-slot atomic Life allocation is paired from its first birth
+through SharedMetadata, including the actual Claims/ClaimHandles clones. No
+raw Arc is adopted after allocation; the cancellation/incarnation/live protocol
+is unchanged. The constructor prequote asks Engine's existing pinned sized
+paired-layout basis for payload plus header before any slot or Life allocation.
+Both requested and actual-capacity metadata cost include it; actual wrapper
+sizes propagate through the existing size_of costs. Unsupported layout refuses
+before birth. This quote certifies physical footprint only, not owning children,
+complete native union, source identity or retirement authority.
+
+The Linux component probe reconciles one48-byte Life allocation; clone and
+nonfinal drop allocate/free nothing. Actual Bank construction totals reconcile
+all seven backing Vecs and two Life payload/header allocations. Retained-minus1
+is rejected by the physical quote before allocations; for this metadata-only
+constructor peak equals retained, so peak-minus1 rejects the pre-existing
+peak>=retained relation (not an independent transient graph-peak proof). Actual
+alias handles must each be visited, sharing one body; omitting a real alias
+refuses. Whole native Work/Bank/current/queued/retiring roots and same-parent
+facade/reborrow remain separate mandatory work. No macOS result is inferred.

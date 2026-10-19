@@ -169,6 +169,15 @@ pub struct SharedMetadataRef<'a> {
     value: &'a dyn SharedMetadataLayout,
 }
 impl<'a> SharedMetadataRef<'a> {
+    /// Requested physical bytes for the existing fresh sized paired constructor.
+    /// This quotes neither payload children nor a source/retirement admission.
+    /// Unsupported pinned layouts refuse before the caller creates the owner.
+    pub fn constructor_bytes<T>() -> Result<usize, AudioStorageError> {
+        let (body, header) = crate::owned_shared::OwnedShared::<T>::declared_parts()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        body.checked_add(header).ok_or(AudioStorageError::Overflow)
+    }
+
     pub fn of<T>(value: &'a SharedMetadata<T>) -> Self {
         Self { value }
     }

@@ -223,3 +223,140 @@ fn excessive_metadata_request_refuses_before_reserving_per_cell_payloads() {
     reservation.receipt_rows = reservation.runtime_slots;
     assert!(Bank::prepare(reservation, 128).is_err());
 }
+
+#[test]
+fn actual_lifecycle_paired_birth_reconciles_quote_and_each_limit_before_allocation() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported pinned lifecycle layout; no allocation qualification");
+        return;
+    }
+    use hex_engine::sampler_host_fields::SharedMetadataRef;
+    let mut quoted = None;
+    let quote = allocation_counter::measure(|| {
+        quoted = Some(SharedMetadataRef::constructor_bytes::<Life>().unwrap());
+    });
+    assert_eq!(quote.count_total, 0);
+    assert_eq!(quote.bytes_total, 0);
+    let bytes = quoted.unwrap();
+    let mut single = None;
+    let birth = allocation_counter::measure(|| single = Some(RuntimeSlot::vacant()));
+    assert_eq!(birth.count_total, 1);
+    assert_eq!(birth.bytes_total as usize, bytes);
+    let Life {
+        incarnation: _,
+        live: _,
+        revision: _,
+        cancellation: _,
+        successor_dependencies: _,
+    } = single.as_ref().unwrap().life.as_ref(); // audited atomic-only leaf
+    let mut alias = None;
+    let cloning = allocation_counter::measure(|| {
+        alias = Some(single.as_ref().unwrap().life.clone());
+    });
+    assert_eq!(cloning.count_total, 0);
+    assert_eq!(cloning.bytes_total, 0);
+    let dropping = allocation_counter::measure(|| drop(alias.take()));
+    assert_eq!(dropping.count_total, 0);
+    assert_eq!(dropping.count_current, 0);
+    drop(single.take());
+
+    let mut pair = None;
+    let full = allocation_counter::measure(|| {
+        pair = Some(Bank::prepare(reservation(), 0).unwrap());
+    });
+    let (bank, work) = pair.take().unwrap();
+    assert_eq!(
+        full.bytes_total as usize, bank.metadata_bytes,
+        "all seven actual Vec backings plus both atomic Life payload/header allocations"
+    );
+    assert_eq!(full.count_total, 7 + bank.slots.len() as u64);
+    let required = bank.metadata_bytes;
+    drop((bank, work));
+    let mut exact = reservation();
+    exact.max_retained_data_bytes = required;
+    exact.max_construction_peak_data_bytes = required;
+    let (bank, work) = Bank::prepare(exact, 0).unwrap();
+    assert_eq!(bank.metadata_bytes, required);
+    drop((bank, work));
+    for retained in [true, false] {
+        let mut short = exact;
+        if retained {
+            short.max_retained_data_bytes -= 1;
+        } else {
+            short.max_construction_peak_data_bytes -= 1;
+        }
+        let mut refusal = None;
+        let failure = allocation_counter::measure(|| {
+            refusal = Bank::prepare(short, 0).err();
+        });
+        assert_eq!(
+            refusal,
+            Some(if retained {
+                "constructor publication metadata reservation exceeded"
+            } else {
+                // This metadata-only constructor has equal retained/peak demand.
+                // Peak-minus1 is independently rejected by its peak>=retained law,
+                // not evidence of a separate transient graph-construction peak.
+                "invalid constructor publication reservation"
+            })
+        );
+        assert_eq!(
+            failure.count_total, 0,
+            "both limits refuse BEFORE Vec or paired Life birth"
+        );
+        assert_eq!(failure.bytes_total, 0);
+    }
+    eprintln!(
+        "SUPPORTED lifecycle fresh paired payload+header bytes={bytes}; one allocation reconciled; clone/nonfinaldrop0; all metadata{required} exact/retained-minus1 priced; peak-minus1 rejects peak<retained law; both prebirth0 allocations"
+    );
+}
+
+#[test]
+fn actual_lifecycle_paired_aliases_require_each_physical_handle() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported pinned lifecycle layout; no alias qualification");
+        return;
+    }
+    let slot = RuntimeSlot::vacant();
+    let alias = slot.life.clone();
+    let budget = hex_engine::AudioStorageLedgerReservation {
+        data_rows: 4,
+        handle_rows: 4,
+        root_rows: 1,
+        max_retained_bytes: 65_536,
+        max_construction_peak_bytes: 65_536,
+    };
+    let mut omitted = hex_engine::AudioRootStorageLedger::try_new_on_control(budget).unwrap();
+    omitted
+        .borrow_shared_metadata_body_on_control(&slot.life)
+        .unwrap();
+    assert_eq!(
+        omitted.validate_selected_shared_handles_on_control(),
+        Err(hex_engine::AudioStorageError::UnknownStorage)
+    );
+    drop(omitted);
+    let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(budget).unwrap();
+    ledger
+        .borrow_shared_metadata_body_on_control(&slot.life)
+        .unwrap();
+    ledger
+        .borrow_shared_metadata_body_on_control(&alias)
+        .unwrap();
+    ledger
+        .validate_selected_shared_handles_on_control()
+        .unwrap();
+    let summary = ledger.summary().unwrap();
+    assert_eq!(summary.data_allocations, 1);
+    assert_eq!(summary.unresolved_handles, 2);
+    assert_eq!(
+        summary.data_bytes,
+        hex_engine::sampler_host_fields::SharedMetadataRef::constructor_bytes::<Life>().unwrap()
+    );
+    ledger
+        .borrow_shared_metadata_body_on_control(&alias)
+        .unwrap();
+    assert_eq!(ledger.summary().unwrap(), summary);
+    eprintln!(
+        "SUPPORTED actual lifecycle paired data1/handles2; omitted actual alias refuses, repeated identical field dedups; no whole native-root claim"
+    );
+}

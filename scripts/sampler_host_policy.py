@@ -7,6 +7,8 @@ finite schema. This check preserves the independent Cargo dependency checks.
 import re
 
 EXACT = {
+    'crates/hex-audio/src/candidate_custody/eligible/publication/tests.rs',
+    'crates/hex-audio/src/candidate_custody/eligible/publication.rs',
     'crates/hex-session/src/service/worker_roots.rs',
     'crates/hex-project/src/time_range.rs',
     'crates/hex-engine/src/lib.rs',
