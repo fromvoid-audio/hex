@@ -931,3 +931,49 @@ fn legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction(cx: &mut Tes
 
 #[path = "eq_graph_layout_tests.rs"]
 mod graph_layout_tests;
+
+#[gpui::test]
+fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let location = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(location, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(selector("eq-auto", device)).is_none(),
+        "selecting a node must expose ordinary parameters, not an EQ-local automation entry"
+    );
+    assert!(
+        visual
+            .debug_bounds(selector("eq-automation-toolbar", device))
+            .is_none()
+    );
+    let id = editor.read_with(cx, |v, _| read(v, device).nodes[0].id);
+    for (field, value) in [
+        (hex_engine::eq::NodeParameter::Frequency, "1234"),
+        (hex_engine::eq::NodeParameter::Gain, "6"),
+        (hex_engine::eq::NodeParameter::Q, "2"),
+    ] {
+        let before = editor.read_with(cx, |v, _| read(v, device));
+        enter_typed_value(&mut visual, device, id.parameter(field).unwrap(), value);
+        visual.simulate_keystrokes("enter");
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) != before);
+        let after = editor.read_with(cx, |v, _| read(v, device));
+        assert_eq!(
+            after.node(id).unwrap().value(field),
+            ParameterValue::Float(value.parse().unwrap())
+        );
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == after);
+        visual.run_until_parked();
+    }
+}
