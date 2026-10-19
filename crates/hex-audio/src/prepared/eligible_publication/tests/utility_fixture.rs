@@ -46,6 +46,7 @@ pub(super) fn project() -> (hex_project::Project, hex_project::TrackId) {
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state,
@@ -141,6 +142,7 @@ pub(super) fn abc_project() -> (hex_project::Project, [hex_project::TrackId; 3])
         )
         .unwrap();
         track.devices.push(hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state,

@@ -51,6 +51,7 @@ fn replacement(
     Command::ReplaceDeviceStateWithIdentityReservation {
         device,
         expected_state,
+        expected_variant: editor.project().device(device).unwrap().active_variant(),
         state,
         expected_next_id: editor.project().snapshot().next_id,
         reserved_ids: 0,
@@ -63,7 +64,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let legacy = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&legacy).unwrap()["version"],
-        31
+        32
     );
     assert_eq!(
         hex_storage::decode(&legacy).unwrap().snapshot(),
@@ -124,7 +125,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        31
+        32
     );
     let reopened = hex_storage::decode(&bytes).unwrap();
     assert_eq!(reopened.snapshot(), editor.project().snapshot());
@@ -135,6 +136,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     assert!(hex_storage::encode_schema22(editor.project()).is_err());
     assert!(hex_storage::encode_schema20(editor.project()).is_err());
     let preset = hex_storage::preset::Preset {
+        comparison: None,
         class: hex_storage::preset::DeviceClass::Instrument,
         state: editor.project().device(instrument).unwrap().state().clone(),
     };

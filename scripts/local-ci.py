@@ -15,6 +15,7 @@ import os
 import shutil
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,7 @@ class Step:
 
 
 QUICK_STEPS = (
+    Step("changelog", ("python3", "scripts/changelog.py", "validate", "--if-present")),
     Step("architecture", ("python3", "scripts/check-architecture.py")),
     Step("gpui-patch", ("python3", "scripts/check-gpui-patch.py")),
     Step("dependency-patches", ("python3", "scripts/check-dependency-patches.py")),
@@ -734,7 +736,7 @@ class LocalCiRunner:
             os.close(descriptor)
 
     @contextmanager
-    def guarded_release(self, *, adopt: bool = False):
+    def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None):
         """Explicit release handoff; caller must identify its artifact before exit.
 
         Uses the dev driver's SAME target-wide lock, but a separate durable
@@ -758,6 +760,22 @@ class LocalCiRunner:
         lock.acquire()
         self.target_lock = lock
         try:
+            expected_owner_bytes = None
+            if expected_owner_sha256 is not None:
+                if (not adopt or len(expected_owner_sha256) != 64
+                        or any(c not in "0123456789abcdef" for c in expected_owner_sha256)):
+                    raise TargetCacheError("expected release owner requires explicit adoption and its SHA256")
+                try:
+                    descriptor = os.open(owner_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(descriptor, "rb") as stream:
+                        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                            raise TargetCacheError("expected release owner is not a regular file")
+                        expected_owner_bytes = stream.read(128 * 1024 + 1)
+                    if (len(expected_owner_bytes) > 128 * 1024
+                            or hashlib.sha256(expected_owner_bytes).hexdigest() != expected_owner_sha256):
+                        raise TargetCacheError("release owner changed since restart inspection; preserved unchanged")
+                except OSError as error:
+                    raise TargetCacheError("expected release owner is unavailable; preserved unchanged") from error
             # Recheck source after acquiring ownership; a changed checkout refuses.
             if not self._capture_repository_state("release_locked_tree") or self.summary["release_locked_tree"] != self.summary["start_tree"]:
                 raise TargetCacheError("release source changed before lock acquisition")
@@ -771,7 +789,7 @@ class LocalCiRunner:
                 try:
                     if owner_path.is_symlink():
                         raise ValueError("symlink marker")
-                    record = json.loads(owner_path.read_text())
+                    record = json.loads(expected_owner_bytes if expected_owner_bytes is not None else owner_path.read_text())
                     if (not isinstance(record, dict) or record.get("schema_version") != 1
                             or not {"target_identity", "source", "workspace_owner", "packages"}.issubset(record)
                             or record.get("profile") != "release" or record.get("target_directory") != str(target)
@@ -805,11 +823,16 @@ class LocalCiRunner:
                                 or not isinstance(record.get("build_argv"), list)):
                             raise ValueError("invalid release artifact fields")
                 except (ValueError, TypeError, OSError) as error:
-                    if not adopt:
+                    if not adopt or expected_owner_sha256 is not None:
                         raise TargetCacheError(f"malformed release ownership: {error}") from error
                     record = None
                     malformed = True
             if record is not None:
+                # Automatic restart recovery retains the inspected owner, not
+                # manual adoption's permission to take over another target.
+                if expected_owner_sha256 is not None and (
+                        record["target_identity"] != identity or record["workspace_owner"] != workspace):
+                    raise TargetCacheError("release target identity/workspace changed since restart inspection; preserved unchanged")
                 old_scope = [(p["name"], p["version"]) for p in record["packages"]]
                 old_names = {name for name, _version in old_scope}
                 retained_scope = [(p["name"], p["version"]) for p in scope if p["name"] in old_names]
@@ -1146,7 +1169,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="assert sole ownership of an unowned Cargo target and clean only this workspace's dev artifacts",
     )
+    parser.add_argument("--prepare-changelog", action="store_true",
+                        help="generate notes before freezing source, then exit without running sealed checks")
+    parser.add_argument("--changelog-base", help="explicit first-generation Git baseline")
+    parser.add_argument("--changelog-through", default="HEAD", help="immutable generation range end")
     arguments = parser.parse_args(argv)
+    if arguments.prepare_changelog:
+        command = [sys.executable, str(ROOT / "scripts/changelog.py"), "prepare",
+                   "--source", arguments.changelog_through]
+        if arguments.changelog_base:
+            command.extend(["--base", arguments.changelog_base])
+        return subprocess.run(command, cwd=ROOT).returncode
+    if arguments.changelog_base or arguments.changelog_through != "HEAD":
+        parser.error("changelog range arguments require --prepare-changelog")
     if arguments.min_free_gib is not None and not 0 <= arguments.min_free_gib <= sys.maxsize // GIB:
         parser.error("--min-free-gib must be a bounded nonnegative integer")
     mode = "quick" if arguments.quick else "full"

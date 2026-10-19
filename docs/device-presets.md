@@ -26,14 +26,17 @@ filtering would require a separately coordinated platform API change.
 
 ## format and compatibility
 
-The independent JSON envelope has `format: "hex-device-preset"`, `schema: 1`,
+The independent JSON envelope has `format: "hex-device-preset"`, `schema: 2`,
 `class` (`instrument` or `effect`), `type_id`, `state_version`, and a complete
-opaque byte-array `payload`. It contains no project identity, device identity,
+opaque byte-array `payload`, and required nullable `comparison`. A comparison
+records active slot `a`/`b` and one inactive type id, state version, opaque payload
+and empty asset-reference list. Both slots use the same provider; mismatched
+device-global host trims refuse before encoding. It contains no project identity, device identity,
 neighbor ordering, bypass, host input/output trims, or external assets. Unknown envelope fields, formats,
 schemas, classes, malformed type identifiers, version zero, and oversized payloads
 are rejected. The existing 4096-byte native-state and 128-byte type-id limits are
 unchanged. The file limit derives from worst-case compact byte-array JSON plus
-bounded metadata (16768 bytes); extra whitespace is allowed within that bound.
+bounded metadata (33536 bytes for both bounded states); extra whitespace is allowed within that bound.
 
 Loading requires the target's exact native class and type. Its existing provider
 must validate the state and support its version; newer/unknown/malformed native
@@ -42,14 +45,14 @@ remain authoritative. Presets preserve original payload bytes and native state
 version rather than re-encoding a migration or stripping unsupported content. Host-owned
 input/output trims stay at the target's exact millidB values during load and Undo/Redo;
 they are not part of the native opaque-payload envelope.
-Envelope schema 1 has no migration to other envelope versions.
+Envelope schema 2 is the current format; other envelope versions refuse explicitly.
 
 Dialogs capture project generation, canonical revision, stable device identity,
 class and type. A changed owner or revision cancels the request with a retry
 message before file I/O. Finish any pending edits before opening the dialog;
 invalid numeric drafts refuse. If a valid draft is still applying, wait for it
 and open the dialog again. The worker owns all preset I/O. A compatible load uses
-one `ReplaceDeviceState` prepared transaction and existing live admission; failed
+one `ReplaceDeviceComparison` prepared transaction and existing live admission; failed
 admission preserves canonical state, history and audio. Undo restores the previous
 complete device state; Redo restores the preset. Save alone does not dirty or
 change the canonical project. Deferred preset requests are discarded if the active device gesture fails to finalize; the visible refusal remains and no preset I/O is submitted.
@@ -111,3 +114,25 @@ queued after failed finalization; repaired retirement submits no preset I/O.
 Focused storage/service/rendered-widget results and final exact-source full CI
 are recorded with PR187. Historical Mac evidence applies to its earlier candidate;
 final-source native dialog, input and listening acceptance remain open.
+
+### Comparison-only authoring and audio correlation
+
+Copy and an identical-state Switch still change canonical comparison history
+when the authored pair changes. The Session worker classifies that exact typed
+transition (and its exact Undo/Redo inverse) inside the existing prepared Editor
+transaction. Only when the complete active provider state, asset bindings, host
+metadata and every other playback field remain equal does it retain the same
+prepared revision and canonical audio-source snapshot. An audible Switch uses
+ordinary graph preparation and admission.
+
+`canonical_audio_source` describes the actual preparation source, whose captured
+Project and context can precede the current authoring revision. A private worker
+binding correlates comparison-only authoring revisions to that exact retained
+source; it does not grant constructor custody or pretend that an audio ACK
+occurred. Save/status reconstruction retains this binding. Pending audio stays
+pending until its real terminal result, and refused audio stays refused. UI
+correlation also requires the actual current output/candidate association before
+an applied authoring revision can advance. Later audio edits establish a new
+source and leave late old ACKs historical. Existing keyboard input can continue
+without replacing its lease; stale device-slot reservations still refuse.
+Every comparison enqueue invalidates arrangement seek through the existing path.

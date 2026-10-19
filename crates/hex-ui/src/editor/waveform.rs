@@ -272,6 +272,12 @@ pub(super) fn waveform_canvas(
                 .map(Arc::new)
             });
             if let Some(geometry) = geometry {
+                #[cfg(all(test, feature = "ui-test-support"))]
+                if let Some(cache) = &cache
+                    && let Ok(mut cache) = cache.try_borrow_mut()
+                {
+                    cache.record_paint(bounds, window.content_mask().bounds, &geometry);
+                }
                 for channel in &geometry.channels {
                     window.paint_path(
                         channel.centerline.clone(),
@@ -983,3 +989,7 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "waveform_resize_ui_test.rs"]
 mod resize_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "waveform_header_ui_test.rs"]
+mod waveform_header_ui_test;

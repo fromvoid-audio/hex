@@ -305,3 +305,412 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
         assert_eq!(view.device_panel.navigation.scroll.offset().x, px(0.0));
     });
 }
+
+#[gpui::test]
+fn workspace_three_returns_device_menu_from_root_or_track_focus(cx: &mut TestAppContext) {
+    for header_focus in [false, true] {
+        let cx = &mut cx.new_app();
+        cx.update(crate::editor::bind_editor_keys);
+        let (service, state, track, _, _, _) = actor_utility_fixture();
+        let (handle, editor) = actor_editor_window(cx, service, state, track);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.update(cx, |v, cx| {
+                v.mode = crate::editor::EditorMode::Arrangement;
+                v.focus.focus(window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        // Configure both real keyboard contexts explicitly; the prior pointer
+        // fixture did not establish header focus, so it cannot prove that route.
+        if header_focus {
+            visual.update(|window, cx| {
+                editor.update(cx, |v, cx| v.track_header_focus(track, cx).focus(window));
+            });
+        }
+        visual.update(|window, cx| {
+            editor.read_with(cx, |v, _| {
+                if header_focus {
+                    assert!(v.track_header_focused(window));
+                } else {
+                    assert!(v.focus.is_focused(window));
+                }
+            });
+        });
+        let add = visual.debug_bounds("device-add-toggle").unwrap().center();
+        visual.simulate_click(add, Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("device-add-menu").is_some());
+        let before = editor.read_with(&visual, |v, _| {
+            assert!(v.device_panel.add_menu_open);
+            v.state.as_ref().unwrap().clone()
+        });
+        visual.update(|window, cx| {
+            editor.read_with(cx, |v, _| {
+                // GPUI's existing tracked-parent mouse-down handler focuses
+                // root when this non-focusable add button is clicked.
+                assert!(v.focus.is_focused(window));
+            })
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.mode,
+                crate::editor::EditorMode::Arrangement,
+                "menu header={header_focus}"
+            );
+            assert!(v.device_panel.add_menu_open);
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+        visual.simulate_click(add, Modifiers::default());
+        editor.read_with(&visual, |v, _| assert!(!v.device_panel.add_menu_open));
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, crate::editor::EditorMode::Session)
+        });
+    }
+}
+
+#[gpui::test]
+fn workspace_three_returns_device_navigation_preserves_capture(cx: &mut TestAppContext) {
+    for overview in [false, true] {
+        let cx = &mut cx.new_app();
+        cx.update(crate::editor::bind_editor_keys);
+        let (service, mut state, track, _, _, _) = actor_utility_fixture();
+        for _ in 0..8 {
+            service
+                .submit(Request::AddNativeDevice {
+                    track,
+                    class: NativeDeviceClass::Effect,
+                    type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                        "hex.utility",
+                    )),
+                    before: None,
+                })
+                .unwrap();
+            state = receive_service_event(&service).state;
+        }
+        let (handle, editor) = actor_editor_window(cx, service, state, track);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(880.0), px(540.0)));
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.read(cx).focus.focus(window);
+        });
+        visual.run_until_parked();
+        let selector = if overview {
+            "device-chain-overview"
+        } else {
+            "device-chain-scroll"
+        };
+        let start = visual.debug_bounds(selector).unwrap().center();
+        let button = if overview {
+            MouseButton::Left
+        } else {
+            MouseButton::Middle
+        };
+        let end = start - point(px(20.0), px(0.0));
+        visual.simulate_mouse_down(start, button, Modifiers::default());
+        visual.simulate_mouse_move(end, button, Modifiers::default());
+        let (before, offset) = editor.read_with(&visual, |v, _| {
+            assert!(v.device_panel.navigation.is_active());
+            (
+                v.state.as_ref().unwrap().clone(),
+                v.device_panel.navigation.scroll.offset(),
+            )
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.mode,
+                crate::editor::EditorMode::Session,
+                "overview={overview}"
+            );
+            assert!(v.device_panel.navigation.is_active());
+            assert_eq!(v.device_panel.navigation.scroll.offset(), offset);
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+        visual.simulate_mouse_up(end, button, Modifiers::default());
+        editor.update(&mut visual, |v, _| {
+            assert!(
+                !v.device_panel.navigation.cancel(),
+                "released capture already retired"
+            )
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
+        });
+    }
+}
+
+#[gpui::test]
+fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.update(cx, |v, cx| {
+            v.mode = crate::editor::EditorMode::Arrangement;
+            v.focus.focus(window);
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    let add = visual.debug_bounds("device-add-toggle").unwrap().center();
+    visual.simulate_click(add, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_some());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Arrangement);
+        assert!(v.device_panel.add_menu_open);
+    });
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    let toggle = visual
+        .debug_bounds("device-panel-bottom-toggle")
+        .unwrap()
+        .center();
+    visual.simulate_click(toggle, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
+    editor.read_with(&visual, |v, _| assert!(!v.clip_view_open));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| assert!(v.focus.is_focused(window))));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.mode,
+            crate::editor::EditorMode::Session,
+            "hidden menu must not own Tab"
+        );
+        assert_eq!(v.state.as_ref().unwrap().project, before.project);
+        assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+    });
+    // Reopening makes the retained menu visible and its local refusal applies again.
+    let toggle = visual
+        .debug_bounds("device-panel-bottom-toggle")
+        .unwrap()
+        .center();
+    visual.simulate_click(toggle, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_some());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Session)
+    });
+    let add = visual.debug_bounds("device-add-toggle").unwrap().center();
+    visual.simulate_click(add, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
+    });
+}
+
+#[gpui::test]
+fn workspace_adb3_returns_removed_last_track_menu_does_not_own_tab(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    assert_eq!(state.project.tracks().len(), 1);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.update(cx, |v, cx| {
+            v.mode = crate::editor::EditorMode::Arrangement;
+            v.focus.focus(window);
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    let add = visual.debug_bounds("device-add-toggle").unwrap().center();
+    visual.simulate_click(add, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_some());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
+    });
+    let remove = visual
+        .debug_bounds("remove selected track")
+        .unwrap()
+        .center();
+    visual.simulate_click(remove, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
+    assert!(visual.debug_bounds("device-add-toggle").is_none());
+    let before = editor.read_with(&visual, |v, _| {
+        assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
+        assert!(v.selected_track.is_none());
+        assert!(v.clip_view_open && v.device_panel_active && v.device_panel.add_menu_open);
+        v.state.as_ref().unwrap().clone()
+    });
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.mode,
+            crate::editor::EditorMode::Session,
+            "a menu without a rendered owner must not own Tab"
+        );
+        assert_eq!(v.state.as_ref().unwrap().project, before.project);
+        assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |v| {
+        v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            assert!(v.state.as_ref().unwrap().project.track(track).is_some());
+            v.selected_track = Some(track);
+            v.focus.focus(window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_some());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Session)
+    });
+    let add = visual.debug_bounds("device-add-toggle").unwrap().center();
+    visual.simulate_click(add, Modifiers::default());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
+    });
+}
+
+#[gpui::test]
+fn workspace_adb3_returns_gain_point_drag_keeps_tab_until_release_or_escape(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    for cancel in [false, true] {
+        let (service, _, track, _, _, _) = actor_utility_fixture();
+        service
+            .submit(Request::Edit(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ZERO,
+                        gain: 1.0,
+                        outgoing: hex_project::GainInterpolation::Linear,
+                    },
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ONE,
+                        gain: 0.5,
+                        outgoing: hex_project::GainInterpolation::Linear,
+                    },
+                ],
+            }))
+            .unwrap();
+        let state = receive_service_event(&service).state;
+        let (handle, editor) = actor_editor_window(cx, service, state, track);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.update(cx, |v, cx| {
+                v.mode = crate::editor::EditorMode::Arrangement;
+                v.focus.focus(window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        let show = visual
+            .debug_bounds(Box::leak(
+                format!("gain-lane-show-{}", track.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        visual.simulate_click(show, Modifiers::default());
+        visual.run_until_parked();
+        let plot = visual.debug_bounds("gain-lane-plot").unwrap();
+        let start = point(plot.origin.x + px(0.5), plot.center().y);
+        let end = start - point(px(0.0), px(10.0));
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        let draft = editor.read_with(&visual, |v, _| {
+            assert!(v.gain_lane.draft.is_some());
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            format!("{:?}", v.gain_lane.draft)
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.mode,
+                crate::editor::EditorMode::Arrangement,
+                "held gain point owns Tab; cancel={cancel}"
+            );
+            assert_eq!(format!("{:?}", v.gain_lane.draft), draft);
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+        if cancel {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        pump_until(&editor, cx, |v| {
+            v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+        });
+        let after = editor.read_with(&visual, |v, _| {
+            assert!(v.gain_lane.draft.is_none());
+            v.state.as_ref().unwrap().clone()
+        });
+        if cancel {
+            assert_eq!(after.project, before.project);
+            assert_eq!(after.revision, before.revision);
+        } else {
+            assert_ne!(after.project, before.project);
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump_until(&editor, cx, |v| {
+                v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+            });
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project, before.project)
+            });
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+            pump_until(&editor, cx, |v| {
+                v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+            });
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project, after.project)
+            });
+        }
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, crate::editor::EditorMode::Session)
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
+        });
+    }
+}

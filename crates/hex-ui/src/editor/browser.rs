@@ -1,5 +1,6 @@
 //! Compact, bounded left-side media and project browser.
 mod audition;
+mod place_icons;
 mod samples;
 mod tree;
 
@@ -24,6 +25,19 @@ use std::{
 };
 
 mod layout;
+
+// Preference diagnostics remain useful without unbounded field/path text in UI tooltips.
+fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> String {
+    let reason = error.to_string().to_lowercase();
+    let mut message = format!(
+        "{prefix} · {}",
+        reason.chars().take(160).collect::<String>()
+    );
+    if reason.chars().count() > 160 {
+        message.push('…');
+    }
+    message
+}
 
 pub(super) const DEFAULT_WIDTH: f32 = 480.0;
 const MIN_WIDTH: f32 = 220.0;
@@ -63,24 +77,12 @@ struct PreviewSlot {
     error: Rc<RefCell<Option<String>>>,
 }
 
+#[cfg(not(test))]
 pub(super) fn default_preferences_path() -> PathBuf {
-    #[cfg(test)]
-    {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "hex-ui-test-places-{}-{}.json",
-            std::process::id(),
-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-    #[cfg(not(test))]
-    {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
-        hex_preferences::browser_places_path(&home)
-    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    hex_preferences::browser_places_path(&home)
 }
 
 fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
@@ -157,6 +159,7 @@ pub(super) struct BrowserState {
     home: PathBuf,
     music: PathBuf,
     pub(super) places: Vec<PathBuf>,
+    place_icons: HashMap<PathBuf, String>,
     preferences_path: PathBuf,
     preferences_loading: bool,
     pub(super) preferences_writable: bool,
@@ -206,10 +209,17 @@ pub(super) struct BrowserState {
 }
 
 impl BrowserState {
-    pub fn new(cx: &mut Context<EditorView>, preferences_path: PathBuf) -> Self {
+    pub fn new(
+        cx: &mut Context<EditorView>,
+        preferences_path: PathBuf,
+        #[cfg(test)] test_home: Option<PathBuf>,
+    ) -> Self {
+        #[cfg(not(test))]
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
+        #[cfg(test)]
+        let home = test_home.expect("editor test home must be resolved before startup");
         let music = home.join("Music");
         let search = cx.new(BrowserSearch::new);
         let mut previous_query = String::new();
@@ -235,6 +245,7 @@ impl BrowserState {
             home,
             music,
             places,
+            place_icons: HashMap::new(),
             preferences_path,
             preferences_loading: true,
             preferences_writable: true,
@@ -398,11 +409,17 @@ impl EditorView {
 
     pub(super) fn start_browser_places_load(&mut self, cx: &mut Context<Self>) {
         let path = self.browser.preferences_path.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::load(&path) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::load(&path)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser_places_loaded(result, cx);
@@ -421,12 +438,23 @@ impl EditorView {
         match loaded {
             Err(error) => {
                 self.browser.preferences_writable = false;
-                self.browser.places_status = Some(format!(
-                    "could not load browser places · {}",
-                    error.to_string().to_lowercase()
-                ));
+                self.browser.places_status =
+                    Some(places_error("could not load browser places", &error));
             }
             Ok(loaded) => {
+                self.browser.place_icons = loaded
+                    .icon_assignments()
+                    .map(|(path, id)| (path.to_owned(), id.to_owned()))
+                    .collect();
+                if self
+                    .browser
+                    .place_icons
+                    .values()
+                    .any(|id| !place_icons::known(id))
+                {
+                    self.browser.places_status =
+                        Some("some place icons unavailable · showing folder".into());
+                }
                 let mut combined = loaded.additional().to_vec();
                 let local_places = self
                     .browser
@@ -476,14 +504,23 @@ impl EditorView {
             .iter()
             .filter(|path| **path != self.browser.home && **path != self.browser.music)
             .cloned();
-        match BrowserPlaces::new(additional) {
+        let places = BrowserPlaces::new(additional).and_then(|mut places| {
+            for (path, id) in &self.browser.place_icons {
+                if places.additional().contains(path) {
+                    places.set_icon(path, Some(id))?;
+                }
+            }
+            Ok(places)
+        });
+        match places {
             Ok(places) => {
                 self.browser.pending_places_save = Some(places);
                 self.browser.places_status = Some("saving browser places…".into());
                 self.start_browser_places_save(cx);
             }
             Err(error) => {
-                self.browser.places_status = Some(error.to_string().to_lowercase());
+                self.browser.places_status =
+                    Some(places_error("could not save browser places", &error));
             }
         }
     }
@@ -497,11 +534,17 @@ impl EditorView {
         };
         self.browser.places_save_in_flight = true;
         let path = self.browser.preferences_path.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::save(&path, &places) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::save(&path, &places)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser_places_saved(result, cx);
@@ -522,10 +565,7 @@ impl EditorView {
         } else {
             self.browser.places_status = Some(match result {
                 Ok(()) => "browser places saved".into(),
-                Err(error) => format!(
-                    "could not save browser places · {}",
-                    error.to_string().to_lowercase()
-                ),
+                Err(error) => places_error("could not save browser places", &error),
             });
         }
     }
@@ -688,15 +728,19 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         self.browser.playback_in_flight = true;
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path = request.path.clone();
             let sample_rate = request.sample_rate;
             let result = cx
                 .background_executor()
-                .spawn(
-                    async move { hex_session::service::prepare_sample_preview(path, sample_rate) },
-                )
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_session::service::prepare_sample_preview(path, sample_rate)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser.playback_in_flight = false;
@@ -968,15 +1012,19 @@ impl EditorView {
             self.browser.preview_preparations += 1;
         }
         self.browser.preview_in_flight = Some(request.clone());
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path = request.key.path.clone();
             let sample_rate = request.key.sample_rate;
             let result = cx
                 .background_executor()
-                .spawn(
-                    async move { hex_session::service::prepare_audio_preview(path, sample_rate) },
-                )
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_session::service::prepare_audio_preview(path, sample_rate)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser_audio_preview_finished(request, result, cx);
@@ -1156,12 +1204,18 @@ impl EditorView {
     }
 
     fn start_browser_scan(&mut self, request: ScanRequest, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path_for_scan = request.directory.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { scan_directory(path_for_scan) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    scan_directory(path_for_scan)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser_scan_finished(request, result, cx);
@@ -1855,25 +1909,34 @@ impl EditorView {
             .flex_col()
             .child(panel.w_full().flex_1().min_h_0().min_w_0())
             .child(preview);
+        // The rail belongs to the fixed base column. The optional editor is a
+        // sibling of that WHOLE column, so neither opening control can move.
         panel = div()
             .w(px(pane_width + editor_width))
             .flex_shrink_0()
             .min_h_0()
             .flex()
-            .flex_col()
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(toolbar)
             .child(
                 div()
-                    .flex_1()
+                    .w(px(pane_width))
+                    .flex_shrink_0()
                     .min_h_0()
                     .flex()
-                    .child(sidebar)
-                    .child(self.browser_sidebar_resize(pane_width, cx))
-                    .child(panel)
-                    .children(editor),
-            );
+                    .flex_col()
+                    .child(toolbar)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .child(sidebar)
+                            .child(self.browser_sidebar_resize(pane_width, cx))
+                            .child(panel),
+                    ),
+            )
+            .children(editor);
 
         let entity = cx.entity();
         let mut resize = div()
@@ -1883,7 +1946,11 @@ impl EditorView {
             .w(px(4.0))
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(if self.browser.resizing {
+                theme::PaletteRole::Secondary
+            } else {
+                theme::PaletteRole::Border
+            })))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))));
         resize = resize.child(
             canvas(
@@ -1908,10 +1975,17 @@ impl EditorView {
                     let move_entity = entity.clone();
                     let available = f32::from(bounds.size.width);
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if !phase.bubble() || !event.dragging() {
+                        if !phase.bubble() {
                             return;
                         }
                         move_entity.update(cx, |view, cx| {
+                            if !event.dragging() {
+                                if view.browser.resizing {
+                                    view.browser.resizing = false;
+                                    cx.notify();
+                                }
+                                return;
+                            }
                             if view.browser.resizing {
                                 view.browser.width = clamped_panel_width(
                                     view.browser.layout.base_width_for_total(
@@ -2512,3 +2586,7 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "browser_ui_test.rs"]
 mod ui_test;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "console_drop_ui_test.rs"]
+mod console_drop_ui_test;
