@@ -1108,5 +1108,139 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertNotIn("cargo clean", self.call_log.read_text())
 
 
+    def dependency_final_pass_race(self, kind):
+        root, package, metadata = self.path_dependency_fixture()
+        external = self.base / "external-vendor"
+        root.rename(external)
+        root = external
+        package["manifest_path"] = str(root / "Cargo.toml")
+        early = root / "a.rs"
+        early.write_bytes(b"original")
+        link_target = self.base / "linked-source.rs"
+        if kind == "link":
+            link_target.write_bytes(b"original")
+            early.unlink()
+            early.symlink_to(link_target)
+        late = root / "z.rs"
+        late.write_bytes(b"read after earlier inventory")
+        original_open = os.open
+        visits = 0
+        def interleave(path, flags, *args, **kwargs):
+            nonlocal visits
+            if Path(path) == late:
+                visits += 1
+                if visits == 2:
+                    if kind == "entry":
+                        (root / "00-added.rs").write_bytes(b"new earlier entry")
+                    else:
+                        (link_target if kind == "link" else early).write_bytes(b"modified")
+            return original_open(path, flags, *args, **kwargs)
+        with metadata, patch.object(local_ci.os, "open", side_effect=interleave):
+            runner = self.runner("endpass-" + kind)
+            code = runner.run()
+        self.assertEqual(visits, 2, "real initial and final content traversals executed")
+        summary = self.summary("endpass-" + kind)
+        print("ACTUAL_DEPENDENCY_ENDPASS", kind, code, summary.get("path_dependency_check_error"), flush=True)
+        self.assertNotEqual(code, 0, "an already-hashed external input changed during the final traversal")
+        self.assertIn("changed", summary.get("path_dependency_check_error", ""))
+        self.assertIsNone(runner.target_lock)
+
+    def test_dependency_final_pass_revalidates_earlier_file(self):
+        self.dependency_final_pass_race("file")
+
+    def test_dependency_final_pass_revalidates_earlier_directory_inventory(self):
+        self.dependency_final_pass_race("entry")
+
+    def test_dependency_final_pass_revalidates_file_symlink_target(self):
+        self.dependency_final_pass_race("link")
+
+    def test_dependency_directory_symlink_to_target_refuses_before_owner_mutation(self):
+        root, _, metadata = self.path_dependency_fixture()
+        Path(self.env["FAKE_METADATA_TARGET"]).mkdir()
+        with metadata:
+            self.assertEqual(self.runner("link-target-prime").run(), 0)
+            owner = next(self.target_state_dir.glob("*.owner.json"))
+            before = owner.read_bytes()
+            target = Path(self.env["FAKE_METADATA_TARGET"])
+            sentinel = target / "release-sentinel"
+            sentinel.write_bytes(b"preserve actual target")
+            (root / "generated-alias").symlink_to(target, target_is_directory=True)
+            calls_before = self.call_log.read_text()
+            code = self.runner("link-target-denied").run()
+            print("ACTUAL_DIRECTORY_TARGET_SYMLINK", code, flush=True)
+            self.assertEqual(code, 1)
+            self.assertIn("directory symlink", self.summary("link-target-denied")["target_cache_error"])
+            self.assertEqual(owner.read_bytes(), before)
+            self.assertEqual(sentinel.read_bytes(), b"preserve actual target")
+            self.assertNotIn("cargo build", self.call_log.read_text()[len(calls_before):])
+            self.assertNotIn("cargo clean", self.call_log.read_text()[len(calls_before):])
+
+    def test_dependency_actual_target_directory_is_excluded_and_unchanged_reuses(self):
+        root, _, metadata = self.path_dependency_fixture()
+        target = root / "actual-target"
+        self.env["FAKE_METADATA_TARGET"] = str(target)
+        target.mkdir()
+        with metadata:
+            self.assertEqual(self.runner("actual-target-prime").run(), 0)
+            generated = target / "generated"
+            generated.write_bytes(b"not a dependency input")
+            self.assertEqual(self.runner("actual-target-reuse", env={**self.env, "MUTATE_FILE": str(generated)}).run(), 0)
+            self.assertEqual(self.summary("actual-target-reuse")["target_cache"]["changed_path_dependencies"], [])
+            self.assertIsNone(self.summary("actual-target-reuse")["target_cache"]["cleanup_argv"])
+
+    def final_hash_signal(self, signum):
+        root, _, metadata = self.path_dependency_fixture()
+        late = root / "z.rs"
+        late.write_bytes(b"interrupt within real final traversal")
+        original_open = os.open
+        visits = 0
+        def interrupt(path, flags, *args, **kwargs):
+            nonlocal visits
+            if Path(path) == late:
+                visits += 1
+                if visits == 2:
+                    os.kill(os.getpid(), signum)
+            return original_open(path, flags, *args, **kwargs)
+        previous = {s: local_ci.signal.getsignal(s) for s in (local_ci.signal.SIGINT, local_ci.signal.SIGTERM)}
+        runner = self.runner("final-hash-signal")
+        escaped = False
+        code = None
+        try:
+            with metadata, patch.object(local_ci.os, "open", side_effect=interrupt):
+                try:
+                    code = runner.run()
+                except local_ci.InterruptedRun:
+                    escaped = True
+            summary = self.summary("final-hash-signal")
+            restored = all(local_ci.signal.getsignal(s) == handler for s, handler in previous.items())
+            print("ACTUAL_FINAL_HASH_SIGNAL", signum, {"code": code, "escaped": escaped,
+                  "lock_retained": runner.target_lock is not None, "handlers_restored": restored,
+                  "summary_exit": summary.get("exit_code"), "ended_at": summary.get("ended_at")}, flush=True)
+            self.assertEqual(code, 130)
+            self.assertFalse(escaped)
+            self.assertIsNone(runner.target_lock)
+            self.assertTrue(restored)
+            self.assertEqual(summary["status"], "interrupted")
+            self.assertEqual(summary["exit_code"], 130)
+            self.assertIsNotNone(summary["ended_at"])
+            lock_path, _ = local_ci.target_state_paths(Path(self.env["FAKE_METADATA_TARGET"]).resolve(), self.target_state_dir)
+            probe = local_ci.CargoTargetLock(lock_path, {"run_id": "after-interrupt"})
+            probe.acquire()
+            self.assertIsNone(probe.release())
+        finally:
+            # Baseline is expected to leak; contain that failure inside the private fixture.
+            if runner.target_lock is not None:
+                runner.target_lock.release()
+            for s, handler in previous.items():
+                local_ci.signal.signal(s, handler)
+
+    def test_dependency_final_hash_sigint_finishes_cleanup(self):
+        self.final_hash_signal(local_ci.signal.SIGINT)
+
+    def test_dependency_final_hash_sigterm_finishes_cleanup(self):
+        self.final_hash_signal(local_ci.signal.SIGTERM)
+
+
+
 if __name__ == "__main__":
     unittest.main()
