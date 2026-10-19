@@ -1561,3 +1561,36 @@ Event/UI borrowed consumption, original-rate Mono/Stereo loading, complete
 Arrangement/Session/runtime construction, joint publication/replacement/retirement
 and export/seek remain required for the same playable Service vertical. Mutable
 Send-only export/seek runtimes have no new Sync/lock workaround in this increment.
+
+### Captured-target qualified constructor bridge (construction-local)
+
+The private original-Sampler compiler now distinguishes its exact paired captured
+Project from the current Editor/history inventory. It selects the original-rate
+device-resource bank inside the same preparation parent. Removing the captured
+track and pruning current history does not substitute the current Project for
+that immutable target. Omitted target aliases and unrelated/missing banks still
+refuse before compiler owner birth. Normal ledger observation IDs are not owner
+births or allocations: the retained regression independently counts the actual
+current/history fields, captured Project fields and transform cancellation field.
+Arithmetic inspection still issues no observation IDs.
+
+For the supported no-ordinary-audio, Stop-only Session-cell configuration, the
+same closed operation prices persistent preview draft/final overlap, Session
+structure/names/tempo/meter, actual Sampler factory aliases, mutable revision
+descriptors, paired revision roots and atomic reader registration before new
+construction. It writes directly into the existing preparation destinations and
+registers the compiled revision at constructor birth; it never adopts a legacy
+prepared Arc. Arrangement and Session share the actual loaded context and its
+constructor-paired factory. All nested resource/metadata aliases join mandatory
+normal inspection. Registered readers delay the same parent's retirement.
+
+The real preview, supported local Utility Return, complete-constructor inventory,
+exact retained/peak and each-minus-one boundaries, row refusal and partial
+Session/revision error/panic cleanup have focused component regressions. These
+do not qualify arbitrary mixed/audio targets, authored Session MIDI, runtime
+publication, Service startup, native playback or export. The ordinary source
+bank has zero source/alias capacity only for this explicitly supported class;
+Sampler PCM stays in the original device-resource bank. The Service/control-work
+bridge, captured mix and Stems, whole live union, productive buffered export and
+all musical/native acceptance remain required. The public whole-host completion
+summary is still unavailable; these constructors do not turn it into permission.

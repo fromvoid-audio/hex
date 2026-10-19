@@ -1,6 +1,7 @@
 //! Closed private control operation over actual borrowed inputs and persistent
 //! destinations. Neither its arithmetic nor selected inventory admits playback.
 use super::*;
+mod complete;
 use crate::{
     AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole,
     audio_transform::{AudioTransformPcmInventory, AudioTransformPreparation},
@@ -17,12 +18,22 @@ struct Construction {
     retained: usize,
     peak: usize,
     contexts: SamplerContextConstructionLimits,
+    preview: bool,
 }
 impl ArrangementClips {
+    #[cfg(test)]
     fn sampler_construction(
         &self,
         project: &hex_project::Project,
         resources: DeviceResourcePreparation<'_>,
+    ) -> Result<Construction, AudioStorageError> {
+        self.sampler_construction_with_preview(project, resources, false)
+    }
+    fn sampler_construction_with_preview(
+        &self,
+        project: &hex_project::Project,
+        resources: DeviceResourcePreparation<'_>,
+        preview: bool,
     ) -> Result<Construction, AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.staged
@@ -43,19 +54,31 @@ impl ArrangementClips {
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
         let compiler = crate::compile::sampler_cost::quote(project)
             .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+        let preview_cost = if preview {
+            Some(crate::midi_preview::persistent::PreviewCustody::compiler_cost(project)?)
+        } else {
+            None
+        };
         Ok(Construction {
             retained: add(
                 add(
                     tracks.additional_retained_bytes,
                     returns.additional_retained_bytes,
                 )?,
-                add(contexts.retained_bytes, compiler.retained)?,
+                add(
+                    add(contexts.retained_bytes, compiler.retained)?,
+                    preview_cost.map_or(0, |cost| cost.retained),
+                )?,
             )?,
             peak: add(
                 add(tracks.additional_peak_bytes, returns.additional_peak_bytes)?,
-                add(contexts.construction_peak_bytes, compiler.peak)?,
+                add(
+                    add(contexts.construction_peak_bytes, compiler.peak)?,
+                    preview_cost.map_or(0, |cost| cost.peak),
+                )?,
             )?,
             contexts,
+            preview,
         })
     }
 }
@@ -63,6 +86,7 @@ struct Inputs<'a> {
     rows: &'a ArrangementClips,
     preparation: &'a crate::AudioPreparationCustody,
     editor: &'a hex_project::Editor,
+    target: Option<&'a crate::SharedMetadata<hex_project::Project>>,
     resources: &'a DeviceResourceBank,
     previous: Option<&'a OwnedShared<SharedAnalyticContextTable>>,
     original: &'a AudioRootStorageLedger<'a>,
@@ -111,6 +135,14 @@ impl<'a> Inputs<'a> {
             ledger.root(self.resources, AudioStorageRole::Caller)?;
         }
         self.resources.visit_storage_on_control(ledger)?;
+        if let Some(target) = self.target {
+            // This exact paired captured Project remains a distinct physical
+            // input even after current authoring/history has discarded it.
+            ledger.borrow_shared_metadata_body_on_control(target)?;
+            ledger.borrow_project_exclusive_buffers_on_control(target)?;
+            ledger.borrow_project_midi_sources_on_control(target)?;
+            ledger.borrow_project_native_states_on_control(target)?;
+        }
         if let Some(previous) = self.previous {
             crate::shared_analytic::resource_storage::visit_table(
                 previous,
@@ -147,16 +179,17 @@ impl ArrangementClips {
             rows: self,
             preparation,
             editor,
+            target: None,
             resources: bank,
             previous,
             original,
         }
         .inspect(transforms, reservation)?;
-        self.construct_original_sampler(editor, bank, previous, transforms, construction)
+        self.construct_original_sampler(editor.project(), bank, previous, transforms, construction)
     }
     fn construct_original_sampler(
         &mut self,
-        editor: &hex_project::Editor,
+        project: &hex_project::Project,
         bank: &DeviceResourceBank,
         previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
         transforms: &AudioTransformPreparation,
@@ -179,10 +212,15 @@ impl ArrangementClips {
             self.root
                 .begin_compiler_context()
                 .map_err(|_| crate::Invalid("sampler context destination is occupied"))?;
+            if construction.preview {
+                self.preview
+                    .reserve_compiler(project)
+                    .map_err(|_| crate::Invalid("sampler preview reservation refused"))?;
+            }
             let (destination, contexts) = self.root.compiler_destinations();
             *contexts = Some(
                 SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
-                    editor.project(),
+                    project,
                     &instruments,
                     previous.map(|table| table.as_ref()),
                     Some(resources),
@@ -194,30 +232,36 @@ impl ArrangementClips {
                 return Err(crate::Invalid("audio preparation cancelled"));
             }
             self.returns
-                .reserve(editor.project())
+                .reserve(project)
                 .map_err(|_| crate::Invalid("sampler paired Return preparation refused"))?;
             self.returns
                 .construct()
                 .map_err(|_| crate::Invalid("sampler paired Return construction refused"))?;
-            let returns = super::super::CompilerReturnChildren::from_rows(
-                &mut self.returns,
-                editor.project(),
-            )
-            .map_err(|_| crate::Invalid("sampler paired Return selector refused"))?;
+            let returns =
+                super::super::CompilerReturnChildren::from_rows(&mut self.returns, project)
+                    .map_err(|_| crate::Invalid("sampler paired Return selector refused"))?;
             let tracks = crate::audio_preparation::CompilerTrackChildren::prepare(
                 &mut self.tracks,
-                editor.project(),
+                project,
                 contexts.as_ref().map(|table| table.as_ref()),
             )
             .map_err(|_| crate::Invalid("sampler paired Track selector refused"))?;
             crate::compile::compile_project_into_selected_children(
-                editor.project(),
+                project,
                 |_, _| {
                     Err(crate::Invalid(
                         "audio clips are outside sampler compiler class",
                     ))
                 },
-                None,
+                if construction.preview {
+                    Some(
+                        self.preview
+                            .compiler_destination()
+                            .map_err(|_| crate::Invalid("sampler preview destination refused"))?,
+                    )
+                } else {
+                    None
+                },
                 &effects,
                 &instruments,
                 contexts,
@@ -226,7 +270,13 @@ impl ArrangementClips {
                 None,
                 Some(returns),
                 Some(tracks),
-            )
+            )?;
+            if construction.preview {
+                self.preview
+                    .finish_compiler()
+                    .map_err(|_| crate::Invalid("sampler preview completion refused"))?;
+            }
+            Ok(())
         });
         #[cfg(test)]
         if let Err(error) = &result {
@@ -242,18 +292,35 @@ impl Inputs<'_> {
         transforms: &AudioTransformPreparation,
         reservation: AudioStorageLedgerReservation,
     ) -> Result<Construction, AudioStorageError> {
+        self.inspect_with_completion(transforms, reservation, false)
+    }
+    fn inspect_with_completion(
+        &self,
+        transforms: &AudioTransformPreparation,
+        reservation: AudioStorageLedgerReservation,
+        complete: bool,
+    ) -> Result<Construction, AudioStorageError> {
         if transforms.cancellation_requested_on_control() {
             return Err(AudioStorageError::SourceMismatch);
         }
-        let editor = self.editor;
+        let project = self
+            .target
+            .map_or(self.editor.project(), |target| &**target);
         let original = self.original;
         let resources = DeviceResourcePreparation {
             bank: self.resources,
             max_scope_metadata_bytes: 65_536,
         };
-        let construction = self
-            .rows
-            .sampler_construction(editor.project(), resources)?;
+        let mut construction = self.rows.sampler_construction_with_preview(
+            project,
+            resources,
+            self.target.is_some(),
+        )?;
+        if complete {
+            let extra = self.preparation.sampler_completion_bytes(project)?;
+            construction.retained = add(construction.retained, extra)?;
+            construction.peak = add(construction.peak, extra)?;
+        }
         let ledger_bytes = AudioRootStorageLedger::requested_metadata_bytes(reservation)?;
         let arithmetic_inline = size_of::<AudioRootStorageLedger<'_>>();
         // The original ledger's physical body/backings are DATA via Inputs;
@@ -316,7 +383,7 @@ impl Inputs<'_> {
 impl crate::AudioPreparationCustody {
     /// Construction-local only. Every new owner is installed directly into
     /// this SAME parent; immutable whole-parent inventory ends before mutation.
-    #[cfg_attr(not(test), expect(dead_code, reason = "awaits Service integration"))]
+    #[cfg(test)]
     pub(crate) fn compile_original_sampler_on_control(
         &mut self,
         editor: &hex_project::Editor,
@@ -331,6 +398,7 @@ impl crate::AudioPreparationCustody {
             rows: &self.arrangement_clips,
             preparation: self,
             editor,
+            target: None,
             resources: bank,
             previous,
             original,
@@ -340,7 +408,7 @@ impl crate::AudioPreparationCustody {
         // retains the parent and all of its source/cleanup destinations in place.
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.arrangement_clips.construct_original_sampler(
-                editor,
+                editor.project(),
                 bank,
                 previous,
                 transforms,
@@ -353,6 +421,61 @@ impl crate::AudioPreparationCustody {
                 // Retire once through its existing ordered cleanup. The first
                 // payload stays owned locally during cleanup, then is installed
                 // before any secondary cleanup payload can be dropped.
+                self.phase = AudioPreparationPhase::Cleaning;
+                self.cleanup_on_control();
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                let secondary = self.first_panic.replace(payload);
+                drop(secondary);
+                Err(AudioStorageError::UnknownStorage)
+            }
+        }
+    }
+    /// Exact immutable captured target, with current authoring/history retained
+    /// only as additional inventory. The original bank is borrowed INSIDE this
+    /// actual parent operation and cannot be substituted/extracted by a caller.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "complete target bridge in progress")
+    )]
+    pub(crate) fn compile_original_sampler_target_on_control(
+        &mut self,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        editor: &hex_project::Editor,
+        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+        original: &AudioRootStorageLedger<'_>,
+        transforms: &AudioTransformPreparation,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<(), AudioStorageError> {
+        self.inspect_sampler_destination()?;
+        let construction = Inputs {
+            rows: &self.arrangement_clips,
+            preparation: self,
+            editor,
+            target: Some(target),
+            resources: self
+                .original_resources
+                .as_ref()
+                .ok_or(AudioStorageError::SourceMismatch)?,
+            previous,
+            original,
+        }
+        .inspect(transforms, reservation)?;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let bank = self
+                .original_resources
+                .as_ref()
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            self.arrangement_clips.construct_original_sampler(
+                target,
+                bank,
+                previous,
+                transforms,
+                construction,
+            )
+        }));
+        match outcome {
+            Ok(result) => result,
+            Err(payload) => {
                 self.phase = AudioPreparationPhase::Cleaning;
                 self.cleanup_on_control();
                 self.phase = AudioPreparationPhase::FailedIncomplete;

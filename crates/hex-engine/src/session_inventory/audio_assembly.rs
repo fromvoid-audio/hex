@@ -13,6 +13,7 @@ use crate::{
 };
 use std::mem;
 mod cleanup;
+mod compiler;
 #[cfg(test)]
 mod midi_cleanup_tests;
 
@@ -231,6 +232,34 @@ fn reserve<T>(v: &mut Vec<T>, n: usize, growth: &mut usize) -> Result<(), AudioS
         .map_err(|_| AudioStorageError::Allocation)
 }
 impl SessionAssembly {
+    pub(crate) fn compiler_construction_bytes(
+        project: &hex_project::Project,
+    ) -> Result<usize, AudioStorageError> {
+        fn rows<T>(n: usize) -> Result<usize, AudioStorageError> {
+            std::alloc::Layout::array::<T>(n).map_err(|_| AudioStorageError::Overflow)?;
+            n.checked_mul(mem::size_of::<T>())
+                .ok_or(AudioStorageError::Overflow)
+        }
+        let mut total = project
+            .meter_map()
+            .owned_allocation_layout()
+            .checked_backing_bytes()
+            .ok_or(AudioStorageError::Overflow)?;
+        for bytes in [
+            rows::<PreparedSessionScene>(project.scenes().len())?,
+            rows::<PreparedSessionTrack>(project.tracks().len())?,
+            rows::<PreparedSessionCell>(project.session_cells().len())?,
+            rows::<usize>(project.session_cells().len())?,
+            rows::<PreparedSessionSceneCellRange>(project.scenes().len())?,
+        ] {
+            total = total
+                .checked_add(bytes)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        total
+            .checked_add(Self::compiler_factory_backing_bytes(project)?)
+            .ok_or(AudioStorageError::Overflow)
+    }
     pub(crate) fn shared_storage(
         &self,
     ) -> Result<crate::session_shared_preparation::InventorySharedView<'_>, AudioStorageError> {
@@ -686,7 +715,7 @@ impl SessionAssembly {
                 scene_cell_ranges: mem::take(&mut self.ranges),
                 tracks: mem::take(&mut self.tracks),
                 midi_clips: Vec::new(),
-                mutable_instruments: Vec::new(),
+                mutable_instruments: mem::take(&mut self.unused_mutable),
                 mutable_history_retarget_storage_bytes: 0,
                 audio_clips: mem::take(&mut self.audio),
                 work: SessionWorkEnvelope::default(),

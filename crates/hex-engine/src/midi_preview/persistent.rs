@@ -1,6 +1,7 @@
 //! Actual preview owner, retained in the existing preparation root.
 //! Nonempty observation/restore/cleanup is separate from closed constructor admission.
 //! Constructor/layout observations leave its allocation/handle obligation OPEN.
+mod compiler;
 use super::{MidiArrangementPreview, MidiClipPreview};
 use crate::{AudioStorageError as Error, owned_shared::OwnedShared};
 
@@ -12,6 +13,7 @@ pub struct AudioPreviewCapacity {
     pub clips_payload_bytes: usize,
     pub clips_declared_overhead_bytes: usize,
     pub samples_backing_bytes: usize,
+    pub compiler_draft_backing_bytes: usize,
     pub reserved_handle_destinations: usize,
     pub independent_handle_obligations: usize,
     pub unresolved_allocations: usize,
@@ -21,6 +23,7 @@ impl AudioPreviewCapacity {
         self.clips_payload_bytes
             .checked_add(self.clips_declared_overhead_bytes)
             .and_then(|bytes| bytes.checked_add(self.samples_backing_bytes))
+            .and_then(|bytes| bytes.checked_add(self.compiler_draft_backing_bytes))
             .ok_or(Error::Overflow)
     }
 }
@@ -52,6 +55,7 @@ enum Disposal {
 pub(crate) struct PreviewCustody {
     clips: Option<OwnedShared<[MidiClipPreview]>>,
     preview: Option<MidiArrangementPreview>,
+    draft: Vec<MidiClipPreview>,
     handle: u64,
     phase: Phase,
     disposal: Disposal,
@@ -67,7 +71,10 @@ impl PreviewCustody {
         self.capacity_at(None)
     }
     pub(crate) fn can_transfer_revision(&self) -> bool {
-        self.phase == Phase::Installed && self.preview.is_some() && self.clips.is_none()
+        self.phase == Phase::Installed
+            && self.preview.is_some()
+            && self.clips.is_none()
+            && self.draft.capacity() == 0
     }
     pub(crate) fn can_restore_revision(&self) -> bool {
         self.phase == Phase::Installed
@@ -85,6 +92,11 @@ impl PreviewCustody {
         &self,
         external: Option<&MidiArrangementPreview>,
     ) -> Result<AudioPreviewCapacity, Error> {
+        if self.draft.capacity() != 0
+            && (self.clips.is_some() || self.preview.is_some() || external.is_some())
+        {
+            return Err(Error::SourceMismatch);
+        }
         if self.preview.is_some() && external.is_some() {
             return Err(Error::SourceMismatch);
         }
@@ -126,6 +138,22 @@ impl PreviewCustody {
                     .ok_or(Error::Overflow)?;
             }
         }
+        report.compiler_draft_backing_bytes = self
+            .draft
+            .capacity()
+            .checked_mul(std::mem::size_of::<MidiClipPreview>())
+            .ok_or(Error::Overflow)?;
+        for clip in &self.draft {
+            report.samples_backing_bytes = report
+                .samples_backing_bytes
+                .checked_add(
+                    clip.samples
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<super::MidiPreviewSample>())
+                        .ok_or(Error::Overflow)?,
+                )
+                .ok_or(Error::Overflow)?;
+        }
         report.bytes()?;
         Ok(report)
     }
@@ -135,6 +163,7 @@ impl PreviewCustody {
             || self.preview.is_some()
             || self.handle != 0
             || self.disposal != Disposal::Unstarted
+            || self.draft.capacity() != 0
         {
             return Err(Error::Capacity);
         }
@@ -223,6 +252,7 @@ impl PreviewCustody {
         // or callback is reachable. The actual shared slice stays in this
         // persistent slot until this control-only terminal operation.
         drop(self.clips.take());
+        drop(std::mem::take(&mut self.draft));
         #[cfg(test)]
         drop(self.probe.take());
         self.disposal = Disposal::Complete;
@@ -237,6 +267,7 @@ impl PreviewCustody {
             || self.disposal != Disposal::Complete
             || self.clips.is_some()
             || self.preview.is_some()
+            || self.draft.capacity() != 0
         {
             return Err(Error::Capacity);
         }
@@ -276,6 +307,7 @@ impl PreviewCustody {
         let Self {
             clips,
             preview,
+            draft,
             handle,
             phase: _,
             disposal: _,
@@ -286,6 +318,10 @@ impl PreviewCustody {
             #[cfg(test)]
                 probe: _,
         } = self;
+        l.vec(draft)?;
+        for clip in draft {
+            l.vec(&clip.samples)?;
+        }
         let owner = clips.as_ref().or_else(|| {
             preview
                 .as_ref()

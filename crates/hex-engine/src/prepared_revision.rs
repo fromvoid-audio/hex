@@ -667,6 +667,22 @@ fn prepare_mutable_track_revisions(
     project: &Project,
     arrangement: &PlaybackProject,
 ) -> Result<Vec<PreparedMutableTrackRevision>, Invalid> {
+    let mut revisions = Vec::new();
+    prepare_mutable_track_revisions_into(project, arrangement, &mut revisions, usize::MAX)?;
+    Ok(revisions)
+}
+
+// Same concrete builder with the output already in the actual constructor.
+// Every nested backing is reserved before the first canonical alias is cloned.
+fn prepare_mutable_track_revisions_into(
+    project: &Project,
+    arrangement: &PlaybackProject,
+    revisions: &mut Vec<PreparedMutableTrackRevision>,
+    maximum_backing: usize,
+) -> Result<(), Invalid> {
+    if !revisions.is_empty() || revisions.capacity() != 0 {
+        return Err(Invalid("mutable descriptor destination is not vacant"));
+    }
     if project.tracks().len() > MAX_TRACKS || arrangement.tracks().len() > MAX_TRACKS {
         return Err(Invalid(
             "mutable revision track count exceeds project limit",
@@ -725,7 +741,6 @@ fn prepare_mutable_track_revisions(
             }
         }
     }
-    let mut revisions = Vec::new();
     revisions
         .try_reserve_exact(mutable_track_count)
         .map_err(|_| Invalid("could not reserve mutable revision descriptors"))?;
@@ -754,6 +769,13 @@ fn prepare_mutable_track_revisions(
             effects,
             arrangement_midi_sources,
         });
+    }
+    let actual = descriptor_storage::backing_bytes(revisions)
+        .map_err(|_| Invalid("mutable descriptor backing overflow"))?;
+    if actual > maximum_backing {
+        return Err(Invalid(
+            "mutable descriptor backing exceeds construction allowance",
+        ));
     }
     for (row, (track, _)) in revisions.iter_mut().zip(
         project
@@ -785,7 +807,7 @@ fn prepare_mutable_track_revisions(
             .sort_unstable_by_key(|clip| clip.id);
     }
     revisions.sort_unstable_by_key(|revision| revision.id);
-    Ok(revisions)
+    Ok(())
 }
 
 fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevision) -> bool {

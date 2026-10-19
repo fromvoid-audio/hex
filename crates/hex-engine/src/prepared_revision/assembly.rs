@@ -1,6 +1,7 @@
 //! Private four-allocation revision composition from existing sealed children.
 //! This establishes constructor declarations and retained custody, never complete
 //! accounting, publication, callback ownership or lifetime-closure admission.
+mod compiler;
 use super::*;
 use crate::{
     AudioStorageError as Error, audio_preparation::ArrangementClips, owned_shared::OwnedShared,
@@ -166,7 +167,7 @@ impl RevisionAssembly {
         }
         TuningContinuationFamily::fresh().map_err(|_| Error::Overflow)
     }
-    pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
+    fn require_vacant(&self) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()
             || self.reader_registration.is_some()
@@ -185,6 +186,10 @@ impl RevisionAssembly {
         {
             return Err(Error::Capacity);
         }
+        Ok(())
+    }
+    pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
+        self.require_vacant()?;
         // Empty mutable descriptors are permitted only for this exhaustive class.
         for track in project.tracks() {
             if track.instrument().is_some()
@@ -209,6 +214,9 @@ impl RevisionAssembly {
                 hex_project::SessionCellContent::Midi(_) => return Err(Error::UnsupportedGraph),
             }
         }
+        self.reserve_roots()
+    }
+    fn reserve_roots(&mut self) -> Result<(), Error> {
         // Identity failure precedes mutation of every reservation field.
         let tuning_family = self.fresh_tuning_family()?;
         self.reserved_bytes = 0;
@@ -452,7 +460,7 @@ impl RevisionAssembly {
                     arrangement,
                     session,
                     midi_preview,
-                    mutable_track_revisions: Vec::new(),
+                    mutable_track_revisions: std::mem::take(&mut self.mutable_descriptors),
                     gain_recording_track: None,
                 });
             }

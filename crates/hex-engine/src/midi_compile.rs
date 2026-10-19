@@ -253,13 +253,13 @@ pub(crate) fn compile_instrument_track(
     }
     // The closed mutable/Sampler and silent branches have an empty note bank.
     // Quote only this constructor's own storage, not the enclosing context or
-    // caller preview Vec. Legacy analytic/preview behavior stays separate.
-    let construction_cost =
-        if previews.is_none() && (mutable_limits.is_some() || instrument.is_none()) {
-            Some(construction::quote(track, instrument.is_some())?)
-        } else {
-            None
-        };
+    // caller preview Vec and its sample/ordinal buffers (quoted by its owning
+    // compiler destination). Legacy analytic note-bank behavior stays separate.
+    let construction_cost = if mutable_limits.is_some() || instrument.is_none() {
+        Some(construction::quote(track, instrument.is_some())?)
+    } else {
+        None
+    };
     // Mutable factories never read an analytic note bank. Other instruments
     // reserve their full authored-key scratch once, before any key is appended.
     let needs_keys = instrument.is_some() && mutable_limits.is_none();

@@ -5,6 +5,14 @@ use crate::{
     shared_analytic::SharedAnalyticContextTable,
 };
 use std::sync::Arc;
+mod compiler;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum ContextRoute {
+    #[default]
+    LegacyEmpty,
+    CompilerSession,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionSharedCapacity {
@@ -47,6 +55,7 @@ pub(super) struct SessionSharedConstruction {
     handles: [u64; 3],
     disposal: [Disposal; 3],
     next: usize,
+    context_route: ContextRoute,
     #[cfg(test)]
     pub(super) fail_after: Option<usize>,
     #[cfg(test)]
@@ -101,7 +110,8 @@ impl SessionSharedConstruction {
         current_handles: usize,
         limit: usize,
     ) -> Result<(), AudioStorageError> {
-        if self.sine.is_some()
+        if self.context_route != ContextRoute::LegacyEmpty
+            || self.sine.is_some()
             || self.arrangement_contexts.is_some()
             || self.session_contexts.is_some()
             || self.next != 0
@@ -233,7 +243,10 @@ impl SessionSharedConstruction {
         .into_iter()
         .flatten()
         {
-            contexts.require_empty_owned_storage()?;
+            match self.context_route {
+                ContextRoute::LegacyEmpty => contexts.require_empty_owned_storage()?,
+                ContextRoute::CompilerSession => contexts.refuse_opaque_control_drop()?,
+            }
             let (payload, overhead) = contexts.parts().ok_or(AudioStorageError::UnknownStorage)?;
             if let Some(previous) = previous {
                 if !Arc::ptr_eq(previous.arc(), contexts.arc())
@@ -290,13 +303,15 @@ impl SessionSharedConstruction {
         self.handles = [0; 3];
         self.disposal = [Disposal::Unstarted; 3];
         self.next = 0;
+        self.context_route = ContextRoute::LegacyEmpty;
         Ok(())
     }
     pub(crate) fn preflight_arrangement_transfer(
         &self,
         target: &Option<OwnedShared<SharedAnalyticContextTable>>,
     ) -> Result<(), AudioStorageError> {
-        if target.is_some()
+        if self.context_route != ContextRoute::LegacyEmpty
+            || target.is_some()
             || self.arrangement_contexts.is_none()
             || self.disposal[1] != Disposal::Unstarted
             || self.handles[1] == 0
@@ -317,7 +332,8 @@ impl SessionSharedConstruction {
         self.disposal[1] = Disposal::Transferred;
     }
     pub(crate) fn preflight_arrangement_restore(&self) -> Result<(), AudioStorageError> {
-        if self.arrangement_contexts.is_some()
+        if self.context_route != ContextRoute::LegacyEmpty
+            || self.arrangement_contexts.is_some()
             || self.disposal[1] != Disposal::Transferred
             || self.next != 0
         {
@@ -342,7 +358,11 @@ impl SessionSharedConstruction {
         handles: [u64; 3],
     ) -> Result<(), AudioStorageError> {
         if handles != self.handles
-            || self.observe()?.installed_handle_obligations != 3
+            || self.observe()?.installed_handle_obligations
+                != match self.context_route {
+                    ContextRoute::LegacyEmpty => 3,
+                    ContextRoute::CompilerSession => 2,
+                }
             || self.disposal != [Disposal::Unstarted; 3]
         {
             return Err(AudioStorageError::SourceMismatch);
@@ -414,6 +434,7 @@ impl SessionSharedConstruction {
             handles,
             disposal: _,
             next: _,
+            context_route,
             #[cfg(test)]
                 fail_after: _,
             #[cfg(test)]
@@ -455,6 +476,12 @@ impl SessionSharedConstruction {
         .zip([handles[1], handles[2]])
         {
             if let Some(owner) = owner {
+                if *context_route == ContextRoute::CompilerSession {
+                    // Actual loaded table and every nested resource are visited;
+                    // the route flag cannot qualify an origin or omit aliases.
+                    crate::shared_analytic::resource_storage::visit_table_contents(owner, l)?;
+                    continue;
+                }
                 owner.require_empty_owned_storage()?;
                 l.shared(
                     owner.arc(),

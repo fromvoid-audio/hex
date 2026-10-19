@@ -142,6 +142,7 @@ fn normal_bounds(
                 rows,
                 preparation: &f.preparation,
                 editor: &f.editor,
+                target: None,
                 resources: &f.bank,
                 previous: Some(&f.previous),
                 original,
@@ -771,3 +772,5 @@ pub(in crate::audio_preparation::arrangement_clips) fn compiled_root_owned_rows(
 }
 
 mod parent_bound;
+
+mod captured_target;
