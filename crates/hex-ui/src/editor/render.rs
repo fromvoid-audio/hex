@@ -354,6 +354,7 @@ impl Render for EditorView {
             .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(window, cx);
+        self.reconcile_device_comparison_menu(window, cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
                 .flex_1()
@@ -392,6 +393,7 @@ impl Render for EditorView {
             )
             .child(workspace_content.flex_1().min_w_0());
         let modifier_entity = cx.entity();
+        let console_drag_entity = cx.entity();
         div()
             .size_full()
             .relative()
@@ -424,10 +426,36 @@ impl Render for EditorView {
             } else {
                 self.browser_key_context(window, cx)
             })
+            .on_drag_move::<super::drag::BrowserAudioDrag>(move |_, _, cx| {
+                console_drag_entity.update(cx, |view, cx| {
+                    if view.mode == super::EditorMode::Session
+                        && let Some(drag) = view.active_browser_audio_drag.as_ref()
+                        && matches!(
+                            drag.destination.get(),
+                            Some(super::drag::BrowserDropDestination::Console(_))
+                        )
+                    {
+                        // Capture runs before child receivers: hover is rebuilt
+                        // from this event's actual hit surfaces, never old selection.
+                        drag.destination.set(None);
+                        cx.notify();
+                    }
+                });
+            })
             .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
                 super::device_panel::capture_navigation_pointer_down(view, event, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left
+                    && let Some(drag) = view.active_browser_audio_drag.clone()
+                {
+                    cx.defer_in(window, move |view, _, cx| {
+                        // Child drop receivers run before this deferred cleanup.
+                        // Retire only the captured Browser payload, never Trim.
+                        view.clear_browser_audio_drag(&drag);
+                        cx.notify();
+                    });
+                }
                 if event.button == MouseButton::Left && view.active_fade_drag.is_some() {
                     view.update_fade_gesture(event.position, event.modifiers.platform, cx);
                     view.finish_fade_gesture(window, cx);
@@ -609,6 +637,11 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.cancel_active_browser_audio_drag() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
@@ -646,6 +679,7 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &Stop, window, cx| {
                 cx.stop_active_drag(window);
                 view.active_clip_drag = None;
+                view.cancel_active_browser_audio_drag();
                 view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
                 view.device_panel.navigation.cancel();
@@ -659,6 +693,11 @@ impl Render for EditorView {
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
+                    return;
+                }
+                if view.cancel_active_browser_audio_drag() {
+                    cx.stop_propagation();
+                    cx.notify();
                     return;
                 }
                 if view.active_fade_drag.take().is_some() {

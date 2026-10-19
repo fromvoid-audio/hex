@@ -40,6 +40,7 @@ fn completed_event(state: &ViewState) -> Event {
     Event {
         state: Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),
             audio_clip_waveforms: state.audio_clip_waveforms.clone(),
@@ -167,6 +168,7 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
         editor.update(cx, |view, cx| {
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::new(project_with_tracks(count)),
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),

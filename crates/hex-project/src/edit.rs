@@ -135,11 +135,12 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
     },
     /// Atomically replace opaque device state and reserve fresh identities.
-    /// Expected source and allocator cursor prevent stale UI edits overwriting
+    /// Expected source, active A/B slot and allocator cursor prevent stale UI edits overwriting
     /// another edit; history preserves the allocator high-water mark on undo.
     ReplaceDeviceStateWithIdentityReservation {
         device: DeviceId,
         expected_state: hex_lattice_contract::NativeDeviceState,
+        expected_variant: crate::DeviceVariant,
         state: hex_lattice_contract::NativeDeviceState,
         expected_next_id: u64,
         reserved_ids: u64,
@@ -147,6 +148,18 @@ pub enum Command {
     SetDeviceBypass {
         device: DeviceId,
         bypassed: bool,
+    },
+    /// Compare provider settings without changing bypass, routing or host trims.
+    CompareDevice {
+        device: DeviceId,
+        expected: crate::DeviceVariant,
+        action: crate::DeviceComparisonAction,
+    },
+    /// Restore a validated complete comparison pair (for current-format presets).
+    ReplaceDeviceComparison {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        comparison: Option<crate::DeviceComparison>,
     },
     AddReturnTrack {
         name: String,
@@ -500,6 +513,11 @@ pub enum Command {
     AddScene {
         name: String,
     },
+    /// Insert before an existing stable scene, or explicitly append with None.
+    InsertScene {
+        name: String,
+        before: Option<crate::SceneId>,
+    },
     /// Copy a scene immediately after it with fresh IDs for copied MIDI content.
     DuplicateScene(crate::SceneId),
     /// Reorder one scene before a stable target, or append it when `before` is `None`.
@@ -761,10 +779,11 @@ pub(crate) fn insert_track_before(
     let instrument_state = crate::default_instrument_state()?;
     let (first_id, instrument_id) = project.allocate_id_range(2)?;
     let id = TrackId(first_id);
+    let color = crate::appearance::new_track_color(project);
     project.tracks.insert(
         index,
         Track {
-            color: crate::ElementColor::default(),
+            color,
             gain_lane: crate::GainLane::default(),
             id,
             name,
@@ -774,6 +793,7 @@ pub(crate) fn insert_track_before(
             soloed: false,
             devices: Vec::new(),
             instrument: Some(crate::Device {
+                comparison: None,
                 id: DeviceId(instrument_id),
                 state: instrument_state,
                 bypassed: false,
@@ -1346,7 +1366,11 @@ impl Project {
             | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
             | Command::ReplaceDeviceStateWithIdentityReservation { .. }
-            | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
+            | Command::SetDeviceBypass { .. }
+            | Command::CompareDevice { .. }
+            | Command::ReplaceDeviceComparison { .. }) => {
+                crate::device::apply(self, device_command)
+            }
             return_command @ (Command::AddReturnTrack { .. }
             | Command::RemoveReturnTrack(_)
             | Command::RenameReturnTrack { .. }
@@ -1416,6 +1440,7 @@ impl Project {
                 Ok(Created::Track(track))
             }
             session_command @ (Command::AddScene { .. }
+            | Command::InsertScene { .. }
             | Command::DuplicateScene(_)
             | Command::MoveScene { .. }
             | Command::RenameScene { .. }

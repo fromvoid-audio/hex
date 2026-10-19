@@ -8,12 +8,24 @@ use std::{
     rc::Rc,
 };
 
+#[path = "stretch_preview.rs"]
+mod stretch_preview;
+
 const HANDLE_WIDTH: f32 = 4.0;
 const MIN_MOVE_WIDTH: f32 = 1.0;
 
 #[derive(Clone, Debug)]
 pub(super) struct TrimPreviewState {
     pub(super) clip: Clip,
+    command_frame: u64,
+    stretch: bool,
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+impl TrimPreviewState {
+    pub(super) fn command_frame_for_test(&self) -> u64 {
+        self.command_frame
+    }
 }
 
 fn replace_audio_trim_preview(
@@ -66,6 +78,7 @@ pub(super) struct TrimDrag {
     valid_pointer_x: Rc<Cell<Option<f32>>>,
     pub(super) grab_delta: Rc<RefCell<Option<i128>>>,
     pub(super) preview: Rc<RefCell<Option<TrimPreviewState>>>,
+    resolution: Rc<RefCell<stretch_preview::Resolution>>,
 }
 
 /// Metadata-only Arrangement MIDI edge gesture. The authored notes are shared
@@ -548,8 +561,7 @@ fn preview_for_pointer(
     viewport: Viewport,
 ) -> Option<TrimPreviewState> {
     let frame = snapped_edge_frame(drag, project, pointer_x, lane, viewport)?;
-    let clip = preview_clip(drag, project, frame).ok()?;
-    Some(TrimPreviewState { clip })
+    stretch_preview::resolve(drag, project, frame)
 }
 
 fn preview_clip(
@@ -897,6 +909,7 @@ impl EditorView {
             valid_pointer_x: Rc::new(Cell::new(None)),
             grab_delta: Rc::new(RefCell::new(None)),
             preview: Rc::new(RefCell::new(None)),
+            resolution: Default::default(),
         };
         let drag_entity = cx.entity();
         let preview_owner_entity = drag_entity.clone();
@@ -1034,6 +1047,7 @@ impl EditorView {
         if let Some(drag) = audio {
             drag.canceled.set(true);
             drag.preview.borrow_mut().take();
+            *drag.resolution.borrow_mut() = Default::default();
             if canceled_view {
                 self.normalize_canceled_trim_viewport(
                     drag.project_generation,
@@ -1516,9 +1530,11 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         };
-        let Ok(preview) = preview_clip(drag, &state.project, frame) else {
+        let Some(resolved) = stretch_preview::resolve(drag, &state.project, frame) else {
             return;
         };
+        let frame = resolved.command_frame;
+        let preview = resolved.clip;
         if preview_is_noop(&drag.clip, &preview) {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
@@ -1645,7 +1661,11 @@ mod tests {
     fn identical_audio_and_midi_trim_candidates_do_not_request_redraws() {
         let clip = test_clip();
         let audio = RefCell::new(None);
-        let candidate = super::TrimPreviewState { clip: clip.clone() };
+        let candidate = super::TrimPreviewState {
+            clip: clip.clone(),
+            command_frame: clip.start(),
+            stretch: false,
+        };
         assert!(replace_audio_trim_preview(&audio, Some(candidate.clone())));
         assert!(!replace_audio_trim_preview(&audio, Some(candidate)));
         assert!(replace_audio_trim_preview(&audio, None));
@@ -1735,6 +1755,7 @@ mod tests {
 
         let stale_revision = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&state.project),
             waveforms: BTreeMap::new(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1794,6 +1815,7 @@ mod tests {
             .expect("remove clip");
         let removed = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1841,6 +1863,7 @@ mod tests {
         );
         let moved = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(moved_editor.project().clone()),
             waveforms: BTreeMap::new(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1891,6 +1914,7 @@ mod tests {
         };
         let state = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1906,7 +1930,7 @@ mod tests {
         (editor, state, track, id)
     }
 
-    fn trim_drag(track: TrackId, clip: Clip, asset_playback_frames: u64) -> TrimDrag {
+    pub(super) fn trim_drag(track: TrackId, clip: Clip, asset_playback_frames: u64) -> TrimDrag {
         TrimDrag {
             canceled: Rc::new(Cell::new(false)),
             stretch_modifier: Rc::new(Cell::new(false)),
@@ -1931,6 +1955,7 @@ mod tests {
             valid_pointer_x: Rc::new(Cell::new(None)),
             grab_delta: Rc::new(RefCell::new(None)),
             preview: Rc::new(RefCell::new(None)),
+            resolution: Default::default(),
         }
     }
 
@@ -1939,6 +1964,10 @@ mod tests {
         state.project.clip(id).expect("clip").clone()
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "stretch_limit_tests.rs"]
+mod stretch_limit_tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "resize_release_tests.rs"]

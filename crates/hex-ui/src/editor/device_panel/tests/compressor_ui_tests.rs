@@ -65,7 +65,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
     );
     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
     assert!(graph.size.height >= px(50.0));
-    for parameter in 1..=6 {
+    for parameter in 1..=7 {
         let control = visual
             .debug_bounds(Box::leak(
                 format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),
@@ -285,4 +285,203 @@ fn removing_return_compressor_retires_preview_without_changing_owner(cx: &mut Te
             ))
             .is_none()
     );
+}
+
+#[gpui::test]
+fn compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, _, track, return_track, return_device, _) = actor_return_utility_fixture();
+    let original = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.compressor"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device: return_device,
+            state: original.clone(),
+        }))
+        .unwrap();
+    assert!(receive_service_event(&service).error.is_none());
+    service
+        .submit(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: original.clone(),
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let track_device = state.project.track(track).unwrap().devices()[0].id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let mix_id = hex_lattice_contract::ParameterId::from_static(7);
+    for (owner, device) in [(None, track_device), (Some(return_track), return_device)] {
+        editor.update(cx, |view, cx| {
+            view.focused_return = owner;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let selector = Box::leak(format!("device-{}-parameter-7", device.value()).into_boxed_str());
+        let before = editor.read_with(cx, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .clone()
+        });
+        let start = visual
+            .debug_bounds(selector)
+            .expect("real mix control")
+            .center();
+        let moved = point(start.x, start.y + px(35.0));
+        // Actual pointer Begin/Change, followed by the existing cancellation path.
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            let gesture = view.device_gesture.snapshot().expect("real mix gesture");
+            assert_ne!(gesture.value, ParameterValue::Float(1.0));
+            let expected =
+                hex_engine::patch_native_device_parameter(&before, mix_id, gesture.value).unwrap();
+            assert_eq!(
+                compressor_panel::cached_curve(view, device),
+                Some(&hex_engine::native_compressor_transfer_curve(&expected).unwrap())
+            );
+        });
+        editor.update(cx, |view, _| view.cancel_device_gesture().unwrap());
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.device_gesture.snapshot().is_none()
+                && view.device_gesture_barriers.is_empty()
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+                &before
+            )
+        });
+        visual.run_until_parked();
+        let value_selector =
+            Box::leak(format!("device-{}-parameter-7-value", device.value()).into_boxed_str());
+        for invalid in ["nan", "inf", "101%"] {
+            let value = visual
+                .debug_bounds(value_selector)
+                .expect("real editable percentage");
+            visual.simulate_click(value.center(), Modifiers::default());
+            visual.simulate_keystrokes("cmd-a");
+            visual.simulate_input(invalid);
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .device(device)
+                        .unwrap()
+                        .state(),
+                    &before
+                );
+                assert!(
+                    view.device_gesture.snapshot().is_none(),
+                    "invalid text cannot begin an edit"
+                );
+            });
+            visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+        }
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.device_gesture.snapshot().is_none()
+                && view.device_gesture_barriers.is_empty()
+        });
+        let changed = editor.read_with(cx, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .clone()
+        });
+        assert_ne!(changed, before);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+                &before
+            )
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+                &changed
+            )
+        });
+    }
+    let expected = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    let path = std::env::temp_dir().join(format!(
+        "hex-compressor-mix-{}-{}.hex",
+        std::process::id(),
+        track_device.value()
+    ));
+    assert!(!path.exists(), "disposable create-new fixture");
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "save must succeed")
+    });
+    let reload = Service::new(48_000, 8, 8_000_000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    for device in [track_device, return_device] {
+        assert_eq!(
+            reopened.state.project.device(device).unwrap().state(),
+            expected.device(device).unwrap().state()
+        );
+    }
+    std::fs::remove_file(path).unwrap();
 }

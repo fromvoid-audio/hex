@@ -330,6 +330,7 @@ mod tests {
     fn view_state(project: Project, revision: u64, timeline_frames: u64) -> ViewState {
         ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(project),
             waveforms: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),

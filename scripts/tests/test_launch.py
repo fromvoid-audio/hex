@@ -363,6 +363,83 @@ class LaunchTests(unittest.TestCase):
         restart.assert_called_once_with(launch.sys.executable, [launch.sys.executable, str(self.root / "launch"), "--test"])
         runner.assert_not_called()
 
+    def test_force_restart_passes_only_inspected_owner_and_preserves_default_no_tests(self):
+        for owner in (None,'e'*64):
+            self.calls.clear();self.head_reads=0
+            with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'command',side_effect=self.command), \
+                    patch.object(launch.restart,'prepare',return_value=owner) as prepare, \
+                    patch.object(launch.delivery,'assert_inactive'), \
+                    patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}), \
+                    patch.object(launch.ci,'LocalCiRunner',side_effect=AssertionError('default ran tests')):
+                launch.run_launch(self.root,argv=['--force-restart'])
+            prepare.assert_called_once()
+            package=next(x for x in self.calls if x[0]=='sh')
+            self.assertIn('--build-only',package)
+            if owner:
+                self.assertIn('--adopt-release-target',package)
+                self.assertEqual(package[package.index('--expected-release-owner-sha256')+1],owner)
+            else:self.assertNotIn('--adopt-release-target',package)
+            self.assertEqual(sum(x[0]=='open' for x in self.calls),1)
+
+    def test_force_test_combination_keeps_actual_full_ci_path_and_report(self):
+        with patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=self.command), \
+                patch.object(launch.restart,'prepare',return_value='e'*64),patch.object(launch.delivery,'assert_inactive'), \
+                patch.object(launch.ci,'LocalCiRunner',side_effect=self.fake_ci), \
+                patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}):
+            launch.run_launch(self.root,argv=['--force-restart','--test'])
+        self.assertIn(('ci',),self.calls)
+        package=next(x for x in self.calls if x[0]=='sh')
+        self.assertIn('--ci-report',package);self.assertNotIn('--build-only',package)
+        self.assertIn('--expected-release-owner-sha256',package)
+        self.assertEqual(sum(x[0]=='open' for x in self.calls),1)
+
+    def test_restart_refusal_interrupt_or_build_failure_never_opens_app(self):
+        for failure in (launch.restart.RestartError('identity changed'),KeyboardInterrupt()):
+            self.calls.clear();self.head_reads=0
+            with patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=self.command), \
+                    patch.object(launch.restart,'prepare',side_effect=failure):
+                with self.assertRaises(type(failure)):launch.run_launch(self.root,argv=['--force-restart'])
+            self.assertFalse(any(x[0] in ('sh','open') for x in self.calls))
+        self.calls.clear();self.head_reads=0
+        def fail_build(argv,**kwargs):
+            if argv[:2]==['sh','scripts/bundle-macos.sh']:
+                self.calls.append(tuple(argv));return self.process(argv,returncode=1,stderr='build failed after quit')
+            return self.command(argv,**kwargs)
+        with patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=fail_build), \
+                patch.object(launch.restart,'prepare',return_value='e'*64),patch.object(launch.delivery,'assert_inactive'):
+            with self.assertRaisesRegex(launch.LaunchError,'build failed after quit'):
+                launch.run_launch(self.root,argv=['--force-restart'])
+        self.assertFalse(any(x[0]=='open' for x in self.calls))
+
+    def test_force_flag_is_preserved_across_main_update_reexec(self):
+        self.initial_head='c'*40
+        with patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=self.command), \
+                patch.object(launch.os,'execv') as execv,patch.object(launch.restart,'prepare') as prepare:
+            with self.assertRaises(launch.LaunchError):launch.run_launch(self.root,argv=['--force-restart','--test'])
+        execv.assert_called_once_with(sys.executable,[sys.executable,str(self.root/'launch'),'--force-restart','--test'])
+        prepare.assert_not_called()
+
+
+class ForceRestartFlagTests(unittest.TestCase):
+    def test_native_bundle_verification_failure_is_a_controlled_cli_refusal(self):
+        with patch.object(launch,'run_launch',side_effect=launch.delivery.DeliveryError('sealed bundle mismatch')), \
+                redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(launch.main(['--force-restart']),1)
+        self.assertIn('sealed bundle mismatch',errors.getvalue())
+
+    def test_installed_only_force_combination_is_refused_and_help_warns_unsaved_loss(self):
+        with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit) as result:
+            launch.main(['--open','--force-restart'])
+        self.assertEqual(result.exception.code,2)
+        with redirect_stdout(io.StringIO()) as output,self.assertRaises(SystemExit):launch.main(['--help'])
+        self.assertIn('unsaved work may be lost',' '.join(output.getvalue().split()))
+
+    def test_force_restart_is_forwarded_and_can_opt_in_to_tests(self):
+        for arguments in (["--force-restart"], ["--force-restart", "--test"]):
+            with self.subTest(arguments=arguments), patch.object(launch, "run_launch") as run:
+                self.assertEqual(launch.main(list(arguments)), 0)
+                run.assert_called_once_with(argv=list(arguments))
+
 
 if __name__ == "__main__":
     unittest.main()

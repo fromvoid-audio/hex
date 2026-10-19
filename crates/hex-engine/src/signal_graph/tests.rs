@@ -467,6 +467,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     snapshot.next_id += 3;
     let owner = &mut snapshot.tracks[0];
     owner.instrument = Some(hex_project::DeviceSnapshot {
+        comparison: None,
         id: next,
         bypassed: false,
         state: InstrumentDefinition.default_state().unwrap(),

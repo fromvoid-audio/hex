@@ -46,6 +46,43 @@ fn settled(view: &EditorView) -> bool {
         && view.device_gesture_barriers.is_empty()
         && view.device_gesture.snapshot().is_none()
 }
+// Seed already-authored data through the canonical command, as in an opened project.
+// This is fixture setup, not a reachable EQ-local editing route.
+fn seed_existing_lane(
+    editor: &gpui::Entity<EditorView>,
+    cx: &mut TestAppContext,
+    device: DeviceId,
+) {
+    editor.update(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let entry = project.device(device).unwrap();
+        let expected_state = entry.state().clone();
+        let expected_variant = entry.active_variant();
+        let mut state = EqState::decode(&expected_state).unwrap();
+        state
+            .set_lane(hex_engine::eq::AutomationLane {
+                node: state.nodes[0].id,
+                parameter: hex_engine::eq::NodeParameter::Gain,
+                points: vec![hex_engine::eq::AutomationPoint {
+                    beat: 0,
+                    normalized: 0.75,
+                }],
+            })
+            .unwrap();
+        let request = Request::Edit(Command::ReplaceDeviceStateWithIdentityReservation {
+            device,
+            expected_state,
+            expected_variant,
+            state: state.encode().unwrap(),
+            expected_next_id: project.next_identity(),
+            reserved_ids: 0,
+        });
+        assert!(view.enqueue(request));
+    });
+    pump_until(editor, cx, |v| {
+        settled(v) && read(v, device).lanes.len() == 1
+    });
+}
 fn selector(prefix: &str, device: DeviceId) -> &'static str {
     Box::leak(format!("{prefix}-{}", device.value()).into_boxed_str())
 }
@@ -123,29 +160,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
         settled(view) && read(view, device).nodes.len() == 1
     });
     visual.run_until_parked();
-    let auto = visual.debug_bounds(selector("eq-auto", device)).unwrap();
-    visual.simulate_click(auto.center(), Modifiers::default());
-    visual.run_until_parked();
-    let point = plot(&mut visual, device, 0.25, 0.6);
-    visual.simulate_click(point, Modifiers::default());
-    pump_until(&editor, cx, |view| {
-        settled(view) && read(view, device).lanes.len() == 1
-    });
-    visual.run_until_parked();
-    let before = editor.read_with(cx, |view, _| read(view, device));
-    visual.simulate_click(point, Modifiers::default());
-    visual.run_until_parked();
-    visual.simulate_keystrokes("backspace");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            read(view, device),
-            before,
-            "automation point identity must not delete a band"
-        )
-    });
-    let auto = visual.debug_bounds(selector("eq-auto", device)).unwrap();
-    visual.simulate_click(auto.center(), Modifiers::default());
+    seed_existing_lane(&editor, cx, device);
     visual.run_until_parked();
     let original = editor.read_with(cx, |view, _| read(view, device));
     let position = plot(&mut visual, device, 0.5, 0.5);
@@ -337,7 +352,6 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
             "eq8-spectrum",
             "eq-spectrum-input",
             "eq-audition",
-            "eq-auto",
             "eq-remove",
         ] {
             names.push(format!("{prefix}-{}", device.value()));
@@ -366,7 +380,6 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
             placed.push(bounds);
         }
         for (prefix, label) in [
-            ("eq-auto", "automate"),
             ("eq-remove", "remove"),
             ("eq-spectrum-input", "input"),
             ("eq-audition", "listen"),
@@ -390,27 +403,12 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
                 "full formatted number and units"
             );
         }
-        let auto = visual.debug_bounds(selector("eq-auto", device)).unwrap();
-        visual.simulate_click(auto.center(), Modifiers::default());
-        visual.run_until_parked();
-        let automation_graph = visual
-            .debug_bounds(selector("eq-response", device))
-            .unwrap();
-        assert_eq!(
-            automation_graph, graph,
-            "automation selection keeps plot stable"
-        );
-        let row = visual
-            .debug_bounds(selector("eq-automation-toolbar", device))
-            .unwrap();
+        assert!(visual.debug_bounds(selector("eq-auto", device)).is_none());
         assert!(
-            row.size.width <= sidebar.size.width,
-            "automation wraps in its own sidebar"
+            visual
+                .debug_bounds(selector("eq-automation-toolbar", device))
+                .is_none()
         );
-        // Return through the existing action, including its draft-finalization protocol.
-        let auto = visual.debug_bounds(selector("eq-auto", device)).unwrap();
-        visual.simulate_click(auto.center(), Modifiers::default());
-        visual.run_until_parked();
     }
 }
 
@@ -446,7 +444,7 @@ fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppC
             );
         });
         assert!(
-            visual.debug_bounds(selector("eq-auto", device)).is_some(),
+            visual.debug_bounds(selector("eq-remove", device)).is_some(),
             "the provisional stable node is visibly selected"
         );
         visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
@@ -642,7 +640,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
     });
 }
 #[gpui::test]
-fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppContext) {
+fn eq_rendered_creation_drag_preserves_existing_lanes_and_history(cx: &mut TestAppContext) {
     let (service, state, track, device) = fixture(false);
     let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -670,7 +668,7 @@ fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppC
     });
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds(selector("eq-auto", device)).is_some(),
+        visual.debug_bounds(selector("eq-remove", device)).is_some(),
         "a newly created node remains selected after publication"
     );
     let initial = editor.read_with(cx, |v, _| read(v, device));
@@ -684,110 +682,10 @@ fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppC
     });
     visual.run_until_parked();
     assert_eq!(editor.read_with(cx, |v, _| read(v, device).nodes[0].id), id);
-    let button = visual.debug_bounds(selector("eq-auto", device)).unwrap();
-    visual.simulate_click(button.center(), Modifiers::default());
+    seed_existing_lane(&editor, cx, device);
     visual.run_until_parked();
-    let point = plot(&mut visual, device, 0.3, 0.75);
-    visual.simulate_click(point, Modifiers::default());
-    pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes.len() == 1
-    });
-    visual.run_until_parked();
-    let destination = plot(&mut visual, device, 0.65, 0.25);
-    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(destination, Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
-    pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes[0].points[0].normalized < 0.3
-    });
-    visual.run_until_parked();
-    // Insert before a selected point: sorting must not move its selection onto
-    // the newly inserted neighbor at the old lane index.
-    visual.simulate_click(destination, Modifiers::default());
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds(selector("eq-auto-delete", device))
-            .is_some()
-    );
-    let neighbor = plot(&mut visual, device, 0.3, 0.8);
-    visual.simulate_click(neighbor, Modifiers::default());
-    pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes[0].points.len() == 2
-    });
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds(selector("eq-auto-delete", device))
-            .is_none()
-    );
-    let surviving_neighbor = editor.read_with(cx, |v, _| read(v, device).lanes[0].points[1]);
-    visual.simulate_click(neighbor, Modifiers::default());
-    visual.run_until_parked();
-    let button = visual
-        .debug_bounds(selector("eq-auto-delete", device))
-        .unwrap();
-    visual.simulate_click(button.center(), Modifiers::default());
-    pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes[0].points.len() == 1
-    });
-    visual.run_until_parked();
-    assert_eq!(
-        editor.read_with(cx, |v, _| read(v, device).lanes[0].points.clone()),
-        vec![surviving_neighbor],
-        "deleting the first point preserves its neighbor exactly"
-    );
-    assert!(
-        visual
-            .debug_bounds(selector("eq-auto-delete", device))
-            .is_none()
-    );
-    // History can shift the selected point's lane index too.
-    visual.simulate_click(destination, Modifiers::default());
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds(selector("eq-auto-delete", device))
-            .is_some()
-    );
-    editor.update(cx, |v, _| {
-        assert!(v.enqueue(Request::Undo));
-    });
-    pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes[0].points.len() == 2
-    });
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds(selector("eq-auto-delete", device))
-            .is_none()
-    );
-    visual.simulate_click(neighbor, Modifiers::default());
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds(selector("eq-auto-delete", device))
-            .is_some()
-    );
-    editor.update(cx, |v, _| {
-        assert!(v.enqueue(Request::Redo));
-    });
-    pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes[0].points.len() == 1
-    });
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds(selector("eq-auto-delete", device))
-            .is_none()
-    );
-    editor.update(cx, |v, _| {
-        assert!(v.enqueue(Request::Undo));
-    });
-    pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes[0].points.len() == 2
-    });
-    visual.run_until_parked();
+    let with_lane = editor.read_with(cx, |v, _| read(v, device));
+    assert_eq!(with_lane.nodes[0].id, id);
     let button = visual.debug_bounds(selector("eq-remove", device)).unwrap();
     visual.simulate_click(button.center(), Modifiers::default());
     pump_until(&editor, cx, |v| {
@@ -807,18 +705,10 @@ fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppC
     });
     visual.run_until_parked();
 
-    // Restore the automation view if undo left the node unselected, then remove
-    // its last node while that view is open. The response must become editable.
-    let automation_field =
-        Box::leak(format!("eq-auto-field-{}-gain", device.value()).into_boxed_str());
-    if visual.debug_bounds(automation_field).is_none() {
-        visual.simulate_click(moved, Modifiers::default());
-        visual.run_until_parked();
-        let button = visual.debug_bounds(selector("eq-auto", device)).unwrap();
-        visual.simulate_click(button.center(), Modifiers::default());
-        visual.run_until_parked();
-    }
-    assert!(visual.debug_bounds(automation_field).is_some());
+    assert_eq!(editor.read_with(cx, |v, _| read(v, device)), with_lane);
+    // Select the restored stable node and remove it through the ordinary action.
+    visual.simulate_click(moved, Modifiers::default());
+    visual.run_until_parked();
     let button = visual.debug_bounds(selector("eq-remove", device)).unwrap();
     visual.simulate_click(button.center(), Modifiers::default());
     pump_until(&editor, cx, |v| {
@@ -848,12 +738,7 @@ fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppC
         state.nodes[0].id
     });
 
-    // Undoing a creation while its automation is open must leave the same usable
-    // empty response, rather than sending future clicks to the removed node.
-    let button = visual.debug_bounds(selector("eq-auto", device)).unwrap();
-    visual.simulate_click(button.center(), Modifiers::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds(automation_field).is_some());
+    // Undoing creation must leave a usable empty response with no stale target.
     editor.update(cx, |v, _| {
         assert!(v.enqueue(Request::Undo));
     });
@@ -874,7 +759,7 @@ fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppC
     });
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds(selector("eq-auto", device)).is_some(),
+        visual.debug_bounds(selector("eq-remove", device)).is_some(),
         "the replacement node is selected after undo and recreation"
     );
     assert!(editor.read_with(cx, |v, _| read(v, device).nodes[0].id) > replacement);
@@ -934,3 +819,120 @@ mod graph_layout_tests;
 
 #[path = "eq_node_gesture_tests.rs"]
 mod node_gesture_tests;
+
+#[gpui::test]
+fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let location = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(location, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(selector("eq-auto", device)).is_none(),
+        "selecting a node must expose ordinary parameters, not an EQ-local automation entry"
+    );
+    assert!(
+        visual
+            .debug_bounds(selector("eq-automation-toolbar", device))
+            .is_none()
+    );
+    let id = editor.read_with(cx, |v, _| read(v, device).nodes[0].id);
+    // A second node must not steal the first node's stable parameter bindings.
+    let second_position = plot(&mut visual, device, 0.8, 0.7);
+    visual.simulate_click(second_position, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    let other = editor.read_with(cx, |v, _| read(v, device).nodes[1]);
+    visual.run_until_parked();
+    visual.simulate_click(location, Modifiers::default());
+    visual.run_until_parked();
+    for (field, value) in [
+        (hex_engine::eq::NodeParameter::Frequency, "1234"),
+        (hex_engine::eq::NodeParameter::Gain, "6"),
+        (hex_engine::eq::NodeParameter::Q, "2"),
+    ] {
+        let before = editor.read_with(cx, |v, _| read(v, device));
+        enter_typed_value(&mut visual, device, id.parameter(field).unwrap(), value);
+        visual.simulate_keystrokes("enter");
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) != before);
+        let after = editor.read_with(cx, |v, _| read(v, device));
+        assert_eq!(
+            after.node(id).unwrap().value(field),
+            ParameterValue::Float(value.parse().unwrap())
+        );
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == after);
+        visual.run_until_parked();
+    }
+    for (field, option, expected) in [
+        (
+            hex_engine::eq::NodeParameter::Kind,
+            4,
+            ParameterValue::Choice(4),
+        ),
+        (
+            hex_engine::eq::NodeParameter::Slope,
+            3,
+            ParameterValue::Choice(3),
+        ),
+    ] {
+        let parameter = id.parameter(field).unwrap();
+        let before = editor.read_with(cx, |v, _| read(v, device));
+        let control = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{}", device.value(), parameter.value())
+                    .into_boxed_str(),
+            ))
+            .unwrap();
+        visual.simulate_click(control.center(), Modifiers::default());
+        visual.run_until_parked();
+        let item = visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "device-{}-parameter-{}-option-{option}",
+                    device.value(),
+                    parameter.value()
+                )
+                .into_boxed_str(),
+            ))
+            .unwrap();
+        visual.simulate_click(item.center(), Modifiers::default());
+        pump_until(&editor, cx, |v| {
+            settled(v) && read(v, device).node(id).unwrap().value(field) == expected
+        });
+        let after = editor.read_with(cx, |v, _| read(v, device));
+        assert_eq!(*after.node(other.id).unwrap(), other);
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
+        editor.update(cx, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |v| settled(v) && read(v, device) == after);
+        visual.run_until_parked();
+    }
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    click_toggle(
+        &mut visual,
+        device,
+        id.parameter(hex_engine::eq::NodeParameter::Enabled)
+            .unwrap(),
+    );
+    pump_until(&editor, cx, |v| {
+        settled(v) && !read(v, device).node(id).unwrap().enabled
+    });
+    let after = editor.read_with(cx, |v, _| read(v, device));
+    assert_eq!(*after.node(other.id).unwrap(), other);
+    editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
+    editor.update(cx, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == after);
+    assert!(visual.debug_bounds(selector("eq-auto", device)).is_none());
+}

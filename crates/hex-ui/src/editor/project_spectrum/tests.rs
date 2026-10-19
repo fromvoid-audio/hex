@@ -12,6 +12,7 @@ fn publish(view: &mut EditorView, project: Project) {
     let old = view.state.as_ref().unwrap();
     view.state = Some(Arc::new(ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         project: Arc::new(project),
         waveforms: old.waveforms.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
@@ -62,6 +63,14 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                     .unwrap(),
                 Created::Track(_)
             ));
+        }
+        if let Some(track) = model.project().tracks().first().map(|track| track.id()) {
+            model
+                .execute(Command::SetTrackColor {
+                    track,
+                    color: ElementColor::Orange,
+                })
+                .unwrap();
         }
         let project = model.project().clone();
         let (handle, editor) = editor_window(cx, project.clone(), Arc::default());
@@ -123,21 +132,37 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                         color: ElementColor::Orange,
                     })
                     .unwrap();
+                assert_eq!(changed.project().tracks()[0].color(), ElementColor::Orange);
                 publish(view, changed.project().clone());
-                let recolored = view.project_spectrum_layers(now);
-                assert_eq!(recolored.len(), count + 1);
+                let unchanged = view.project_spectrum_layers(now);
                 assert!(
-                    !std::ptr::eq(layers.as_ptr(), recolored.as_ptr()),
-                    "color change invalidates cache"
+                    std::ptr::eq(layers.as_ptr(), unchanged.as_ptr()),
+                    "setting the authored color again preserves cached layers"
                 );
-                assert_eq!(
-                    recolored[0].color,
-                    theme::element_colors(ElementColor::Orange).accent
-                );
-                assert_eq!(
-                    recolored[0].points, layers[0].points,
-                    "color change does not reset or change signal data"
-                );
+                let mut previous = unchanged;
+                for color in [ElementColor::Blue, ElementColor::Orange] {
+                    assert_ne!(changed.project().tracks()[0].color(), color);
+                    changed
+                        .execute(Command::SetTrackColor {
+                            track: *track,
+                            color,
+                        })
+                        .unwrap();
+                    assert_eq!(changed.project().tracks()[0].color(), color);
+                    publish(view, changed.project().clone());
+                    let recolored = view.project_spectrum_layers(now);
+                    assert_eq!(recolored.len(), count + 1);
+                    assert!(
+                        !std::ptr::eq(previous.as_ptr(), recolored.as_ptr()),
+                        "color change invalidates cache"
+                    );
+                    assert_eq!(recolored[0].color, theme::element_colors(color).accent);
+                    assert_eq!(
+                        recolored[0].points, layers[0].points,
+                        "color change does not reset or change signal data"
+                    );
+                    previous = recolored;
+                }
                 changed.execute(Command::RemoveTrack(*track)).unwrap();
                 publish(view, changed.project().clone());
                 assert!(
