@@ -63,7 +63,7 @@ fn schema24_roundtrip_preserves_typed_routes_ids_gain_and_midi_bus_selection() {
     let project = fixture();
     let bytes = encode(&project).unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["version"], 31);
+    assert_eq!(value["version"], 32);
     assert_eq!(value["audio_feeds"][0]["source"]["kind"], "track");
     assert_eq!(value["audio_feeds"][1]["source"]["kind"], "return");
     let loaded = decode(&bytes).unwrap();

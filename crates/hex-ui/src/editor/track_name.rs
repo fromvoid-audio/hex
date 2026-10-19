@@ -227,6 +227,39 @@ impl EditorView {
         }
         cx.notify();
     }
+    /// Match the existing Enter/blur commit law, but keep a refused draft
+    /// visible when a project replacement is requested.
+    pub(super) fn finalize_track_name_for_open(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(edit) = &self.track_name.edit else {
+            return true;
+        };
+        let name = &edit.input.read(cx).content;
+        if self.edit_pending()
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || edit.generation != self.project_generation
+            || !self.state.as_ref().is_some_and(|state| {
+                state.revision == edit.revision
+                    && state
+                        .project
+                        .track(edit.track)
+                        .is_some_and(|track| track.name() == edit.original)
+            })
+            || name.trim().is_empty()
+            || name.len() > hex_project::MAX_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            self.error =
+                Some("finish or cancel the current name edit before opening a project".into());
+            return false;
+        }
+        self.finish_track_name(true, window, cx);
+        true
+    }
     pub(super) fn finish_track_name(
         &mut self,
         commit: bool,
@@ -396,6 +429,19 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("track-name-input").is_some());
         visual.simulate_input("Verse S 🎹");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let input = view.track_name.edit.as_ref().unwrap().input.read(cx);
+            assert_eq!(
+                input.content, "Verse S 🎹",
+                "display policy must preserve the submitted name"
+            );
+            assert_eq!(
+                input.painted_text_for_test(),
+                Some("verse s 🎹"),
+                "editing and committed display must use the same lowercase policy"
+            );
+        });
         visual.simulate_keystrokes("enter");
         let command = editor.read_with(&visual,|view,_| {
             assert!(view.track_name.edit.is_none());

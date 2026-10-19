@@ -149,6 +149,7 @@ mod native {
             let old = view.state.as_ref().unwrap();
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: old.project.clone(),
                 waveforms: old.waveforms.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
@@ -531,6 +532,7 @@ mod native {
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: project.clone(),
                 gain_preview: Ok(Arc::new(preview)),
                 waveforms: old.waveforms.clone(),
@@ -599,6 +601,7 @@ mod native {
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project,
                 gain_preview: Ok(preview),
                 waveforms: old.waveforms.clone(),

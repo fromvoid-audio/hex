@@ -10,6 +10,16 @@ fn git(arguments: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    let dataset = std::path::Path::new("../../changelog/generated.json");
+    let bytes = match std::fs::read(dataset) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => bytes,
+        Ok(_) => panic!("changelog exceeds the validated dataset limit"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("cannot embed changelog: {error}"),
+    };
+    let output =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo output directory"));
+    std::fs::write(output.join("changelog.json"), bytes).expect("embed changelog");
     // Intentionally absent: refresh identity on every Cargo invocation, including
     // commits that change only another workspace crate or an untracked source.
     println!("cargo:rerun-if-changed=.hex-build-identity-refresh");

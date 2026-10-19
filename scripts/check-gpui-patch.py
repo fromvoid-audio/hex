@@ -32,6 +32,7 @@ if string_value(section(workspace, "workspace.lints.rust"), "unsafe_code") != "f
 if string_value(package, "name") != manifest["package"] or string_value(package, "version") != manifest["version"]:
     errors.append("GPUI package identity differs from the recorded baseline")
 expected_changes = {
+    "src/app.rs",
     "src/interactive.rs",
     "src/platform/mac/events.rs",
     "src/platform/mac/window.rs",

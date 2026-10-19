@@ -28,6 +28,12 @@ ci = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ci
 SPEC.loader.exec_module(ci)
 
+CHANGELOG_SPEC = importlib.util.spec_from_file_location("hex_changelog", ROOT / "scripts/changelog.py")
+if CHANGELOG_SPEC is None or CHANGELOG_SPEC.loader is None:
+    raise RuntimeError("changelog validator unavailable")
+changelog = importlib.util.module_from_spec(CHANGELOG_SPEC)
+CHANGELOG_SPEC.loader.exec_module(changelog)
+
 
 class DeliveryError(Exception):
     """Fail closed without changing projects, preferences or unrelated apps."""
@@ -46,13 +52,17 @@ def sha(path: Path) -> str:
 
 
 @contextmanager
-def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False):
+def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False,
+                       expected_owner_sha256: str | None = None):
     """Build/identify only; shared by delivery and nonactivating review staging.
 
     The target lock spans compilation, source validation and the caller's copy.
     This helper never installs, activates or launches an application.
     """
-    with runner.guarded_release(adopt=adopt) as ownership:
+    recovery = {"adopt": adopt}
+    if expected_owner_sha256 is not None:
+        recovery["expected_owner_sha256"] = expected_owner_sha256
+    with runner.guarded_release(**recovery) as ownership:
         argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
         log_path = runner.output_dir / "optimized-build.log"
         with log_path.open("w") as log, \
@@ -394,6 +404,21 @@ def validate_source(runner, candidate: str, expected: dict | None = None) -> dic
     return dict(current)
 
 
+def changelog_payload(root: Path) -> tuple[bytes | None, dict]:
+    """Return validated exact committed bytes for sealing; never generate during build."""
+    try:
+        dataset = changelog.validate_current(root, if_present=True)
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        raise DeliveryError(f"invalid changelog; previous app preserved: {error}") from error
+    path = root / changelog.DATASET
+    if not path.exists():
+        return None, {"status": "unavailable", "coverage": []}
+    raw = path.read_bytes()
+    return raw, {"status": "available" if dataset['batches'] else "unavailable",
+                 "sha256": hashlib.sha256(raw).hexdigest(),
+                 "coverage": [batch['input']['source'] for batch in dataset['batches']]}
+
+
 def build(args) -> dict:
     if sys.platform != "darwin":
         raise DeliveryError("native test delivery requires macOS")
@@ -425,6 +450,8 @@ def build(args) -> dict:
                 validate_ci(args.ci_report, runner, args.candidate)
 
         revalidate()
+        changelog_bytes, changelog_identity = changelog_payload(ROOT)
+        revalidate()
         included = json.loads(args.included.read_text())
         if not isinstance(included, list) or not included:
             raise DeliveryError("include PR head revisions")
@@ -440,7 +467,8 @@ def build(args) -> dict:
         runner.output_dir.mkdir(parents=True)
         if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
             raise DeliveryError(str(runner.summary))
-        with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False)) as (binary, release_ownership):
+        with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False),
+                                expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None)) as (binary, release_ownership):
             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
             argv = release_ownership["build_argv"]
@@ -464,6 +492,8 @@ def build(args) -> dict:
             with (contents / "Info.plist").open("wb") as output:
                 plistlib.dump(info, output)
             (contents / "Resources/USER-TEST.md").write_text(checklist)
+            if changelog_bytes is not None:
+                (contents / "Resources/changelog.json").write_bytes(changelog_bytes)
             if build_only:
                 write_json(contents / "Resources/source-verification.json", {
                     "mode": "source-only", "tests": "not_run", "source": source_evidence,
@@ -481,7 +511,7 @@ def build(args) -> dict:
                        "ci_report_sha256": None if build_only else sha(args.ci_report),
                        "verification": {"mode": "source-only" if build_only else "full-ci",
                                         "tests": "not_run" if build_only else "passed"},
-                       "included": included, "app_path": str(app), "created_at": ci.utc_now(),
+                       "included": included, "changelog": changelog_identity, "app_path": str(app), "created_at": ci.utc_now(),
                        "activation": "installed on disk; launch or relaunch required; not launched by delivery",
                        "signature": "Developer ID sealed local test bundle; not notarized",
                        "signing": signing,
@@ -511,7 +541,11 @@ def main() -> int:
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
+    parser.add_argument("--expected-release-owner-sha256",
+                        help="require this exact previously inspected owner under the release mutation lock")
     args = parser.parse_args()
+    if args.expected_release_owner_sha256 and not args.adopt_release_target:
+        parser.error("--expected-release-owner-sha256 requires --adopt-release-target")
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
@@ -522,7 +556,7 @@ def main() -> int:
     except (DeliveryError, ci.TargetCacheError, ci.InterruptedRun, OSError, ValueError,
             KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
         print(f"test installation incomplete: {error}; temporary publication files preserved for retry. "
-              "save and quit hex before retrying; no process was terminated", file=sys.stderr)
+              "inspect the reported process/ownership refusal before retrying; no process was terminated", file=sys.stderr)
         return 1
 
 

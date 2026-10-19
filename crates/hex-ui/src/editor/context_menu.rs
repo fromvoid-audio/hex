@@ -2,7 +2,7 @@ use super::{EditorView, ViewState, device_panel};
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Div, Pixels, Point, Window};
 use hex_lattice_contract::{ParameterId, ParameterValue};
-use hex_project::{ClipFlavor, ClipId, Command, DeviceId, ElementColor, TrackId};
+use hex_project::{ClipFlavor, ClipId, Command, DeviceId, ElementColor, SceneId, TrackId};
 use hex_session::service::Request;
 
 #[derive(Clone)]
@@ -26,7 +26,13 @@ pub(super) enum EditorContextAction {
         id: Option<&'static str>,
     },
     InsertTrack(InsertTrackAction),
+    InsertScene {
+        generation: u64,
+        revision: u64,
+        before: Option<SceneId>,
+    },
     UtilityMode(UtilityModeAction),
+    DeviceComparison(super::device_comparison::Intent),
     TrackColor {
         generation: u64,
         track: TrackId,
@@ -41,6 +47,52 @@ pub(super) enum EditorContextAction {
 }
 
 impl EditorView {
+    pub(super) fn open_console_scene_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        before: Option<SceneId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != super::EditorMode::Session
+            || self.edit_pending()
+            || !device_panel::finalize_controls(self, cx)
+        {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if before.is_some_and(|id| !state.project.scenes().iter().any(|scene| scene.id() == id)) {
+            return;
+        }
+        let revision = state.revision;
+        let previous_focus = self
+            .context_menu
+            .take()
+            .and_then(|menu| menu.previous_focus)
+            .or_else(|| window.focused(cx));
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        self.context_menu = Some(PopupMenu {
+            icon_grid: None,
+            position,
+            selected: 0,
+            focus,
+            previous_focus,
+            items: vec![MenuItem {
+                label: "add scene",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::InsertScene {
+                    generation: self.project_generation,
+                    revision,
+                    before,
+                },
+            }],
+        });
+        cx.notify();
+    }
     pub(super) fn open_track_context_menu(
         &mut self,
         position: Point<Pixels>,
@@ -61,6 +113,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             selected: 0,
             focus,
@@ -98,17 +151,20 @@ impl EditorView {
         };
         self.open_track_context_menu(position, Some(track), window, cx);
         if let Some(menu) = &mut self.context_menu {
-            menu.items
-                .extend(ElementColor::ALL.into_iter().map(|choice| MenuItem {
-                    label: choice.key(),
-                    swatch: Some(crate::theme::element_colors(choice).accent),
-                    checked: color == choice,
-                    action: EditorContextAction::TrackColor {
-                        generation: self.project_generation,
-                        track,
-                        color: choice,
-                    },
-                }));
+            menu.items.extend(
+                ElementColor::TRACK_CHOICES
+                    .into_iter()
+                    .map(|choice| MenuItem {
+                        label: choice.key(),
+                        swatch: Some(crate::theme::element_colors(choice).accent),
+                        checked: color == choice,
+                        action: EditorContextAction::TrackColor {
+                            generation: self.project_generation,
+                            track,
+                            color: choice,
+                        },
+                    }),
+            );
         }
     }
 
@@ -141,6 +197,7 @@ impl EditorView {
         window.focus(&focus);
         let target = flavor.toggled();
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             selected: 0,
             focus,
@@ -196,6 +253,7 @@ impl EditorView {
             ("switch to mid/side", true)
         };
         self.context_menu = Some(PopupMenu {
+            icon_grid: None,
             position,
             items: vec![MenuItem {
                 label,
@@ -230,6 +288,9 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::DeviceComparison(target) => {
+                self.perform_device_comparison(target, cx)
+            }
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
             }
@@ -263,6 +324,13 @@ impl EditorView {
                     self.enqueue(Request::Edit(Command::SetClipFlavor { clip, flavor }));
                     cx.notify();
                 }
+            }
+            EditorContextAction::InsertScene {
+                generation,
+                revision,
+                before,
+            } => {
+                self.insert_console_scene(before, generation, revision, cx);
             }
             EditorContextAction::InsertTrack(action) => {
                 if action.generation != self.project_generation {
@@ -339,10 +407,27 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::DeviceComparison(target) => {
+                    !super::device_comparison::current(self, target)
+                }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
                 }
                 EditorContextAction::InsertTrack(_) => false,
+                EditorContextAction::InsertScene {
+                    generation,
+                    revision,
+                    before,
+                } => {
+                    self.mode != super::EditorMode::Session
+                        || *generation != self.project_generation
+                        || self.state.as_ref().is_none_or(|state| {
+                            state.revision != *revision
+                                || before.is_some_and(|id| {
+                                    !state.project.scenes().iter().any(|scene| scene.id() == id)
+                                })
+                        })
+                }
                 EditorContextAction::TrackColor {
                     generation, track, ..
                 } => {
@@ -447,6 +532,7 @@ mod tests {
             } else {
                 audio_project()
             };
+            let original_color = project.track(track).unwrap().color();
             let preview = if midi {
                 Arc::new(
                     hex_engine::compile::project_with_midi_preview(&project, &Default::default())
@@ -484,15 +570,86 @@ mod tests {
             editor.read_with(cx, |view, _| {
                 assert!(view.context_menu.is_none());
                 assert!(matches!(view.last_enqueued_edit, Some(Command::SetClipFlavor { clip: id, flavor: ClipFlavor::Accent }) if id == clip));
-                assert_eq!(view.state.as_ref().unwrap().project.track(track).unwrap().color(), ElementColor::Gray);
+                assert_eq!(view.state.as_ref().unwrap().project.track(track).unwrap().color(), original_color);
             });
         }
     }
 
+    // Private bounded startup for the new palette regression; never ambient
+    // preferences/library roots or a production constructor/global setting edit.
+    struct ColorTestDirectory(std::path::PathBuf);
+    impl ColorTestDirectory {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "hex-track-colors-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).expect("private unique color test directory");
+            std::fs::create_dir(path.join("samples")).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for ColorTestDirectory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).expect("remove only owned fixture directory");
+        }
+    }
+    fn color_test_window(
+        cx: &mut TestAppContext,
+        project: hex_project::Project,
+        directory: &std::path::Path,
+    ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
+        use gpui::AppContext;
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let service = hex_session::service::Service::new(48_000, 32, 8_000_000).unwrap();
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
+                });
+                editor.update(cx, |view, cx| {
+                    view.state = Some(Arc::new(hex_session::service::ViewState {
+                        canonical_audio_source: None,
+                        comparison_audio: None,
+                        project: Arc::new(project),
+                        waveforms: Default::default(),
+                        audio_clip_waveforms: Default::default(),
+                        midi_preview: Arc::default(),
+                        gain_preview: Ok(Arc::default()),
+                        timeline_frames: 384_000,
+                        can_undo: false,
+                        can_redo: false,
+                        revision: 1,
+                        unsaved: false,
+                        document_path: None,
+                    }));
+                    assert_eq!(view.browser.directory, directory.join("samples"));
+                    assert!(view.audio.is_none());
+                    cx.notify();
+                });
+                editor
+            })
+            .unwrap();
+        (handle, editor)
+    }
+
     #[gpui::test]
-    fn track_header_offers_ten_swatches_and_stale_clip_action_is_ignored(cx: &mut TestAppContext) {
+    fn track_header_offers_nine_non_gray_swatches_and_stale_clip_action_is_ignored(
+        cx: &mut TestAppContext,
+    ) {
         let (project, track, _, clip) = audio_project();
-        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let mut model = hex_project::Editor::new(project, 8).unwrap();
+        model
+            .execute(Command::SetTrackColor {
+                track,
+                color: ElementColor::Orange,
+            })
+            .unwrap();
+        let project = model.project().clone();
+        let directory = ColorTestDirectory::new();
+        let (handle, editor) = color_test_window(cx, project, &directory.0);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let selector =
@@ -504,15 +661,37 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 11);
+            assert_eq!(menu.items.len(), 10);
             assert_eq!(
                 menu.items
                     .iter()
                     .filter(|item| item.swatch.is_some())
                     .count(),
-                10
+                9
             );
-            assert!(menu.items[1].checked);
+            let choices: Vec<_> = menu
+                .items
+                .iter()
+                .filter_map(|item| match item.action {
+                    EditorContextAction::TrackColor { color, .. } => Some(color),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(choices, ElementColor::ALL[1..]);
+            assert!(!choices.contains(&ElementColor::Gray));
+            assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 1);
+            assert!(
+                menu.items.iter().find(|item| item.checked).unwrap().label
+                    == view
+                        .state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(track)
+                        .unwrap()
+                        .color()
+                        .key()
+            );
         });
         let swatch = visual
             .debug_bounds("context-menu-swatch-cyan")

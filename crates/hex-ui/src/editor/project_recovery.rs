@@ -20,6 +20,8 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         if self.opening_project
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
             || self.close_prompt_open
             || self.saving_project
             || self.save_dialog_open
