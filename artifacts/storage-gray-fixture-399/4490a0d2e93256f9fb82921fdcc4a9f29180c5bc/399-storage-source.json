@@ -1,0 +1,8 @@
+{
+  "base": "3fdcde8688e88454b27b0b752e6b60accfcac865",
+  "head": "4490a0d2e93256f9fb82921fdcc4a9f29180c5bc",
+  "tree": "346495d48db16be5db34819a936b8fe4c2be5150",
+  "files": [
+    "crates/hex-storage/src/schema/gain_touch/tests.rs"
+  ]
+}

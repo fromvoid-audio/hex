@@ -1,0 +1,9 @@
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.88s
+     Running tests/automatic_track_colors.rs (target/debug/deps/automatic_track_colors-24db7a759178440f)
+
+running 1 test
+test automatic_colors_survive_current_document_redo_and_repeated_decode_without_reselection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+

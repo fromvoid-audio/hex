@@ -1,0 +1,20 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.35s
+     Running unittests src/lib.rs (target/debug/deps/hex_storage-457c375e3b9af02a)
+
+running 1 test
+
+thread 'schema::gain_touch::tests::empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refuse_loss' (143776) panicked at crates/hex-storage/src/schema/gain_touch/tests.rs:170:42:
+called `Result::unwrap()` on an `Err` value: Invalid("older schema cannot save element colors or clip flavors")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test schema::gain_touch::tests::empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refuse_loss ... FAILED
+
+failures:
+
+failures:
+    schema::gain_touch::tests::empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refuse_loss
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p hex-storage --lib`

@@ -1,0 +1,427 @@
+{
+  "schema": 1,
+  "ticket": 2793,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/399",
+  "source": {
+    "base": "3fdcde8688e88454b27b0b752e6b60accfcac865",
+    "head": "4490a0d2e93256f9fb82921fdcc4a9f29180c5bc",
+    "tree": "346495d48db16be5db34819a936b8fe4c2be5150",
+    "files": [
+      "crates/hex-storage/src/schema/gain_touch/tests.rs"
+    ]
+  },
+  "file_hashes": {
+    "crates/hex-storage/src/schema/gain_touch/tests.rs": {
+      "before_blob": "2a6c467ab47014523b51baecae4ae83ac60a7e4a",
+      "before_sha256": "1adb4eeb419ca288507a2e60d177690cd1169c387ffc538f2845358cfb664571",
+      "after_blob": "038a2f06ea1d4a40b2cb6cd06b0bc80617824ab2",
+      "after_sha256": "caa70d74396cdac74847b8536dcc86d522ddc6f14a774d366f30d28eddf39da3"
+    }
+  },
+  "runs": {
+    "original-red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 9.666,
+      "start_tree": {
+        "commit": "3fdcde8688e88454b27b0b752e6b60accfcac865",
+        "content_sha256": "3fc292aba365d67c379fe4b63993f88d3ef7f7a2354abfe125a82898f9a03422",
+        "dirty": false,
+        "dirty_files": []
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--lib",
+            "schema::gain_touch::tests::empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refuse_loss",
+            "--",
+            "--exact",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:03:17Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-original-red/01-legacy-gain-touch-fixture.log",
+          "started_at": "2026-10-19T01:03:07Z",
+          "status": "failed",
+          "step_id": "legacy-gain-touch-fixture"
+        }
+      ]
+    },
+    "targeted-green": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 7.097,
+      "start_tree": {
+        "commit": "3fdcde8688e88454b27b0b752e6b60accfcac865",
+        "content_sha256": "c71d56770a4bfe576cd6e48f573571fbf7229d5e147e383359afffeb4f28a1d3",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-storage/src/schema/gain_touch/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--lib",
+            "schema::gain_touch::tests::empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refuse_loss",
+            "--",
+            "--exact",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:03:55Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-targeted-green/01-legacy-gain-touch-fixture.log",
+          "started_at": "2026-10-19T01:03:48Z",
+          "status": "passed",
+          "step_id": "legacy-gain-touch-fixture"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 24.871,
+      "start_tree": {
+        "commit": "4490a0d2e93256f9fb82921fdcc4a9f29180c5bc",
+        "content_sha256": "c71d56770a4bfe576cd6e48f573571fbf7229d5e147e383359afffeb4f28a1d3",
+        "dirty": false,
+        "dirty_files": []
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--lib",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:04:28Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/01-storage-lib.log",
+          "started_at": "2026-10-19T01:04:27Z",
+          "status": "passed",
+          "step_id": "storage-lib"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--test",
+            "automatic_track_colors",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:04:35Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/02-storage-automatic-colors.log",
+          "started_at": "2026-10-19T01:04:28Z",
+          "status": "passed",
+          "step_id": "storage-automatic-colors"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--test",
+            "appearance",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:04:35Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/03-storage-appearance.log",
+          "started_at": "2026-10-19T01:04:35Z",
+          "status": "passed",
+          "step_id": "storage-appearance"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--test",
+            "automatic_track_colors",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:04:36Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/04-project-automatic-colors.log",
+          "started_at": "2026-10-19T01:04:35Z",
+          "status": "passed",
+          "step_id": "project-automatic-colors"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--lib",
+            "appearance::automatic_color_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:04:39Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/05-project-color-ties.log",
+          "started_at": "2026-10-19T01:04:36Z",
+          "status": "passed",
+          "step_id": "project-color-ties"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-storage",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T01:04:46Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/06-storage-clippy.log",
+          "started_at": "2026-10-19T01:04:39Z",
+          "status": "passed",
+          "step_id": "storage-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-19T01:04:46Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/07-architecture.log",
+          "started_at": "2026-10-19T01:04:46Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-19T01:04:46Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/08-gpui-patch.log",
+          "started_at": "2026-10-19T01:04:46Z",
+          "status": "passed",
+          "step_id": "gpui-patch"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-19T01:04:46Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/09-ui-style.log",
+          "started_at": "2026-10-19T01:04:46Z",
+          "status": "passed",
+          "step_id": "ui-style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-19T01:04:46Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/10-device-layout.log",
+          "started_at": "2026-10-19T01:04:46Z",
+          "status": "passed",
+          "step_id": "device-layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T01:04:52Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/11-format.log",
+          "started_at": "2026-10-19T01:04:46Z",
+          "status": "passed",
+          "step_id": "format"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T01:04:52Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/storage-gray-fixture-399-qualification/12-diff.log",
+          "started_at": "2026-10-19T01:04:52Z",
+          "status": "passed",
+          "step_id": "diff"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "TESTONLYone named legacy fixture authors Gray; productionpalette/writer laws unchanged",
+    "Canonical3993fdc preserved; solemerger prospective full21/review/merge",
+    "BOTH format31 expectations remain31; no Source6unmerged456 import",
+    "No newnativecase; physicalacceptance rootownedOPEN",
+    "Root originalfull21negative separatelypreserved; ownexactcaseRED recoveredhere"
+  ],
+  "payloads": {
+    "399-storage-component.py": {
+      "bytes": 553,
+      "sha256": "74b04478e6f8e96dab3daae0e0c8ce60c32ba0c6c8b6e086294ff99f4cfc6ab5"
+    },
+    "399-storage-evidence.py": {
+      "bytes": 6775,
+      "sha256": "b1c397067dd07e0b441b8c6aaea3b91b1b6ee100b20d4af200b2d2679a3d38fb"
+    },
+    "399-storage-original-red.stdout": {
+      "bytes": 189,
+      "sha256": "7cee2915bc0846eb47db19d3fad52265c0834fd891efd6e36961e93f56554cf5"
+    },
+    "399-storage-qualification-steps.json": {
+      "bytes": 1090,
+      "sha256": "457a1196b39b11276aecd6748d79aee0efda53ba2076343c9ae67eb8afecb7cc"
+    },
+    "399-storage-qualification.stdout": {
+      "bytes": 835,
+      "sha256": "833757143e8daaf4a55a3a9b97303895764d9cddda3ac301389fa6a695e91183"
+    },
+    "399-storage-scope-proof.json": {
+      "bytes": 211,
+      "sha256": "6f1e7331e8a78f505c63ce2ae38c036415375817193d4eff26028b973d75f1f9"
+    },
+    "399-storage-source.json": {
+      "bytes": 239,
+      "sha256": "80586711dbc4d84b59f3389f2e6293672eac0e8e0383099ad41b02b0f128fee5"
+    },
+    "399-storage-targeted-green.stdout": {
+      "bytes": 191,
+      "sha256": "8eea7783d1339cf96df183b78930e9b2414f258e5fe89e33251dc82535d90078"
+    },
+    "HANDOFF.md": {
+      "bytes": 3368,
+      "sha256": "0d13f2fef0ba31a820be9fc874133ace0bce13f0ea06106017e36776f956036d"
+    },
+    "before-after-hashes.json": {
+      "bytes": 366,
+      "sha256": "fca25bdbd9753d068ce569f5b3e6b8cffd76735c2933bfa45d80caab208fdd4a"
+    },
+    "owner.patch": {
+      "bytes": 1049,
+      "sha256": "f0be4bb92cbdf1c08f0a6a5a8760da00b5628e9f4f8f73269648377c99db1add"
+    },
+    "runs/original-red/01-legacy-gain-touch-fixture.log": {
+      "bytes": 1120,
+      "sha256": "ff46735d426e80c62cb9cee8330cea3a15907c933158650cfd59b54cf6f56f74"
+    },
+    "runs/original-red/summary.json": {
+      "bytes": 9841,
+      "sha256": "1715bc0c0935ed3b9f738a3c26bafa2c3573eff4a7c4bd293c66de310f991f20"
+    },
+    "runs/qualification/01-storage-lib.log": {
+      "bytes": 4526,
+      "sha256": "ce08ada412fd7148a319780eccbbdf9d05b5ff517d80c9318e42c1426eed4a6d"
+    },
+    "runs/qualification/02-storage-automatic-colors.log": {
+      "bytes": 457,
+      "sha256": "4369e39f02c246d27c195a9911b12f01f9408d0720ab577c8a8b98af6b769448"
+    },
+    "runs/qualification/03-storage-appearance.log": {
+      "bytes": 479,
+      "sha256": "76785b8893b5ff9b235458b1e854db70ede0dafce3f01df7b386b16ff196f612"
+    },
+    "runs/qualification/04-project-automatic-colors.log": {
+      "bytes": 591,
+      "sha256": "5a5a5b54eaf39a72f736eb2b11505afcaf9473befedf2dfd71d624bc0976b455"
+    },
+    "runs/qualification/05-project-color-ties.log": {
+      "bytes": 443,
+      "sha256": "e604658d4bc8a73f8e0359dd379290331ab07b3122581db18ded14be5d4fbdb0"
+    },
+    "runs/qualification/06-storage-clippy.log": {
+      "bytes": 208,
+      "sha256": "216d6b1d0dc7b5af9df74329e85e85f282f73a3b17dd927e3964782294fa5853"
+    },
+    "runs/qualification/07-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/08-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/09-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/10-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/11-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/12-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 15442,
+      "sha256": "7160b1eaeebdfa4465ea6a35c14c0941c8bd3dd6d8cd2e35796eca7b7d422da1"
+    },
+    "runs/targeted-green/01-legacy-gain-touch-fixture.log": {
+      "bytes": 460,
+      "sha256": "1dcfd91d36e2c2ee9cb2a17f3c35b2a29a9e11c97fc743ab6eab4d1124302af2"
+    },
+    "runs/targeted-green/summary.json": {
+      "bytes": 10101,
+      "sha256": "80cdc0de91d9b716a283592a6cfeb0a141fe6c43ba46d6c0f2fefb032e7d2e48"
+    }
+  }
+}

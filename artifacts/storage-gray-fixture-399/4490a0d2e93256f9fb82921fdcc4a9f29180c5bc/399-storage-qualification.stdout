@@ -1,0 +1,25 @@
+[1/12] storage-lib: running
+[1/12] storage-lib: passed
+[2/12] storage-automatic-colors: running
+[2/12] storage-automatic-colors: passed
+[3/12] storage-appearance: running
+[3/12] storage-appearance: passed
+[4/12] project-automatic-colors: running
+[4/12] project-automatic-colors: passed
+[5/12] project-color-ties: running
+[5/12] project-color-ties: passed
+[6/12] storage-clippy: running
+[6/12] storage-clippy: passed
+[7/12] architecture: running
+[7/12] architecture: passed
+[8/12] gpui-patch: running
+[8/12] gpui-patch: passed
+[9/12] ui-style: running
+[9/12] ui-style: passed
+[10/12] device-layout: running
+[10/12] device-layout: passed
+[11/12] format: running
+[11/12] format: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/storage-gray-fixture-399-qualification/summary.json

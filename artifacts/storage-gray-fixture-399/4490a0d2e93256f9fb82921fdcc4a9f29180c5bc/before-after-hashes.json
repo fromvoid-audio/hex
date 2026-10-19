@@ -1,0 +1,8 @@
+{
+  "crates/hex-storage/src/schema/gain_touch/tests.rs": {
+    "before_blob": "2a6c467ab47014523b51baecae4ae83ac60a7e4a",
+    "before_sha256": "1adb4eeb419ca288507a2e60d177690cd1169c387ffc538f2845358cfb664571",
+    "after_blob": "038a2f06ea1d4a40b2cb6cd06b0bc80617824ab2",
+    "after_sha256": "caa70d74396cdac74847b8536dcc86d522ddc6f14a774d366f30d28eddf39da3"
+  }
+}
