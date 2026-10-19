@@ -5914,6 +5914,80 @@ User rejected device-local automation editing. Remove its button, graph mode and
   owner framework, Service join, global fixture sweep or native operation.
   Prior f3d56-case/required-negative evidence stays independently source-bound.
 
+## replacement loop paint custody — pulse2883 / PR485, 19 october2026
+
+A real pointer/Service/completed-scene regression reproduced the old bar flashing
+between release and canonical installation. One private pending loop now retains
+its validated range until its own real FIFO completion installs canonical state;
+earlier ACKs do not retire it, deferred requests stamp only on actual submission,
+and queue refusal rolls back. Held Escape/button/focus cancellation stays separate.
+The existing blur hook clears state synchronously and defers only notification to
+the end of the effect cycle, outside GPUI's Focus paint phase; no frame delay,
+forced refresh, synthetic event or vendor change. Fourteen owning tests passed
+with zero ignored, including old rail controls, actual playback, Undo/Redo and
+save/open; default and feature all-targets strict checks passed. Raw failures and
+source-bound evidence are recorded in Pulse2883. PR329's separate whole-move,
+Shift and marker source needs later precise composition; no wholesale import or
+claim of combined qualification. Native framebuffer/listening and final merger
+qualification remain open; this is source evidence, not installed acceptance.
+
+## shared text double-click toggle — pulse2817 / PR423, 18 october 2026
+
+Original actual input regressions showed repeated query double-clicks never
+select all again and numeric draft clicks reformat the uncommitted text. A tiny
+local shared snapshot now toggles against pre-first-click selection, surviving
+release/repaint and invalidating on text/IME/keyboard/drag. Query/name caret and
+raw Unicode mapping remain; numeric editing-only selection retains draft and
+emits no value events, using the existing active gesture capture. Existing knob
+reset/adjustment/finalization and browser no-doubleclick-import remain separate.
+Focused source tests cover real click pairs, rapid pairs, partial drag/release,
+workers/window resize, composition and empty text. Frozen426+returned7c4d is a
+material input dependency, not new main integration. Sole merger owns final
+prospective full CI/integration; native physical mouse/IME acceptance stays open.
+
+### 2026-10-19 — PR423 invalidated first-click review return
+
+- Preserve canonical b017 and its declared426/416 history. Actual helper and
+  five actual browser-input caller regressions reproduced a stale even-count
+  toggle after keyboard/text/IME/Shift/drag invalidation.
+- Replace only the shared helper's current-state fallback with optional saved
+  snapshot mapping. Missing snapshot falls through to each existing caller's
+  normal text click. No browser/numeric consumer, formatter, CompactSlider,
+  value-event, knob-reset or geometry production change.
+- Preserve original negatives and all original tests; qualify new invalidation
+  cases plus valid paired-click/numeric/Unicode controls. Row navigation review
+ 4308115090 remains a separate diagnostic/baseline attribution, not a silently
+  folded423 production repair. Sole merger owns integration/full21/review/merge;
+  physical/native acceptance remains separate.
+
+## 19 October 2026 — Pulse2817 / PR423 new toggle fixture custody
+
+- Root29870 structural lifetime return: replace only new toggle_fixture caller
+  PathBuf ownership with one precreated existing Arc Environment and injected
+  constructor; samples/WAV before startup. All original toggle/invalidation/IME/
+  query/focus/drag/raw-field assertions byte-identical; production policy intact.
+- Reuse only the two identical accepted469 feature-test-only path accessors for
+  actual four-preference/catalog/root correlation. Actual held catalog job owns
+  root through view+caller drop, then successful save and ordinary cleanup.
+- Correct real Rust filters are editor::browser::ui_test::search_selection:: and
+  editor::browser_input::name_case_ui_test::. Historical351 widget80PASS is kept;
+  its two zero-match UI commands are not qualification. New actual search12PASS
+  includes old4+toggle/invalidation7+custody1, with no ignored tests. Final exact
+  shared-widget/name/input/strict/guard receipts remain separately source-bound.
+
+### 2026-10-19 — PR460 browser arrow eligibility
+
+- Recover the same canonical task2858/PR460 plan03db at verified main2683942b;
+  preserve separate423 policy7db and its source/negative evidence unchanged.
+- Add only results_focused refusal to existing Right preview and Left collapse
+  handlers. Retain the active browser navigation context, Up/Down entry, selected
+  sample/folder actions, Command-F/text editing and separate manual audition.
+- Promote the verified identical five baseline negatives and selected controls;
+  add actual Service canonical/history invariants and Up/Down/Command-F routing.
+  Focused seven cases pass without rerunning the unchanged original negative.
+  Exact source component checks precede sole-merger full21/fresh review/merge;
+  no native/app/physical output or user acceptance is inferred.
+
 ### 2026-10-19 — PR329 loop-bar gestures and musical marker
 
 - Continue original c525/2713 history after one main2683 composition; preserve

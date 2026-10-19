@@ -654,6 +654,7 @@ pub(super) struct EditorView {
     device_panel_active: bool,
     clip_detail_body_height: f32,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
+    pending_loop: Option<loop_rail::PendingLoop>,
     loop_rail_cursor: gpui::CursorStyle,
     clip_content_cache: clip_content_cache::TrackCache,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
@@ -1024,6 +1025,9 @@ impl EditorView {
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            if view.cancel_loop_rail_gesture() {
+                cx.defer_in(window, |_, _, cx| cx.notify());
+            }
             if view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
             }
@@ -1213,6 +1217,7 @@ impl EditorView {
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
             loop_rail_gesture: None,
+            pending_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
             clip_content_cache: clip_content_cache::TrackCache::default(),
             drag_lanes: std::collections::HashMap::new(),

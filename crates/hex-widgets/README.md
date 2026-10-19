@@ -232,3 +232,11 @@ Editable text presentation is caller-selected through `ControlStyle::text_case`.
 input handlers, IME UTF-16 ranges, clipboard and numeric parsers retain original
 source text. Hex injects lowercase; neutral widget fixtures can preserve case.
 This is display styling, not content normalization or a project edit.
+
+Editable value text uses the same local `TextClickSelection` policy as Hex's
+query/name fields: keep the selection from before the first click, toggle all vs
+clicked caret on the paired click, and invalidate on typing/IME/keyboard/drag.
+The snapshot survives mouse-up and repaint; it owns no timer or global input hook.
+An already edited numeric value keeps its raw draft during text clicks/drag;
+selection emits no numeric events. Nonediting value drag and knob reset retain
+separate adjustment gestures and existing finalization/cancellation contracts.

@@ -8,6 +8,15 @@ use gpui::{
 use hex_project::{Command, LoopRegion};
 use hex_session::service::Request;
 
+mod pending;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PendingLoop {
+    generation: u64,
+    region: LoopRegion,
+    remaining: Option<usize>,
+}
+
 const RAIL_HEIGHT: f32 = 18.0;
 const BAR_INSET: f32 = 4.0;
 const EDGE_HIT_PIXELS: f32 = 6.0;
@@ -310,11 +319,7 @@ impl EditorView {
         if Some(region) == gesture.loop_region {
             return true;
         }
-        let _ = self.enqueue(Request::Edit(Command::SetLoopRegion {
-            start: region.start(),
-            end: region.end(),
-            enabled: region.enabled(),
-        }));
+        self.submit_loop_preview(gesture.generation, region);
         true
     }
 
@@ -378,6 +383,7 @@ pub(super) fn view(
     });
     let shown_region = gesture
         .and_then(|gesture| gesture.preview)
+        .or_else(|| view.pending_loop_region())
         .or(current_region);
     let entity = cx.entity();
     let rail = div()
@@ -450,6 +456,7 @@ pub(super) fn view(
                                     }
                                     if event.pressed_button != Some(MouseButton::Left) {
                                         let hover = move_entity.update(cx, |view, _| {
+                                            let cancelled = view.cancel_loop_rail_gesture();
                                             let hover = if move_bounds.contains(&event.position) {
                                                 match view.loop_rail_hover(
                                                     f32::from(event.position.x),
@@ -464,7 +471,7 @@ pub(super) fn view(
                                                 CursorStyle::Crosshair
                                             };
                                             if view.loop_rail_cursor == hover {
-                                                return false;
+                                                return cancelled;
                                             }
                                             view.loop_rail_cursor = hover;
                                             true
@@ -786,3 +793,7 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "loop_bar_ui_tests.rs"]
 mod loop_bar_ui_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "loop_rail/pending_ui_tests.rs"]
+mod pending_ui_tests;

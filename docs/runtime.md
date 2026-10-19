@@ -466,8 +466,8 @@ not. If multiple binary durations fit a very short rounded interval, no marker
 is claimed. Tempo changes, edge resizing and zoom/pan update this presentation;
 when the real start is clipped off-screen, no false start marker is painted.
 
-The rail owns capture through release outside its bounds. Escape, focus loss
-at the next captured event, invalid modifiers, project generation/revision or
+The rail owns capture through release outside its bounds. Escape, focus loss,
+invalid modifiers, project generation/revision or
 canonical loop changes discard the preview. Root focus-path callbacks forward
 modifier changes and Escape to the same private rail state. Preview is local;
 only release/toggle submits canonical commands, with existing Undo/Redo and
@@ -483,6 +483,25 @@ Shift-step one-bar and other lengths both ways at two zooms; release with a newe
 pointer/modifier; resize both edges and paint empty rail; inspect two/four/three
 and fractional markers; Escape/focus cancellation and outside release; then
 Undo/Redo and reopen the saved project. Root alone schedules that native work.
+
+A released replacement remains the rail's displayed range while its real worker
+request is pending. The existing request FIFO stamps it only after submission;
+earlier unrelated completions do not retire it. Its matching completion installs
+the canonical state before retiring the preview, including a truthful refusal.
+Queue refusal rolls back the local intent. Escape, lost held-button and editor
+focus cancel an unreleased gesture without submitting it; document replacement
+and stale revision discard it through the existing lifecycle. No frame delay or
+synthetic acknowledgment is used.
+
+The source regression checks completed GPUI scene quads while holding real
+Service responses, plus deferred submission, unrelated success/error responses,
+queue refusal, both directions, final-release coordinates/modifiers and Undo/Redo.
+The separate PR329 whole-move/Shift/marker changes remain unmerged at this
+checkpoint and require their own combined qualification; this change does not
+import that older rail wholesale. Native GPU/framebuffer and listening acceptance
+remain open. A finite native check is to replace an active bar in both directions,
+release rapidly at a new position, repeat, then cancel a held gesture and check
+one Undo/Redo and the transport's final loop bounds.
 
 The canonical mixer adds validated per-track balance (-1..=1) and master gain
 (0..=2). Center balance is unity; this original Hex linear law attenuates only
