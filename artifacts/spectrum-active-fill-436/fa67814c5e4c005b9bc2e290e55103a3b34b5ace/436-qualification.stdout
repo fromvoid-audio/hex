@@ -1,0 +1,17 @@
+[1/8] architecture: running
+[1/8] architecture: passed
+[2/8] gpui-patch: running
+[2/8] gpui-patch: passed
+[3/8] ui-style: running
+[3/8] ui-style: passed
+[4/8] device-layout: running
+[4/8] device-layout: passed
+[5/8] format: running
+[5/8] format: passed
+[6/8] diff: running
+[6/8] diff: passed
+[7/8] widgets: running
+[7/8] widgets: passed
+[8/8] widgets-clippy: running
+[8/8] widgets-clippy: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/spectrum-active-fill-436-qualification/summary.json

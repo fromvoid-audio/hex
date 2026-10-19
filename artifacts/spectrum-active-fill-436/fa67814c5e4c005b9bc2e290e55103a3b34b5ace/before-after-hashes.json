@@ -1,0 +1,14 @@
+{
+  "crates/hex-widgets/src/spectrum_painter.rs": {
+    "before_blob": "8c54330693cb2827ade0232eaa3c8b16de3f5b90",
+    "before_sha256": "161627e2ecf595c404d40fb607e1ea5a3a7794ba1c2f0eda820093aaedfe9dcb",
+    "after_blob": "f4f03eb3e170e611355a4b7d59fee226c6515dfb",
+    "after_sha256": "88e4af287d20f0ebe11e29b051a5edb4f968409c479e324f91d9a93537b0e709"
+  },
+  "crates/hex-widgets/src/spectrum_painter/tests.rs": {
+    "before_blob": "970640673e45ff8165833b71b3a073d16553fb3c",
+    "before_sha256": "83adb8392f5cc9f48b93800051f5ddd9817f11b9e7a33747ef136af26b9f5cb1",
+    "after_blob": "3d62243a5457f11d3bda253e4ec6dd1439b4a3df",
+    "after_sha256": "262dcea9d45cccd0aaffedf10b682c0c3b70831195e6b131269be5679accb8c0"
+  }
+}

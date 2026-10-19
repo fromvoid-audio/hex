@@ -1,0 +1,235 @@
+diff --git a/crates/hex-widgets/src/spectrum_painter.rs b/crates/hex-widgets/src/spectrum_painter.rs
+index 8c543306..f4f03eb3 100644
+--- a/crates/hex-widgets/src/spectrum_painter.rs
++++ b/crates/hex-widgets/src/spectrum_painter.rs
+@@ -61,6 +61,14 @@ fn valid_points(points: &[[f32; 2]]) -> bool {
+         && points.windows(2).all(|p| p[0][0] <= p[1][0])
+ }
+ 
++fn paintable(layer: &Layer<'_>, pass: Pass) -> bool {
++    valid_points(layer.points)
++        && layer.color <= 0xffffff
++        && f32::from(layer.stroke_width).is_finite()
++        && (0.0..=4.0).contains(&f32::from(layer.stroke_width))
++        && (pass != Pass::Fill || layer.points.iter().any(|p| p[1] != 0.0))
++}
++
+ fn secant(a: [f32; 2], b: [f32; 2]) -> f32 {
+     let dx = b[0] - a[0];
+     if dx <= f32::EPSILON {
+@@ -136,17 +144,18 @@ where
+     {
+         return;
+     }
+-    let alpha = fill_alpha(count);
++    // Input admission counts every layer; only visible fills spend the ink budget.
++    let alpha = fill_alpha(if pass == Pass::Fill {
++        layers
++            .clone()
++            .filter(|layer| paintable(layer, pass))
++            .count()
++    } else {
++        count
++    });
+     window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {
+         for layer in layers {
+-            if !valid_points(layer.points)
+-                || layer.color > 0xffffff
+-                || !f32::from(layer.stroke_width).is_finite()
+-                || !(0.0..=4.0).contains(&f32::from(layer.stroke_width))
+-            {
+-                continue;
+-            }
+-            if pass == Pass::Fill && layer.points.iter().all(|p| p[1] == 0.0) {
++            if !paintable(&layer, pass) {
+                 continue;
+             }
+             let mut path = match pass {
+diff --git a/crates/hex-widgets/src/spectrum_painter/tests.rs b/crates/hex-widgets/src/spectrum_painter/tests.rs
+index 97064067..3d62243a 100644
+--- a/crates/hex-widgets/src/spectrum_painter/tests.rs
++++ b/crates/hex-widgets/src/spectrum_painter/tests.rs
+@@ -402,3 +402,183 @@ fn write_svg(records: &[Record], width: f32) {
+         path.display()
+     );
+ }
++
++struct BudgetFixture {
++    layers: SpectrumPlotLayers,
++}
++impl Render for BudgetFixture {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        layered_spectrum_plot(self.layers.clone(), STYLE)
++    }
++}
++
++#[gpui::test]
++fn production_active_fill_budget_ignores_silent_and_invalid_layers(cx: &mut TestAppContext) {
++    let handle = *cx.add_window(|_, _| Empty);
++    let fixture = cx
++        .update_window(handle, |_, window, cx| {
++            window.replace_root(cx, |_, _| BudgetFixture {
++                layers: SpectrumPlotLayers::default(),
++            })
++        })
++        .unwrap();
++    let visual = VisualTestContext::from_window(handle, cx);
++    visual.simulate_resize(size(px(440.0), px(200.0)));
++    visual.run_until_parked();
++    let active = SpectrumPlotLayer {
++        points: points(),
++        color: 0xff6655,
++    };
++    let floor = SpectrumPlotLayer {
++        points: vec![[0.0, 0.0], [1.0, 0.0]],
++        color: 0x55ddff,
++    };
++    let invalid = SpectrumPlotLayer {
++        color: 0x1000000,
++        ..active.clone()
++    };
++    let mut baseline_geometry = None;
++    for (case, active_count, floor_count, invalid_count) in [
++        ("single", 1, 0, 0),
++        ("silent", 1, 256, 0),
++        ("mixed", 1, 128, 128),
++        ("two-active", 2, 127, 128),
++        ("all-inactive", 0, 128, 129),
++    ] {
++        let layers = [
++            vec![active.clone(); active_count],
++            vec![floor.clone(); floor_count],
++            vec![invalid.clone(); invalid_count],
++        ]
++        .concat();
++        assert!(layers.len() <= 257);
++        RECORDS.with(|r| *r.borrow_mut() = Some(Vec::new()));
++        fixture.update(cx, |view, cx| {
++            view.layers = SpectrumPlotLayers::new(layers).unwrap();
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let records = RECORDS.with(|r| r.borrow_mut().take().unwrap());
++        let fills = records
++            .iter()
++            .filter(|r| r.pass == Pass::Fill)
++            .collect::<Vec<_>>();
++        if active_count == 0 {
++            assert!(
++                fills.is_empty(),
++                "{case}: inactive layers must not paint a fill"
++            );
++            continue;
++        }
++        assert!(
++            !fills.is_empty(),
++            "{case}: actual production path must paint"
++        );
++        assert_eq!(fills.len() % active_count, 0);
++        for fill in fills {
++            let expected = if active_count == 1 { 0.14 } else { 0.12 };
++            assert_eq!(
++                fill.alpha, expected,
++                "{case}: only valid nonfloor spectra spend the fill budget"
++            );
++            assert_eq!(fill.color, active.color);
++            assert_eq!(fill.mask, fill.plot);
++            let geometry = format!("{:?}", fill.commands);
++            if let Some(baseline) = &baseline_geometry {
++                assert_eq!(
++                    &geometry, baseline,
++                    "{case}: active path geometry stays exact"
++                );
++            } else {
++                baseline_geometry = Some(geometry);
++            }
++        }
++        assert!(records.iter().all(|r| r.color <= 0xffffff));
++    }
++}
++
++struct RawBudgetFixture {
++    layers: Vec<(Vec<[f32; 2]>, u32, Pixels)>,
++}
++impl Render for RawBudgetFixture {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        let layers = self.layers.clone();
++        div().size_full().child(
++            gpui::canvas(
++                |_, _, _| (),
++                move |bounds, _, window, _| {
++                    paint(
++                        bounds,
++                        layers.iter().map(|(points, color, stroke_width)| Layer {
++                            points,
++                            color: *color,
++                            stroke_width: *stroke_width,
++                        }),
++                        Pass::Fill,
++                        window,
++                    );
++                },
++            )
++            .size_full(),
++        )
++    }
++}
++
++#[gpui::test]
++fn shared_fill_budget_skips_malformed_layers_without_bypassing_total_input_cap(
++    cx: &mut TestAppContext,
++) {
++    let handle = *cx.add_window(|_, _| Empty);
++    let fixture = cx
++        .update_window(handle, |_, window, cx| {
++            window.replace_root(cx, |_, _| RawBudgetFixture { layers: Vec::new() })
++        })
++        .unwrap();
++    let visual = VisualTestContext::from_window(handle, cx);
++    visual.simulate_resize(size(px(440.0), px(200.0)));
++    visual.run_until_parked();
++    let invalid = [
++        (vec![[0.0, 0.0], [1.0, f32::NAN]], 0x55ddff, px(1.0)),
++        (vec![[1.0, 0.0], [0.0, 0.5]], 0x55ddff, px(1.0)),
++        (points(), 0x1000000, px(1.0)),
++        (points(), 0x55ddff, px(f32::NAN)),
++        (points(), 0x55ddff, px(-1.0)),
++        (points(), 0x55ddff, px(5.0)),
++        (vec![[0.0, 0.0], [1.0, 0.0]], 0x55ddff, px(1.0)),
++    ];
++    for (supplied, active_count) in [(257, 1), (258, 1), (257, 0)] {
++        let mut layers = (0..supplied)
++            .map(|i| invalid[i % invalid.len()].clone())
++            .collect::<Vec<_>>();
++        if active_count == 1 {
++            layers[0] = (points(), 0xff6655, px(1.0));
++        }
++        RECORDS.with(|r| *r.borrow_mut() = Some(Vec::new()));
++        fixture.update(cx, |view, cx| {
++            view.layers = layers;
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let records = RECORDS.with(|r| r.borrow_mut().take().unwrap());
++        if supplied > 257 || active_count == 0 {
++            assert!(
++                records.is_empty(),
++                "total {supplied}/active {active_count}: cap and empty output remain strict"
++            );
++        } else {
++            assert!(
++                !records.is_empty(),
++                "actual shared painter must submit valid active path"
++            );
++            for record in records {
++                assert_eq!(record.pass, Pass::Fill);
++                assert_eq!(record.color, 0xff6655);
++                assert_eq!(
++                    record.alpha, 0.14,
++                    "malformed/floor layers cannot spend ink"
++                );
++                assert_eq!(record.mask, record.plot);
++            }
++        }
++    }
++}

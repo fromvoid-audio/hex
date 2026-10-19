@@ -1,0 +1,29 @@
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+warning: variable does not need to be mutable
+   --> crates/hex-widgets/src/spectrum_painter/tests.rs:425:9
+    |
+425 |     let mut visual = VisualTestContext::from_window(handle, cx);
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/hex-widgets/src/spectrum_painter/tests.rs:537:9
+    |
+537 |     let mut visual = VisualTestContext::from_window(handle, cx);
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: `hex-widgets` (lib test) generated 2 warnings (run `cargo fix --lib -p hex-widgets --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.95s
+     Running unittests src/lib.rs (target/debug/deps/hex_widgets-ba49dcf5db2a657f)
+
+running 2 tests
+test spectrum_painter::tests::shared_fill_budget_skips_malformed_layers_without_bypassing_total_input_cap ... ok
+test spectrum_painter::tests::production_active_fill_budget_ignores_silent_and_invalid_layers ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 66 filtered out; finished in 0.03s
+

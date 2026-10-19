@@ -1,0 +1,9 @@
+{
+  "base": "e6a0bc97fae81df55fc0b2869a4800c415cbb51a",
+  "head": "fa67814c5e4c005b9bc2e290e55103a3b34b5ace",
+  "tree": "e9f010bf8d8e89d72b240076e82362f1b481a2d7",
+  "files": [
+    "crates/hex-widgets/src/spectrum_painter.rs",
+    "crates/hex-widgets/src/spectrum_painter/tests.rs"
+  ]
+}

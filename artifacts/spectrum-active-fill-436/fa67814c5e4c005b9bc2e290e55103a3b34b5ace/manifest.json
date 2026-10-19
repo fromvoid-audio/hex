@@ -1,0 +1,335 @@
+{
+  "schema": 1,
+  "ticket": 2832,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/436",
+  "source": {
+    "base": "e6a0bc97fae81df55fc0b2869a4800c415cbb51a",
+    "head": "fa67814c5e4c005b9bc2e290e55103a3b34b5ace",
+    "tree": "e9f010bf8d8e89d72b240076e82362f1b481a2d7",
+    "files": [
+      "crates/hex-widgets/src/spectrum_painter.rs",
+      "crates/hex-widgets/src/spectrum_painter/tests.rs"
+    ]
+  },
+  "file_hashes": {
+    "crates/hex-widgets/src/spectrum_painter.rs": {
+      "before_blob": "8c54330693cb2827ade0232eaa3c8b16de3f5b90",
+      "before_sha256": "161627e2ecf595c404d40fb607e1ea5a3a7794ba1c2f0eda820093aaedfe9dcb",
+      "after_blob": "f4f03eb3e170e611355a4b7d59fee226c6515dfb",
+      "after_sha256": "88e4af287d20f0ebe11e29b051a5edb4f968409c479e324f91d9a93537b0e709"
+    },
+    "crates/hex-widgets/src/spectrum_painter/tests.rs": {
+      "before_blob": "970640673e45ff8165833b71b3a073d16553fb3c",
+      "before_sha256": "83adb8392f5cc9f48b93800051f5ddd9817f11b9e7a33747ef136af26b9f5cb1",
+      "after_blob": "3d62243a5457f11d3bda253e4ec6dd1439b4a3df",
+      "after_sha256": "262dcea9d45cccd0aaffedf10b682c0c3b70831195e6b131269be5679accb8c0"
+    }
+  },
+  "runs": {
+    "original-red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 24.569,
+      "start_tree": {
+        "commit": "e6a0bc97fae81df55fc0b2869a4800c415cbb51a",
+        "content_sha256": "9c9b3078fae13d7596f0cc84dac5401870a0c0e37688cc8c164db0db8e11118c",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-widgets/src/spectrum_painter/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-widgets",
+            "--locked",
+            "production_active_fill_budget_ignores_silent_and_invalid_layers",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:59:17Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-original-red/01-production-fill-budget.log",
+          "started_at": "2026-10-19T00:58:53Z",
+          "status": "failed",
+          "step_id": "production-fill-budget"
+        }
+      ]
+    },
+    "targeted-green": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 5.307,
+      "start_tree": {
+        "commit": "e6a0bc97fae81df55fc0b2869a4800c415cbb51a",
+        "content_sha256": "6ddad92720ca61b61536a905e6da7649208553f2460af0e5fab6534185ac2e81",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-widgets/src/spectrum_painter.rs",
+          " M crates/hex-widgets/src/spectrum_painter/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-widgets",
+            "--locked",
+            "fill_budget_",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:59:57Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-targeted-green/01-shared-production-fill-cases.log",
+          "started_at": "2026-10-19T00:59:51Z",
+          "status": "passed",
+          "step_id": "shared-production-fill-cases"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 21.663,
+      "start_tree": {
+        "commit": "fa67814c5e4c005b9bc2e290e55103a3b34b5ace",
+        "content_sha256": "508f587a08f61eb27af3505e846f90a6fdcaf86b334907d23a954b34de7f18e7",
+        "dirty": false,
+        "dirty_files": []
+      },
+      "steps": [
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-19T01:00:29Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-qualification/01-architecture.log",
+          "started_at": "2026-10-19T01:00:29Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-19T01:00:29Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-qualification/02-gpui-patch.log",
+          "started_at": "2026-10-19T01:00:29Z",
+          "status": "passed",
+          "step_id": "gpui-patch"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-19T01:00:29Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-qualification/03-ui-style.log",
+          "started_at": "2026-10-19T01:00:29Z",
+          "status": "passed",
+          "step_id": "ui-style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-19T01:00:29Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-qualification/04-device-layout.log",
+          "started_at": "2026-10-19T01:00:29Z",
+          "status": "passed",
+          "step_id": "device-layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T01:00:35Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-qualification/05-format.log",
+          "started_at": "2026-10-19T01:00:29Z",
+          "status": "passed",
+          "step_id": "format"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T01:00:35Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-qualification/06-diff.log",
+          "started_at": "2026-10-19T01:00:35Z",
+          "status": "passed",
+          "step_id": "diff"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-widgets",
+            "--locked"
+          ],
+          "ended_at": "2026-10-19T01:00:40Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-qualification/07-widgets.log",
+          "started_at": "2026-10-19T01:00:35Z",
+          "status": "passed",
+          "step_id": "widgets"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-widgets",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T01:00:50Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/spectrum-active-fill-436-qualification/08-widgets-clippy.log",
+          "started_at": "2026-10-19T01:00:40Z",
+          "status": "passed",
+          "step_id": "widgets-clippy"
+        }
+      ]
+    }
+  },
+  "payloads": {
+    "436-component.py": {
+      "bytes": 553,
+      "sha256": "8746ad5768b3797a152c91e12a4d02a5d7e12d96ef78fb35790524295f1682e0"
+    },
+    "436-evidence.py": {
+      "bytes": 8433,
+      "sha256": "d38d08bf3c98983247e93db1a67b3d31b22c5ff4db5044d4ab808b5679c827f3"
+    },
+    "436-fill-test.rs": {
+      "bytes": 2742,
+      "sha256": "709652d02269e4c7c24197e6de1d71f0393e9d4b750dedd44f946d9ae0834fde"
+    },
+    "436-original-red-fixture.rs": {
+      "bytes": 17468,
+      "sha256": "a19eceea69bb9b4410fa5ec603edd8624617756089cb61c964ef8e93c7dce756"
+    },
+    "436-original-red.stdout": {
+      "bytes": 183,
+      "sha256": "2a0e06992392117ba35909c659a88eebce16f1b8a90890ffa17fc81ace499262"
+    },
+    "436-qualification-steps.json": {
+      "bytes": 514,
+      "sha256": "33e2e4e6b2a8d2c8de37c7df2ab442448a2e0ced74469462a8c2a5d7592cbe3f"
+    },
+    "436-qualification.stdout": {
+      "bytes": 505,
+      "sha256": "952275a0851c4c83cf7f6b2b9534acaa24a341ff275fb38ea41e2453c142fa3e"
+    },
+    "436-source.json": {
+      "bytes": 288,
+      "sha256": "fccbec1cb8818360745a1b412b2e227b86e0410878ad4a9a1eb85e47afaf2902"
+    },
+    "436-targeted-green.stdout": {
+      "bytes": 197,
+      "sha256": "5e9e4948014c3c47c4be55f506d99304eb228d77048153268612cc6daacfafc9"
+    },
+    "HANDOFF.md": {
+      "bytes": 3954,
+      "sha256": "747c32dc569877579fa8be31432b44566a4b006727de95833defbbefb89ec86b"
+    },
+    "before-after-hashes.json": {
+      "bytes": 721,
+      "sha256": "0b24928e415513b51b6ca99f284ea69ed90f6c1729ab75b80b3474413e802a3e"
+    },
+    "owner.patch": {
+      "bytes": 8533,
+      "sha256": "7036d03db8c9e19b4c55754c48fff267a6ab2dc2c96f01dfbd0cba3b4f6a2e49"
+    },
+    "red-reconstruction-proof.json": {
+      "bytes": 206,
+      "sha256": "88fee9263498a5a59d396a05a49101927950d40786afdf03a8d777490788075c"
+    },
+    "runs/original-red/01-production-fill-budget.log": {
+      "bytes": 1529,
+      "sha256": "8f786eb17c14b93feca57fdc8f85f783e2e92b3ae5793c175e4016f47f7a2222"
+    },
+    "runs/original-red/summary.json": {
+      "bytes": 9925,
+      "sha256": "7a906913dd09f18c56aa548c152e2e0a32793009f7604a4db2801405d9256c1f"
+    },
+    "runs/qualification/01-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/02-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/03-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/04-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/05-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/06-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/07-widgets.log": {
+      "bytes": 6609,
+      "sha256": "b727c659477324d9981d806d970414c0e475314335a7599e6ec476543466e110"
+    },
+    "runs/qualification/08-widgets-clippy.log": {
+      "bytes": 199,
+      "sha256": "5dfd8a56e8fd35659576685d8629f9517e66af8ae338477aab4b409eba86a981"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 12652,
+      "sha256": "ef4ded69bf7ca2578f152dd815ce6f2163ce83b23d402c445f27702e92aec0da"
+    },
+    "runs/targeted-green/01-shared-production-fill-cases.log": {
+      "bytes": 1289,
+      "sha256": "ae47d5ededc5c0b77726860f25b30cb467f5d1ad36da72b1304f9f54e15f6079"
+    },
+    "runs/targeted-green/summary.json": {
+      "bytes": 10062,
+      "sha256": "6d8c3c0a57423585c68328cf08fdb85ca87f065a68d2b4417e3c24731eddcd88"
+    }
+  }
+}
