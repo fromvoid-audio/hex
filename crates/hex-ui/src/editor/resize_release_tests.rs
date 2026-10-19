@@ -874,6 +874,20 @@ fn review_midi_clip(editor: &Entity<EditorView>, visual: &mut VisualTestContext)
 }
 
 fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool) {
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        captured_release_case(cx, midi, edge, false, false, if outside { 1 } else { 0 });
+    }
+}
+
+fn captured_release_case(
+    cx: &mut TestAppContext,
+    midi: bool,
+    edge: TrimEdge,
+    stretch: bool,
+    enabled_warp: bool,
+    destination: u8,
+) {
+    let outside = destination != 0;
     let (_files, handle, editor, audio) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
@@ -882,6 +896,28 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
     } else {
         audio
     };
+    if enabled_warp {
+        let settings = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            hex_project::default_audio_warp(
+                p.clip(clip).unwrap(),
+                p.tempo_map(),
+                hex_project::WarpMode::Beats {
+                    preserve: hex_project::BeatsPreserve::Transients,
+                    tail: hex_project::BeatsTail::Forward,
+                    decay: 100,
+                },
+            )
+            .unwrap()
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings)
+            })))
+        });
+        pump(&editor, &mut visual);
+    }
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::AddTrack {
             name: "other release target".into()
@@ -900,21 +936,35 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
     let prefix = if midi { "midi-clip" } else { "clip" };
     let down = visual
         .debug_bounds(Box::leak(
-            format!("{prefix}-trim-right-{}", clip.value()).into_boxed_str(),
+            format!(
+                "{prefix}-trim-{}-{}",
+                if edge == TrimEdge::Left {
+                    "left"
+                } else {
+                    "right"
+                },
+                clip.value()
+            )
+            .into_boxed_str(),
         ))
         .unwrap()
         .center();
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    let modifiers = Modifiers {
+        shift: stretch,
+        ..Modifiers::default()
+    };
+    let direction = if edge == TrimEdge::Left { 1.0 } else { -1.0 };
+    visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
     visual.simulate_mouse_move(
-        point(down.x - px(12.0), down.y),
+        point(down.x + px(12.0 * direction), down.y),
         MouseButton::Left,
-        Modifiers::default(),
+        modifiers,
     );
     visual.run_until_parked();
     visual.simulate_mouse_move(
-        point(down.x - px(40.0), down.y),
+        point(down.x + px(40.0 * direction), down.y),
         MouseButton::Left,
-        Modifiers::default(),
+        modifiers,
     );
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
@@ -939,7 +989,23 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
             format!("arrangement-lane-{}", other.value()).into_boxed_str(),
         ))
         .unwrap();
-    let release = if outside {
+    let release = if destination >= 2 {
+        let selector = match destination {
+            2 => Box::leak(format!("arrangement-track-header-{}", other.value()).into_boxed_str()),
+            3 => "arrangement-loop-rail-row",
+            4 => "editor-status-bar",
+            5 => "browser-audition-waveform",
+            _ => unreachable!("private fixture destination"),
+        };
+        let bounds = visual
+            .debug_bounds(selector)
+            .expect("actual rendered receiver");
+        if matches!(destination, 3 | 4) {
+            point(down.x + px(40.0 * direction), bounds.center().y)
+        } else {
+            bounds.center()
+        }
+    } else if outside {
         let source = editor.read_with(&visual, |v, _| {
             if midi {
                 v.active_midi_trim_drag.as_ref().unwrap().source_track
@@ -947,7 +1013,7 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
                 v.active_trim_drag.as_ref().unwrap().source_track
             }
         });
-        let source_lane = visual
+        let _source_lane = visual
             .debug_bounds(Box::leak(
                 format!("arrangement-lane-{}", source.value()).into_boxed_str(),
             ))
@@ -956,7 +1022,7 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
             assert_eq!(v.arrangement_bounds_epoch, v.drag_layout_generation);
             v.arrangement_bounds.unwrap()
         });
-        let position = point(source_lane.center().x, px(body.top) - px(20.0));
+        let position = point(down.x + px(40.0 * direction), px(body.top) - px(20.0));
         let browser = visual.debug_bounds("resize-browser-hit-region").unwrap();
         let bounds = gpui::Bounds::new(
             point(px(body.left), px(body.top)),
@@ -966,19 +1032,21 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
         assert!(!bounds.contains(&position));
         position
     } else {
-        point(down.x - px(40.0), lane.center().y)
+        point(down.x + px(40.0 * direction), lane.center().y)
     };
     editor.read_with(&visual, |v, _| {
         let target = v
             .hovered_drag_target(f32::from(release.x), f32::from(release.y))
             .map(|(track, _)| track);
-        assert_eq!(target, if outside { None } else { Some(other) });
+        if destination <= 1 {
+            assert_eq!(target, if outside { None } else { Some(other) });
+        }
     });
     eprintln!(
         "resize review release midi={midi} outside={outside} point={release:?} browser={:?}",
         visual.debug_bounds("resize-browser-hit-region")
     );
-    visual.simulate_mouse_move(release, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(release, MouseButton::Left, modifiers);
     visual.run_until_parked();
     let (desired_audio, desired_midi) = editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -992,13 +1060,17 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
         )
     });
     assert!(desired_audio.is_some() || desired_midi.is_some());
-    visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
         if let Some(expected) = &desired_audio {
             assert_eq!(p.clip(clip), Some(expected), "captured audio release midi={midi} outside={outside}");
-            assert!(matches!(v.last_enqueued_edit, Some(Command::TrimClipEdge { clip: id, .. }) if id == clip));
+            assert!(if stretch {
+                matches!(v.last_enqueued_edit, Some(Command::StretchAudioClipEdge { clip: id, edge: actual, .. }) if id == clip && actual == edge)
+            } else {
+                matches!(v.last_enqueued_edit, Some(Command::TrimClipEdge { clip: id, edge: actual, .. }) if id == clip && actual == edge)
+            });
         }
         if let Some(expected) = desired_midi {
             let actual = p.midi_clip(clip).unwrap();
@@ -1339,5 +1411,38 @@ fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enable
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
         });
+    }
+}
+
+#[gpui::test]
+fn captured_release_audio_over_header_ruler_status_and_browser(cx: &mut TestAppContext) {
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        for destination in 2..=5 {
+            captured_release_case(cx, false, edge, false, false, destination);
+        }
+    }
+}
+#[gpui::test]
+fn captured_release_midi_over_header_ruler_status_and_browser(cx: &mut TestAppContext) {
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        for destination in 2..=5 {
+            captured_release_case(cx, true, edge, false, false, destination);
+        }
+    }
+}
+#[gpui::test]
+fn captured_release_shift_over_other_track_and_foreign_panels(cx: &mut TestAppContext) {
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        for destination in 0..=5 {
+            captured_release_case(cx, false, edge, true, false, destination);
+        }
+    }
+}
+#[gpui::test]
+fn captured_release_enabled_warp_over_other_track_and_foreign_panels(cx: &mut TestAppContext) {
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        for destination in 0..=5 {
+            captured_release_case(cx, false, edge, false, true, destination);
+        }
     }
 }
