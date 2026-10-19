@@ -53,7 +53,9 @@ def sha(path: Path) -> str:
 
 @contextmanager
 def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False,
-                       expected_owner_sha256: str | None = None):
+                       expected_owner_sha256: str | None = None,
+                       expected_recreated_target_identity: dict[str, int] | None = None,
+                       recovery_inactive_check=None):
     """Build/identify only; shared by delivery and nonactivating review staging.
 
     The target lock spans compilation, source validation and the caller's copy.
@@ -62,6 +64,9 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
     recovery = {"adopt": adopt}
     if expected_owner_sha256 is not None:
         recovery["expected_owner_sha256"] = expected_owner_sha256
+    if expected_recreated_target_identity is not None:
+        recovery.update(expected_recreated_target_identity=expected_recreated_target_identity,
+                        recovery_inactive_check=recovery_inactive_check)
     with runner.guarded_release(**recovery) as ownership:
         argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
         log_path = runner.output_dir / "optimized-build.log"
@@ -129,6 +134,16 @@ def assert_inactive(app: Path) -> None:
         if len(fields) == 2 and str(Path(fields[1]).absolute()).casefold().startswith(prefix):
             raise DeliveryError(f"hex is running (pid {fields[0]}); save, quit and retry. "
                                 "no application was force-quit; disk replacement cannot reload a process")
+
+
+def assert_recovery_inactive(app: Path) -> None:
+    """Never quit; recheck both configured app and raw desktops before mutation."""
+    assert_inactive(app)
+    for line in run(["ps", "-ww", "-axo", "pid=,comm="]).splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) == 2 and Path(fields[1].rstrip("/")).name.casefold() == "hex-desktop":
+            raise DeliveryError(f"raw hex-desktop is running (pid {fields[0]}); save, quit and retry; "
+                                "no process was terminated")
 
 
 def inventory(app: Path, *, signed_payload: bool = False, include_receipt: bool = False) -> dict[str, str]:
@@ -467,8 +482,22 @@ def build(args) -> dict:
         runner.output_dir.mkdir(parents=True)
         if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
             raise DeliveryError(str(runner.summary))
+        replacement = None
+        device = getattr(args, "expected_recreated_target_device", None)
+        inode = getattr(args, "expected_recreated_target_inode", None)
+        if device is not None or inode is not None:
+            if (type(device) is not int or device < 0 or type(inode) is not int or inode <= 0
+                    or not getattr(args, "adopt_release_target", False)
+                    or not getattr(args, "expected_release_owner_sha256", None)):
+                raise DeliveryError("explicit recreated target requires both identity integers and owner CAS")
+            replacement = {"device": device, "inode": inode}
+        recovery = {}
+        if replacement is not None:
+            recovery = {"expected_recreated_target_identity": replacement,
+                        "recovery_inactive_check": lambda: assert_recovery_inactive(app)}
         with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False),
-                                expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None)) as (binary, release_ownership):
+                                expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
+                                **recovery) as (binary, release_ownership):
             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
             argv = release_ownership["build_argv"]
@@ -543,7 +572,16 @@ def main() -> int:
                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
     parser.add_argument("--expected-release-owner-sha256",
                         help="require this exact previously inspected owner under the release mutation lock")
+    parser.add_argument("--expected-recreated-target-device", type=int,
+                        help="explicit recovery: require this inspected replacement target device")
+    parser.add_argument("--expected-recreated-target-inode", type=int,
+                        help="explicit recovery: require this inspected replacement target inode")
     args = parser.parse_args()
+    if args.expected_recreated_target_device is not None or args.expected_recreated_target_inode is not None:
+        if (args.expected_recreated_target_device is None or args.expected_recreated_target_device < 0
+                or args.expected_recreated_target_inode is None or args.expected_recreated_target_inode <= 0
+                or not args.expected_release_owner_sha256 or not args.adopt_release_target):
+            parser.error("recreated-target recovery requires device/inode, owner SHA256 and explicit adoption")
     if args.expected_release_owner_sha256 and not args.adopt_release_target:
         parser.error("--expected-release-owner-sha256 requires --adopt-release-target")
     def interrupted(_signum, _frame):

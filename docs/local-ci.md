@@ -162,6 +162,20 @@ The packaging CLI exposes `--adopt-release-target` for that assertion; it does
 not imply dev adoption or loosen any disk/profile/source checks. Direct Cargo
 builds still do not participate in this cooperative lock.
 
+The launcher additionally exposes the narrower `--recover-release-target` path
+for an explicitly inspected **same-repository recreated directory**. Its optional
+replacement identity is valid only with exact old-owner SHA256, the same full
+workspace/common repository, ancestor clean source and unchanged retained package
+specifications. Under the target lock the guard checks those facts again, along
+with a required packaging inactivity check immediately before mutation. No
+replacement identity means the existing automatic expected-owner guard still
+requires the retained old target identity. This adds no owner format or general
+adoption permission. Exact own PENDING state may retry at the same current
+identity; unchanged READY state cannot use this exception. Recovery plus --test
+uses a fresh invocation-owned verification target with ordinary no-adopt CI,
+leaving the old dev marker and original release packaging target independent.
+See `docs/test-builds.md` for refusal and race limits.
+
 Before incompatible release cleanup, the guard durably writes a pending marker.
 It invokes `cargo clean --profile release` for current workspace package IDs
 only; it never clears the whole target. Failed cleanup, interrupted builds,
