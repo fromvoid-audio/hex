@@ -28,6 +28,23 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_nested_single_component_member_owns_its_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a").mkdir()
+            for path in ("Cargo.toml", "a/Cargo.toml", "a/lib.rs"):
+                (root / path).write_text("original")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            metadata = {"workspace_members": ["root", "child"], "packages": [
+                {"id": "root", "manifest_path": str(root / "Cargo.toml")},
+                {"id": "child", "manifest_path": str(root / "a/Cargo.toml")}]}
+            before = inputs.workspace_snapshot(root, os.environ, metadata)
+            (root / "a/lib.rs").write_text("changed")
+            after = inputs.workspace_snapshot(root, os.environ, metadata)
+            changed = {p["spec"]: p["sha256"] != q["sha256"] for p, q in zip(before["packages"], after["packages"])}
+            self.assertEqual(changed, {"child": True, "root": False})
+
     def test_review_target_directory_is_ownership_not_semantic_config(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

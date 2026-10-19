@@ -133,7 +133,7 @@ def workspace_snapshot(root: Path, env: dict, metadata: dict) -> dict:
         matches = [p for p in packages if p["path"] == "." or name.startswith(p["path"] + "/")]
         if not matches:
             continue
-        package = max(matches, key=lambda p: len(p["path"]))
+        package = max(matches, key=lambda p: 0 if p["path"] == "." else len(p["path"]))
         path = root / name
         try:
             info = path.lstat()
