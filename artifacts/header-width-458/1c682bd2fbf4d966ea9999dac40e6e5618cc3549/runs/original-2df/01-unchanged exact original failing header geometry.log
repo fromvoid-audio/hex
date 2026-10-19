@@ -1,0 +1,32 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 58.95s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+header bounds window=Bounds { origin: Point { x: 0px, y: 0px }, size: Size { 880px × 540px } } title=Bounds { origin: Point { x: 232px, y: 1px }, size: Size { 416px × 19px } } version=Bounds { origin: Point { x: 686px, y: 2.5px }, size: Size { 96px × 16px } } log=Bounds { origin: Point { x: 786px, y: 0.5px }, size: Size { 20px × 20px } } changelog=Bounds { origin: Point { x: 810px, y: 0.5px }, size: Size { 62px × 20px } } tempo=Bounds { origin: Point { x: 0px, y: 22px }, size: Size { 78px × 25px } } import=Bounds { origin: Point { x: 140px, y: 24.5px }, size: Size { 20px × 20px } }
+
+thread 'editor::header::ui_tests::compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights' (158877) panicked at crates/hex-ui/src/editor/header.rs:344:13:
+assertion failed: f32::from(output_status.size.width) > 0.0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::header::ui_tests::compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights ... FAILED
+
+failures:
+
+failures:
+    editor::header::ui_tests::compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 923 filtered out; finished in 0.37s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

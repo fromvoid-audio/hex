@@ -1,0 +1,30 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.98s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+toolbar diagnostics restart=Bounds { origin: Point { x: 850px, y: 24.5px }, size: Size { 20px × 20px } } output=Bounds { origin: Point { x: 872px, y: 25px }, size: Size { 0px × 19px } } name=Some(Bounds { origin: Point { x: 683px, y: 25px }, size: Size { 87px × 19px } }) snap=Some(Bounds { origin: Point { x: 547px, y: 24.5px }, size: Size { 68px × 20px } }) fit=Some(Bounds { origin: Point { x: 617px, y: 24.5px }, size: Size { 20px × 20px } })
+header bounds window=Bounds { origin: Point { x: 0px, y: 0px }, size: Size { 880px × 540px } } title=Bounds { origin: Point { x: 232px, y: 1px }, size: Size { 416px × 19px } } version=Bounds { origin: Point { x: 650px, y: 2.5px }, size: Size { 132px × 16px } } log=Bounds { origin: Point { x: 786px, y: 0.5px }, size: Size { 20px × 20px } } changelog=Bounds { origin: Point { x: 810px, y: 0.5px }, size: Size { 62px × 20px } } tempo=Bounds { origin: Point { x: 0px, y: 22px }, size: Size { 78px × 25px } } import=Bounds { origin: Point { x: 140px, y: 24.5px }, size: Size { 20px × 20px } }
+
+thread 'editor::header::ui_tests::compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights' (164438) panicked at crates/hex-ui/src/editor/header.rs:345:13:
+assertion failed: f32::from(output_status.size.width) > 0.0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::header::ui_tests::compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights ... FAILED
+
+failures:
+
+failures:
+    editor::header::ui_tests::compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 925 filtered out; finished in 0.32s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

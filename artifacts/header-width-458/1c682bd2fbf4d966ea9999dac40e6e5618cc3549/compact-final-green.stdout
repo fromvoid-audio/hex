@@ -1,0 +1,21 @@
+[1/10] header rendered controls and toolbar status matrix: running
+[1/10] header rendered controls and toolbar status matrix: passed
+[2/10] workspace input guard regressions: running
+[2/10] workspace input guard regressions: passed
+[3/10] strict affected UI Clippy: running
+[3/10] strict affected UI Clippy: passed
+[4/10] architecture guard: running
+[4/10] architecture guard: passed
+[5/10] GPUI guard: running
+[5/10] GPUI guard: passed
+[6/10] dependency guard: running
+[6/10] dependency guard: passed
+[7/10] UI style guard: running
+[7/10] UI style guard: passed
+[8/10] device layout guard: running
+[8/10] device layout guard: passed
+[9/10] format: running
+[9/10] format: passed
+[10/10] diff: running
+[10/10] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-compact-final-green/summary.json

@@ -1,0 +1,128 @@
+{
+  "kind": "evidence-only-never-build-merge",
+  "source": "1c682bd2fbf4d966ea9999dac40e6e5618cc3549",
+  "tree": "f10feb02e0b40241d28ac5497fc77fbcee8ea843",
+  "parent": "1d38161acf6ef4cd54b75b0f06f36e32ad8497ac",
+  "payloads": {
+    "HANDOFF.md": {
+      "bytes": 5163,
+      "sha256": "82226884d1eb0fa8556d787c3c525f77e288911eb69333020717a58b8db4e73c"
+    },
+    "compact-final-green.stdout": {
+      "bytes": 832,
+      "sha256": "b7e5f9b78ad8f3cc3f3927234df0b220a48d75daa2559a2412986a0805da4ee2"
+    },
+    "compact-green.stdout": {
+      "bytes": 235,
+      "sha256": "81896b77bfd5f70f5deebbff012b93a44feb51f51ee5fa8b7f811571715f39b6"
+    },
+    "file-hashes.json": {
+      "bytes": 504,
+      "sha256": "3748b3672c389bd479db1ca745588c556283099dc89c153efda5fb60f50a1c6f"
+    },
+    "geometry-diagnostic-1d381.stdout": {
+      "bytes": 215,
+      "sha256": "b67e06a7a772018966bc3369e6de18d776fe83ecbae503f2e01ba515067ec8fa"
+    },
+    "header-component.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "new-matrix-baseline.stdout": {
+      "bytes": 211,
+      "sha256": "3b06dbccc7aecac88cf2e808a2ef327517eef98ee0029eb6bc0e2edfbce33a1a"
+    },
+    "original-2df.stdout": {
+      "bytes": 230,
+      "sha256": "2e26769276d2d83808616c236b06974c44197aa2d0f32c83de35a697f67b2ce9"
+    },
+    "owner.patch": {
+      "bytes": 7598,
+      "sha256": "39535df6e5051418b8395504c8c8f41499b97ae7fefd66ec465a9fa074882746"
+    },
+    "runs/compact-final-green/01-header rendered controls and toolbar status matrix.log": {
+      "bytes": 2574,
+      "sha256": "3ce2523f0c36ab5b68071e7318ab464c23f01b9194d547aff49a73ab644d2355"
+    },
+    "runs/compact-final-green/02-workspace input guard regressions.log": {
+      "bytes": 1446,
+      "sha256": "66a4124f94f4fd3f28d9dcf0190eaf1484dd3ac9777995b989e9769b20bba281"
+    },
+    "runs/compact-final-green/03-strict affected UI Clippy.log": {
+      "bytes": 1093,
+      "sha256": "596d258dce8eeb3c1c06b7d55879cb780ae324f907e462f80198e4a2861229a9"
+    },
+    "runs/compact-final-green/04-architecture guard.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/compact-final-green/05-GPUI guard.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/compact-final-green/06-dependency guard.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/compact-final-green/07-UI style guard.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/compact-final-green/08-device layout guard.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/compact-final-green/09-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/compact-final-green/10-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/compact-final-green/summary.json": {
+      "bytes": 14694,
+      "sha256": "12e4a13f8d508f0b48dbc7ec6964b3c7d892daceff69ad029bc822a0490448cc"
+    },
+    "runs/compact-green/01-header rendered controls and toolbar status matrix.log": {
+      "bytes": 3195,
+      "sha256": "191e1b56e8486098f8d6724015744fc330751967ad42753e183c216b84a9ab00"
+    },
+    "runs/compact-green/summary.json": {
+      "bytes": 10784,
+      "sha256": "5dacd9a7e6771d78522ca3a9de3d54d37a0eb0b72a7e9492dfc7a41bbbcb3174"
+    },
+    "runs/geometry-diagnostic-1d381/01-actual toolbar geometry diagnostic.log": {
+      "bytes": 2623,
+      "sha256": "535bc5ef6ec8d03ac27a663183419e8e4eed8b65b361976924a70e42ca2bcb1e"
+    },
+    "runs/geometry-diagnostic-1d381/summary.json": {
+      "bytes": 10053,
+      "sha256": "0e6c127696618969457479848af16191aa43673a75f19349d2d0d6e66f2a5dd8"
+    },
+    "runs/new-matrix-baseline/01-new compact toolbar matrix baseline.log": {
+      "bytes": 1187,
+      "sha256": "1797fff9a062087e5a846d3b8f0aa76e90b7205d93e0ceab949bd31fde172d96"
+    },
+    "runs/new-matrix-baseline/summary.json": {
+      "bytes": 10012,
+      "sha256": "53ee84cb108470920526203a6f05a40b5e7f71a7af34eb5c3b0a17bfd9ec022c"
+    },
+    "runs/original-2df/01-unchanged exact original failing header geometry.log": {
+      "bytes": 2367,
+      "sha256": "b72b67052ad993b4b09aa7d0bbb4d0ff017bd6096fce21ed43d5c65c5cd52494"
+    },
+    "runs/original-2df/summary.json": {
+      "bytes": 9860,
+      "sha256": "d1332caaf64bf45431f1c73c3505b94380e86837724409bec5f8fdb2720d1591"
+    },
+    "source/crates/hex-ui/src/editor/header.rs": {
+      "bytes": 20643,
+      "sha256": "0dd65f7d654af22e1e68960faf081c4e421f0c34bab6e8ac658ba4c220deda5d"
+    },
+    "source/crates/hex-ui/src/editor/transport.rs": {
+      "bytes": 14787,
+      "sha256": "ad9f0eb331c8a576e6d3c54c605655b5f80f1e605b87a727052b79843a6b7c9c"
+    }
+  }
+}

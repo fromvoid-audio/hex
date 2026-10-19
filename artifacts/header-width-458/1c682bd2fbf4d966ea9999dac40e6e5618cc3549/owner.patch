@@ -1,0 +1,164 @@
+diff --git a/crates/hex-ui/src/editor/header.rs b/crates/hex-ui/src/editor/header.rs
+index b3866292..e147fbda 100644
+--- a/crates/hex-ui/src/editor/header.rs
++++ b/crates/hex-ui/src/editor/header.rs
+@@ -142,7 +142,7 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
+         .flex_shrink_0()
+         .flex()
+         .items_center()
+-        .gap(px(2.0))
++        .gap(px(1.0))
+         // The toolbar is below the title row and does not need the traffic-light inset.
+         .pr_2()
+         .border_b_1()
+@@ -363,4 +363,112 @@ mod ui_tests {
+             assert!(!gpui::TitlebarOptions::default().hide_native_window_controls);
+         }
+     }
++
++    #[gpui::test]
++    fn compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces(
++        cx: &mut TestAppContext,
++    ) {
++        use super::super::EditorMode;
++        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
++            cx,
++            Project::new(48_000).unwrap(),
++            Arc::default(),
++        );
++        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        // The existing headless control carrier supplies labels without OS audio.
++        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
++        let (mut output, _backend) = loop {
++            match hex_audio::worker_fixture::open(48_000) {
++                Ok(output) => break output,
++                Err(error)
++                    if error == "audio output is open or still shutting down"
++                        && std::time::Instant::now() < deadline =>
++                {
++                    std::thread::yield_now()
++                }
++                Err(error) => panic!("headless toolbar fixture: {error}"),
++            }
++        };
++        let mut client = output.take_client();
++        for label in [
++            None,
++            Some("audio ready"),
++            Some(
++                "output unavailable: device disconnected; a very long original device name that must remain available in its tooltip",
++            ),
++        ] {
++            if let Some(label) = label {
++                editor.update(&mut visual, |view, cx| {
++                    if let Some(audio) = view.audio.as_mut() {
++                        audio.label = label.into();
++                    } else {
++                        view.audio = Some(crate::EditorAudio {
++                            control: client.take().unwrap(),
++                            sample_rate: 48_000,
++                            label: label.into(),
++                            spectrum_error: None,
++                            mode: hex_session::DocumentAudioMode::Resident,
++                        });
++                    }
++                    cx.notify();
++                });
++            }
++            for mode in [EditorMode::Arrangement, EditorMode::Session] {
++                visual.update(|window, cx| {
++                    editor.update(cx, |view, cx| {
++                        view.set_mode(mode);
++                        view.focus.focus(window);
++                        cx.notify();
++                    })
++                });
++                for width in [880.0, 881.0, 960.0, 1440.0, 880.0] {
++                    visual.simulate_resize(size(px(width), px(540.0)));
++                    visual.run_until_parked();
++                    let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
++                    let name = visual
++                        .debug_bounds(match mode {
++                            EditorMode::Arrangement => "arrange view",
++                            EditorMode::Session => "console view",
++                        })
++                        .unwrap();
++                    let status = visual.debug_bounds("audio output status").unwrap();
++                    let restart = visual
++                        .debug_bounds("restart default audio output · stays stopped")
++                        .unwrap();
++                    // Ioskeley Mono: enough actual shaped width for all seven
++                    // characters of 'offline', not an invisible sliver.
++                    assert!(
++                        status.size.width >= name.size.width * (7.0 / 12.0),
++                        "{width} {mode:?}: status={status:?} name={name:?}"
++                    );
++                    assert!(name.size.width >= px(80.0), "full canonical view name");
++                    assert!(name.right() <= restart.left());
++                    assert!(restart.right() <= status.left());
++                    assert!(status.right() <= toolbar.right() - px(8.0));
++                    assert!(status.size.height <= toolbar.size.height);
++                    for selector in [
++                        "import audio · cmd+i",
++                        "show arrange view · tab",
++                        "show console view · tab",
++                        "restart default audio output · stays stopped",
++                    ] {
++                        let control = visual.debug_bounds(selector).unwrap();
++                        assert_eq!(
++                            control.size,
++                            size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
++                        );
++                        assert!(
++                            control.left() >= toolbar.left() && control.right() <= toolbar.right()
++                        );
++                    }
++                    editor.read_with(&visual, |view, _| {
++                        assert_eq!(view.state.as_ref().unwrap().project, before);
++                        assert_eq!(view.audio_label(), label);
++                        assert_eq!(view.worker_requests_pending, 0);
++                    });
++                }
++            }
++        }
++    }
+ }
+diff --git a/crates/hex-ui/src/editor/transport.rs b/crates/hex-ui/src/editor/transport.rs
+index 6fba421b..0fc11dd9 100644
+--- a/crates/hex-ui/src/editor/transport.rs
++++ b/crates/hex-ui/src/editor/transport.rs
+@@ -112,7 +112,7 @@ impl EditorView {
+                 div()
+                     .w(px(1.0))
+                     .h(px(20.0))
+-                    .mx_1()
++                    .mx(px(1.0))
+                     .bg(rgb(theme::color(theme::PaletteRole::Border))),
+             )
+             .child(self.control_icon(
+@@ -185,7 +185,12 @@ impl EditorView {
+             )
+             .child(
+                 div()
+-                    .w(px(82.0))
++                    // Size the short readout to its text; retain the existing
++                    // upper bound for unusually long project positions.
++                    .max_w(px(82.0))
++                    .flex_shrink_0()
++                    .line_clamp(1)
++                    .text_ellipsis()
+                     .text_xs()
+                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                     .child(theme::text(self.position_label())),
+@@ -201,7 +206,9 @@ impl EditorView {
+                 div()
+                     .id("audio output status")
+                     .debug_selector(|| "audio output status".into())
+-                    .flex_1()
++                    // Status takes available width before the empty spacer;
++                    // a zero flex basis could collapse it at minimum width.
++                    .w(px(230.0))
+                     .max_w(px(230.0))
+                     .min_w_0()
+                     // Keep a definite wrap width during GPUI's second layout

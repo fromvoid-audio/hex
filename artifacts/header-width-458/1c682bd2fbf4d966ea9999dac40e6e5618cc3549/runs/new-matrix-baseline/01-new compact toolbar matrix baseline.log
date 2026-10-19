@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.99s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+
+thread 'editor::header::ui_tests::compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces' (164629) panicked at crates/hex-ui/src/editor/header.rs:441:21:
+880 Arrangement: status=Bounds { origin: Point { x: 872px, y: 25px }, size: Size { 0px × 19px } } name=Bounds { origin: Point { x: 683px, y: 25px }, size: Size { 87px × 19px } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::header::ui_tests::compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces ... FAILED
+
+failures:
+
+failures:
+    editor::header::ui_tests::compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 926 filtered out; finished in 0.33s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
