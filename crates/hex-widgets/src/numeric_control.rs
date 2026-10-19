@@ -59,6 +59,27 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
         KeyBinding::new("down", NumericDown, Some("hex_numeric_control")),
         KeyBinding::new("shift-up", NumericUpFine, Some("hex_numeric_control")),
         KeyBinding::new("shift-down", NumericDownFine, Some("hex_numeric_control")),
+        // Only owners that opt in use Command for fine steps, including drafts.
+        KeyBinding::new(
+            "cmd-up",
+            NumericUpFine,
+            Some("hex_numeric_control && hex_numeric_command_steps"),
+        ),
+        KeyBinding::new(
+            "cmd-down",
+            NumericDownFine,
+            Some("hex_numeric_control && hex_numeric_command_steps"),
+        ),
+        KeyBinding::new(
+            "shift-up",
+            NumericUp,
+            Some("hex_numeric_control && hex_numeric_command_steps"),
+        ),
+        KeyBinding::new(
+            "shift-down",
+            NumericDown,
+            Some("hex_numeric_control && hex_numeric_command_steps"),
+        ),
     ]);
 }
 
@@ -122,6 +143,7 @@ pub struct NumericControlConfig {
     style: ControlStyle,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
+    command_fine_steps: bool,
 }
 
 impl NumericControlConfig {
@@ -146,7 +168,15 @@ impl NumericControlConfig {
             style,
             appearance: NumericControlAppearance::Standard,
             dial_layout: DialLayout::ReadoutGap,
+            command_fine_steps: false,
         })
+    }
+
+    /// Opt into Command-fine arrow steps and stepping a valid local text draft.
+    /// Shift remains coarse; other controls keep their existing Shift-fine policy.
+    pub fn with_command_fine_steps(mut self) -> Self {
+        self.command_fine_steps = true;
+        self
     }
 
     /// Select rail geometry from caller-owned control semantics, never density.
@@ -205,6 +235,7 @@ pub struct NumericControl {
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
     tab_navigation: bool,
+    command_fine_steps: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
@@ -269,6 +300,7 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
+            command_fine_steps,
         } = config;
         Self {
             accessibility_binding: None,
@@ -298,6 +330,7 @@ impl NumericControl {
             meter_readout: Default::default(),
             inline_value_width: None,
             tab_navigation: false,
+            command_fine_steps,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -673,7 +706,26 @@ impl NumericControl {
     }
 
     fn emit_step(&mut self, direction: f64, fine: bool, cx: &mut Context<Self>) {
-        if !self.enabled || self.editing {
+        if !self.enabled {
+            return;
+        }
+        if self.editing {
+            // A composing or invalid draft must never be replaced with the old
+            // canonical value. Stepping remains local until Enter/blur commits.
+            if !self.command_fine_steps || self.marked.is_some() {
+                return;
+            }
+            if let Ok(current) = self.spec.parse(&self.text)
+                && let Ok(value) = self.spec.step(current, direction, fine)
+                && let Ok(text) = self.spec.format(value)
+            {
+                self.text = text;
+                self.text_modified = true;
+                self.invalid_text = false;
+                self.selected = 0..self.text.len();
+                self.reversed = false;
+                cx.notify();
+            }
             return;
         }
         if let Ok(value) = self.spec.step(self.draft, direction, fine) {
@@ -1138,10 +1190,11 @@ impl gpui::Render for NumericControl {
         }
         // A text draft owns printable keys even beneath editor shortcut contexts.
         // Keep numeric editing actions available in the same focused node.
-        let key_context = if self.editing {
-            "hex_numeric_control hex_text_editing"
-        } else {
-            "hex_numeric_control"
+        let key_context = match (self.editing, self.command_fine_steps) {
+            (true, true) => "hex_numeric_control hex_text_editing hex_numeric_command_steps",
+            (false, true) => "hex_numeric_control hex_numeric_command_steps",
+            (true, false) => "hex_numeric_control hex_text_editing",
+            (false, false) => "hex_numeric_control",
         };
         let entity = cx.entity();
         let enabled = self.enabled;

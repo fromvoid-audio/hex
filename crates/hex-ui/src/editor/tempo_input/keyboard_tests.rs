@@ -121,3 +121,165 @@ fn focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm(cx: &mu
         )
     });
 }
+
+fn project_text(editor: &Entity<EditorView>, visual: &VisualTestContext) -> String {
+    editor.read_with(visual, |view, cx| {
+        view.project_tempo_control
+            .as_ref()
+            .unwrap()
+            .entity
+            .read(cx)
+            .display_text()
+            .to_owned()
+    })
+}
+
+#[gpui::test]
+fn project_steps_preserve_bounds_precision_cancel_invalid_and_composition(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment) = fixture(cx);
+    begin(&mut visual, "project-tempo-value");
+    for (text, keys, expected) in [
+        ("1", "down cmd-down", "1"),
+        ("1000", "up cmd-up", "1000"),
+        ("120.123456", "up cmd-down", "121.023456"),
+        ("120", "shift-up shift-down", "120"),
+        ("120", "cmd-up", "120.1"),
+    ] {
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input(text);
+        visual.simulate_keystrokes(keys);
+        assert_eq!(project_text(&editor, &visual), expected);
+    }
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("120.123456");
+    for _ in 0..100 {
+        visual.simulate_keystrokes("cmd-up");
+    }
+    assert_eq!(project_text(&editor, &visual), "130.123456");
+    for _ in 0..100 {
+        visual.simulate_keystrokes("cmd-down");
+    }
+    assert_eq!(project_text(&editor, &visual), "120.123456");
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("nan");
+    visual.simulate_keystrokes("up cmd-down");
+    assert_eq!(project_text(&editor, &visual), "nan");
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("120");
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let entity = view.project_tempo_control.as_ref().unwrap().entity.clone();
+            entity.update(cx, |numeric, cx| {
+                gpui::EntityInputHandler::replace_and_mark_text_in_range(
+                    numeric,
+                    Some(0..3),
+                    "12",
+                    None,
+                    window,
+                    cx,
+                )
+            });
+        })
+    });
+    visual.simulate_keystrokes("up cmd-down");
+    assert_eq!(
+        project_text(&editor, &visual),
+        "12",
+        "composing text is not adjusted"
+    );
+    visual.simulate_keystrokes("escape");
+    assert_eq!(project_text(&editor, &visual), "120");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.last_enqueued_edit.is_none());
+        assert!(!view.state.as_ref().unwrap().can_undo);
+    });
+    // Returning to root focus keeps arrows out of the BPM owner.
+    visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("up down cmd-up cmd-down");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.last_enqueued_edit.is_none())
+    });
+}
+
+#[gpui::test]
+fn sample_bpm_uses_same_arrow_policy_and_actual_canonical_history(cx: &mut TestAppContext) {
+    let (mut visual, editor, environment) = fixture(cx);
+    let path = environment.root().join("samples/tempo.wav");
+    let frames = 96_000_u32;
+    let n = frames * 2;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + n).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&n.to_le_bytes());
+    for _ in 0..frames {
+        bytes.extend_from_slice(&8192_i16.to_le_bytes());
+    }
+    std::fs::write(&path, bytes).unwrap();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Import(path)))
+    });
+    pump(&editor, &mut visual);
+    let clip = editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.as_ref().unwrap().project.tracks()[0].clips()[0].id()
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.clip_view_open = true;
+        let bounds = view.state.as_ref().unwrap().project.clip(clip).unwrap();
+        let settings = hex_project::default_audio_warp(
+            bounds,
+            view.state.as_ref().unwrap().project.tempo_map(),
+            hex_project::WarpMode::RePitch,
+        )
+        .unwrap();
+        assert!(view.enqueue(Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings)
+        })));
+        cx.notify();
+    });
+    pump(&editor, &mut visual);
+    begin(&mut visual, "audio-sample-bpm-value");
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("120.123456");
+    visual.simulate_keystrokes("up cmd-up cmd-down down cmd-down enter");
+    pump(&editor, &mut visual);
+    let tempo = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain
+            .sample_bpm
+            .unwrap()
+            .micro_bpm()
+    };
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(tempo(view), 120_023_456);
+        assert!(matches!(view.last_enqueued_edit, Some(Command::SetAudioClipSampleBpm{clip: actual, ..}) if actual==clip));
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| assert_ne!(tempo(view), 120_023_456));
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| assert_eq!(tempo(view), 120_023_456));
+    begin(&mut visual, "audio-sample-bpm-value");
+    visual.simulate_keystrokes("up cmd-up escape");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| assert_eq!(tempo(view), 120_023_456));
+}
