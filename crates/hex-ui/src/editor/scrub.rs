@@ -38,6 +38,12 @@ pub(super) struct ScrubState {
 }
 
 impl EditorView {
+    /// Includes a released final target until its existing admission/refusal
+    /// retires it: switching modes must not silently discard that target.
+    pub(super) fn scrub_active(&self) -> bool {
+        self.scrub.gesture.is_some()
+    }
+
     pub(super) fn update_scrub_geometry(&mut self, bounds: Bounds<Pixels>) {
         if self
             .scrub

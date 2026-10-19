@@ -118,8 +118,18 @@ pub(crate) fn apply(
 ) -> Result<Created, Invalid> {
     use crate::Command;
     match command {
-        Command::AddScene { name } => {
+        Command::AddScene { name } => apply(project, Command::InsertScene { name, before: None }),
+        Command::InsertScene { name, before } => {
             crate::edit::name_valid(&name)?;
+            let index = match before {
+                Some(anchor) => project
+                    .session
+                    .scenes
+                    .iter()
+                    .position(|scene| scene.id == anchor)
+                    .ok_or(Invalid("scene insertion anchor no longer exists"))?,
+                None => project.session.scenes.len(),
+            };
             if project.session.scenes.len() >= MAX_SCENES {
                 return Err(Invalid("scene limit reached"));
             }
@@ -129,7 +139,7 @@ pub(crate) fn apply(
                 .try_reserve(1)
                 .map_err(|_| Invalid("could not reserve scene storage"))?;
             let id = SceneId(project.allocate_id()?);
-            project.session.scenes.push(Scene { id, name });
+            project.session.scenes.insert(index, Scene { id, name });
             Ok(Created::Scene(id))
         }
         Command::DuplicateScene(scene) => duplicate_scene(project, scene),

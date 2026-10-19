@@ -1,34 +1,27 @@
 //! Native action dispatch and canonical history for track keyboard shortcuts.
-use super::EditorView;
 use super::clip_drag_ui_test::audio_project;
+use super::{EditorView, test_environment::Environment};
 use gpui::AppContext;
 use gpui::{TestAppContext, VisualTestContext};
 use hex_project::{Command, Created, Editor};
 use std::sync::Arc;
 
-// Only this private fixture: bound all discovery before browser workers start.
-struct TrackTestDirectory(std::path::PathBuf);
+// Only this private fixture: the caller and real filesystem jobs share one owner.
+struct TrackTestDirectory(Arc<Environment>);
 impl TrackTestDirectory {
     fn new() -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "hex-empty-track-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&root).unwrap();
-        std::fs::create_dir(root.join("samples")).unwrap();
-        Self(root)
-    }
-}
-impl Drop for TrackTestDirectory {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).expect("owned empty-track fixture only");
+        let environment = Environment::new().expect("owned empty-track environment");
+        std::fs::create_dir(environment.root().join("samples")).unwrap();
+        Self(environment)
     }
 }
 fn publish(view: &mut EditorView, project: hex_project::Project) {
     view.state = Some(Arc::new(hex_session::service::ViewState {
         canonical_audio_source: None,
+        comparison_audio: view
+            .state
+            .as_ref()
+            .and_then(|state| state.comparison_audio.clone()),
         project: Arc::new(project),
         waveforms: Default::default(),
         audio_clip_waveforms: Default::default(),
@@ -45,18 +38,24 @@ fn publish(view: &mut EditorView, project: hex_project::Project) {
 fn editor_window(
     cx: &mut TestAppContext,
     project: hex_project::Project,
-    directory: &std::path::Path,
+    directory: &Arc<Environment>,
 ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
     let handle = *cx.add_window(|_, _| gpui::Empty);
     let editor = cx
         .update_window(handle, |_, window, cx| {
             let service = hex_session::service::Service::new(48_000, 32, 8_000_000).unwrap();
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    service,
+                    Arc::clone(directory),
+                )
             });
             editor.update(cx, |view, cx| {
                 publish(view, project);
-                assert_eq!(view.browser.directory, directory.join("samples"));
+                assert!(Arc::ptr_eq(directory, &view.test_environment));
+                assert_eq!(view.browser.directory, directory.root().join("samples"));
                 assert!(view.audio.is_none());
                 cx.notify();
             });
@@ -69,9 +68,9 @@ fn editor_window(
 #[gpui::test]
 fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
+    let directory = TrackTestDirectory::new();
     let (project, _, _, _) = audio_project();
     let original = project.clone();
-    let directory = TrackTestDirectory::new();
     let (handle, editor) = editor_window(cx, project, &directory.0);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
@@ -145,8 +144,8 @@ fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppCont
 fn command_t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     for clip_name in [false, true] {
-        let (project, _, _, clip) = audio_project();
         let directory = TrackTestDirectory::new();
+        let (project, _, _, clip) = audio_project();
         let (handle, editor) = editor_window(cx, project, &directory.0);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.update(|window, cx| {
@@ -168,4 +167,85 @@ fn command_t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext)
             assert_eq!(view.worker_requests_pending, 0);
         });
     }
+}
+
+#[gpui::test]
+fn empty_track_fixture_catalog_job_owns_same_root_after_view_and_caller_drop(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::Ordering;
+    let directory = TrackTestDirectory::new();
+    let root = directory.0.root().to_owned();
+    let weak = Arc::downgrade(&directory.0);
+    let gate = directory.0.gate_next_catalog_save();
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, &directory.0);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(
+        gate.reached.load(Ordering::Acquire),
+        "actual catalog save reached"
+    );
+    assert!(!gate.finished.load(Ordering::Acquire));
+    let paths = editor.read_with(&visual, |view, _| {
+        assert!(Arc::ptr_eq(&directory.0, &view.test_environment));
+        assert_eq!(view.browser.directory, root.join("samples"));
+        [
+            view.browser.test_preferences_path().to_owned(),
+            view.recent_projects.test_path().to_owned(),
+            view.theme_settings.test_path().to_owned(),
+            view.project_directory.test_path().to_owned(),
+        ]
+    });
+    for (path, name) in paths.iter().zip([
+        "browser.json",
+        "recent-projects.json",
+        "theme.json",
+        "project-directory.json",
+    ]) {
+        assert_eq!(*path, root.join("config").join(name));
+        assert!(path.parent().unwrap().is_dir());
+    }
+    let database = paths[0].with_extension("samples-v1.db");
+    assert_eq!(database, root.join("config/browser.samples-v1.db"));
+    assert!(!database.exists(), "held before real first catalog save");
+    let editor_weak = editor.downgrade();
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| gpui::Empty);
+    });
+    drop(editor);
+    drop(directory);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(editor_weak.upgrade().is_none());
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "only actual held catalog job owns root"
+    );
+    assert!(root.join("samples").is_dir());
+    for path in &paths {
+        assert!(path.parent().unwrap().is_dir());
+    }
+    assert!(!gate.finished.load(Ordering::Acquire));
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.save_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(weak.upgrade().is_none());
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while root.exists() {
+        assert!(std::time::Instant::now() < until, "owned root cleanup");
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(
+        !root.exists(),
+        "completed jobs cannot recreate retired root"
+    );
+    eprintln!(
+        "empty_track_fixture SAME root, four preferences, actual catalog save, retired view/caller and final cleanup verified"
+    );
 }

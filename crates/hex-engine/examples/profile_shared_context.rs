@@ -277,6 +277,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: NativeDeviceState::new(instrument_type, 1, Vec::new())?,

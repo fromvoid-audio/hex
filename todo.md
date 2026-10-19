@@ -1,3 +1,71 @@
+## group batch capacity, copied selection and victim accent — pulse2803 / PR409
+
+The accepted review repair plans the complete final Arrangement state before
+installation, with Session-inclusive clip/note counts, separate occurrence bounds
+and all fragment IDs before copied IDs. One existing candidate/preparation/history
+commit owns the result. Additive Created::Clips reports actual copied endpoints;
+request-ordered scalar intent selects real committed clips only after canonical
+installation and never steals newer selection. Passive row-local victim accents
+follow all ghosts, exclude selected originals in both modes and use one bounded
+scalar sweep. Targeted canonical/rendered/strict evidence is recorded in Pulse2803;
+original three review REDs and intermediate compile failures remain preserved.
+No final prospective full CI, native deadline/listening or installed acceptance
+is implied. See docs/group-clip-drag.md. Sole merger owns final integration.
+
+## selected group drag review return — pulse2803 / PR409, 19 october2026
+
+Original22bc source implemented whole-selection Audio/MIDI drag with one prepared
+edit/Undo and received12 focused Mac positives; those receipts did not cover the
+later copy-overlap or stale-preview findings. New canonical tests reproduced
+selected-original loss for Audio/MIDI/mixed copies. Actual GPUI pointer tests
+reproduced stale row previews outside lanes and after vertical autoscroll.
+The bounded repair protects selected IDs in existing overwrite bodies without
+removing originals, and retires all invalid group previews before repaint.
+Single-clip conversion, capacity/refusal, subframe and history laws stay intact.
+Source checks and immutable raw failure/green receipts are recorded in Pulse2803;
+Undo comparisons explicitly retain canonical allocator high-water. No new native
+run, final combined-tree full CI, physical acceptance or merge is implied here.
+The accepted bounded capture now retains a Weak immutable Project witness and
+checked original indices with reusable selected metadata. Updates preserve the
+canonical placement law without per-event metadata/backing allocations; rendering
+uses indexed originals and context retirement clears the shared payload owner.
+Equal-counter replacement and selection changes refuse stale capture. Canonical
+release still revalidates IDs/position in the original prepared transaction.
+Exact capture/UI/strict checks, debug allocation and separate redraw measurements
+are retained in Pulse2803; no optimized/native deadline or final merge claim.
+See docs/group-clip-drag.md. Sole merger owns final integration/qualification;
+root owns serial native/delivery and user-present group/waveform/capture testing.
+
+## project File actions after focus loss — pulse2815 / PR421
+
+Actual rendered dispatch reproduced New/Open being lost without editor focus,
+then one Open waiting for a second invocation. Active-window fallbacks retain
+focused precedence. The selected Open now continues through Save / Don't Save /
+Cancel and successful canonical save once; cancellation/failure/stale results
+preserve the current document/history/media. Sixteen bounded rendered cases and
+two legacy selected-path assertions cover this workflow; native picker/physical
+acceptance and merger-owned full integration checks remain separate.
+See docs/project-file-actions.md. No app actions or backend changes.
+
+## selected-device removal focus repair — pulse2796 / PR402
+
+Returned review reproduced a blurred window after real card Backspace and worker
+reconciliation. Accepted removal now focuses a persistent neutral chain container;
+real Cmd-Z/Shift-Cmd-Z and Space remain routed, while held Backspace cannot target
+a restored card. Track and empty Return-chain fixtures use actual keyboard Undo.
+Nested numeric/browser/EQ focus and refusal coverage remain in the nine bounded
+rendered fixtures. Native physical input and final integrated CI remain separate.
+
+## selected-device Backspace — pulse2796 / PR402, 18 october2026
+
+Added exact focused-card removal through existing canonical commands and gesture
+barriers. Nine bounded rendered Service regressions pass for Track instrument/
+effect and Return removal, Undo/Redo, valid/invalid text drafts, numeric/browser/
+EQ focus, pending/stale/no selection and held repeat with a selected clip.
+No model, audio, DSP, shared widget or constructor changes. Final integrated
+full local CI/review belongs to the dedicated merger; native input acceptance
+and app delivery remain separate. Original focus-failure logs are preserved.
+
 ## header volume automation indication — returned pulse2715 / PR331
 
 Restored explicit `auto` readout for authored gain envelopes and recorded touch
@@ -5135,6 +5203,12 @@ for original failed/green/control evidence and native limits. Canonical PR363;
 final focused checks and dedicated-merger prospective-tree full CI remain
 separate, with no production browser/Tab/audition or installed-app change.
 
+18 October 2026 source follow-up, Pulse2801/PR407: sparse-EQ cut-node wheel
+uses existing typed slope choices; Option-bell drag uses canonical paired Q.
+Focused source/evidence and native limits are recorded in docs/eq-node-gestures.md.
+Canonical integration/full20/merge belong to the dedicated merger; native visual,
+input/listening and optimized delivery remain coordinator-owned and open.
+
 ### inline-tree refresh of query-hidden expansions — pulse2728 / PR341
 
 Returned review PRRT_kwDOVB_C-s6trg4M reproduced on canonical29d97330: refresh during
@@ -5173,6 +5247,39 @@ clicks, inert hover, focus and resize state across those widths. Targeted result
 and immutable evidence belong to Pulse2706. Dedicated merger owns prospective
 full CI/integration/merge; optimized native drag/hover/optical acceptance remains
 open. No installed app, persisted schema or user files changed.
+
+## workspace Tab review repair — pulse2813 / PR419, 19 october2026
+
+The actual rendered track-height resize reproduced Tab changing views while its
+capture was active. One existing workspace guard now blocks Tab during track
+resizing; release completes the capture and subsequent Tab works normally.
+Header click → toolbar Console → Tab already returned correctly: no toolbar
+production change was needed. Corrected the new test to capture selection after
+the header click, retaining actual focus, full project/revision and zero queued
+request assertions. Original failure logs distinguish the product red from the
+misplaced fixture selection expectation. All four original workspace and two
+Operator cases are retained: the combined targeted run passed 8 unique cases,
+zero failed/ignored. Strict UI feature/all-target and repository guard results
+are recorded in the immutable repair handoff. Prior source/native six-case
+evidence remains historical. This source repair is unmerged; final combined full
+qualification and merge belong to the sole merger, with physical input/IME,
+display and delivered-app acceptance still open. No Mac/app operations occurred.
+
+## workspace paint-capture Tab guard — pulse2813 / PR419, 19 october2026
+
+A real held double-click clip-paint drag followed by Tab reproduced switching to
+Console during capture on preserved7b5. Add only the missing clip_paint_gesture
+refusal to workspace Tab. The owning regression preserves the rendered preview
+and capture, tests normal release with one canonical paint command/Undo/Redo and
+Escape plus release with no edit, then verifies ordinary Tab after either end.
+The previous track-resize guard, post-header toolbar fixture, text/numeric/modal
+focus and Operator traversal tests remain unchanged. All nine focused cases pass
+with zero failures/ignored (7 workspace +2 Operator); strict UI/guards and exact
+immutable source evidence are recorded in Pulse. The baseline failure is retained.
+No paint production, layout, selection, Console or global focus rewrite. This is
+headless pointer/key and canonical-command proof, not actual worker-acknowledgement,
+physical input, installed delivery or user acceptance. Sole merger owns final
+prospective full21/review/composition/merge; Pulse remains In Progress while unmerged.
 
 18 October 2026 — Pulse #2710 / canonical PR #326: custom Place icon source work
 uses the existing bundled browser glyphs and editor context menu, with stable
@@ -5231,6 +5338,30 @@ to normal; existing selection/hover/focus/audition regressions remain applicable
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
 
+18 October2026 — Pulse2708/PR324: actual active picker drag lost cyan beyond its
+moving hit bounds; outer resize activity survived lost-Left movement. Bind paint
+to each existing gesture and notify on state transitions; clear stale outer latch
+on no-Left movement. Keep resize widths/cursors/laws and existing close cancellation.
+Focused paint/input regressions and evidence in Pulse;2707 thin dividers separate.
+Sole merger owns prospective fullCI/merge; root owns optimized native acceptance.
+
+18 October2026 — Pulse2709/PR325: reproduced rail width480→624px on tag-editor
+open plus mini-strip open-only click. Keep toolbar/body in one fixed base column
+and append editor beside the whole browser; both original controls toggle at a
+stationary pointer. Rendered normal/23px picker and sample-metadata retention
+regressions; focused checks/evidence in Pulse. Tag persistence2667 remains separate;
+sole merger owns prospective fullCI/merge, root optimized native acceptance.
+
+- 18 October 2026 — Pulse2808 / PR414: common cfg(test) editor resolver allocates
+  unique private Home/Music/config before discovery, preserving explicit fixture
+  paths; no process environment or application feature-only behavior change.
+  Arc guards live in actual inner filesystem jobs, and owned-root cleanup is off
+  the UI thread after the last guard. Original ordinary-constructor RED configured
+  /home/agent. Five new regressions cover two-editor startup/catalog isolation,
+  missing-Music private fallback, explicit missing/corrupt/populated preferences,
+  and a real held catalog save after actual view release then cleanup. Session
+  worker joining/native delivery are not claimed; final candidate CI belongs to merger.
+
 - 18 October 2026 — Pulse2841 / PR444: minimum-width source-picker headings retain
   their original line boxes while painting themed separator marks; full names have
   tooltips. Near-minimum divider drags capture exactly23px with divider-derived
@@ -5239,3 +5370,641 @@ source handoff is separate from final integration/full CI/merge and delivery.
   cover all source-row/glyph positions, separator scene paint/text non-paint, long
   labels, open settings and repeated capture/expansion. Sole merger owns final full
   candidate checks/merge; native physical interaction and delivery remain open.
+
+## console arrangement midi stop-cell admission — pulse2814 / pr420, 19 october2026
+
+The focused return on frozen44adc reproduces a real UI/model mismatch: an actual
+Arrangement MIDI drag released onto Console Stop queued a copy, then the Service
+refused the occupied cell. MIDI admission now matches Audio and the existing
+canonical empty-cell contract. Stop refuses locally, preserves the complete model
+and history, clears the ghost and queues nothing; browser sample replacement keeps
+its separate atomic contract. No Project/Session/queue/capture semantics changed.
+
+Two real GPUI/Service regressions cover Stop refusal and empty-cell copying with
+fresh IDs, full MIDI source/note payload preservation, one Undo/Redo, and occupied
+MIDI/prepared Audio protection. Baseline1pass1fail becomes2pass; the full focused
+Console set passes11/0ignored. Tests capture the real Arrangement pointer drag,
+use the existing production mode setter, and release over the real Console cell;
+the pinned source predates419's Tab binding. Exact-source strict checks/evidence
+are recorded in Pulse. Full prospective CI/merge belongs to the sole merger;
+changed native/physical acceptance and delivery remain coordinator-owned.
+- 19 October2026 — Pulse2847 / PR449: fixed Preserve groups now retain their
+  native-relative first pass, selected inverse-map anchors and physical/FIR
+  exclusions, with explicit compression omission and zero-duration-group tests.
+  The requested exact-pruning oracle passes480 complete-Match bit comparisons.
+  A new27.5Hz sub-bass RED demonstrated insufficient phase search width; version11
+  uses bounded coarse screening/full finalist rescoring across the wider range,
+  preserving existing work/scratch caps and invalidating older prepared PCM.
+  Focused43 Beats cases, Engine3, Export1 and strict all-target Warp Clippy pass;
+  all54 authorised acoustic recording renders actually complete. Original REDs,
+  work-limit failures and before/intermediate WAVs remain distinct. Sole merger
+  owns final integration/full local CI; native/listening and practical musical
+  acceptance remain open. Sampler395 stays with Source5; no shared compiler work
+  was imported into this standalone Beats change.
+
+- 19 October 2026 — Pulse2854 / PR456: extracted the audio-only placement model
+  prerequisite for clip-local looping2843 on pinned main2eef. Once retains its
+  consumed cursor through silent tails; Repeat normalizes only on explicit
+  activation. Borrowed checked projections use absolute tempo endpoints and
+  retained roots; operation-only resize shares checked metadata preview and the
+  existing overwrite/history transaction. Current format32 requires placement
+  (including null), tuning and device manifests; format31 refuses explicitly.
+  Targeted checks pass284 Project,123 Storage and5 existing Session-conversion
+  cases, strict relevant Clippy, architecture, formatting and diff checks. Audio
+  Session-copy refusal preserves bindings/history; ordinary copy still works.
+  No MIDI Once ancestry, Engine/resource/custody, UI or export changes. Final
+  combined-tree/full21 and A/B format composition belong to the sole merger;
+  clip-loop audio preparation, waveforms, handles, rounded painting, playback/
+  export and native/physical delivery remain open under parent2843/PR445.
+
+- 19 October 2026 — Pulse2831 / PR435 integration: add independent rendered-pitch
+  coverage for the registered Sine, FM4 and current-mode Vector generators in
+  Arrangement, Console, live input, tuning handoffs, seek/loop, WAV export and
+  nonzero-range bounce. The owner adds only two integration test files and the
+  owning audit document; no production tuning, registry, MTS or resource change.
+  Original focused 14-step qualification records 33 positive cases; an earlier
+  zero-match allocation invocation remains negative evidence, with the corrected
+  feature-enabled three positive callback cases kept separate. Root verified
+  exact cd3376b6 native component tests: ten Engine plus one Export, no ignores.
+  Merger verified all 118 original payload hashes and preserved the three source
+  files byte for byte while integrating qualified main. New exact prospective
+  FULL21 and final review remain pending; physical MIDI, installed MTS-client,
+  listening and full Sampler395 acceptance remain open. The historical ignored
+  keyboard profile is excluded explicitly from focused non-profile commands,
+  never counted as passing. This entry records integration evidence only.
+
+- 19 October 2026 — Pulse2793 / PR399 integration: new tracks choose once from
+  the existing nine non-gray hues, using unused colors first and then a random
+  least-used tie. Canonical insertion owns the choice; Undo/Redo and current
+  persistence retain it. Existing explicit gray and return tracks remain valid.
+  Owner focused twelve-step qualification records 286 positive cases; original
+  model/rendered reds and an earlier zero-match selector remain preserved.
+  Merger verified all 56 original payload hashes and all eight owner file hashes,
+  then ordinarily integrated qualified main without conflicts or feature edits.
+  Root exact8c7fffb9 native components passed one UI and one Storage selector;
+  these do not prove physical palette or current combined-tree acceptance.
+  New exact prospective FULL21 and final review remain pending. User review on
+  a qualified delivered build should check nine created hues, recolor, Undo/Redo,
+  save/reopen and existing gray preservation. Empty-track policy408 stays separate.
+
+- 19 October 2026 — Pulse2818 / PR424 returned startup writer repair: retain
+  both owner commits ee9ac4c8 and67b84e10. Actual named Save during held initial
+  preference load followed by view drop lost the queued folder; the existing
+  owned writer now starts immediately, retaining independent off-UI preference
+  validation and the non-writable refusal. Two actual reds and the condition-only
+  green remain preserved; owner expanded54positive cases and strict checks pass.
+  Merger verified all47new payloads and both owner file identities, then ordinarily
+  integrated qualified main without conflicts or feature edits. New exact FULL21
+  and final review remain pending; previous1f085full21 and4737native51 are scoped
+  history, not this repair's qualification. Actual OS chooser, physical save/open
+  and installation acceptance remain open.
+
+## audio placement review repair — pulse2854 / PR456, 19 october2026
+
+Loaded existing audio/MIDI overlaps exposed full-result overwrite on unchanged,
+shortened and grown outer bounds. The model now overwrites only newly occupied
+growth after the old endpoint, preserving original-region material, no-op IDs and
+Redo, one Undo/Redo and atomic preparation refusal. The existing Arrangement
+Looping control separates retained-source looping from optional Once/Repeat mode;
+only the loop control follows placement, while PlayStart/source phase and source
+range behavior keep the raw flag. Freshness checks both states. No new handle,
+widget, Engine or source-loop reinterpretation is introduced.
+
+Two actual visible-control reds now pass; controlled mode-only captured-state
+freshness plus a newly rendered valid click, source-phase discrimination and
+three unchanged ordinary tests yield seven UI positives/zero ignored. Separately
+22 model +4 current-format codec +5 Session binding +6 actual return workflows
+pass (37 positives/zero ignored). The return test changes only stale version31
+expectation to current32; all PCM/routing/device/history/save-load assertions stay.
+Strict touched-component checks and immutable evidence are reported in Pulse.
+Original reds, invalid offscreen click and own test-compilation/freshness-fixture
+failures are preserved, not relabeled. Owner patch is isolated from canonical2918
+until sole-merger composition/fresh full21/review; source passing is not native,
+worker-acknowledgement, audible full445, installed-app or user acceptance.
+### 2026-10-19 — PR407 prospective integration
+
+- Composed owner c2ceadfa nearest-node return and prior Option-Q/cut-wheel repairs with qualified main35ea, preserving current406 analyzer lifecycle/raw-radius hit ownership and424 private picker support.
+- Verified all28 new evidence payloads and both changed source hashes; original407 packets remain separately verified. Original rendered overlap RED and final97 positives remain source-scoped.
+- Rebuilt cumulative GPUI patch metadata from the pinned original archive; all183 originals/21 patched/3 added source files match a fresh patch application. Only additive momentum metadata changes platform input; no other consumer opts in.
+- Full21 on this exact prospective tree and fresh review are pending; no merge, native physical trackpad/listening or installation claim.
+
+- 19 October 2026 — Pulse2793 / PR399 import-equivalence fixture return: first
+  exact candidate e66a9102 failed workspace checks in two Session import cases
+  whose independently created tracks drew different valid automatic hues. The
+  source owner retained full Project/resource comparisons and production random
+  policy, using a shared authored eight-hue baseline with one legal unused Cyan
+  choice; complete Undo/Redo comparisons remain. Actual paired red/green and
+  135 positive focused cases are separate from final required checks. Merger
+  verified all26 repair payloads and bytes outside the two test functions, then
+  ordinarily integrated qualified main, preserving both append-only todo sides.
+  New exact FULL21/final review remain pending; old e66 failure stays negative,
+  original owner native2 stays scoped, and physical palette/delivery remain open.
+
+### 2026-10-19 — PR399 legacy-storage fixture return
+
+- Integrated owner4490a0d2 on preserved3fdc history: only the named legacy gain-touch storage fixture explicitly authors Gray before old-schema encoding; all original assertions and current31 expectations remain.
+- Verified all28 immutable owner payloads and exact11-line insertion; production random color assignment, strict older-writer loss refusal and shared fixtures remain unchanged.
+- Original Session-equivalence failures/fixes and later storage failure remain separate negative evidence. Previous full21 stages do not qualify this changed candidate.
+- New exact prospective full21 and fresh review pending; no merge, installation or physical palette acceptance claim. Unqualified456 placement schema32 is not imported.
+
+### 2026-10-19 — PR436 active spectrum fill integration
+
+- Composed ownerfa67814c active-fill repair with qualified main35ea; shared EQ/global painter keeps the total257-input cap while budgeting alpha only across valid non-floor fills.
+- Verified all71 original and26 repair evidence payloads. Original actualpaint alpha RED and final68widget component results remain scope-bound; coordinator changednative2 positive is separate from repository qualification and physical pixels.
+- Resolved shared painter composition using existing406 axes::plot_bounds exactly once, preserving grids, node hits, analyzer lifecycle and current GPUI support. No extra7px inset or unqualified407 gesture import.
+- Exact prospective full21/fresh review are pending; no merge, framebuffer/listening, installation or user acceptance claim.
+
+### 2026-10-19 — PR456 coherent placement return integration
+
+- Composed ownera6061328 onto qualified mainbd54; only append-only todo conflict retained both histories. No unmerged447/399/407/419 import.
+- Verified all27 original and42 repair payloads plus exact six before/after owning hashes. Growth-tail overwrite, raw source-looping versus optional placement mode, and current32 return assertion retain original actual reds and separate targeted37+7 positives.
+- New exact prospective full21 and independent review remain pending; old2918 negative and component receipts are source-bound. No full445 playback/Engine, native physical, installation or user acceptance claim.
+### 2026-10-19 — PR419 coherent workspace Tab qualification
+
+- Composed owner3868167e over7b5/d035 with actualqualified mainbd54. All17original+20resize-review+18paint-reviewpayloads verified; originaltrack-resize/clip-paint renderedreds and toolbar-focusfixturedisproof remain distinct.
+- Preserved constructor/privateEnvironment, projectOpen/name/folder/changelogfocus code; mod conflict retained ONLYworkspace modules plus existingtest_environment. Rootkey hook remains bubbling and existing labels/set_mode preserve completedtime selections.
+- Track-resize and clip-paint captures now refuse workspace Tab, normal end restores switching. All9 sourcefocused cases are component evidence, no workerACK/nativephysical proof; originalOperator tests unchanged.
+- New exact prospective full21/freshreview pending, no merge, installation or human acceptance claim; no unqualified399/407/409/420/456/447 imports.
+
+### 2026-10-19 — PR419 owned Open and ruler-capture repair
+
+- On exact failed integration2df27623, two real GPUI regressions reproduced Tab
+  switching during selected-project confirmation and held ruler scrub. Original
+  negative full21 and the unrelated Source1 header-width failure stay preserved.
+- Workspace Tab now checks existing project-Open ownership and a read-only scrub
+  activity query; no Open/seek/transport lifecycle or global focus policy changes.
+  The synthetic pending-path fixture is replaced with the actual picker lifetime,
+  while a valid disposable selected-project confirmation proves the path-to-intent
+  transition and unchanged Project/revision before cancellation.
+- All11 focused workspace/unchanged Operator cases pass, zero ignored. Real ruler
+  down/move/Tab retains capture; release/refusal and Escape permit later Tab.
+  Offline bounded fixtures start with private paths before browser workers.
+- Owner patch remains unmerged pending sole-merger combined qualification/review.
+  Prior native receipts are historical; no new native/app/physical acceptance is
+  claimed. Staffing handoff ends this lane after the frozen source/evidence packet.
+### 2026-10-19 — PR399 coherent palette and Storage return
+
+- Preserved both owner commits e1729d2a then d44a7b59 over8258; three named legacy-compatible fixtures explicitly author Gray while every full Project/Snapshot and strict loss assertion remains. Shared fixtures and current31 schema are unchanged.
+- Private palette selection now derives counts from the palette and uses a bounded ordered tie loop; exact ticket mapping is covered across1024 legal authored profiles. Original fixed-nine panic reachability was disproved, so this is a policy cleanup rather than a reproduced runtime crash fix.
+- Verified all35 immutable owner payloads/four source-file hashes. Owner completeStorage baseline117PASS3FAIL then all120PASS and final125 positives remain component evidence; all three prior required-run negatives stay preserved.
+- Composed actualqualified mainbd54 with newly merged spectrum painter; no unqualified407/456/447 imports. New exact full21/freshreview pending before any merge, installation or user acceptance claim.
+### 2026-10-19 — PR447 coherent six-return and ancillary-error integration
+
+- Composed full owner1561 plus both12d ancillary-error commits with qualified mainbd54, preserving successful Open continuation, recovery/trim counters, recent-directory persistence, current EQ lifecycle and shared spectrum painter. Git merged disjoint hunks without feature edits.
+- Verified62 six-return and16 ancillary-error evidence payloads; actual recovery checkpoint error RED and final24 functional components remain source-bound, as do coordinator14 native functional positives. Original651 full21 green-but-review-blocked receipt remains historical.
+- Ordered valid metadata proof may reconcile authoring while preserving ancillary recovery error; actual publication ACK/output/runtime ownership and refusal/generation checks remain. Retained canonical source Project must count in future395 custody.
+- Current32 comparison/tuning/asset manifest is qualified independently of unmerged456 placement; future composition must retain both required capabilities. No whole395/456/409/420/407/399/419 import.
+- Required new exact prospective full21 and fresh independent review pending; no physical provider listening, native Verified constructor, installed/user acceptance or merge claim.
+
+### 2026-10-19 — PR453 combined generic A/B acceptance base
+
+- Prepared exact dry/wet owner1ce92988 with qualified generic A/B main447e042 for the already-declared owner supplement. Ordinary merge has no conflicts; no provider/parameter/persistence feature fix or source-test implementation by merger.
+- Original53payloads/six-source hashes already verified; provider/TrackReturn/codec/allocation positives remain originalsource-only. Actual distinct mix values through generic Switch/Copy/current project+preset SaveOpen still require owner execution on this combined source.
+- This base is unqualified: no full21/fresh final review/merge/native/install claim and no canonical453 overwrite. Preserve current32 comparison/tuning/assets and globalhosttrims. No unready455/395 or bank fork.
+## 19 October 2026 — EQ local automation removal (#2855 / PR457)
+
+User rejected device-local automation editing. Remove its button, graph mode and point controls; retain ordinary stable-node parameter bindings, existing stored lane data/runtime evaluation and canonical history. Future central Arrange automation remains #2839/#2674, not implemented here. Actual rendered pre-change regression f31267b3 failed on the automate entry (original component 20261019T060051Z-73bfe14e, clean/stale=false). Targeted final source verification and native limits are recorded in live Pulse2855; sole merger owns prospective full21/review/merge. No app installation or user acceptance claimed.
+### 2026-10-19 — PR325 stationary tag-column integration
+
+- Composed exact owner2e48c996 with qualified main447e042; fixed base toolbar/body column plus outward full-height tag editor and both stationary toggle controls.
+- Verified21 immutable owner payloads and all six before/after source hashes; actual two rendered reds, first/final positives88browser plus strict checks remain source-bound. Preserved414 private startup/custody, four preference paths, Source1Open and actualA/Bcomparison fields,444three-field divider/hysteresis and currentsharedspectrum.
+- Only append-only browser-test module and todo conflicts retained both histories. Exact prospective FULL21/fresh review remain pending; no tag persistence, physical/native pointer, installed or acceptance claim.
+
+### 2026-10-19 — PR399 controlled spectrum fixture return
+
+- Composed ownerd2dd90d4 over failed e301 with qualified main325/447; controlled Orange no-op now verifies cache reuse, then genuinely different Blue and Orange transitions verify invalidation and unchanged signal points. All21 owner payloads and exact before/after source snapshots verified.
+- Preserved all prior palette, full-snapshot legacy fixture, current32 comparison/assets/tuning and spectrum oracles. No production cache/randomness changes; original e301 UI negative remains distinct. New exact prospective full21 and fresh review required; no installed/native/user acceptance claim.
+
+- PR399 composition correction: first combined03335ecc failed before UI execution because the private color-picker ViewState literal lacked merged447 comparison_audio. Added only explicit None, preserving no-publication fixture intent. Original required-run negative sealed separately; corrected source needs its own full21.
+
+### 2026-10-19 — PR457 requested EQ-local editor removal integration
+
+- Composed owner96ad6ba7 with qualified main399/325/447, preserving ordinary node parameter keys, current spectrum/raw hit lifecycle, A/B state, history and stored automation data. Removed local automate route and point/page state; central Arrange automation remains separate.
+- Verified all21 immutable owner payloads and four owning source byte/blob/mode records; original rendered automate-entry RED and final27UI/strict component receipts remain source-bound. Sole conflict is append-only todo with both histories retained. Focused compile precedes new required exact full21/fresh review. No unmerged407/456 imports or native/installed/user acceptance claim.
+
+### 2026-10-19 — PR453 Dry/Wet and actual generic A/B integration
+
+- Composed complete owner1ce through e80 with actualtest-only owner15c99 A/B supplement and qualified main457/399/325/447; original53 plus supplement16 evidence payloads verified, exact source hashes retained. Onlyappendtodo conflict retains both histories. Current32 comparison/assets/tuning and no-local-EQ mode preserved; no RMS455/AutoPan454/Sampler395 import.
+- Stable Compressor ID7 mix, originalinput/postmakeupwet linear blend and finite5ms history ramp remain owner code. Actual Track/Return genericSwitch/bothCopy directions/UndoRedo/current-project andpresetSaveOpen distinct25/75 mixes/globaltrims are finite ownercomponent evidence, not providerclone proof or finalfullCI.
+- Focused affectedtesttarget compile precedes new required actualfull21/freshreview; no native/listening/physical/installed/useracceptance claim.
+
+### 2026-10-19 — PR422 supported Warp preview and exact release integration
+
+- Composed shipping owner eb47d9b7 with qualified main453/457/399/325/447 through an ordinary conflict-free merge; canonical53cf history retained. All69 immutable payloads and ten source before/after hashes verified; all ten owning files remain byte-identical to the shipping source. Superseded interval research30e3 is excluded.
+- Requested valid endpoints are admitted directly, including disconnected valid islands. Unsupported requests retain a validated clip and its exact command frame; optional refinement has at most8 probes and a1ms start budget. Preview and release share the resolver; ordinary trim/MIDI, capture/cancel, worker/FIFO and source freshness remain distinct.
+- Original owner5UI,29release controls and measured metadata-cost evidence remain component-scoped. New actual prospective full21/fresh review required; no native optimized pointer deadline, physical release, listening, installed or whole-general-resize acceptance claim.
+### 2026-10-19 — PR413 complete restart repair-chain integration
+
+- Composed canonical be596 through ordered65aa compiler,143 configured filesystem identity andff89 portable-case fixture repairs with qualified main4531bc9. Git merged without conflicts, retaining changelog preparation/history/package handling and current default no-test launch.
+- Verified all34 identity and24 fixture payloads plus prior12 compiler payloads; complete chain and unchanged Python/Swift hashes checked. Root reports exactff89 systemPython3.9 suites89 and compiled ABSENT-only helper probes passed; this is attested component evidence, not cloud access to raw Mac files or running AppKit lifecycle acceptance.
+- Opt-in force restart retains exact bundle/executable/PID/start identity, locks/CAS/recovery/refusal and separate120scompile/15soperation limits. Required new exact prospective full21 and fresh review remain pending; no app/control/native/build/install action by merger.
+
+### 2026-10-19 — PR420 Console drop and Stop-cell return integration
+
+- Composed frozen44adc plus focusedf8f5 return with qualifiedmain422b3aba, preserving canonical history and both appended todo sides. Original53 and return25 immutable payloads were verified; actual Stop refusal and empty-cell copy evidence remains source-bound.
+- Browser receiver runs before deferred root cleanup; existing capture, trim/resize, Open, private test constructor, comparison state and qualified changelog/launcher remain preserved by ordinary hunks. No unready409/419/456/395 import.
+- Focused compile then fresh exact prospective full21/review required; no native physical Console gesture, listening, installed or user acceptance claim.
+
+### 2026-10-19 — PR419 and PR458 coherent workspace/header cohort
+
+- Composed actual419 owner1d381 and dependent458 minimal1c682 header delta, retaining both canonical4192df/45820f histories and qualifiedConsolemainf920. Verified25 and30 owner evidence payloads; original workspace/Open/scrub/paint/resize reds, toolbar-focus disproof and status-zero/first46px negatives remain source-bound.
+- Cohort needs one exact shared source candidate: workspace names expose the known compact-toolbar width failure, so no unchanged419-only full21 retry. Publish the same coherent candidate to both canonical PRs and independently read back their review/merge outcomes; checks bind the exact candidate, never a different head.
+- Mode conflict preserves current Browser cancellation and conditional active time-gesture cancellation; completed time selections survive as owner contract requires. Current comparison/Open/constructor/Console/deferred-release/Warp/launcher/changelog source retained. Group409 diagnostic/semantic repair and draftSampler395 are not imported.
+- Focused affected compile then fresh exact full21/review required, no native physical keyboard/IME/toolbar pixels/delivery acceptance claim.
+### 2026-10-19 — PR407 coherent outside-terminal integration
+
+- Integrated complete owner67dea ->30cd ->8bb ->baf16 history with qualifiedmain420f920; verified all43 final outside-terminal payloads and four source files, retaining prior boundary/phase/nearest-node repairs and original runtime negatives.
+- Conflict resolution preserves merged457 removal of EQ-local automation: ordinary response model plus Bell-only relative Option-Q configuration and both the local-removal and gesture test suites. Qualified436 shared spectrum painter,406 raw-radius/axes/status lifetime and current comparison metadata remain intact.
+- New exact UI/widget test-target compile, full21 and independent review required; owner89 component positives and historical8724 full21 are not this candidate's qualification. Physical trackpad/font/pixels/listening and installed acceptance remain open; no native or app action by merger.
+- Focused compile preserved a stale-GPUI metadata failure, then after narrow GPUI development-cache invalidation exposed two owner gesture guards referencing local automation/preview fields intentionally removed by merged457. Mechanical integration drops only these nonexistent-field checks, retaining editing/creation refusal; no local editor state or UI is restored, and tests/oracles remain unchanged.
+
+### 2026-10-19 — PR409 complete group-copy return integration
+
+- Composed preserved72beb/fd80/6fc fixture-custody and full2e5 diagnostic/production return with qualifiedConsole420mainf920. All86 owner payloads/archive87members and all14 production/diagnostic/after hashes verified; canonical ancestry retained.
+- One Stop-handler conflict combines owning clip-capture retirement with current Browser cancellation, preserving Console receiver-before-deferred-cleanup and current Trim/FIFO/Open/comparison/native-window lifecycle. No production planner/intent/painter rewrite by merger and no unready395/456 import.
+- Source focused328 cases include3 expected privacy compile-fail docs, not328 runtime. New affected compile then actual exact full21/fresh review required; prior6fc native9 is historical only, no physical drag/audio/optimized deadline/installed claim.
+
+### 2026-10-19 — PR409 atomic Console receiver return
+
+- Preserved canonical144d metadata correction and actuald411 group-to-Console partial-copy failure, then integrated complete owner416cc history. All43 corrected-v2 evidence payloads and both source files verified; owner immediateparent0daba is distinct from patch-based411.
+- Existing single-clip Console receiver now refuses multi-selected Arrangement payloads before any subset command is queued, with existing exact capture retirement and clear error. Original Audio diagnostic stays unchanged; mixed MIDI, scene insertion, stale revision and single-clip positives preserve canonical selection/history/highwater assertions. No multi-cell mapping or model/Service policy expansion.
+- Owner68 distinct component positives remain bound to their actual source revisions, not relabelled final-head/fullCI. Current qualifiedConsolemainf920 is already an ancestor; new exact affected compile, requiredfull21 and freshreview remain necessary. No unchanged oldfull run, new native/app job, physical drag, callback deadline or installed acceptance claim.
+
+### 2026-10-19 — PR419/458 held-pan repair and loading disproof qualification
+
+- Preserved the shared09b canonical histories and its passing-but-review-blocked receipt, composed exact419ccd813 held-pan refusal with458121f loading-state disproof coverage, then ordinary-merged qualifiedGroup409maina2d47. Both canonical419 and458 must retain authenticated actual merge readbacks; shared code inclusion alone does not mark either ticket Ready.
+- The only new runtime refusal is existing arrangement_pan ownership in workspace Tab. The loading hypothesis was disproved by actual constructor None then actual Service Init measurements: absent tempo input pays for loading status; the supplement adds only layout-neutral debug selectors and regression tests, with no invented sizing/focus/content fix.
+- Current group-copy/capture/Console atomic receiver and private shared-Environment custody remain intact; module-declaration and appended-tracking conflicts keep both sides. All32 held-pan and28 loading payloads verified; original pan RED, Escape fixture correction and earlier status0/46px negatives retained source-bound.
+- New guarded affected compile and exact joint full21/fresh per-PR reviews required before actual separate merge/readiness proof. Prior09b full21 does not qualify new source; no physical keyboard/IME/font/pixels/native/app/delivery acceptance claim. Earlier09b tracking describes its historical pre409 composition; current qualified409 is included here.
+### 2026-10-19 — PR324 active browser resize feedback integration
+
+- Preserve the original e934 owner history and compose actual qualified main a2d47. Both dividers paint their own active cyan state, retain normal idle hover, and publish release/lost-Left retirement. Original owner actual twoREDs and final90browser controls remain historical component evidence.
+- Resolve only the overlapping sidebar transitions around the current444 THREE-field pointer/width/locked tuple and existing snap hysteresis; preserve325 stationary tag-column geometry,414 private constructor/FS leases, Console/group receiver and all current main source outside the six owning files. Keep all appended test registrations/docs/history.
+- Verified all original payload and source hashes; exact new guarded focused and required full21/fresh review remain pending. Native physical hover/capture-loss/GPU flicker and delivery remain separate. Thin divider323 is not imported.
+
+### 2026-10-19 — PR456 cfg/codec return with current A/B format
+
+- Retain canonical770 and both ordered owner commits through13bd9fa3, including the actual valid Once fade-origin codec RED and original default-feature compilation failure. Six cfg annotations match existing GPUI fixture availability; all four pure default tests remain enabled. The codec lower bound matches the existing model, with upper bound and complete validation unchanged.
+- All44 owner payloads and four source bytes were verified. Owner13 focused steps127.407s are source-bound component evidence, not current combined full qualification. Compose actual qualified main3cda without unmerged419/458/407 or draft395.
+- Current schema32 combines required nullable audio placement, project tuning and complete device manifests with nullable A/B comparison and BOTH active/inactive asset bindings. README conflicts retain all capabilities; there is no format dispatch, old-reader rollback or migration. Main palette fixtures, group/Console capture, waveform body and browser feedback remain.
+- New guarded affected default/feature tests and current-format Storage roundtrips, exact full21 and fresh review remain pending. Historical770 and2918 failures are retained; no native full445 playback, physical loop, audio, installation or user acceptance claim.
+
+- First guarded current integration focused run passed default four cases but feature test-target compilation failed E0063 in the single reconstructed ViewState fixture. Carry comparison_audio from the existing old state, matching the current Group409 fixture pattern and preserving all captured scalar freshness oracles. Original exact failure remains; model/Storage phases were not run. Fresh corrected affected qualification and full21/review are still required.
+
+### 2026-10-19 — PR456 phased fade origin and Repeat boundary review return
+
+- Preserve the combined current1c2 placement32/A/B/tuning/both-slot-asset source,
+  original13bd cfg/codec repair, f5 compile negative and mechanical fixture carry.
+  Two actual canonical model regressions reproduce the previously source-backed
+  phase fade-age and before-start Repeat-boundary findings; zero-phase control
+  and original22 placement cases remain intact.
+- Fade authoring reuses the existing projection_origin plus its existing local
+  fade_start, retaining the frozen authored tempo map. Repeat CycleEnd refuses a
+  requested at/before-start boundary before cycle normalization; Once retains
+  valid exhausted cursors and earlier logical boundaries. No guessed DSP law,
+  schema/version/legacy reader, rendering/export or Engine/resource change.
+- New independent curve-age, frame/beat boundary/refusal, exact history and
+  current-format frozen-envelope roundtrip cases precede source handoff. Existing
+  malformed/range, phase/source/fade, ordinary trim and current-format integrity
+  assertions remain. New combined full21/fresh review/actual merge are merger
+  work; old1c2 receipt does not qualify the changed source. Native/installed
+  listening and parent445 full runtime/waveform acceptance remain open.
+
+### 2026-10-19 — PR419/458 auxiliary guards, keyed click and periodic state repair
+
+- Preserve the historical held-pan record above. Its later d9b owner supplement
+  adds the four existing-owner Tab guards: held pre-drag pointer, visible device
+  add-menu, spectrum resize and device-chain navigation. Matching clip click
+  cleanup uses the original generation/ClipId/None-edge key before selection and
+  propagation stop; delayed foreign generation/clip/edge capture stays protected.
+- On exact joint c385, two actual GPUI regressions reproduce a completed range
+  collapsing on a Console controller tick and an add-menu blocking Tab after the
+  real bottom-panel hide. Restrict non-Arrangement cancellation to active range
+  gestures while retaining stale-source/generation/cursor validation; gate the
+  existing menu guard by actual panel visibility. No model/worker/focus/framework
+  change, no hidden cursor pulse and no blanket cancellation/keyboard bypass.
+- Preserve the original 13 workspace-module cases, both Operator traversal cases,
+  navigation/drag/paint/capture/selection and compact status oracles. The new two
+  workspace cases plus separate navigation case make the documented native union
+  18, not the stale 11. Real input and Service/controller tests, invalid-context
+  controls, strict/guard checks and exact source evidence precede source handoff.
+- Old d9b/38c3/c385 positives do not qualify this changed source. Both canonical
+  PRs require separate authenticated merge readbacks after new combined required
+  CI and fresh review; source readiness remains In Progress. Physical keyboard,
+  IME, native fonts/pixels/audio and installed/user acceptance remain open.
+### 2026-10-19 — PR407 four scroll review returns integration
+
+- Retain the complete81e050 owner chain over actual0bd plus the byte-identical local mechanical sibling via ordinary merge, then compose qualified main3cda. Original4RED diagnostics, stale queued Cancel and post-blur Begin failures remain preserved; source owner final29EQ cases/strict and prior unchanged-input108 components stay scoped to their actual receipts.
+- Add explicit Cancelled input and optional known physical wheel ticks while preserving content deltas, parameter fallback and all non-EQ consumers. Private bounded32-stream EQ intent waits for matching accepted terminal ACK and canonical installation, checks owner/context/identity and preserves monotonic retired-token watermark. No generic queue, audio/Engine/API ownership redesign.
+- Verify all106 immutable payloads and19 source bytes; preserve406axes/436paint/457local-automation removal, current409Console/group capture/ACK paths and324browser feedback. Only appended todo conflict joins both histories. All Cargo phases, including focused compilation, require existing target ownership handoff and bounded audited GPUI invalidation for the changed vendored API; no blanket clean.
+- New exact prospective full21/fresh review/merge remain pending. Actual platform compile/physical wheel/trackpad/focus and installed acceptance remain coordinator-owned; Windows/nativeMac results are not inferred from Linux source checks.
+
+### 2026-10-19 — PR407 Wayland v9 physical direction return
+
+- Preserve canonical0134 and normal ownerb03cd2ed five-file delta. Per-original-axis direction consensus and paired-report metadata normalize only physical parameter ticks before Shift routing; raw content arithmetic/preferences, unknown/pre-v9 fallback, non-Wayland producers, consumer getters and bounded EQ FIFO/lifecycle remain unchanged. New metadata drains at every Frame before missing-window delivery checks.
+- All83 owner payloads and exactly five shipping source files were verified. Owner clean13 checks235.244s include117 distinct component cases:29 EQ nodes,78 widgets,two Operator traversal cases,seven real typed production-fold tests and one4096-frame literal-old-arm raw differential. These remain owner-source results, not new prospective full21. Direct excluded-package attempts, fixture unit mismatch, harness setup failures and original direction REDs remain distinct evidence.
+- Current actual main3cda is already an ancestor; preserve qualified406 axes/status,436 painter,457 local-automation removal, Group409 and Browser324. Current code does not import unmerged419/458/456 or draft395. Earlier0134 full21PASS904.159s is historical/review-blocked and cannot qualify changed source.
+- New guarded GPUI-only target handoff, actual production fold/protocol checks, exact full21 and fresh review remain required before merge. No Linux compositor/hardware or Mac/Windows native build/physical wheel/trackpad/font/pixels/listening/installed acceptance is claimed. No new native job or blanket cache cleanup is requested; independent2857 invalidation work remains queued.
+
+### 2026-10-19 — PR456 phased model return integration with qualified EQ main
+
+- Compose complete61678dff owner return over canonical1c2 with actual qualified main2dc7. Only appended todo history conflicts; retain both histories, exact model/Storage owner bytes and private comparison fixture carry. Preserve current32 nullable placement, tuning and required nullable comparison with both asset slots; no old reader or schema rollback.
+- Owner39 payloads and all five before/after Git blobs verified; original two model REDs and historical1c2 full21 green/review-blocked receipt preserved. New guarded actual three model and one codec regressions, exact combined full21 and fresh review are required. No unmerged joint419/458 or draft395 import. Parent445 full runtime/native/listening/installed acceptance stays open.
+
+### 2026-10-19 — PR456 placed Length binding review return
+
+- Preserve exact6a8d and prior616 phase/fade/CycleEnd corrections/current32.
+  Actual rendered Length− through Service lost Once/Repeat placement in four
+  zero/nonzero-phase cases; ordinary unplaced control passed. Test-only dc87538c
+  and the earlier compiler-only fixture dependency error remain preserved.
+- Route only already-placed Length edits through existing canonical OuterEnd,
+  checked position+duration; ordinary TrimClip stays unchanged. No model/codec,
+  Engine/Session, shared binding, owner or projection law changes.
+- Real private WAV import/edit/current-format SaveNew/Open fixtures verify both
+  Length directions, retained metadata/fades/pitch/custom tuning/distinct A/B,
+  exact fullProject model-oracle equality and one Undo/Redo. Minimum length
+  refuses without requests/history; old loaded-view tests retain their scope.
+  Sole merger owns prospective full21/fresh review/merge; native/app/parent445
+  completion remains separate.
+### 2026-10-19 — PR419/458 periodic range and hidden-menu return integration
+
+- Compose precise f16 owner return with actual qualified EQ main2dc7 using ordinary history. Retain both appended integration histories; only todo.md conflicts. Preserve all merged407 gesture/FIFO/Wayland behavior and 457 removal of local EQ automation.
+- Existing c385 full21 positives remain historical and review-blocked; new combined affected tests, exact full21 and fresh review of each canonical PR are required. Both PRs remain unmerged until their own authenticated merge readbacks. Physical keyboard/IME/fonts/pixels/listening and installed acceptance remain open.
+
+
+### 2026-10-19 — PR419/458 last-owner menu and held gain-point return
+
+- Preserve joint adb3 and both canonical histories. Actual GPUI plus Service
+  reproduced an invisible add-menu refusal after toolbar removal of the last
+  selected track, and a held gain-point drag incorrectly switching to Console.
+  Test-only diagnostic49469e7c and all earlier compiler-only/raw failures remain.
+- Reuse the actual rendered device owner and existing canonical owner_exists
+  query for menu visibility; retain raw menu preference without forced dismissal.
+  Add only a private pointer-draft query to the existing workspace refusal list.
+  No gesture lifecycle, focus operation, queue, model or worker policy changes.
+- New actual input tests preserve visible menu refusal and Undo/reselection;
+  gain release has exact one Undo/Redo, Escape authors nothing, duplicate release
+  does nothing, and an open lane alone permits normal Tab. Prospective full21,
+  fresh review/merge of BOTH PRs and physical acceptance remain outstanding.
+
+- Merger integration note, 19 october2026: preserve complete4bbe owner runtime/tests and both canonical419/458 histories. Correct the one retained prose reference from18 to the actual20-case union already documented in the command/checklist; no runtime or test-oracle changes. New exact guarded changed cases/full21/fresh review of each PR remain required; oldadb3 green is historical/review-blocked, installed2eef unchanged.
+
+### 2026-10-19 — PR456 placed Length return integration with merged workspace cohort
+
+- Compose complete429ba3b5 owner return over6a8d with actual qualified main2683942b (BOTH419/458 authenticated merged, exact935.723s full21). Only three appended todo conflict regions; retain both histories, original phase/fade/CycleEnd/cfg/codec and private comparison fixture carry. Preserve all current workspace/menu/gain-pointer/header/407/413/main source.
+- All35 Length owner payloads and six before/after Git blobs verified. Actual ordinary control PASS/four placed Length-minus REDs and fixture compile-only negative remain source-bound. New current guarded six actual Length Service cases, prospective full21 and fresh review required before canonical456 merge. Keep current32 placement+tuning+required nullable A/B with BOTH asset slots; no unmerged native395/whole445 import or physical/runtime/listening/delivery claim.
+
+### 2026-10-19 — Pulse2861 / PR463 resize pointer delivery past the original handle
+
+- Actual audio and MIDI GPUI failures: after repeated edge-pan moved the original
+  handle out of view, a held move to the interior left the payload at the old edge;
+  viewport192000 advanced to195600. Test-only6b6c6efc/raw negatives remain.
+- Move the existing typed audio/MIDI pointer handlers to the stable editor root,
+  removing virtualized-handle listeners. Preserve their current/stale checks,
+  payload identity, modifiers and preview update; timer, edge law, model bounds,
+  capture/release/ACK/viewport retirement and track-height resizing are unchanged.
+- Both original failures pass; expanded normal audio/MIDI/Shift/permanent-Warp
+  controls cover both edges, stop/re-entry/reversal, exact worker extent and one
+  Undo/Redo. Permanent Warp uses a valid inward retained-root crop; the original
+  unsupported-outward fixture assertion and diagnostic are retained separately.
+  Pre-freeze21pan+18release cases and both strict Clippy configurations passed;
+  exact frozen receipts and remaining terminal controls are recorded in Pulse.
+- Sole merger owns prospective full validation/review/merge. Root-only optimized
+  physical edge-pan/release/keyboard-modifier/waveform acceptance remains open.
+  This is separate from Pulse2867's new outside-source-track release requirement.
+
+
+### 2026-10-19 — Pulse2860 / PR462 clip-local resize feedback
+
+- Actual completed-scene normal/Shift audio resize added accent borders on all
+  four source-lane edges; MIDI retained its ordinary right divider. Preserve the
+  original two paint failures and MIDI positive control.
+- Remove only the nine-line TrimDrag lane styling callback. Preserve clip-local
+  preview/handles/waveform, selection, header/hue strip, drop/command/capture and
+  ordinary non-resize styles. This explicit newer exception overrides2711's older
+  general track-outline request during clip resizing.
+- Real Service/GPUI scene controls cover both edges and selected/other-selected
+  source origins, commits/Undo/Redo and logical Escape/stale/focus cancellation.
+  Separate inherited preview-disappearance failure2871/473 remains open; its
+  original failed assertions and evidence14f are preserved without ignore/pass. Retain
+  the separate controls-row/header-click fixture failure and corrected name-hit
+  setup. Exact source-bound receipts and limitations are in Pulse; merger owns
+  prospective full qualification/review/merge, Root owns physical acceptance.
+- Frozen463 pointer-delivery and469 captured-release packets remain separate;
+  neither their source nor historical evidence is replaced by this paint fix.
+
+
+## 19 october 2026 — pulse2872 / pr474 current warning cleanup
+
+- Current canonical baseline is `d303cbf4` / main `53ad3087` tree `f6c31b50`.
+  Rust 1.94.0 x86_64 Linux reproduced 46 vendored block missing-ABI warnings,
+  duplicate Engine/Warp `profile` and `profile.dwp` outputs, and fail-closed PCM
+  Unknown under the installed Clippy workspace wrapper. These are distinct from
+  Cargo cleanup package-qualifier notices and the historical native395 errors
+  (reported cleared in intermediate cfg(test) source; production promotion stays
+  native-owner work).
+- Spell the existing C ABI explicitly in block, retain the complete original
+  archive/license inventory and exact reverse provenance guard, deny missing_abi
+  in the real dependency compile. Name the Warp example `warp_profile`; preserve
+  both profiling implementations and Engine's existing command.
+- Qualify only the pinned ordinary official Clippy installation for the existing
+  declared-layout gate, checking actual args independently from info queries;
+  all other unsupported inputs and evidence-write failure remain Unknown.
+  Four real build-script policy tests and three new private installation/args
+  tests cover positive/default/strict and refusal paths; old PCM tests remain.
+- Original five-stage baseline passed. Workspace no-run reproduced collisions
+  then failed ENOSPC; preserve that infrastructure negative. Guarded cleanup of
+  seven owned dev packages reclaimed space, preserving dependency/release artifacts.
+  Subsequent independent workspace test-build/strict checks passed; final exact
+  source matrix and immutable receipts are retained in Pulse, not inferred here.
+- No warning suppression, lint weakening, unfinished-feature deletion, native
+  Audio-owner edit, full21 merge claim or application operation. Native/release
+  qualification and source-specific final integration remain explicitly separate.
+
+## 19 October 2026 — Pulse2806 / PR412 explicit recreated release-target recovery
+
+- Root29797 accepts distinct `./launch --recover-release-target`; default and
+  automatic force-restart target identity/CAS protections remain. Never signals
+  an app. Initial and guarded mutation-boundary checks require configured/raw
+  executables inactive; normal latest-main build/install/open, tests opt-in.
+- Read-only inspection binds old regular bounded owner bytes, exact replacement
+  directory identity, same workspace/common repo, ancestor clean source and
+  retained package specs. Guard rechecks under existing lock before pending
+  marker/selective release clean/fresh identified build/ready. No stale artifact
+  qualification, blind marker deletion, shared-target test cleanup or new owner.
+- Source tests cover actual production Runner/private recreated directories,
+  fake Cargo compilation/identification, read-only inspection, explicit routing,
+  old automatic refusal, marker/target/source races, foreign/malformed metadata,
+  package changes, missing/symlink targets, busy lock and running-app refusal.
+  Original29786 causal diagnostic is retained; new fixture setup corrections
+  are distinct from product failures. Exact check receipts accompany handoff.
+- Root alone performs later real Mac recovery after safe app shutdown. Cloud
+  tests do not establish actual machine recovery, native qualification or merge.
+
+## 19 October 2026 — Pulse2806 / PR412 three-path recovery return
+
+- Root29859 accepts three reproduced supported-path repairs on exactc670, keeping
+  merged474 and all413 guards. recover+test uses a retained fresh invocation-owned
+  verification target via runner env only; no old dev-owner adoption/rewrite,
+  original inspected release target/environment still used for packaging.
+- Plain validated app-parent creation/revalidation supports configured new paths;
+  symlink/non-directory parents still refuse. Same-identity explicit retry allows
+  exact own PENDING only, never unchanged READY, with all ownerCAS/source/package/
+  identity/inactivity/lock/final checks before normal clean/freshbuild/ready.
+- Three actual new baseline errors retained: stale devowner stops real verification
+  Runner; missingparent activationlock FileNotFound; failed guardedconsumer leaves
+  pending that explicit reinspection refuses. New source tests prove each path,
+  real stale devmarker preservation/fresh target claim, unchanged release env,
+  realguardedconsumerfailure then actual packaging helper/fakeCargo freshartifact
+  ready, parent negative controls and unchanged READY refusal. No native actions.
+
+
+### 2026-10-19 — Pulse2867 / PR469 captured resize release
+
+- Actual same-window release over another track rejected the captured audio/MIDI
+  resize; generic outside release fell through to cancellation. The corrected
+  outside fixture retains a changed preview; its real baseline failure is kept
+  separately from an earlier no-op assertion and a private-field compile error.
+- Existing root finish now uses the captured source track rather than hovered
+  receiver eligibility. Keep the existing final-coordinate/modifier resolver,
+  model/Warp/source admission, focus/stale/cancel checks and pending FIFO/ACK owner.
+- Both-edge audio/MIDI/Shift/enabled-Warp receiver and pan-stop/outside-release
+  controls use actual GPUI input, Service commits, non-retargeting, full snapshots
+  and Undo/Redo. Exact frozen source/check counts and negative artifacts are in
+  Pulse; sole merger owns prospective qualification/review/merge.
+- This source is stacked explicitly on frozen PR463 pointer-delivery work.
+  Physical outside-window capture and optimized waveform/input acceptance remain
+  Root-owned; no native app action or global reliability claim is implied.
+
+
+## 19 october 2026 — pulse2867 / pr469 upper-rail oracle return
+
+- On exact canonical4454/tree0479, replace the stale upper-rail cancellation
+  expectation with the user's captured-source release law. Test-only owning
+  case plus docs; no production edits or canonical branch overwrite.
+- Retain actual browser/body/no-hover region assertions and real pointer input.
+  Use an owned WAV and actual Service project/events instead of the prior
+  unrelated empty worker, then prove typed command/frame/modifier, canonical
+  before ACK, capture/pending retirement, exact worker clip/untouched track and
+  complete one-Undo/Redo snapshots.
+- Single case passed actual1/0ignored with raw command192000 and accepted
+  extent95999..96000. First fixture assertion equating these values failed and
+  is permanently preserved; final canonical model projection oracle keeps both.
+- Original failed721.767s/fullUI1064PASS1FAIL3oldignore remains negative; old61
+  focused positives remain source-bound. Fresh focused qualification/immutable
+  transport is reported in Pulse. Merger owns prospective full21/review/merge;
+  no native app operation or acceptance claim.
+
+## 19 October 2026 — Pulse2867 / PR469 single-root fixture custody return
+
+- Root29830 confirms structural BatchFiles/independent Environment root mismatch,
+  without claiming an executed filesystem race or new product release failure.
+  Correct only the upper-rail Service fixture: one precreated Arc Environment,
+  WAV/samples/default paths before startup, injected existing constructor.
+- Reuse existing PendingSetup custody pattern; only a real successful matching
+  Import ACK with exact source path/48kHz/96k frames disarms retention. Actual
+  view/browser/assets/four preferences/catalog share that root, checked through
+  two feature-test-only private path accessors following existing test_path APIs.
+- Actual paused catalog worker holds root after view+caller drop, saves then
+  permits cleanup. Actual pre-ACK missing-file import refusal retains disk
+  evidence without leaking Arc; controlled artificial case cleans its own root
+  only after observing the sole request finish, with no UI jobs started.
+- All original release/preview/raw192000/canonical-before-ACK/actual worker and
+  one-UndoRedo assertions are byte-identical; no production runtime behavior,
+  owner framework, Service join, global fixture sweep or native operation.
+  Prior f3d56-case/required-negative evidence stays independently source-bound.
+
+## replacement loop paint custody — pulse2883 / PR485, 19 october2026
+
+A real pointer/Service/completed-scene regression reproduced the old bar flashing
+between release and canonical installation. One private pending loop now retains
+its validated range until its own real FIFO completion installs canonical state;
+earlier ACKs do not retire it, deferred requests stamp only on actual submission,
+and queue refusal rolls back. Held Escape/button/focus cancellation stays separate.
+The existing blur hook clears state synchronously and defers only notification to
+the end of the effect cycle, outside GPUI's Focus paint phase; no frame delay,
+forced refresh, synthetic event or vendor change. Fourteen owning tests passed
+with zero ignored, including old rail controls, actual playback, Undo/Redo and
+save/open; default and feature all-targets strict checks passed. Raw failures and
+source-bound evidence are recorded in Pulse2883. PR329's separate whole-move,
+Shift and marker source needs later precise composition; no wholesale import or
+claim of combined qualification. Native framebuffer/listening and final merger
+qualification remain open; this is source evidence, not installed acceptance.
+
+## shared text double-click toggle — pulse2817 / PR423, 18 october 2026
+
+Original actual input regressions showed repeated query double-clicks never
+select all again and numeric draft clicks reformat the uncommitted text. A tiny
+local shared snapshot now toggles against pre-first-click selection, surviving
+release/repaint and invalidating on text/IME/keyboard/drag. Query/name caret and
+raw Unicode mapping remain; numeric editing-only selection retains draft and
+emits no value events, using the existing active gesture capture. Existing knob
+reset/adjustment/finalization and browser no-doubleclick-import remain separate.
+Focused source tests cover real click pairs, rapid pairs, partial drag/release,
+workers/window resize, composition and empty text. Frozen426+returned7c4d is a
+material input dependency, not new main integration. Sole merger owns final
+prospective full CI/integration; native physical mouse/IME acceptance stays open.
+
+### 2026-10-19 — PR423 invalidated first-click review return
+
+- Preserve canonical b017 and its declared426/416 history. Actual helper and
+  five actual browser-input caller regressions reproduced a stale even-count
+  toggle after keyboard/text/IME/Shift/drag invalidation.
+- Replace only the shared helper's current-state fallback with optional saved
+  snapshot mapping. Missing snapshot falls through to each existing caller's
+  normal text click. No browser/numeric consumer, formatter, CompactSlider,
+  value-event, knob-reset or geometry production change.
+- Preserve original negatives and all original tests; qualify new invalidation
+  cases plus valid paired-click/numeric/Unicode controls. Row navigation review
+ 4308115090 remains a separate diagnostic/baseline attribution, not a silently
+  folded423 production repair. Sole merger owns integration/full21/review/merge;
+  physical/native acceptance remains separate.
+
+## 19 October 2026 — Pulse2817 / PR423 new toggle fixture custody
+
+- Root29870 structural lifetime return: replace only new toggle_fixture caller
+  PathBuf ownership with one precreated existing Arc Environment and injected
+  constructor; samples/WAV before startup. All original toggle/invalidation/IME/
+  query/focus/drag/raw-field assertions byte-identical; production policy intact.
+- Reuse only the two identical accepted469 feature-test-only path accessors for
+  actual four-preference/catalog/root correlation. Actual held catalog job owns
+  root through view+caller drop, then successful save and ordinary cleanup.
+- Correct real Rust filters are editor::browser::ui_test::search_selection:: and
+  editor::browser_input::name_case_ui_test::. Historical351 widget80PASS is kept;
+  its two zero-match UI commands are not qualification. New actual search12PASS
+  includes old4+toggle/invalidation7+custody1, with no ignored tests. Final exact
+  shared-widget/name/input/strict/guard receipts remain separately source-bound.
+
+### 2026-10-19 — PR460 browser arrow eligibility
+
+- Recover the same canonical task2858/PR460 plan03db at verified main2683942b;
+  preserve separate423 policy7db and its source/negative evidence unchanged.
+- Add only results_focused refusal to existing Right preview and Left collapse
+  handlers. Retain the active browser navigation context, Up/Down entry, selected
+  sample/folder actions, Command-F/text editing and separate manual audition.
+- Promote the verified identical five baseline negatives and selected controls;
+  add actual Service canonical/history invariants and Up/Down/Command-F routing.
+  Focused seven cases pass without rerunning the unchanged original negative.
+  Exact source component checks precede sole-merger full21/fresh review/merge;
+  no native/app/physical output or user acceptance is inferred.
+
+### 2026-10-19 — PR329 loop-bar gestures and musical marker
+
+- Continue original c525/2713 history after one main2683 composition; preserve
+  earlier c71e three executed negatives and separate literal compile failure.
+- Command-click anywhere on the bar (including endpoints) toggles on/off;
+  ordinary body move preserves full length,
+  Shift uses nearest full-length steps relative to the captured original start.
+  Existing edge resize/empty-rail painting and Command-L/toolbar remain intact.
+- Mark two/four and unambiguous fractional binary musical lengths through exact
+  canonical forward-rounded endpoint intervals, not pixels; ambiguous subframe
+  intervals carry no marker. Include tempo seams, zoom and resize controls.
+- Real routed Escape/stationary-modifier negatives required narrow existing root
+  callbacks into private rail state; no new gesture owner/framework/vendor code.
+  Old rail fixture now initializes its actual Service project instead of only
+  overriding the displayed state. Twelve beats plus the existing two-second
+  Service horizon preserve its exact384000-frame viewport assertions.
+- Qualification covers original five rail cases, eight real-Service loop-bar
+  cases and four pure math cases, with save/open, Undo/Redo, both directions,
+  live modifiers/focus/cancel/Open invalidation. Native physical/listening and
+  merger's prospective full21/review/actual merge remain separate and open.

@@ -67,6 +67,7 @@ fn exercise(
         let old = view.state.as_ref().unwrap();
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             audio_clip_waveforms: old.audio_clip_waveforms.clone(),
             project: Arc::new(model.project().clone()),
             waveforms: Default::default(),
