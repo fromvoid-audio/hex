@@ -104,14 +104,26 @@ class CompiledHelperTests(unittest.TestCase):
     def test_cold_compile_has_separate_budget_then_fast_operations_keep_runtime_budget(self):
         import time
         self.configure(sleep=.35)
-        with patch.object(restart,'COMPILE_TIMEOUT',2),patch.object(restart,'OPERATION_TIMEOUT',.2):
+        real_popen=subprocess.Popen;wait_budgets=[]
+        def spawn(*args,**kwargs):
+            child=real_popen(*args,**kwargs);wait=child.wait
+            def record(timeout=None):
+                wait_budgets.append(timeout)
+                return wait(timeout=timeout)
+            child.wait=record
+            return child
+        # This is a budget-routing oracle, not an interpreter startup benchmark.
+        # Generous fixture budgets keep cold Python startup out of the assertion;
+        # recording the actual waits detects merged/per-call compile budgets.
+        with patch.object(restart,'COMPILE_TIMEOUT',30),patch.object(restart,'OPERATION_TIMEOUT',5),patch.object(restart.subprocess,'Popen',side_effect=spawn):
             start=time.monotonic();self.assertEqual(self.controller.snapshot(),[])
             self.assertGreater(time.monotonic()-start,.35)
             self.assertEqual(self.controller.snapshot(),[])
+        self.assertEqual(wait_budgets,[30,5,5])
         self.assertEqual(len(self.calls(self.compiler_log)),1)
         self.assertEqual(len(self.calls(self.native_log)),2)
-        self.assertIn('budget 2s',(self.output/'native-compile.log').read_text())
-        self.assertIn('budget 0.2s',(self.output/'native-control.log').read_text())
+        self.assertIn('budget 30s',(self.output/'native-compile.log').read_text())
+        self.assertIn('budget 5s',(self.output/'native-control.log').read_text())
 
     def test_snapshot_quit_force_all_use_same_binary_and_repeat_installed_seal_after_compile(self):
         self.controller.snapshot()
@@ -269,13 +281,41 @@ class CompiledHelperTests(unittest.TestCase):
         self.assertIn('interrupted',(self.output/'native-compile.log').read_text())
 
     def test_native_operation_retains_its_own_timeout_and_never_recompiles(self):
+        import time
         self.configure(native_sleep=60)
-        with patch.object(restart,'OPERATION_TIMEOUT',.2):
+        real_popen=subprocess.Popen;native_children=[];runtime_waits=[]
+        def spawn(*args,**kwargs):
+            child=real_popen(*args,**kwargs)
+            if Path(args[0][0]).name=='launch-restart':
+                native_children.append(child);wait=child.wait;first_wait=True
+                def after_invocation(timeout=None):
+                    nonlocal first_wait
+                    if first_wait:
+                        first_wait=False
+                        # Fixture-only readiness: the owned Python helper must
+                        # record its invocation before the short runtime oracle.
+                        # Production's 15s deadline still includes all startup.
+                        deadline=time.monotonic()+15
+                        while not self.native_log.exists() or not self.native_log.read_text().endswith('\n'):
+                            self.assertIsNone(child.poll(),'fixture helper exited before invocation')
+                            self.assertLess(time.monotonic(),deadline,'fixture helper never recorded invocation')
+                            time.sleep(.01)
+                        runtime_waits.append(timeout)
+                    return wait(timeout=timeout)
+                child.wait=after_invocation
+            return child
+        with patch.object(restart,'OPERATION_TIMEOUT',.2),patch.object(restart.subprocess,'Popen',side_effect=spawn):
             with self.assertRaisesRegex(restart.RestartError,'snapshot timed out'):self.controller.snapshot()
+        self.assertEqual(runtime_waits,[.2])
+        self.assertEqual(len(native_children),1)
+        self.assertIsNotNone(native_children[0].poll(),'timed-out owned helper was not reaped')
         self.assertEqual(len(self.calls(self.compiler_log)),1)
         self.assertEqual(len(self.calls(self.native_log)),1)
+        self.assertIn('timed out',(self.output/'native-control.log').read_text())
         self.assertFalse(list(self.output.glob('native-helper-*')))
         with self.assertRaisesRegex(restart.RestartError,'closed'):self.controller.snapshot()
+        self.assertEqual(len(self.calls(self.compiler_log)),1)
+        self.assertEqual(len(self.calls(self.native_log)),1)
 
     def test_native_refusal_and_invalid_json_do_not_escape_as_success(self):
         self.configure(native_fail=True)
