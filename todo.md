@@ -11,8 +11,14 @@ Single-clip conversion, capacity/refusal, subframe and history laws stay intact.
 Source checks and immutable raw failure/green receipts are recorded in Pulse2803;
 Undo comparisons explicitly retain canonical allocator high-water. No new native
 run, final combined-tree full CI, physical acceptance or merge is implied here.
-The repeated preview allocation/scan finding remains open pending the root's
-bounded capture/freshness contract; no persistent cache/public API was added.
+The accepted bounded capture now retains a Weak immutable Project witness and
+checked original indices with reusable selected metadata. Updates preserve the
+canonical placement law without per-event metadata/backing allocations; rendering
+uses indexed originals and context retirement clears the shared payload owner.
+Equal-counter replacement and selection changes refuse stale capture. Canonical
+release still revalidates IDs/position in the original prepared transaction.
+Exact capture/UI/strict checks, debug allocation and separate redraw measurements
+are retained in Pulse2803; no optimized/native deadline or final merge claim.
 See docs/group-clip-drag.md. Sole merger owns final integration/qualification;
 root owns serial native/delivery and user-present group/waveform/capture testing.
 

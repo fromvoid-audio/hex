@@ -216,6 +216,9 @@ fn group_escape_and_actual_gpui_capture_loss_never_commit_any_member(cx: &mut Te
         let mut visual = VisualTestContext::from_window(handle, cx);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         let target = begin_group(&mut visual, &clips);
+        let retained_payload =
+            editor.read_with(&visual, |v, _| v.active_clip_drag.as_ref().unwrap().clone());
+        assert!(retained_payload.group.borrow().capture.is_some());
         for id in &clips {
             let selector = Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
             assert!(
@@ -234,6 +237,10 @@ fn group_escape_and_actual_gpui_capture_loss_never_commit_any_member(cx: &mut Te
         }
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
+        assert!(
+            retained_payload.group.borrow().capture.is_none(),
+            "retired Rc payload cannot keep capture metadata"
+        );
         editor.read_with(&visual, |v, _| {
             assert!(v.active_clip_drag.is_none());
             assert_eq!(v.selected_clip_ids(), clips);
@@ -307,7 +314,7 @@ fn stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_releas
         let starts = clips
             .iter()
             .map(|id| {
-                let item = group.previews.iter().find(|p| p.id() == *id).unwrap();
+                let item = group.previews().iter().find(|p| p.id() == *id).unwrap();
                 let hex_project::ClipGroupContent::Audio(c) = &item.content else {
                     panic!("audio group")
                 };
@@ -432,7 +439,7 @@ fn mixed_audio_midi_group_uses_real_track_offsets_or_refuses_whole_vertical_move
             assert_eq!(v.selected_clip_ids(), vec![anchor, midi]);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             let drag = v.active_clip_drag.as_ref().unwrap();
-            let plan = drag.group.borrow().previews.clone();
+            let plan = drag.group.borrow().previews().to_vec();
             assert_eq!(plan.len(), if fits { 2 } else { 0 });
             plan
         });
@@ -519,7 +526,7 @@ fn group_outside_lane_clears_all_previews_and_restores_originals(cx: &mut TestAp
         assert!(drag.preview.get().is_none());
         assert!(drag.destination.get().is_none());
         assert!(
-            drag.group.borrow().previews.is_empty(),
+            drag.group.borrow().previews().is_empty(),
             "outside lane must invalidate all group destinations"
         );
     });
@@ -578,7 +585,7 @@ fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut Te
                 .unwrap()
                 .group
                 .borrow()
-                .previews
+                .previews()
                 .len(),
             3
         );
@@ -599,7 +606,7 @@ fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut Te
         assert!(drag.preview.get().is_none());
         assert!(drag.destination.get().is_none());
         assert!(
-            drag.group.borrow().previews.is_empty(),
+            drag.group.borrow().previews().is_empty(),
             "vertical autoscroll invalidates every group destination before repaint"
         );
     });
@@ -608,5 +615,212 @@ fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut Te
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert_eq!(v.worker_requests_pending, 0);
+    });
+}
+
+fn with_project_view(
+    state: &hex_session::service::ViewState,
+    project: std::sync::Arc<hex_project::Project>,
+) -> std::sync::Arc<hex_session::service::ViewState> {
+    std::sync::Arc::new(hex_session::service::ViewState {
+        canonical_audio_source: state.canonical_audio_source.clone(),
+        project,
+        waveforms: state.waveforms.clone(),
+        audio_clip_waveforms: state.audio_clip_waveforms.clone(),
+        midi_preview: state.midi_preview.clone(),
+        gain_preview: state.gain_preview.clone(),
+        timeline_frames: state.timeline_frames,
+        can_undo: state.can_undo,
+        can_redo: state.can_redo,
+        revision: state.revision,
+        unsaved: state.unsaved,
+        document_path: state.document_path.clone(),
+    })
+}
+#[gpui::test]
+fn group_capture_checks_source_allocation_and_selection_epoch(cx: &mut TestAppContext) {
+    for case in 0..3 {
+        let replace_project = case == 1;
+        let invalid = case != 0;
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let target = begin_group(&mut visual, &clips);
+        visual.run_until_parked();
+        let payload =
+            editor.read_with(&visual, |v, _| v.active_clip_drag.as_ref().unwrap().clone());
+        editor.update(&mut visual, |v, cx| {
+            let old = v.state.as_ref().unwrap();
+            let project = if replace_project {
+                std::sync::Arc::new((*old.project).clone())
+            } else {
+                old.project.clone()
+            };
+            v.state = Some(with_project_view(old, project));
+            if case == 2 {
+                let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+                v.clip_selection.only(track, clips[0]);
+            }
+            cx.notify();
+        });
+        visual.simulate_mouse_move(
+            point(target.x + px(5.0), target.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before,
+                "model/revision content stayed equal"
+            );
+            assert_eq!(
+                payload.group.borrow().previews().len(),
+                if invalid { 0 } else { 3 }
+            );
+            if invalid {
+                assert!(
+                    payload.group.borrow().capture.is_none(),
+                    "replacement retires capture despite equal IDs/revision"
+                );
+            }
+        });
+        if invalid {
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.worker_requests_pending, 0);
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            });
+        } else {
+            visual.simulate_keystrokes("escape");
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            pump(&editor, &mut visual);
+        }
+    }
+}
+
+#[gpui::test]
+fn group_capture_profiles_actual_redraw_separately_from_projection(cx: &mut TestAppContext) {
+    for total in [128, 16_384] {
+        let (_files, handle, editor, clips) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |v, cx| {
+            let old = v.state.as_ref().unwrap();
+            let mut snapshot = old.project.snapshot();
+            let originals = std::mem::take(snapshot.tracks[0].audio_clips_mut().unwrap());
+            for index in 0..total - originals.len() {
+                let mut c = originals[0].clone();
+                c.id = snapshot.next_id;
+                snapshot.next_id += 1;
+                c.start = 10_000_000 + index as u64 * 48_000;
+                snapshot.tracks[0].audio_clips_mut().unwrap().push(c);
+            }
+            snapshot.tracks[0]
+                .audio_clips_mut()
+                .unwrap()
+                .extend(originals);
+            let project =
+                std::sync::Arc::new(hex_project::Project::from_snapshot(snapshot).unwrap());
+            // Metadata-only renderer fixture: no publication/source authority or
+            // commit is inferred from this view; original real-Service cases run separately.
+            v.state = Some(with_project_view(old, project));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let target = begin_group(&mut visual, &clips);
+        visual.run_until_parked();
+        let (row, position) = editor.read_with(&visual, |v, _| {
+            let drag = v.active_clip_drag.as_ref().unwrap();
+            let preview = drag.preview.get().unwrap();
+            (
+                preview.target_track,
+                super::group_position(preview.position),
+            )
+        });
+        let start = Instant::now();
+        editor.update(&mut visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let drag = v.active_clip_drag.as_ref().unwrap();
+            let mut group = drag.group.borrow_mut();
+            let capture = group.capture.as_mut().unwrap();
+            for _ in 0..32 {
+                capture.update(&state.project, row, position).unwrap();
+            }
+        });
+        let projection = start.elapsed();
+        // Repaint complete actual GPUI view (including unrelated row cost),
+        // separately from the projection loop. No native/deadline threshold.
+        for _ in 0..2 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+        }
+        let start = Instant::now();
+        for _ in 0..4 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+        }
+        let painting = start.elapsed();
+        for id in &clips {
+            let selector = Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "actual indexed-source overlays painted"
+            );
+        }
+        eprintln!(
+            "group capture profile total={total} selected=3 projection_ns_per_update={} full_gpui_redraw_ns={} profile=debug/no_deadline_claim",
+            projection.as_nanos() / 32,
+            painting.as_nanos() / 4
+        );
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+    }
+}
+
+#[gpui::test]
+fn group_capture_reenters_valid_lane_and_commits_only_current_projection(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let target = begin_group(&mut visual, &clips);
+    visual.run_until_parked();
+    let payload = editor.read_with(&visual, |v, _| v.active_clip_drag.as_ref().unwrap().clone());
+    visual.simulate_mouse_move(
+        point(px(200.0), target.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(payload.group.borrow().previews().is_empty());
+    assert!(
+        payload.group.borrow().capture.is_some(),
+        "temporary no-target keeps reusable metadata"
+    );
+    let returned = point(target.x + px(13.0), target.y);
+    visual.simulate_mouse_move(returned, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let plan = payload.group.borrow().previews().to_vec();
+    assert_eq!(plan.len(), 3);
+    visual.simulate_mouse_up(returned, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert!(
+        payload.group.borrow().capture.is_none(),
+        "accepted release retires shared capture"
+    );
+    editor.read_with(&visual, |v, _| {
+        let project = &v.state.as_ref().unwrap().project;
+        for item in &plan {
+            let hex_project::ClipGroupContent::Audio(c) = &item.content else {
+                panic!("audio fixture")
+            };
+            assert_eq!(
+                project.clip(c.id()),
+                Some(c),
+                "fresh canonical release equals current landing"
+            );
+        }
+        assert!(v.error.is_none(), "{:?}", v.error);
     });
 }

@@ -459,7 +459,12 @@ impl EditorView {
             let group = drag.group.borrow();
             if group.ids.len() > 1 {
                 let mut shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
-                for member in group.previews.iter().filter(|p| p.track == track_id) {
+                for (member_index, member) in group
+                    .previews()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.track == track_id)
+                {
                     use hex_project::ClipGroupContent;
                     let position = match &member.content {
                         ClipGroupContent::Audio(c) => ClipPosition::Audio {
@@ -501,7 +506,8 @@ impl EditorView {
                         .children([clip_grid_layer(grid, start, end)]);
                     match &member.content {
                         ClipGroupContent::Audio(c) => {
-                            if let Some(original) = state.project.clip(c.id())
+                            if let Some(original) =
+                                group.original_audio(&state.project, member_index)
                                 && let Some(waveform) =
                                     super::waveform::preview_waveform_view_cached(
                                         super::waveform::WaveformPreview {
@@ -1086,7 +1092,7 @@ impl EditorView {
         let group = group_owner.map(|d| d.group.borrow());
         let hides_group_member = |id| {
             group.as_ref().is_some_and(|g| {
-                g.ids.len() > 1 && !g.previews.is_empty() && g.ids.binary_search(&id).is_ok()
+                g.ids.len() > 1 && !g.previews().is_empty() && g.ids.binary_search(&id).is_ok()
             })
         };
         for clip in track.clips() {

@@ -71,9 +71,51 @@ whole group projection; vertical scroll clears it before repaint alongside the
 primary destination. Valid planning repopulates it. The painter and original
 visibility therefore agree without giving outside release commit authority.
 
-The separate review of repeated preview construction remains OPEN. Its measured
-bounded allocation/scan costs and a proposed capture/reuse direction are recorded
-in Pulse2803; no persistent cache or new public capture API is implemented here.
+At the first copy/preview checkpoint, repeated preview construction remained
+open. Its measured bounded allocation/scan costs and the subsequent accepted
+capture contract are recorded in Pulse2803. The implementation below addresses
+that separate finding without changing canonical commit authority.
 Original22bc source/Mac12 receipts, new red/green checks, merger final combined
 full CI and physical optimized acceptance are separate evidence. This bounded
 repair is not a claim that every PR409 review finding is closed or merge-ready.
+
+## drag-local immutable-source capture
+
+`ClipGroupMovePreview` captures one checked selection once from the current
+`Arc<Project>`. Its fields and original indices are private; it retains only a
+Weak source witness, checked original coordinates/indices, and reusable selected
+metadata. Before every update or indexed original read it compares that witness
+with the actual current allocation. Project has no public interior mutation;
+Weak prevents `get_mut`, and `make_mut` dissociates the source allocation. Equal
+IDs/revision/content on a different allocation are insufficient. This is UI
+correlation, never native provenance or authority to commit cached clips.
+
+Projection always starts from captured original coordinates, including shared
+zero clamping, exact MIDI-anchor beats and positive subframe lengths. Musical
+placement shells detach once while retained processing domains stay shared.
+Updates retain storage when invalid but publish no visible members until every
+member succeeds. A caller-retained clone of a musical preview shell causes a
+controlled invalidation/refusal, rather than a hidden pointer-path COW allocation;
+normal renderer consumers borrow previews. Dropping the alias permits recovery.
+
+Pointer, modifier and autoscroll changes reuse that storage. Existing generation,
+revision, selection epoch, pending state, lane geometry and active-drag checks
+remain. Context retirement removes the capture inside the shared Rc payload,
+including Stop, Escape, root MouseUp, project replacement and superseding drags.
+Outside/vertical invalidation hides all previews and restores original visibility
+without dropping/recloning reusable metadata. Rendering borrows original audio
+through checked captured indices, and anchor freshness avoids a source-track
+clip scan. Actual MouseUp still submits IDs/anchor/current position to the fresh
+canonical planner and its original prepared transaction; cached metadata never
+becomes a commit payload.
+
+Focused tests compare the old canonical projection with mixed/Warp/tempo capture
+for either anchor, A→B→A, invalid→valid, zero bounds, subframe MIDI, replacement,
+reorder/delete and metadata-alias refusal. GPUI tests cover same-source new views,
+equal-counter source replacement, selection change, retained payload retirement,
+outside/vertical reentry and actual redraw separately from projection. Instrumented
+standalone update probes report zero metadata/backing allocations and frees for
+frame and musical selections up to16,384. Full GPUI redraw includes unrelated
+view work and is measured separately. These are debug source measurements, not
+optimized/native deadline, audio, delivery or physical interaction acceptance.
+Final exact-source receipts and immutable originals are in Pulse2803.

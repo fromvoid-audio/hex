@@ -1667,7 +1667,7 @@ impl EditorView {
             self.arrangement_bounds_epoch = 0;
             self.main_track_lane_bounds = None;
             self.main_track_lane_epoch = 0;
-            self.active_clip_drag = None;
+            self.retire_active_clip_drag();
             self.pointer_down = None;
             self.stop();
             self.viewport = None;

@@ -120,16 +120,15 @@ impl Project {
                 .filter(|c| selected.contains(&c.id()))
             {
                 let frame = translated(self.tempo_map().beat_to_frame(clip.start())?, delta)?;
-                let start = if clip.id() == anchor && delta == requested_delta {
-                    let ClipGroupPosition::Midi(beat) = position else {
-                        return Err(Invalid("midi anchor kind changed"));
-                    };
-                    beat
-                } else if delta == 0 {
-                    clip.start()
-                } else {
-                    self.tempo_map().frame_to_beat(frame)?
-                };
+                let start = midi_start(
+                    self,
+                    clip.start(),
+                    frame,
+                    delta,
+                    requested_delta,
+                    clip.id() == anchor,
+                    position,
+                )?;
                 let end = BeatTime::from_raw(
                     start
                         .raw()
@@ -155,9 +154,30 @@ impl Project {
         Ok(result)
     }
 }
-fn translated(frame: u64, delta: i128) -> Result<u64, Invalid> {
+pub(super) fn translated(frame: u64, delta: i128) -> Result<u64, Invalid> {
     u64::try_from(i128::from(frame) + delta)
         .map_err(|_| Invalid("whole clip group exceeds timeline bounds"))
+}
+
+pub(super) fn midi_start(
+    project: &Project,
+    original: BeatTime,
+    frame: u64,
+    delta: i128,
+    requested: i128,
+    anchor: bool,
+    position: ClipGroupPosition,
+) -> Result<BeatTime, Invalid> {
+    if anchor && delta == requested {
+        let ClipGroupPosition::Midi(beat) = position else {
+            return Err(Invalid("midi anchor kind changed"));
+        };
+        Ok(beat)
+    } else if delta == 0 {
+        Ok(original)
+    } else {
+        project.tempo_map().frame_to_beat(frame)
+    }
 }
 
 pub(crate) fn apply(

@@ -437,6 +437,27 @@ fn canonical_subframe_midi_member_is_retained_in_whole_group_move() {
         1
     );
     let edit = command(&f, f.audio, f.tracks[0], ClipGroupPosition::Audio(72_000));
+    let captured_source = std::sync::Arc::new(before.clone());
+    let mut captured =
+        crate::ClipGroupMovePreview::capture(&captured_source, &[f.audio, f.midi], f.midi).unwrap();
+    captured
+        .update(
+            &captured_source,
+            f.tracks[1],
+            ClipGroupPosition::Midi(destination),
+        )
+        .unwrap();
+    assert_capture_matches_plan(
+        captured.previews(),
+        &before
+            .preview_clip_group_move(
+                &[f.audio, f.midi],
+                f.midi,
+                f.tracks[1],
+                ClipGroupPosition::Midi(destination),
+            )
+            .unwrap(),
+    );
     f.editor
         .execute(edit)
         .expect("a legal subframe member must not block or disappear from the group");
@@ -594,4 +615,197 @@ fn copy_overlap_preserves_midi_selected_originals() {
 #[test]
 fn copy_overlap_preserves_mixed_selected_originals() {
     copied_group_preserves_overlapped_selected_originals(2);
+}
+
+fn capture_project() -> std::sync::Arc<Project> {
+    let mut f = fixture();
+    let settings = crate::audio_edit::default_audio_warp(
+        f.editor.project().clip(f.audio).unwrap(),
+        f.editor.project().tempo_map(),
+        crate::WarpMode::RePitch,
+    )
+    .unwrap();
+    f.editor
+        .execute(Command::SetAudioClipWarp {
+            clip: f.audio,
+            settings: Some(settings),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::from_quarters(12).unwrap(),
+            tempo: crate::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    std::sync::Arc::new(f.editor.project().clone())
+}
+fn assert_capture_matches_plan(actual: &[ClipGroupPreview], expected: &[ClipGroupPreview]) {
+    assert_eq!(actual.len(), expected.len());
+    for (a, b) in actual.iter().zip(expected) {
+        assert_eq!(a.track, b.track);
+        match (&a.content, &b.content) {
+            (ClipGroupContent::Audio(a), ClipGroupContent::Audio(b)) => assert_eq!(a, b),
+            (ClipGroupContent::Midi(a), ClipGroupContent::Midi(b)) => assert_eq!(a, b),
+            _ => panic!("member kind/order changed"),
+        }
+    }
+}
+#[test]
+fn capture_projection_matches_canonical_and_recovers_absolute_original_after_invalid_and_roundtrips()
+ {
+    use crate::ClipGroupMovePreview;
+    let project = capture_project();
+    let audio = project.tracks()[0].clips()[0].id();
+    let midi = project.tracks()[1].midi_clips()[0].id();
+    assert!(crate::ClipGroupMovePreview::capture(&project, &[], audio).is_err());
+    assert!(crate::ClipGroupMovePreview::capture(&project, &[audio, audio], audio).is_err());
+    assert!(crate::ClipGroupMovePreview::capture(&project, &[audio], midi).is_err());
+    assert!(
+        crate::ClipGroupMovePreview::capture(&project, &[audio, ClipId(u64::MAX)], audio).is_err()
+    );
+    assert!(
+        crate::ClipGroupMovePreview::capture(&project, &vec![audio; MAX_CLIPS + 1], audio).is_err()
+    );
+    for anchor in [audio, midi] {
+        let (track, a, b, invalid) = if anchor == audio {
+            (
+                project.tracks()[0].id(),
+                ClipGroupPosition::Audio(project.clip(audio).unwrap().start()),
+                ClipGroupPosition::Audio(288_123),
+                project.tracks()[2].id(),
+            )
+        } else {
+            (
+                project.tracks()[1].id(),
+                ClipGroupPosition::Midi(project.midi_clip(midi).unwrap().start()),
+                ClipGroupPosition::Midi(BeatTime::from_raw(BeatTime::ONE.raw() * 16 + 17)),
+                project.tracks()[0].id(),
+            )
+        };
+        let ids = [audio, midi];
+        let mut capture = ClipGroupMovePreview::capture(&project, &ids, anchor).unwrap();
+        assert_eq!(
+            std::sync::Arc::strong_count(&project),
+            1,
+            "capture must retain only Weak source"
+        );
+        assert!(capture.previews().is_empty());
+        for position in [
+            a,
+            b,
+            a,
+            if anchor == audio {
+                ClipGroupPosition::Audio(0)
+            } else {
+                ClipGroupPosition::Midi(BeatTime::ZERO)
+            },
+            a,
+        ] {
+            let expected = project
+                .preview_clip_group_move(&ids, anchor, track, position)
+                .unwrap();
+            capture.update(&project, track, position).unwrap();
+            assert_capture_matches_plan(capture.previews(), &expected);
+        }
+        assert!(capture.update(&project, invalid, b).is_err());
+        assert!(
+            capture.previews().is_empty(),
+            "partial projection cannot become visible"
+        );
+        capture.update(&project, track, a).unwrap();
+        assert_capture_matches_plan(
+            capture.previews(),
+            &project
+                .preview_clip_group_move(&ids, anchor, track, a)
+                .unwrap(),
+        );
+        assert!(std::ptr::eq(
+            capture.original_audio(&project, 0).unwrap(),
+            project.clip(audio).unwrap()
+        ));
+        capture.invalidate();
+        assert!(capture.previews().is_empty());
+        capture.update(&project, track, b).unwrap();
+        assert_capture_matches_plan(
+            capture.previews(),
+            &project
+                .preview_clip_group_move(&ids, anchor, track, b)
+                .unwrap(),
+        );
+    }
+}
+#[test]
+fn capture_source_witness_refuses_equal_replacement_and_cow_reorder_delete_without_strong_owner() {
+    use crate::ClipGroupMovePreview;
+    for mutation in 0..3 {
+        let mut project = capture_project();
+        let ids = [
+            project.tracks()[0].clips()[0].id(),
+            project.tracks()[1].midi_clips()[0].id(),
+        ];
+        let track = project.tracks()[0].id();
+        let mut capture = ClipGroupMovePreview::capture(&project, &ids, ids[0]).unwrap();
+        capture
+            .update(&project, track, ClipGroupPosition::Audio(72_000))
+            .unwrap();
+        let same = std::sync::Arc::clone(&project);
+        assert!(capture.matches_source(&same));
+        capture
+            .update(&same, track, ClipGroupPosition::Audio(96_000))
+            .unwrap();
+        drop(same);
+        assert_eq!(std::sync::Arc::strong_count(&project), 1);
+        assert!(
+            std::sync::Arc::get_mut(&mut project).is_none(),
+            "Weak prevents silent in-place mutation"
+        );
+        if mutation == 0 {
+            project = std::sync::Arc::new((*project).clone());
+        } else if mutation == 1 {
+            std::sync::Arc::make_mut(&mut project).tracks.swap(0, 1);
+        } else {
+            std::sync::Arc::make_mut(&mut project).tracks[0]
+                .content
+                .audio_clips
+                .clear();
+        }
+        assert!(!capture.matches_source(&project));
+        assert!(capture.original_audio(&project, 0).is_none());
+        assert!(
+            capture
+                .update(&project, track, ClipGroupPosition::Audio(72_000))
+                .is_err()
+        );
+        assert!(capture.previews().is_empty());
+    }
+}
+#[test]
+fn capture_rejects_retained_musical_preview_shell_alias_then_recovers_without_clone_reset() {
+    let project = capture_project();
+    let ids = [
+        project.tracks()[0].clips()[0].id(),
+        project.tracks()[1].midi_clips()[0].id(),
+    ];
+    let track = project.tracks()[0].id();
+    let mut capture = crate::ClipGroupMovePreview::capture(&project, &ids, ids[0]).unwrap();
+    capture
+        .update(&project, track, ClipGroupPosition::Audio(72_000))
+        .unwrap();
+    let alias = capture.previews()[0].clone();
+    assert!(
+        capture
+            .update(&project, track, ClipGroupPosition::Audio(96_000))
+            .is_err()
+    );
+    assert!(capture.previews().is_empty());
+    drop(alias);
+    capture
+        .update(&project, track, ClipGroupPosition::Audio(96_000))
+        .unwrap();
+    assert_capture_matches_plan(
+        capture.previews(),
+        &project
+            .preview_clip_group_move(&ids, ids[0], track, ClipGroupPosition::Audio(96_000))
+            .unwrap(),
+    );
 }

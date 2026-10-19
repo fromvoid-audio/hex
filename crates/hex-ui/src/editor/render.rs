@@ -473,7 +473,7 @@ impl Render for EditorView {
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
-                    if view.active_clip_drag.take().is_some() {
+                    if view.retire_active_clip_drag() {
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
@@ -631,7 +631,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &Stop, window, cx| {
                 cx.stop_active_drag(window);
-                view.active_clip_drag = None;
+                view.retire_active_clip_drag();
                 view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
                 view.device_panel.navigation.cancel();
@@ -672,7 +672,7 @@ impl Render for EditorView {
                 let pan_canceled =
                     view.cancel_arrangement_pan() | view.device_panel.navigation.cancel();
                 if drag_stopped {
-                    view.active_clip_drag = None;
+                    view.retire_active_clip_drag();
                 }
                 if !gain_canceled
                     && !midi_canceled
