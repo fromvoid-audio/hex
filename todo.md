@@ -5287,6 +5287,23 @@ sole merger owns prospective fullCI/merge, root optimized native acceptance.
   labels, open settings and repeated capture/expansion. Sole merger owns final full
   candidate checks/merge; native physical interaction and delivery remain open.
 
+## console arrangement midi stop-cell admission — pulse2814 / pr420, 19 october2026
+
+The focused return on frozen44adc reproduces a real UI/model mismatch: an actual
+Arrangement MIDI drag released onto Console Stop queued a copy, then the Service
+refused the occupied cell. MIDI admission now matches Audio and the existing
+canonical empty-cell contract. Stop refuses locally, preserves the complete model
+and history, clears the ghost and queues nothing; browser sample replacement keeps
+its separate atomic contract. No Project/Session/queue/capture semantics changed.
+
+Two real GPUI/Service regressions cover Stop refusal and empty-cell copying with
+fresh IDs, full MIDI source/note payload preservation, one Undo/Redo, and occupied
+MIDI/prepared Audio protection. Baseline1pass1fail becomes2pass; the full focused
+Console set passes11/0ignored. Tests capture the real Arrangement pointer drag,
+use the existing production mode setter, and release over the real Console cell;
+the pinned source predates419's Tab binding. Exact-source strict checks/evidence
+are recorded in Pulse. Full prospective CI/merge belongs to the sole merger;
+changed native/physical acceptance and delivery remain coordinator-owned.
 - 19 October2026 — Pulse2847 / PR449: fixed Preserve groups now retain their
   native-relative first pass, selected inverse-map anchors and physical/FIR
   exclusions, with explicit compression omission and zero-duration-group tests.
@@ -5425,3 +5442,9 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Composed canonical be596 through ordered65aa compiler,143 configured filesystem identity andff89 portable-case fixture repairs with qualified main4531bc9. Git merged without conflicts, retaining changelog preparation/history/package handling and current default no-test launch.
 - Verified all34 identity and24 fixture payloads plus prior12 compiler payloads; complete chain and unchanged Python/Swift hashes checked. Root reports exactff89 systemPython3.9 suites89 and compiled ABSENT-only helper probes passed; this is attested component evidence, not cloud access to raw Mac files or running AppKit lifecycle acceptance.
 - Opt-in force restart retains exact bundle/executable/PID/start identity, locks/CAS/recovery/refusal and separate120scompile/15soperation limits. Required new exact prospective full21 and fresh review remain pending; no app/control/native/build/install action by merger.
+
+### 2026-10-19 — PR420 Console drop and Stop-cell return integration
+
+- Composed frozen44adc plus focusedf8f5 return with qualifiedmain422b3aba, preserving canonical history and both appended todo sides. Original53 and return25 immutable payloads were verified; actual Stop refusal and empty-cell copy evidence remains source-bound.
+- Browser receiver runs before deferred root cleanup; existing capture, trim/resize, Open, private test constructor, comparison state and qualified changelog/launcher remain preserved by ordinary hunks. No unready409/419/456/395 import.
+- Focused compile then fresh exact prospective full21/review required; no native physical Console gesture, listening, installed or user acceptance claim.
