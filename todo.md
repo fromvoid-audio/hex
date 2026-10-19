@@ -5193,3 +5193,18 @@ Focused source tests cover real click pairs, rapid pairs, partial drag/release,
 workers/window resize, composition and empty text. Frozen426+returned7c4d is a
 material input dependency, not new main integration. Sole merger owns final
 prospective full CI/integration; native physical mouse/IME acceptance stays open.
+
+### 2026-10-19 — PR423 invalidated first-click review return
+
+- Preserve canonical b017 and its declared426/416 history. Actual helper and
+  five actual browser-input caller regressions reproduced a stale even-count
+  toggle after keyboard/text/IME/Shift/drag invalidation.
+- Replace only the shared helper's current-state fallback with optional saved
+  snapshot mapping. Missing snapshot falls through to each existing caller's
+  normal text click. No browser/numeric consumer, formatter, CompactSlider,
+  value-event, knob-reset or geometry production change.
+- Preserve original negatives and all original tests; qualify new invalidation
+  cases plus valid paired-click/numeric/Unicode controls. Row navigation review
+ 4308115090 remains a separate diagnostic/baseline attribution, not a silently
+  folded423 production repair. Sole merger owns integration/full21/review/merge;
+  physical/native acceptance remains separate.

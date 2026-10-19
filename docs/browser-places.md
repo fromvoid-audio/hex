@@ -159,3 +159,18 @@ value edit. Knob reset and nonediting numeric adjustment remain separate gesture
 Rendered tests exercise actual down/up click counts, partial/drag/release,
 filesystem worker/tick/resize updates, Unicode composition and empty text. Native
 physical mouse/IME/accessibility acceptance remains coordinator-owned and open.
+
+### invalidated text double-click pairs
+
+A text/keyboard/IME update, Shift selection or drag invalidates the saved first
+click. If the platform subsequently sends an even click count, the shared policy
+returns no toggle and the field uses its normal caret/selection path. It never
+substitutes current selection for the discarded snapshot. Fresh rapid1/2 and3/4
+pairs still toggle from their own pre-gesture state. No text/query/value event,
+formatter, numeric knob reset or geometry policy changes.
+
+New bounded actual-caller regressions cover keyboard, text, IME, Shift and drag
+invalidation followed by click2, then a fresh3/4 pair. The shared pure policy
+covers both prior/current full-selection states. Original browser/name/numeric
+and physical input evidence remains source-bound; native click-count/IME and
+clipboard acceptance is separate from headless source checks.

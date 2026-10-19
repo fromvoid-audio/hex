@@ -11,7 +11,7 @@ impl TextClickSelection {
     /// records the pre-gesture state. Rapid pairs may arrive as 1/2 then 3/4.
     pub fn selection_for_down(&mut self, click_count: usize, all: bool) -> Option<bool> {
         if click_count >= 2 && click_count % 2 == 0 {
-            Some(!self.before_all.take().unwrap_or(all))
+            self.before_all.take().map(|before| !before)
         } else {
             self.before_all = Some(all);
             None
