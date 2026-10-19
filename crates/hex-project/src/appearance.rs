@@ -65,7 +65,7 @@ impl ElementColor {
 // Control-side only: count at most MAX_TRACKS existing identities, then choose
 // among equally least-used hues. No new failure mode when the palette fills.
 fn least_used_track_color(project: &Project, ticket: u64) -> ElementColor {
-    let mut counts = [0_u16; 9];
+    let mut counts = ElementColor::TRACK_CHOICES.map(|_| 0_u16);
     for track in &project.tracks {
         if let Some(index) = ElementColor::TRACK_CHOICES
             .iter()
@@ -76,14 +76,20 @@ fn least_used_track_color(project: &Project, ticket: u64) -> ElementColor {
     }
     let minimum = counts.iter().copied().min().unwrap_or(0);
     let ties = counts.iter().filter(|n| **n == minimum).count();
-    let choice = (ticket % ties as u64) as usize;
-    ElementColor::TRACK_CHOICES
-        .into_iter()
-        .zip(counts)
-        .filter(|(_, count)| *count == minimum)
-        .nth(choice)
-        .expect("nonempty finite track palette")
-        .0
+    let mut remaining = (ticket % ties.max(1) as u64) as usize;
+    // The fixed palette is nonempty at compile time. Select its ordered tie
+    // rank with bounded work, without a fallible iterator lookup or Gray fallback.
+    let [mut selected, ..] = ElementColor::TRACK_CHOICES;
+    for (color, count) in ElementColor::TRACK_CHOICES.into_iter().zip(counts) {
+        if count == minimum {
+            selected = color;
+            if remaining == 0 {
+                break;
+            }
+            remaining -= 1;
+        }
+    }
+    selected
 }
 
 pub(crate) fn new_track_color(project: &Project) -> ElementColor {
@@ -112,6 +118,52 @@ mod automatic_color_tests {
         );
         assert_eq!(ElementColor::ALL[0], ElementColor::Gray);
         assert_eq!(ElementColor::ALL[1..], ElementColor::TRACK_CHOICES);
+    }
+    #[test]
+    fn authored_count_profiles_preserve_exact_ticket_rank_for_every_tie_subset() {
+        use crate::{Command, Editor};
+        let palette = ElementColor::TRACK_CHOICES;
+        let mut completed = 0;
+        // Legal projects cover every unused-hue subset and every least-used
+        // subset after exhaustion, without inventing malformed runtime state.
+        for base in [0_u16, 1] {
+            for mask in 0..(1_usize << palette.len()) {
+                let counts =
+                    std::array::from_fn::<_, 9, _>(|i| base + u16::from(mask & (1 << i) != 0));
+                let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+                for (color, count) in palette.into_iter().zip(counts) {
+                    for _ in 0..count {
+                        let Created::Track(track) = editor
+                            .execute(Command::AddTrack {
+                                name: "authored".into(),
+                            })
+                            .unwrap()
+                        else {
+                            panic!("track");
+                        };
+                        editor
+                            .execute(Command::SetTrackColor { track, color })
+                            .unwrap();
+                    }
+                }
+                let minimum = counts.into_iter().min().unwrap();
+                let candidates = palette
+                    .into_iter()
+                    .zip(counts)
+                    .filter_map(|(color, count)| (count == minimum).then_some(color))
+                    .collect::<Vec<_>>();
+                assert!(!candidates.is_empty());
+                for ticket in (0..(2 * candidates.len()) as u64).chain([u64::MAX - 1, u64::MAX]) {
+                    assert_eq!(
+                        least_used_track_color(editor.project(), ticket),
+                        candidates[(ticket % candidates.len() as u64) as usize],
+                        "base{base} mask{mask} ticket{ticket}"
+                    );
+                }
+                completed += 1;
+            }
+        }
+        assert_eq!(completed, 1024);
     }
 }
 
