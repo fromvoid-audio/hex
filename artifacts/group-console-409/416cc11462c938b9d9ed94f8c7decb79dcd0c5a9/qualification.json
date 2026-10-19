@@ -1,0 +1,23 @@
+{
+  "source": "416cc11462c938b9d9ed94f8c7decb79dcd0c5a9",
+  "tree": "8642b6f3980b7c445ea5f717797c781dd7704d41",
+  "parent": "0daba729eab1bb18f5f95245e6833bed5470797d",
+  "patch_base": "d4112fc1d85a59e380842ed3e0f0c9995dc55d5c",
+  "canonical_untouched": "144d22a7134c59e5a2351b8b55180dd013f70fa0",
+  "first_clean_summary_sha256": "9a18a4b908e1818e1ca4d8f6de984a5f6279252470d59eb50538310066d2eed6",
+  "first_clean_source": "bf59e91fb448ebf8398249e0c56aab4e87176103",
+  "first_duration_seconds": 202.944,
+  "first_content_sha256": "7b4a19ab6bd91091382e475ff74ab2d285b986a408dfc79dbe4eb747ab57e682",
+  "final_summary_sha256": "a22843b20b46046d1c3f94a2389d527a4b27111e93015f259f9092a0bf221107",
+  "duration_seconds": 83.141,
+  "content_sha256": "5602fec93ae6e3ad03d03ca3c6c5e840b956f17016257928e8f5d6612ac11b6d",
+  "cases": {
+    "01-all-drag-controls.log": 32,
+    "02-all-console-controls.log": 11,
+    "03-single-clip-controls.log": 25
+  },
+  "total_unique_cases": 68,
+  "ignored": 0,
+  "first_clean_steps": 12,
+  "final_steps": 5
+}

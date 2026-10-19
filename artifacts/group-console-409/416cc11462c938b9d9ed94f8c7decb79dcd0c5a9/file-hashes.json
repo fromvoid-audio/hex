@@ -1,0 +1,14 @@
+{
+  "crates/hex-ui/src/editor/console_drop.rs": {
+    "before_sha256": "5bebeedd9fa8af4587f6ba292229c4f323c53e3be9219f3034b2789c1dc2d2b7",
+    "after_sha256": "294dd5456b8461ea4994a57cc33117c40b64f9fa22b29aabddca4810a396f422",
+    "before_bytes": 7755,
+    "after_bytes": 8205
+  },
+  "crates/hex-ui/src/editor/group_drag_ui_test.rs": {
+    "before_sha256": "eccca844eac183fa6139b566bba9db63c59af083165c8405ab4e96c3d4b1c21e",
+    "after_sha256": "bc27ca56742411e01cbe09b51adc4fc2ae5bb68f981433a79170fbac1df5f906",
+    "before_bytes": 57691,
+    "after_bytes": 68337
+  }
+}

@@ -1,0 +1,11 @@
+[1/5] all-drag-controls: running
+[1/5] all-drag-controls: passed
+[2/5] ui-feature-strict: running
+[2/5] ui-feature-strict: passed
+[3/5] ui-style: running
+[3/5] ui-style: passed
+[4/5] fmt: running
+[4/5] fmt: passed
+[5/5] diff: running
+[5/5] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-group409-console-final-high-water/summary.json

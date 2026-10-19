@@ -1,0 +1,70 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.40s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 32 tests
+group anchor=6 clip=5 delta=19215 actual=67215 expected=67215
+group anchor=6 clip=6 delta=19215 actual=115215 expected=115215
+group anchor=6 clip=7 delta=19215 actual=163215 expected=163215
+
+thread 'editor::drag::group_drag_ui_test::console_single_audio_arrangement_payload_still_copies_once_with_one_history_step' (179168) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:1719:9:
+assertion `left == right` failed
+  left: Snapshot { tuning: ProjectTuning { enabled: false, scale: Scale { count: 12, cents: [0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0, 1100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], root_key: 69, root_hz: 440.0, root_degree: 9, period_cents: 1200.0 }, audition: Audition { waveform: Triangle, level: 0.25, attack_ms: 10.0, release_ms: 900.0 } }, return_feeds: [], audio_feeds: [], midi_routes: [], import_provenance: None, sample_rate: 48000, next_id: 10, assets: [AssetSnapshot { id: 3, path: "/tmp/hex-editor-test-179166-0/group.wav", source_sample_rate: 48000, source_frames: 96000, playback_frames: 96000, conversion_version: 0 }], tracks: [TrackSnapshot { color: Orange, gain_envelope: [], gain_touch_spans: [], gain_touch_epoch: 0, id: 1, name: "imported audio", gain: 1.0, balance: 0.0, muted: false, soloed: false, devices: [], instrument: Some(DeviceSnapshot { comparison: None, id: 2, bypassed: false, state: NativeDeviceState { type_id: DeviceTypeId { bytes: [104, 101, 120, 46, 105, 110, 115, 116, 114, 117, 109, 101, 110, 116, 46, 115, 105, 110, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], length: 19, valid: true }, state_version: 1, payload: [], input_gain_millidb: 0, output_gain_millidb: 0, asset_references: None } }), instrument_position: Some(0), content: Hybrid { audio_clips: [ClipSnapshot { name: "clip", flavor: Muted, id: 5, asset: 3, start: 48000, duration: 24000, source_offset: 0, source_length: 24000, looping: false, source_phase: 0, edit: None, fade: ClipFade { span: 24000, offset: 0, fade_in: 0, fade_out: 0, in_start: 0, out_end_offset: 0, in_curve: 0, out_curve: 0 }, gain: ClipGain(0) }, ClipSnapshot { name: "clip", flavor: Muted, id: 6, asset: 3, start: 96000, duration: 24000, source_offset: 24000, source_length: 24000, looping: false, source_phase: 0, edit: None, fade: ClipFade { span: 24000, offset: 0, fade_in: 0, fade_out: 0, in_start: 0, out_end_offset: 0, in_curve: 0, out_curve: 0 }, gain: ClipGain(0) }, ClipSnapshot { name: "clip", flavor: Muted, id: 7, asset: 3, start: 144000, duration: 24000, source_offset: 48000, source_length: 24000, looping: false, source_phase: 0, edit: None, fade: ClipFade { span: 24000, offset: 0, fade_in: 0, fade_out: 0, in_start: 0, out_end_offset: 0, in_curve: 0, out_curve: 0 }, gain: ClipGain(0) }], midi_clips: [] }, sends: [] }], return_tracks: [], session: SessionSnapshot { scenes: [SceneSnapshot { id: 8, name: "single target" }], cells: [] }, loop_region: None, master_gain: 1.0, tempo_points: [TempoPoint { beat: BeatTime(0), tempo: Tempo(120000000) }], meter_points: [MeterPoint { beat: BeatTime(0), meter: Meter { numerator: 4, denominator: 4 } }] }
+ right: Snapshot { tuning: ProjectTuning { enabled: false, scale: Scale { count: 12, cents: [0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0, 1100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], root_key: 69, root_hz: 440.0, root_degree: 9, period_cents: 1200.0 }, audition: Audition { waveform: Triangle, level: 0.25, attack_ms: 10.0, release_ms: 900.0 } }, return_feeds: [], audio_feeds: [], midi_routes: [], import_provenance: None, sample_rate: 48000, next_id: 9, assets: [AssetSnapshot { id: 3, path: "/tmp/hex-editor-test-179166-0/group.wav", source_sample_rate: 48000, source_frames: 96000, playback_frames: 96000, conversion_version: 0 }], tracks: [TrackSnapshot { color: Orange, gain_envelope: [], gain_touch_spans: [], gain_touch_epoch: 0, id: 1, name: "imported audio", gain: 1.0, balance: 0.0, muted: false, soloed: false, devices: [], instrument: Some(DeviceSnapshot { comparison: None, id: 2, bypassed: false, state: NativeDeviceState { type_id: DeviceTypeId { bytes: [104, 101, 120, 46, 105, 110, 115, 116, 114, 117, 109, 101, 110, 116, 46, 115, 105, 110, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], length: 19, valid: true }, state_version: 1, payload: [], input_gain_millidb: 0, output_gain_millidb: 0, asset_references: None } }), instrument_position: Some(0), content: Hybrid { audio_clips: [ClipSnapshot { name: "clip", flavor: Muted, id: 5, asset: 3, start: 48000, duration: 24000, source_offset: 0, source_length: 24000, looping: false, source_phase: 0, edit: None, fade: ClipFade { span: 24000, offset: 0, fade_in: 0, fade_out: 0, in_start: 0, out_end_offset: 0, in_curve: 0, out_curve: 0 }, gain: ClipGain(0) }, ClipSnapshot { name: "clip", flavor: Muted, id: 6, asset: 3, start: 96000, duration: 24000, source_offset: 24000, source_length: 24000, looping: false, source_phase: 0, edit: None, fade: ClipFade { span: 24000, offset: 0, fade_in: 0, fade_out: 0, in_start: 0, out_end_offset: 0, in_curve: 0, out_curve: 0 }, gain: ClipGain(0) }, ClipSnapshot { name: "clip", flavor: Muted, id: 7, asset: 3, start: 144000, duration: 24000, source_offset: 48000, source_length: 24000, looping: false, source_phase: 0, edit: None, fade: ClipFade { span: 24000, offset: 0, fade_in: 0, fade_out: 0, in_start: 0, out_end_offset: 0, in_curve: 0, out_curve: 0 }, gain: ClipGain(0) }], midi_clips: [] }, sends: [] }], return_tracks: [], session: SessionSnapshot { scenes: [SceneSnapshot { id: 8, name: "single target" }], cells: [] }, loop_region: None, master_gain: 1.0, tempo_points: [TempoPoint { beat: BeatTime(0), tempo: Tempo(120000000) }], meter_points: [MeterPoint { beat: BeatTime(0), meter: Meter { numerator: 4, denominator: 4 } }] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::drag::group_drag_ui_test::console_single_audio_arrangement_payload_still_copies_once_with_one_history_step ... FAILED
+test editor::drag::group_drag_ui_test::dragging_nonprimary_selected_header_moves_all_three_clips_with_gaps_and_one_undo ... ok
+test editor::drag::group_drag_ui_test::copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_copies ... ok
+group capture profile total=128 selected=3 projection_ns_per_update=2929 full_gpui_redraw_ns=49780993 profile=debug/no_deadline_claim
+test editor::drag::group_drag_ui_test::group_capture_reenters_valid_lane_and_commits_only_current_projection ... ok
+group capture profile total=16384 selected=3 projection_ns_per_update=1392 full_gpui_redraw_ns=51793720 profile=debug/no_deadline_claim
+test editor::drag::group_drag_ui_test::group_capture_profiles_actual_redraw_separately_from_projection ... ok
+test editor::drag::group_drag_ui_test::console_midi_primary_group_cell_insertion_and_stale_release_are_atomic ... ok
+test editor::drag::group_drag_ui_test::group_capture_checks_source_allocation_and_selection_epoch ... ok
+
+thread 'editor::drag::group_drag_ui_test::group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup' (179237) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:965:13:
+intentional post-ACK fixture unwind
+group_fixture_catalog_custody unwind=true actual_save=true same_root=true cleaned=true
+test editor::drag::group_drag_ui_test::group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup ... ok
+
+thread 'editor::drag::group_drag_ui_test::group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory' (179242) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:29:9:
+Some("could not read media file: no such file or directory (os error 2)")
+retained editor test root after unacknowledged setup: "/tmp/hex-editor-test-179166-17"
+group_fixture_pre_ack_retention actual_refusal=true weak_expired=true disk_retained=true root="/tmp/hex-editor-test-179166-17"
+test editor::drag::group_drag_ui_test::group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory ... ok
+group_fixture_catalog_custody unwind=false actual_save=true same_root=true cleaned=true
+test editor::drag::group_drag_ui_test::group_fixture_same_root_survives_real_catalog_job_after_view_retirement ... ok
+test editor::drag::group_drag_ui_test::group_copy_actual_completion_does_not_steal_new_selection_and_keeps_ancillary_error ... ok
+test editor::drag::group_drag_ui_test::group_copy_deferred_submission_counts_only_own_fifo_terminal_and_actual_refusal ... ok
+test editor::drag::group_drag_ui_test::group_outside_lane_clears_all_previews_and_restores_originals ... ok
+test editor::drag::group_drag_ui_test::group_escape_and_actual_gpui_capture_loss_never_commit_any_member ... ok
+test editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes ... ok
+actual selected=3 submitted=None cell=None error=Some(DisplayError { message: "selected clips require an arrangement target", batch_member: None })
+test editor::drag::group_drag_ui_test::integration_group_console_refuses_partial_primary_copy ... ok
+test editor::drag::group_drag_ui_test::group_pending_or_actual_revision_change_refuses_all_members_without_losing_independent_edit ... ok
+test editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim ... ok
+test editor::drag::tests::hovered_track_geometry_rejects_gaps_and_non_finite_rows ... ok
+test editor::drag::tests::independently_created_projects_with_colliding_ids_are_generation_scoped ... ok
+test editor::drag::tests::midi_preview_and_drop_keep_beat_anchor_and_resolve_tempo_mapped_width ... ok
+test editor::drag::tests::move_grab_offset_uses_mouse_down_instead_of_threshold_crossing_position ... ok
+test editor::drag::tests::move_preview_and_release_share_the_same_snapped_candidate_resolver ... ok
+test editor::drag::tests::one_cross_track_move_undoes_and_redoes_with_the_same_clip_metadata ... ok
+test editor::drag::tests::pointer_down_is_keyed_to_trim_edge_and_survives_render_replacement ... ok
+test editor::drag::tests::pointer_math_preserves_cropped_grab_offset_and_clamps_before_zero ... ok
+test editor::drag::tests::pointer_math_rejects_invalid_geometry_and_overflow ... ok
+test editor::drag::tests::stale_project_revision_viewport_and_missing_ids_reject_a_drop ... ok
+test editor::drag::tests::unchanged_drop_is_classified_as_noop_without_becoming_stale ... ok
+test editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release ... ok
+test editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint ... ok
+test editor::drag::group_drag_ui_test::mixed_audio_midi_group_uses_real_track_offsets_or_refuses_whole_vertical_move ... ok
+
+failures:
+
+failures:
+    editor::drag::group_drag_ui_test::console_single_audio_arrangement_payload_still_copies_once_with_one_history_step
+
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 949 filtered out; finished in 9.35s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
