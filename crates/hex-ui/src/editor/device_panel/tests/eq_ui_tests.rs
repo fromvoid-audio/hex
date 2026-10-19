@@ -817,6 +817,9 @@ fn legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction(cx: &mut Tes
 #[path = "eq_graph_layout_tests.rs"]
 mod graph_layout_tests;
 
+#[path = "eq_node_gesture_tests.rs"]
+mod node_gesture_tests;
+
 #[gpui::test]
 fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAppContext) {
     cx.update(hex_widgets::bind_numeric_control_keys);

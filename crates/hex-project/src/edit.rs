@@ -474,6 +474,12 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
+    /// Recompute a clip-local loop operation from the current authored source.
+    /// Outer growth carves both clip kinds; cycle edits retain outer occupancy.
+    ResizeAudioClipView {
+        clip: ClipId,
+        operation: crate::AudioViewResizeOperation,
+    },
     SetAudioClipWarp {
         clip: ClipId,
         settings: Option<crate::WarpSettings>,
@@ -1089,6 +1095,13 @@ pub(crate) fn split_clip_at_tempo(
         .ok_or(Invalid("audio split end overflow"))?;
     if frame <= original.start || frame >= end {
         return Err(Invalid("split cursor must be inside the clip"));
+    }
+    if edit.placement.is_some() {
+        let left = crate::audio_edit::trim_view(original, crate::TrimEdge::Right, frame, tempo)?;
+        let mut right =
+            crate::audio_edit::trim_view(original, crate::TrimEdge::Left, frame, tempo)?;
+        right.id = right_id;
+        return Ok((left, right));
     }
     let cut = edit.crop_at_frame(original, frame, tempo)?;
     if cut <= edit.view_start || cut >= edit.view_end {
@@ -2281,6 +2294,9 @@ impl Project {
                     original.preview_fade_edge_trim(edge, frame, asset_frames, self.tempo_map())?;
                 *self.clip_mut(clip)? = trimmed;
                 Ok(Created::None)
+            }
+            Command::ResizeAudioClipView { clip, operation } => {
+                crate::audio_edit::resize_view(self, clip, operation)
             }
             command @ (Command::SetAudioClipPitch { .. }
             | Command::SetAudioClipMusical { .. }

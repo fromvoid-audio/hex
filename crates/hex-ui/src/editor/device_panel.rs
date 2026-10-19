@@ -39,6 +39,7 @@ mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
 mod gate_panel;
@@ -161,6 +162,13 @@ pub(super) enum DevicePanelOwner {
 }
 
 impl DevicePanelState {
+    pub(super) fn add_menu_is_open(&self, state: Option<&ViewState>) -> bool {
+        self.add_menu_open
+            && self
+                .owner
+                .is_some_and(|owner| state.is_some_and(|state| owner_exists(state, owner)))
+    }
+
     /// A menu selecting another card restores that card only when a card owned
     /// focus. Nested numeric/text/graph and browser focus remain untouched.
     pub(super) fn comparison_return_focus(
