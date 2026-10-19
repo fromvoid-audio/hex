@@ -352,6 +352,7 @@ fn fixture(
                 browser.assert_owned(view);
                 view.state = Some(Arc::new(hex_session::service::ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: Default::default(),

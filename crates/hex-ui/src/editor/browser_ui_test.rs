@@ -106,6 +106,7 @@ fn browser_drag_fixture_with_tracks(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -606,6 +607,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                     .clone();
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -664,6 +666,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                 let project = Project::new(48_000).expect("project");
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -816,6 +819,7 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
                     .clone();
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -2170,6 +2174,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
         let clip = project.project().midi_clip(clip_id).expect("clip");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(project.project().clone()),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -4920,6 +4925,9 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
         assert!(view.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "browser_tag_editor_geometry_ui_test.rs"]
+mod tag_editor_geometry;
 
 #[path = "editor_test_environment_ui_test.rs"]
 mod test_environment;

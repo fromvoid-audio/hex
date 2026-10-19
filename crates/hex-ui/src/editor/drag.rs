@@ -126,6 +126,7 @@ pub(super) struct NativeDeviceDrag {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BrowserDropDestination {
+    Console(hex_session::import_batch::ConsoleDestination),
     ExistingTrack {
         track: TrackId,
         start: u64,
@@ -986,7 +987,11 @@ impl super::EditorView {
     }
 
     pub(super) fn browser_audio_drag_is_current(&self, drag: &BrowserAudioDrag) -> bool {
-        if self.opening_project
+        if !self
+            .active_browser_audio_drag
+            .as_ref()
+            .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
+            || self.opening_project
             || self.close_prompt_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
@@ -1077,6 +1082,12 @@ impl super::EditorView {
             drag.insertion_line_y.set(None);
             return (None, false);
         }
+        if self.mode == super::EditorMode::Session {
+            // Console receivers own their stable cell/scene target. Browser
+            // row moves must not project into retained Arrangement geometry.
+            drag.insertion_line_y.set(None);
+            return (None, false);
+        }
         let Some(state) = self.state.as_ref() else {
             drag.destination.set(None);
             drag.insertion_line_y.set(None);
@@ -1158,6 +1169,14 @@ impl super::EditorView {
             drag.lane_hovered.set(false);
             return;
         }
+        if self.mode == super::EditorMode::Session {
+            if let Some(BrowserDropDestination::Console(target)) = drag.destination.get()
+                && !self.console_target_exists(target)
+            {
+                drag.destination.set(None);
+            }
+            return;
+        }
         let Some((pointer_x, pointer_y)) = drag.last_pointer.get() else {
             return;
         };
@@ -1170,11 +1189,7 @@ impl super::EditorView {
         if self
             .active_browser_audio_drag
             .as_ref()
-            .is_some_and(|active| {
-                active.project_generation == drag.project_generation
-                    && active.browser_generation == drag.browser_generation
-                    && active.path == drag.path
-            })
+            .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
         {
             self.active_browser_audio_drag = None;
         }
@@ -1182,6 +1197,16 @@ impl super::EditorView {
         drag.destination.set(None);
         drag.insertion_line_y.set(None);
         drag.lane_hovered.set(false);
+        drag.last_pointer.set(None);
+        drag.scroll.set(Default::default());
+    }
+
+    pub(super) fn cancel_active_browser_audio_drag(&mut self) -> bool {
+        let Some(drag) = self.active_browser_audio_drag.clone() else {
+            return false;
+        };
+        self.clear_browser_audio_drag(&drag);
+        true
     }
 
     pub(super) fn drop_browser_audio(
@@ -1219,7 +1244,7 @@ impl super::EditorView {
                         metadata.playback_frames > 0
                             && start.checked_add(metadata.playback_frames).is_some()
                     }
-                    None => false,
+                    Some(BrowserDropDestination::Console(_)) | None => false,
                 }
         });
         if !metadata_valid {
@@ -1234,6 +1259,12 @@ impl super::EditorView {
             return;
         };
         let request = match destination {
+            BrowserDropDestination::Console(_) => {
+                self.clear_browser_audio_drag(drag);
+                self.error = Some("sample drop canceled · choose a console cell".into());
+                cx.notify();
+                return;
+            }
             BrowserDropDestination::ExistingTrack { track, start } => {
                 Request::ImportToTrackWithOverwrite {
                     path: drag.path.clone(),

@@ -247,12 +247,20 @@ pub(super) fn render_return_effect(
     let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
     if device_view.is_ok() {
-        actions = actions.child(super::super::device_preset::actions(
-            id,
-            NativeDeviceClass::Effect,
-            selected,
-            cx,
-        ));
+        actions = actions
+            .child(super::super::device_preset::actions(
+                id,
+                NativeDeviceClass::Effect,
+                selected,
+                cx,
+            ))
+            .child(super::super::device_comparison::actions(
+                view,
+                device,
+                NativeDeviceClass::Effect,
+                selected,
+                cx,
+            ));
     }
     actions = actions.child(
         action_button(

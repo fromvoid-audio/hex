@@ -252,6 +252,7 @@ mod tests {
             let mut snapshot = editor.project().snapshot();
             for track in &mut snapshot.tracks {
                 track.devices.push(hex_project::DeviceSnapshot {
+                    comparison: None,
                     id: snapshot.next_id,
                     bypassed: false,
                     state: hex_devices::utility::UTILITY_DEFINITION

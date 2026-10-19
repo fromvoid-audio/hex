@@ -762,7 +762,11 @@ impl EditorView {
                 Some(drag::BrowserDropDestination::ExistingTrack { track, start }) => {
                     Some((track, start))
                 }
-                Some(drag::BrowserDropDestination::NewTrack { .. }) | None => None,
+                Some(
+                    drag::BrowserDropDestination::NewTrack { .. }
+                    | drag::BrowserDropDestination::Console(_),
+                )
+                | None => None,
             })
             .filter(|(pending_track, _)| *pending_track == track_id)
         {

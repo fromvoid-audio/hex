@@ -127,6 +127,7 @@ pub struct SendLevelSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSnapshot {
+    pub comparison: Option<crate::DeviceComparison>,
     pub id: u64,
     pub bypassed: bool,
     pub state: hex_lattice_contract::NativeDeviceState,
@@ -274,12 +275,14 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
                             state: device.state.clone(),
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        comparison: instrument.comparison.clone(),
                         id: instrument.id.value(),
                         bypassed: instrument.bypassed,
                         state: instrument.state.clone(),
@@ -359,6 +362,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
                             state: device.state.clone(),
@@ -526,6 +530,7 @@ impl Project {
                     return Err(Invalid("project device limit reached"));
                 }
                 devices.push(Device {
+                    comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
                     bypassed: device.bypassed,
@@ -575,6 +580,7 @@ impl Project {
             for device in track.devices {
                 insert_id(device.id, &mut ids, &mut max_id)?;
                 devices.push(Device {
+                    comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
                     bypassed: device.bypassed,
@@ -589,6 +595,7 @@ impl Project {
                 }
                 insert_id(instrument.id, &mut ids, &mut max_id)?;
                 Some(Device {
+                    comparison: instrument.comparison,
                     id: DeviceId(instrument.id),
                     state: instrument.state,
                     bypassed: instrument.bypassed,
@@ -890,6 +897,20 @@ impl Project {
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
+        for track in project.tracks() {
+            for device in track.devices().iter().chain(track.instrument()) {
+                if let Some(comparison) = device.comparison() {
+                    comparison.validate(device.state())?;
+                }
+            }
+        }
+        for track in project.return_tracks() {
+            for device in track.devices() {
+                if let Some(comparison) = device.comparison() {
+                    comparison.validate(device.state())?;
+                }
+            }
+        }
         project.validate_device_asset_references()?;
         for track in &project.tracks {
             for clip in track.clips() {
