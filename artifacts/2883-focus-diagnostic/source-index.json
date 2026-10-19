@@ -1,0 +1,42 @@
+{
+  "source": "1e3535f87646db2b8f5ba2e2374356fc1ea7a89e",
+  "tree": "0f350536b428ffb7921c6f0d2ca0a8bb82c0854b",
+  "base": "579bf18531cae3af5eef999a555f4c7dbfbad003",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/controller.rs",
+      "blob": "0c82761a715dc48651f76282de19be490eb43e31",
+      "sha256": "d61f730000a3c42c4f0ca3d1c29b0c2505b34eb85bc88f123d79ded9c71b1d23"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail.rs",
+      "blob": "23dcf185c9a8c325ede999c226789ddd1b571993",
+      "sha256": "18af9772057cff551b481fb7d308f5ed873fc21ee366b68087ac5160a49f3cc2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail/pending.rs",
+      "blob": "bc4d0ff66e8e59541ad0bffb7eca83bbfb7aa696",
+      "sha256": "5e53902a8b2a9fb134285c559be151a8cba628bfb6ad8bd80d2a80647e1ba4a1"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs",
+      "blob": "0390007f50cffb6258ae924633bc073c95a7a69e",
+      "sha256": "9cc31904cb49797efab8cc53111cdc61ab2e7d6c38030ba7e1dddaed9477d66e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/mod.rs",
+      "blob": "caf1711b1dbfedbf17b62f00411c4c9ec7339438",
+      "sha256": "9dde480af330e25223b009e8077ff29756d4b3bcd8e9f58c12fac58afd1b47c0"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/render.rs",
+      "blob": "981096780dc1fb22410726cb0bfbb00728c719d3",
+      "sha256": "1b3850f26fb9bc72060d6c656725fba082c28b504b5fc542f9bc69eec0b047c6"
+    },
+    {
+      "path": "docs/runtime.md",
+      "blob": "18eefbcca7bd7da318916473580bc7470d115812",
+      "sha256": "907d240f9d63af5b7af639018dcb64cbc45faff184bcf498068bc7de10f6b9db"
+    }
+  ]
+}

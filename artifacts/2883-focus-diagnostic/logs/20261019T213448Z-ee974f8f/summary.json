@@ -1,0 +1,3856 @@
+{
+  "cargo_identity": {
+    "configured_target_value": null,
+    "lock_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.lock",
+    "manifest_path": "/workspace/hex/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/workspace/hex/Cargo.toml"
+    ],
+    "owner_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.owner.json",
+    "target_directory": "/workspace/hex/target",
+    "target_source": "cargo metadata/config/default",
+    "workspace_packages": [
+      {
+        "id": "path+file:///workspace/hex/crates/hex-mts#0.1.0",
+        "name": "hex-mts",
+        "spec": "path+file:///workspace/hex/crates/hex-mts#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-tuning#0.1.0",
+        "name": "hex-tuning",
+        "spec": "path+file:///workspace/hex/crates/hex-tuning#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-dsp#0.1.0",
+        "name": "hex-dsp",
+        "spec": "path+file:///workspace/hex/crates/hex-dsp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-midi#0.1.0",
+        "name": "hex-midi",
+        "spec": "path+file:///workspace/hex/crates/hex-midi#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-clap-scan#0.1.0",
+        "name": "hex-clap-scan",
+        "spec": "path+file:///workspace/hex/crates/hex-clap-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0",
+        "name": "hex-plugin-scan",
+        "spec": "path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-warp#0.1.0",
+        "name": "hex-warp",
+        "spec": "path+file:///workspace/hex/crates/hex-warp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-diagnostics#0.1.0",
+        "name": "hex-diagnostics",
+        "spec": "path+file:///workspace/hex/crates/hex-diagnostics#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-session#0.1.0",
+        "name": "hex-session",
+        "spec": "path+file:///workspace/hex/crates/hex-session#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-engine#0.1.0",
+        "name": "hex-engine",
+        "spec": "path+file:///workspace/hex/crates/hex-engine#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-devices#0.1.0",
+        "name": "hex-devices",
+        "spec": "path+file:///workspace/hex/crates/hex-devices#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-lattice#0.1.0",
+        "name": "hex-lattice",
+        "spec": "path+file:///workspace/hex/crates/hex-lattice#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0",
+        "name": "hex-lattice-contract",
+        "spec": "path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-project#0.1.0",
+        "name": "hex-project",
+        "spec": "path+file:///workspace/hex/crates/hex-project#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-export#0.1.0",
+        "name": "hex-export",
+        "spec": "path+file:///workspace/hex/crates/hex-export#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-media#0.1.0",
+        "name": "hex-media",
+        "spec": "path+file:///workspace/hex/crates/hex-media#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-storage#0.1.0",
+        "name": "hex-storage",
+        "spec": "path+file:///workspace/hex/crates/hex-storage#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-stream#0.1.0",
+        "name": "hex-stream",
+        "spec": "path+file:///workspace/hex/crates/hex-stream#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-library#0.1.0",
+        "name": "hex-library",
+        "spec": "path+file:///workspace/hex/crates/hex-library#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-cli#0.1.0",
+        "name": "hex-cli",
+        "spec": "path+file:///workspace/hex/crates/hex-cli#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-desktop#0.1.0",
+        "name": "hex-desktop",
+        "spec": "path+file:///workspace/hex/crates/hex-desktop#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-audio#0.1.0",
+        "name": "hex-audio",
+        "spec": "path+file:///workspace/hex/crates/hex-audio#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-ui#0.1.0",
+        "name": "hex-ui",
+        "spec": "path+file:///workspace/hex/crates/hex-ui#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-preferences#0.1.0",
+        "name": "hex-preferences",
+        "spec": "path+file:///workspace/hex/crates/hex-preferences#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-widgets#0.1.0",
+        "name": "hex-widgets",
+        "spec": "path+file:///workspace/hex/crates/hex-widgets#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/workspace/hex"
+  },
+  "commit": "2a2494e461fe9fa75e98882695557de2a757fa58",
+  "dirty": true,
+  "dirty_files": [
+    " M crates/hex-ui/src/editor/loop_rail.rs",
+    " M crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs",
+    " M crates/hex-ui/src/editor/mod.rs",
+    " M crates/hex-ui/src/editor/render.rs"
+  ],
+  "disk_headroom": {
+    "checked_at": "2026-10-19T21:34:49Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 26010669056,
+        "probed_path": "/workspace/hex",
+        "requested_path": "/workspace/hex",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 26010669056,
+        "probed_path": "/workspace/hex/target",
+        "requested_path": "/workspace/hex/target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 55.868,
+  "end_tree": {
+    "commit": "2a2494e461fe9fa75e98882695557de2a757fa58",
+    "content_sha256": "4d7c9f68a70cd2144e4a169aa70e24967b46929ae778330375dc1d39be716c15",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/loop_rail.rs",
+      " M crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs",
+      " M crates/hex-ui/src/editor/mod.rs",
+      " M crates/hex-ui/src/editor/render.rs"
+    ]
+  },
+  "ended_at": "2026-10-19T21:35:44Z",
+  "exit_code": 1,
+  "invocation_argv": [
+    "scripts/local-ci.py",
+    "--profile",
+    "edit",
+    "--base",
+    "579bf18531cae3af5eef999a555f4c7dbfbad003",
+    "--source",
+    "HEAD",
+    "--package",
+    "hex-ui",
+    "--features",
+    "ui-test-support",
+    "--test-filter",
+    "loop_rail"
+  ],
+  "mode": "edit",
+  "plan": {
+    "affected_packages": [
+      "hex-desktop",
+      "hex-ui"
+    ],
+    "base": "579bf18531cae3af5eef999a555f4c7dbfbad003",
+    "cargo_inventory": [
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "cpal",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-engine",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-engine",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-stream",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-stream",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "rtrb",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "allocation-counter",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "conformance"
+            ],
+            "kind": "dev",
+            "name": "hex-lattice",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-media",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-media",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {
+          "allocation-probe": [
+            "hex-engine/instrument-test-support"
+          ]
+        },
+        "manifest": "crates/hex-audio/Cargo.toml",
+        "name": "hex-audio",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_audio"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_eq8_audition"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_eq8_spectrum"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_session_routes"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "allocation_probe_calibration"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "callback_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "controller_keyboard_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "device_comparison"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "eq8_audition_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "eq8_oversampling_study"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "fresh_publication_cancellation"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "gain_recording_native"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_filter_proof_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_fixed_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "pitch_multiplier_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "prepared"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "return_feed_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "routed_midi_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session_silence_effect_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "signed_envelope_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "spectrum_capture_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "stream_publication"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "track_gain_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "vector_global_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "warp_preview_metadata_cost"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [
+              "derive"
+            ],
+            "kind": null,
+            "name": "serde",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "serde_json",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "sha2",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "process",
+              "event"
+            ],
+            "kind": null,
+            "name": "rustix",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": "cfg(any(target_os = \"linux\", target_os = \"macos\"))",
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "signal-hook",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": "cfg(any(target_os = \"linux\", target_os = \"macos\"))",
+            "uses_default_features": false
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-clap-scan/Cargo.toml",
+        "name": "hex-clap-scan",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_clap_scan"
+          },
+          {
+            "kind": [
+              "bin"
+            ],
+            "name": "hex-clap-offline"
+          },
+          {
+            "kind": [
+              "bin"
+            ],
+            "name": "hex-clap-scan"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "delay_native"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "direct_child"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "macos_native"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "native"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "offline_native"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "offline_protocol"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "protocol"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-engine",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-engine",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-export",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-export",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-media",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-media",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-storage",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-storage",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-cli/Cargo.toml",
+        "name": "hex-cli",
+        "targets": [
+          {
+            "kind": [
+              "bin"
+            ],
+            "name": "hex-cli"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "fades"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "fm4_export"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "import_render"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "loop_trims"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi_project"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "projects"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "timebase"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [
+              "font-kit",
+              "macos-blade"
+            ],
+            "kind": null,
+            "name": "gpui",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": false
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-audio",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-audio",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-diagnostics",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-diagnostics",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-engine",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-engine",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-media",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-media",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-midi",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-midi",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-mts",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-mts",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-session",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-session",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-stream",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-stream",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-ui",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-ui",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "allocation-counter",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {
+          "allocation-probe": [
+            "hex-audio/allocation-probe"
+          ]
+        },
+        "manifest": "crates/hex-desktop/Cargo.toml",
+        "name": "hex-desktop",
+        "targets": [
+          {
+            "kind": [
+              "bin"
+            ],
+            "name": "hex-desktop"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-dsp",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-dsp",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "conformance"
+            ],
+            "kind": "dev",
+            "name": "hex-lattice",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-devices/Cargo.toml",
+        "name": "hex-devices",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_devices"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "device_conformance"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "eq8_response"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "operator_harmonic_cpu"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "operator_harmonic_layout"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "operator_harmonic_runtime"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_eq"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_fm4"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_operator_context"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_operator_waveforms"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_parameter_snapshots"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_sampler"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_utility_filters"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_vector_globals"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "authoring_conformance"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "eq8_oversampling_layout"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_filter_lowpass_proof"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_filter_packing_proof"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_globals_volume_proof"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_lfo_assignment"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "parameter_semantics"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "pitch_multiplier_proof"
+          }
+        ]
+      },
+      {
+        "dependencies": [],
+        "features": {},
+        "manifest": "crates/hex-diagnostics/Cargo.toml",
+        "name": "hex-diagnostics",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_diagnostics"
+          }
+        ]
+      },
+      {
+        "dependencies": [],
+        "features": {},
+        "manifest": "crates/hex-dsp/Cargo.toml",
+        "name": "hex-dsp",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_dsp"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-devices",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-devices",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-warp",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-warp",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "conformance"
+            ],
+            "kind": "dev",
+            "name": "hex-lattice",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {
+          "instrument-test-support": []
+        },
+        "manifest": "crates/hex-engine/Cargo.toml",
+        "name": "hex-engine",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_engine"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "harmonic_transition_layout"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "playback_stack",
+            "required-features": [
+              "instrument-test-support"
+            ]
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_arrangement"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_compile"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_eq8_parameter_history"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_instrument"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_lattice_effects"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_loop"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_midi_aggregate"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_midi_spans"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_midi_template"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_operator_feedback"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_operator_filter"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_operator_lfo"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_return_routing"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_session_audio"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_session_grid"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_session_handoff"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_session_inventory"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_session_playback"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_shared_context",
+            "required-features": [
+              "instrument-test-support"
+            ]
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_tempo_conversion"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_utility"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_fades"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_gain"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "compile_project"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "compile_streamed_sources"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "device_chain"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "fm4_native_admission"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "gain_envelope"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "latency_layout"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "loop_playback"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi_activity"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi_compile"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi_template"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "mix_controls"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "native_tuning_coverage"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "observed_pages"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_native_admission"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "project_tuning"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "registered_instrument"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "render_spans"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "return_routes"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session_audio_large"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session_playback"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session_profile_oracle"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session_streamed_audio"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "streamed_render"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "track_mix"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "tuning_admission"
+          },
+          {
+            "kind": [
+              "custom-build"
+            ],
+            "name": "build-script-build"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-engine",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-engine",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-lattice",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "fs"
+            ],
+            "kind": null,
+            "name": "rustix",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": "cfg(any(target_os = \"linux\", target_os = \"macos\"))",
+            "uses_default_features": true
+          }
+        ],
+        "features": {
+          "instrument-test-support": [
+            "hex-engine/instrument-test-support"
+          ]
+        },
+        "manifest": "crates/hex-export/Cargo.toml",
+        "name": "hex-export",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_export"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "compensated"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "native_tuning_coverage"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_native"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "prepared_mutable"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "return_routes"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-dsp",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-dsp",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {
+          "conformance": []
+        },
+        "manifest": "crates/hex-lattice/Cargo.toml",
+        "name": "hex-lattice",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_lattice"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "configuration_profile"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "owned_history_profile",
+            "required-features": [
+              "conformance"
+            ]
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "effect_runtime_budget"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "owned_effects"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "state_descriptors"
+          }
+        ]
+      },
+      {
+        "dependencies": [],
+        "features": {},
+        "manifest": "crates/hex-lattice-contract/Cargo.toml",
+        "name": "hex-lattice-contract",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_lattice_contract"
+          }
+        ]
+      },
+      {
+        "dependencies": [],
+        "features": {},
+        "manifest": "crates/hex-library/Cargo.toml",
+        "name": "hex-library",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_library"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-engine",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-engine",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "sha2",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-media/Cargo.toml",
+        "name": "hex-media",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_media"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_resample"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "coremidi",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": "cfg(target_os = \"macos\")",
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-midi/Cargo.toml",
+        "name": "hex-midi",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_midi"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "mts-esp-master-adapter",
+            "optional": false,
+            "path": "/workspace/hex/third_party/mts-esp-master",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-mts/Cargo.toml",
+        "name": "hex-mts",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_mts"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [
+              "derive"
+            ],
+            "kind": null,
+            "name": "serde",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "serde_json",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "sha2",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "process",
+              "event"
+            ],
+            "kind": null,
+            "name": "rustix",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": "cfg(target_os = \"linux\")",
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "signal-hook",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": "cfg(target_os = \"linux\")",
+            "uses_default_features": false
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-plugin-scan/Cargo.toml",
+        "name": "hex-plugin-scan",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_plugin_scan"
+          },
+          {
+            "kind": [
+              "bin"
+            ],
+            "name": "hex-plugin-scan"
+          },
+          {
+            "kind": [
+              "bin"
+            ],
+            "name": "hex-vst3-offline"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "native"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "offline_native"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "offline_protocol"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "protocol"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [
+              "derive"
+            ],
+            "kind": null,
+            "name": "serde",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "serde_json",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-preferences/Cargo.toml",
+        "name": "hex-preferences",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_preferences"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-project/Cargo.toml",
+        "name": "hex-project",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_project"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_edits"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "audio_clip_looping"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "audio_clip_source_phase"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "audio_domain"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "audio_view"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "automatic_track_colors"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_fades"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_fragment"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_gain"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_paint"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_paint_capacity"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_trim"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "device_comparison"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "duplicate"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "editing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "gain_envelope"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "import"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "insert_time"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "loop_region"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi_split"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi_trim"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "mix_controls"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "playable_routing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "prepared_batch_routing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "relative"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "return_tracks"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "routing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "scene_editing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session_audio"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "snapshot"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "solo"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "split"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "time_range"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "timebase"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "timebase_quantization"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "track_insertion"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "tuning"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "validated_history"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "warp_projection"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-engine",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-engine",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-export",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-export",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-media",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-media",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-storage",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-storage",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "serde_json",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-session/Cargo.toml",
+        "name": "hex-session",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_session"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "native_streaming_fixture"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "operator_enable_fixture"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_device_gestures"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_midi_edits"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "time_selection_fixture"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "device_comparison"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "gain_lane"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "gain_recording"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "host_gain"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi_admission"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "midi_workflow"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_presets"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "operator_seek"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "prepared_batch_routing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "project_open_preview"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "project_recovery"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "returns"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "scene_editing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "service"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "session_workflow"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "track_gain_gesture"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "fs2",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "derive"
+            ],
+            "kind": null,
+            "name": "serde",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "float_roundtrip"
+            ],
+            "kind": null,
+            "name": "serde_json",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "libc",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": "cfg(unix)",
+            "uses_default_features": true
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-storage/Cargo.toml",
+        "name": "hex-storage",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_storage"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "appearance"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "audio_edit"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "audio_events"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "audio_view"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "automatic_track_colors"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_warp"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "clip_names"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "device_assets"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "device_comparison"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "gain_envelope"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "musical_routing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "persistence"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "playable_routing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "provenance"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "return_feeds"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "routing"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "sample_bpm_stretch"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "schema_lineages"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "tuning"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-engine",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-engine",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-media",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-media",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "rtrb",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "allocation-counter",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "build",
+            "name": "sha2",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {
+          "allocation-probe": []
+        },
+        "manifest": "crates/hex-stream/Cargo.toml",
+        "name": "hex-stream",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_stream"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_100_long_sources"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "profile_100_sources"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "callback_allocations"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "worker_runtime"
+          },
+          {
+            "kind": [
+              "custom-build"
+            ],
+            "name": "build-script-build"
+          }
+        ]
+      },
+      {
+        "dependencies": [],
+        "features": {},
+        "manifest": "crates/hex-tuning/Cargo.toml",
+        "name": "hex-tuning",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_tuning"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [
+              "font-kit",
+              "macos-blade"
+            ],
+            "kind": null,
+            "name": "gpui",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": false
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-audio",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-audio",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-diagnostics",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-diagnostics",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-engine",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-engine",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-lattice-contract",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-lattice-contract",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-library",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-library",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-midi",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-midi",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-mts",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-mts",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-preferences",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-preferences",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-project",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-project",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-session",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-session",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-tuning",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-tuning",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "hex-widgets",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-widgets",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "serde_json",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": null,
+            "name": "unicode-segmentation",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [
+              "allocation-probe"
+            ],
+            "kind": "dev",
+            "name": "hex-audio",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-audio",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          },
+          {
+            "features": [],
+            "kind": "dev",
+            "name": "hex-media",
+            "optional": false,
+            "path": "/workspace/hex/crates/hex-media",
+            "rename": null,
+            "target": null,
+            "uses_default_features": true
+          }
+        ],
+        "features": {
+          "ui-test-support": [
+            "gpui/test-support"
+          ]
+        },
+        "manifest": "crates/hex-ui/Cargo.toml",
+        "name": "hex-ui",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_ui"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "knob_review"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "layout_review"
+          },
+          {
+            "kind": [
+              "custom-build"
+            ],
+            "name": "build-script-build"
+          }
+        ]
+      },
+      {
+        "dependencies": [],
+        "features": {},
+        "manifest": "crates/hex-warp/Cargo.toml",
+        "name": "hex-warp",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_warp"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "beats_diagnosis"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "beats_quality"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "beats_recording"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "beats_short_diagnosis"
+          },
+          {
+            "kind": [
+              "example"
+            ],
+            "name": "warp_profile"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_alternating"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_bass_band"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_envelope"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_groups"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_plan"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_quality_followup"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_seams"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_short"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_stop"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "beats_wsola"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "dsp"
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "name": "stretch_admission"
+          }
+        ]
+      },
+      {
+        "dependencies": [
+          {
+            "features": [
+              "font-kit",
+              "macos-blade"
+            ],
+            "kind": null,
+            "name": "gpui",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": false
+          },
+          {
+            "features": [
+              "font-kit",
+              "macos-blade",
+              "test-support"
+            ],
+            "kind": "dev",
+            "name": "gpui",
+            "optional": false,
+            "path": null,
+            "rename": null,
+            "target": null,
+            "uses_default_features": false
+          }
+        ],
+        "features": {},
+        "manifest": "crates/hex-widgets/Cargo.toml",
+        "name": "hex-widgets",
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "name": "hex_widgets"
+          }
+        ]
+      }
+    ],
+    "edit": {
+      "features": "ui-test-support",
+      "filter": "loop_rail",
+      "package": "hex-ui"
+    },
+    "paths": [
+      "crates/hex-ui/src/editor/controller.rs",
+      "crates/hex-ui/src/editor/loop_rail.rs",
+      "crates/hex-ui/src/editor/loop_rail/pending.rs",
+      "crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs",
+      "crates/hex-ui/src/editor/mod.rs",
+      "crates/hex-ui/src/editor/render.rs"
+    ],
+    "plan_sha256": "98ae21711d56262f094111cf597ffbe22969b290eea5489ccb9c54ec3d1c69a9",
+    "policy_version": 1,
+    "profile": "edit",
+    "qualifies_merge": false,
+    "reasons": [
+      "known ui inputs; prose does not widen executable scope"
+    ],
+    "runtime_inputs": {
+      "metadata_exclusions": [
+        "README.md",
+        "docs/architecture.md",
+        "docs/arrangement-device-drop.md",
+        "docs/arrangement-navigation.md",
+        "docs/arrangement-overview.md",
+        "docs/audio-candidate-publication.md",
+        "docs/audio-events.md",
+        "docs/audio-only-storage-accounting.md",
+        "docs/audio-view-model.md",
+        "docs/auto-pan.md",
+        "docs/automatic-track-colors.md",
+        "docs/beats-clip-warp.md",
+        "docs/browser-drag.md",
+        "docs/browser-layout.md",
+        "docs/browser-places.md",
+        "docs/changelog.md",
+        "docs/clap-admission.md",
+        "docs/clip-conversion.md",
+        "docs/clip-drag.md",
+        "docs/clip-edit-performance.md",
+        "docs/clip-fades.md",
+        "docs/clip-names.md",
+        "docs/clip-overwrite.md",
+        "docs/clip-paint.md",
+        "docs/clip-resize-browser-release.md",
+        "docs/clip-resizing.md",
+        "docs/clip-trim.md",
+        "docs/clip-view.md",
+        "docs/clip-waveform-body.md",
+        "docs/cloud-environment.md",
+        "docs/compressor.md",
+        "docs/configuration-comparison.md",
+        "docs/context-menus.md",
+        "docs/controller-input.md",
+        "docs/dependency-warnings.md",
+        "docs/development-workflow.md",
+        "docs/device-assets.md",
+        "docs/device-comparison.md",
+        "docs/device-controls.md",
+        "docs/device-gain-staging.md",
+        "docs/device-gestures.md",
+        "docs/device-presets.md",
+        "docs/device-preview-navigation.md",
+        "docs/diagnostics.md",
+        "docs/edit-cursor.md",
+        "docs/element-colors.md",
+        "docs/eq-eight-audition.md",
+        "docs/eq-eight-oversampling-study.md",
+        "docs/eq-eight-parameter-history.md",
+        "docs/eq-eight-response-measurement.md",
+        "docs/eq-eight.md",
+        "docs/eq-graph-layout.md",
+        "docs/eq-node-gestures.md",
+        "docs/eq-quality-cycle1.md",
+        "docs/eq.md",
+        "docs/evidence/time-selection-2026-10-16/report.md",
+        "docs/evidence/time-selection-2026-10-17/report.md",
+        "docs/export.md",
+        "docs/features.md",
+        "docs/final-active-audio-disposal.md",
+        "docs/finder-audio-import.md",
+        "docs/fm4.md",
+        "docs/gain-touch-spans.md",
+        "docs/gate.md",
+        "docs/grid-snapping.md",
+        "docs/group-clip-drag.md",
+        "docs/history/todo-2026-10-09.md",
+        "docs/hybrid-tracks.md",
+        "docs/issues.md",
+        "docs/latency-compensation.md",
+        "docs/latency.md",
+        "docs/lattice-instruments.md",
+        "docs/lattice.md",
+        "docs/layout-review.md",
+        "docs/live-set-import.md",
+        "docs/local-ci.md",
+        "docs/main-track.md",
+        "docs/media-streaming.md",
+        "docs/midi.md",
+        "docs/mts-esp-boundary.md",
+        "docs/musical-editing.md",
+        "docs/musical-time.md",
+        "docs/mutable-source-loops.md",
+        "docs/mutable-transport-loops.md",
+        "docs/native-accessibility.md",
+        "docs/native-audio-acceptance.md",
+        "docs/native-device-authoring.md",
+        "docs/native-device-bindings.md",
+        "docs/native-device-catalog.md",
+        "docs/native-dsp.md",
+        "docs/native-effect-tails.md",
+        "docs/native-input.md",
+        "docs/native-interaction.md",
+        "docs/native-parameter-semantics.md",
+        "docs/native-tuning-coverage.md",
+        "docs/never-installed-audio-disposal.md",
+        "docs/operator-canonical-state-reuse.md",
+        "docs/operator-capture-proof.md",
+        "docs/operator-context.md",
+        "docs/operator-enable-continuation.md",
+        "docs/operator-enable-retest.md",
+        "docs/operator-enable.md",
+        "docs/operator-envelope-ui.md",
+        "docs/operator-envelopes.md",
+        "docs/operator-feedback.md",
+        "docs/operator-filter-lowpass-proof.md",
+        "docs/operator-filter-packing-proof.md",
+        "docs/operator-filter.md",
+        "docs/operator-fixed-tuning.md",
+        "docs/operator-fm.md",
+        "docs/operator-globals-volume-proof.md",
+        "docs/operator-harmonic-inline-proof.md",
+        "docs/operator-harmonic-retarget.md",
+        "docs/operator-harmonic-root-cache-proof.md",
+        "docs/operator-harmonics.md",
+        "docs/operator-lfo-assignment.md",
+        "docs/operator-lfo.md",
+        "docs/operator-native.md",
+        "docs/operator-routing-presets.md",
+        "docs/operator-state.md",
+        "docs/operator-tab-fixture.md",
+        "docs/operator-waveforms.md",
+        "docs/output-capture.md",
+        "docs/output-meter.md",
+        "docs/owned-effect-transactions.md",
+        "docs/page-delivery.md",
+        "docs/performance.md",
+        "docs/pitch-multiplier-proof.md",
+        "docs/plan.md",
+        "docs/playback-stack.md",
+        "docs/prepared-seek-cancellation.md",
+        "docs/project-directory.md",
+        "docs/project-file-actions.md",
+        "docs/project-recovery.md",
+        "docs/project-spectrum.md",
+        "docs/project-tempo-input.md",
+        "docs/project-tuning-runtime.md",
+        "docs/project-tuning.md",
+        "docs/recent-projects.md",
+        "docs/reference-project.md",
+        "docs/research/reference.md",
+        "docs/research/utility-audio.md",
+        "docs/research/workflow.md",
+        "docs/resize-edge-pan.md",
+        "docs/resize-release.md",
+        "docs/return-effect-tails.md",
+        "docs/return-tracks.md",
+        "docs/routing.md",
+        "docs/runtime.md",
+        "docs/sample-bpm-stretch.md",
+        "docs/sample-library.md",
+        "docs/sampler.md",
+        "docs/saturator.md",
+        "docs/selected-clip-border-followup.md",
+        "docs/session-audio.md",
+        "docs/session-silence-effect-tails.md",
+        "docs/signed-envelope-precursor.md",
+        "docs/snap-nudges.md",
+        "docs/spectrum-analysis.md",
+        "docs/spectrum-painting.md",
+        "docs/stateful-lattice.md",
+        "docs/streamed-native-readiness.md",
+        "docs/streamed-session-source-plan.md",
+        "docs/streaming-100-track-workload.md",
+        "docs/streaming-native-validation.md",
+        "docs/streaming-prerequisite-integration.md",
+        "docs/streaming-source-support-matrix.md",
+        "docs/test-builds.md",
+        "docs/theme-settings.md",
+        "docs/time-selection-profile.md",
+        "docs/time-selection.md",
+        "docs/track-gain-automation.md",
+        "docs/track-header-volume.md",
+        "docs/track-selection.md",
+        "docs/tuning-cloud-handoff.md",
+        "docs/tuning-native-acceptance.md",
+        "docs/tuning-resource-contract.md",
+        "docs/ui-design.md",
+        "docs/utility-acceptance.md",
+        "docs/utility-filters.md",
+        "docs/vector-global.md",
+        "docs/warp-resize-limits.md",
+        "docs/waveform-display.md",
+        "docs/workspace-views.md",
+        "docs/xattr-compatibility.md",
+        "todo.md"
+      ],
+      "sha256": "2d58bed40faec444d6aa91c863c6e0f51bd3c5abc1b89bfb52fd0c7e1b386624",
+      "symlinks": [],
+      "version": 1
+    },
+    "scope": "ui",
+    "source": "2a2494e461fe9fa75e98882695557de2a757fa58",
+    "tree": "20d1af8579aefeaf570526e1af6eb4c1146d332f"
+  },
+  "platform": "linux",
+  "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "repo_root": "/workspace/hex",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "20261019T213448Z-ee974f8f",
+  "runtime_inputs": {
+    "metadata_exclusions": [
+      "README.md",
+      "docs/architecture.md",
+      "docs/arrangement-device-drop.md",
+      "docs/arrangement-navigation.md",
+      "docs/arrangement-overview.md",
+      "docs/audio-candidate-publication.md",
+      "docs/audio-events.md",
+      "docs/audio-only-storage-accounting.md",
+      "docs/audio-view-model.md",
+      "docs/auto-pan.md",
+      "docs/automatic-track-colors.md",
+      "docs/beats-clip-warp.md",
+      "docs/browser-drag.md",
+      "docs/browser-layout.md",
+      "docs/browser-places.md",
+      "docs/changelog.md",
+      "docs/clap-admission.md",
+      "docs/clip-conversion.md",
+      "docs/clip-drag.md",
+      "docs/clip-edit-performance.md",
+      "docs/clip-fades.md",
+      "docs/clip-names.md",
+      "docs/clip-overwrite.md",
+      "docs/clip-paint.md",
+      "docs/clip-resize-browser-release.md",
+      "docs/clip-resizing.md",
+      "docs/clip-trim.md",
+      "docs/clip-view.md",
+      "docs/clip-waveform-body.md",
+      "docs/cloud-environment.md",
+      "docs/compressor.md",
+      "docs/configuration-comparison.md",
+      "docs/context-menus.md",
+      "docs/controller-input.md",
+      "docs/dependency-warnings.md",
+      "docs/development-workflow.md",
+      "docs/device-assets.md",
+      "docs/device-comparison.md",
+      "docs/device-controls.md",
+      "docs/device-gain-staging.md",
+      "docs/device-gestures.md",
+      "docs/device-presets.md",
+      "docs/device-preview-navigation.md",
+      "docs/diagnostics.md",
+      "docs/edit-cursor.md",
+      "docs/element-colors.md",
+      "docs/eq-eight-audition.md",
+      "docs/eq-eight-oversampling-study.md",
+      "docs/eq-eight-parameter-history.md",
+      "docs/eq-eight-response-measurement.md",
+      "docs/eq-eight.md",
+      "docs/eq-graph-layout.md",
+      "docs/eq-node-gestures.md",
+      "docs/eq-quality-cycle1.md",
+      "docs/eq.md",
+      "docs/evidence/time-selection-2026-10-16/report.md",
+      "docs/evidence/time-selection-2026-10-17/report.md",
+      "docs/export.md",
+      "docs/features.md",
+      "docs/final-active-audio-disposal.md",
+      "docs/finder-audio-import.md",
+      "docs/fm4.md",
+      "docs/gain-touch-spans.md",
+      "docs/gate.md",
+      "docs/grid-snapping.md",
+      "docs/group-clip-drag.md",
+      "docs/history/todo-2026-10-09.md",
+      "docs/hybrid-tracks.md",
+      "docs/issues.md",
+      "docs/latency-compensation.md",
+      "docs/latency.md",
+      "docs/lattice-instruments.md",
+      "docs/lattice.md",
+      "docs/layout-review.md",
+      "docs/live-set-import.md",
+      "docs/local-ci.md",
+      "docs/main-track.md",
+      "docs/media-streaming.md",
+      "docs/midi.md",
+      "docs/mts-esp-boundary.md",
+      "docs/musical-editing.md",
+      "docs/musical-time.md",
+      "docs/mutable-source-loops.md",
+      "docs/mutable-transport-loops.md",
+      "docs/native-accessibility.md",
+      "docs/native-audio-acceptance.md",
+      "docs/native-device-authoring.md",
+      "docs/native-device-bindings.md",
+      "docs/native-device-catalog.md",
+      "docs/native-dsp.md",
+      "docs/native-effect-tails.md",
+      "docs/native-input.md",
+      "docs/native-interaction.md",
+      "docs/native-parameter-semantics.md",
+      "docs/native-tuning-coverage.md",
+      "docs/never-installed-audio-disposal.md",
+      "docs/operator-canonical-state-reuse.md",
+      "docs/operator-capture-proof.md",
+      "docs/operator-context.md",
+      "docs/operator-enable-continuation.md",
+      "docs/operator-enable-retest.md",
+      "docs/operator-enable.md",
+      "docs/operator-envelope-ui.md",
+      "docs/operator-envelopes.md",
+      "docs/operator-feedback.md",
+      "docs/operator-filter-lowpass-proof.md",
+      "docs/operator-filter-packing-proof.md",
+      "docs/operator-filter.md",
+      "docs/operator-fixed-tuning.md",
+      "docs/operator-fm.md",
+      "docs/operator-globals-volume-proof.md",
+      "docs/operator-harmonic-inline-proof.md",
+      "docs/operator-harmonic-retarget.md",
+      "docs/operator-harmonic-root-cache-proof.md",
+      "docs/operator-harmonics.md",
+      "docs/operator-lfo-assignment.md",
+      "docs/operator-lfo.md",
+      "docs/operator-native.md",
+      "docs/operator-routing-presets.md",
+      "docs/operator-state.md",
+      "docs/operator-tab-fixture.md",
+      "docs/operator-waveforms.md",
+      "docs/output-capture.md",
+      "docs/output-meter.md",
+      "docs/owned-effect-transactions.md",
+      "docs/page-delivery.md",
+      "docs/performance.md",
+      "docs/pitch-multiplier-proof.md",
+      "docs/plan.md",
+      "docs/playback-stack.md",
+      "docs/prepared-seek-cancellation.md",
+      "docs/project-directory.md",
+      "docs/project-file-actions.md",
+      "docs/project-recovery.md",
+      "docs/project-spectrum.md",
+      "docs/project-tempo-input.md",
+      "docs/project-tuning-runtime.md",
+      "docs/project-tuning.md",
+      "docs/recent-projects.md",
+      "docs/reference-project.md",
+      "docs/research/reference.md",
+      "docs/research/utility-audio.md",
+      "docs/research/workflow.md",
+      "docs/resize-edge-pan.md",
+      "docs/resize-release.md",
+      "docs/return-effect-tails.md",
+      "docs/return-tracks.md",
+      "docs/routing.md",
+      "docs/runtime.md",
+      "docs/sample-bpm-stretch.md",
+      "docs/sample-library.md",
+      "docs/sampler.md",
+      "docs/saturator.md",
+      "docs/selected-clip-border-followup.md",
+      "docs/session-audio.md",
+      "docs/session-silence-effect-tails.md",
+      "docs/signed-envelope-precursor.md",
+      "docs/snap-nudges.md",
+      "docs/spectrum-analysis.md",
+      "docs/spectrum-painting.md",
+      "docs/stateful-lattice.md",
+      "docs/streamed-native-readiness.md",
+      "docs/streamed-session-source-plan.md",
+      "docs/streaming-100-track-workload.md",
+      "docs/streaming-native-validation.md",
+      "docs/streaming-prerequisite-integration.md",
+      "docs/streaming-source-support-matrix.md",
+      "docs/test-builds.md",
+      "docs/theme-settings.md",
+      "docs/time-selection-profile.md",
+      "docs/time-selection.md",
+      "docs/track-gain-automation.md",
+      "docs/track-header-volume.md",
+      "docs/track-selection.md",
+      "docs/tuning-cloud-handoff.md",
+      "docs/tuning-native-acceptance.md",
+      "docs/tuning-resource-contract.md",
+      "docs/ui-design.md",
+      "docs/utility-acceptance.md",
+      "docs/utility-filters.md",
+      "docs/vector-global.md",
+      "docs/warp-resize-limits.md",
+      "docs/waveform-display.md",
+      "docs/workspace-views.md",
+      "docs/xattr-compatibility.md",
+      "todo.md"
+    ],
+    "sha256": "2d58bed40faec444d6aa91c863c6e0f51bd3c5abc1b89bfb52fd0c7e1b386624",
+    "symlinks": [],
+    "version": 1
+  },
+  "schema_version": 2,
+  "source_identity": {
+    "commit": "2a2494e461fe9fa75e98882695557de2a757fa58",
+    "content_sha256": "4d7c9f68a70cd2144e4a169aa70e24967b46929ae778330375dc1d39be716c15",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/loop_rail.rs",
+      " M crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs",
+      " M crates/hex-ui/src/editor/mod.rs",
+      " M crates/hex-ui/src/editor/render.rs"
+    ],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "2a2494e461fe9fa75e98882695557de2a757fa58",
+    "content_sha256": "4d7c9f68a70cd2144e4a169aa70e24967b46929ae778330375dc1d39be716c15",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/loop_rail.rs",
+      " M crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs",
+      " M crates/hex-ui/src/editor/mod.rs",
+      " M crates/hex-ui/src/editor/render.rs"
+    ]
+  },
+  "started_at": "2026-10-19T21:34:48Z",
+  "status": "failed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "loop_rail",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-19T21:35:44Z",
+      "error": null,
+      "exit_code": 101,
+      "log": "artifacts/local-ci/20261019T213448Z-ee974f8f/01-edit-tests.log",
+      "started_at": "2026-10-19T21:34:50Z",
+      "status": "failed",
+      "step_id": "edit-tests",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "edit-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "format"
+    }
+  ],
+  "target_cache": {
+    "action": "source-or-compiler-handoff",
+    "cleanup_argv": [
+      "cargo",
+      "clean",
+      "--profile",
+      "dev",
+      "--target-dir",
+      "/workspace/hex/target",
+      "--manifest-path",
+      "/workspace/hex/Cargo.toml",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-audio#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-clap-scan#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-cli#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-desktop#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-devices#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-diagnostics#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-dsp#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-engine#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-export#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-lattice#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-library#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-media#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-midi#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-mts#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-preferences#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-project#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-session#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-storage#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-stream#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-tuning#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-ui#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-warp#0.1.0",
+      "--package",
+      "path+file:///workspace/hex/crates/hex-widgets#0.1.0"
+    ],
+    "cleanup_exit_code": 0,
+    "cleanup_log": "artifacts/local-ci/20261019T213448Z-ee974f8f/target-handoff-clean.log",
+    "cleanup_status": "passed",
+    "current_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex"
+    },
+    "dependency_inputs": {
+      "packages": [
+        {
+          "name": "block",
+          "sha256": "7b5074e7a3e7c62deb544f7a85518025e1af99d7c972b8db7d86487a23bc7f55",
+          "spec": "path+file:///workspace/hex/third_party/block#0.1.6",
+          "version": "0.1.6"
+        },
+        {
+          "name": "gpui",
+          "sha256": "dca5bf7e2aa47dd7bb03388451af6aab487216f4f2fdd3fb41d2a80d108469dd",
+          "spec": "path+file:///workspace/hex/third_party/gpui#0.2.2",
+          "version": "0.2.2"
+        },
+        {
+          "name": "mts-esp-master-adapter",
+          "sha256": "d1382e2c3505886d19482d22bc3f07a98983fd36452977f61e55a5adc9c9c56e",
+          "spec": "path+file:///workspace/hex/third_party/mts-esp-master#mts-esp-master-adapter@0.1.0",
+          "version": "0.1.0"
+        },
+        {
+          "name": "proc-macro-error2",
+          "sha256": "d25b206e38f7ce3cf06078906ec4ef5f082f1f1c8723e84281875344aa671d5a",
+          "spec": "path+file:///workspace/hex/third_party/proc-macro-error2#2.0.1",
+          "version": "2.0.1"
+        },
+        {
+          "name": "xattr",
+          "sha256": "e7c1ecf257291a6b341f288c6951b8ebc4cf770f601b20cf4420012666675abf",
+          "spec": "path+file:///workspace/hex/third_party/xattr#0.2.3",
+          "version": "0.2.3"
+        }
+      ],
+      "sha256": "e09d2e246403b8335dc8b397eca248a9f4a7af410efe10bba9febe338db3c18f",
+      "version": 1
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex"
+    },
+    "target_identity_before": {
+      "device": 27,
+      "inode": 9223372036855999389
+    }
+  },
+  "toolchain": {
+    "cargo": {
+      "mode": 33261,
+      "path": "/workspace/.hex-tools/cargo/bin/rustup",
+      "sha256": "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71",
+      "version": "cargo 1.94.0 (85eff7c80 2026-01-15)\nrelease: 1.94.0\ncommit-hash: 85eff7c80277b57f78b11e28d14154ab12fcf643\ncommit-date: 2026-01-15\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.2 (sys:0.20.3 vendored)\nlibcurl: 8.17.0-DEV (sys:0.4.84+curl-8.17.0 vendored ssl:OpenSSL/3.5.4)\nssl: OpenSSL 3.5.4 30 Sep 2025\nos: Debian 13.0.0 [64-bit]\n"
+    },
+    "rustc": {
+      "mode": 33261,
+      "path": "/workspace/.hex-tools/cargo/bin/rustup",
+      "sha256": "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71",
+      "version": "rustc 1.94.0 (4a4ef493e 2026-03-02)\nbinary: rustc\ncommit-hash: 4a4ef493e3a1488c6e321570238084b38948f6db\ncommit-date: 2026-03-02\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.0\nLLVM version: 21.1.8\n"
+    }
+  },
+  "verification_status": "failed"
+}

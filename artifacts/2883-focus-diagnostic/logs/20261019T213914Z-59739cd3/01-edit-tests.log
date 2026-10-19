@@ -1,0 +1,54 @@
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-mts v0.1.0 (/workspace/hex/crates/hex-mts)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-midi v0.1.0 (/workspace/hex/crates/hex-midi)
+   Compiling hex-library v0.1.0 (/workspace/hex/crates/hex-library)
+   Compiling hex-diagnostics v0.1.0 (/workspace/hex/crates/hex-diagnostics)
+    Finished `test` profile [unoptimized] target(s) in 47.45s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 14 tests
+test editor::loop_rail::pending_ui_tests::deferred_loop_is_stamped_only_when_the_real_request_is_submitted ... ok
+test editor::loop_rail::pending_ui_tests::another_paint_while_deferred_keeps_the_original_pending_intent ... ok
+test editor::loop_rail::pending_ui_tests::active_loop_retires_on_real_revision_or_document_replacement ... ok
+test editor::loop_rail::pending_ui_tests::earlier_success_and_refusal_ack_do_not_retire_loop_replacement ... ok
+test editor::loop_rail::pending_ui_tests::replacement_loop_stays_painted_until_its_real_response_installs ... ok
+test editor::loop_rail::tests::visible_range_clips_loop_edges_to_zoomed_viewport ... ok
+test editor::loop_rail::pending_ui_tests::queue_refusal_restores_real_old_paint_without_inserting_loop_history ... ok
+test editor::loop_rail_ui_test::command_drag_uses_free_frames_and_zoomed_panned_coordinates ... ok
+
+thread 'editor::loop_rail::pending_ui_tests::escape_button_loss_and_focus_loss_cancel_held_loop_without_a_request' (367258) panicked at crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs:322:9:
+assertion `left == right` failed: completed cancellation scene 2
+  left: Bounds { origin: Point { x: 669px, y: 220px }, size: Size { 185px × 9px } }
+ right: Bounds { origin: Point { x: 530.5px, y: 220px }, size: Size { 46px × 9px } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::loop_rail::pending_ui_tests::escape_button_loss_and_focus_loss_cancel_held_loop_without_a_request ... FAILED
+test editor::loop_rail_ui_test::loop_rail_click_activates_resizable_ends_preserve_enable_and_toolbar_disables ... ok
+test editor::loop_rail_ui_test::loop_rail_drag_continues_outside_rail_without_starting_lane_selection ... ok
+test editor::loop_rail_ui_test::loop_rail_paint_previews_then_commits_adaptive_grid_range_disabled ... ok
+test editor::loop_rail_ui_test::stale_loop_state_cancels_preview_without_overwriting_the_new_range ... ok
+test editor::loop_rail::pending_ui_tests::reverse_free_final_release_and_repeated_replacement_keep_exact_worker_geometry ... ok
+
+failures:
+
+failures:
+    editor::loop_rail::pending_ui_tests::escape_button_loss_and_focus_loss_cancel_held_loop_without_a_request
+
+test result: FAILED. 13 passed; 1 failed; 0 ignored; 0 measured; 1059 filtered out; finished in 3.68s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
