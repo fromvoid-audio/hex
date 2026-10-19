@@ -1,0 +1,5 @@
+# proposed singleton Main runtime binding (unapplied)
+
+Base session_playback.rs SHA256 b1e5ea3052924061a757aa43c4272dd34fa5787e9c818d0eff996ef5cd9232b3
+
+This literal field/constructor/visitor patch is NOT applied, not a complete accounting implementation, and not proof against unseen Cloud5 unpublished bytes. It preserves existing owner kinds0..8 and proposes9 for Main. Root/Cloud5 should bind actual Main NativeRuntimeChain.storage_view storage allocations, concrete runtime pair boxes/configuration/shared references/active+candidate overlap exactly once in the actual candidate_storage inventory. The owned file is absent on canonical base; no fabricated patch for unavailable bytes. Session metering/audition/history/reset loops also need Main, separately coordinated. New private Project::new_main_device_runtime() will prepare the exact compiled Main plan through the existing NativeRuntimeChain constructor; no callback allocation/new owner. Additive ProcessorChainOwner::Main tag is required for stable meter/history identity, never a fake TrackId/ReturnId.

@@ -1,0 +1,43 @@
+--- a/crates/hex-engine/src/session_playback.rs
++++ b/crates/hex-engine/src/session_playback.rs
+@@ -330,6 +330,7 @@
+     route_scratch: Vec<TrackRoute>,
+     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
+     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
++    main_chain: hex_lattice::NativeRuntimeChain,
+     return_scratch: Vec<[Frame; 256]>,
+     return_effect_tails: ReturnEffectTailBank,
+     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
+@@ -516,6 +517,7 @@
+             route_scratch: _,
+             device_chains,
+             return_chains,
++            main_chain: _,
+             return_scratch: _,
+             return_effect_tails,
+             mutable_instruments,
+@@ -576,6 +578,7 @@
+         }
+         visit(7, 0, true)?; // this exact Session revision handle
+         visit(8, 0, compensation.is_some())?;
++        visit(9, 0, true)?; // singleton Main chain; existing kind identities unchanged
+         Ok(())
+     }
+     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
+@@ -995,6 +998,8 @@
+             );
+             return_scratch.push([[0.0; 2]; 256]);
+         }
++        let main_chain = revision.arrangement().new_main_device_runtime()
++            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+         let return_effect_tails = ReturnEffectTailBank::new()?;
+         let mut tail_groups = Vec::new();
+         tail_groups
+@@ -1081,6 +1086,7 @@
+             route_scratch,
+             device_chains,
+             return_chains,
++            main_chain,
+             return_scratch,
+             return_effect_tails,
+             mutable_instruments,
