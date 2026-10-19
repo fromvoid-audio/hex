@@ -228,6 +228,7 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
             }
             _ => {
                 value["version"] = 29.into();
+                value.as_object_mut().unwrap().remove("main_devices");
             }
         }
         assert!(
@@ -264,6 +265,7 @@ fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
     for (tuning, assets) in [(true, true), (true, false), (false, true), (false, false)] {
         let mut value = source.clone();
         value["version"] = 30.into();
+        value.as_object_mut().unwrap().remove("main_devices");
         if !tuning {
             value.as_object_mut().unwrap().remove("tuning");
         }

@@ -49,6 +49,7 @@ fn required_schema33_tuning_roundtrips_every_waveform_enabled_and_disabled() {
 fn schema29_migrates_explicit_disabled_equal_temperament_and_refuses_tuning() {
     let mut value = document();
     value["version"] = json!(29);
+    value.as_object_mut().unwrap().remove("main_devices");
     refuses(&value);
     value.as_object_mut().unwrap().remove("tuning");
     value.as_object_mut().unwrap().remove("device_assets");
