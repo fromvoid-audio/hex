@@ -44,7 +44,7 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&folder).unwrap();
-        let service = Service::new(48_000, 32, 0).unwrap();
+        let service = Service::new(48_000, 32, 16_384).unwrap();
         event(&service);
         run(
             &service,
@@ -53,19 +53,53 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
                 reservation: (mode == DocumentAudioMode::VerifiedStreaming).then(reservation),
             },
         );
+        let wav = folder.join("actual.wav");
+        let mut bytes = Vec::from(*b"RIFF");
+        bytes.extend_from_slice(&(36u32 + 256).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000u32.to_le_bytes());
+        bytes.extend_from_slice(&96_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&256u32.to_le_bytes());
+        for _ in 0..128 {
+            bytes.extend_from_slice(&4000i16.to_le_bytes());
+        }
+        std::fs::write(&wav, bytes).unwrap();
+        run(
+            &service,
+            Request::ImportToNewTrack {
+                path: wav,
+                before_track: None,
+                start: 0,
+            },
+        );
         let initial = run(
             &service,
             Request::Edit(Command::AddMidiTrack {
                 name: "notes".into(),
             }),
         );
-        let device = initial.state.project.tracks()[0].instrument().unwrap().id();
+        let device = initial
+            .state
+            .project
+            .tracks()
+            .last()
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
         let source = initial
             .state
             .canonical_audio_source
             .as_ref()
             .unwrap()
             .clone();
+        assert_eq!(source.sources().len(), 1, "real prepared media binding");
         let before_comparison_save = run(&service, Request::SaveNew(folder.join("before.hex")));
         assert!(
             Arc::ptr_eq(
@@ -129,7 +163,7 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
         let audio = run(
             &service,
             Request::Edit(Command::Mute {
-                track: initial.state.project.tracks()[0].id(),
+                track: initial.state.project.tracks().last().unwrap().id(),
                 muted: true,
             }),
         );

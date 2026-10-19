@@ -1433,8 +1433,12 @@ fn run_worker(
                 }
             }
         }
-        let comparison_binding =
-            ComparisonAudioBinding::advance(&state, project_generation, revision.saturating_add(1));
+        let comparison_binding = ComparisonAudioBinding::advance(
+            &state,
+            project_generation,
+            revision.saturating_add(1),
+            &session,
+        );
         if let Some(reason) = barrier_failure {
             open_complete = request.is_project_open();
             if let Request::TuningLibrary { operation_id, .. } = &request {

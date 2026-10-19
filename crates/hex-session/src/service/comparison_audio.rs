@@ -8,9 +8,15 @@ pub struct ComparisonAudioBinding {
     revision: u64,
 }
 impl ComparisonAudioBinding {
-    pub(super) fn advance(previous: &ViewState, generation: u64, revision: u64) -> Option<Self> {
+    pub(super) fn advance(
+        previous: &ViewState,
+        generation: u64,
+        revision: u64,
+        session: &Session,
+    ) -> Option<Self> {
         let source = previous.canonical_audio_source.as_ref()?;
-        if source.context().project_generation != generation
+        if !source.matches_session_sources(session)
+            || source.context().project_generation != generation
             || previous.revision.checked_add(1) != Some(revision)
             || previous.audio_authoring_revision(source.context()) != Some(previous.revision)
         {
