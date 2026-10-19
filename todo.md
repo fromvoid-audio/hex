@@ -5753,3 +5753,23 @@ User rejected device-local automation editing. Remove its button, graph mode and
 
 - Compose complete429ba3b5 owner return over6a8d with actual qualified main2683942b (BOTH419/458 authenticated merged, exact935.723s full21). Only three appended todo conflict regions; retain both histories, original phase/fade/CycleEnd/cfg/codec and private comparison fixture carry. Preserve all current workspace/menu/gain-pointer/header/407/413/main source.
 - All35 Length owner payloads and six before/after Git blobs verified. Actual ordinary control PASS/four placed Length-minus REDs and fixture compile-only negative remain source-bound. New current guarded six actual Length Service cases, prospective full21 and fresh review required before canonical456 merge. Keep current32 placement+tuning+required nullable A/B with BOTH asset slots; no unmerged native395/whole445 import or physical/runtime/listening/delivery claim.
+
+
+### 2026-10-19 — Pulse2860 / PR462 clip-local resize feedback
+
+- Actual completed-scene normal/Shift audio resize added accent borders on all
+  four source-lane edges; MIDI retained its ordinary right divider. Preserve the
+  original two paint failures and MIDI positive control.
+- Remove only the nine-line TrimDrag lane styling callback. Preserve clip-local
+  preview/handles/waveform, selection, header/hue strip, drop/command/capture and
+  ordinary non-resize styles. This explicit newer exception overrides2711's older
+  general track-outline request during clip resizing.
+- Real Service/GPUI scene controls cover both edges and selected/other-selected
+  source origins, commits/Undo/Redo and logical Escape/stale/focus cancellation.
+  Separate inherited preview-disappearance failure2871/473 remains open; its
+  original failed assertions and evidence14f are preserved without ignore/pass. Retain
+  the separate controls-row/header-click fixture failure and corrected name-hit
+  setup. Exact source-bound receipts and limitations are in Pulse; merger owns
+  prospective full qualification/review/merge, Root owns physical acceptance.
+- Frozen463 pointer-delivery and469 captured-release packets remain separate;
+  neither their source nor historical evidence is replaced by this paint fix.
