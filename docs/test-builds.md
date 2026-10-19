@@ -51,6 +51,17 @@ an app by name or PID alone: bundle URL, executable, development identifier and
 launch time are rechecked before every request, with the installed signature and
 sealed inventory verified as well. Multiple processes, a replacement identity,
 unverifiable app or busy activation/build lock refuse without retargeting.
+The supported persistent `HEX_DEV_APP_PATH` setting is used by this opt-in path
+with the same validation as the default target. `Hex.app` casing is accepted only
+when the actual filesystem proves the configured bundle and native executable
+have the captured device/inode identities. Separate case-sensitive bundles never
+match just because their names differ only in case. Observed native path strings,
+PID, launch time and identifier remain part of the exact process identity; all
+nine private protocol fields travel together. Symlinks and changed bundle or
+executable inodes refuse, including replacement while the helper compiles.
+Linux tests cover owned filesystem objects and a labeled case-insensitive lookup
+model; actual Swift compilation, AppKit casing and running-process behavior still
+require source-specific macOS qualification.
 Ctrl-C stops further escalation, recovery and launch. A cancelled normal quit
 can still be followed by force under this explicit option; omit the option to
 retain the ordinary save-and-quit guard.

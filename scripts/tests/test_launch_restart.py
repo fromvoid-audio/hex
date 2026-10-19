@@ -31,7 +31,7 @@ class OwnedProcess:
         self.child = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, text=True)
         assert self.child.stdout.readline().strip() == 'ready'
         self.identity = restart.Identity(self.child.pid, str(time.monotonic_ns()), str(app),
-                                         str(app/'Contents/MacOS/hex'), 'org.portalsurfer.hex.dev')
+                                         str(app/'Contents/MacOS/hex'), 'org.portalsurfer.hex.dev', 1, 2, 1, 3)
         self.requests = []
 
     def snapshot(self):
@@ -125,6 +125,164 @@ class LifecycleTests(unittest.TestCase):
                     patch.object(c,'_run_owned',side_effect=restart.RestartError('native quit timed out; escalation stopped')):
                 with self.assertRaisesRegex(restart.RestartError,'timed out'): c.call('quit')
 
+
+
+class FilesystemIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.app = self.root / 'hex.app'
+        self.executable = self.app / 'Contents/MacOS/hex'
+        self.executable.parent.mkdir(parents=True)
+        self.executable.write_bytes(b'owned fixture executable')
+        self.delivery = Mock()
+        self.delivery.sha.side_effect = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+    def payload(self):
+        bundle = self.app.lstat(); executable = self.executable.lstat()
+        return dict(pid=123, started='fixture-start', bundle=str(self.app),
+                    executable=str(self.executable), identifier='org.portalsurfer.hex.dev',
+                    bundle_device=bundle.st_dev, bundle_inode=bundle.st_ino,
+                    executable_device=executable.st_dev, executable_inode=executable.st_ino)
+
+    def test_actual_target_pins_and_observed_strings_are_preserved(self):
+        value = self.payload()
+        self.assertEqual(asdict(restart.exact_identity(value, self.app)), value)
+
+    def test_alternate_spelling_requires_same_filesystem_pins_model(self):
+        # Linux has no case-insensitive fixture volume. Model ONLY its lstat
+        # result for an alternate spelling; derive every accepted pin from the
+        # actual owned objects. This is not AppKit/native volume evidence.
+        value = self.payload(); alias = self.root / 'Hex.app'
+        value.update(bundle=str(alias), executable=str(alias/'Contents/MacOS/hex'))
+        original = restart._path_pin
+        def case_insensitive_pin(path, **kwargs):
+            relative = path.relative_to(alias)
+            return original(self.app / relative, **kwargs)
+        def lookup(path, **kwargs):
+            return case_insensitive_pin(path, **kwargs) if path == alias or alias in path.parents else original(path, **kwargs)
+        with patch.object(restart, '_path_pin', side_effect=lookup):
+            self.assertEqual(asdict(restart.exact_identity(value, self.app)), value)
+        with self.assertRaises(restart.RestartError):
+            restart.exact_identity(value, self.app)
+
+    def test_distinct_case_sensitive_bundle_and_hardlinked_executable_refuse(self):
+        other = self.root/'Hex.app'; executable = other/'Contents/MacOS/hex'
+        executable.parent.mkdir(parents=True)
+        os.link(self.executable, executable)
+        value = self.payload(); value.update(bundle=str(other), executable=str(executable))
+        self.assertNotEqual(other.stat().st_ino, self.app.stat().st_ino)
+        self.assertEqual(executable.stat().st_ino, self.executable.stat().st_ino)
+        with self.assertRaisesRegex(restart.RestartError, 'another target'):
+            restart.exact_identity(value, self.app)
+        # Even honest pins for that second bundle cannot authorize our target.
+        value['bundle_inode'] = other.stat().st_ino
+        with self.assertRaises(restart.RestartError):
+            restart.exact_identity(value, self.app)
+
+    def test_pin_types_bounds_zero_inode_and_missing_extra_fields_refuse(self):
+        good = self.payload()
+        for field in ('bundle_device','bundle_inode','executable_device','executable_inode'):
+            for invalid in (True, False, -1, 1 << 64, '1', 1.0, None):
+                with self.subTest(field=field,value=invalid), self.assertRaises(restart.RestartError):
+                    restart.exact_identity({**good, field:invalid}, self.app)
+            missing = dict(good); del missing[field]
+            with self.assertRaises(restart.RestartError): restart.exact_identity(missing,self.app)
+        for field in ('bundle_inode','executable_inode'):
+            with self.assertRaises(restart.RestartError): restart.exact_identity({**good,field:0},self.app)
+        with self.assertRaises(restart.RestartError): restart.exact_identity({**good,'extra':1},self.app)
+        for pid in (True, 0, -1, 1 << 31):
+            with self.assertRaises(restart.RestartError): restart.exact_identity({**good,'pid':pid},self.app)
+
+    def test_zero_device_and_uint64_limit_are_representable_protocol_values(self):
+        # Boundary model; not a claim about this host's actual device/inode IDs.
+        for pins in ((0,1,0,2), ((1 << 64)-1,)*4):
+            value = self.payload()
+            value.update(zip(('bundle_device','bundle_inode','executable_device','executable_inode'),pins))
+            with patch.object(restart,'_filesystem_identity',return_value=pins):
+                self.assertEqual(asdict(restart.exact_identity(value,self.app)),value)
+
+    def test_symlink_bundle_parent_executable_and_traversed_dotdot_refuse(self):
+        good = self.payload(); alias = self.root/'alias'; alias.symlink_to(self.root, target_is_directory=True)
+        for bundle, executable in ((alias/'hex.app',alias/'hex.app/Contents/MacOS/hex'),
+                                   (self.app,alias/'hex.app/Contents/MacOS/hex'),
+                                   (alias/'..'/self.root.name/'hex.app', self.executable)):
+            value = {**good,'bundle':str(bundle),'executable':str(executable)}
+            with self.subTest(bundle=bundle), self.assertRaises(restart.RestartError):
+                restart.exact_identity(value,self.app)
+        saved=self.root/'saved'; self.executable.rename(saved); self.executable.symlink_to(saved)
+        with self.assertRaisesRegex(restart.RestartError,'symlink'): restart.exact_identity(good,self.app)
+
+    def test_bundle_and_executable_inode_replacements_refuse_old_snapshot(self):
+        good=self.payload()
+        saved=self.root/'old-executable'; self.executable.rename(saved)
+        self.executable.write_bytes(saved.read_bytes())
+        with self.assertRaisesRegex(restart.RestartError,'identity changed'):
+            restart.exact_identity(good,self.app)
+        self.executable.unlink(); saved.rename(self.executable)
+        old=self.root/'old-bundle'; self.app.rename(old)
+        self.executable.parent.mkdir(parents=True)
+        os.link(old/'Contents/MacOS/hex', self.executable)
+        with self.assertRaisesRegex(restart.RestartError,'identity changed'):
+            restart.exact_identity(good,self.app)
+
+    def test_invalid_process_strings_and_nonregular_targets_refuse(self):
+        good=self.payload()
+        for key,value in (('started',''),('started',None),('identifier','other.app'),
+                          ('bundle','relative/hex.app'),('executable',None)):
+            with self.subTest(key=key,value=value),self.assertRaisesRegex(restart.RestartError,'ambiguous'):
+                restart.exact_identity({**good,key:value},self.app)
+        saved=self.root/'saved';self.executable.rename(saved);self.executable.mkdir()
+        with self.assertRaisesRegex(restart.RestartError,'ambiguous'):restart.exact_identity(good,self.app)
+        self.executable.rmdir();saved.rename(self.executable)
+        self.delivery.verify.side_effect=RuntimeError('foreign signature')
+        with self.assertRaisesRegex(RuntimeError,'foreign signature'):
+            restart.NativeController(self.root,self.app,self.root,self.delivery)
+
+    def test_target_change_between_observed_and_final_read_refuses(self):
+        good=self.payload(); pins=tuple(good[k] for k in ('bundle_device','bundle_inode','executable_device','executable_inode'))
+        changed=(pins[0],pins[1]+1,*pins[2:])
+        with patch.object(restart,'_filesystem_identity',side_effect=[pins,pins,changed]):
+            with self.assertRaisesRegex(restart.RestartError,'identity changed'):
+                restart.exact_identity(good,self.app)
+
+    def test_installed_seal_tracks_bundle_inode_even_if_executable_is_same_hardlink(self):
+        controller=restart.NativeController(self.root,self.app,self.root,self.delivery)
+        seal=controller.seal
+        old=self.root/'old-bundle';self.app.rename(old)
+        self.executable.parent.mkdir(parents=True);os.link(old/'Contents/MacOS/hex',self.executable)
+        self.assertNotEqual(controller.disk_identity(),seal)
+        self.assertEqual(controller.disk_identity()[2:],seal[2:])
+        with patch.object(controller,'_prepare_helper') as compile:
+            with self.assertRaisesRegex(restart.RestartError,'changed'): controller.call('force')
+            compile.assert_not_called()
+
+    def test_changed_request_identity_refuses_before_compile_and_after_compile(self):
+        good=restart.exact_identity(self.payload(),self.app)
+        for during_compile in (False,True):
+            controller=restart.NativeController(self.root,self.app,self.root,self.delivery)
+            wrong=replace(good,bundle_inode=good.bundle_inode+1)
+            with patch.object(controller,'_prepare_helper') as compile, patch.object(controller,'_run_owned') as operation:
+                if during_compile:
+                    # Same disk seal check is not enough if native identity pins
+                    # change; exercise the second actual protocol validation.
+                    original=restart.exact_identity
+                    count=[0]
+                    def validate(value,app):
+                        count[0]+=1
+                        if count[0]==2: value={**value,'bundle_inode':wrong.bundle_inode}
+                        return original(value,app)
+                    with patch.object(restart,'exact_identity',side_effect=validate):
+                        with self.assertRaises(restart.RestartError): controller.call('quit',good)
+                    compile.assert_called_once()
+                else:
+                    with self.assertRaises(restart.RestartError): controller.call('quit',wrong)
+                    compile.assert_not_called()
+                operation.assert_not_called()
+                with self.assertRaisesRegex(restart.RestartError,'closed'):
+                    controller._prepare_helper = restart.NativeController._prepare_helper.__get__(controller)
+                    controller._prepare_helper()
 
 
 class ReleaseFixture(unittest.TestCase):
@@ -250,6 +408,36 @@ class PreflightTests(ReleaseFixture):
         self.assertEqual(len(reports),2)
         self.assertTrue(all(json.loads(p.read_text())['status']=='ready_for_build' for p in reports))
 
+    def test_supported_configured_override_uses_same_verified_preflight(self):
+        self.prepare_fixture()
+        config=self.f.repo/'scripts/hex-test-build.json'; config.parent.mkdir(parents=True,exist_ok=True)
+        config.write_text('{"app_path":"artifacts/hex.app"}')
+        self.app=self.f.repo/'configured/Hex.app'
+        raw=self.owner.read_bytes()
+        with patch.dict(os.environ,{'HEX_DEV_APP_PATH':str(self.app)}):
+            self.assertEqual(launch.configured_app(self.f.repo),self.app)
+            self.assertEqual(self.prepare(),hashlib.sha256(raw).hexdigest())
+        self.factory.assert_called_once()
+        self.controller.request.assert_not_called()
+        self.assertEqual(self.owner.read_bytes(),raw)
+        self.assertIsNone(self.runner.target_lock)
+
+    def test_configured_override_does_not_bypass_alias_or_foreign_owner_refusal(self):
+        self.prepare_fixture();raw=self.owner.read_bytes()
+        self.app.parent.mkdir(parents=True)
+        alias=self.f.repo/'alias-parent';alias.symlink_to(self.app.parent,target_is_directory=True)
+        original=self.app;self.app=alias/'hex.app'
+        with patch.dict(os.environ,{'HEX_DEV_APP_PATH':str(self.app)}):
+            with self.assertRaisesRegex(delivery.DeliveryError,'symlink'):self.prepare()
+        self.app=original;self.record['workspace_owner']['workspace_root']='/foreign';self.save()
+        foreign=self.owner.read_bytes()
+        with patch.dict(os.environ,{'HEX_DEV_APP_PATH':str(self.app)}):
+            with self.assertRaises(restart.RestartError):self.prepare()
+        self.factory.assert_not_called()
+        self.assertEqual(self.owner.read_bytes(),foreign)
+        self.assertIsNone(self.runner.target_lock)
+        self.owner.write_bytes(raw)
+
     def test_first_install_absent_bundle_does_not_claim_close_hex(self):
         self.prepare_fixture();self.owner.unlink()
         self.assertIsNone(self.prepare());self.controller.request.assert_not_called()
@@ -296,7 +484,7 @@ class PreflightTests(ReleaseFixture):
     def test_interrupt_preserves_install_workspace_pending_owner_and_releases_locks(self):
         self.prepare_fixture();workspace=delivery.install_workspace(self.app);workspace.mkdir(parents=True)
         metadata=workspace/'.DS_Store';metadata.write_bytes(b'Finder');raw=self.owner.read_bytes()
-        identity=restart.Identity(123,'start',str(self.app),str(self.app/'Contents/MacOS/hex'),'org.portalsurfer.hex.dev')
+        identity=restart.Identity(123,'start',str(self.app),str(self.app/'Contents/MacOS/hex'),'org.portalsurfer.hex.dev', 1, 2, 1, 3)
         self.controller.snapshot.return_value=[identity]
         with patch.object(restart,'stop_exact',side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):self.prepare()

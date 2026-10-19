@@ -47,6 +47,14 @@ class CompiledHelperTests(unittest.TestCase):
             ' pathlib.Path(' + repr(str(self.root/'compiler-child-pid')) + ').write_text(str(child.pid))\n'
             'time.sleep(config.get("sleep",0))\n'
             'if config.get("fail"): print("fixture compiler refused",file=sys.stderr);sys.exit(7)\n'
+            'if config.get("change_installed"):\n'
+            ' app=pathlib.Path(' + repr(str(self.app)) + ');exe=app/"Contents/MacOS/hex"\n'
+            ' kind=config["change_installed"]\n'
+            ' if kind=="bundle":\n'
+            '  old=app.with_name("old-bundle");app.rename(old);exe.parent.mkdir(parents=True);os.link(old/"Contents/MacOS/hex",exe)\n'
+            ' elif kind=="inode":\n'
+            '  old=exe.with_name("old-executable");exe.rename(old);exe.write_bytes(old.read_bytes())\n'
+            ' else: exe.write_bytes(b"different installed bytes")\n'
             'out=pathlib.Path(sys.argv[sys.argv.index("-o")+1])\n'
             'if config.get("missing"): sys.exit(0)\n'
             'if config.get("symlink"): out.symlink_to(config["symlink"]);sys.exit(0)\n'
@@ -273,7 +281,10 @@ class CompiledHelperTests(unittest.TestCase):
     def test_snapshot_quit_force_all_use_same_binary_and_repeat_installed_seal_after_compile(self):
         self.controller.snapshot()
         self.controller.seal=(1,2,'sealed')
-        identity=restart.Identity(123,'fixture',str(self.app),str(self.app/'Contents/MacOS/hex'),'org.portalsurfer.hex.dev')
+        executable=self.app/'Contents/MacOS/hex'; executable.parent.mkdir(parents=True)
+        executable.write_bytes(b'fixture executable')
+        identity=restart.Identity(123,'fixture',str(self.app),str(executable),'org.portalsurfer.hex.dev',
+                                  *restart._filesystem_identity(self.app, executable))
         with patch.object(self.controller,'disk_identity',return_value=self.controller.seal) as seal:
             self.assertTrue(self.controller.request('quit',identity))
             self.assertTrue(self.controller.request('force',identity))
@@ -292,6 +303,24 @@ class CompiledHelperTests(unittest.TestCase):
         self.assertEqual(len(self.calls(self.compiler_log)),1)
         self.assertEqual(self.calls(self.native_log),[])
         self.assertFalse(list(self.output.glob('native-helper-*')))
+
+    def test_actual_installed_replacements_during_compile_never_start_native_operation(self):
+        for kind in ('bundle','inode','content'):
+            with self.subTest(kind=kind):
+                app=self.app;exe=app/'Contents/MacOS/hex'
+                exe.parent.mkdir(parents=True,exist_ok=True);exe.write_bytes(b'original fixture bytes')
+                output=self.root/('replacement-'+kind);output.mkdir(mode=0o700)
+                delivery=Mock();delivery.sha.side_effect=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+                controller=restart.NativeController(self.root,app,output,delivery)
+                pins=(app.stat().st_dev,app.stat().st_ino,exe.stat().st_dev,exe.stat().st_ino)
+                expected=restart.Identity(123,'fixture',str(app),str(exe),'org.portalsurfer.hex.dev',*pins)
+                self.configure(change_installed=kind)
+                with self.assertRaisesRegex(restart.RestartError,'installed application changed'):
+                    controller.request('quit',expected)
+                self.assertEqual(self.calls(self.native_log),[])
+                self.assertFalse(list(output.glob('native-helper-*')))
+                with self.assertRaisesRegex(restart.RestartError,'closed'):controller.snapshot()
+        self.assertEqual(len(self.calls(self.compiler_log)),3)
 
     def test_missing_compiler_refuses_without_fallback_or_native_operation(self):
         with patch.object(restart,'SWIFTC',str(self.root/'missing-compiler')):

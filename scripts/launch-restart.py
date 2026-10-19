@@ -30,16 +30,49 @@ class Identity:
     bundle: str
     executable: str
     identifier: str
+    bundle_device: int
+    bundle_inode: int
+    executable_device: int
+    executable_inode: int
+
+
+def _path_pin(path: Path, *, directory: bool) -> tuple[int, int]:
+    if not path.is_absolute():
+        raise RestartError("application identity path must be absolute")
+    for component in (path, *path.parents):
+        if component.is_symlink():
+            raise RestartError("application identity path contains a symlink")
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise RestartError("application filesystem identity is unavailable") from error
+    kind = stat.S_ISDIR if directory else stat.S_ISREG
+    if (not kind(info.st_mode) or not 0 <= info.st_dev <= (1 << 64) - 1
+            or not 0 < info.st_ino <= (1 << 64) - 1):
+        raise RestartError("application filesystem identity is ambiguous")
+    return info.st_dev, info.st_ino
+
+
+def _filesystem_identity(bundle: Path, executable: Path) -> tuple[int, int, int, int]:
+    return (*_path_pin(bundle, directory=True), *_path_pin(executable, directory=False))
 
 
 def exact_identity(value: dict, app: Path) -> Identity:
+    pin_fields = ("bundle_device", "bundle_inode", "executable_device", "executable_inode")
     if (not isinstance(value, dict) or set(value) != set(Identity.__dataclass_fields__)
-            or type(value["pid"]) is not int or value["pid"] <= 0
+            or type(value["pid"]) is not int or not 0 < value["pid"] <= (1 << 31) - 1
             or not isinstance(value["started"], str) or not value["started"]
-            or value["bundle"] != str(app)
-            or value["executable"] != str(app / "Contents/MacOS/hex")
-            or value["identifier"] != "org.portalsurfer.hex.dev"):
+            or any(not isinstance(value[key], str) or not Path(value[key]).is_absolute()
+                   for key in ("bundle", "executable"))
+            or value["identifier"] != "org.portalsurfer.hex.dev"
+            or any(type(value[key]) is not int or not 0 <= value[key] <= (1 << 64) - 1
+                   or (key.endswith("inode") and value[key] == 0) for key in pin_fields)):
         raise RestartError("refusing an ambiguous or unrelated development process")
+    pins = tuple(value[key] for key in pin_fields)
+    target = _filesystem_identity(app, app / "Contents/MacOS/hex")
+    observed = _filesystem_identity(Path(value["bundle"]), Path(value["executable"]))
+    if pins != target or observed != target or target != _filesystem_identity(app, app / "Contents/MacOS/hex"):
+        raise RestartError("application filesystem identity changed or belongs to another target")
     return Identity(**value)
 
 
@@ -56,8 +89,11 @@ class NativeController:
     def disk_identity(self):
         self.delivery.verify(self.app)
         executable = self.app / "Contents/MacOS/hex"
-        info = executable.stat()
-        return (info.st_dev, info.st_ino, self.delivery.sha(executable))
+        pins = _filesystem_identity(self.app, executable)
+        digest = self.delivery.sha(executable)
+        if pins != _filesystem_identity(self.app, executable):
+            raise RestartError("installed application changed while sealed")
+        return (*pins, digest)
 
     def _compiler_identity(self):
         # System toolchains may legitimately have multiple hard links. Private
@@ -251,11 +287,15 @@ class NativeController:
         try:
             if operation != "snapshot" and (self.seal is None or self.disk_identity() != self.seal):
                 raise RestartError("installed application changed; no termination requested")
+            if expected is not None:
+                exact_identity(asdict(expected), self.app)
             binary = self._prepare_helper()
             # Compilation may be cold/slow. Repeat the installed seal check at
             # the actual operation boundary, before even invoking the helper.
             if operation != "snapshot" and self.disk_identity() != self.seal:
                 raise RestartError("installed application changed; no termination requested")
+            if expected is not None:
+                exact_identity(asdict(expected), self.app)
             argv = [str(binary), operation, str(self.app)]
             if expected is not None:
                 argv.append(json.dumps(asdict(expected), separators=(",", ":")))
@@ -394,8 +434,6 @@ def recovery_hash(runner, ci, source: str, ancestor) -> str | None:
 def prepare(root: Path, app: Path, source: str, ci, delivery, assert_no_raw,
             *, controller_factory=NativeController) -> str | None:
     """Inspect/quit/recover under existing exclusions; never write release ownership."""
-    if "HEX_DEV_APP_PATH" in os.environ:
-        raise RestartError("--force-restart requires the repository-configured stable app path")
     delivery.assert_plain_path(app)
     app.parent.mkdir(parents=True, exist_ok=True)
     runner = ci.LocalCiRunner(root, adopt_target=False)
