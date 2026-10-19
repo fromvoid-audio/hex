@@ -5974,3 +5974,16 @@ prospective full CI/integration; native physical mouse/IME acceptance stays open
   its two zero-match UI commands are not qualification. New actual search12PASS
   includes old4+toggle/invalidation7+custody1, with no ignored tests. Final exact
   shared-widget/name/input/strict/guard receipts remain separately source-bound.
+
+### 2026-10-19 — PR460 browser arrow eligibility
+
+- Recover the same canonical task2858/PR460 plan03db at verified main2683942b;
+  preserve separate423 policy7db and its source/negative evidence unchanged.
+- Add only results_focused refusal to existing Right preview and Left collapse
+  handlers. Retain the active browser navigation context, Up/Down entry, selected
+  sample/folder actions, Command-F/text editing and separate manual audition.
+- Promote the verified identical five baseline negatives and selected controls;
+  add actual Service canonical/history invariants and Up/Down/Command-F routing.
+  Focused seven cases pass without rerunning the unchanged original negative.
+  Exact source component checks precede sole-merger full21/fresh review/merge;
+  no native/app/physical output or user acceptance is inferred.
