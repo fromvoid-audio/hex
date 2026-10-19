@@ -130,10 +130,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the single current schema31 envelope with required tuning and complete
+/// Encode the single current schema32 envelope with required tuning and complete
 /// device asset manifests, preserving all other active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::tuning::DocumentV31::from_project(project)?)
+    encode_document(&schema::tuning::DocumentV32::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.

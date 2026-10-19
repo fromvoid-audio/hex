@@ -28,6 +28,12 @@ ci = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ci
 SPEC.loader.exec_module(ci)
 
+CHANGELOG_SPEC = importlib.util.spec_from_file_location("hex_changelog", ROOT / "scripts/changelog.py")
+if CHANGELOG_SPEC is None or CHANGELOG_SPEC.loader is None:
+    raise RuntimeError("changelog validator unavailable")
+changelog = importlib.util.module_from_spec(CHANGELOG_SPEC)
+CHANGELOG_SPEC.loader.exec_module(changelog)
+
 
 class DeliveryError(Exception):
     """Fail closed without changing projects, preferences or unrelated apps."""
@@ -398,6 +404,21 @@ def validate_source(runner, candidate: str, expected: dict | None = None) -> dic
     return dict(current)
 
 
+def changelog_payload(root: Path) -> tuple[bytes | None, dict]:
+    """Return validated exact committed bytes for sealing; never generate during build."""
+    try:
+        dataset = changelog.validate_current(root, if_present=True)
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        raise DeliveryError(f"invalid changelog; previous app preserved: {error}") from error
+    path = root / changelog.DATASET
+    if not path.exists():
+        return None, {"status": "unavailable", "coverage": []}
+    raw = path.read_bytes()
+    return raw, {"status": "available" if dataset['batches'] else "unavailable",
+                 "sha256": hashlib.sha256(raw).hexdigest(),
+                 "coverage": [batch['input']['source'] for batch in dataset['batches']]}
+
+
 def build(args) -> dict:
     if sys.platform != "darwin":
         raise DeliveryError("native test delivery requires macOS")
@@ -428,6 +449,8 @@ def build(args) -> dict:
             else:
                 validate_ci(args.ci_report, runner, args.candidate)
 
+        revalidate()
+        changelog_bytes, changelog_identity = changelog_payload(ROOT)
         revalidate()
         included = json.loads(args.included.read_text())
         if not isinstance(included, list) or not included:
@@ -469,6 +492,8 @@ def build(args) -> dict:
             with (contents / "Info.plist").open("wb") as output:
                 plistlib.dump(info, output)
             (contents / "Resources/USER-TEST.md").write_text(checklist)
+            if changelog_bytes is not None:
+                (contents / "Resources/changelog.json").write_bytes(changelog_bytes)
             if build_only:
                 write_json(contents / "Resources/source-verification.json", {
                     "mode": "source-only", "tests": "not_run", "source": source_evidence,
@@ -486,7 +511,7 @@ def build(args) -> dict:
                        "ci_report_sha256": None if build_only else sha(args.ci_report),
                        "verification": {"mode": "source-only" if build_only else "full-ci",
                                         "tests": "not_run" if build_only else "passed"},
-                       "included": included, "app_path": str(app), "created_at": ci.utc_now(),
+                       "included": included, "changelog": changelog_identity, "app_path": str(app), "created_at": ci.utc_now(),
                        "activation": "installed on disk; launch or relaunch required; not launched by delivery",
                        "signature": "Developer ID sealed local test bundle; not notarized",
                        "signing": signing,

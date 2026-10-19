@@ -51,7 +51,7 @@ use ptr::null_mut;
 use std::{
     cell::Cell,
     convert::TryInto,
-    ffi::{CStr, OsStr, c_void},
+    ffi::{CStr, CString, OsStr, c_void},
     os::{raw::c_char, unix::ffi::OsStrExt},
     path::{Path, PathBuf},
     process::Command,
@@ -279,6 +279,16 @@ impl Default for MacPlatform {
 }
 
 impl MacPlatform {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn picker_directory_url_for_test(directory: &Path) -> Result<PathBuf> {
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+            let result = ns_directory_url(directory).and_then(|url| ns_url_to_path(url));
+            pool.drain();
+            result
+        }
+    }
+
     pub(crate) fn new(headless: bool) -> Self {
         let dispatcher = Arc::new(MacDispatcher);
 
@@ -812,11 +822,29 @@ impl Platform for MacPlatform {
         &self,
         options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        self.prompt_for_paths_with_directory(options, None)
+    }
+
+    fn prompt_for_paths_with_directory(
+        &self,
+        options: PathPromptOptions,
+        directory: Option<&Path>,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        let directory = directory.map(Path::to_owned);
         let (done_tx, done_rx) = oneshot::channel();
         self.foreground_executor()
             .spawn(async move {
                 unsafe {
                     let panel = NSOpenPanel::openPanel(nil);
+                    if let Some(directory) = directory {
+                        match ns_directory_url(&directory) {
+                            Ok(url) => panel.setDirectoryURL(url),
+                            Err(error) => {
+                                let _ = done_tx.send(Err(error));
+                                return;
+                            }
+                        }
+                    }
                     panel.setCanChooseDirectories_(options.directories.to_objc());
                     panel.setCanChooseFiles_(options.files.to_objc());
                     panel.setAllowsMultipleSelection_(options.multiple.to_objc());
@@ -870,9 +898,13 @@ impl Platform for MacPlatform {
             .spawn(async move {
                 unsafe {
                     let panel = NSSavePanel::savePanel(nil);
-                    let path = ns_string(directory.to_string_lossy().as_ref());
-                    let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
-                    panel.setDirectoryURL(url);
+                    match ns_directory_url(&directory) {
+                        Ok(url) => panel.setDirectoryURL(url),
+                        Err(error) => {
+                            let _ = done_tx.send(Err(error));
+                            return;
+                        }
+                    }
 
                     if let Some(suggested_name) = suggested_name {
                         let name_string = ns_string(&suggested_name);
@@ -1652,6 +1684,18 @@ extern "C" fn handle_dock_menu(this: &mut Object, _: Sel, _: id) -> id {
 
 unsafe fn ns_string(string: &str) -> id {
     unsafe { NSString::alloc(nil).init_str(string).autorelease() }
+}
+
+// NSURL copies the filesystem representation; no lossy display conversion.
+unsafe fn ns_directory_url(directory: &Path) -> Result<id> {
+    let bytes = CString::new(directory.as_os_str().as_bytes())
+        .context("picker directory contains a nul byte")?;
+    let url: id = unsafe {
+        msg_send![class!(NSURL), fileURLWithFileSystemRepresentation: bytes.as_ptr()
+            isDirectory: YES relativeToURL: nil]
+    };
+    anyhow::ensure!(url != nil, "could not represent picker directory as a file url");
+    Ok(url)
 }
 
 unsafe fn ns_url_to_path(url: id) -> Result<PathBuf> {

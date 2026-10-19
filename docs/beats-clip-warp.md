@@ -86,3 +86,91 @@ added the browser-preview lifecycle and its own work-log footer. Clip DSP/model/
 did not conflict; the footer insertion did. Both records remain intact, with the
 Beats entry now between stable native-work sections. The resulting final candidate
 requires exact checks under the same repository rule; prior PASS evidence remains.
+
+## click repair and control discoverability (Pulse2830 / PR434)
+
+The new user listening report supersedes any inference of sonic acceptance from
+previous PCM tests. Original synthetic regressions reproduced a0.3001 adjacent
+sample jump at a Forward tail reset and a0.5 Off-to-silence jump, away from the
+intentional source attack. Existing Off/Forward/Alternating and0..100 decay state
+and commands were present; the controls were below source fields in the scrolling
+sidebar. They are now composed beside the visible Beats picker: Preserve,
+stop/forward/back-and-forth choices and the current transient envelope value.
+The existing state, worker command, disabled/stale-capture protection and Undo
+route are reused. Native layout/input checks remain required.
+
+Forward sustain overlaps only the middle/tail with a bounded2ms smooth equal-gain
+blend; it never loops the attack and does not attenuate a constant DC tail.
+Alternating sustain reflects sample centers without duplicating its endpoint.
+Transient segment reconstruction clamps filter reads to that segment, preventing
+the next attack from leaking into a fractional-pitch tail. Actual stretched cuts
+and Off exhaustion use a bounded1ms safety release, separate from the authored
+shortening envelope. Envelope100 still has no intentional exponential shortening;
+exact unity playback remains unchanged. Work accounting covers both overlap
+reads, scratch/output ceilings and cancellation remain unchanged. Algorithm
+version2 invalidates older prepared-cache entries. Other modes retain their
+existing algorithms and reconstruction behavior.
+
+Original listening fixtures can be regenerated without reading user media:
+`cargo run -p hex-warp --example beats_quality --locked -- NEW_DIRECTORY`.
+It creates original stereo73Hz percussive/DC-offset PCM and three48kHz,2x-duration,
+pitch0/envelope100 WAVs using create-new files. Before and after originals have
+the same hash. On this fixture, maximum PCM16 adjacent step outside±64 frames of
+mapped attacks changed from0.25697 to0.00528 for Forward, and0.25895 to0.00641
+for Off. Back-and-forth was already amplitude-continuous on this fixture; its
+maximum changes from0.00388 to0.00681 with the end safety release. These are
+fixture-specific continuity measurements, not a listening verdict or a claim
+that every metric improves. Raw artifacts and hashes are retained in the source
+handoff; intentional attacks are excluded from the seam measure.
+
+Finite coordinator listening checks: compare original/before/after at matched
+level; listen to sustained/DC tails, bassy attacks and an imported drum loop;
+try slower/faster/fractional tempos, Off/Forward/back-and-forth and envelope100
+then lower; check stereo placement, no repeated attack, Stop/seek/loop and export.
+In the selected clip verify visible controls at compact width, current selection,
+Preserve divisions, parameter sound changes, one Undo/Redo, split/copy and current
+save/reopen. Physical listening/UI, exact final local CI and optimized delivery
+remain coordinator/merger work. Sampler admission and unrelated catalog features
+do not gate this bounded Beats repair.
+
+## Beats WSOLA quality follow-up — Pulse2847 / PR449
+
+The subsequent listening report reopened musical quality despite the earlier
+seam repair. The Beats-only replacement uses stereo-linked, transient-anchored
+waveform-similarity overlap-add. Physical attack exclusions remain separate from
+chosen Preserve groups. Selected boundaries follow the actual map; unselected
+attacks inside a fixed group retain native-relative pitch timing. A compressed
+next group can omit late material, but cannot accelerate or replay its attack.
+All tail modes share that first pass and bounded boundary treatment; Stop still
+produces exact silence after its available pass. Envelope100 does not gate each
+grain. Other Warp modes and Engine ownership remain unchanged.
+
+A broader independent test exposed severe added residual on27.5Hz at ordinary
+2:1 compression with the initial12ms search radius. A40ms radius found coherent
+phase without lengthening grains. Version11 therefore screens the entire wider
+bounded range using16 stereo points, fully scores eight separated finalists plus
+nominal/predicted positions, and refines multiple full-score winners before the
+final fractional search. Only fully scored statistics drive reconstruction.
+Both screening and full previous moments are computed once per grain. Every
+search stage remains charged; the concurrently live search reservation increases
+from4096 to8192 bytes inside the unchanged32MiB scratch ceiling. The work ceiling
+remains one billion units. Version11 invalidates earlier prepared-cache entries;
+selection/PCM identity with earlier versions is not claimed.
+
+Focused source checks pass43 Beats cases, including480 complete-Match bitwise
+comparisons of exhaustive versus exact-pruned scans,20 screened-versus-full
+stereo quality comparisons, seven chosen-group laws, and66 positive sub-bass
+rate/ratio/pitch combinations with six explicit out-of-range validation cases.
+Actual Engine preparation/cache/Undo/seek/partition cases and linear export pass.
+All54 default renders of the six authorised CC0 acoustic recordings complete;
+the16.82-second timpani2x cases consume897519062 Forward and840646204 Alternating
+work units. These are charged-work observations, not a broad throughput claim.
+Original failures and intermediate renders remain separate evidence.
+
+The original recordings have no asserted publisher BPM. A separately documented
+120BPM arrangement constructed from the authorised bass/snare recordings provides
+additional musical material; it is not a publisher loop or commercial reference.
+Fixed-gain comparisons and additional whole-file level matching retain exact
+settings and gains. Neither automated residual/RMS tests nor WAV generation
+constitutes hearing, Live parity, or user acceptance. Optimized native listening,
+representative mixed music and final integrated validation remain open.

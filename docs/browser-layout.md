@@ -14,8 +14,10 @@ The picker has an independent 4 px drag divider. Its session-only width starts a
 124 px, leaves at least 120 px for results, and resizes continuously to a 23 px
 minimum: the existing 22 px browser-control hit/centering slot plus the sidebar's
 existing 1 px right border. Collection, Library and Place glyphs share that fixed
-leading slot at every width. Labels hide below 64 px without moving the icon column;
-drag right to restore them. Full-row hit targets remain at least 22 px wide/high.
+leading slot at every width. Single-line labels progressively clip to the remaining
+space beside the icon, reaching zero width without ellipsis. Group headings and
+open section settings retain their line/row space during resizing, so source rows
+and icons do not jump vertically. Full-row hit targets remain at least 22 px wide/high.
 In icon mode, collections, sections and folder places retain name tooltips; folder
 save/error status remains available by hover.
 Section settings expand the picker when opened. All paint uses the existing semantic
@@ -222,3 +224,22 @@ inspection; their physical native display and optical glyph appearance remain
 coordinator-owned optimized acceptance, alongside smooth native divider dragging.
 No tree indentation, results, preview, persisted preferences or divider feedback
 behavior is implemented by this follow-up.
+
+## Stationary tag-editor toggles — Pulse2709 / PR325
+
+The rail and original browser body share one fixed base-width column. The optional
+editor is a sibling to that whole column, beginning at the rail's top and spanning
+the browser height. It borrows space to the right using the existing editor-width
+and outer-resize law; it neither overlays the base browser nor stretches the rail.
+Top and mini-strip controls both toggle, so a second click at the same coordinates
+closes the editor. Its dedicated close control remains available.
+
+Rendered input regressions reproduce the original rail expanding from480to624px
+and the mini-strip's open-only callback. They verify repeated stationary clicks at
+124px and23px picker widths, all rail/control bounds, results/preview/waveform and
+source geometry, top/right/bottom column alignment and return of the outer edge.
+An actually selected private WAV retains its loaded metadata owner without new
+preparation/audition requests. Existing browser source menus, heading/minimum snap,
+selection, drag/import, audition and history contracts remain separate and intact.
+This is layout/toggle behavior only; persistent tag editing remains Pulse2667.
+Optimized native pointer/GPU/tooltip acceptance remains root-owned and open.

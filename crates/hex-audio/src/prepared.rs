@@ -2914,6 +2914,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    comparison: None,
                     id: DEVICE_ID,
                     bypassed: false,
                     state,
@@ -2943,6 +2944,7 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    comparison: None,
                     id: DEVICE_ID + 1,
                     bypassed: false,
                     state: return_state,
@@ -3047,6 +3049,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
                     state: make_state(),
@@ -3079,6 +3082,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
                     state: make_state(),
@@ -3168,6 +3172,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
                     state: make_state(),
@@ -3200,6 +3205,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
                     state: make_state(),
@@ -3301,6 +3307,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
                     state: make_state(),
@@ -3333,6 +3340,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
                     state: make_state(),

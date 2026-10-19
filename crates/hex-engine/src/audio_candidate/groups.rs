@@ -458,6 +458,7 @@ mod tests {
                 )
                 .unwrap();
             track.devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
                 state,

@@ -88,6 +88,7 @@ class Step:
 
 
 QUICK_STEPS = (
+    Step("changelog", ("python3", "scripts/changelog.py", "validate", "--if-present")),
     Step("architecture", ("python3", "scripts/check-architecture.py")),
     Step("gpui-patch", ("python3", "scripts/check-gpui-patch.py")),
     Step("dependency-patches", ("python3", "scripts/check-dependency-patches.py")),
@@ -1163,7 +1164,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="assert sole ownership of an unowned Cargo target and clean only this workspace's dev artifacts",
     )
+    parser.add_argument("--prepare-changelog", action="store_true",
+                        help="generate notes before freezing source, then exit without running sealed checks")
+    parser.add_argument("--changelog-base", help="explicit first-generation Git baseline")
+    parser.add_argument("--changelog-through", default="HEAD", help="immutable generation range end")
     arguments = parser.parse_args(argv)
+    if arguments.prepare_changelog:
+        command = [sys.executable, str(ROOT / "scripts/changelog.py"), "prepare",
+                   "--source", arguments.changelog_through]
+        if arguments.changelog_base:
+            command.extend(["--base", arguments.changelog_base])
+        return subprocess.run(command, cwd=ROOT).returncode
+    if arguments.changelog_base or arguments.changelog_through != "HEAD":
+        parser.error("changelog range arguments require --prepare-changelog")
     if arguments.min_free_gib is not None and not 0 <= arguments.min_free_gib <= sys.maxsize // GIB:
         parser.error("--min-free-gib must be a bounded nonnegative integer")
     mode = "quick" if arguments.quick else "full"
