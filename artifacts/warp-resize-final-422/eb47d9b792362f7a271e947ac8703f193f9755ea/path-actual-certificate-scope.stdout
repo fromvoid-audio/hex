@@ -1,0 +1,5 @@
+[1/2] actual mapping certificate exhaustive small and path: running
+[1/2] actual mapping certificate exhaustive small and path: passed
+[2/2] shared Warp admission differential: running
+[2/2] shared Warp admission differential: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/warp-resize-422-path-actual-certificate-scope/summary.json

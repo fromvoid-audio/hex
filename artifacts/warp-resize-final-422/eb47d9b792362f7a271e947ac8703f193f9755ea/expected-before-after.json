@@ -1,0 +1,52 @@
+{
+  "crates/hex-audio/tests/warp_preview_metadata_cost.rs": {
+    "before_sha256": null,
+    "after_sha256": "44dec017c45853addd87766257eccfa0ca4d257519a57ba0902c11d78452a9b1",
+    "after_bytes": 3266
+  },
+  "crates/hex-engine/src/audio_transform/mod.rs": {
+    "before_sha256": "6f3ab787ba387b22dd7f9b2c164b9b9204abf3f307e7f69c7ae201b376cd9276",
+    "after_sha256": "17100a2c8219cc3b9515a81d2049517b70487221a5835945b4632fe51a66a879",
+    "after_bytes": 25752
+  },
+  "crates/hex-engine/src/audio_transform/tests.rs": {
+    "before_sha256": "713a728948ee4d510afef943e575d5cb25d86817f74879b620bc9c675dcec764",
+    "after_sha256": "72e730de1ae677659983412dd79c8de3b5c679c9bc38aa28d49259a668b93304",
+    "after_bytes": 63388
+  },
+  "crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "before_sha256": "500fe644316eaf0d8a3be3dab01402ce397619bee5c81223c66e52a79daeb905",
+    "after_sha256": "a78f3c1d063c0cf3b5314919774ebe25ec015ba7f89b468a35c0ad1f7acb21e7",
+    "after_bytes": 51601
+  },
+  "crates/hex-ui/src/editor/stretch_limit_tests.rs": {
+    "before_sha256": "8c50228c6ff225a93454ae358e58ba5bb7e37e0769183f02b6a7c35f30260253",
+    "after_sha256": "68529c455101516c2611015169fac536744cc6aa263ddc3d84364c3d07bebe30",
+    "after_bytes": 17865
+  },
+  "crates/hex-ui/src/editor/stretch_preview.rs": {
+    "before_sha256": null,
+    "after_sha256": "409b3bafddd101f9f328c3d336c09dfa74e2b928e3c18deefcd16298ba3ae8ea",
+    "after_bytes": 6779
+  },
+  "crates/hex-ui/src/editor/trim.rs": {
+    "before_sha256": "825b8e2adb8655f305f637c0eff250632eca94db5f168493a585c4ccf075c95e",
+    "after_sha256": "dbf126db42f033dbfbf565af540435cf8cff5986388bb51d892ce314ddf76b2a",
+    "after_bytes": 69276
+  },
+  "crates/hex-warp/src/lib.rs": {
+    "before_sha256": "021ac7b302db9148623b6f529adcd0f4e3c652396fa71f1e61a409c9f620f7b3",
+    "after_sha256": "b752a56a9d26d4cf3b86cda86fe77ffa582df0fbd3944a2adaf0de9fea3c70f8",
+    "after_bytes": 19430
+  },
+  "crates/hex-warp/tests/stretch_admission.rs": {
+    "before_sha256": null,
+    "after_sha256": "ce84993634dcf673e9ccc9392ab71b7e2f0ac5d888b74b293e9f929986ac5fa5",
+    "after_bytes": 4141
+  },
+  "docs/warp-resize-limits.md": {
+    "before_sha256": null,
+    "after_sha256": "f60b285fef9ad89d40730777502e70d597b537e0a6299e2b30868e8a97026e0f",
+    "after_bytes": 3954
+  }
+}

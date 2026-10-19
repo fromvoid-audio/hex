@@ -1,0 +1,14 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.15s
+     Running tests/warp_preview_metadata_cost.rs (target/debug/deps/warp_preview_metadata_cost-76d8e634c4b97eec)
+
+running 1 test
+point-admission cost markers=2 cycles=1 raw-boundaries=2 probes=32 elapsed=290.437µs per-point=9.076µs allocations=AllocationInfo { count_total: 320, count_current: 0, count_max: 8, bytes_total: 17280, bytes_current: 0, bytes_max: 508 }
+point-admission cost markers=1024 cycles=8 raw-boundaries=8192 probes=32 elapsed=373.290008ms per-point=11.665312ms allocations=AllocationInfo { count_total: 672, count_current: 0, count_max: 8, bytes_total: 17301888, bytes_current: 0, bytes_max: 475148 }
+test representative_and_maximum_raw_boundary_capture_point_admission_cost ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+

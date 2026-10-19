@@ -1,0 +1,9 @@
+[1/4] all current audio midi resize release controls: running
+[1/4] all current audio midi resize release controls: passed
+[2/4] all pending FIFO terminal and horizon controls: running
+[2/4] all pending FIFO terminal and horizon controls: passed
+[3/4] stationary mode modifier Escape focus: running
+[3/4] stationary mode modifier Escape focus: passed
+[4/4] representative and raw8192 metadata cost allocation: running
+[4/4] representative and raw8192 metadata cost allocation: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/warp-resize-422-direct-release-cost/summary.json

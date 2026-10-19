@@ -1,0 +1,11 @@
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running tests/stretch_admission.rs (target/debug/deps/stretch_admission-c6fdd5bd3262f2e5)
+
+running 3 tests
+test stretch_admission_invalid_pitch_stays_refused_even_when_resample_is_exempt ... ok
+test stretch_admission_preserves_inclusive_epsilon_and_per_segment_not_average ... ok
+test stretch_admission_matches_independent_pitch_law_and_real_render_all_modes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.60s
+

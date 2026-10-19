@@ -1,0 +1,10 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.76s
+     Running unittests src/lib.rs (target/debug/deps/hex_project-36707f45c482d0ae)
+
+running 2 tests
+test audio_edit::scalar_certification_tests::extracted_retime_and_anchor_scalars_match_original_arithmetic ... ok
+test audio_edit::scalar_certification_tests::same_tempo_span_bounds_enclose_all_tested_signed_prefixes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 84 filtered out; finished in 0.00s
+

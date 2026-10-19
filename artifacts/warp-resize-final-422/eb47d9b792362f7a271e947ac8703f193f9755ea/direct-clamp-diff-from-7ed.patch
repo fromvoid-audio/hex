@@ -1,0 +1,753 @@
+diff --git a/crates/hex-audio/tests/warp_preview_metadata_cost.rs b/crates/hex-audio/tests/warp_preview_metadata_cost.rs
+new file mode 100644
+index 00000000..76630731
+--- /dev/null
++++ b/crates/hex-audio/tests/warp_preview_metadata_cost.rs
+@@ -0,0 +1,94 @@
++//! Control-side metadata cost only: no PCM/render, callback, OS audio or native UI.
++#![cfg(feature = "allocation-probe")]
++use hex_project::{
++    BeatTime, BeatsPreserve, BeatsTail, Command, Created, Editor, Project, TrimEdge, WarpMode,
++    default_audio_warp, preview_audio_clip_stretch,
++};
++use std::time::Instant;
++
++fn profile(markers: usize, cycles: u64) {
++    let frames = 48_000;
++    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
++    let Created::Imported { track, asset, .. } = editor
++        .execute(Command::ImportAudioTrack {
++            name: "cost".into(),
++            path: "cost.wav".into(),
++            sample_rate: 48_000,
++            frames,
++        })
++        .unwrap()
++    else {
++        panic!("import")
++    };
++    let Created::Clip(clip) = editor
++        .execute(Command::PlaceClip {
++            track,
++            asset,
++            start: 96_000,
++            duration: frames * cycles,
++            source_offset: 0,
++            source_length: frames,
++            looping: true,
++        })
++        .unwrap()
++    else {
++        panic!("place")
++    };
++    let mut settings = default_audio_warp(
++        editor.project().clip(clip).unwrap(),
++        editor.project().tempo_map(),
++        WarpMode::Beats {
++            preserve: BeatsPreserve::Transients,
++            tail: BeatsTail::Forward,
++            decay: 100,
++        },
++    )
++    .unwrap();
++    let unit = settings.markers.last().unwrap().beat.raw();
++    settings.markers = (0..markers)
++        .map(|index| {
++            let denominator = (markers - 1) as u128;
++            hex_project::WarpMarker {
++                source_frame: (u128::from(frames) * index as u128 / denominator) as u64,
++                beat: BeatTime::from_raw((u128::from(unit) * index as u128 / denominator) as u64),
++            }
++        })
++        .collect();
++    editor
++        .execute(Command::SetAudioClipWarp {
++            clip,
++            settings: Some(settings),
++        })
++        .unwrap();
++    let original = editor.project().clip(clip).unwrap();
++    let tempo = editor.project().tempo_map();
++    hex_engine::audio_transform::validate_clip_warp_preview(original, tempo).unwrap();
++    let requested = original.start() + original.duration() * 5 / 4;
++    let started = Instant::now();
++    let info = allocation_counter::measure(|| {
++        for _ in 0..32 {
++            let preview =
++                preview_audio_clip_stretch(original, TrimEdge::Right, requested, tempo, frames)
++                    .unwrap();
++            hex_engine::audio_transform::validate_clip_warp_preview(&preview, tempo).unwrap();
++            std::hint::black_box(&preview);
++        }
++    });
++    let elapsed = started.elapsed();
++    assert_eq!(
++        (info.count_current, info.bytes_current),
++        (0, 0),
++        "all temporary model/map allocations reclaimed"
++    );
++    eprintln!(
++        "point-admission cost markers={markers} cycles={cycles} raw-boundaries={} probes=32 elapsed={elapsed:?} per-point={:?} allocations={info:?}",
++        markers as u64 * cycles,
++        elapsed / 32
++    );
++}
++
++#[test]
++fn representative_and_maximum_raw_boundary_capture_point_admission_cost() {
++    profile(2, 1);
++    profile(1_024, 8); // Actual raw8192 constructor cap, without dedup pretending lower cost.
++}
+diff --git a/crates/hex-ui/src/editor/stretch_limit_tests.rs b/crates/hex-ui/src/editor/stretch_limit_tests.rs
+index 1aa0c3ad..01a7f27c 100644
+--- a/crates/hex-ui/src/editor/stretch_limit_tests.rs
++++ b/crates/hex-ui/src/editor/stretch_limit_tests.rs
+@@ -183,3 +183,286 @@ fn check_boundary(cx: &mut TestAppContext, edge: TrimEdge) {
+         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+     });
+ }
++
++fn point_for_frame(
++    editor: &Entity<EditorView>,
++    visual: &VisualTestContext,
++    frame: u64,
++    y: gpui::Pixels,
++) -> gpui::Point<gpui::Pixels> {
++    editor.read_with(visual, |view, _| {
++        let drag = view.active_trim_drag.as_ref().unwrap();
++        let lane = view.drag_lanes[&drag.source_track];
++        let state = view.state.as_ref().unwrap();
++        let viewport = view.visible_viewport(state.timeline_frames);
++        point(
++            px(lane.left
++                + ((frame - viewport.start) as f64 / viewport.length as f64 * f64::from(lane.width))
++                    as f32),
++            y,
++        )
++    })
++}
++
++#[gpui::test]
++fn validated_reversal_and_final_mouseup_commit_exact_command_across_pitch_and_modes(
++    cx: &mut TestAppContext,
++) {
++    for (edge, pitch, mode) in [
++        (TrimEdge::Right, 1_200, hex_project::WarpMode::Complex),
++        (TrimEdge::Left, -1_200, hex_project::WarpMode::Complex),
++        (TrimEdge::Right, 2_400, hex_project::WarpMode::RePitch),
++        (TrimEdge::Left, 2_400, hex_project::WarpMode::RePitch),
++    ] {
++        let (_files, handle, editor, clip) = fixture(cx);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.update(|window, _| window.activate_window());
++        editor.update(&mut visual, |view, _| {
++            let state = view.state.as_ref().unwrap();
++            let settings = hex_project::default_audio_warp(
++                state.project.clip(clip).unwrap(),
++                state.project.tempo_map(),
++                mode,
++            )
++            .unwrap();
++            assert!(view.enqueue(Request::Edit(Command::SetAudioClipWarp {
++                clip,
++                settings: Some(settings)
++            })));
++        });
++        pump(&editor, &mut visual);
++        editor.update(&mut visual, |view, _| {
++            assert!(view.enqueue(Request::Edit(Command::SetAudioClipPitch {
++                clip,
++                cents: pitch
++            })));
++        });
++        pump(&editor, &mut visual);
++        visual.run_until_parked();
++        let before = editor.read_with(&visual, |view, _| {
++            view.state.as_ref().unwrap().project.snapshot()
++        });
++        let name = if edge == TrimEdge::Right {
++            "right"
++        } else {
++            "left"
++        };
++        let selector = Box::leak(format!("clip-trim-{name}-{}", clip.value()).into_boxed_str());
++        let down = visual.debug_bounds(selector).unwrap().center();
++        let shift = Modifiers {
++            shift: true,
++            ..Modifiers::default()
++        };
++        visual.simulate_mouse_down(down, MouseButton::Left, shift);
++        visual.simulate_mouse_move(
++            point(
++                down.x + px(if edge == TrimEdge::Right { -12.0 } else { 12.0 }),
++                down.y,
++            ),
++            MouseButton::Left,
++            shift,
++        );
++        visual.run_until_parked();
++        let invalid = point_for_frame(
++            &editor,
++            &visual,
++            if edge == TrimEdge::Right {
++                96_100
++            } else {
++                191_900
++            },
++            down.y,
++        );
++        visual.simulate_mouse_move(invalid, MouseButton::Left, shift);
++        visual.run_until_parked();
++        let checks = editor.read_with(&visual, |view, _| {
++            let drag = view.active_trim_drag.as_ref().unwrap();
++            let shown = drag.preview.borrow();
++            hex_engine::audio_transform::validate_clip_warp_preview(
++                &shown.as_ref().unwrap().clip,
++                view.state.as_ref().unwrap().project.tempo_map(),
++            )
++            .unwrap();
++            drag.resolution.borrow().point_checks
++        });
++        visual.simulate_mouse_move(invalid, MouseButton::Left, shift);
++        visual.run_until_parked();
++        editor.read_with(&visual, |view, _| {
++            assert_eq!(
++                view.active_trim_drag
++                    .as_ref()
++                    .unwrap()
++                    .resolution
++                    .borrow()
++                    .point_checks,
++                checks
++            )
++        });
++        let reverse = point_for_frame(&editor, &visual, 144_000, down.y);
++        visual.simulate_mouse_move(reverse, MouseButton::Left, shift);
++        visual.run_until_parked();
++        let release = point_for_frame(
++            &editor,
++            &visual,
++            if edge == TrimEdge::Right {
++                168_000
++            } else {
++                120_000
++            },
++            down.y,
++        );
++        let (expected, frame) = editor.read_with(&visual, |view, _| {
++            let drag = view.active_trim_drag.as_ref().unwrap();
++            let project = &view.state.as_ref().unwrap().project;
++            let lane = view.drag_lanes[&drag.source_track];
++            let viewport = view.visible_viewport(view.state.as_ref().unwrap().timeline_frames);
++            let frame =
++                super::snapped_edge_frame(drag, project, f32::from(release.x), lane, viewport)
++                    .unwrap();
++            let expected = hex_project::preview_audio_clip_stretch(
++                &drag.clip,
++                edge,
++                frame,
++                project.tempo_map(),
++                drag.asset_playback_frames,
++            )
++            .unwrap();
++            hex_engine::audio_transform::validate_clip_warp_preview(&expected, project.tempo_map())
++                .unwrap();
++            assert_ne!(
++                drag.preview.borrow().as_ref().unwrap().clip,
++                expected,
++                "final MouseUp must be resolved separately"
++            );
++            (expected, frame)
++        });
++        visual.simulate_mouse_up(release, MouseButton::Left, shift);
++        visual.run_until_parked();
++        pump(&editor, &mut visual);
++        let after = editor.read_with(&visual, |view, _| {
++            assert!(view.error.is_none(), "{:?}", view.error);
++            assert_eq!(view.state.as_ref().unwrap().project.clip(clip), Some(&expected));
++            assert!(matches!(view.last_enqueued_edit, Some(Command::StretchAudioClipEdge { frame: actual, .. }) if actual == frame));
++            view.state.as_ref().unwrap().project.snapshot()
++        });
++        visual.simulate_keystrokes("cmd-z");
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |view, _| {
++            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
++        });
++        visual.simulate_keystrokes("cmd-shift-z");
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |view, _| {
++            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
++        });
++    }
++}
++
++#[gpui::test]
++fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut TestAppContext) {
++    for edge in [TrimEdge::Left, TrimEdge::Right] {
++        let (_files, handle, editor, clip) = fixture(cx);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.update(|window, _| window.activate_window());
++        if edge == TrimEdge::Left {
++            editor.update(&mut visual, |view, _| {
++                let track = view.state.as_ref().unwrap().project.tracks()[0].id();
++                assert!(view.enqueue(Request::Edit(Command::MoveClip {
++                    clip,
++                    track,
++                    start: 1_000_000
++                })));
++            });
++            pump(&editor, &mut visual);
++        }
++        editor.update(&mut visual, |view, _| {
++            let track = view.state.as_ref().unwrap().project.tracks()[0].id();
++            assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
++                track,
++                start: hex_project::BeatTime::from_quarters(128).unwrap(),
++                length: hex_project::BeatTime::ONE,
++            })));
++        });
++        pump(&editor, &mut visual);
++        editor.update(&mut visual, |view, cx| {
++            view.viewport = Some(super::Viewport {
++                start: 0,
++                length: 1_400_000,
++            });
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let before = editor.read_with(&visual, |view, _| {
++            view.state.as_ref().unwrap().project.snapshot()
++        });
++        let name = if edge == TrimEdge::Right {
++            "right"
++        } else {
++            "left"
++        };
++        let selector = Box::leak(format!("clip-trim-{name}-{}", clip.value()).into_boxed_str());
++        let down = visual.debug_bounds(selector).unwrap().center();
++        let shift = Modifiers {
++            shift: true,
++            ..Modifiers::default()
++        };
++        visual.simulate_mouse_down(down, MouseButton::Left, shift);
++        visual.simulate_mouse_move(
++            point(
++                down.x + px(if edge == TrimEdge::Right { 12.0 } else { -12.0 }),
++                down.y,
++            ),
++            MouseButton::Left,
++            shift,
++        );
++        visual.run_until_parked();
++        let target = point_for_frame(
++            &editor,
++            &visual,
++            if edge == TrimEdge::Right {
++                1_000_000
++            } else {
++                100_000
++            },
++            down.y,
++        );
++        editor.read_with(&visual, |view, _| {
++            let drag = view.active_trim_drag.as_ref().unwrap();
++            assert_eq!(
++                view.hovered_drag_target(f32::from(target.x), f32::from(target.y))
++                    .map(|(track, _)| track),
++                Some(drag.source_track),
++                "upper-bound test must actually release in its Arrangement lane"
++            );
++        });
++        visual.simulate_mouse_move(target, MouseButton::Left, shift);
++        visual.run_until_parked();
++        let expected = editor.read_with(&visual, |view, _| {
++            let drag = view.active_trim_drag.as_ref().unwrap();
++            let preview = drag.preview.borrow().as_ref().unwrap().clone();
++            assert!(
++                preview.clip.duration() <= 768_000,
++                "unsupported expansion cannot become visible"
++            );
++            hex_engine::audio_transform::validate_clip_warp_preview(
++                &preview.clip,
++                view.state.as_ref().unwrap().project.tempo_map(),
++            )
++            .unwrap();
++            preview
++        });
++        visual.simulate_mouse_up(target, MouseButton::Left, shift);
++        visual.run_until_parked();
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |view, _| {
++            assert!(view.error.is_none(), "{:?}", view.error);
++            assert_eq!(view.state.as_ref().unwrap().project.clip(clip), Some(&expected.clip));
++            assert!(matches!(view.last_enqueued_edit, Some(Command::StretchAudioClipEdge { frame, .. }) if frame == expected.command_frame));
++        });
++        visual.simulate_keystrokes("cmd-z");
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |view, _| {
++            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
++        });
++    }
++}
+diff --git a/crates/hex-ui/src/editor/stretch_preview.rs b/crates/hex-ui/src/editor/stretch_preview.rs
+new file mode 100644
+index 00000000..f06fe0ec
+--- /dev/null
++++ b/crates/hex-ui/src/editor/stretch_preview.rs
+@@ -0,0 +1,194 @@
++//! Capture-local point admission. Invalid requested points never become display
++//! or commands; this deliberately makes no monotonic/nearest-boundary claim.
++use super::{TrimDrag, TrimPreviewState, edge_frame, preview_clip};
++use hex_project::Project;
++use std::time::{Duration, Instant};
++
++// Precision only: never limits whether a requested endpoint is admitted.
++const OPTIONAL_PRECISION_TIME: Duration = Duration::from_millis(1);
++
++#[derive(Default, Debug)]
++pub(super) struct Resolution {
++    requested: Option<(u64, bool)>,
++    accepted: Option<TrimPreviewState>,
++    #[cfg(test)]
++    pub(super) point_checks: usize,
++}
++
++pub(super) fn resolve(drag: &TrimDrag, project: &Project, frame: u64) -> Option<TrimPreviewState> {
++    let stretch = drag.stretch_modifier.get();
++    let mut resolution = drag.resolution.borrow_mut();
++    if resolution.requested == Some((frame, stretch)) {
++        return resolution.accepted.clone();
++    }
++    let started = Instant::now();
++    #[cfg(test)]
++    {
++        resolution.point_checks += 1;
++    }
++    if let Some(candidate) = admitted(drag, project, frame) {
++        resolution.requested = Some((frame, stretch));
++        resolution.accepted = Some(candidate.clone());
++        return Some(candidate);
++    }
++    if !stretch {
++        resolution.requested = Some((frame, stretch));
++        resolution.accepted = None;
++        return None;
++    }
++    // A modifier change must not reuse an ordinary-trim candidate as a stretch
++    // command. The captured original is an exact no-op fallback in the new mode.
++    let mut accepted = resolution
++        .accepted
++        .clone()
++        .filter(|old| old.stretch == stretch);
++    if accepted.is_none() {
++        accepted = admitted(drag, project, edge_frame(&drag.clip, drag.edge)?);
++        #[cfg(test)]
++        {
++            resolution.point_checks += 1;
++        }
++    }
++    if let Some(candidate) = &mut accepted {
++        let mut invalid = frame;
++        // Precision only for an already unsupported target. Every retained
++        // point is canonically validated; valid far targets above bypass this.
++        for _ in 0..8 {
++            if started.elapsed() >= OPTIONAL_PRECISION_TIME {
++                break;
++            }
++            let valid = candidate.command_frame;
++            if valid.abs_diff(invalid) <= 1 {
++                break;
++            }
++            let middle = valid.min(invalid) + valid.abs_diff(invalid) / 2;
++            #[cfg(test)]
++            {
++                resolution.point_checks += 1;
++            }
++            if let Some(next) = admitted(drag, project, middle) {
++                *candidate = next;
++            } else {
++                invalid = middle;
++            }
++        }
++    }
++    resolution.requested = Some((frame, stretch));
++    resolution.accepted = accepted.clone();
++    accepted
++}
++
++fn admitted(drag: &TrimDrag, project: &Project, frame: u64) -> Option<TrimPreviewState> {
++    let clip = preview_clip(drag, project, frame).ok()?;
++    let stretch = drag.stretch_modifier.get();
++    if stretch {
++        hex_engine::audio_transform::validate_clip_warp_preview(&clip, project.tempo_map()).ok()?;
++    }
++    Some(TrimPreviewState {
++        clip,
++        command_frame: frame,
++        stretch,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use hex_project::{
++        BeatTime, BeatsPreserve, BeatsTail, Command, Created, Editor, Project, Tempo, TrimEdge,
++        WarpMode, default_audio_warp,
++    };
++
++    #[test]
++    fn distant_valid_island_is_accepted_and_identical_requests_do_no_metadata_work() {
++        let mut editor = Editor::new(Project::new(16_000).unwrap(), 16).unwrap();
++        let Created::Imported { clip, track, .. } = editor
++            .execute(Command::ImportAudioTrack {
++                name: "islands".into(),
++                path: "islands.wav".into(),
++                sample_rate: 16_000,
++                frames: 8_000,
++            })
++            .unwrap()
++        else {
++            panic!("import")
++        };
++        let mut settings = default_audio_warp(
++            editor.project().clip(clip).unwrap(),
++            editor.project().tempo_map(),
++            WarpMode::Beats {
++                preserve: BeatsPreserve::Transients,
++                tail: BeatsTail::Forward,
++                decay: 100,
++            },
++        )
++        .unwrap();
++        settings.markers.insert(
++            1,
++            hex_project::WarpMarker {
++                source_frame: 7_600,
++                beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
++            },
++        );
++        editor
++            .execute(Command::SetAudioClipWarp {
++                clip,
++                settings: Some(settings),
++            })
++            .unwrap();
++        editor
++            .execute(Command::SetTempoPoint {
++                beat: BeatTime::ZERO,
++                tempo: Tempo::new(30_000_000).unwrap(),
++            })
++            .unwrap();
++        editor
++            .execute(Command::SetTempoPoint {
++                beat: BeatTime::ONE,
++                tempo: Tempo::new(480_000_000).unwrap(),
++            })
++            .unwrap();
++        editor
++            .execute(Command::StretchAudioClipEdge {
++                clip,
++                edge: TrimEdge::Right,
++                frame: 3_200,
++            })
++            .unwrap();
++        let mut drag = super::super::tests::trim_drag(
++            track,
++            editor.project().clip(clip).unwrap().clone(),
++            8_000,
++        );
++        drag.edge = TrimEdge::Right;
++        drag.stretch_modifier.set(true);
++        let project = editor.project();
++        assert!(admitted(&drag, project, 32_000).is_none());
++        assert!(admitted(&drag, project, 34_200).is_some());
++        let held = resolve(&drag, project, 32_000).unwrap();
++        assert_ne!(held.command_frame, 32_000);
++        assert!(
++            hex_engine::audio_transform::validate_clip_warp_preview(
++                &held.clip,
++                project.tempo_map()
++            )
++            .is_ok()
++        );
++        let before = drag.resolution.borrow().point_checks;
++        assert_eq!(resolve(&drag, project, 32_000).unwrap().clip, held.clip);
++        assert_eq!(drag.resolution.borrow().point_checks, before);
++        let distant = resolve(&drag, project, 34_200).unwrap();
++        assert_eq!(
++            distant.command_frame, 34_200,
++            "no connected-component restriction"
++        );
++        assert_eq!(drag.resolution.borrow().point_checks, before + 1);
++        let reversed = resolve(&drag, project, 3_200).unwrap();
++        assert_eq!(reversed.command_frame, 3_200);
++        assert_eq!(&reversed.clip, &drag.clip);
++        assert!(
++            drag.resolution.borrow().point_checks <= 12,
++            "one invalid target has at most8 precision probes plus initial fallback"
++        );
++    }
++}
+diff --git a/crates/hex-ui/src/editor/trim.rs b/crates/hex-ui/src/editor/trim.rs
+index 24c7e75a..17e131c7 100644
+--- a/crates/hex-ui/src/editor/trim.rs
++++ b/crates/hex-ui/src/editor/trim.rs
+@@ -8,12 +8,17 @@ use std::{
+     rc::Rc,
+ };
+ 
++#[path = "stretch_preview.rs"]
++mod stretch_preview;
++
+ const HANDLE_WIDTH: f32 = 4.0;
+ const MIN_MOVE_WIDTH: f32 = 1.0;
+ 
+ #[derive(Clone, Debug)]
+ pub(super) struct TrimPreviewState {
+     pub(super) clip: Clip,
++    command_frame: u64,
++    stretch: bool,
+ }
+ 
+ fn replace_audio_trim_preview(
+@@ -66,6 +71,7 @@ pub(super) struct TrimDrag {
+     valid_pointer_x: Rc<Cell<Option<f32>>>,
+     pub(super) grab_delta: Rc<RefCell<Option<i128>>>,
+     pub(super) preview: Rc<RefCell<Option<TrimPreviewState>>>,
++    resolution: Rc<RefCell<stretch_preview::Resolution>>,
+ }
+ 
+ /// Metadata-only Arrangement MIDI edge gesture. The authored notes are shared
+@@ -548,8 +554,7 @@ fn preview_for_pointer(
+     viewport: Viewport,
+ ) -> Option<TrimPreviewState> {
+     let frame = snapped_edge_frame(drag, project, pointer_x, lane, viewport)?;
+-    let clip = preview_clip(drag, project, frame).ok()?;
+-    Some(TrimPreviewState { clip })
++    stretch_preview::resolve(drag, project, frame)
+ }
+ 
+ fn preview_clip(
+@@ -897,6 +902,7 @@ impl EditorView {
+             valid_pointer_x: Rc::new(Cell::new(None)),
+             grab_delta: Rc::new(RefCell::new(None)),
+             preview: Rc::new(RefCell::new(None)),
++            resolution: Default::default(),
+         };
+         let drag_entity = cx.entity();
+         let preview_owner_entity = drag_entity.clone();
+@@ -1034,6 +1040,7 @@ impl EditorView {
+         if let Some(drag) = audio {
+             drag.canceled.set(true);
+             drag.preview.borrow_mut().take();
++            *drag.resolution.borrow_mut() = Default::default();
+             if canceled_view {
+                 self.normalize_canceled_trim_viewport(
+                     drag.project_generation,
+@@ -1516,9 +1523,11 @@ impl EditorView {
+             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
+             return;
+         };
+-        let Ok(preview) = preview_clip(drag, &state.project, frame) else {
++        let Some(resolved) = stretch_preview::resolve(drag, &state.project, frame) else {
+             return;
+         };
++        let frame = resolved.command_frame;
++        let preview = resolved.clip;
+         if preview_is_noop(&drag.clip, &preview) {
+             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
+             return;
+@@ -1645,7 +1654,11 @@ mod tests {
+     fn identical_audio_and_midi_trim_candidates_do_not_request_redraws() {
+         let clip = test_clip();
+         let audio = RefCell::new(None);
+-        let candidate = super::TrimPreviewState { clip: clip.clone() };
++        let candidate = super::TrimPreviewState {
++            clip: clip.clone(),
++            command_frame: clip.start(),
++            stretch: false,
++        };
+         assert!(replace_audio_trim_preview(&audio, Some(candidate.clone())));
+         assert!(!replace_audio_trim_preview(&audio, Some(candidate)));
+         assert!(replace_audio_trim_preview(&audio, None));
+@@ -1910,7 +1923,7 @@ mod tests {
+         (editor, state, track, id)
+     }
+ 
+-    fn trim_drag(track: TrackId, clip: Clip, asset_playback_frames: u64) -> TrimDrag {
++    pub(super) fn trim_drag(track: TrackId, clip: Clip, asset_playback_frames: u64) -> TrimDrag {
+         TrimDrag {
+             canceled: Rc::new(Cell::new(false)),
+             stretch_modifier: Rc::new(Cell::new(false)),
+@@ -1935,6 +1948,7 @@ mod tests {
+             valid_pointer_x: Rc::new(Cell::new(None)),
+             grab_delta: Rc::new(RefCell::new(None)),
+             preview: Rc::new(RefCell::new(None)),
++            resolution: Default::default(),
+         }
+     }
+ 
+diff --git a/docs/warp-resize-limits.md b/docs/warp-resize-limits.md
+new file mode 100644
+index 00000000..ad2530b7
+--- /dev/null
++++ b/docs/warp-resize-limits.md
+@@ -0,0 +1,57 @@
++# warp resize admission — pulse2816 / pr422
++
++Shift stretching now admits the exact snapped command frame through the canonical
++model preview and the same metadata Warp mapping/stretch predicate used by render.
++The retained root, marker/tempo crossings, pitch compensation, mode exemptions,
++1/8..8 range and epsilon remain authoritative. Ordinary audio trim (including
++cropping an already warped root) and MIDI resize retain their existing semantics.
++No PCM decode, render, graph preparation or audio callback work runs on motion.
++
++A valid requested endpoint is displayed directly. In particular, a valid distant
++endpoint is accepted even if intermediate endpoints would be invalid. Unsupported
++requests retain the last validated preview and its exact command frame. Up to eight
++point probes may improve that retained endpoint toward an invalid pointer target;
++no further optional probe starts after one millisecond of request processing.
++An already started bounded metadata check completes normally.
++The initial requested endpoint is always checked, regardless of shape or elapsed
++time. This is neither a support limit nor a claim of a mathematically nearest or
++first connected boundary. There is no new root/map complexity refusal.
++
++Repeated identical command frame/mode requests reuse the capture-local result.
++Changing Shift cannot reuse a trim preview as a stretch command. Capture validity
++continues to require the original project generation/revision, track/clip/source
++and asset extent. Cancellation retires the local resolution. Pointer preview and
++MouseUp use the same resolver: a final valid MouseUp may update the candidate; an
++invalid release submits the retained exact command frame, without reverse-mapping
++rounded visible geometry or re-snapping that retained frame.
++
++The existing PendingTrim/FIFO owner, actual-submission stamping, canonical install
++before owned viewport retirement, unrelated ACK handling, refusal and one Undo/Redo
++remain unchanged. The audit reproduced the unsupported Warp preview mismatch;
++its other tested audio/MIDI, fast final MouseUp/reversal, browser/outside release,
++queue/deferred/own-terminal, replacement, modifier, focus and Escape paths passed.
++These finite checks do not establish all physical capture-loss interleavings.
++
++Linux debug instrumentation measured canonical preview plus metadata admission:
++32 simple two-marker probes took290.437us total (9.076us/point), and32 actual
++8192-raw-boundary/1024-marker/eight-cycle probes took373.290008ms
++(11.665312ms/point). Per point total allocations were10/540bytes and21/540684bytes,
++respectively; maximum simultaneously live temporary bytes508/475148, with zero
++signed-net count/bytes after each batch. These are instrumented control-side costs,
++not optimized native timing or callback measurements. Optional precision has a
++small time budget to avoid multiplying dense-map cost; requested valid endpoints
++are never rejected for taking longer. No new allocator dependency was introduced.
++
++Coordinator-only finite optimized acceptance: both edges, original and nonzero
++pitch, permanent-Warp ordinary trim and Shift stretching; request too-short and
++too-long extents, reverse immediately, release at a new valid point and at an
++invalid point, and release over the browser. Expect only admitted visible geometry,
++matching committed waveform/extent, no stretch-range error or pending rollback,
++one Undo/Redo, unchanged Escape/focus/stale cancellation and ordinary MIDI resize.
++Use affected media without changing pitch/tempo to conceal an invalid mapping.
++Physical pointer/audio/listening and delivery remain open until coordinator evidence.
++
++The superseded interval-certificate research is preserved separately at
++research/422-interval-prototype-7ed9 (30e3a704), with its raw positive and failed
++fixture logs. Its unused APIs and extra Project/timebase changes are not included
++in this focused fix. The accepted shared admission extraction remains7ed9debc.

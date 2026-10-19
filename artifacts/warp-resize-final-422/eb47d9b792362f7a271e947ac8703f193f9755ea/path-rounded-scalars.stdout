@@ -1,0 +1,5 @@
+[1/2] rounded interval exhaustive and canonical path: running
+[1/2] rounded interval exhaustive and canonical path: passed
+[2/2] extracted scalar and signed tempo differential: running
+[2/2] extracted scalar and signed tempo differential: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/warp-resize-422-path-rounded-scalars/summary.json

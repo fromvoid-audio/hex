@@ -1,0 +1,17 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.32s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 5 tests
+capability edge=Left desired=179960..192000 actual=Some((179960, 12040)) error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Left, frame: 179960 })
+capability edge=Right desired=96000..108160 actual=Some((96000, 12160)) error=None submitted=Some(StretchAudioClipEdge { clip: ClipId(4), edge: Right, frame: 108160 })
+test editor::trim::stretch_limit_tests::shift_right_preview_boundary_is_accepted_by_actual_worker ... ok
+test editor::trim::stretch_preview::tests::distant_valid_island_is_accepted_and_identical_requests_do_no_metadata_work ... ok
+test editor::trim::stretch_limit_tests::shift_left_preview_boundary_is_accepted_by_actual_worker ... ok
+test editor::trim::stretch_limit_tests::validated_reversal_and_final_mouseup_commit_exact_command_across_pitch_and_modes ... ok
+test editor::trim::stretch_limit_tests::large_invalid_expansion_releases_last_validated_frame_both_edges ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 937 filtered out; finished in 15.12s
+

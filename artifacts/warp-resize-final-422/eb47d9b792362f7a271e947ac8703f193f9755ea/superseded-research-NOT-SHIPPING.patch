@@ -1,0 +1,1092 @@
+diff --git a/crates/hex-engine/src/audio_transform/mapping.rs b/crates/hex-engine/src/audio_transform/mapping.rs
+index 1e2b0d1f..c3b6606d 100644
+--- a/crates/hex-engine/src/audio_transform/mapping.rs
++++ b/crates/hex-engine/src/audio_transform/mapping.rs
+@@ -1,3 +1,5 @@
++#[cfg(test)]
++mod resize_path;
+ use super::*;
+ use hex_project::{AudioDomainClock, BeatsPreserve, audio_projection_frame};
+ const Q32: i128 = 1_i128 << 32;
+diff --git a/crates/hex-engine/src/audio_transform/mapping/resize_path.rs b/crates/hex-engine/src/audio_transform/mapping/resize_path.rs
+new file mode 100644
+index 00000000..22be94f9
+--- /dev/null
++++ b/crates/hex-engine/src/audio_transform/mapping/resize_path.rs
+@@ -0,0 +1,261 @@
++//! Research prototype for ordered, certificate-driven drag prefixes.
++//!
++//! Kept test-only until the mapping certificate and worst-shape work bounds are
++//! qualified. In particular, an uncertain certificate is not a shipping promise
++//! to enumerate every frame. Only all-valid certificates may skip an interval.
++
++mod constant_root;
++mod rounded;
++
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++struct Work {
++    certificates: u64,
++    singletons: u64,
++}
++
++#[derive(Clone, Copy, Debug)]
++struct Frontier {
++    left: u64,
++    right: u64,
++    left_blocked: bool,
++    right_blocked: bool,
++}
++
++impl Frontier {
++    // The caller must have established exact canonical admission at `accepted`.
++    fn new(accepted: u64) -> Self {
++        Self {
++            left: accepted,
++            right: accepted,
++            left_blocked: false,
++            right_blocked: false,
++        }
++    }
++
++    fn request<E>(
++        &mut self,
++        requested: u64,
++        certificate: &mut impl FnMut(u64, u64) -> Result<bool, E>,
++        singleton: &mut impl FnMut(u64) -> Result<bool, E>,
++        work: &mut Work,
++    ) -> Result<u64, E> {
++        if (self.left..=self.right).contains(&requested) {
++            return Ok(requested);
++        }
++        let rightward = requested > self.right;
++        let (known, blocked) = if rightward {
++            (self.right, self.right_blocked)
++        } else {
++            (self.left, self.left_blocked)
++        };
++        if blocked {
++            return Ok(known);
++        }
++        let (low, high) = if rightward {
++            (known + 1, requested)
++        } else {
++            (requested, known - 1)
++        };
++        // Update custody only after successful proof. An arithmetic/allocation
++        // error cannot publish a partly proved frontier or a guessed boundary.
++        let first_bad = first_invalid(low, high, rightward, certificate, singleton, work)?;
++        let accepted = first_bad.map_or(requested, |bad| if rightward { bad - 1 } else { bad + 1 });
++        if rightward {
++            self.right = accepted;
++            self.right_blocked = first_bad.is_some();
++        } else {
++            self.left = accepted;
++            self.left_blocked = first_bad.is_some();
++        }
++        Ok(accepted)
++    }
++}
++
++fn first_invalid<E>(
++    low: u64,
++    high: u64,
++    rightward: bool,
++    certificate: &mut impl FnMut(u64, u64) -> Result<bool, E>,
++    singleton: &mut impl FnMut(u64) -> Result<bool, E>,
++    work: &mut Work,
++) -> Result<Option<u64>, E> {
++    if low == high {
++        work.singletons += 1;
++        return Ok((!singleton(low)?).then_some(low));
++    }
++    work.certificates += 1;
++    if certificate(low, high)? {
++        return Ok(None);
++    }
++    let middle = low + (high - low) / 2;
++    let (near, far) = if rightward {
++        ((low, middle), (middle + 1, high))
++    } else {
++        ((middle + 1, high), (low, middle))
++    };
++    if let Some(bad) = first_invalid(near.0, near.1, rightward, certificate, singleton, work)? {
++        return Ok(Some(bad));
++    }
++    first_invalid(far.0, far.1, rightward, certificate, singleton, work)
++}
++
++#[test]
++fn exhaustive_small_masks_preserve_first_boundary_and_reversal() {
++    // Every disconnected validity topology on twelve integer endpoints. The
++    // certificate here is an independent exhaustive test oracle, not the future
++    // production mapping certificate. Test both no proofs and sound proofs.
++    for mask in 1_u16..1 << 12 {
++        let valid = |frame: u64| mask & (1 << frame) != 0;
++        for origin in 0..12 {
++            if !valid(origin) {
++                continue;
++            }
++            let expected_left = (0..origin).rev().find(|&f| !valid(f)).map_or(0, |f| f + 1);
++            let expected_right = (origin + 1..12).find(|&f| !valid(f)).map_or(11, |f| f - 1);
++            for certify in [false, true] {
++                let mut frontier = Frontier::new(origin);
++                let mut work = Work::default();
++                for request in [11, 0, origin, 7, 2, 11, 0] {
++                    let result = frontier
++                        .request(
++                            request,
++                            &mut |lo, hi| Ok::<_, ()>(certify && (lo..=hi).all(valid)),
++                            &mut |frame| Ok(valid(frame)),
++                            &mut work,
++                        )
++                        .unwrap();
++                    assert_eq!(
++                        result,
++                        request.clamp(expected_left, expected_right),
++                        "mask={mask:x} origin={origin} request={request}"
++                    );
++                }
++                let before = work;
++                for request in expected_left..=expected_right {
++                    assert_eq!(
++                        frontier.request(
++                            request,
++                            &mut |_, _| Ok::<_, ()>(false),
++                            &mut |_| Ok(false),
++                            &mut work
++                        ),
++                        Ok(request)
++                    );
++                }
++                assert_eq!(
++                    work, before,
++                    "proven reversal must perform no admission work"
++                );
++            }
++        }
++    }
++}
++
++#[test]
++fn large_sound_certificate_skips_only_requested_prefix_and_errors_are_atomic() {
++    let mut frontier = Frontier::new(1_000);
++    let mut work = Work::default();
++    assert_eq!(
++        frontier.request(
++            16_000_000,
++            &mut |lo, hi| {
++                assert_eq!((lo, hi), (1_001, 16_000_000));
++                Ok::<_, ()>(true)
++            },
++            &mut |_| panic!("certified interval needs no singleton"),
++            &mut work
++        ),
++        Ok(16_000_000)
++    );
++    assert_eq!(
++        work,
++        Work {
++            certificates: 1,
++            singletons: 0
++        }
++    );
++    assert_eq!(
++        frontier.left, 1_000,
++        "unused opposite direction remains uncomputed"
++    );
++    let before = frontier;
++    assert_eq!(
++        frontier.request(
++            0,
++            &mut |_, _| Err("research abort"),
++            &mut |_| Ok(true),
++            &mut work
++        ),
++        Err("research abort")
++    );
++    assert_eq!(
++        (
++            frontier.left,
++            frontier.right,
++            frontier.left_blocked,
++            frontier.right_blocked
++        ),
++        (
++            before.left,
++            before.right,
++            before.left_blocked,
++            before.right_blocked
++        )
++    );
++}
++
++#[test]
++fn canonical_small_warp_paths_match_exhaustive_admission() {
++    use hex_project::{Command, Created, Editor, Project, TrimEdge, preview_audio_clip_stretch};
++    for pitch in [-1_200, 0, 1_200, 2_400] {
++        let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
++        let Created::Imported { clip, .. } = editor
++            .execute(Command::ImportAudioTrack {
++                name: "small".into(),
++                path: "small.wav".into(),
++                sample_rate: 16_000,
++                frames: 32,
++            })
++            .unwrap()
++        else {
++            panic!("import")
++        };
++        editor
++            .execute(Command::SetAudioClipPitch { clip, cents: pitch })
++            .unwrap();
++        let original = editor.project().clip(clip).unwrap();
++        let tempo = editor.project().tempo_map();
++        let admitted = |frame| {
++            preview_audio_clip_stretch(original, TrimEdge::Right, frame, tempo, 32)
++                .and_then(|candidate| {
++                    super::super::validate_clip_warp_preview(&candidate, tempo)
++                        .map_err(|error| hex_project::Invalid(error.0))
++                })
++                .is_ok()
++        };
++        let truth: Vec<bool> = (0..=96).map(admitted).collect();
++        assert!(truth[32]);
++        let left = (0..32).rev().find(|&f| !truth[f]).map_or(0, |f| f + 1);
++        let right = (33..=96).find(|&f| !truth[f]).map_or(96, |f| f - 1);
++        // No interval certificate yet: deliberately bounded small-domain oracle
++        // exercise. This is not a shipping frame-enumeration fallback.
++        let mut frontier = Frontier::new(32);
++        let mut work = Work::default();
++        for request in (0..=96).rev().chain(0..=96) {
++            let result = frontier
++                .request(
++                    request,
++                    &mut |_, _| Ok::<_, ()>(false),
++                    &mut |f| Ok(admitted(f)),
++                    &mut work,
++                )
++                .unwrap();
++            assert_eq!(
++                result,
++                request.clamp(left as u64, right as u64),
++                "pitch={pitch} request={request}"
++            );
++        }
++        eprintln!("canonical path pitch={pitch}: connected=[{left},{right}] work={work:?}");
++    }
++}
+diff --git a/crates/hex-engine/src/audio_transform/mapping/resize_path/constant_root.rs b/crates/hex-engine/src/audio_transform/mapping/resize_path/constant_root.rs
+new file mode 100644
+index 00000000..64e56791
+--- /dev/null
++++ b/crates/hex-engine/src/audio_transform/mapping/resize_path/constant_root.rs
+@@ -0,0 +1,325 @@
++//! First actual mapping certificate: full processing root at one constant tempo.
++//! A deliberately partial RESEARCH certificate, not a supported-shape refusal.
++//! Other topologies return uncertain; no UI or shipping enumeration fallback.
++use super::rounded::Rounded;
++use hex_project::{AudioDomainClock, BeatsPreserve, Clip, TempoMap, TrimEdge, WarpMode};
++
++pub(super) fn certify(
++    original: &Clip,
++    edge: TrimEdge,
++    low: u64,
++    high: u64,
++    tempo: &TempoMap,
++    asset_frames: u64,
++) -> Option<bool> {
++    if low > high || tempo.points().len() != 1 {
++        return Some(false);
++    }
++    let edit = original.audio_edit()?;
++    let domain = &edit.domain;
++    let AudioDomainClock::Beats(span) = domain.clock else {
++        return Some(false);
++    };
++    if !domain.warp_enabled
++        || domain.events.is_some()
++        || edit.view_start != 0
++        || edit.view_end != span.raw()
++        || domain.source_phase != 0
++        || domain.source_length > (1_u64 << 40)
++        || domain.fade_start != 0
++        || !domain.fade.is_neutral()
++        || domain.fade.offset() != 0
++        || domain.fade.span() != original.duration()
++    {
++        return Some(false);
++    }
++    // Constructor/model checks are independent of ratio proof. On this restricted
++    // full-root family, retiming leaves source fields/gain/mode unchanged, gives
++    // clock=view_end=N exactly, and fade span becomes the exact new root frames.
++    edit.validate(original, tempo, asset_frames).ok()?;
++    let warp = domain.warp.as_ref()?;
++    if warp.markers.last()?.beat.raw() != span.raw() {
++        return Some(false);
++    }
++    let original_end = original.start().checked_add(original.duration())?;
++    let (short_start, short_end, long_start, long_end) = match edge {
++        TrimEdge::Right if low > original.start() => {
++            (original.start(), low, original.start(), high)
++        }
++        TrimEdge::Left if high < original_end => (high, original_end, low, original_end),
++        _ => return Some(false),
++    };
++    let shortest = short_end.checked_sub(short_start)?;
++    let longest = long_end.checked_sub(long_start)?;
++    if shortest == 0 || longest > hex_project::MAX_AUDIO_DOMAIN_FRAMES {
++        return Some(false);
++    }
++    let beat_span = |start, end| {
++        tempo
++            .frame_to_beat(end)
++            .ok()?
++            .raw()
++            .checked_sub(tempo.frame_to_beat(start).ok()?.raw())
++    };
++    let n_low = beat_span(short_start, short_end)?;
++    let n_high = beat_span(long_start, long_end)?;
++    if n_low == 0 || n_low > n_high {
++        return Some(false);
++    }
++    if let WarpMode::Beats {
++        preserve: BeatsPreserve::Division(division),
++        ..
++    } = warp.mode
++        && (division.raw() == 0
++            || n_high / division.raw() + 1 > hex_project::MAX_AUDIO_POINTS as u64)
++    {
++        return Some(false);
++    }
++    // With zero phase and unit==root, loop repetitions contribute no internal
++    // boundary. Raw boundary count is exactly markers.len(), below8192 by model
++    // admission. All source endpoints remain within the original admitted range.
++    let mode = super::super::super::render_mode(domain).ok()?;
++    for pair in warp.markers.windows(2) {
++        let mut difference = Rounded::new(span.raw(), 0, 1, false)?;
++        difference.add_scaled(pair[1].beat.raw(), 1)?;
++        difference.add_scaled(pair[0].beat.raw(), -1)?;
++        let (beat_low, beat_high) = difference.bounds(n_low, n_high)?;
++        if beat_low <= 0 {
++            return Some(false);
++        }
++        let (frames_low, frames_high) = tempo
++            .same_tempo_frame_span_bounds(
++                tempo.points()[0].tempo(),
++                u64::try_from(beat_low).ok()?,
++                u64::try_from(beat_high).ok()?,
++            )
++            .ok()?;
++        if frames_low == 0 {
++            return Some(false);
++        }
++        let source_span = i128::from(pair[1].source_frame.checked_sub(pair[0].source_frame)?) << 32;
++        // Same exact float order, pitch compensation and epsilon as rendering.
++        // Both extrema accepting proves every positive intermediate tuple accepts.
++        if hex_warp::validate_stretch_segment(frames_low, source_span, mode, domain.pitch_cents)
++            .is_err()
++            || hex_warp::validate_stretch_segment(
++                frames_high,
++                source_span,
++                mode,
++                domain.pitch_cents,
++            )
++            .is_err()
++        {
++            return Some(false);
++        }
++    }
++    Some(true)
++}
++
++#[test]
++fn every_small_certified_interval_is_canonically_valid() {
++    use hex_project::{
++        Command, Created, Editor, Project, default_audio_warp, preview_audio_clip_stretch,
++    };
++    let mut certified = 0;
++    for pitch in [-1_200, 0, 1_200] {
++        let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
++        let Created::Imported { clip, .. } = editor
++            .execute(Command::ImportAudioTrack {
++                name: "certificate".into(),
++                path: "certificate.wav".into(),
++                sample_rate: 16_000,
++                frames: 32,
++            })
++            .unwrap()
++        else {
++            panic!("import")
++        };
++        let mut settings = default_audio_warp(
++            editor.project().clip(clip).unwrap(),
++            editor.project().tempo_map(),
++            WarpMode::Beats {
++                preserve: BeatsPreserve::Transients,
++                tail: hex_project::BeatsTail::Forward,
++                decay: 100,
++            },
++        )
++        .unwrap();
++        settings.markers.insert(
++            1,
++            hex_project::WarpMarker {
++                source_frame: 16,
++                beat: hex_project::BeatTime::from_raw(settings.markers[1].beat.raw() / 2),
++            },
++        );
++        editor
++            .execute(Command::SetAudioClipWarp {
++                clip,
++                settings: Some(settings),
++            })
++            .unwrap();
++        editor
++            .execute(Command::SetAudioClipPitch { clip, cents: pitch })
++            .unwrap();
++        let original = editor.project().clip(clip).unwrap();
++        let tempo = editor.project().tempo_map();
++        let truth: Vec<bool> = (0..=96)
++            .map(|frame| {
++                preview_audio_clip_stretch(original, TrimEdge::Right, frame, tempo, 32).is_ok_and(
++                    |candidate| {
++                        super::super::super::validate_clip_warp_preview(&candidate, tempo).is_ok()
++                    },
++                )
++            })
++            .collect();
++        for low in 0..=96 {
++            for high in low..=96 {
++                if certify(
++                    original,
++                    TrimEdge::Right,
++                    low as u64,
++                    high as u64,
++                    tempo,
++                    32,
++                ) == Some(true)
++                {
++                    assert!(
++                        truth[low..=high].iter().all(|valid| *valid),
++                        "false proof pitch={pitch} interval={low}..{high}"
++                    );
++                    certified += 1;
++                }
++            }
++        }
++        let mut frontier = super::Frontier::new(32);
++        let mut work = super::Work::default();
++        for request in [96, 0, 32, 65, 9, 96] {
++            let expected_left = (0..32).rev().find(|&f| !truth[f]).map_or(0, |f| f + 1);
++            let expected_right = (33..=96).find(|&f| !truth[f]).map_or(96, |f| f - 1);
++            let actual = frontier
++                .request(
++                    request,
++                    &mut |lo, hi| {
++                        Ok::<_, ()>(
++                            certify(original, TrimEdge::Right, lo, hi, tempo, 32) == Some(true),
++                        )
++                    },
++                    &mut |frame| Ok(truth[frame as usize]),
++                    &mut work,
++                )
++                .unwrap();
++            assert_eq!(
++                actual,
++                request.clamp(expected_left as u64, expected_right as u64)
++            );
++        }
++        eprintln!("actual constant-root certificate pitch={pitch} work={work:?}");
++    }
++    assert!(certified > 1_000, "must prove real non-singleton intervals");
++    eprintln!("actual mapping certified intervals={certified}, all exhaustively checked");
++}
++
++#[test]
++fn maximum_marker_shape_profiles_requested_prefix_without_frame_scan() {
++    use hex_project::{
++        Command, Created, Editor, Project, default_audio_warp, preview_audio_clip_stretch,
++    };
++    let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
++    let frames = 2_000_000_u64;
++    let Created::Imported { clip, .. } = editor
++        .execute(Command::ImportAudioTrack {
++            name: "max markers".into(),
++            path: "max-markers.wav".into(),
++            sample_rate: 16_000,
++            frames,
++        })
++        .unwrap()
++    else {
++        panic!("import")
++    };
++    let mut settings = default_audio_warp(
++        editor.project().clip(clip).unwrap(),
++        editor.project().tempo_map(),
++        WarpMode::Beats {
++            preserve: BeatsPreserve::Transients,
++            tail: hex_project::BeatsTail::Forward,
++            decay: 100,
++        },
++    )
++    .unwrap();
++    let unit = settings.markers[1].beat.raw();
++    settings.markers = (0..hex_project::MAX_AUDIO_POINTS)
++        .map(|index| {
++            let index = index as u128;
++            let denominator = (hex_project::MAX_AUDIO_POINTS - 1) as u128;
++            hex_project::WarpMarker {
++                source_frame: (u128::from(frames) * index / denominator) as u64,
++                beat: hex_project::BeatTime::from_raw(
++                    (u128::from(unit) * index / denominator) as u64,
++                ),
++            }
++        })
++        .collect();
++    editor
++        .execute(Command::SetAudioClipWarp {
++            clip,
++            settings: Some(settings),
++        })
++        .unwrap();
++    let original = editor.project().clip(clip).unwrap();
++    let tempo = editor.project().tempo_map();
++    let mut frontier = super::Frontier::new(frames);
++    let mut work = super::Work::default();
++    let admitted = |frame| {
++        preview_audio_clip_stretch(original, TrimEdge::Right, frame, tempo, frames).is_ok_and(
++            |candidate| super::super::super::validate_clip_warp_preview(&candidate, tempo).is_ok(),
++        )
++    };
++    let started = std::time::Instant::now();
++    let high = frontier
++        .request(
++            12_000_000,
++            &mut |lo, hi| {
++                Ok::<_, ()>(certify(original, TrimEdge::Right, lo, hi, tempo, frames) == Some(true))
++            },
++            &mut |f| Ok(admitted(f)),
++            &mut work,
++        )
++        .unwrap();
++    assert_eq!(high, 12_000_000);
++    let low = frontier
++        .request(
++            0,
++            &mut |lo, hi| {
++                Ok::<_, ()>(certify(original, TrimEdge::Right, lo, hi, tempo, frames) == Some(true))
++            },
++            &mut |f| Ok(admitted(f)),
++            &mut work,
++        )
++        .unwrap();
++    assert!(admitted(low));
++    assert!(!admitted(low - 1));
++    let before = work;
++    assert_eq!(
++        frontier
++            .request(
++                frames,
++                &mut |_, _| Ok::<_, ()>(false),
++                &mut |_| Ok(false),
++                &mut work
++            )
++            .unwrap(),
++        frames
++    );
++    assert_eq!(before, work);
++    eprintln!(
++        "max-marker profile markers={} requested=[0,12000000] connected=[{low},{high}] work={work:?} elapsed={:?}",
++        hex_project::MAX_AUDIO_POINTS,
++        started.elapsed()
++    );
++    // Research measurement oracle, NOT a runtime refusal or shipping budget.
++    assert!(
++        work.singletons < 100,
++        "certificate degeneration: report this counterexample before UI work"
++    );
++}
+diff --git a/crates/hex-engine/src/audio_transform/mapping/resize_path/rounded.rs b/crates/hex-engine/src/audio_transform/mapping/resize_path/rounded.rs
+new file mode 100644
+index 00000000..9792cc70
+--- /dev/null
++++ b/crates/hex-engine/src/audio_transform/mapping/resize_path/rounded.rs
+@@ -0,0 +1,179 @@
++//! Checked integer enclosure for the actual canonical rounded retime scalars.
++//! No floating-point topology decisions and no endpoint-sampling certificate.
++use hex_project::audio_retime_scale;
++
++const TERMS: usize = 8;
++
++#[derive(Clone, Copy, Debug, Default)]
++struct Term {
++    value: u64,
++    coefficient: i128,
++}
++
++#[derive(Clone, Copy, Debug)]
++pub(super) struct Rounded {
++    denominator: u64,
++    constant: i128,
++    linear: i128,
++    terms: [Term; TERMS],
++    divisor: i128,
++    ceil: bool,
++}
++
++impl Rounded {
++    pub(super) fn new(denominator: u64, constant: i128, divisor: i128, ceil: bool) -> Option<Self> {
++        (denominator > 0 && divisor > 0).then_some(Self {
++            denominator,
++            constant,
++            linear: 0,
++            terms: [Term::default(); TERMS],
++            divisor,
++            ceil,
++        })
++    }
++
++    pub(super) fn add_scaled(&mut self, value: u64, coefficient: i128) -> Option<()> {
++        // round((q*D+r)*N/D) == q*N + round(r*N/D), exactly.
++        // Normalize BEFORE bounding to preserve shared-root cancellations.
++        self.linear = self
++            .linear
++            .checked_add(coefficient.checked_mul(i128::from(value / self.denominator))?)?;
++        let residual = value % self.denominator;
++        if residual == 0 || coefficient == 0 {
++            return Some(());
++        }
++        let slot = self.terms.iter_mut().find(|term| term.value == residual);
++        if let Some(term) = slot {
++            term.coefficient = term.coefficient.checked_add(coefficient)?;
++            return Some(());
++        }
++        let term = self.terms.iter_mut().find(|term| term.coefficient == 0)?;
++        *term = Term {
++            value: residual,
++            coefficient,
++        };
++        Some(())
++    }
++
++    fn divide(&self, numerator: i128) -> Option<i128> {
++        let quotient = numerator.checked_div_euclid(self.divisor)?;
++        quotient.checked_add(i128::from(
++            self.ceil && numerator.rem_euclid(self.divisor) != 0,
++        ))
++    }
++
++    pub(super) fn exact(&self, numerator: u64) -> Option<i128> {
++        if numerator == 0 {
++            return None;
++        }
++        let mut sum = self
++            .constant
++            .checked_add(self.linear.checked_mul(i128::from(numerator))?)?;
++        for term in &self.terms {
++            if term.coefficient != 0 {
++                sum = sum.checked_add(term.coefficient.checked_mul(i128::from(
++                    audio_retime_scale(term.value, numerator, self.denominator).ok()?,
++                ))?)?;
++            }
++        }
++        self.divide(sum)
++    }
++
++    pub(super) fn bounds(&self, low: u64, high: u64) -> Option<(i128, i128)> {
++        if low == 0 || low > high {
++            return None;
++        }
++        if low == high {
++            let exact = self.exact(low)?;
++            return Some((exact, exact));
++        }
++        let denominator = i128::from(self.denominator);
++        let mut slope = self.linear.checked_mul(denominator)?;
++        let mut error = 0_i128;
++        for term in &self.terms {
++            slope = slope.checked_add(term.coefficient.checked_mul(i128::from(term.value))?)?;
++            // Each nearest-rounded residual differs from its rational value by
++            // strictly less than one. This deliberately outward integer bound
++            // remains valid for odd D and signed coefficients.
++            error = error.checked_add(term.coefficient.checked_abs()?)?;
++        }
++        let affine_floor = |n: u64| -> Option<(i128, bool)> {
++            // Divide slope first: slope*n may overflow even though its quotient
++            // and the real model scalar are representable. Residual multiplication
++            // uses full u128, supporting the entire u64 retime domain.
++            let quotient = slope.checked_div_euclid(denominator)?;
++            let residual = u128::try_from(slope.rem_euclid(denominator)).ok()?;
++            let product = residual.checked_mul(u128::from(n))?;
++            let fraction = product / u128::from(self.denominator);
++            let value = quotient
++                .checked_mul(i128::from(n))?
++                .checked_add(i128::try_from(fraction).ok()?)?;
++            Some((value, product % u128::from(self.denominator) != 0))
++        };
++        let (near, far) = if slope >= 0 { (low, high) } else { (high, low) };
++        let (minimum, _) = affine_floor(near)?;
++        let (maximum, fractional) = affine_floor(far)?;
++        let minimum = self.constant.checked_add(minimum)?.checked_sub(error)?;
++        let maximum = self
++            .constant
++            .checked_add(maximum)?
++            .checked_add(i128::from(fractional))?
++            .checked_add(error)?;
++        Some((self.divide(minimum)?, self.divide(maximum)?))
++    }
++}
++
++#[test]
++fn every_small_interval_encloses_exact_signed_rounded_phase_expressions() {
++    let mut checked = 0_u64;
++    for denominator in 1..=13 {
++        for value in 0..=2 * denominator {
++            for coefficient in [-7, -1, 1, 9] {
++                for ceil in [false, true] {
++                    let mut expression = Rounded::new(denominator, -13, 7, ceil).unwrap();
++                    expression.add_scaled(value, coefficient).unwrap();
++                    expression.add_scaled(denominator + 1, -3).unwrap();
++                    for low in 1..=16 {
++                        for high in low..=16 {
++                            let (min, max) = expression.bounds(low, high).unwrap();
++                            for n in low..=high {
++                                let exact = expression.exact(n).unwrap();
++                                assert!(
++                                    (min..=max).contains(&exact),
++                                    "D={denominator} value={value} c={coefficient} interval={low}..{high} n={n} exact={exact} enclosure={min}..{max}"
++                                );
++                                checked += 1;
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++    eprintln!("integer enclosures checked against {checked} exact scalar evaluations");
++}
++
++#[test]
++fn crop_difference_identity_is_exact_and_large_products_do_not_need_signed_multiplication() {
++    for denominator in [1, 2, 3, 13, 1 << 32, u64::MAX / 2] {
++        let visible_start = denominator / 3;
++        let mut expression = Rounded::new(denominator, 0, 1, false).unwrap();
++        expression
++            .add_scaled(visible_start + denominator, 1)
++            .unwrap();
++        expression.add_scaled(visible_start, -1).unwrap();
++        for n in [1, 2, 19, u64::MAX / 2] {
++            assert_eq!(expression.exact(n), Some(i128::from(n)));
++        }
++        assert_eq!(
++            expression.bounds(1, u64::MAX / 2),
++            Some((1, i128::from(u64::MAX / 2)))
++        );
++    }
++    let mut expression = Rounded::new(u64::MAX, 0, 1, false).unwrap();
++    expression.add_scaled(u64::MAX - 1, 1_i128 << 40).unwrap();
++    let (low, high) = expression.bounds(u64::MAX / 2, u64::MAX - 1).unwrap();
++    for n in [u64::MAX / 2, u64::MAX - 1] {
++        assert!((low..=high).contains(&expression.exact(n).unwrap()));
++    }
++}
+diff --git a/crates/hex-project/src/audio_edit.rs b/crates/hex-project/src/audio_edit.rs
+index 10f944c6..70ff6b95 100644
+--- a/crates/hex-project/src/audio_edit.rs
++++ b/crates/hex-project/src/audio_edit.rs
+@@ -241,6 +241,20 @@ pub fn audio_projection_frame(tempo: &TempoMap, beat_raw: i128) -> Result<i128,
+         u128::from(tempo.tempo_at(BeatTime::ZERO).micro_bpm()) << 32,
+     )
+ }
++/// Exact frame-domain anchoring scalar used by canonical audio anchoring.
++/// The retained root may begin before frame zero; signed projection is preserved.
++pub fn audio_anchor_beat_offset(
++    tempo: &TempoMap,
++    origin_frame: i128,
++    frame: u64,
++) -> Result<u64, Invalid> {
++    u64::try_from(
++        audio_projection_beat(tempo, origin_frame + i128::from(frame))?
++            - audio_projection_beat(tempo, origin_frame)?,
++    )
++    .map_err(|_| Invalid("musical audio domain projection overflow"))
++}
++
+ pub fn audio_projection_beat(tempo: &TempoMap, frame: i128) -> Result<i128, Invalid> {
+     if frame >= 0 {
+         return tempo
+@@ -508,12 +522,7 @@ impl AudioClipEdit {
+         }
+         let origin_frame = i128::from(clip_start) - i128::from(self.view_start);
+         let origin_beat = audio_projection_beat(tempo, origin_frame)?;
+-        let beat_at = |frame: u64| -> Result<u64, Invalid> {
+-            u64::try_from(
+-                audio_projection_beat(tempo, origin_frame + i128::from(frame))? - origin_beat,
+-            )
+-            .map_err(|_| Invalid("musical audio domain projection overflow"))
+-        };
++        let beat_at = |frame| audio_anchor_beat_offset(tempo, origin_frame, frame);
+         let length = beat_at(self.domain.clock.length())?;
+         let start = beat_at(self.view_start)?;
+         let end = beat_at(self.view_end)?;
+@@ -601,6 +610,9 @@ pub(crate) use commands::{
+ };
+ 
+ mod stretch;
+-pub use stretch::preview_audio_clip_stretch;
++pub use stretch::{audio_retime_scale, preview_audio_clip_stretch};
+ 
+ mod warp_projection;
++
++#[cfg(test)]
++mod scalar_certification_tests;
+diff --git a/crates/hex-project/src/audio_edit/scalar_certification_tests.rs b/crates/hex-project/src/audio_edit/scalar_certification_tests.rs
+new file mode 100644
+index 00000000..79441dcb
+--- /dev/null
++++ b/crates/hex-project/src/audio_edit/scalar_certification_tests.rs
+@@ -0,0 +1,76 @@
++use crate::{
++    BeatTime, Tempo, TempoMap, audio_anchor_beat_offset, audio_projection_beat,
++    audio_projection_frame, audio_retime_scale,
++};
++
++#[test]
++fn extracted_retime_and_anchor_scalars_match_original_arithmetic() {
++    for denominator in [1, 2, 3, 13, 1 << 32, u64::MAX] {
++        for numerator in [1, 2, 7, u64::MAX / 2, u64::MAX] {
++            for value in [0, 1, 2, 19, 1 << 32, u64::MAX] {
++                let old = u64::try_from(
++                    (u128::from(value) * u128::from(numerator) + u128::from(denominator / 2))
++                        / u128::from(denominator),
++                );
++                assert_eq!(
++                    audio_retime_scale(value, numerator, denominator).ok(),
++                    old.ok()
++                );
++            }
++        }
++    }
++    assert!(audio_retime_scale(1, 0, 1).is_err());
++    assert!(audio_retime_scale(1, 1, 0).is_err());
++    let tempo = TempoMap::constant(44_100, Tempo::new(123_456_789).unwrap()).unwrap();
++    for origin in [-1_000_001, -1, 0, 1, 44_100] {
++        for frame in [0, 1, 17, 44_100, 1_000_003] {
++            let old = u64::try_from(
++                audio_projection_beat(&tempo, origin + i128::from(frame)).unwrap()
++                    - audio_projection_beat(&tempo, origin).unwrap(),
++            );
++            assert_eq!(
++                audio_anchor_beat_offset(&tempo, origin, frame).ok(),
++                old.ok()
++            );
++        }
++    }
++}
++
++#[test]
++fn same_tempo_span_bounds_enclose_all_tested_signed_prefixes() {
++    for rate in [8_000, 44_100, 192_000] {
++        for bpm in [1_000_000, 30_000_001, 123_456_789, 1_000_000_000] {
++            let value = Tempo::new(bpm).unwrap();
++            let tempo = TempoMap::constant(rate, value).unwrap();
++            for delta in [
++                0,
++                1,
++                13,
++                1 << 16,
++                BeatTime::ONE.raw() / 3,
++                BeatTime::ONE.raw(),
++            ] {
++                let (low, high) = tempo
++                    .same_tempo_frame_span_bounds(value, delta, delta)
++                    .unwrap();
++                for prefix in [
++                    -i128::from(BeatTime::ONE.raw()),
++                    -17,
++                    -1,
++                    0,
++                    1,
++                    7,
++                    123_456_789,
++                ] {
++                    let difference = audio_projection_frame(&tempo, prefix + i128::from(delta))
++                        .unwrap()
++                        - audio_projection_frame(&tempo, prefix).unwrap();
++                    assert!(
++                        (i128::from(low)..=i128::from(high)).contains(&difference),
++                        "rate={rate} bpm={bpm} delta={delta} prefix={prefix} actual={difference} bounds={low}..{high}"
++                    );
++                }
++            }
++        }
++    }
++}
+diff --git a/crates/hex-project/src/audio_edit/stretch.rs b/crates/hex-project/src/audio_edit/stretch.rs
+index 2aef2fb1..49f39b99 100644
+--- a/crates/hex-project/src/audio_edit/stretch.rs
++++ b/crates/hex-project/src/audio_edit/stretch.rs
+@@ -2,7 +2,9 @@
+ use super::*;
+ use crate::{BeatsPreserve, BeatsTail, WarpMode};
+ 
+-fn scale(value: u64, numerator: u64, denominator: u64) -> Result<u64, Invalid> {
++/// Exact positive-interval retime scalar, shared with metadata certification.
++/// Rounds by adding floor(denominator / 2), exactly as canonical retiming.
++pub fn audio_retime_scale(value: u64, numerator: u64, denominator: u64) -> Result<u64, Invalid> {
+     if numerator == 0 || denominator == 0 {
+         return Err(Invalid("stretch must retain a positive interval"));
+     }
+@@ -13,6 +15,8 @@ fn scale(value: u64, numerator: u64, denominator: u64) -> Result<u64, Invalid> {
+     .map_err(|_| Invalid("stretch exceeds time range"))
+ }
+ 
++use audio_retime_scale as scale;
++
+ pub(super) fn retime(
+     edit: &mut AudioClipEdit,
+     numerator: u64,
+diff --git a/crates/hex-project/src/lib.rs b/crates/hex-project/src/lib.rs
+index 3ec3731b..40e865ca 100644
+--- a/crates/hex-project/src/lib.rs
++++ b/crates/hex-project/src/lib.rs
+@@ -8,8 +8,9 @@ mod clip_name;
+ pub use audio_edit::{
+     AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
+     BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
+-    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
+-    audio_projection_frame, default_audio_warp, preview_audio_clip_stretch,
++    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings,
++    audio_anchor_beat_offset, audio_projection_beat, audio_projection_frame, audio_retime_scale,
++    default_audio_warp, preview_audio_clip_stretch,
+ };
+ mod appearance;
+ mod clip_conversion;
+diff --git a/crates/hex-project/src/timebase/tempo.rs b/crates/hex-project/src/timebase/tempo.rs
+index 4516ec7e..3fe2ba75 100644
+--- a/crates/hex-project/src/timebase/tempo.rs
++++ b/crates/hex-project/src/timebase/tempo.rs
+@@ -90,6 +90,31 @@ impl TempoMap {
+         })
+     }
+ 
++    /// Outward integer-frame bounds for a positive raw-beat difference.
++    /// Both endpoints must lie in the SAME constant-tempo segment at `tempo`.
++    /// The fixed prefix cancels: differences of rounded affine projections lie
++    /// between floor(delta * slope) and ceil(delta * slope), for every prefix.
++    /// This does not establish segment membership or Warp/model admission.
++    pub fn same_tempo_frame_span_bounds(
++        &self,
++        tempo: Tempo,
++        beat_delta_low: u64,
++        beat_delta_high: u64,
++    ) -> Result<(u64, u64), Invalid> {
++        if beat_delta_low > beat_delta_high {
++            return Err(Invalid("inverted beat difference bounds"));
++        }
++        let factor = u128::from(self.sample_rate) * FRAME_FACTOR_NUMERATOR;
++        let denominator = u128::from(tempo.micro_bpm()) << FRAME_FRACTION_BITS;
++        let low = u128::from(beat_delta_low) * factor / denominator;
++        let high_numerator = u128::from(beat_delta_high) * factor;
++        let high = high_numerator / denominator + u128::from(high_numerator % denominator != 0);
++        Ok((
++            u64::try_from(low).map_err(|_| Invalid("frame difference exceeds time range"))?,
++            u64::try_from(high).map_err(|_| Invalid("frame difference exceeds time range"))?,
++        ))
++    }
++
+     pub fn sample_rate(&self) -> u32 {
+         self.sample_rate
+     }
+diff --git a/crates/hex-warp/src/lib.rs b/crates/hex-warp/src/lib.rs
+index 450db5ea..54eb00cd 100644
+--- a/crates/hex-warp/src/lib.rs
++++ b/crates/hex-warp/src/lib.rs
+@@ -142,6 +142,54 @@ pub struct MapSegment {
+     pub source_start_q32: i128,
+     pub source_end_q32: i128,
+ }
++/// The renderer's exact scalar stretch predicate for one positive map segment.
++/// Does not validate map topology, source extent, mode settings or render work.
++/// Outward interval certificates must prove those conditions independently.
++pub fn validate_stretch_segment(
++    output_frames: u64,
++    source_span_q32: i128,
++    mode: Mode,
++    pitch_cents: i16,
++) -> Result<(), Error> {
++    let pitch = stretch_pitch(pitch_cents)?;
++    if output_frames == 0 || source_span_q32 <= 0 {
++        return Err(Error::Invalid(
++            "audio map must increase in source and output time",
++        ));
++    }
++    if !matches!(mode, Mode::Resample) {
++        validate_stretch_ratio(output_frames, source_span_q32, mode, pitch)?;
++    }
++    Ok(())
++}
++
++fn stretch_pitch(pitch_cents: i16) -> Result<f64, Error> {
++    if !(-4_800..=4_800).contains(&pitch_cents) {
++        return Err(Error::Invalid("invalid audio transform extent or pitch"));
++    }
++    Ok(2.0_f64.powf(f64::from(pitch_cents) / 1_200.0))
++}
++
++fn validate_stretch_ratio(
++    output_frames: u64,
++    source_span_q32: i128,
++    mode: Mode,
++    pitch: f64,
++) -> Result<(), Error> {
++    let ratio = output_frames as f64 * Q32 as f64 / source_span_q32 as f64;
++    let compensated = if matches!(mode, Mode::RePitch) {
++        ratio
++    } else {
++        ratio * pitch
++    };
++    if !(0.125 - 1e-9..=8.0 + 1e-9).contains(&compensated) {
++        return Err(Error::Invalid(
++            "warp stretch including pitch compensation must be within 1/8..8",
++        ));
++    }
++    Ok(())
++}
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub struct TimeMap {
+     segments: Vec<MapSegment>,
+@@ -189,24 +237,15 @@ impl TimeMap {
+     /// Metadata only; the existing map constructor owns extent/segment validity.
+     /// This does not admit PCM, algorithm settings, scratch or render work.
+     pub fn validate_stretch(&self, mode: Mode, pitch_cents: i16) -> Result<(), Error> {
+-        if !(-4_800..=4_800).contains(&pitch_cents) {
+-            return Err(Error::Invalid("invalid audio transform extent or pitch"));
+-        }
+-        let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
++        let pitch = stretch_pitch(pitch_cents)?;
+         if !matches!(mode, Mode::Resample) {
+             for segment in self.segments() {
+-                let ratio = (segment.output_end - segment.output_start) as f64 * Q32 as f64
+-                    / (segment.source_end_q32 - segment.source_start_q32) as f64;
+-                let compensated = if matches!(mode, Mode::RePitch) {
+-                    ratio
+-                } else {
+-                    ratio * pitch
+-                };
+-                if !(0.125 - 1e-9..=8.0 + 1e-9).contains(&compensated) {
+-                    return Err(Error::Invalid(
+-                        "warp stretch including pitch compensation must be within 1/8..8",
+-                    ));
+-                }
++                validate_stretch_ratio(
++                    segment.output_end - segment.output_start,
++                    segment.source_end_q32 - segment.source_start_q32,
++                    mode,
++                    pitch,
++                )?;
+             }
+         }
+         Ok(())

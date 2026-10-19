@@ -1,0 +1,285 @@
+{
+  "kind": "source-handoff-evidence-only-never-build-merge",
+  "source": "eb47d9b792362f7a271e947ac8703f193f9755ea",
+  "tree": "72d73a354decde96eaf72ac6c74bdc142214b777",
+  "canonical_before": "53cfac1c3b0c1603a4ed82c3bcd2f4bee04d33f5",
+  "expected_feature_before": "f7f639de484e924c2b92904c4445183e39538891",
+  "payloads": {
+    "422-component.py": {
+      "bytes": 544,
+      "sha256": "e64cb5df11f0d650a3ef1cb56c191a989aaa0e2e1feab2abf54ba1b8eb90ffd9"
+    },
+    "HANDOFF.md": {
+      "bytes": 7276,
+      "sha256": "d0939deda1da7684f80462f7ddd93e7360fa63f40352825f3e12a2f13198f7c2"
+    },
+    "direct-clamp-diff-from-7ed.patch": {
+      "bytes": 30563,
+      "sha256": "98153c3c706ca353b97a89d516f11afa546341f464711efb3255df0f87081908"
+    },
+    "direct-clean-qualification.stdout": {
+      "bytes": 805,
+      "sha256": "5a0c53916cbb95c76c82b4de9cb914b2ac3c397d9d98a3d62c82b0d0f8df8c1b"
+    },
+    "direct-final-ui.stdout": {
+      "bytes": 239,
+      "sha256": "e558ad37a9aa7de2df2d009d0cf511bfb40e6efd8e997bfd4a30c078e088fe26"
+    },
+    "direct-release-cost.stdout": {
+      "bytes": 590,
+      "sha256": "988f21dd337bc934374adfb510701c3c1b5f5e1806a74a53ce7f99156d487da7"
+    },
+    "direct-ui-discriminators.stdout": {
+      "bytes": 280,
+      "sha256": "dfa869906a3b0af63d42cb3a0e163a4c4bfbec8ba913e6f8bfd7d748346d2d50"
+    },
+    "direct-ui-first.stdout": {
+      "bytes": 223,
+      "sha256": "da6a6f7def988a76f3f22c21bc2bbcd52f6135022c7e25692b9aea217fc3e9a3"
+    },
+    "direct-upper-fixture.stdout": {
+      "bytes": 244,
+      "sha256": "a52bfc1efa2e6f811f2c2739583b9721daa4e1f018877516ba92a402edd1e085"
+    },
+    "expected-before-after.json": {
+      "bytes": 2307,
+      "sha256": "9bbf559833eba84ca137e2c6a174fdd2cb3ae853298aa8ec7a5742dbba686be3"
+    },
+    "feature-diff-from-f7.patch": {
+      "bytes": 56003,
+      "sha256": "b7da2bacea7c57be5a9023b382ca7d8cd5130bafe93bbde1020c23c72df8f4e3"
+    },
+    "path-actual-certificate-scope.stdout": {
+      "bytes": 350,
+      "sha256": "c55e6b9e6dd79d7c804f5a02547802fae74fc7c765d5591aa6c89be633b3638c"
+    },
+    "path-actual-certificate.stdout": {
+      "bytes": 245,
+      "sha256": "7e07ce5786e27da9f8c7d1308c001c44d0f67ffcebb070a6e2f5e3b5f63dc8dd"
+    },
+    "path-first-small-scope.stdout": {
+      "bytes": 244,
+      "sha256": "5cbe355c8ff63332c73ae23db8c8eb37452709ef76b4f5ea36aec889705f7bd9"
+    },
+    "path-first-small-types.stdout": {
+      "bytes": 244,
+      "sha256": "fb34e9665a10d8774799794c2e8b3bd0229c40ed95e155319b3e9e22764fddb7"
+    },
+    "path-first-small.stdout": {
+      "bytes": 238,
+      "sha256": "b8b332883b7a826090df9370d8ab0b21b8aaabfbcfbf448ac9c774009c70f56f"
+    },
+    "path-max-marker-profile.stdout": {
+      "bytes": 207,
+      "sha256": "d78599012acec54cd47a665052cbb4ee42bff4c97a4032b65d3f893b37494a1b"
+    },
+    "path-rounded-scalars.stdout": {
+      "bytes": 353,
+      "sha256": "3559d190cb58ff960001b5536585c47139810ea79ed25c55bec28715b9d54586"
+    },
+    "runs/direct-clean-qualification/01-clean exact direct Warp point admission regressions.log": {
+      "bytes": 1367,
+      "sha256": "9c53666111212d8550c689582d5ce1fbb7844670411089f7860f9f31c89f39d7"
+    },
+    "runs/direct-clean-qualification/02-strict UI all targets.log": {
+      "bytes": 822,
+      "sha256": "a520ba621b96973536c2f69b86d7e9c6d9582faacdf050aa7929cffed9d33c63"
+    },
+    "runs/direct-clean-qualification/03-strict existing allocation-probe target.log": {
+      "bytes": 542,
+      "sha256": "4c78a89bb9614eefb895d8ee0a32ce18adc8b6fe1bb08448dfd1b2dc0c51e1c4"
+    },
+    "runs/direct-clean-qualification/04-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/direct-clean-qualification/05-GPUI patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/direct-clean-qualification/06-dependency patch.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/direct-clean-qualification/07-UI style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/direct-clean-qualification/08-device layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/direct-clean-qualification/09-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/direct-clean-qualification/10-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/direct-clean-qualification/summary.json": {
+      "bytes": 14372,
+      "sha256": "ab1481306dbb210f5f301a9e34c5f346a541dd60a83cbb99528a72df02c0879d"
+    },
+    "runs/direct-final-ui/01-all actual direct Warp limits plus29 release controls.log": {
+      "bytes": 11822,
+      "sha256": "9751b13fcc3d28e06a659fc79727e8cb2b84aa176331a3d9c7c764feabe3aa69"
+    },
+    "runs/direct-final-ui/summary.json": {
+      "bytes": 11029,
+      "sha256": "890c8e63c7a597bbe61834c5077f4a1a27ddc88c37ebbe291907b1090fd2a4e6"
+    },
+    "runs/direct-release-cost/01-all current audio midi resize release controls.log": {
+      "bytes": 6792,
+      "sha256": "2cfc982051a40793d586a0906c5e9d6bc2fdb658cd9ffb4f08b683f6ab71f743"
+    },
+    "runs/direct-release-cost/02-all pending FIFO terminal and horizon controls.log": {
+      "bytes": 2251,
+      "sha256": "9abc1acec6a18965c9cd91c9142e6aa173473dbee1ebe637915c121e4b37f021"
+    },
+    "runs/direct-release-cost/03-stationary mode modifier Escape focus.log": {
+      "bytes": 685,
+      "sha256": "7e10228c88e32f59465d7b8d0e56d60f36747375c68ca314335c8740aa71ef19"
+    },
+    "runs/direct-release-cost/04-representative and raw8192 metadata cost allocation.log": {
+      "bytes": 1135,
+      "sha256": "9bc618fa34a6c5bcbc8adcca420a00ff20f3b33546cd2a675456d38cbf313293"
+    },
+    "runs/direct-release-cost/summary.json": {
+      "bytes": 12949,
+      "sha256": "8b4bbff446e91a026f87ef6ac99f7a991ea4f40fc885ea46c8293786afc91fcf"
+    },
+    "runs/direct-ui-discriminators/01-pointwise rendered pitch mode reversal final-release and island cache.log": {
+      "bytes": 1255,
+      "sha256": "9dea8479ecec13134bd22b94811a8926f19132e02f87f21817e47687fe380f50"
+    },
+    "runs/direct-ui-discriminators/summary.json": {
+      "bytes": 10519,
+      "sha256": "23e8f56c5ac964f5d334bcfd2eb338306a6e48261de98b74c3d63e5d9ea7ac93"
+    },
+    "runs/direct-ui-first/01-original actual rendered boundary regressions.log": {
+      "bytes": 1462,
+      "sha256": "23dc30b13ab52d55ea2927df394011c7aace622802859a9a4a7da65e079fd4ad"
+    },
+    "runs/direct-ui-first/summary.json": {
+      "bytes": 10121,
+      "sha256": "c5045c1ac0884317b9706c7f7d8ac73969baf7ad2a0f7591f683d830fd167122"
+    },
+    "runs/direct-upper-fixture/01-actual upper bound releases with verified lane target.log": {
+      "bytes": 567,
+      "sha256": "ddc499f0ebe6073fb8c6634976a24ec3b8436c2d05ed0003ff9886af50bc3679"
+    },
+    "runs/direct-upper-fixture/summary.json": {
+      "bytes": 10818,
+      "sha256": "2f74f7aa97bd3278bf2ff2065b78bbf05f4d53ad03b3231d9dce7eb988553910"
+    },
+    "runs/path-actual-certificate/01-actual mapping certificate exhaustive small and path.log": {
+      "bytes": 1081,
+      "sha256": "1575257854c8e8549df2c2308678bb4dab597492dda018f646ac41ef731e2505"
+    },
+    "runs/path-actual-certificate/summary.json": {
+      "bytes": 12732,
+      "sha256": "26a43cd05f02ebab0285ffa313df78c16fe23abd9e534518d8629c28026d5250"
+    },
+    "runs/path-actual-certificate-scope/01-actual mapping certificate exhaustive small and path.log": {
+      "bytes": 1837,
+      "sha256": "a54cbc2a7e7fb8eafba57a8dfae0bb5e32ed3f61ce09cb9cc0623f6004a9510f"
+    },
+    "runs/path-actual-certificate-scope/02-shared Warp admission differential.log": {
+      "bytes": 602,
+      "sha256": "435402d9699b6a0d7e3435cde1926ff1886bc70cc921683e0b69cf657c14847a"
+    },
+    "runs/path-actual-certificate-scope/summary.json": {
+      "bytes": 12854,
+      "sha256": "9318acc8fe2cad3a330404f7771c7f51c95a610356740cb0657a15d5c674b54b"
+    },
+    "runs/path-first-small/01-ordered prefix exhaustive small and canonical oracle.log": {
+      "bytes": 954,
+      "sha256": "90c4d677a83996fbb51c5f1d8bfe17b1176bbade04c26660b715231aa12ce7c0"
+    },
+    "runs/path-first-small/summary.json": {
+      "bytes": 10238,
+      "sha256": "dc87d08916948ce3e730f9a862ae74f2bdab093b30d52e945b04f0444d68131b"
+    },
+    "runs/path-first-small-scope/01-ordered prefix exhaustive small and canonical oracle.log": {
+      "bytes": 1041,
+      "sha256": "6767846dea99632b3450bca8ddddb67cd2faa87da309ea355eb325a3ac5aceee"
+    },
+    "runs/path-first-small-scope/summary.json": {
+      "bytes": 10256,
+      "sha256": "c3f2e369c3d8a9fe81c8618bb6c863f76d2068f696ec89337fa4f4a8e2af5a07"
+    },
+    "runs/path-first-small-types/01-ordered prefix exhaustive small and canonical oracle.log": {
+      "bytes": 1040,
+      "sha256": "b76cbaea845be9f4e274ac58e838f096af964a10fcda76615685dbeff0ee984a"
+    },
+    "runs/path-first-small-types/summary.json": {
+      "bytes": 10255,
+      "sha256": "6e1921207c25519fb57458deeb88cf8f2bbf2ccd1e30a2e677a9bc1c87049002"
+    },
+    "runs/path-max-marker-profile/01-actual maximum-marker prefix work.log": {
+      "bytes": 617,
+      "sha256": "8dca5ae02d78bb7790eb525f0c559c8c5acfe95d8f4941bcf6d07d07a0fa427d"
+    },
+    "runs/path-max-marker-profile/summary.json": {
+      "bytes": 12105,
+      "sha256": "0860d5265d67ce3e411046889f32c5e05f97dfe2e04d537303cd518e09e9b667"
+    },
+    "runs/path-rounded-scalars/01-rounded interval exhaustive and canonical path.log": {
+      "bytes": 1452,
+      "sha256": "dbb3ff4eef572508102630292250550835440a958e6030128c8029cf78807301"
+    },
+    "runs/path-rounded-scalars/02-extracted scalar and signed tempo differential.log": {
+      "bytes": 562,
+      "sha256": "9f6628fd874e31361cf40727b302c58a904a6120c0ad83e24c861e6c5f270f0a"
+    },
+    "runs/path-rounded-scalars/summary.json": {
+      "bytes": 12358,
+      "sha256": "2a870bdb000769427ec1da8b963c9a6d167d666142b851c13da59d934586c220"
+    },
+    "source/crates/hex-audio/tests/warp_preview_metadata_cost.rs": {
+      "bytes": 3266,
+      "sha256": "44dec017c45853addd87766257eccfa0ca4d257519a57ba0902c11d78452a9b1"
+    },
+    "source/crates/hex-engine/src/audio_transform/mod.rs": {
+      "bytes": 25752,
+      "sha256": "17100a2c8219cc3b9515a81d2049517b70487221a5835945b4632fe51a66a879"
+    },
+    "source/crates/hex-engine/src/audio_transform/tests.rs": {
+      "bytes": 63388,
+      "sha256": "72e730de1ae677659983412dd79c8de3b5c679c9bc38aa28d49259a668b93304"
+    },
+    "source/crates/hex-ui/src/editor/resize_release_tests.rs": {
+      "bytes": 51601,
+      "sha256": "a78f3c1d063c0cf3b5314919774ebe25ec015ba7f89b468a35c0ad1f7acb21e7"
+    },
+    "source/crates/hex-ui/src/editor/stretch_limit_tests.rs": {
+      "bytes": 17865,
+      "sha256": "68529c455101516c2611015169fac536744cc6aa263ddc3d84364c3d07bebe30"
+    },
+    "source/crates/hex-ui/src/editor/stretch_preview.rs": {
+      "bytes": 6779,
+      "sha256": "409b3bafddd101f9f328c3d336c09dfa74e2b928e3c18deefcd16298ba3ae8ea"
+    },
+    "source/crates/hex-ui/src/editor/trim.rs": {
+      "bytes": 69276,
+      "sha256": "dbf126db42f033dbfbf565af540435cf8cff5986388bb51d892ce314ddf76b2a"
+    },
+    "source/crates/hex-warp/src/lib.rs": {
+      "bytes": 19430,
+      "sha256": "b752a56a9d26d4cf3b86cda86fe77ffa582df0fbd3944a2adaf0de9fea3c70f8"
+    },
+    "source/crates/hex-warp/tests/stretch_admission.rs": {
+      "bytes": 4141,
+      "sha256": "ce84993634dcf673e9ccc9392ab71b7e2f0ac5d888b74b293e9f929986ac5fa5"
+    },
+    "source/docs/warp-resize-limits.md": {
+      "bytes": 3954,
+      "sha256": "f60b285fef9ad89d40730777502e70d597b537e0a6299e2b30868e8a97026e0f"
+    },
+    "superseded-research-NOT-SHIPPING.patch": {
+      "bytes": 42223,
+      "sha256": "03a0503177fce925c0036a86536bc513fb3f82e12c2d4b58506173f09900bc3f"
+    }
+  }
+}

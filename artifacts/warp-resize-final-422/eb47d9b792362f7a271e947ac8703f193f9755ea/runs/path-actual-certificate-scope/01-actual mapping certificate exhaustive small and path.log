@@ -1,0 +1,23 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.37s
+     Running unittests src/lib.rs (target/debug/deps/hex_engine-5ab7741602b2157c)
+
+running 6 tests
+test audio_transform::mapping::resize_path::large_sound_certificate_skips_only_requested_prefix_and_errors_are_atomic ... ok
+test audio_transform::mapping::resize_path::rounded::crop_difference_identity_is_exact_and_large_products_do_not_need_signed_multiplication ... ok
+canonical path pitch=-1200: connected=[8,96] work=Work { certificates: 63, singletons: 89 }
+canonical path pitch=0: connected=[4,96] work=Work { certificates: 63, singletons: 93 }
+canonical path pitch=1200: connected=[2,96] work=Work { certificates: 63, singletons: 95 }
+canonical path pitch=2400: connected=[1,64] work=Work { certificates: 37, singletons: 65 }
+test audio_transform::mapping::resize_path::canonical_small_warp_paths_match_exhaustive_admission ... ok
+actual constant-root certificate pitch=-1200 work=Work { certificates: 12, singletons: 3 }
+test audio_transform::mapping::resize_path::exhaustive_small_masks_preserve_first_boundary_and_reversal ... ok
+actual constant-root certificate pitch=0 work=Work { certificates: 11, singletons: 3 }
+actual constant-root certificate pitch=1200 work=Work { certificates: 10, singletons: 3 }
+actual mapping certified intervals=12661, all exhaustively checked
+test audio_transform::mapping::resize_path::constant_root::every_small_certified_interval_is_canonically_valid ... ok
+integer enclosures checked against 1272960 exact scalar evaluations
+test audio_transform::mapping::resize_path::rounded::every_small_interval_encloses_exact_signed_rounded_phase_expressions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 545 filtered out; finished in 0.48s
+

@@ -1,0 +1,21 @@
+[1/10] clean exact direct Warp point admission regressions: running
+[1/10] clean exact direct Warp point admission regressions: passed
+[2/10] strict UI all targets: running
+[2/10] strict UI all targets: passed
+[3/10] strict existing allocation-probe target: running
+[3/10] strict existing allocation-probe target: passed
+[4/10] architecture: running
+[4/10] architecture: passed
+[5/10] GPUI patch: running
+[5/10] GPUI patch: passed
+[6/10] dependency patch: running
+[6/10] dependency patch: passed
+[7/10] UI style: running
+[7/10] UI style: passed
+[8/10] device layout: running
+[8/10] device layout: passed
+[9/10] format: running
+[9/10] format: passed
+[10/10] diff: running
+[10/10] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/warp-resize-422-direct-clean-qualification/summary.json
