@@ -1,0 +1,26 @@
+/workspace/hex/scripts/tests/test_local_ci.py:35: SyntaxWarning: invalid escape sequence '\ '
+  git\ rev-parse*) echo deadbeef; exit 0 ;;
+{
+  "old_identity": {
+    "device": 33,
+    "inode": 287371
+  },
+  "current_identity": {
+    "device": 33,
+    "inode": 287376
+  },
+  "same_workspace": true,
+  "owner_sha256": "c2ea8c49604ff691ba1b1a5dcf92d6090c17b69495587f724298392f1b00f73d",
+  "restart_preflight": {
+    "type": "RestartError",
+    "message": "release ownership does not match this checkout/target; no implicit adoption"
+  },
+  "automatic_guard": {
+    "type": "TargetCacheError",
+    "message": "release target identity/workspace changed since restart inspection; preserved unchanged"
+  },
+  "owner_unchanged": true,
+  "retained_artifact_unchanged": true,
+  "no_cleanup": true,
+  "lock_released": true
+}
