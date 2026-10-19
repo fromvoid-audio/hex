@@ -5321,3 +5321,10 @@ source handoff is separate from final integration/full CI/merge and delivery.
   and final review remain pending; previous1f085full21 and4737native51 are scoped
   history, not this repair's qualification. Actual OS chooser, physical save/open
   and installation acceptance remain open.
+
+### 2026-10-19 — PR436 active spectrum fill integration
+
+- Composed ownerfa67814c active-fill repair with qualified main35ea; shared EQ/global painter keeps the total257-input cap while budgeting alpha only across valid non-floor fills.
+- Verified all71 original and26 repair evidence payloads. Original actualpaint alpha RED and final68widget component results remain scope-bound; coordinator changednative2 positive is separate from repository qualification and physical pixels.
+- Resolved shared painter composition using existing406 axes::plot_bounds exactly once, preserving grids, node hits, analyzer lifecycle and current GPUI support. No extra7px inset or unqualified407 gesture import.
+- Exact prospective full21/fresh review are pending; no merge, framebuffer/listening, installation or user acceptance claim.
