@@ -595,3 +595,50 @@ fn workspace_review_tab_preserves_held_middle_pan_until_release_or_cancel(cx: &m
         });
     }
 }
+
+#[gpui::test]
+fn workspace_three_returns_held_left_before_drag_preserves_capture(cx: &mut TestAppContext) {
+    for trim in [false, true] {
+        let cx = &mut cx.new_app();
+        cx.update(super::bind_editor_keys);
+        let (project, _, _, clip) = super::clip_drag_ui_test::audio_project();
+        let (handle, editor) =
+            super::clip_drag_ui_test::editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.read(cx).focus.focus(window);
+        });
+        visual.run_until_parked();
+        let selector = Box::leak(if trim {
+            format!("clip-trim-right-{}", clip.value()).into_boxed_str()
+        } else {
+            format!("clip-drag-surface-{}", clip.value()).into_boxed_str()
+        });
+        let point = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+        let before = editor.read_with(&visual, |v, _| {
+            assert!(v.pointer_down.is_some());
+            assert!(v.active_clip_drag.is_none() && v.active_trim_drag.is_none());
+            v.state.as_ref().unwrap().clone()
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, EditorMode::Arrangement, "pre-drag trim={trim}");
+            assert!(v.pointer_down.is_some());
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+        visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pointer_down.is_none());
+            assert!(v.last_enqueued_edit.is_none());
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
+    }
+}
