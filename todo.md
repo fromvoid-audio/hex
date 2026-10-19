@@ -5309,3 +5309,15 @@ source handoff is separate from final integration/full CI/merge and delivery.
   listening and full Sampler395 acceptance remain open. The historical ignored
   keyboard profile is excluded explicitly from focused non-profile commands,
   never counted as passing. This entry records integration evidence only.
+
+- 19 October 2026 — Pulse2818 / PR424 returned startup writer repair: retain
+  both owner commits ee9ac4c8 and67b84e10. Actual named Save during held initial
+  preference load followed by view drop lost the queued folder; the existing
+  owned writer now starts immediately, retaining independent off-UI preference
+  validation and the non-writable refusal. Two actual reds and the condition-only
+  green remain preserved; owner expanded54positive cases and strict checks pass.
+  Merger verified all47new payloads and both owner file identities, then ordinarily
+  integrated qualified main without conflicts or feature edits. New exact FULL21
+  and final review remain pending; previous1f085full21 and4737native51 are scoped
+  history, not this repair's qualification. Actual OS chooser, physical save/open
+  and installation acceptance remain open.
