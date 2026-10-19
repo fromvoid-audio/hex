@@ -261,3 +261,12 @@ invalidation followed by click2, then a fresh3/4 pair. The shared pure policy
 covers both prior/current full-selection states. Original browser/name/numeric
 and physical input evidence remains source-bound; native click-count/IME and
 clipboard acceptance is separate from headless source checks.
+
+The new PR423 toggle fixture now precreates one existing test Environment and
+its samples/WAV before Service/browser startup, then injects that same Arc into
+the editor. Actual browser/home/root, all four preference paths and the catalog
+path correlate with that owner. A real catalog-save gate proves the same root
+survives view/caller retirement, saves successfully, then cleans up without
+recreation. No import or new PendingSetup is needed for this browser-only fixture;
+no production input policy changes. Original query/IME/double-pair/value-event
+assertions remain byte-identical. Older fixtures are not converted by this fix.

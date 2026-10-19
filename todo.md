@@ -5849,3 +5849,18 @@ prospective full CI/integration; native physical mouse/IME acceptance stays open
  4308115090 remains a separate diagnostic/baseline attribution, not a silently
   folded423 production repair. Sole merger owns integration/full21/review/merge;
   physical/native acceptance remains separate.
+
+## 19 October 2026 — Pulse2817 / PR423 new toggle fixture custody
+
+- Root29870 structural lifetime return: replace only new toggle_fixture caller
+  PathBuf ownership with one precreated existing Arc Environment and injected
+  constructor; samples/WAV before startup. All original toggle/invalidation/IME/
+  query/focus/drag/raw-field assertions byte-identical; production policy intact.
+- Reuse only the two identical accepted469 feature-test-only path accessors for
+  actual four-preference/catalog/root correlation. Actual held catalog job owns
+  root through view+caller drop, then successful save and ordinary cleanup.
+- Correct real Rust filters are editor::browser::ui_test::search_selection:: and
+  editor::browser_input::name_case_ui_test::. Historical351 widget80PASS is kept;
+  its two zero-match UI commands are not qualification. New actual search12PASS
+  includes old4+toggle/invalidation7+custody1, with no ignored tests. Final exact
+  shared-widget/name/input/strict/guard receipts remain separately source-bound.

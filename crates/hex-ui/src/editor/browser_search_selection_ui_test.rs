@@ -296,34 +296,60 @@ fn search_selection_clipboard_ime_empty_and_long_query_keep_text_ownership(
     });
 }
 
-// Only the new toggle regressions use this bounded pre-worker seam. Existing
-// legacy fixtures remain separate from the queued broader sandbox work.
+// Only the new toggle regressions use this bounded pre-worker seam. Inject the
+// actual root lease before startup; older fixtures retain their original scope.
 fn toggle_fixture(
     cx: &mut TestAppContext,
 ) -> (
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
-    PreferencesTestDirectory,
+    std::sync::Arc<super::super::super::test_environment::Environment>,
     std::path::PathBuf,
 ) {
-    let directory = PreferencesTestDirectory::new();
-    let samples = directory.0.join("samples");
+    let directory = super::super::super::test_environment::Environment::new().unwrap();
+    let samples = directory.root().join("samples");
     std::fs::create_dir_all(&samples).unwrap();
     std::fs::write(samples.join("loop.wav"), mono_pcm_wav(24)).unwrap();
     let handle = *cx.add_window(|_, _| Empty);
     let editor = cx
         .update_window(handle, |_, window, cx| {
             window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(
+                EditorView::new_for_test_with_environment(
                     window,
                     cx,
                     Service::new(48_000, 32, 8_000_000).unwrap(),
-                    &directory.0,
+                    std::sync::Arc::clone(&directory),
                 )
             })
         })
         .unwrap();
     editor.read_with(cx, |view, _| {
+        let root = directory.root();
+        assert!(std::sync::Arc::ptr_eq(&directory, &view.test_environment));
+        assert_eq!(view.browser.home, directory.home);
+        assert!(samples.join("loop.wav").is_file());
+        assert_eq!(
+            view.browser.test_preferences_path(),
+            root.join("config/browser.json")
+        );
+        assert_eq!(
+            view.recent_projects.test_path(),
+            root.join("config/recent-projects.json")
+        );
+        assert_eq!(
+            view.theme_settings.test_path(),
+            root.join("config/theme.json")
+        );
+        assert_eq!(
+            view.project_directory.test_path(),
+            root.join("config/project-directory.json")
+        );
+        assert_eq!(
+            view.browser
+                .test_preferences_path()
+                .with_extension("samples-v1.db"),
+            root.join("config/browser.samples-v1.db")
+        );
         assert_eq!(view.browser.directory, samples);
         assert_eq!(view.browser.places, vec![samples.clone()]);
         assert_eq!(view.sample_roots(), vec![samples.clone()]);
@@ -566,4 +592,73 @@ fn search_invalidated_pair_shift(cx: &mut TestAppContext) {
 #[gpui::test]
 fn search_invalidated_pair_drag(cx: &mut TestAppContext) {
     invalidated_pair_caller(cx, "drag");
+}
+
+#[gpui::test]
+fn toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop(
+    cx: &mut TestAppContext,
+) {
+    use std::{
+        sync::{Arc, atomic::Ordering},
+        time::{Duration, Instant},
+    };
+    let (handle, editor, directory, samples) = toggle_fixture(cx);
+    let root = directory.root().to_owned();
+    let weak = Arc::downgrade(&directory);
+    let gate = directory.gate_next_catalog_save();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(
+        gate.reached.load(Ordering::Acquire),
+        "actual catalog worker at save gate"
+    );
+    assert!(!gate.finished.load(Ordering::Acquire));
+    editor.read_with(&visual, |view, _| {
+        assert!(Arc::ptr_eq(&directory, &view.test_environment));
+        assert_eq!(view.browser.directory, samples);
+        assert_eq!(
+            view.browser
+                .test_preferences_path()
+                .with_extension("samples-v1.db"),
+            root.join("config/browser.samples-v1.db")
+        );
+    });
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| Empty);
+    });
+    let editor_weak = editor.downgrade();
+    drop(editor);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(
+        editor_weak.upgrade().is_none(),
+        "view retired before real save continuation"
+    );
+    drop(directory);
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "only actual held catalog job retains SAME fixture root"
+    );
+    assert!(root.is_dir());
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.save_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(weak.upgrade().is_none(), "no caller/view/job Arc leak");
+    let until = Instant::now() + Duration::from_secs(5);
+    while root.exists() {
+        assert!(
+            Instant::now() < until,
+            "owned root cleanup timed out: {root:?}"
+        );
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(!root.exists(), "drained catalog job cannot recreate root");
+    eprintln!(
+        "toggle_fixture_custody same_root=true real_save=true all_four_preferences=true view_retired=true cleaned=true"
+    );
 }
