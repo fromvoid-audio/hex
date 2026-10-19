@@ -109,12 +109,12 @@ impl ResponseGraph {
             return;
         };
         cx.defer_in(window, move |graph, window, cx| {
-            if graph
-                .scroll
-                .gesture
-                .is_some_and(|gesture| gesture.token == token)
-                && graph.focus.is_focused(window)
-            {
+            if graph.scroll.gesture.is_some_and(|gesture| {
+                gesture.token == token
+                        // Fractional intent has not taken focus or begun an
+                        // edit; its phase metadata can retire without focus.
+                        && (!gesture.begun || graph.focus.is_focused(window))
+            }) {
                 graph.finish_scroll(false, cx);
             }
         });
