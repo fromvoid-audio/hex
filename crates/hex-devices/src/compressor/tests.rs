@@ -1128,3 +1128,129 @@ fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
     );
     println!("RMS_SILENCE_CASES {cases} finite exact-zero histories, no native timing claim");
 }
+
+#[test]
+fn rms_energy_floor_preserves_closed_form_above_floor_and_retires_at_analytic_crossing() {
+    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
+        for detector in 0..2 {
+            let state = mode(&COMPRESSOR_DEFINITION.default_state().unwrap(), detector);
+            let mut actual = runtime(&state, rate);
+            actual.process_block(
+                &mut [[0.5, -0.25]; 257],
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
+            let initial = history(actual.as_ref()).energy;
+            let alpha = (-100.0 / f64::from(rate)).exp();
+            let expected_crossing =
+                initial.map(|energy| ((1e-30 / energy).ln() / alpha.ln()).ceil() as usize);
+            let mut first_zero = [None; 2];
+            for n in 1..=rate as usize {
+                actual.process_block(&mut [[0.0; 2]], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                for channel in 0..2 {
+                    let energy = history(actual.as_ref()).energy[channel];
+                    assert!(energy == 0.0 || energy >= 1e-30);
+                    let analytic = initial[channel] * alpha.powi(n as i32);
+                    if energy == 0.0 {
+                        if first_zero[channel].is_none() {
+                            first_zero[channel] = Some(n);
+                        }
+                    } else {
+                        assert!(
+                            (energy / analytic - 1.0).abs() < 1e-9,
+                            "unchanged10ms law rate{rate} channel{channel} frame{n}"
+                        );
+                    }
+                }
+            }
+            for channel in 0..2 {
+                assert!(
+                    first_zero[channel]
+                        .unwrap()
+                        .abs_diff(expected_crossing[channel])
+                        <= 1,
+                    "actual/closed-form crossing rate{rate} channel{channel}"
+                );
+            }
+            println!(
+                "RMS_FLOOR_CROSSING rate={rate} detector={detector} actual={first_zero:?} analytic={expected_crossing:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rms_floor_partition_history_retarget_invalid_frames_and_reset_remain_coherent() {
+    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
+        let base = COMPRESSOR_DEFINITION.default_state().unwrap();
+        let changed = mode(&patch(&base, parameter::DRY_WET, 0.375), 1);
+        let mut prior = runtime(&base, rate);
+        prior.process_block(
+            &mut [[0.75, -0.125]; 257],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        let before = history(prior.as_ref()).energy;
+        let mut whole = runtime(&changed, rate);
+        whole.copy_history_from(prior.as_ref());
+        let mut split = runtime(&changed, rate);
+        split.copy_history_from(prior.as_ref());
+        let mut a = vec![[0.0; 2]; rate as usize];
+        let mut b = a.clone();
+        whole.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let mut offset = 0;
+        for count in [1, 31, 257, 3, 509].into_iter().cycle() {
+            if offset == b.len() {
+                break;
+            }
+            let end = (offset + count).min(b.len());
+            let mut scratch = runtime(&changed, rate);
+            scratch.copy_history_from(split.as_ref());
+            scratch.process_block(&mut b[offset..end], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            split = scratch;
+            offset = end;
+        }
+        assert_eq!(a, b);
+        assert_eq!(history(whole.as_ref()).energy, [0.0; 2]);
+        assert_eq!(history(split.as_ref()).energy, [0.0; 2]);
+        assert_eq!(
+            history(whole.as_ref()).envelope,
+            history(split.as_ref()).envelope
+        );
+        assert_eq!(
+            history(whole.as_ref()).gain_db,
+            history(split.as_ref()).gain_db
+        );
+        assert_eq!(
+            history(prior.as_ref()).energy,
+            before,
+            "scratch processing/cancel did not change original history"
+        );
+        let mut peak = runtime(&base, rate);
+        peak.copy_history_from(split.as_ref());
+        peak.process_bypassed_block(&mut [[0.0; 2]; 1021], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(
+            history(peak.as_ref()).energy,
+            [0.0; 2],
+            "retarget/bypass cannot resurrect a retired tail"
+        );
+        peak.process_block(
+            &mut [[f32::NAN, 1.0], [1.0, f32::INFINITY]],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        assert_eq!(history(peak.as_ref()).energy, [0.0; 2]);
+        peak.process_block(
+            &mut [[f32::from_bits(1), -f32::from_bits(1)]],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        assert_eq!(
+            history(peak.as_ref()).energy,
+            [0.0; 2],
+            "subfloor input does not recreate tiny history"
+        );
+        peak.reset();
+        let mut actual = [[0.75, -0.125]; 257];
+        let mut fresh = actual;
+        peak.process_block(&mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        runtime(&base, rate).process_block(&mut fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(actual, fresh, "reset retains exact original Peak PCM");
+    }
+}

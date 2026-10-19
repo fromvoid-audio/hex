@@ -17,6 +17,9 @@ const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
 const GAIN_SMOOTH_MS: f64 = 5.0;
 const RMS_INTEGRATION_SECONDS: f64 = 0.010;
+// Power floor: sqrt(1e-30) is -300 dBFS, far below the useful detector
+// range. Retire silent tails before f64 subnormals can persist in warm history.
+const RMS_ENERGY_FLOOR: f64 = 1e-30;
 const SILENCE_FLOOR_DB: f64 = -120.0;
 
 pub mod parameter {
@@ -441,6 +444,9 @@ impl CompressorRuntime {
         // Independent mean-square histories stay warm even while Peak is selected.
         for (energy, input) in self.energy.iter_mut().zip([left, right]) {
             *energy = self.rms_alpha * *energy + (1.0 - self.rms_alpha) * input * input;
+            if *energy < RMS_ENERGY_FLOOR {
+                *energy = 0.0;
+            }
         }
         if self.detector_remaining > 0 {
             let target = f64::from(self.settings.detector == Detector::Rms);

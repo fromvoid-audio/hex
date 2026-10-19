@@ -173,3 +173,22 @@ headless UI/worker/persistence checks, not native pixels or listening acceptance
 No production changes were required for this acceptance supplement. Original
 Peak/DryWet PCM, RMS history, 5ms transition and allocation evidence is retained;
 native behavior, listening and full Compressor/W12 parity remain open.
+
+### Silent RMS energy retirement
+
+After the unchanged per-channel exponential update, energies below `1e-30`
+are set to exact zero. This power floor corresponds to -300 dBFS detector
+amplitude, 180 dB below the existing -120 dB silence reference and far below
+the minimum threshold/knee region. It prevents persistent `f64` subnormal
+histories during digital silence, including warm Peak, fully dry and bypass
+paths. The original recurrence above the floor, Peak arithmetic fast path,
+10 ms integration coefficient and 5 ms mode transition remain unchanged.
+Subfloor input increments are discarded; this is a local numerical floor,
+not a noise gate, new control, global floating-point mode or codec change.
+
+Real provider tone/impulse-to-silence tests cover six rates and eight processing
+paths; independent exponential crossing, history/partition/reset and calibrated
+allocation checks accompany the original PCM/analytic/persistence/A-B controls.
+Observed subnormal persistence is source/runtime evidence, not proof of a native
+callback deadline miss or an audible glitch. Native listening and optimized
+hardware performance remain separate acceptance work.
