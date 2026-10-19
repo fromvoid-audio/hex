@@ -226,3 +226,20 @@ when opening settings, and closing already-open compact settings does not widen 
 This state is transient editor layout; no new persisted format or global width
 quantization is introduced. Native physical drag/hover and accessibility inspection
 remain coordinator-owned acceptance, separate from headless scene/input tests.
+
+### keyboard row-action eligibility
+
+Left/Right operate only on a highlighted browser result. Clicking a source/Place
+or pressing Escape retains navigation focus but clears the highlight; subsequent
+Right cannot audition an implicit first sample or expand an implicit folder, and
+Left cannot collapse one. Up/Down still enter and navigate results through the
+existing selection path. A highlighted sample's Right audition and highlighted
+folder Left/Right remain available, as do explicit row clicks and manual preview.
+The browser key context and search/Command-F text ownership are unchanged.
+
+Pulse2858/PR460 promotes the verified five failures from both main2683942b and
+original423 into normal rendered regressions. They use actual routed keys,
+private filesystem workers and canonical Service Init; refused row actions leave
+canonical metadata/history and project requests unchanged. Selected-row controls
+and Up/Down-to-Right plus Command-F typing remain positive cases. This is source
+coverage, not physical keyboard/audio-output or native delivery acceptance.

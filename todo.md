@@ -5659,3 +5659,16 @@ User rejected device-local automation editing. Remove its button, graph mode and
   fresh review/merge of BOTH PRs and physical acceptance remain outstanding.
 
 - Merger integration note, 19 october2026: preserve complete4bbe owner runtime/tests and both canonical419/458 histories. Correct the one retained prose reference from18 to the actual20-case union already documented in the command/checklist; no runtime or test-oracle changes. New exact guarded changed cases/full21/fresh review of each PR remain required; oldadb3 green is historical/review-blocked, installed2eef unchanged.
+
+### 2026-10-19 — PR460 browser arrow eligibility
+
+- Recover the same canonical task2858/PR460 plan03db at verified main2683942b;
+  preserve separate423 policy7db and its source/negative evidence unchanged.
+- Add only results_focused refusal to existing Right preview and Left collapse
+  handlers. Retain the active browser navigation context, Up/Down entry, selected
+  sample/folder actions, Command-F/text editing and separate manual audition.
+- Promote the verified identical five baseline negatives and selected controls;
+  add actual Service canonical/history invariants and Up/Down/Command-F routing.
+  Focused seven cases pass without rerunning the unchanged original negative.
+  Exact source component checks precede sole-merger full21/fresh review/merge;
+  no native/app/physical output or user acceptance is inferred.
