@@ -670,3 +670,53 @@ fn workspace_three_returns_plain_clip_click_retires_pending_pointer(cx: &mut Tes
         assert_eq!(v.worker_requests_pending, 0);
     });
 }
+
+#[gpui::test]
+fn workspace_three_returns_delayed_click_preserves_other_pointer_identity(cx: &mut TestAppContext) {
+    for mismatch in 0..3 {
+        let cx = &mut cx.new_app();
+        cx.update(super::bind_editor_keys);
+        let (project, _, target, clip) = super::clip_drag_ui_test::audio_project();
+        let mut model = hex_project::Editor::new(project, 8).unwrap();
+        let hex_project::Created::Clip(other) = model
+            .execute(hex_project::Command::CopyClipTo {
+                clip,
+                track: target,
+                start: 0,
+            })
+            .unwrap()
+        else {
+            panic!("actual second clip");
+        };
+        let (handle, editor) = super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Default::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.read(cx).focus.focus(window);
+        });
+        visual.run_until_parked();
+        let name = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
+        let point = visual.debug_bounds(name).unwrap().center();
+        visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+        // Deliver the original surface's pending click after a different keyed
+        // press has taken ownership, as with a delayed callback after redraw.
+        let retained = editor.update(&mut visual, |v, _| {
+            let generation = v.project_generation + u64::from(mismatch == 0);
+            let owner = if mismatch == 1 { other } else { clip };
+            let edge = (mismatch == 2).then_some(hex_project::TrimEdge::Right);
+            v.remember_pointer_down(generation, owner, edge, 123.0);
+            v.pointer_down.unwrap()
+        });
+        visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.pointer_down, Some(retained), "mismatch={mismatch}");
+            assert!(v.last_enqueued_edit.is_none());
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+    }
+}

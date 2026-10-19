@@ -140,3 +140,31 @@ Also hold a double-click body-paint drag and press Tab: keep Arrange and the pai
 preview. Release to paint once, or Escape then release to cancel, then verify Tab
 switches normally. This checklist does not dispatch a native job or create a new
 verification gate.
+
+### Auxiliary capture and device-menu review return
+
+The next source-specific review reproduced Tab switching during four actual
+rendered interactions: a held clip press before the drag threshold, an open
+device-add menu, a project-spectrum resize and device-chain navigation. The
+existing workspace refusal now checks those owners too. Private read-only
+queries expose only whether each existing owner is active; capture, focus,
+worker, model and history policies are unchanged.
+
+The pre-drag guard also exposed a pre-existing ordinary-click cleanup gap:
+the clip's click handler consumed mouse-up before its separate release handler
+cleared the recorded press. The click handler now clears only its captured
+project generation, clip and non-trim edge before selecting the clip. A delayed
+click cannot clear a different generation, clip or trim-edge press. There is no
+blanket pointer reset or vendor change.
+
+New rendered cases exercise body/trim press and release, ordinary click without
+Tab, delayed keyed click, menu entry from root and real header keyboard focus,
+spectrum release/Escape, and overview/middle-button device navigation. The add
+button's actual click focuses the existing tracked root parent through GPUI;
+it does not preserve header focus as initially assumed. Menu tests establish
+both starting focus contexts, then assert the real root route after clicking.
+They preserve project/revision and queue state, retain each capture through Tab,
+and allow switching again after the existing release/cancel/close path.
+Headless pointer/key evidence is not physical/native acceptance. The immutable
+handoff retains all original review failures and the separate fixture focus
+assumption failures. Final prospective-tree qualification remains merger-owned.

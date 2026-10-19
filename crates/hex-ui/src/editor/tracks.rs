@@ -1937,6 +1937,7 @@ impl EditorView {
         let mouse_up_entity = drag_entity.clone();
         let move_entity = drag_entity.clone();
         let source_track = payload.source_track;
+        let source_generation = payload.project_generation;
         let mouse_down_payload = payload.clone();
         let mouse_up_payload = payload.clone();
         div()
@@ -1952,6 +1953,9 @@ impl EditorView {
             .cursor(gpui::CursorStyle::OpenHand)
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    // Click consumes the mouse-up before the separate release
+                    // listener; retire only this surface's original press.
+                    view.clear_pointer_down(source_generation, clip_id, None);
                     cx.stop_propagation();
                     view.select_clip_header(source_track, clip_id, event.modifiers(), window, cx);
                     cx.notify();

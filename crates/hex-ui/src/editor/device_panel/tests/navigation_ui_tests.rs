@@ -307,7 +307,7 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
 }
 
 #[gpui::test]
-fn workspace_three_returns_device_menu_retains_root_or_track_focus(cx: &mut TestAppContext) {
+fn workspace_three_returns_device_menu_from_root_or_track_focus(cx: &mut TestAppContext) {
     for header_focus in [false, true] {
         let cx = &mut cx.new_app();
         cx.update(crate::editor::bind_editor_keys);
@@ -323,15 +323,22 @@ fn workspace_three_returns_device_menu_retains_root_or_track_focus(cx: &mut Test
             });
         });
         visual.run_until_parked();
+        // Configure both real keyboard contexts explicitly; the prior pointer
+        // fixture did not establish header focus, so it cannot prove that route.
         if header_focus {
-            let name =
-                Box::leak(format!("arrangement-track-header-{}", track.value()).into_boxed_str());
-            let bounds = visual.debug_bounds(name).unwrap();
-            visual.simulate_click(
-                bounds.origin + point(px(12.0), px(9.0)),
-                Modifiers::default(),
-            );
+            visual.update(|window, cx| {
+                editor.update(cx, |v, cx| v.track_header_focus(track, cx).focus(window));
+            });
         }
+        visual.update(|window, cx| {
+            editor.read_with(cx, |v, _| {
+                if header_focus {
+                    assert!(v.track_header_focused(window));
+                } else {
+                    assert!(v.focus.is_focused(window));
+                }
+            });
+        });
         let add = visual.debug_bounds("device-add-toggle").unwrap().center();
         visual.simulate_click(add, Modifiers::default());
         visual.run_until_parked();
@@ -342,7 +349,9 @@ fn workspace_three_returns_device_menu_retains_root_or_track_focus(cx: &mut Test
         });
         visual.update(|window, cx| {
             editor.read_with(cx, |v, _| {
-                assert!(v.focus.is_focused(window) || v.track_header_focused(window));
+                // GPUI's existing tracked-parent mouse-down handler focuses
+                // root when this non-focusable add button is clicked.
+                assert!(v.focus.is_focused(window));
             })
         });
         visual.simulate_keystrokes("tab");
