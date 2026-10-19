@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 38.13s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_space_key_routes_transport_without_retiring_pointer_or_edit ... ok
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_position_survives_real_preview_ack_and_repeated_completed_frames ... ok
+
+thread 'editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_space_reaches_real_prepared_output_and_callback_without_release' (330371) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs:322:17:
+actual Space did not start callback while moving=true: error=Some(DisplayError { message: "arrangement seek requires the current applied arrangement graph", batch_member: None }) prepared=false latched=false key=Some(GestureKey { generation: 0, token: 1 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_space_reaches_real_prepared_output_and_callback_without_release ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_space_reaches_real_prepared_output_and_callback_without_release
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 6.66s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

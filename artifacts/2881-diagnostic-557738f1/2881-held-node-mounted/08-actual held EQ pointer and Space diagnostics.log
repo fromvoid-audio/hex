@@ -1,0 +1,12 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 36.42s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 2 tests
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_space_key_routes_transport_without_retiring_pointer_or_edit ... ok
+test editor::device_panel::tests::eq_ui_tests::held_pointer_tests::eq_held_node_position_survives_real_preview_ack_and_repeated_completed_frames ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 3.66s
+
