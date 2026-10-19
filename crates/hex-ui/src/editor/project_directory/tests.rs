@@ -728,3 +728,118 @@ fn project_directory_ordinary_constructor_resolves_fourth_path_before_any_job(
         .unwrap();
     drop(editor);
 }
+
+#[gpui::test]
+fn project_directory_named_save_during_initial_load_persists_after_view_drop(
+    cx: &mut TestAppContext,
+) {
+    let owned = Directory::new();
+    let current = owned
+        .folder("Named Save Before Preferences")
+        .join("Current.hex");
+    let remembered = owned.folder("Old Remembered Folder");
+    hex_preferences::save_project_directory(&owned.preferences(), &remembered).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    service_state(&service);
+    service.submit(Request::SaveNew(current.clone())).unwrap();
+    let initial = service_state(&service);
+    let original = std::fs::read(&current).unwrap();
+    let gate = Arc::new(TestGate::default());
+    INITIAL_LOAD_GATE.with(|slot| {
+        assert!(slot.borrow().is_none());
+        *slot.borrow_mut() = Some(gate.clone());
+    });
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_project_preferences(
+                    window,
+                    cx,
+                    service,
+                    &owned.0,
+                    owned.preferences(),
+                )
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(initial);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let save_gate = Arc::new(TestGate::default());
+    editor.update(&mut visual, |view, _| {
+        view.project_directory.save_gate = Some(save_gate.clone())
+    });
+    pump(&editor, &mut visual, |view| {
+        settled(view) && gate.reached.load(Ordering::Acquire)
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(hex_project::Command::AddTrack {
+            name: "actual startup save".into()
+        })))
+    });
+    pump(&editor, &mut visual, |view| {
+        settled(view) && view.state.as_ref().unwrap().unsaved
+    });
+    editor.update_in(&mut visual, |view, window, _| view.focus.focus(window));
+    visual.run_until_parked();
+    visual.dispatch_action(SaveProject);
+    pump(&editor, &mut visual, |view| {
+        settled(view) && !view.saving_project && !view.state.as_ref().unwrap().unsaved
+    });
+    assert!(
+        cx.pending_save_options().is_none(),
+        "named Save uses actual document without picker"
+    );
+    assert_ne!(
+        std::fs::read(&current).unwrap(),
+        original,
+        "actual canonical SaveCurrent changed project bytes"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.project_directory.loading,
+            "initial preference load remains gated through real save completion"
+        );
+        assert_eq!(
+            view.project_directory
+                .writes
+                .lock()
+                .unwrap()
+                .pending
+                .as_deref(),
+            current.parent(),
+            "canonical success queued actual folder"
+        );
+    });
+    let writes = editor.read_with(&visual, |view, _| {
+        Arc::clone(&view.project_directory.writes)
+    });
+    let weak = editor.downgrade();
+    close(visual, editor);
+    cx.run_until_parked();
+    assert!(
+        weak.upgrade().is_none(),
+        "background work must not pin the view"
+    );
+    gate.release();
+    save_gate.release();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !gate.finished.load(Ordering::Acquire) || writes.lock().unwrap().running {
+        cx.run_until_parked();
+        assert!(
+            std::time::Instant::now() < until,
+            "initial load completion stalled"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    cx.run_until_parked();
+    assert_eq!(
+        hex_preferences::load_project_directory(&owned.preferences()).unwrap(),
+        Some(current.parent().unwrap().to_owned()),
+        "successful named Save before startup preference completion must survive view destruction"
+    );
+}

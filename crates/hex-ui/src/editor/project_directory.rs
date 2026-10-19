@@ -8,6 +8,11 @@ use std::{
 
 type PreferenceResult<T> = Result<T, hex_preferences::PreferencesError>;
 
+#[cfg(test)]
+std::thread_local! {
+    static INITIAL_LOAD_GATE: std::cell::RefCell<Option<Arc<TestGate>>> = const { std::cell::RefCell::new(None) };
+}
+
 #[derive(Default)]
 struct Writes {
     pending: Option<PathBuf>,
@@ -66,12 +71,20 @@ impl EditorView {
         let path = self.project_directory.path.clone();
         #[cfg(test)]
         let environment = Arc::clone(&self.test_environment);
+        #[cfg(test)]
+        let load_gate = INITIAL_LOAD_GATE.with(|slot| slot.borrow_mut().take());
+        #[cfg(test)]
+        let completion = load_gate.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     let _environment = environment;
+                    #[cfg(test)]
+                    if let Some(gate) = load_gate {
+                        gate.wait().await;
+                    }
                     hex_preferences::load_project_directory(&path)
                 })
                 .await;
@@ -95,6 +108,11 @@ impl EditorView {
                 }
                 cx.notify();
             });
+            #[cfg(test)]
+            if let Some(gate) = completion {
+                gate.finished
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
         })
         .detach();
     }
@@ -259,6 +277,7 @@ impl EditorView {
 #[cfg(test)]
 #[derive(Default)]
 struct TestGate {
+    finished: std::sync::atomic::AtomicBool,
     reached: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
     waker: Mutex<Option<std::task::Waker>>,
