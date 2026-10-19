@@ -1,0 +1,41 @@
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-mts v0.1.0 (/workspace/hex/crates/hex-mts)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-midi v0.1.0 (/workspace/hex/crates/hex-midi)
+   Compiling hex-diagnostics v0.1.0 (/workspace/hex/crates/hex-diagnostics)
+   Compiling hex-library v0.1.0 (/workspace/hex/crates/hex-library)
+    Finished `test` profile [unoptimized] target(s) in 48.23s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 8 tests
+test editor::browser::ui_test::arrow_fixture::browser_arrows_fixture_catalog_job_owns_root_after_caller_and_view_drop ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=true left=false before=(0, "▸", 0) after=(0, "▸", 0)
+test editor::browser::ui_test::browser_arrows_escape_folder_right ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=true escape=true left=false before=(0, "▸", 0) after=(0, "▸", 0)
+test editor::browser::ui_test::browser_arrows_escape_sample_right ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=true left=true before=(0, "▾", 1) after=(0, "▾", 1)
+test editor::browser::ui_test::browser_arrows_escape_folder_left ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=false left=false before=(0, "▸", 0) after=(0, "▸", 0)
+test editor::browser::ui_test::browser_arrows_source_folder_right ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=true escape=false left=false before=(0, "▸", 0) after=(0, "▸", 0)
+test editor::browser::ui_test::browser_arrows_source_sample_right ... ok
+test editor::browser::ui_test::browser_arrows_up_down_enter_results_and_command_f_keeps_text_input ... ok
+test editor::browser::ui_test::browser_arrows_selected_controls ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1038 filtered out; finished in 1.81s
+

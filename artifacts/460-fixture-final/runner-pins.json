@@ -1,0 +1,23 @@
+{
+  "runner_source": "3539f1f37ffe01cba653b4939d6055c95da00167",
+  "location": "/tmp/hex460-current-guard",
+  "workspace": "/workspace/hex",
+  "files": [
+    {
+      "path": "scripts/local-ci.py",
+      "git_blob": "b13d442c9bc7817869ab5e006a6808a9d5a537bb",
+      "sha256": "f3dbc31e7d0eee976f0b141f0750bd5a2315aa4638169930939de0b551bb2929"
+    },
+    {
+      "path": "scripts/ci_plan.py",
+      "git_blob": "018f53e67dce19497e061bd3e331f9f41e42666e",
+      "sha256": "4d2ae2a6dcf2583cb82a45794d6a04aff114272a134f289ce794a98d9589c21c"
+    },
+    {
+      "path": "scripts/build_inputs.py",
+      "git_blob": "0f131c9ef8cb5c580bfa299f8f788e068841c102",
+      "sha256": "7937829e1872d24e4841fab68c98cf75499fa09de6b10557a13e5e6bd1739b64"
+    }
+  ],
+  "scope": "partial owner component, not required merge plan"
+}

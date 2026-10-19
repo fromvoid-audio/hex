@@ -1,0 +1,30 @@
+{
+  "source": "8219210ec90ec04b887235672bd785c1c19329e7",
+  "tree": "746894f6cf1a8f63e44e64d6e554524a38796f8e",
+  "base": "4a9f35af66dbd8669abe0322018911d84b677f9e",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/browser_arrow_fixture_ui_test.rs",
+      "before_blob": null,
+      "after_blob": "29ecadecb3813d435266f2365a11106ca090cd0c",
+      "sha256": "b7fce7cd66695fda1a5c34417005930d7b62608a6d886f03e41cc9238dd45e51"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/browser_ui_test.rs",
+      "before_blob": "15e77edce942fb2e1cbdb835b763340404e09806",
+      "after_blob": "73976b1aee1a67240036d81edb48982d36dab520",
+      "sha256": "60d28293ab970d27ebe861d361eb818e235bd1de9f25b96346b94071c3332d42"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/project_directory.rs",
+      "before_blob": "ab70d02b83e8fd0a1d16b962d80b7550e6b36e0a",
+      "after_blob": "93f21a9e828e260d3d8f7627c358b1be883fef70",
+      "sha256": "514bfce63f073cdd1eaffb61b6efc08e3a4e326c826ee3e8278014983b606fdb"
+    }
+  ],
+  "all_seven_behavior_and_helper_tail_bytes_unchanged": true,
+  "behavior_tail_sha256": "6f33dc96c33b6e94b9e52cd4a659366db2802c3347f297a4522ce0803f90eba6",
+  "project_accessor_identical_to_accepted469_at": "3539f1f37ffe01cba653b4939d6055c95da00167",
+  "tested_dirty_parent": "4a9f35af66dbd8669abe0322018911d84b677f9e",
+  "tested_content_sha256": "6dd82b3e4b2a0e806a806538ccd01848210e8a8b0e98c5039ed188fa3f0da648"
+}
