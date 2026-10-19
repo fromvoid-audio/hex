@@ -884,7 +884,10 @@ fn view_state_bound(
     project_generation: u64,
     unsaved: bool,
     document_path: Option<&Path>,
-    binding: Option<ComparisonAudioBinding>,
+    binding: Option<(
+        Arc<CanonicalAudioSourceSnapshot>,
+        Option<ComparisonAudioBinding>,
+    )>,
 ) -> Arc<ViewState> {
     let project = Arc::new(session.project().clone());
     let rate = u64::from(project.sample_rate());
@@ -896,8 +899,8 @@ fn view_state_bound(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
-        comparison_audio: binding.clone(),
-        canonical_audio_source: binding.map(|binding| binding.source).or_else(|| {
+        comparison_audio: binding.as_ref().and_then(|(_, proof)| proof.clone()),
+        canonical_audio_source: binding.map(|(source, _)| source).or_else(|| {
             Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
                 &project,
                 project_generation,
@@ -2523,7 +2526,9 @@ fn run_worker(
                                         project_generation,
                                         unsaved,
                                         document.as_ref().map(|handle| handle.path.as_path()),
-                                        state.comparison_audio.clone(),
+                                        state.canonical_audio_source.as_ref().map(|source| {
+                                            (Arc::clone(source), state.comparison_audio.clone())
+                                        }),
                                     );
                                     status = Some("project saved".into());
                                 }
@@ -2563,7 +2568,9 @@ fn run_worker(
                                         project_generation,
                                         unsaved,
                                         document.as_ref().map(|current| current.path.as_path()),
-                                        state.comparison_audio.clone(),
+                                        state.canonical_audio_source.as_ref().map(|source| {
+                                            (Arc::clone(source), state.comparison_audio.clone())
+                                        }),
                                     );
                                 }
                                 Err(reason) => error = Some(reason.to_string().to_lowercase()),
@@ -2906,7 +2913,7 @@ fn run_worker(
                     project_generation,
                     unsaved,
                     document.as_ref().map(|handle| handle.path.as_path()),
-                    Some(binding),
+                    Some((Arc::clone(&binding.source), Some(binding))),
                 );
                 if let Some((compiled_revision, _)) = &mut compiled {
                     *compiled_revision = revision;

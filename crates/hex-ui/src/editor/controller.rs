@@ -181,6 +181,21 @@ impl EditorView {
                     })
             });
         let applied_is_current = resident_applied || verified_applied;
+        // This proof preserves the actual active provider/runtime and selected
+        // stable TrackId. Advance only this input's authoring correlation; never
+        // replace its lease, held notes, request identity or slot reservations.
+        if self
+            .computer_keyboard
+            .input
+            .as_ref()
+            .is_some_and(|input| !input.is_cancelled())
+            && let Some((generation, revision, _)) = &mut self.computer_keyboard.target
+            && *generation == self.project_generation
+            && *revision == previous_revision
+        {
+            *revision = next.revision;
+        }
+
         if let Some(pending) = self.pending_playback.as_mut()
             && pending.seek_request_id.is_none()
             && pending.device_preview_identity.is_none()
@@ -1460,6 +1475,28 @@ impl EditorView {
     }
 
     pub(super) fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+        if !event.project_replaced
+            && let Some(previous) = self.state.as_ref()
+            && let Some(proof) = event.state.comparison_audio.as_ref()
+            && !proof.follows(previous, &event.state, self.project_generation)
+            && !(previous.revision == event.state.revision
+                && previous.project == event.state.project
+                && previous
+                    .canonical_audio_source
+                    .as_ref()
+                    .zip(event.state.canonical_audio_source.as_ref())
+                    .is_some_and(|(old, current)| {
+                        Arc::ptr_eq(old, current)
+                            && current.context().project_generation == self.project_generation
+                            && event.state.audio_authoring_revision(current.context())
+                                == Some(event.state.revision)
+                    }))
+        {
+            // Worker events are ordered and retained under backpressure. A
+            // duplicate old proof or mismatched source cannot advance authoring,
+            // admission, an input target, or any pending publication owner.
+            return None;
+        }
         let retired_trim = self.trim_request_complete(&event);
         if event.project_replaced {
             self.invalidate_prepared_seek();
