@@ -203,3 +203,50 @@ fn current32_placement_keeps_required_tuning_manifest_and_refuses_old31() {
         assert!(hex_storage::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
     }
 }
+
+#[test]
+fn once_consumed_cursor_and_selected_root_offset_convert_below_single_signed_range() {
+    use hex_project::{BeatTime, audio_projection_frame};
+    let (project, clip) = fixture(AudioViewMode::Once);
+    // The retained source/root remains bounded (480k frames). Once may have
+    // consumed a much larger cursor and now project only silence.
+    let phase = project
+        .tempo_map()
+        .beat_to_frame(BeatTime::from_raw(u64::MAX))
+        .unwrap()
+        - 2;
+    let mut snapshot = project.snapshot();
+    snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+        .edit
+        .as_mut()
+        .unwrap()
+        .placement
+        .as_mut()
+        .unwrap()
+        .cycle_phase = phase;
+    let mut model = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    model
+        .execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        })
+        .unwrap();
+    let edit = model.project().clip(clip).unwrap().audio_edit().unwrap();
+    let projection = edit.domain.fade_projection.as_ref().unwrap();
+    assert!(projection.origin_beat_raw < -i128::from(u64::MAX));
+    assert!(projection.origin_beat_raw >= -2 * i128::from(u64::MAX));
+    assert!(audio_projection_frame(&projection.tempo, projection.origin_beat_raw).is_ok());
+    let projected = AudioViewProjection::new(
+        model.project().clip(clip).unwrap(),
+        model.project().tempo_map(),
+    )
+    .unwrap();
+    assert_eq!(
+        projected.occurrence_count(),
+        0,
+        "consumed Once remains silence, not a repeated source"
+    );
+    let bytes = hex_storage::encode(model.project()).unwrap();
+    let reopened = hex_storage::decode(&bytes).unwrap();
+    assert_eq!(reopened.snapshot(), model.project().snapshot());
+}
