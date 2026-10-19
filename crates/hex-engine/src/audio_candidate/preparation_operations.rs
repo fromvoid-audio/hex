@@ -97,6 +97,12 @@ impl AudioCandidatePreparationOperations<'_> {
         self.preparation
             .prepare_on_control(project, source_generation, context)
     }
+    /// A registered immutable input retained by the existing constructor root.
+    pub fn register_compiled_reader_on_control(
+        &self,
+    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
+        self.preparation.register_compiled_reader_on_control()
+    }
     /// Actual ready identity only; never cost, custody or publication authority.
     pub fn prepared_identity(&self) -> Option<AudioCandidateIdentity> {
         self.preparation

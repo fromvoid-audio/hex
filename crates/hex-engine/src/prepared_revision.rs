@@ -4,6 +4,8 @@ use crate::{
     compile::PreparedAudioSource,
 };
 pub(crate) mod assembly;
+mod compiled_reader;
+pub use compiled_reader::{AudioCompiledRevision, AudioCompiledRevisionIdentity};
 mod descriptor_storage;
 use hex_project::{
     Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity, Project,

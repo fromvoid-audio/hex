@@ -326,6 +326,18 @@ impl AudioPreparationCustody {
         Ok((self.root, self.incarnation, self.revision.candidate_root()?))
     }
 
+    /// Register an immutable compiled field against this actual constructor
+    /// incarnation. No arbitrary revision owner can be adopted.
+    pub fn register_compiled_reader_on_control(
+        &self,
+        token: &AudioPreparationToken,
+    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
+        if !self.matches(token) || self.phase != AudioPreparationPhase::ArrangementAndSessionSources
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.revision.registered_reader(self.root, self.incarnation)
+    }
     pub(crate) fn candidate_root_view(
         &self,
         token: &AudioPreparationToken,
@@ -570,7 +582,7 @@ impl AudioPreparationCustody {
                     .and_then(|n| n.checked_add(device_handles))
                     .and_then(|n| n.checked_add(return_handles))
                     .and_then(|n| n.checked_add(usize::from(assemble_preview)))
-                    .and_then(|n| n.checked_add(if assemble_revision { 4 } else { 0 }))
+                    .and_then(|n| n.checked_add(if assemble_revision { 5 } else { 0 }))
                     .ok_or(AudioStorageError::Overflow)?;
                 self.shared
                     .reserve(handles, inputs.reservation.handle_obligations)?;
@@ -1145,6 +1157,14 @@ impl AudioPreparationCustody {
         self.phase = AudioPreparationPhase::Recoverable;
     }
     fn dispose_arrangement_clips_on_control(&mut self) -> bool {
+        match self.revision.external_readers_pending() {
+            Ok(true) => return false, // real registered readers retain all root charges
+            Ok(false) => {}
+            Err(_) => {
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                return false;
+            }
+        }
         match catch_unwind(AssertUnwindSafe(|| {
             self.revision
                 .restore(&mut self.arrangement_clips, &mut self.assembly)?;

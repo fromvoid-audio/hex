@@ -1415,3 +1415,43 @@ mechanism is distinct from the allocation-free lifecycle checker/bootstrap.
 This is construction-local source evidence, not an all-constructor destructor
 proof, a complete public retirement receipt, retained Service/worker incarnation
 integration, native full-live-union admission, registration or usable Sampler UI.
+
+### Qualified compiled readers: Service integration in progress
+
+The next Service deliverable uses an `AudioCompiledRevision` created only from
+the actual `RevisionAssembly` constructor and validated preparation incarnation.
+It retains the paired revision declaration; it cannot adopt a caller Arc or
+return an owning revision/Playback. Explicit duplication registers another
+physical field, with its own ledger observations. Scalar identity and metadata
+queries confer no publication or cleanup authority.
+
+The existing revision root retains a separate constructor-declared reader-state
+allocation. Its body/header, inline fields and observation destination are
+included in the same preparation reservation and ledger. Reader release drops
+the paired revision alias before decrementing its registration under a small
+control-only mutex. Retirement seals registration under that same exclusion.
+No callback takes this lock. An unexplained revision/Weak alias is a sticky
+Unknown refusal; a real registered reader instead leaves the existing parent
+Cleaning with every constructor-root charge intact. Release does not itself
+clear those charges or perform final child disposal.
+
+Candidate/runtime retirement and native preparation/archive cleanup preserve
+`ExternalReadersPending` as a retryable retained state. The mutable runtime is
+disposed once; later ticks retry root retirement only. Once all actual readers
+release, the existing root restores children and retires normally. Panic and
+unknown-alias failures remain terminal. Tests exercise physical omitted-handle
+closure, foreign token refusal, concurrent release, repeat cleanup, and the real
+native preparation slot retaining its incarnation and full reservation until
+release. This additional allocation changes current root-layout costs; historical
+source-bound byte boundaries above are not relabeled for this increment.
+
+This is an intermediate Engine/native-custody component. Startup still uses the
+legacy compiled/Event path, all four opaque Service mpsc queues remain in use,
+and the resource-aware complete candidate bridge and final joint publication
+frontier remain closed. The next work replaces admitted native transport with
+purpose-specific fixed-capacity records in the same registered Session family,
+including compiled, export, seek and real input ownership. Registered startup,
+exact captured-source/current-history inventory, original-rate loading and
+publication/replacement/terminal retirement must then compose together. No
+Sampler registration, playable Service request, native app or musical acceptance
+is implied by the reader component.

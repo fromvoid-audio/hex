@@ -22,6 +22,9 @@ pub struct AudioRevisionRootCapacity {
     pub actual_declared_overhead_bytes: usize,
     pub control_extracted_allocations: usize,
     pub constructed: bool,
+    /// Separate constructor-declared external-reader registration allocation.
+    pub reader_registration_bytes: usize,
+    pub reader_registration_constructed: bool,
     /// Actual descriptor Vec backings, not a preconstruction allowance.
     pub mutable_descriptor_backing_bytes: usize,
 }
@@ -44,6 +47,8 @@ pub struct AudioPreparedRevisionMetadata {
 #[derive(Default)]
 pub(crate) struct RevisionAssembly {
     owner: Option<OwnedShared<PreparedRevision>>,
+    reader_registration: Option<super::compiled_reader::ReaderOwner>,
+    reader_registration_handle: u64,
     revision_value: Option<PreparedRevision>,
     arrangement: Option<OwnedShared<PlaybackProject>>,
     session: Option<OwnedShared<PreparedSessionInventory>>,
@@ -131,6 +136,29 @@ impl RevisionAssembly {
         Ok(owner.arc())
     }
 
+    pub(crate) fn registered_reader(
+        &self,
+        root: u64,
+        incarnation: u64,
+    ) -> Result<super::AudioCompiledRevision, Error> {
+        self.capacity()?;
+        super::AudioCompiledRevision::register(
+            self.owner.as_ref().ok_or(Error::SourceMismatch)?,
+            self.reader_registration
+                .as_ref()
+                .ok_or(Error::SourceMismatch)?,
+            super::AudioCompiledRevisionIdentity { root, incarnation },
+        )
+    }
+    pub(crate) fn external_readers_pending(&self) -> Result<bool, Error> {
+        match (&self.owner, &self.reader_registration) {
+            (Some(revision), Some(registration)) => {
+                super::compiled_reader::retirement_pending(revision, registration)
+            }
+            (_, None) => Ok(false), // construction failed before reader registration
+            (None, Some(_)) => Err(Error::UnknownStorage),
+        }
+    }
     fn fresh_tuning_family(&self) -> Result<TuningContinuationFamily, Error> {
         #[cfg(test)]
         if self.fail_tuning_family {
@@ -141,6 +169,8 @@ impl RevisionAssembly {
     pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()
+            || self.reader_registration.is_some()
+            || self.reader_registration_handle != 0
             || self.revision_value.is_some()
             || self.arrangement.is_some()
             || self.session.is_some()
@@ -179,6 +209,8 @@ impl RevisionAssembly {
                 hex_project::SessionCellContent::Midi(_) => return Err(Error::UnsupportedGraph),
             }
         }
+        // Identity failure precedes mutation of every reservation field.
+        let tuning_family = self.fresh_tuning_family()?;
         self.reserved_bytes = 0;
         for parts in [
             OwnedShared::<PlaybackProject>::declared_parts(),
@@ -193,9 +225,17 @@ impl RevisionAssembly {
                 .and_then(|n| n.checked_add(overhead))
                 .ok_or(Error::Overflow)?;
         }
+        let (payload, overhead) = super::compiled_reader::ReaderOwner::declared_parts()
+            .ok_or(Error::UnsupportedConstructor)?;
+        self.reserved_bytes = self
+            .reserved_bytes
+            .checked_add(payload)
+            .and_then(|n| n.checked_add(overhead))
+            .ok_or(Error::Overflow)?;
+        self.reader_registration_handle = crate::audio_only_inputs::handle()?;
         // This fallible identity reservation precedes all prepared child
         // transfers. Exhaustion cannot strand or drop a taken child locally.
-        self.preallocated_tuning_family = Some(self.fresh_tuning_family()?);
+        self.preallocated_tuning_family = Some(tuning_family);
         self.reserved = true;
         for index in 0..4 {
             self.handles[index] = crate::audio_only_inputs::handle()?;
@@ -294,6 +334,17 @@ impl RevisionAssembly {
             .reserved_data_bytes
             .checked_add(report.mutable_descriptor_backing_bytes)
             .ok_or(Error::Overflow)?;
+        if let Some(registration) = &self.reader_registration {
+            if self.reader_registration_handle == 0
+                || self.handles.contains(&self.reader_registration_handle)
+            {
+                return Err(Error::SourceMismatch);
+            }
+            let (payload, overhead) = registration.parts().ok_or(Error::UnknownStorage)?;
+            report.reader_registration_bytes =
+                payload.checked_add(overhead).ok_or(Error::Overflow)?;
+            report.reader_registration_constructed = true;
+        }
         if let Some(owner) = &self.owner {
             add_parts(owner, &mut report)?;
         }
@@ -330,6 +381,8 @@ impl RevisionAssembly {
         if report
             .actual_payload_bytes
             .checked_add(report.actual_declared_overhead_bytes)
+            .ok_or(Error::Overflow)?
+            .checked_add(report.reader_registration_bytes)
             .ok_or(Error::Overflow)?
             > report.reserved_data_bytes
         {
@@ -415,6 +468,7 @@ impl RevisionAssembly {
         }
         #[cfg(test)]
         self.fault(11)?;
+        self.reader_registration = Some(OwnedShared::new_owned(std::sync::Mutex::default()));
         self.capacity()?;
         Ok(())
     }
@@ -427,6 +481,9 @@ impl RevisionAssembly {
             return Ok(());
         }
         self.capacity()?;
+        if self.external_readers_pending()? {
+            return Err(Error::Capacity);
+        }
         // Only destinations for children already moved here must be vacant.
         let view = self.storage_view()?;
         if (view.arrangement.is_some() || view.preview.is_some())
@@ -484,6 +541,8 @@ impl RevisionAssembly {
         if self.session_value.is_some() {
             session.restore_revision(&mut self.session_value);
         }
+        drop(self.reader_registration.take());
+        self.reader_registration_handle = 0;
         self.reserved = false;
         self.preallocated_tuning_family = None;
         self.handles = [0; 4];
@@ -562,6 +621,8 @@ impl RevisionAssembly {
         self.capacity()?;
         let Self {
             owner,
+            reader_registration,
+            reader_registration_handle,
             revision_value,
             arrangement,
             session,
@@ -588,6 +649,15 @@ impl RevisionAssembly {
         fn copy_leaf<T: Copy>(_: T) {}
         copy_leaf(*preallocated_tuning_family);
         super::descriptor_storage::visit(mutable_descriptors, l)?;
+        if let Some(registration) = reader_registration {
+            l.shared(
+                registration.arc(),
+                registration.parts(),
+                Owner::exclusive(registration),
+                *reader_registration_handle,
+                None,
+            )?;
+        }
         if let Some(owner) = owner {
             l.shared(
                 owner.arc(),

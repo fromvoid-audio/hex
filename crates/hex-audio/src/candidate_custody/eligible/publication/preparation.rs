@@ -707,6 +707,13 @@ impl Custody {
             }));
             match result {
                 Ok(Ok(())) => {}
+                Ok(Err(hex_engine::AudioStorageError::ExternalReadersPending)) => {
+                    // Cleanup has not consumed the constructor root. Its actual
+                    // registered readers and all charges remain in this slot.
+                    execution.pending = false;
+                    lock(&self.bank).publication.slots[index].phase = Phase::Reserved;
+                    continue;
+                }
                 result => {
                     execution.failed = true;
                     let mut bank = lock(&self.bank);
@@ -1049,6 +1056,68 @@ mod tests {
         drop(anchor.recover_inputs_on_control().unwrap());
         cell.cleanup_on_control().unwrap();
     }
+    #[test]
+    fn registered_compiled_reader_keeps_closed_preparation_slot_charged_until_release() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported constructor layout; no positive compiled-reader custody proof");
+            return;
+        }
+        let root = root();
+        let custody = &root.0.eligible;
+        let token = custody
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .ok()
+            .unwrap();
+        let held = lock(&custody.bank).publication.retained_bytes().unwrap();
+        let (project, asset, audio) = project();
+        let mut reader = None;
+        custody
+            .with_runtime_preparation(token, |cell| {
+                cell.copy_resident_source_on_control(asset, &audio)?;
+                cell.prepare_on_control(
+                    &project,
+                    11,
+                    hex_engine::AudioSourceContext {
+                        project_generation: 2,
+                        editor_revision: 8,
+                    },
+                )?;
+                reader = Some(cell.register_compiled_reader_on_control()?);
+                Ok(())
+            })
+            .unwrap();
+        assert!(custody.cancel_runtime_preparation(token));
+        for _ in 0..2 {
+            std::thread::scope(|scope| {
+                scope.spawn(|| root.advance_on_control()).join().unwrap();
+            });
+            let bank = lock(&custody.bank);
+            assert_eq!(
+                bank.publication.slots[token.slot].incarnation,
+                token.incarnation
+            );
+            assert_eq!(bank.publication.slots[token.slot].phase, Phase::Reserved);
+            assert_eq!(bank.publication.retained_bytes(), Some(held));
+            drop(bank);
+            let work = lock(&custody.work);
+            let execution = work.publication.preparations[token.slot].as_ref().unwrap();
+            assert!(!execution.pending && !execution.failed);
+            assert!(!execution.cell.as_ref().unwrap().failed_incomplete());
+        }
+        assert!(reader.as_ref().unwrap().try_duplicate_on_control().is_err());
+        drop(reader.take());
+        std::thread::scope(|scope| {
+            scope.spawn(|| root.advance_on_control()).join().unwrap();
+        });
+        assert!(custody.complete());
+        assert_eq!(lock(&custody.bank).publication.retained_bytes(), Some(0));
+        assert!(lock(&custody.work).publication.preparations[token.slot].is_none());
+        assert!(custody.with_runtime_preparation(token, |_| Ok(())).is_err());
+        eprintln!(
+            "SUPPORTED actual registered compiled reader; same preparation slot/charge retained twice; normal release cleanup completed"
+        );
+    }
+
     #[test]
     fn reserved_slot_incarnation_survives_actual_preparation_close_and_normal_cleanup() {
         if !hex_engine::audio_storage_constructor_layout_supported() {

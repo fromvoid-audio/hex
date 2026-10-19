@@ -294,6 +294,17 @@ pub struct AudioCandidateOwner {
     inner: Box<CandidateState>,
 }
 impl AudioCandidateOwner {
+    /// Register a real immutable field against this candidate's sealed root.
+    pub fn register_compiled_reader_on_control(
+        &self,
+    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
+        if self.inner.phase != AudioCandidateDisposalPhase::Owned || self.inner.receipt_taken {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.inner
+            .custody
+            .register_compiled_reader_on_control(&self.inner.token)
+    }
     /// Control-only headless observer on the actual nested Runtime Box Drop.
     /// Returns a scalar address only; no pointer, Playback or owning handle escapes.
     #[cfg(any(test, feature = "instrument-test-support"))]
@@ -563,6 +574,9 @@ impl CandidateState {
         }
         self.custody.close_on_control();
         self.custody.cleanup_on_control();
+        if self.custody.phase() == AudioPreparationPhase::Cleaning {
+            return Err(AudioStorageError::ExternalReadersPending);
+        }
         if self.custody.phase() != AudioPreparationPhase::Recoverable {
             self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
             return Err(AudioStorageError::UnknownStorage);

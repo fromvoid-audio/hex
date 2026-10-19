@@ -257,6 +257,17 @@ impl AudioCandidatePreparation {
     pub fn owner_on_control(&mut self) -> Option<&mut AudioCandidateOwner> {
         self.owner.as_mut()
     }
+    pub fn register_compiled_reader_on_control(
+        &self,
+    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
+        if self.failed_incomplete() || self.cleaning || self.complete {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.owner
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .register_compiled_reader_on_control()
+    }
     pub fn failed_incomplete(&self) -> bool {
         self.failed
             || self
@@ -302,6 +313,9 @@ impl AudioCandidatePreparation {
                 if custody.phase() == AudioPreparationPhase::FailedIncomplete {
                     return Err(AudioStorageError::UnknownStorage);
                 }
+                if custody.phase() == AudioPreparationPhase::Cleaning {
+                    return Err(AudioStorageError::ExternalReadersPending);
+                }
                 if let Some(token) = self.token.as_ref() {
                     if self.bank.is_some() {
                         return Err(AudioStorageError::SourceMismatch);
@@ -326,6 +340,10 @@ impl AudioCandidatePreparation {
                 self.cleaning = false;
                 self.complete = true;
                 Ok(())
+            }
+            Ok(Err(AudioStorageError::ExternalReadersPending)) => {
+                self.cleaning = false;
+                Err(AudioStorageError::ExternalReadersPending)
             }
             Ok(Err(reason)) => {
                 self.failed = true;

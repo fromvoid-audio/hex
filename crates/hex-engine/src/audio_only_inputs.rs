@@ -37,6 +37,8 @@ pub enum AudioStorageError {
     UnsupportedGraph,
     SourceMismatch,
     UnknownStorage,
+    /// Registered immutable readers still retain the constructor root.
+    ExternalReadersPending,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioStorageReservation {

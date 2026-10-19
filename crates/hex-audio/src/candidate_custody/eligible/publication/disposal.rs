@@ -262,7 +262,14 @@ impl Custody {
                 }
                 if execution.disposed.is_none() {
                     execution.pending = true;
-                    execution.disposed = Some(anchor.finish_disposal_on_control().map_err(|_| ())?);
+                    match anchor.finish_disposal_on_control() {
+                        Ok(disposed) => execution.disposed = Some(disposed),
+                        Err(hex_engine::AudioStorageError::ExternalReadersPending) => {
+                            execution.pending = false;
+                            return Ok(false);
+                        }
+                        Err(_) => return Err(()),
+                    }
                     execution.pending = false;
                 }
                 if execution.inputs.is_none() {

@@ -195,7 +195,8 @@ fn four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity(
         assert_eq!(report.revision_roots.reserved_handle_destinations, 4);
         assert_eq!(
             report.revision_roots.actual_payload_bytes
-                + report.revision_roots.actual_declared_overhead_bytes,
+                + report.revision_roots.actual_declared_overhead_bytes
+                + report.revision_roots.reader_registration_bytes,
             report.revision_roots.reserved_data_bytes
         );
         assert!(report.revision_roots.constructed);
@@ -598,8 +599,9 @@ fn four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumptio
     }
     let (project, mut bank) = fixture(false);
     // One bank, two Arrangement clips, cache+Session clip, two Track handles,
-    // two Return handles, preview slice, three shared anchors and four roots.
-    bank.reservation.handle_obligations = 17;
+    // two Return handles, preview slice, three shared anchors, four revision
+    // roots and the separate actual reader-registration allocation.
+    bank.reservation.handle_obligations = 18;
     let mut c = AudioPreparationCustody::try_new_on_control().unwrap();
     let token = begin(&mut c, &project, bank).ok().unwrap();
     let report = c.capacity_report();
@@ -610,7 +612,7 @@ fn four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumptio
     for pressure in 0..3 {
         let (project, mut bank) = fixture(false);
         match pressure {
-            0 => bank.reservation.handle_obligations = 16,
+            0 => bank.reservation.handle_obligations = 17,
             1 => bank.reservation.max_prepared_data_bytes = report.retained_stage_bytes - 1,
             _ => bank.reservation.max_construction_data_bytes = report.construction_peak_bytes - 1,
         }
@@ -748,7 +750,7 @@ fn borrowed_storage_inventory_covers_real_roots_without_retirement_admission() {
                     .arrangement_clips
                     .preview
                     .independent_handle_obligations
-                + 4
+                + 5 // four revision fields plus actual reader-registration field
         );
         assert_eq!(ledger.streamed_sources().count(), usize::from(streamed));
         assert!(summary.data_allocations > 20);
