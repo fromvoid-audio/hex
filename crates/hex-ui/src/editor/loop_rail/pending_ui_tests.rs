@@ -298,8 +298,15 @@ fn escape_button_loss_and_focus_loss_cancel_held_loop_without_a_request(cx: &mut
                 visual.simulate_mouse_move(end, None, Modifiers::default());
             }
             _ => {
-                let focus = visual.update(|_, cx| cx.focus_handle());
-                visual.update(|window, _| window.focus(&focus));
+                let search = visual
+                    .debug_bounds("browser-search")
+                    .expect("actual focusable input");
+                visual.simulate_mouse_down(
+                    search.center(),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                );
+                visual.simulate_mouse_up(search.center(), MouseButton::Left, Modifiers::default());
             }
         }
         visual.run_until_parked();
