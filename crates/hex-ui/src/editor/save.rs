@@ -101,6 +101,9 @@ impl EditorView {
                     Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
                     _ => {}
                 }
+                if !view.saving_project {
+                    view.cancel_open_after_save();
+                }
                 cx.notify();
             });
         })
@@ -115,7 +118,10 @@ impl EditorView {
                 .is_some(),
             self.saving_project,
             self.save_dialog_open,
-            self.close_prompt_open || self.opening_project,
+            self.close_prompt_open
+                || self.opening_project
+                || (self.project_open.busy() && !self.project_open.permits_save())
+                || self.pending_open_path.is_some(),
         )
     }
 

@@ -1,3 +1,33 @@
+## project File actions after focus loss — pulse2815 / PR421
+
+Actual rendered dispatch reproduced New/Open being lost without editor focus,
+then one Open waiting for a second invocation. Active-window fallbacks retain
+focused precedence. The selected Open now continues through Save / Don't Save /
+Cancel and successful canonical save once; cancellation/failure/stale results
+preserve the current document/history/media. Sixteen bounded rendered cases and
+two legacy selected-path assertions cover this workflow; native picker/physical
+acceptance and merger-owned full integration checks remain separate.
+See docs/project-file-actions.md. No app actions or backend changes.
+
+## selected-device removal focus repair — pulse2796 / PR402
+
+Returned review reproduced a blurred window after real card Backspace and worker
+reconciliation. Accepted removal now focuses a persistent neutral chain container;
+real Cmd-Z/Shift-Cmd-Z and Space remain routed, while held Backspace cannot target
+a restored card. Track and empty Return-chain fixtures use actual keyboard Undo.
+Nested numeric/browser/EQ focus and refusal coverage remain in the nine bounded
+rendered fixtures. Native physical input and final integrated CI remain separate.
+
+## selected-device Backspace — pulse2796 / PR402, 18 october2026
+
+Added exact focused-card removal through existing canonical commands and gesture
+barriers. Nine bounded rendered Service regressions pass for Track instrument/
+effect and Return removal, Undo/Redo, valid/invalid text drafts, numeric/browser/
+EQ focus, pending/stale/no selection and held repeat with a selected clip.
+No model, audio, DSP, shared widget or constructor changes. Final integrated
+full local CI/review belongs to the dedicated merger; native input acceptance
+and app delivery remain separate. Original focus-failure logs are preserved.
+
 ## header volume automation indication — returned pulse2715 / PR331
 
 Restored explicit `auto` readout for authored gain envelopes and recorded touch
@@ -5230,3 +5260,52 @@ covers long Place names, zero label space, both settings states and resize back
 to normal; existing selection/hover/focus/audition regressions remain applicable.
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
+
+- 18 October 2026 — Pulse2808 / PR414: common cfg(test) editor resolver allocates
+  unique private Home/Music/config before discovery, preserving explicit fixture
+  paths; no process environment or application feature-only behavior change.
+  Arc guards live in actual inner filesystem jobs, and owned-root cleanup is off
+  the UI thread after the last guard. Original ordinary-constructor RED configured
+  /home/agent. Five new regressions cover two-editor startup/catalog isolation,
+  missing-Music private fallback, explicit missing/corrupt/populated preferences,
+  and a real held catalog save after actual view release then cleanup. Session
+  worker joining/native delivery are not claimed; final candidate CI belongs to merger.
+
+- 18 October 2026 — Pulse2841 / PR444: minimum-width source-picker headings retain
+  their original line boxes while painting themed separator marks; full names have
+  tooltips. Near-minimum divider drags capture exactly23px with divider-derived
+  4px/8px capture/release hysteresis; other widths retain continuous resizing.
+  Original actual drag RED retained25px instead of23px. Rendered pointer regressions
+  cover all source-row/glyph positions, separator scene paint/text non-paint, long
+  labels, open settings and repeated capture/expansion. Sole merger owns final full
+  candidate checks/merge; native physical interaction and delivery remain open.
+
+- 19 October2026 — Pulse2847 / PR449: fixed Preserve groups now retain their
+  native-relative first pass, selected inverse-map anchors and physical/FIR
+  exclusions, with explicit compression omission and zero-duration-group tests.
+  The requested exact-pruning oracle passes480 complete-Match bit comparisons.
+  A new27.5Hz sub-bass RED demonstrated insufficient phase search width; version11
+  uses bounded coarse screening/full finalist rescoring across the wider range,
+  preserving existing work/scratch caps and invalidating older prepared PCM.
+  Focused43 Beats cases, Engine3, Export1 and strict all-target Warp Clippy pass;
+  all54 authorised acoustic recording renders actually complete. Original REDs,
+  work-limit failures and before/intermediate WAVs remain distinct. Sole merger
+  owns final integration/full local CI; native/listening and practical musical
+  acceptance remain open. Sampler395 stays with Source5; no shared compiler work
+  was imported into this standalone Beats change.
+
+- 19 October 2026 — Pulse2831 / PR435 integration: add independent rendered-pitch
+  coverage for the registered Sine, FM4 and current-mode Vector generators in
+  Arrangement, Console, live input, tuning handoffs, seek/loop, WAV export and
+  nonzero-range bounce. The owner adds only two integration test files and the
+  owning audit document; no production tuning, registry, MTS or resource change.
+  Original focused 14-step qualification records 33 positive cases; an earlier
+  zero-match allocation invocation remains negative evidence, with the corrected
+  feature-enabled three positive callback cases kept separate. Root verified
+  exact cd3376b6 native component tests: ten Engine plus one Export, no ignores.
+  Merger verified all 118 original payload hashes and preserved the three source
+  files byte for byte while integrating qualified main. New exact prospective
+  FULL21 and final review remain pending; physical MIDI, installed MTS-client,
+  listening and full Sampler395 acceptance remain open. The historical ignored
+  keyboard profile is excluded explicitly from focused non-profile commands,
+  never counted as passing. This entry records integration evidence only.
