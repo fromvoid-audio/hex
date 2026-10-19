@@ -174,3 +174,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod keyboard_tests;
