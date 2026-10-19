@@ -1,0 +1,22 @@
+{
+  "crates/hex-ui/src/editor/browser.rs": {
+    "before_sha256": "29c4282e1da858e2c23e4f55ccaa07317a2cf2d1d4d651ae445a810461a12c4a",
+    "after_sha256": "1b493e536ebc5787ac1aec5505ea7b79b52680897e7301232b188794dabc1cea"
+  },
+  "crates/hex-ui/src/editor/browser/tree.rs": {
+    "before_sha256": "9852b48903f26e364ce02d66bcd941a69a824ff663424ea1a7c36c2af8787637",
+    "after_sha256": "daf29d0162450d58fbd629c53e064621f35c8357b0e8faba0dbd6aea61400101"
+  },
+  "crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "before_sha256": "2c9fcbac1d8a8081b2259a2fea44e7b77eaa5c155b010cc1ced322f210e2de0a",
+    "after_sha256": "6cef48772dee874a598a960c907b03bffe44120c07903afcaac2f92ea78c671e"
+  },
+  "docs/browser-places.md": {
+    "before_sha256": "3d9d4a5c4dbc14a916fbe70d09bc781e7d04dad5795e5883a23c5a3db55315a6",
+    "after_sha256": "d613b3428de5dd4fc6ae3c4d3343389c333a1e59bb7fd10678ce5cc270e68e16"
+  },
+  "todo.md": {
+    "before_sha256": "51d9c3d07d53bf0af0d9747faeb66d4449e3ea38a4e860b5e1d6115968068e33",
+    "after_sha256": "828b2986d87ca4531804af6a963578038e4170e2df798ecf04d7c1e0b2a8b170"
+  }
+}

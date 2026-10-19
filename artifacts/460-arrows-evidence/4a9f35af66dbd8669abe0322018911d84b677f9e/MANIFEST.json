@@ -1,0 +1,166 @@
+{
+  "423-row-b017-v3/01-actual-row-action-baseline.log": {
+    "sha256": "d40addd96b21b6bece7fbc4244da185d69f777e815c36ab9c55dfbfc021954f6",
+    "size": 3448
+  },
+  "423-row-b017-v3/summary.json": {
+    "sha256": "685df7e328e9f4e8bf642d574e00875690705b016494947c3efa287f32c932d7",
+    "size": 9712
+  },
+  "423-row-main/01-gpui-dev-handoff.log": {
+    "sha256": "4421a815b18bf7c42ce86c70e0429dbd4dee936fe863856ebc6a9193bae0f1cb",
+    "size": 38
+  },
+  "423-row-main/02-actual-main-row-baseline.log": {
+    "sha256": "967e213e9dc20634e9ef6e5fb4102da32c4b9ce0176607fcce61f0d64c6bdecb",
+    "size": 4182
+  },
+  "423-row-main/summary.json": {
+    "sha256": "db7d4a6a7a128ebb6caa8d6195f7065442ce625aa02ca7067d58f1870aea9285",
+    "size": 10200
+  },
+  "460-arrows-final/01-browser-input-focus-navigation-audition.log": {
+    "sha256": "da10a1598e9eaec503d729f9d7bd7c90173d11618bec273cb76e7ed0ff687c65",
+    "size": 34260
+  },
+  "460-arrows-final/02-ui-strict-feature.log": {
+    "sha256": "7674da6eed301e2ff778cc874df3188f594c842b208f730a2fc60bfcf91b7e2c",
+    "size": 1710
+  },
+  "460-arrows-final/summary.json": {
+    "sha256": "8340bca79341d1d589432954211682abbbcac4420217d368bde0d3a536fd5108",
+    "size": 13507
+  },
+  "460-arrows-first/01-actual-arrow-routing.log": {
+    "sha256": "2d6b2ef111e858d2120c6e94350b58e4f5d7d22e924caef2f49aeadc9e07fff8",
+    "size": 2239
+  },
+  "460-arrows-first/summary.json": {
+    "sha256": "31276f9e46149f89b4b3e0d54a78a864c7eba2f8656e055c4078443b16e64ff5",
+    "size": 10307
+  },
+  "460-arrows-qualified/01-browser-input-focus-navigation-audition.log": {
+    "sha256": "05e00bf4837b6ff7dd0188e60ed68161623463f67ad63ad7f96ae944bc67f350",
+    "size": 34260
+  },
+  "460-arrows-qualified/02-ui-strict-feature.log": {
+    "sha256": "513fe5e6c54c3e25b1052ab1af69a11002c8e9168579dd8b76b1f043419116e6",
+    "size": 360
+  },
+  "460-arrows-qualified/03-ui-strict-default.log": {
+    "sha256": "0b3f2807faa9b506a8045b82bb9c2a23ba96fc5ff8cbcca70a3ebe2a332464a6",
+    "size": 621
+  },
+  "460-arrows-qualified/04-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "460-arrows-qualified/05-gpui-patch.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "460-arrows-qualified/06-dependency-patches.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "460-arrows-qualified/07-ui-style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "460-arrows-qualified/08-device-layout.log": {
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9",
+    "size": 84
+  },
+  "460-arrows-qualified/09-fmt.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "460-arrows-qualified/10-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "460-arrows-qualified/summary.json": {
+    "sha256": "ca038c2662098275fb363a1bba6f8aa34d49ab939d1f1cbfc7d9f0a2b9ad6aa8",
+    "size": 14134
+  },
+  "HANDOFF.md": {
+    "sha256": "95aeb1e758246942584231003c649f66eb2b035421672a176b9b6ba768d8a38e",
+    "size": 4289
+  },
+  "orchestration/header-component.py": {
+    "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7",
+    "size": 520
+  },
+  "orchestration/seal-460-arrows.py": {
+    "sha256": "232a38b2394f53f0877f44d73047fc106dbb7b2e908013f44acb305350194715",
+    "size": 5843
+  },
+  "protected-proof.json": {
+    "sha256": "567bb0b929973ba997d76f1615aaa3209898c067ba590720bb1458a31d2401cf",
+    "size": 1585
+  },
+  "row-b017.patch": {
+    "sha256": "0ac7b34b904510f4d3f9062deb41e11b2eb81236c29f72c708ce483e1d7bab01",
+    "size": 6703
+  },
+  "row-comparison-proof.json": {
+    "sha256": "6458efc586e903879743b8585bbaee80c57a2a3128e4e86f0e532537a5dd7a8d",
+    "size": 589
+  },
+  "row-main.patch": {
+    "sha256": "7f84452488f06a4ed0fea6736e4b3e3a71dffd431d86fb44693e7172b65923e6",
+    "size": 6712
+  },
+  "source-history.txt": {
+    "sha256": "78451600b03426e7c88c5f0b953d04b51ccad0441c287e650c2d3cb026728812",
+    "size": 578
+  },
+  "source-identities.json": {
+    "sha256": "f97ddb5c695413ce7f59a34eb5f47fc18d4831b306dee90e512063fd4ca9ead8",
+    "size": 1095
+  },
+  "source.patch": {
+    "sha256": "0cb10f1a88be7f703be19988bc92e70455608831a73dbc6e7be439149ff8549d",
+    "size": 13740
+  },
+  "source/after/crates/hex-ui/src/editor/browser.rs": {
+    "sha256": "1b493e536ebc5787ac1aec5505ea7b79b52680897e7301232b188794dabc1cea",
+    "size": 98020
+  },
+  "source/after/crates/hex-ui/src/editor/browser/tree.rs": {
+    "sha256": "daf29d0162450d58fbd629c53e064621f35c8357b0e8faba0dbd6aea61400101",
+    "size": 29767
+  },
+  "source/after/crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "sha256": "6cef48772dee874a598a960c907b03bffe44120c07903afcaac2f92ea78c671e",
+    "size": 212287
+  },
+  "source/after/docs/browser-places.md": {
+    "sha256": "d613b3428de5dd4fc6ae3c4d3343389c333a1e59bb7fd10678ce5cc270e68e16",
+    "size": 16328
+  },
+  "source/after/todo.md": {
+    "sha256": "828b2986d87ca4531804af6a963578038e4170e2df798ecf04d7c1e0b2a8b170",
+    "size": 391690
+  },
+  "source/before/crates/hex-ui/src/editor/browser.rs": {
+    "sha256": "29c4282e1da858e2c23e4f55ccaa07317a2cf2d1d4d651ae445a810461a12c4a",
+    "size": 97987
+  },
+  "source/before/crates/hex-ui/src/editor/browser/tree.rs": {
+    "sha256": "9852b48903f26e364ce02d66bcd941a69a824ff663424ea1a7c36c2af8787637",
+    "size": 29694
+  },
+  "source/before/crates/hex-ui/src/editor/browser_ui_test.rs": {
+    "sha256": "2c9fcbac1d8a8081b2259a2fea44e7b77eaa5c155b010cc1ced322f210e2de0a",
+    "size": 203391
+  },
+  "source/before/docs/browser-places.md": {
+    "sha256": "3d9d4a5c4dbc14a916fbe70d09bc781e7d04dad5795e5883a23c5a3db55315a6",
+    "size": 15258
+  },
+  "source/before/todo.md": {
+    "sha256": "51d9c3d07d53bf0af0d9747faeb66d4449e3ea38a4e860b5e1d6115968068e33",
+    "size": 390860
+  }
+}

@@ -1,0 +1,15 @@
+commit 4a9f35af66dbd8669abe0322018911d84b677f9e
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 13:57:38 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 13:57:38 2026 +0000
+
+    test: use direct browser disclosure equality assertions
+
+commit ed14c78217428cd0a09e82a77533530c29b909c8
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 13:53:45 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 13:53:45 2026 +0000
+
+    fix: require highlighted browser results for arrow row actions

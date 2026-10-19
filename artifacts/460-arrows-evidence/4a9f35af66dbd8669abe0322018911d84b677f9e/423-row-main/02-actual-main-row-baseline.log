@@ -1,0 +1,68 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 11s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 6 tests
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=true left=false before=(0, "▸", 0) after=(0, "▾", 1)
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_escape_folder_right' (227514) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:5043:9:
+assertion `left == right` failed: unhighlighted navigation must not dispatch a row action
+  left: (0, "▾", 1)
+ right: (0, "▸", 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::review_unhighlighted_row_escape_folder_right ... FAILED
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=true left=true before=(0, "▾", 1) after=(0, "▸", 1)
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_escape_folder_left' (227513) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:5043:9:
+assertion `left == right` failed: unhighlighted navigation must not dispatch a row action
+  left: (0, "▸", 1)
+ right: (0, "▾", 1)
+test editor::browser::ui_test::review_unhighlighted_row_escape_folder_left ... FAILED
+ACTUAL_UNHIGHLIGHTED_ROW sample=true escape=true left=false before=(0, "▸", 0) after=(1, "▸", 0)
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_escape_sample_right' (227515) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:5043:9:
+assertion `left == right` failed: unhighlighted navigation must not dispatch a row action
+  left: (1, "▸", 0)
+ right: (0, "▸", 0)
+test editor::browser::ui_test::review_unhighlighted_row_escape_sample_right ... FAILED
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=false left=false before=(0, "▸", 0) after=(0, "▾", 1)
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_source_folder_right' (227530) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:5043:9:
+assertion `left == right` failed: unhighlighted navigation must not dispatch a row action
+  left: (0, "▾", 1)
+ right: (0, "▸", 0)
+test editor::browser::ui_test::review_unhighlighted_row_source_folder_right ... FAILED
+ACTUAL_UNHIGHLIGHTED_ROW sample=true escape=false left=false before=(0, "▸", 0) after=(1, "▸", 0)
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_source_sample_right' (227535) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:5043:9:
+assertion `left == right` failed: unhighlighted navigation must not dispatch a row action
+  left: (1, "▸", 0)
+ right: (0, "▸", 0)
+test editor::browser::ui_test::review_unhighlighted_row_source_sample_right ... FAILED
+test editor::browser::ui_test::review_unhighlighted_row_selected_controls ... ok
+
+failures:
+
+failures:
+    editor::browser::ui_test::review_unhighlighted_row_escape_folder_left
+    editor::browser::ui_test::review_unhighlighted_row_escape_folder_right
+    editor::browser::ui_test::review_unhighlighted_row_escape_sample_right
+    editor::browser::ui_test::review_unhighlighted_row_source_folder_right
+    editor::browser::ui_test::review_unhighlighted_row_source_sample_right
+
+test result: FAILED. 1 passed; 5 failed; 0 ignored; 0 measured; 1038 filtered out; finished in 1.26s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

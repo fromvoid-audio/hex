@@ -1,0 +1,33 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 09s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 7 tests
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=true left=false before=(0, "▸", 0) after=(0, "▸", 0)
+test editor::browser::ui_test::browser_arrows_escape_folder_right ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=true escape=true left=false before=(0, "▸", 0) after=(0, "▸", 0)
+test editor::browser::ui_test::browser_arrows_escape_sample_right ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=true left=true before=(0, "▾", 1) after=(0, "▾", 1)
+test editor::browser::ui_test::browser_arrows_escape_folder_left ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=false left=false before=(0, "▸", 0) after=(0, "▸", 0)
+test editor::browser::ui_test::browser_arrows_source_folder_right ... ok
+ACTUAL_UNHIGHLIGHTED_ROW sample=true escape=false left=false before=(0, "▸", 0) after=(0, "▸", 0)
+test editor::browser::ui_test::browser_arrows_source_sample_right ... ok
+test editor::browser::ui_test::browser_arrows_selected_controls ... ok
+test editor::browser::ui_test::browser_arrows_up_down_enter_results_and_command_f_keeps_text_input ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1038 filtered out; finished in 2.54s
+

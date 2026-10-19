@@ -1,0 +1,309 @@
+diff --git a/crates/hex-ui/src/editor/browser.rs b/crates/hex-ui/src/editor/browser.rs
+index 6078e7ca..25ef26c5 100644
+--- a/crates/hex-ui/src/editor/browser.rs
++++ b/crates/hex-ui/src/editor/browser.rs
+@@ -788,7 +788,7 @@ impl EditorView {
+     }
+ 
+     pub(super) fn browser_preview_selected(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+-        if self.browser.section == BrowserSection::Instruments {
++        if !self.browser.results_focused || self.browser.section == BrowserSection::Instruments {
+             return;
+         }
+         if let Some(entry) = self
+diff --git a/crates/hex-ui/src/editor/browser/tree.rs b/crates/hex-ui/src/editor/browser/tree.rs
+index e66d82a1..44aa64c4 100644
+--- a/crates/hex-ui/src/editor/browser/tree.rs
++++ b/crates/hex-ui/src/editor/browser/tree.rs
+@@ -527,6 +527,9 @@ impl EditorView {
+         _: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if !self.browser.results_focused {
++            return;
++        }
+         let entries = self.browser_visible_entries(cx);
+         let Some(entry) = entries.get(self.browser.selected_index) else {
+             return;
+diff --git a/crates/hex-ui/src/editor/browser_ui_test.rs b/crates/hex-ui/src/editor/browser_ui_test.rs
+index 9e59c7e2..15e77edc 100644
+--- a/crates/hex-ui/src/editor/browser_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_ui_test.rs
+@@ -4937,3 +4937,231 @@ mod test_environment;
+ 
+ #[path = "browser_picker_compact_ui_test.rs"]
+ mod compact_picker;
++
++// Actual routed keyboard input over owned private files and the real Service.
++fn arrow_row_fixture(
++    cx: &mut TestAppContext,
++    sample: bool,
++) -> (
++    gpui::AnyWindowHandle,
++    gpui::Entity<EditorView>,
++    PreferencesTestDirectory,
++    std::path::PathBuf,
++) {
++    cx.update(super::super::bind_editor_keys);
++    let directory = PreferencesTestDirectory::new();
++    let samples = directory.0.join("samples");
++    std::fs::create_dir_all(&samples).unwrap();
++    if !sample {
++        std::fs::create_dir(samples.join("a")).unwrap();
++        std::fs::write(samples.join("a/child.hex"), []).unwrap();
++    }
++    std::fs::write(samples.join("loop.wav"), mono_pcm_wav(24)).unwrap();
++    let handle = *cx.add_window(|_, _| Empty);
++    let editor = cx
++        .update_window(handle, |_, window, cx| {
++            window.activate_window();
++            window.replace_root(cx, |window, cx| {
++                EditorView::new_for_test_with_browser_directory(
++                    window,
++                    cx,
++                    Service::new(48_000, 32, 8_000_000).unwrap(),
++                    &directory.0,
++                )
++            })
++        })
++        .unwrap();
++    editor.update(cx, |v, cx| {
++        v.browser.auto_audition = false;
++        v.refresh_sample_catalog(cx);
++        v.request_browser_scan(samples.clone(), cx);
++    });
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    loop {
++        let ready = editor.update(cx, |v, cx| {
++            v.tick(cx);
++            cx.notify();
++            v.state.is_some() && v.worker_requests_pending == 0 && v.pending_requests.is_empty()
++        });
++        if ready {
++            break;
++        }
++        assert!(
++            std::time::Instant::now() < deadline,
++            "real Service Init did not arrive"
++        );
++        std::thread::sleep(std::time::Duration::from_millis(1));
++    }
++    (handle, editor, directory, samples)
++}
++
++fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: bool, left: bool) {
++    let (handle, editor, _directory, samples) = arrow_row_fixture(cx, sample);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let category = if sample {
++        "browser-place-0"
++    } else {
++        "browser-section-projects"
++    };
++    let point = visual.debug_bounds(category).unwrap().center();
++    visual.simulate_click(point, Modifiers::default());
++    visual.run_until_parked();
++    editor.read_with(&visual, |v, cx| {
++        let entries = v.browser_visible_entries(cx);
++        assert!(!entries.is_empty(), "actual async entries available");
++        assert_eq!(
++            entries[0].path,
++            if sample {
++                samples.join("loop.wav")
++            } else {
++                samples.join("a")
++            }
++        );
++    });
++    if escape || left {
++        let row = visual.debug_bounds("browser-entry-0").unwrap().center();
++        visual.simulate_click(row, Modifiers::default());
++        editor.read_with(&visual, |v, _| assert!(v.browser.results_focused));
++        if left {
++            visual.simulate_keystrokes("right");
++            visual.run_until_parked();
++            editor.read_with(&visual, |v, _| {
++                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"))
++            });
++        }
++        visual.simulate_keystrokes("escape");
++    }
++    visual.update(|window, cx| {
++        editor.read_with(cx, |v, cx| {
++            assert!(!v.browser.results_focused);
++            assert!(v.browser.results_focus.is_focused(window));
++            assert_eq!(v.browser_key_context(window, cx), "hex_browser");
++        })
++    });
++    let canonical = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
++    let before = editor.read_with(&visual, |v, _| {
++        (
++            v.browser.playback_generation,
++            v.browser.tree.icon(&samples.join("a")),
++            v.browser.tree.requests_started,
++        )
++    });
++    visual.simulate_keystrokes(if left { "left" } else { "right" });
++    visual.run_until_parked();
++    editor.read_with(&visual, |v, _| {
++        let after = (v.browser.playback_generation, v.browser.tree.icon(&samples.join("a")), v.browser.tree.requests_started);
++        eprintln!("ACTUAL_UNHIGHLIGHTED_ROW sample={sample} escape={escape} left={left} before={before:?} after={after:?}");
++        assert_eq!(after, before, "unhighlighted navigation must not dispatch a row action");
++        assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
++        let state = v.state.as_ref().unwrap();
++        assert_eq!(state.project, canonical.project);
++        assert_eq!((state.revision, state.can_undo, state.can_redo, state.unsaved),
++                   (canonical.revision, canonical.can_undo, canonical.can_redo, canonical.unsaved));
++        assert_eq!(v.worker_requests_pending, 0);
++    });
++}
++
++#[gpui::test]
++fn browser_arrows_source_sample_right(cx: &mut TestAppContext) {
++    unhighlighted_arrow_action(cx, true, false, false);
++}
++#[gpui::test]
++fn browser_arrows_escape_sample_right(cx: &mut TestAppContext) {
++    unhighlighted_arrow_action(cx, true, true, false);
++}
++#[gpui::test]
++fn browser_arrows_source_folder_right(cx: &mut TestAppContext) {
++    unhighlighted_arrow_action(cx, false, false, false);
++}
++#[gpui::test]
++fn browser_arrows_escape_folder_right(cx: &mut TestAppContext) {
++    unhighlighted_arrow_action(cx, false, true, false);
++}
++#[gpui::test]
++fn browser_arrows_escape_folder_left(cx: &mut TestAppContext) {
++    unhighlighted_arrow_action(cx, false, true, true);
++}
++
++#[gpui::test]
++fn browser_arrows_selected_controls(cx: &mut TestAppContext) {
++    for sample in [false, true] {
++        let (handle, editor, _directory, samples) = arrow_row_fixture(cx, sample);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.run_until_parked();
++        let category = if sample {
++            "browser-place-0"
++        } else {
++            "browser-section-projects"
++        };
++        let category = visual.debug_bounds(category).unwrap().center();
++        visual.simulate_click(category, Modifiers::default());
++        visual.run_until_parked();
++        let row = visual.debug_bounds("browser-entry-0").unwrap().center();
++        visual.simulate_click(row, Modifiers::default());
++        let before = editor.read_with(&visual, |v, _| {
++            assert!(v.browser.results_focused);
++            v.browser.playback_generation
++        });
++        visual.simulate_keystrokes("right");
++        visual.run_until_parked();
++        editor.read_with(&visual, |v, _| {
++            if sample {
++                assert!(v.browser.playback_generation > before);
++            } else {
++                assert_eq!(v.browser.tree.icon(&samples.join("a")), "▾");
++            }
++        });
++        if !sample {
++            visual.simulate_keystrokes("left");
++            editor.read_with(&visual, |v, _| {
++                assert_ne!(v.browser.tree.icon(&samples.join("a")), "▾")
++            });
++        }
++    }
++}
++
++#[gpui::test]
++fn browser_arrows_up_down_enter_results_and_command_f_keeps_text_input(cx: &mut TestAppContext) {
++    use gpui::EntityInputHandler;
++    let (handle, editor, _directory, _samples) = arrow_row_fixture(cx, true);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let place = visual.debug_bounds("browser-place-0").unwrap().center();
++    visual.simulate_click(place, Modifiers::default());
++    visual.run_until_parked();
++    for key in ["down", "up"] {
++        editor.read_with(&visual, |v, _| assert!(!v.browser.results_focused));
++        visual.simulate_keystrokes(key);
++        let before = editor.read_with(&visual, |v, _| {
++            assert!(v.browser.results_focused);
++            assert_eq!(v.browser.selected_index, 0);
++            v.browser.playback_generation
++        });
++        visual.simulate_keystrokes("right");
++        editor.read_with(&visual, |v, _| {
++            assert!(v.browser.playback_generation > before)
++        });
++        visual.simulate_keystrokes("escape");
++    }
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("loop");
++    visual.simulate_keystrokes("cmd-f");
++    let before = editor.read_with(&visual, |v, _| v.browser.playback_generation);
++    visual.update(|window, cx| {
++        let input = editor.read(cx).browser.search.clone();
++        input.update(cx, |input, cx| {
++            assert_eq!(
++                input.selected_text_range(false, window, cx).unwrap().range,
++                0..4
++            )
++        });
++    });
++    visual.simulate_keystrokes("right");
++    visual.simulate_input("x");
++    editor.read_with(&visual, |v, cx| {
++        assert_eq!(v.browser.search.read(cx).content, "loopx");
++        assert_eq!(v.browser.playback_generation, before);
++        assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
++    });
++}
+diff --git a/docs/browser-places.md b/docs/browser-places.md
+index 78f3ed66..ce22b0bb 100644
+--- a/docs/browser-places.md
++++ b/docs/browser-places.md
+@@ -226,3 +226,20 @@ when opening settings, and closing already-open compact settings does not widen
+ This state is transient editor layout; no new persisted format or global width
+ quantization is introduced. Native physical drag/hover and accessibility inspection
+ remain coordinator-owned acceptance, separate from headless scene/input tests.
++
++### keyboard row-action eligibility
++
++Left/Right operate only on a highlighted browser result. Clicking a source/Place
++or pressing Escape retains navigation focus but clears the highlight; subsequent
++Right cannot audition an implicit first sample or expand an implicit folder, and
++Left cannot collapse one. Up/Down still enter and navigate results through the
++existing selection path. A highlighted sample's Right audition and highlighted
++folder Left/Right remain available, as do explicit row clicks and manual preview.
++The browser key context and search/Command-F text ownership are unchanged.
++
++Pulse2858/PR460 promotes the verified five failures from both main2683942b and
++original423 into normal rendered regressions. They use actual routed keys,
++private filesystem workers and canonical Service Init; refused row actions leave
++canonical metadata/history and project requests unchanged. Selected-row controls
++and Up/Down-to-Right plus Command-F typing remain positive cases. This is source
++coverage, not physical keyboard/audio-output or native delivery acceptance.
+diff --git a/todo.md b/todo.md
+index ffaf90c1..0eb1c3ac 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5659,3 +5659,16 @@ User rejected device-local automation editing. Remove its button, graph mode and
+   fresh review/merge of BOTH PRs and physical acceptance remain outstanding.
+ 
+ - Merger integration note, 19 october2026: preserve complete4bbe owner runtime/tests and both canonical419/458 histories. Correct the one retained prose reference from18 to the actual20-case union already documented in the command/checklist; no runtime or test-oracle changes. New exact guarded changed cases/full21/fresh review of each PR remain required; oldadb3 green is historical/review-blocked, installed2eef unchanged.
++
++### 2026-10-19 — PR460 browser arrow eligibility
++
++- Recover the same canonical task2858/PR460 plan03db at verified main2683942b;
++  preserve separate423 policy7db and its source/negative evidence unchanged.
++- Add only results_focused refusal to existing Right preview and Left collapse
++  handlers. Retain the active browser navigation context, Up/Down entry, selected
++  sample/folder actions, Command-F/text editing and separate manual audition.
++- Promote the verified identical five baseline negatives and selected controls;
++  add actual Service canonical/history invariants and Up/Down/Command-F routing.
++  Focused seven cases pass without rerunning the unchanged original negative.
++  Exact source component checks precede sole-merger full21/fresh review/merge;
++  no native/app/physical output or user acceptance is inferred.

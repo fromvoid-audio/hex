@@ -1,0 +1,16 @@
+{
+  "crates/hex-ui/src/editor/browser_input.rs": "d0d0e66f37018677534a080c9f78f6739a408b8e19834d891f400c2ef90440c6",
+  "crates/hex-ui/src/editor/browser/audition.rs": "1958a1698ff21bb895b0a8780b7a9db22664844080da5825774f2c9a536d6e82",
+  "crates/hex-ui/src/editor/browser/layout.rs": "13c71e7069302fa6495a79edd6549c728541aba0b1e53497359e8ff3decd01b2",
+  "crates/hex-ui/src/editor/render.rs": "9d084ee7c4c2cfc1c5cdf1cca8ad7672c7d804066e4ef8f4444c6d662db98a55",
+  "crates/hex-ui/src/editor/controller.rs": "ab3ec4660fd1948117a04e89dfd68be62bff18bfec7b9d58a78026e5fcd051ae",
+  "crates/hex-widgets/src/numeric_control.rs": "af47f9416c6b74dc139000163bfa2de14d2f9fd78ed9464f193c32dcb2897a74",
+  "crates/hex-widgets/src/numeric_text.rs": "30a1a199f60bc9e9f10b869828c50d342a602f1f5c9fedc3fe254319a4806295",
+  "crates/hex-widgets/src/lib.rs": "65cf408bd677e7eeefd2ea6aa2e86dd4cdd54b2b3f447f1d552ba8fe4fbf27f9",
+  "crates/hex-widgets/src/style.rs": "51872dc1013a6705fc56a55c925dde0c7f30d83d49f8b1f8f5985f42a6500288",
+  "crates/hex-widgets/src/text_case.rs": "1b3bd21b72791d5a15e10e45daaac6288a525eeab1782dc5a45f35169f6d016e",
+  "crates/hex-project/src/lib.rs": "6adb95bbd91af4467c5d82deab1f2046a8373f746e75669dec9362847cc2ce6c",
+  "original_browser_ui_tests_unchanged_prefix": "2c9fcbac1d8a8081b2259a2fea44e7b77eaa5c155b010cc1ced322f210e2de0a",
+  "plan_tree_equals_diagnostic_main": "252e6319e135b4e7d17257cdc3828bb8d1af6332",
+  "baseline_evidence": "06bf54aba08f081a808511adb0cfdcb03e2d2483; same five actual RED and selected control PASS on b017 and main2683, independently verified by Root"
+}
