@@ -1014,7 +1014,14 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
             name: "held".into(),
         }))
         .unwrap();
+    receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddScene {
+            name: "launch".into(),
+        }))
+        .unwrap();
     let mut initial = receive_service_event(&service);
+    let scene = initial.state.project.scenes()[0].id();
     let state = Arc::clone(&initial.state);
     let track = state.project.tracks()[0].id();
     let device = state.project.tracks()[0].instrument().unwrap().id();
@@ -1198,6 +1205,111 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
         // Repeated status reconstruction is idempotent, not a new publication.
         view.tick(cx);
         assert_eq!(view.applied_project_revision(), Some(next.revision));
+        view.queue_session_launch_batch(
+            hex_engine::SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            },
+            next.revision,
+        );
+        assert!(
+            view.pending_session_ticket.is_some(),
+            "current equivalent audio must allow actual Session launch"
+        );
+        assert_eq!(view.worker_requests_pending, pending);
+        view.stop();
+        assert!(
+            view.stopped_playback_restore.is_none(),
+            "Stop must not recompile equivalent canonical audio"
+        );
+        assert_eq!(view.worker_requests_pending, pending);
+        // Actual audio edit -> comparison while its graph is still unsubmitted.
+        view.service
+            .submit(Request::Edit(Command::Mute { track, muted: true }))
+            .unwrap();
+        let audio_event = receive_service_event(&view.service);
+        let actual_prepared = audio_event
+            .playback
+            .as_ref()
+            .unwrap()
+            .prepared_revision()
+            .unwrap()
+            .clone();
+        let audio_state = audio_event.state.clone();
+        view.service
+            .submit(Request::CompareDevice {
+                owner: hex_session::service::preset::Owner {
+                    project_generation: 0,
+                    revision: audio_state.revision,
+                    device,
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: audio_state
+                        .project
+                        .device(device)
+                        .unwrap()
+                        .state()
+                        .type_id(),
+                },
+                expected: DeviceVariant::A,
+                action: hex_project::DeviceComparisonAction::Switch,
+            })
+            .unwrap();
+        let metadata_event = receive_service_event(&view.service);
+        let metadata_state = metadata_event.state.clone();
+        view.receive(metadata_event); // Deliberately out of order: cannot skip its actual audio source.
+        assert_eq!(view.state.as_ref().unwrap().revision, next.revision);
+        assert!(view.pending_playback.is_none());
+        view.receive(audio_event);
+        assert_eq!(view.state.as_ref().unwrap().revision, audio_state.revision);
+        view.service
+            .submit(Request::SaveNew(directory.0.join("queued.hex")))
+            .unwrap();
+        let saved = receive_service_event(&view.service);
+        view.receive(saved); // Persistent, ordered proof now correlates the pending graph.
+        assert_eq!(
+            view.state.as_ref().unwrap().revision,
+            metadata_state.revision
+        );
+        assert_eq!(
+            view.pending_playback.as_ref().unwrap().project_revision,
+            metadata_state.revision
+        );
+        assert!(Arc::ptr_eq(
+            view.pending_playback
+                .as_ref()
+                .unwrap()
+                .prepared_revision
+                .as_ref()
+                .unwrap(),
+            &actual_prepared
+        ));
+        assert_eq!(
+            view.audio_admission.current().unwrap().state,
+            AdmissionState::Pending
+        );
+        assert_eq!(
+            view.applied_project_revision(),
+            Some(next.revision),
+            "a pending graph cannot become applied through metadata"
+        );
+        view.service.submit(Request::SaveCurrent).unwrap();
+        let delayed_metadata = receive_service_event(&view.service);
+        view.service
+            .submit(Request::Edit(Command::Mute {
+                track,
+                muted: false,
+            }))
+            .unwrap();
+        let later_audio = receive_service_event(&view.service);
+        let later_state = later_audio.state.clone();
+        view.receive(later_audio);
+        view.receive(delayed_metadata); // Old proof cannot resurrect the retired pending graph.
+        assert_eq!(view.state.as_ref().unwrap().revision, later_state.revision);
+        assert!(view.state.as_ref().unwrap().comparison_audio.is_none());
+        assert_eq!(
+            view.pending_playback.as_ref().unwrap().project_revision,
+            later_state.revision
+        );
         view.audio = None;
     });
     backend.close();
