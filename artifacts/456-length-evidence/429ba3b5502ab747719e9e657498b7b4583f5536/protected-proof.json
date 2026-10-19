@@ -1,0 +1,13 @@
+{
+  "crates/hex-project/src/audio_edit/view.rs": "13009a146c067872bd7d39fb4dcaf7aad678af2d2eedc404b460a7cfcfcf6038",
+  "crates/hex-project/src/audio_edit/commands.rs": "0856cd728f09025e2a3632e84b8762d3c233729b85f4e4c474be94931cd17d8e",
+  "crates/hex-project/tests/audio_view.rs": "affbc03ffd098d50e8c8ab0786dcee51264f56f30fc9bf8b0e4e1136ec27a83e",
+  "crates/hex-project/src/device_comparison.rs": "4c40e55dd9a56549e4983ebcbefc10a811af6f27d95d48a44692d5b980733487",
+  "crates/hex-storage/src/audio_edit.rs": "675e98bd74351f0c5842e9cd89b9def015d72efe8b46a99e6775b07659e3f87f",
+  "crates/hex-storage/src/lib.rs": "026939e2ab27ed6344ae025b2b0abb364b96c3b5cb9e8a17a63f6efb68d23cdd",
+  "crates/hex-session/src/service.rs": "bbd463f9a6295ff51428d1c5a2f1c633113c00bfe67d836ebcc3936465321420",
+  "crates/hex-engine/src/audio_transform/mod.rs": "17100a2c8219cc3b9515a81d2049517b70487221a5835945b4632fe51a66a879",
+  "crates/hex-ui/src/editor/trim.rs": "4a458731ffb3a70b6fb4eb65c527377bba3403d1bf9e404b589108bc0c6473b1",
+  "diagnostic_production_exact_base": true,
+  "all_original_seven_panel_tests_unchanged_prefix": "47997e209792f870bed14a18ef00be54dba7d7a1544f4ea2535a9748f21619de"
+}

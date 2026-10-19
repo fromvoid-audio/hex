@@ -1,0 +1,142 @@
+{
+  "HANDOFF.md": {
+    "sha256": "c5db36c510a7dd92380929ecc3ac42e6d44b9fc776c517f7b8f86b4b8453bddd",
+    "size": 4998
+  },
+  "diagnostic.patch": {
+    "sha256": "d1f7b35e488d87ae2615a9cf434ea1f67e29bc92704282fe7b8ff7caf22beabb",
+    "size": 12946
+  },
+  "final/01-audio-panel-ui-service.log": {
+    "sha256": "22498b9da90739656a81b8c69f15c9b18062e80200aecd5de8d3398037f714f5",
+    "size": 1939
+  },
+  "final/02-canonical-audio-view.log": {
+    "sha256": "62c456cfdc0a3302ec3efcbe280da266a97a0aaf84d1a2020abac3039d184897",
+    "size": 4128
+  },
+  "final/03-ui-strict-feature.log": {
+    "sha256": "182af65444ba7b7e79058a253dfa69ed6fa3de63f850a7f73ac2e22175b4648d",
+    "size": 760
+  },
+  "final/04-ui-strict-default.log": {
+    "sha256": "2882adbeec60bfc21ade6c0579b5af30f40de76458213baec3f27fad8c324b0f",
+    "size": 494
+  },
+  "final/05-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "final/06-gpui-patch.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "final/07-dependency-patches.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "final/08-ui-style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "final/09-device-layout.log": {
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9",
+    "size": 84
+  },
+  "final/10-fmt.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "final/11-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "final/summary.json": {
+    "sha256": "0ed09554c7a2d8b9b2cc28f93ba56f1a366c93d41022cacad039fa3234e30171",
+    "size": 14695
+  },
+  "green/01-actual-placed-length-ui-service.log": {
+    "sha256": "41cae02630141ec9a1144bc12afc96933f195abee6b0ed7fbf5dd2ad623dbf37",
+    "size": 1188
+  },
+  "green/summary.json": {
+    "sha256": "c95720294b90258525bbc60b9b4777a80bfabeeafb950deae606994cc96c28e6",
+    "size": 9968
+  },
+  "orchestration/header-component.py": {
+    "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7",
+    "size": 520
+  },
+  "orchestration/seal-456-length-final.py": {
+    "sha256": "940669c7e851a08567d1baac69a636e0114c55e5fe3eb2d8b9b367337f7fbdf1",
+    "size": 5966
+  },
+  "protected-proof.json": {
+    "sha256": "be24be540dc59aaa350e0ff4780405513f7665a7d35ac9eb04337c070a3ef1be",
+    "size": 1175
+  },
+  "raw/diagnostic-sha.txt": {
+    "sha256": "76a8d302541ddc88d51adcc93766c4eb9f030bd4b92dd3810e09a69e5726bd91",
+    "size": 41
+  },
+  "raw/final-case-list.txt": {
+    "sha256": "c7200fa8144f6fc46f58db7130269a3b3004650d68bfee27d0c2b1e475c98ed5",
+    "size": 6896
+  },
+  "raw/github-readback.json": {
+    "sha256": "fef27ba1012aec78e418fc82968ef5822177cae6163c7ed8f614896e156a25af",
+    "size": 9615
+  },
+  "red/01-actual-placed-length-ui-service.log": {
+    "sha256": "4bd9230280476a89ad00fdc34cb821bb1daaa5c0bb3e418cab5bc97224796b48",
+    "size": 1176
+  },
+  "red/summary.json": {
+    "sha256": "e92d36c4adad0c271a8651e4048ce22a6f67169bf9d90ce2ebf652301822f327",
+    "size": 9964
+  },
+  "red2/01-actual-placed-length-ui-service.log": {
+    "sha256": "d7885cb560acea8753033b28c699726040a8989b4cfd230884364936598de4b4",
+    "size": 3043
+  },
+  "red2/summary.json": {
+    "sha256": "5ca2510b115d4533c2e7279f77eca7010f431ee6ed23fdf5146d80973ec3d2a6",
+    "size": 9966
+  },
+  "source-history.txt": {
+    "sha256": "f3568f4d24115a45cc5e9eacceb95ed97f091a8c117d840f87f4b62be1f930df",
+    "size": 595
+  },
+  "source-identities.json": {
+    "sha256": "3d0cfce410e321d9ff51f42f4636a70b36ebb68bae59c5046bd9bc03d3286930",
+    "size": 652
+  },
+  "source.patch": {
+    "sha256": "c2be1e1ffc7a0930bed79e4c402bc62ca4436201ccc50665cfc4bbe598d6254f",
+    "size": 19526
+  },
+  "source/after/crates/hex-ui/src/editor/arrangement_audio_panel.rs": {
+    "sha256": "2ac0fda9dea19b31c0dc2645de933a9facb52add8395e04ec756f501c1db0f62",
+    "size": 55290
+  },
+  "source/after/docs/audio-view-model.md": {
+    "sha256": "0c1aebef21668c54518225bec5ae189a66d92fb15f75d360eb471c9a7b57645a",
+    "size": 9856
+  },
+  "source/after/todo.md": {
+    "sha256": "e15e960aeffb2f92cb435a43a442c7007673438021d4bb7474b293906847a7f6",
+    "size": 388278
+  },
+  "source/before/crates/hex-ui/src/editor/arrangement_audio_panel.rs": {
+    "sha256": "0360197e527f33a185e6275bc3b72499af360f4c6971e0ff6588d3805caca785",
+    "size": 40963
+  },
+  "source/before/docs/audio-view-model.md": {
+    "sha256": "dfc068aa4b9a0ac5d7f3a483a30acd5a90825b176a3460d110a8557f6c5f7e52",
+    "size": 8704
+  },
+  "source/before/todo.md": {
+    "sha256": "7578c5aaf40ef897fd66efc46a1724ed559597c12742598558b9d45cd5682ef3",
+    "size": 387255
+  }
+}

@@ -1,0 +1,15 @@
+commit 429ba3b5502ab747719e9e657498b7b4583f5536
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 13:24:14 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 13:24:14 2026 +0000
+
+    fix: retain placed audio view metadata from Length controls
+
+commit dc87538ca9719493d828f0b5d4d259ae9b26d848
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 13:22:33 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 13:22:33 2026 +0000
+
+    test: reproduce placed audio Length controls losing metadata in real worker

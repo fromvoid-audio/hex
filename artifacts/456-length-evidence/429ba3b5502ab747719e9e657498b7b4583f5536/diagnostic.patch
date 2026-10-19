@@ -1,0 +1,299 @@
+diff --git a/crates/hex-ui/src/editor/arrangement_audio_panel.rs b/crates/hex-ui/src/editor/arrangement_audio_panel.rs
+index 0095bb98..bf7d341b 100644
+--- a/crates/hex-ui/src/editor/arrangement_audio_panel.rs
++++ b/crates/hex-ui/src/editor/arrangement_audio_panel.rs
+@@ -1144,4 +1144,294 @@ mod tests {
+         assert!(command_for(window, Field::Position, 1, u64::MAX).is_none());
+         assert!(command_for(window, Field::PlayStart, 1, 80).is_none());
+     }
++
++    #[cfg(feature = "ui-test-support")]
++    mod length_worker_returns {
++        use super::*;
++        use gpui::{AppContext, Modifiers, TestAppContext, VisualTestContext};
++        use hex_project::{AudioViewResizeOperation, Editor};
++        use hex_session::service::{Event, Request, Service};
++        use std::time::{Duration, Instant};
++
++        fn next(service: &Service) -> Event {
++            let deadline = Instant::now() + Duration::from_secs(5);
++            loop {
++                if let Ok(event) = service.try_event() {
++                    assert!(event.error.is_none(), "{:?}", event.error);
++                    return event;
++                }
++                assert!(
++                    Instant::now() < deadline,
++                    "actual service response timed out"
++                );
++                std::thread::sleep(Duration::from_millis(1));
++            }
++        }
++
++        fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
++            let deadline = Instant::now() + Duration::from_secs(5);
++            loop {
++                let done = editor.update(&mut *visual, |v, cx| {
++                    v.tick(cx);
++                    cx.notify();
++                    v.worker_requests_pending == 0 && v.pending_requests.is_empty()
++                });
++                if done {
++                    visual.run_until_parked();
++                    return;
++                }
++                assert!(Instant::now() < deadline, "actual clip edit timed out");
++                std::thread::sleep(Duration::from_millis(1));
++            }
++        }
++
++        fn fixture(
++            cx: &mut TestAppContext,
++            mode: Option<AudioViewMode>,
++            phase: u64,
++            length: u64,
++        ) -> (
++            gpui::AnyWindowHandle,
++            gpui::Entity<EditorView>,
++            ClipId,
++            super::super::super::external_audio_drop_ui_test::BatchFiles,
++        ) {
++            let files = super::super::super::external_audio_drop_ui_test::BatchFiles::new();
++            let wav = files.wav("placed-length.wav", 48_000, 96_000);
++            let root = wav.parent().unwrap();
++            std::fs::create_dir(root.join("samples")).unwrap();
++            let service = Service::new(48_000, 32, 8_000_000).unwrap();
++            next(&service);
++            service.submit(Request::Import(wav.clone())).unwrap();
++            let imported = next(&service);
++            let track = imported.state.project.tracks()[0].id();
++            let clip = imported.state.project.track(track).unwrap().clips()[0].id();
++            let edit = |command| {
++                service.submit(Request::Edit(command)).unwrap();
++                next(&service)
++            };
++            edit(Command::TrimClip {
++                clip,
++                start: 0,
++                duration: 24_000,
++                source_offset: 12_000,
++                source_length: 24_000,
++            });
++            edit(Command::SetClipLooping {
++                clip,
++                looping: true,
++            });
++            edit(Command::SetAudioClipPitch { clip, cents: 123 });
++            let a = hex_engine::default_native_device_state(
++                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
++            )
++            .unwrap()
++            .with_input_gain_millidb(-1234)
++            .unwrap()
++            .with_output_gain_millidb(4321)
++            .unwrap();
++            let view = hex_engine::native_device_view(&a).unwrap();
++            let parameter = view
++                .parameters
++                .iter()
++                .find(|p| matches!(p.value, hex_lattice_contract::ParameterValue::Bool(_)))
++                .unwrap();
++            let hex_lattice_contract::ParameterValue::Bool(value) = parameter.value else {
++                unreachable!()
++            };
++            let b = hex_engine::patch_native_device_parameter(
++                &a,
++                parameter.descriptor.id,
++                hex_lattice_contract::ParameterValue::Bool(!value),
++            )
++            .unwrap();
++            let inserted = edit(Command::InsertDevice {
++                track,
++                before: None,
++                state: a.clone(),
++            });
++            let device = inserted.state.project.track(track).unwrap().devices()[0].id();
++            edit(Command::ReplaceDeviceComparison {
++                device,
++                state: a,
++                comparison: Some(hex_project::DeviceComparison::new(
++                    hex_project::DeviceVariant::B,
++                    b,
++                )),
++            });
++            let scale = hex_tuning::Scale::new(
++                7,
++                *hex_tuning::Scale::default().cents(),
++                57,
++                432.0,
++                3,
++                1300.0,
++            )
++            .unwrap();
++            edit(Command::SetTuning(
++                hex_tuning::ProjectTuning::new(true, scale, hex_tuning::Audition::default())
++                    .unwrap(),
++            ));
++            if let Some(mode) = mode {
++                edit(Command::ResizeAudioClipView {
++                    clip,
++                    operation: AudioViewResizeOperation::OuterEnd {
++                        project_frame: 48_000,
++                    },
++                });
++                if mode == AudioViewMode::Once {
++                    edit(Command::SetClipLooping {
++                        clip,
++                        looping: false,
++                    });
++                }
++                if phase > 0 {
++                    edit(Command::TrimClipEdge {
++                        clip,
++                        edge: hex_project::TrimEdge::Left,
++                        frame: phase,
++                    });
++                    edit(Command::MoveClip {
++                        clip,
++                        track,
++                        start: 0,
++                    });
++                }
++                let placed = edit(Command::ResizeAudioClipView {
++                    clip,
++                    operation: AudioViewResizeOperation::OuterEnd {
++                        project_frame: length,
++                    },
++                });
++                let placement = placed
++                    .state
++                    .project
++                    .clip(clip)
++                    .unwrap()
++                    .audio_edit()
++                    .unwrap()
++                    .placement
++                    .unwrap();
++                assert_eq!(placement.mode, mode);
++                assert_eq!(placement.cycle_phase, phase);
++            }
++            edit(Command::SetClipFades {
++                clip,
++                fade_in: length.min(100),
++                fade_out: length.min(200),
++            });
++            let path = root.join("placed.hex");
++            service.submit(Request::SaveNew(path.clone())).unwrap();
++            let saved = next(&service);
++            assert!(saved.save_complete);
++            service.submit(Request::Open(path)).unwrap();
++            let event = next(&service);
++            assert!(event.project_replaced && event.open_complete);
++            assert_eq!(
++                event.state.project, saved.state.project,
++                "actual current-format SaveNew/Open"
++            );
++            let handle = *cx.add_window(|_, _| gpui::Empty);
++            let editor = cx
++                .update_window(handle, |_, window, cx| {
++                    window.activate_window();
++                    let editor = window.replace_root(cx, |window, cx| {
++                        EditorView::new_for_test_with_browser_directory(window, cx, service, root)
++                    });
++                    editor.update(cx, |v, cx| {
++                        v.receive(event);
++                        v.selected_track = Some(track);
++                        v.selected_clip = Some(clip);
++                        v.clip_view_open = true;
++                        v.device_panel_active = false;
++                        v.focus.focus(window);
++                        cx.notify();
++                    });
++                    editor
++                })
++                .unwrap();
++            (handle, editor, clip, files)
++        }
++
++        fn length_steps(cx: &mut TestAppContext, mode: Option<AudioViewMode>, phase: u64) {
++            for direction in [-1, 1] {
++                let (handle, editor, clip, _files) = fixture(cx, mode, phase, 48_000);
++                let mut visual = VisualTestContext::from_window(handle, cx);
++                visual.run_until_parked();
++                let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
++                let old = before.project.clip(clip).unwrap();
++                let duration = if direction < 0 {
++                    old.duration() - 48
++                } else {
++                    old.duration() + 48
++                };
++                let expected = if mode.is_some() {
++                    Command::ResizeAudioClipView {
++                        clip,
++                        operation: AudioViewResizeOperation::OuterEnd {
++                            project_frame: old.start() + duration,
++                        },
++                    }
++                } else {
++                    Command::TrimClip {
++                        clip,
++                        start: old.start(),
++                        duration,
++                        source_offset: old.source_offset(),
++                        source_length: old.source_length(),
++                    }
++                };
++                let mut oracle = Editor::new((*before.project).clone(), 16).unwrap();
++                oracle.execute(expected).unwrap();
++                let button = visual
++                    .debug_bounds(Box::leak(
++                        format!("audio-clip-length-{direction}").into_boxed_str(),
++                    ))
++                    .unwrap()
++                    .center();
++                let controls = visual.debug_bounds("arrangement-audio-controls").unwrap();
++                assert!(controls.contains(&button));
++                visual.simulate_click(button, Modifiers::default());
++                pump(&editor, &mut visual);
++                let after = editor.read_with(&visual, |v, _| {
++                    assert!(v.error.is_none(), "{:?}", v.error);
++                    assert_eq!(v.state.as_ref().unwrap().project.clip(clip).unwrap().audio_edit().unwrap().placement.map(|p| p.mode), mode,
++                        "actual Length click lost placement: mode={mode:?} phase={phase} direction={direction}");
++                    assert_eq!(*v.state.as_ref().unwrap().project, *oracle.project(), "complete canonical metadata including source/fade/tuning/A-B");
++                    v.state.as_ref().unwrap().clone()
++                });
++                editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
++                pump(&editor, &mut visual);
++                editor.read_with(&visual, |v, _| {
++                    assert_eq!(v.state.as_ref().unwrap().project, before.project)
++                });
++                editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
++                pump(&editor, &mut visual);
++                editor.read_with(&visual, |v, _| {
++                    assert_eq!(v.state.as_ref().unwrap().project, after.project)
++                });
++            }
++        }
++
++        #[gpui::test]
++        fn placed_length_once_zero_phase_real_worker(cx: &mut TestAppContext) {
++            length_steps(cx, Some(AudioViewMode::Once), 0);
++        }
++        #[gpui::test]
++        fn placed_length_once_nonzero_phase_real_worker(cx: &mut TestAppContext) {
++            length_steps(cx, Some(AudioViewMode::Once), 6_000);
++        }
++        #[gpui::test]
++        fn placed_length_repeat_zero_phase_real_worker(cx: &mut TestAppContext) {
++            length_steps(cx, Some(AudioViewMode::Repeat), 0);
++        }
++        #[gpui::test]
++        fn placed_length_repeat_nonzero_phase_real_worker(cx: &mut TestAppContext) {
++            length_steps(cx, Some(AudioViewMode::Repeat), 6_000);
++        }
++        #[gpui::test]
++        fn placed_length_ordinary_trim_real_worker_control(cx: &mut TestAppContext) {
++            length_steps(cx, None, 0);
++        }
++    }
+ }

@@ -1,0 +1,45 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.73s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 5 tests
+
+thread 'editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_repeat_nonzero_phase_real_worker' (224087) panicked at crates/hex-ui/src/editor/arrangement_audio_panel.rs:1398:21:
+assertion `left == right` failed: actual Length click lost placement: mode=Some(Repeat) phase=6000 direction=-1
+  left: None
+ right: Some(Repeat)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_repeat_nonzero_phase_real_worker ... FAILED
+
+thread 'editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_once_zero_phase_real_worker' (224085) panicked at crates/hex-ui/src/editor/arrangement_audio_panel.rs:1398:21:
+assertion `left == right` failed: actual Length click lost placement: mode=Some(Once) phase=0 direction=-1
+  left: None
+ right: Some(Once)
+test editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_once_zero_phase_real_worker ... FAILED
+
+thread 'editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_once_nonzero_phase_real_worker' (224084) panicked at crates/hex-ui/src/editor/arrangement_audio_panel.rs:1398:21:
+assertion `left == right` failed: actual Length click lost placement: mode=Some(Once) phase=6000 direction=-1
+  left: None
+ right: Some(Once)
+test editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_once_nonzero_phase_real_worker ... FAILED
+
+thread 'editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_repeat_zero_phase_real_worker' (224101) panicked at crates/hex-ui/src/editor/arrangement_audio_panel.rs:1398:21:
+assertion `left == right` failed: actual Length click lost placement: mode=Some(Repeat) phase=0 direction=-1
+  left: None
+ right: Some(Repeat)
+test editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_repeat_zero_phase_real_worker ... FAILED
+test editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_ordinary_trim_real_worker_control ... ok
+
+failures:
+
+failures:
+    editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_once_nonzero_phase_real_worker
+    editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_once_zero_phase_real_worker
+    editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_repeat_nonzero_phase_real_worker
+    editor::arrangement_audio_panel::tests::length_worker_returns::placed_length_repeat_zero_phase_real_worker
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 1019 filtered out; finished in 3.65s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

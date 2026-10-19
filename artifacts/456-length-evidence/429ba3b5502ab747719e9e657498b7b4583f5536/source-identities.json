@@ -1,0 +1,14 @@
+{
+  "crates/hex-ui/src/editor/arrangement_audio_panel.rs": {
+    "before_sha256": "0360197e527f33a185e6275bc3b72499af360f4c6971e0ff6588d3805caca785",
+    "after_sha256": "2ac0fda9dea19b31c0dc2645de933a9facb52add8395e04ec756f501c1db0f62"
+  },
+  "docs/audio-view-model.md": {
+    "before_sha256": "dfc068aa4b9a0ac5d7f3a483a30acd5a90825b176a3460d110a8557f6c5f7e52",
+    "after_sha256": "0c1aebef21668c54518225bec5ae189a66d92fb15f75d360eb471c9a7b57645a"
+  },
+  "todo.md": {
+    "before_sha256": "7578c5aaf40ef897fd66efc46a1724ed559597c12742598558b9d45cd5682ef3",
+    "after_sha256": "e15e960aeffb2f92cb435a43a442c7007673438021d4bb7474b293906847a7f6"
+  }
+}
