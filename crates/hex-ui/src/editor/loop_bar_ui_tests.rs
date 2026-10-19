@@ -582,3 +582,63 @@ fn moving_body_recalculates_modifiers_without_changing_initial_origin(cx: &mut T
         LoopRegion::new(60_000, 96_000, false).unwrap()
     );
 }
+
+// Review 4319218033: actual captured pointer travel must disqualify a click,
+// including a final release not preceded by a move and a return to the origin.
+fn command_vertical_motion_control(cx: &mut TestAppContext, moves: &[f32], release_y: f32) {
+    let (handle, editor) = fixture(
+        cx,
+        48_000,
+        144_000,
+        Viewport {
+            start: 0,
+            length: 384_000,
+        },
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let down = at(&mut visual, 0.25);
+    let command = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.simulate_mouse_down(down, MouseButton::Left, command);
+    assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_some()));
+    for y in moves {
+        visual.simulate_mouse_move(
+            point(down.x, down.y + gpui::px(*y)),
+            MouseButton::Left,
+            command,
+        );
+        visual.run_until_parked();
+        assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_some()));
+    }
+    let up = point(down.x, down.y + gpui::px(release_y));
+    eprintln!("command vertical down={down:?} moves={moves:?} actual mouse up={up:?}");
+    visual.simulate_mouse_up(up, MouseButton::Left, command);
+    visual.run_until_parked();
+    assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_none()));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().project.snapshot(),
+            before,
+            "vertical command travel is not a click and must not author a toggle"
+        );
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+    });
+}
+#[gpui::test]
+fn command_vertical_motion_outside_is_not_toggle(cx: &mut TestAppContext) {
+    command_vertical_motion_control(cx, &[80.0], 80.0);
+}
+#[gpui::test]
+fn command_vertical_motion_final_release_is_not_toggle(cx: &mut TestAppContext) {
+    command_vertical_motion_control(cx, &[], 80.0);
+}
+#[gpui::test]
+fn command_vertical_motion_return_to_origin_is_not_toggle(cx: &mut TestAppContext) {
+    command_vertical_motion_control(cx, &[80.0, 0.0], 0.0);
+}
