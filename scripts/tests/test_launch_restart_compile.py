@@ -79,6 +79,151 @@ class CompiledHelperTests(unittest.TestCase):
         self.assertNotEqual(native[0][0], '/usr/bin/swift')
         self.assertEqual([x[1] for x in native], ['snapshot', 'snapshot'])
 
+    def test_hardlinked_compiler_reuses_one_binary_for_snapshot_quit_force(self):
+        for index in range(77):
+            os.link(self.compiler, self.root / ('compiler-link-' + str(index)))
+        self.assertEqual(self.compiler.stat().st_nlink, 78)
+        self.test_snapshot_quit_force_all_use_same_binary_and_repeat_installed_seal_after_compile()
+        report = json.loads((self.output / 'native-helper.json').read_text())
+        self.assertEqual(report['compiler'], str(self.compiler))
+        self.assertEqual(report['compiler_identity'][-1], hashlib.sha256(self.compiler.read_bytes()).hexdigest())
+        self.assertEqual(report['compile_timeout_seconds'], 120)
+        self.assertEqual(report['operation_timeout_seconds'], 15)
+        binary = Path(report['binary'])
+        self.controller.close()
+        self.assertFalse(binary.exists())
+        self.assertTrue(self.compiler.exists())
+        self.assertEqual(self.compiler.stat().st_nlink, 78)
+
+    def test_compiler_identity_accepts_single_and_multiple_links_only_for_compiler(self):
+        for count in (1, 78):
+            with self.subTest(links=count):
+                if count == 78:
+                    for index in range(77):
+                        os.link(self.compiler, self.root / ('identity-link-' + str(index)))
+                identity = self.controller._compiler_identity()
+                self.assertEqual(identity[-1], hashlib.sha256(self.compiler.read_bytes()).hexdigest())
+                if count > 1:
+                    with self.assertRaisesRegex(restart.RestartError, 'ambiguous'):
+                        self.controller._file_identity(self.compiler, executable=True, owned=False)
+        self.assertEqual(self.calls(self.compiler_log), [])
+        self.assertEqual(self.calls(self.native_log), [])
+
+    def test_zero_link_file_is_rejected_for_both_compiler_and_private_identity(self):
+        fields = list(self.compiler.stat())
+        fields[3] = 0  # st_nlink: an unlinked descriptor is never an accepted tool.
+        detached = os.stat_result(fields)
+        with patch.object(restart.os, 'fstat', return_value=detached):
+            with self.assertRaisesRegex(restart.RestartError, 'ambiguous'):
+                self.controller._compiler_identity()
+            with self.assertRaisesRegex(restart.RestartError, 'ambiguous'):
+                self.controller._file_identity(self.compiler, executable=True)
+        self.assertIsNone(self.controller._helper_dir)
+        self.assertEqual(self.calls(self.compiler_log), [])
+        self.assertEqual(self.calls(self.native_log), [])
+
+    def test_compiler_unsafe_paths_refuse_before_compile_and_latch(self):
+        candidates = []
+        missing = self.root / 'missing-tool'
+        candidates.append(missing)
+        directory = self.root / 'directory-tool'; directory.mkdir()
+        candidates.append(directory)
+        fifo = self.root / 'fifo-tool'; os.mkfifo(fifo)
+        candidates.append(fifo)
+        link = self.root / 'symlink-tool'; link.symlink_to(self.compiler)
+        candidates.append(link)
+        parent_link = self.root / 'parent-link'; parent_link.symlink_to(self.root, target_is_directory=True)
+        candidates.append(parent_link / self.compiler.name)
+        for mode in (0o720, 0o702, 0o600):
+            tool = self.root / ('mode-tool-' + oct(mode))
+            tool.write_bytes(self.compiler.read_bytes()); tool.chmod(mode)
+            candidates.append(tool)
+        for index, tool in enumerate(candidates):
+            with self.subTest(tool=tool.name, parent=tool.parent.name):
+                output = self.root / ('unsafe-output-' + str(index)); output.mkdir(mode=0o700)
+                controller = restart.NativeController(self.root, self.app, output, Mock())
+                with patch.object(restart, 'SWIFTC', str(tool)), patch.object(controller, '_run_owned') as run:
+                    with self.assertRaises(restart.RestartError): controller.snapshot()
+                    with self.assertRaisesRegex(restart.RestartError, 'closed'): controller.snapshot()
+                    run.assert_not_called()
+                self.assertIsNone(controller._helper_dir)
+                self.assertEqual(list(output.iterdir()), [])
+
+    def test_private_original_source_hardlink_refused_before_compile(self):
+        os.link(self.source, self.root / 'source-alias')
+        with patch.object(self.controller, '_run_owned') as run:
+            with self.assertRaisesRegex(restart.RestartError, 'ambiguous'): self.controller.snapshot()
+            run.assert_not_called()
+        self.assertIsNone(self.controller._helper_dir)
+
+    def test_private_source_snapshot_hardlink_refused_before_operation(self):
+        run = self.controller._run_owned
+        def link_snapshot(argv, timeout, phase):
+            result = run(argv, timeout, phase)
+            if phase == 'compile':
+                os.link(self.controller._helper_dir / 'launch-restart.swift', self.root / 'snapshot-alias')
+            return result
+        with patch.object(self.controller, '_run_owned', side_effect=link_snapshot):
+            with self.assertRaisesRegex(restart.RestartError, 'ambiguous'): self.controller.snapshot()
+        self.assertEqual(len(self.calls(self.compiler_log)), 1)
+        self.assertEqual(self.calls(self.native_log), [])
+        self.assertFalse(list(self.output.glob('native-helper-*')))
+
+    def test_compiler_mutation_during_compile_refuses_before_operation(self):
+        original = self.compiler.read_bytes()
+        for index, change in enumerate(('inode', 'content', 'mode', 'links')):
+            with self.subTest(change=change):
+                tool = self.root / ('changing-tool-' + str(index))
+                tool.write_bytes(original); tool.chmod(0o700)
+                output = self.root / ('changing-output-' + str(index)); output.mkdir(mode=0o700)
+                controller = restart.NativeController(self.root, self.app, output, Mock())
+                run = controller._run_owned
+                def mutate(argv, timeout, phase):
+                    result = run(argv, timeout, phase)
+                    if phase == 'compile':
+                        if change == 'inode':
+                            replacement = self.root / 'replacement-tool'
+                            replacement.write_bytes(original); replacement.chmod(0o700)
+                            replacement.replace(tool)
+                        elif change == 'content': tool.write_bytes(original + b'\n# changed\n')
+                        elif change == 'mode': tool.chmod(0o500)
+                        else: os.link(tool, self.root / 'new-compiler-alias')
+                    return result
+                with patch.object(restart, 'SWIFTC', str(tool)), patch.object(controller, '_run_owned', side_effect=mutate):
+                    with self.assertRaisesRegex(restart.RestartError, 'compiler changed'): controller.snapshot()
+                    with self.assertRaisesRegex(restart.RestartError, 'closed'): controller.snapshot()
+                self.assertEqual(self.calls(self.native_log), [])
+                self.assertEqual(len(self.calls(self.compiler_log)), index + 1)
+                self.assertFalse(list(output.glob('native-helper-*')))
+
+    def test_compiler_changes_during_identity_hash_are_refused(self):
+        original_sha256 = restart.hashlib.sha256
+        for index, change in enumerate(('path', 'links', 'content')):
+            with self.subTest(change=change):
+                tool = self.root / ('hashing-tool-' + str(index))
+                tool.write_bytes(self.compiler.read_bytes()); tool.chmod(0o700)
+                class ChangingDigest:
+                    def __init__(inner):
+                        inner.digest = original_sha256()
+                        inner.changed = False
+                    def update(inner, block):
+                        inner.digest.update(block)
+                        if not inner.changed:
+                            inner.changed = True
+                            if change == 'path':
+                                replacement = self.root / 'hash-replacement'
+                                replacement.write_bytes(tool.read_bytes()); replacement.chmod(0o700)
+                                replacement.replace(tool)
+                            elif change == 'links': os.link(tool, self.root / 'hash-link')
+                            else: tool.write_bytes(b'changed')
+                    def hexdigest(inner): return inner.digest.hexdigest()
+                with patch.object(restart, 'SWIFTC', str(tool)), patch.object(restart.hashlib, 'sha256', ChangingDigest):
+                    with self.assertRaisesRegex(restart.RestartError, 'changed while inspected'):
+                        self.controller._compiler_identity()
+        self.assertIsNone(self.controller._helper_dir)
+        self.assertEqual(self.calls(self.compiler_log), [])
+        self.assertEqual(self.calls(self.native_log), [])
+
     def configure(self, **values):
         self.config.write_text(json.dumps(values))
 

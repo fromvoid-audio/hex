@@ -59,7 +59,13 @@ class NativeController:
         info = executable.stat()
         return (info.st_dev, info.st_ino, self.delivery.sha(executable))
 
-    def _file_identity(self, path: Path, *, executable=False, owned=True):
+    def _compiler_identity(self):
+        # System toolchains may legitimately have multiple hard links. Private
+        # source snapshots and compiled outputs still require exclusive links.
+        return self._file_identity(Path(SWIFTC), executable=True, owned=False,
+                                   require_single_link=False)
+
+    def _file_identity(self, path: Path, *, executable=False, owned=True, require_single_link=True):
         # Source and private executable paths cannot pass through a symlink.
         for component in (path, *path.parents):
             if component.is_symlink():
@@ -75,7 +81,8 @@ class NativeController:
                 raise
             with stream:
                 before = os.fstat(stream.fileno())
-                if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                if (not stat.S_ISREG(before.st_mode) or before.st_nlink < 1
+                        or (require_single_link and before.st_nlink != 1)
                         or (owned and before.st_uid != os.getuid())
                         or before.st_mode & 0o022
                         or (executable and not before.st_mode & stat.S_IXUSR)
@@ -178,7 +185,7 @@ class NativeController:
         self._failed = True  # No second compiler attempt after abnormal exit.
         source = self.root / "scripts/launch-restart.swift"
         self._source_identity = self._file_identity(source)
-        compiler_identity = self._file_identity(Path(SWIFTC), executable=True, owned=False)
+        compiler_identity = self._compiler_identity()
         self._helper_dir = Path(tempfile.mkdtemp(prefix="native-helper-", dir=self.output))
         info = self._helper_dir.lstat()
         self._directory_identity = (info.st_dev, info.st_ino)
@@ -215,7 +222,7 @@ class NativeController:
         if result.returncode:
             raise RestartError(f"native helper compile refused; see {self.output / 'native-compile.log'}")
         self._binary_identity = self._file_identity(self._binary, executable=True)
-        if self._file_identity(Path(SWIFTC), executable=True, owned=False) != compiler_identity:
+        if self._compiler_identity() != compiler_identity:
             raise RestartError("native compiler changed during compilation; app control stopped")
         self._validate_helper()
         provenance = {"source": str(source), "source_identity": self._source_identity,
