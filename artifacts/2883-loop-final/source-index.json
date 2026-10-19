@@ -1,0 +1,62 @@
+{
+  "source": "5760cd37f8cff1b9906bf79e1f40380aee72d67d",
+  "tree": "4f066ace4b818fc605afa296055bc62f11296476",
+  "base": "579bf18531cae3af5eef999a555f4c7dbfbad003",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/controller.rs",
+      "before_git_blob": "40b853a8457c92aa05c913ae9f88e35e8a200c88",
+      "after_git_blob": "0c82761a715dc48651f76282de19be490eb43e31",
+      "sha256": "d61f730000a3c42c4f0ca3d1c29b0c2505b34eb85bc88f123d79ded9c71b1d23"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail.rs",
+      "before_git_blob": "a00681b2f701defd019a66c21d52b8997f3e8f85",
+      "after_git_blob": "23dcf185c9a8c325ede999c226789ddd1b571993",
+      "sha256": "18af9772057cff551b481fb7d308f5ed873fc21ee366b68087ac5160a49f3cc2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail/pending.rs",
+      "before_git_blob": null,
+      "after_git_blob": "bc4d0ff66e8e59541ad0bffb7eca83bbfb7aa696",
+      "sha256": "5e53902a8b2a9fb134285c559be151a8cba628bfb6ad8bd80d2a80647e1ba4a1"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs",
+      "before_git_blob": null,
+      "after_git_blob": "0390007f50cffb6258ae924633bc073c95a7a69e",
+      "sha256": "9cc31904cb49797efab8cc53111cdc61ab2e7d6c38030ba7e1dddaed9477d66e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/mod.rs",
+      "before_git_blob": "02c7901d8b11b21803373aa5d9971d88bdb22de2",
+      "after_git_blob": "2579c707dcb094936fdad4ad6decfa630d78c1b5",
+      "sha256": "1b4f4279b7d0165c95e70479e211c0727b044f764055a64d70216f2a09eca7b1"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/render.rs",
+      "before_git_blob": "587dea029db9400b856a8cd21e3f4c74c27b26ad",
+      "after_git_blob": "981096780dc1fb22410726cb0bfbb00728c719d3",
+      "sha256": "1b3850f26fb9bc72060d6c656725fba082c28b504b5fc542f9bc69eec0b047c6"
+    },
+    {
+      "path": "docs/runtime.md",
+      "before_git_blob": "0a16b860e6e752a0fa51bf5d05af2b16b77b570d",
+      "after_git_blob": "18eefbcca7bd7da318916473580bc7470d115812",
+      "sha256": "907d240f9d63af5b7af639018dcb64cbc45faff184bcf498068bc7de10f6b9db"
+    },
+    {
+      "path": "todo.md",
+      "before_git_blob": "86e16580253a1f74ae16514fc1e80d0679d266f2",
+      "after_git_blob": "76ecc1e7a70aafcb6150bce83cb5a556ae799170",
+      "sha256": "0f3270704498e1b6c71a5becf254caf4f4bb280199a1db320cc1aced6ea04fe3"
+    }
+  ],
+  "tested_content_sha256": "06bedadf66fced055df6db68f97f38fcf3fa1cc62c07855af17f1452b0717f67",
+  "feature_test_dirty_parent": "1e3535f87646db2b8f5ba2e2374356fc1ea7a89e",
+  "default_strict_commit": "b0d22b11c704f0f15e8112e4e4af868b445b3207",
+  "final_document_only_delta": [
+    "todo.md"
+  ],
+  "final_document_check_run": "20261019T214610Z-d34ed83a"
+}

@@ -1,0 +1,67 @@
+   Compiling cc v1.6.0
+   Compiling rustix v1.1.5
+   Compiling memchr v2.8.3
+    Checking linux-raw-sys v0.12.1
+    Checking bytemuck v1.25.2
+   Compiling ring v0.17.14
+   Compiling aho-corasick v1.1.5
+    Checking polling v3.11.0
+    Checking async-io v2.6.0
+    Checking async-signal v0.2.14
+    Checking async-process v2.5.0
+   Compiling regex-automata v0.4.18
+   Compiling object v0.37.3
+   Compiling bstr v1.13.1
+   Compiling rustls v0.23.45
+   Compiling globset v0.4.19
+   Compiling ar_archive_writer v0.5.1
+    Checking rustls-webpki v0.103.15
+    Checking async-net v2.0.0
+    Checking num-complex v0.4.6
+   Compiling psm v0.1.31
+   Compiling rust-embed-utils v8.13.0
+   Compiling freetype-sys v0.20.1
+    Checking tiny-skia-path v0.11.4
+   Compiling rust-embed-impl v8.13.0
+    Checking async-global-executor v2.4.1
+    Checking rgb v0.8.53
+   Compiling stacker v0.1.25
+    Checking async-std v1.13.2
+    Checking tokio-rustls v0.26.6
+    Checking hyper-rustls v0.27.10
+    Checking rustybuzz v0.20.1
+    Checking gpui_collections v0.2.2
+    Checking pulp v0.22.3
+    Checking zbus v5.13.2
+   Compiling serde_json v1.0.151
+    Checking rust-embed v8.13.0
+    Checking rand v0.9.5
+    Checking smol v2.0.2
+    Checking tempfile v3.27.0
+    Checking usvg v0.45.1
+    Checking ashpd v0.12.3
+    Checking gpui_util v0.2.2
+    Checking zed-reqwest v0.12.15-zed
+    Checking exr v1.74.2
+    Checking blade-graphics v0.7.1
+   Compiling zed-font-kit v0.14.1-zed
+    Checking zed-async-tar v0.5.0-zed
+    Checking ravif v0.12.0
+    Checking tiny-skia v0.11.4
+   Compiling gpui_perf v0.2.2
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+    Checking num v0.4.3
+    Checking qoi v0.4.1
+    Checking image v0.25.9
+    Checking oo7 v0.5.0
+    Checking resvg v0.45.1
+   Compiling gpui_util_macros v0.2.2
+    Checking gpui_http_client v0.2.2
+    Checking stacksafe v0.1.4
+    Checking blade-util v0.3.0
+    Checking calloop v0.13.0
+    Checking hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+    Checking hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Checking hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `dev` profile [unoptimized] target(s) in 38.23s

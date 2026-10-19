@@ -1,0 +1,379 @@
+{
+  "source": "5760cd37f8cff1b9906bf79e1f40380aee72d67d",
+  "tree": "4f066ace4b818fc605afa296055bc62f11296476",
+  "runtime_passed": 14,
+  "runtime_failed": 0,
+  "runtime_ignored": 0,
+  "cheap7": [
+    {
+      "argv": [
+        "python3",
+        "scripts/changelog.py",
+        "validate",
+        "--if-present"
+      ],
+      "ended_at": "2026-10-19T21:43:20Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214319Z-f475e303/01-changelog.log",
+      "started_at": "2026-10-19T21:43:20Z",
+      "status": "passed",
+      "step_id": "changelog",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": "2026-10-19T21:43:20Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214319Z-f475e303/02-architecture.log",
+      "started_at": "2026-10-19T21:43:20Z",
+      "status": "passed",
+      "step_id": "architecture",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": "2026-10-19T21:43:20Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214319Z-f475e303/03-gpui-patch.log",
+      "started_at": "2026-10-19T21:43:20Z",
+      "status": "passed",
+      "step_id": "gpui-patch",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "ended_at": "2026-10-19T21:43:20Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214319Z-f475e303/04-dependency-patches.log",
+      "started_at": "2026-10-19T21:43:20Z",
+      "status": "passed",
+      "step_id": "dependency-patches",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": "2026-10-19T21:43:20Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214319Z-f475e303/05-ui-style.log",
+      "started_at": "2026-10-19T21:43:20Z",
+      "status": "passed",
+      "step_id": "ui-style",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "ended_at": "2026-10-19T21:43:20Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214319Z-f475e303/06-device-layout.log",
+      "started_at": "2026-10-19T21:43:20Z",
+      "status": "passed",
+      "step_id": "device-layout",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-19T21:43:27Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214319Z-f475e303/07-format.log",
+      "started_at": "2026-10-19T21:43:20Z",
+      "status": "passed",
+      "step_id": "format",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    }
+  ],
+  "feature_edit_profile": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "loop_rail",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-19T21:44:31Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214335Z-ff6ca9c0/01-edit-tests.log",
+      "started_at": "2026-10-19T21:43:36Z",
+      "status": "passed",
+      "step_id": "edit-tests",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": [
+          14
+        ]
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T21:45:05Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214335Z-ff6ca9c0/02-edit-clippy.log",
+      "started_at": "2026-10-19T21:44:31Z",
+      "status": "passed",
+      "step_id": "edit-clippy",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-19T21:45:12Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214335Z-ff6ca9c0/03-format.log",
+      "started_at": "2026-10-19T21:45:05Z",
+      "status": "passed",
+      "step_id": "format",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    }
+  ],
+  "default_strict": [
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T21:46:00Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2883-default-strict/01-ui-default-strict.log",
+      "started_at": "2026-10-19T21:45:21Z",
+      "status": "passed",
+      "step_id": "ui-default-strict",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    }
+  ],
+  "full_integration": false,
+  "native_framebuffer": false,
+  "final_run": "20261019T214335Z-ff6ca9c0",
+  "document_only_final_preflight": [
+    {
+      "argv": [
+        "python3",
+        "scripts/changelog.py",
+        "validate",
+        "--if-present"
+      ],
+      "ended_at": "2026-10-19T21:46:11Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214610Z-d34ed83a/01-changelog.log",
+      "started_at": "2026-10-19T21:46:11Z",
+      "status": "passed",
+      "step_id": "changelog",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": "2026-10-19T21:46:11Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214610Z-d34ed83a/02-architecture.log",
+      "started_at": "2026-10-19T21:46:11Z",
+      "status": "passed",
+      "step_id": "architecture",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": "2026-10-19T21:46:11Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214610Z-d34ed83a/03-gpui-patch.log",
+      "started_at": "2026-10-19T21:46:11Z",
+      "status": "passed",
+      "step_id": "gpui-patch",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "ended_at": "2026-10-19T21:46:11Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214610Z-d34ed83a/04-dependency-patches.log",
+      "started_at": "2026-10-19T21:46:11Z",
+      "status": "passed",
+      "step_id": "dependency-patches",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": "2026-10-19T21:46:11Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214610Z-d34ed83a/05-ui-style.log",
+      "started_at": "2026-10-19T21:46:11Z",
+      "status": "passed",
+      "step_id": "ui-style",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "ended_at": "2026-10-19T21:46:11Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214610Z-d34ed83a/06-device-layout.log",
+      "started_at": "2026-10-19T21:46:11Z",
+      "status": "passed",
+      "step_id": "device-layout",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-19T21:46:18Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261019T214610Z-d34ed83a/07-format.log",
+      "started_at": "2026-10-19T21:46:11Z",
+      "status": "passed",
+      "step_id": "format",
+      "test_results": {
+        "python_executions": [],
+        "python_skipped": [],
+        "rust_passed_by_binary": []
+      }
+    }
+  ],
+  "code_source": "b0d22b11c704f0f15e8112e4e4af868b445b3207"
+}
