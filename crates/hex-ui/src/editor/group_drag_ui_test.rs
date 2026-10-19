@@ -1,11 +1,78 @@
 //! Actual multi-selection/header drag → worker candidate → one history step.
+use super::super::test_environment::Environment;
 use super::super::{EditorView, musical_time::SnapGrid};
 use gpui::{
     AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px,
 };
 use hex_project::{ClipId, Command, Created};
 use hex_session::service::{Event, Request, Service};
-use std::time::{Duration, Instant};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::Ordering},
+    time::{Duration, Instant},
+};
+
+// Armed before any Service work can escape. Only an actual successful Import
+// response disarms retention; shutdown is deliberately not treated as a join.
+struct PendingSetup {
+    environment: Arc<Environment>,
+    acknowledged: bool,
+}
+impl PendingSetup {
+    fn new(environment: Arc<Environment>) -> Self {
+        Self {
+            environment,
+            acknowledged: false,
+        }
+    }
+    fn acknowledge_import(&mut self, event: &Event, path: &Path) {
+        assert!(event.error.is_none(), "{:?}", event.error);
+        assert!(event.request_complete);
+        assert_eq!(event.status.as_deref(), Some("audio imported"));
+        assert!(
+            event.state.project.assets().any(|asset| {
+                asset.path() == path
+                    && asset.source_sample_rate() == 48_000
+                    && asset.source_frames() == 96_000
+            }),
+            "ACK must contain the actual fixture import"
+        );
+        self.acknowledged = true;
+    }
+}
+impl Drop for PendingSetup {
+    fn drop(&mut self) {
+        if !self.acknowledged {
+            self.environment.retain_for_unacknowledged_setup_failure();
+        }
+    }
+}
+
+fn fixture_wav(environment: &Environment) -> PathBuf {
+    // Identical96k-frame mono PCM fixture; all bytes live under the leased root.
+    let rate = 48_000_u32;
+    let frames = 96_000_u32;
+    let bytes = frames * 2;
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&rate.to_le_bytes());
+    wav.extend_from_slice(&(rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&bytes.to_le_bytes());
+    for _ in 0..frames {
+        wav.extend_from_slice(&8192_i16.to_le_bytes());
+    }
+    let path = environment.root().join("group.wav");
+    std::fs::write(&path, wav).unwrap();
+    path
+}
 
 fn next(service: &Service) -> Event {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -38,20 +105,22 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
 fn fixture(
     cx: &mut TestAppContext,
 ) -> (
-    super::super::external_audio_drop_ui_test::BatchFiles,
+    Arc<Environment>,
     gpui::AnyWindowHandle,
     Entity<EditorView>,
     Vec<ClipId>,
 ) {
     cx.update(super::super::bind_editor_keys);
-    let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
-    let wav = files.wav("group.wav", 48_000, 96_000);
-    let directory = wav.parent().unwrap();
+    let files = Environment::new().unwrap();
+    let mut setup = PendingSetup::new(Arc::clone(&files));
+    let wav = fixture_wav(&files);
+    let directory = files.root();
     std::fs::create_dir(directory.join("samples")).unwrap();
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let event = next(&service);
+    setup.acknowledge_import(&event, &wav);
     let source = &event.state.project.tracks()[0];
     let track = source.id();
     let original = source.clips()[0].id();
@@ -88,9 +157,10 @@ fn fixture(
     let editor = cx
         .update_window(handle, |_, window, cx| {
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
+                EditorView::new_for_test_with_environment(window, cx, service, Arc::clone(&files))
             });
             editor.update(cx, |v, cx| {
+                assert!(Arc::ptr_eq(&files, &v.test_environment));
                 assert_eq!(v.browser.directory, directory.join("samples"));
                 assert_eq!(v.browser.places, vec![directory.join("samples")]);
                 v.state = Some(event.state);
@@ -823,4 +893,169 @@ fn group_capture_reenters_valid_lane_and_commits_only_current_projection(cx: &mu
         }
         assert!(v.error.is_none(), "{:?}", v.error);
     });
+}
+
+fn prove_fixture_catalog_custody(cx: &mut TestAppContext, unwind: bool) {
+    let (files, handle, editor, _) = fixture(cx);
+    let root = files.root().to_owned();
+    let weak = Arc::downgrade(&files);
+    let gate = files.gate_next_catalog_save();
+    editor.read_with(cx, |view, _| {
+        assert!(Arc::ptr_eq(&files, &view.test_environment));
+        assert_eq!(
+            view.browser.directory,
+            root.join("samples"),
+            "actual filesystem-job owner must own fixture scan path, not a separate root"
+        );
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .assets()
+                .all(|asset| asset.path().starts_with(&root))
+        );
+        assert_eq!(
+            view.recent_projects.test_path(),
+            root.join("config/recent-projects.json")
+        );
+        assert_eq!(
+            view.theme_settings.test_path(),
+            root.join("config/theme.json")
+        );
+        // These are the exact four paths resolved by the injected constructor;
+        // the catalog is derived by its real worker from the browser path.
+        let empty = PathBuf::new();
+        let paths = files.resolve_paths(
+            (empty.clone(), empty.clone(), empty.clone(), empty),
+            [true; 4],
+        );
+        assert_eq!(
+            paths,
+            (
+                root.join("config/browser.json"),
+                root.join("config/recent-projects.json"),
+                root.join("config/theme.json"),
+                root.join("config/project-directory.json")
+            )
+        );
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(
+        gate.reached.load(Ordering::Acquire),
+        "paused inside actual catalog worker"
+    );
+    assert!(!gate.finished.load(Ordering::Acquire));
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| gpui::Empty);
+    });
+    let editor_weak = editor.downgrade();
+    drop(editor);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(
+        editor_weak.upgrade().is_none(),
+        "actual view retired before I/O continuation"
+    );
+    let retired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _fixture = files;
+        if unwind {
+            panic!("intentional post-ACK fixture unwind");
+        }
+    }));
+    assert_eq!(retired.is_err(), unwind);
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "only real held filesystem job retains SAME root"
+    );
+    assert!(root.is_dir());
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.save_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(
+        weak.upgrade().is_none(),
+        "fixture/view/job owners released without Arc leak"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while root.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "owned background cleanup timed out: {root:?}"
+        );
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(!root.exists(), "drained job cannot recreate the root");
+    eprintln!(
+        "group_fixture_catalog_custody unwind={unwind} actual_save=true same_root=true cleaned=true"
+    );
+}
+
+#[gpui::test]
+fn group_fixture_same_root_survives_real_catalog_job_after_view_retirement(
+    cx: &mut TestAppContext,
+) {
+    prove_fixture_catalog_custody(cx, false);
+}
+
+#[gpui::test]
+fn group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup(
+    cx: &mut TestAppContext,
+) {
+    prove_fixture_catalog_custody(cx, true);
+}
+
+#[test]
+fn group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory() {
+    let environment = Environment::new().unwrap();
+    let root = environment.root().to_owned();
+    let weak = Arc::downgrade(&environment);
+    let observed_refusal = std::cell::Cell::new(false);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut setup = PendingSetup::new(environment);
+        let missing = root.join("missing-import.wav");
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        next(&service);
+        service.submit(Request::Import(missing.clone())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let event = loop {
+            if let Ok(event) = service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(event.request_complete);
+        assert!(
+            event.error.is_some(),
+            "real missing-file import must refuse"
+        );
+        observed_refusal.set(true);
+        setup.acknowledge_import(&event, &missing); // Must unwind BEFORE disarming.
+    }));
+    assert!(caught.is_err());
+    assert!(
+        observed_refusal.get(),
+        "caught panic came after actual request completion, not timeout"
+    );
+    assert!(
+        weak.upgrade().is_none(),
+        "retain disk evidence without leaking Environment/Arc"
+    );
+    assert!(
+        root.is_dir(),
+        "unacknowledged successful setup cannot remove evidence"
+    );
+    eprintln!(
+        "group_fixture_pre_ack_retention actual_refusal=true weak_expired=true disk_retained=true root={root:?}"
+    );
+    // Only this artificial refusal case has proven its sole I/O request finished
+    // and has launched NO UI jobs. Explicit cleanup of that exclusive test root
+    // is safe here; general unacknowledged failures have no automatic cleanup.
+    std::fs::remove_dir_all(root).unwrap();
 }
