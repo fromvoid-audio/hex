@@ -1,0 +1,878 @@
+diff --git a/crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs b/crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs
+index fcea1ba7..07d5015e 100644
+--- a/crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs
++++ b/crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs
+@@ -262,7 +262,14 @@ impl Custody {
+                 }
+                 if execution.disposed.is_none() {
+                     execution.pending = true;
+-                    execution.disposed = Some(anchor.finish_disposal_on_control().map_err(|_| ())?);
++                    match anchor.finish_disposal_on_control() {
++                        Ok(disposed) => execution.disposed = Some(disposed),
++                        Err(hex_engine::AudioStorageError::ExternalReadersPending) => {
++                            execution.pending = false;
++                            return Ok(false);
++                        }
++                        Err(_) => return Err(()),
++                    }
+                     execution.pending = false;
+                 }
+                 if execution.inputs.is_none() {
+diff --git a/crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs b/crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs
+index 1c4563a5..8ed25032 100644
+--- a/crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs
++++ b/crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs
+@@ -707,6 +707,13 @@ impl Custody {
+             }));
+             match result {
+                 Ok(Ok(())) => {}
++                Ok(Err(hex_engine::AudioStorageError::ExternalReadersPending)) => {
++                    // Cleanup has not consumed the constructor root. Its actual
++                    // registered readers and all charges remain in this slot.
++                    execution.pending = false;
++                    lock(&self.bank).publication.slots[index].phase = Phase::Reserved;
++                    continue;
++                }
+                 result => {
+                     execution.failed = true;
+                     let mut bank = lock(&self.bank);
+@@ -1049,6 +1056,68 @@ mod tests {
+         drop(anchor.recover_inputs_on_control().unwrap());
+         cell.cleanup_on_control().unwrap();
+     }
++    #[test]
++    fn registered_compiled_reader_keeps_closed_preparation_slot_charged_until_release() {
++        if !hex_engine::audio_storage_constructor_layout_supported() {
++            eprintln!("unsupported constructor layout; no positive compiled-reader custody proof");
++            return;
++        }
++        let root = root();
++        let custody = &root.0.eligible;
++        let token = custody
++            .reserve_runtime_preparation(reservation(), Vec::new())
++            .ok()
++            .unwrap();
++        let held = lock(&custody.bank).publication.retained_bytes().unwrap();
++        let (project, asset, audio) = project();
++        let mut reader = None;
++        custody
++            .with_runtime_preparation(token, |cell| {
++                cell.copy_resident_source_on_control(asset, &audio)?;
++                cell.prepare_on_control(
++                    &project,
++                    11,
++                    hex_engine::AudioSourceContext {
++                        project_generation: 2,
++                        editor_revision: 8,
++                    },
++                )?;
++                reader = Some(cell.register_compiled_reader_on_control()?);
++                Ok(())
++            })
++            .unwrap();
++        assert!(custody.cancel_runtime_preparation(token));
++        for _ in 0..2 {
++            std::thread::scope(|scope| {
++                scope.spawn(|| root.advance_on_control()).join().unwrap();
++            });
++            let bank = lock(&custody.bank);
++            assert_eq!(
++                bank.publication.slots[token.slot].incarnation,
++                token.incarnation
++            );
++            assert_eq!(bank.publication.slots[token.slot].phase, Phase::Reserved);
++            assert_eq!(bank.publication.retained_bytes(), Some(held));
++            drop(bank);
++            let work = lock(&custody.work);
++            let execution = work.publication.preparations[token.slot].as_ref().unwrap();
++            assert!(!execution.pending && !execution.failed);
++            assert!(!execution.cell.as_ref().unwrap().failed_incomplete());
++        }
++        assert!(reader.as_ref().unwrap().try_duplicate_on_control().is_err());
++        drop(reader.take());
++        std::thread::scope(|scope| {
++            scope.spawn(|| root.advance_on_control()).join().unwrap();
++        });
++        assert!(custody.complete());
++        assert_eq!(lock(&custody.bank).publication.retained_bytes(), Some(0));
++        assert!(lock(&custody.work).publication.preparations[token.slot].is_none());
++        assert!(custody.with_runtime_preparation(token, |_| Ok(())).is_err());
++        eprintln!(
++            "SUPPORTED actual registered compiled reader; same preparation slot/charge retained twice; normal release cleanup completed"
++        );
++    }
++
+     #[test]
+     fn reserved_slot_incarnation_survives_actual_preparation_close_and_normal_cleanup() {
+         if !hex_engine::audio_storage_constructor_layout_supported() {
+diff --git a/crates/hex-engine/src/audio_candidate.rs b/crates/hex-engine/src/audio_candidate.rs
+index cad55464..c7122773 100644
+--- a/crates/hex-engine/src/audio_candidate.rs
++++ b/crates/hex-engine/src/audio_candidate.rs
+@@ -294,6 +294,17 @@ pub struct AudioCandidateOwner {
+     inner: Box<CandidateState>,
+ }
+ impl AudioCandidateOwner {
++    /// Register a real immutable field against this candidate's sealed root.
++    pub fn register_compiled_reader_on_control(
++        &self,
++    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
++        if self.inner.phase != AudioCandidateDisposalPhase::Owned || self.inner.receipt_taken {
++            return Err(AudioStorageError::SourceMismatch);
++        }
++        self.inner
++            .custody
++            .register_compiled_reader_on_control(&self.inner.token)
++    }
+     /// Control-only headless observer on the actual nested Runtime Box Drop.
+     /// Returns a scalar address only; no pointer, Playback or owning handle escapes.
+     #[cfg(any(test, feature = "instrument-test-support"))]
+@@ -563,6 +574,9 @@ impl CandidateState {
+         }
+         self.custody.close_on_control();
+         self.custody.cleanup_on_control();
++        if self.custody.phase() == AudioPreparationPhase::Cleaning {
++            return Err(AudioStorageError::ExternalReadersPending);
++        }
+         if self.custody.phase() != AudioPreparationPhase::Recoverable {
+             self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
+             return Err(AudioStorageError::UnknownStorage);
+diff --git a/crates/hex-engine/src/audio_candidate/preparation.rs b/crates/hex-engine/src/audio_candidate/preparation.rs
+index d3e91792..f1267149 100644
+--- a/crates/hex-engine/src/audio_candidate/preparation.rs
++++ b/crates/hex-engine/src/audio_candidate/preparation.rs
+@@ -257,6 +257,17 @@ impl AudioCandidatePreparation {
+     pub fn owner_on_control(&mut self) -> Option<&mut AudioCandidateOwner> {
+         self.owner.as_mut()
+     }
++    pub fn register_compiled_reader_on_control(
++        &self,
++    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
++        if self.failed_incomplete() || self.cleaning || self.complete {
++            return Err(AudioStorageError::SourceMismatch);
++        }
++        self.owner
++            .as_ref()
++            .ok_or(AudioStorageError::SourceMismatch)?
++            .register_compiled_reader_on_control()
++    }
+     pub fn failed_incomplete(&self) -> bool {
+         self.failed
+             || self
+@@ -302,6 +313,9 @@ impl AudioCandidatePreparation {
+                 if custody.phase() == AudioPreparationPhase::FailedIncomplete {
+                     return Err(AudioStorageError::UnknownStorage);
+                 }
++                if custody.phase() == AudioPreparationPhase::Cleaning {
++                    return Err(AudioStorageError::ExternalReadersPending);
++                }
+                 if let Some(token) = self.token.as_ref() {
+                     if self.bank.is_some() {
+                         return Err(AudioStorageError::SourceMismatch);
+@@ -327,6 +341,10 @@ impl AudioCandidatePreparation {
+                 self.complete = true;
+                 Ok(())
+             }
++            Ok(Err(AudioStorageError::ExternalReadersPending)) => {
++                self.cleaning = false;
++                Err(AudioStorageError::ExternalReadersPending)
++            }
+             Ok(Err(reason)) => {
+                 self.failed = true;
+                 Err(reason)
+diff --git a/crates/hex-engine/src/audio_candidate/preparation_operations.rs b/crates/hex-engine/src/audio_candidate/preparation_operations.rs
+index 41905ef9..5fdd2d9c 100644
+--- a/crates/hex-engine/src/audio_candidate/preparation_operations.rs
++++ b/crates/hex-engine/src/audio_candidate/preparation_operations.rs
+@@ -97,6 +97,12 @@ impl AudioCandidatePreparationOperations<'_> {
+         self.preparation
+             .prepare_on_control(project, source_generation, context)
+     }
++    /// A registered immutable input retained by the existing constructor root.
++    pub fn register_compiled_reader_on_control(
++        &self,
++    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
++        self.preparation.register_compiled_reader_on_control()
++    }
+     /// Actual ready identity only; never cost, custody or publication authority.
+     pub fn prepared_identity(&self) -> Option<AudioCandidateIdentity> {
+         self.preparation
+diff --git a/crates/hex-engine/src/audio_only_inputs.rs b/crates/hex-engine/src/audio_only_inputs.rs
+index d6811165..7ddfdc15 100644
+--- a/crates/hex-engine/src/audio_only_inputs.rs
++++ b/crates/hex-engine/src/audio_only_inputs.rs
+@@ -37,6 +37,8 @@ pub enum AudioStorageError {
+     UnsupportedGraph,
+     SourceMismatch,
+     UnknownStorage,
++    /// Registered immutable readers still retain the constructor root.
++    ExternalReadersPending,
+ }
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct AudioStorageReservation {
+diff --git a/crates/hex-engine/src/audio_preparation.rs b/crates/hex-engine/src/audio_preparation.rs
+index 60bb8639..77472e92 100644
+--- a/crates/hex-engine/src/audio_preparation.rs
++++ b/crates/hex-engine/src/audio_preparation.rs
+@@ -326,6 +326,18 @@ impl AudioPreparationCustody {
+         Ok((self.root, self.incarnation, self.revision.candidate_root()?))
+     }
+ 
++    /// Register an immutable compiled field against this actual constructor
++    /// incarnation. No arbitrary revision owner can be adopted.
++    pub fn register_compiled_reader_on_control(
++        &self,
++        token: &AudioPreparationToken,
++    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
++        if !self.matches(token) || self.phase != AudioPreparationPhase::ArrangementAndSessionSources
++        {
++            return Err(AudioStorageError::SourceMismatch);
++        }
++        self.revision.registered_reader(self.root, self.incarnation)
++    }
+     pub(crate) fn candidate_root_view(
+         &self,
+         token: &AudioPreparationToken,
+@@ -570,7 +582,7 @@ impl AudioPreparationCustody {
+                     .and_then(|n| n.checked_add(device_handles))
+                     .and_then(|n| n.checked_add(return_handles))
+                     .and_then(|n| n.checked_add(usize::from(assemble_preview)))
+-                    .and_then(|n| n.checked_add(if assemble_revision { 4 } else { 0 }))
++                    .and_then(|n| n.checked_add(if assemble_revision { 5 } else { 0 }))
+                     .ok_or(AudioStorageError::Overflow)?;
+                 self.shared
+                     .reserve(handles, inputs.reservation.handle_obligations)?;
+@@ -1145,6 +1157,14 @@ impl AudioPreparationCustody {
+         self.phase = AudioPreparationPhase::Recoverable;
+     }
+     fn dispose_arrangement_clips_on_control(&mut self) -> bool {
++        match self.revision.external_readers_pending() {
++            Ok(true) => return false, // real registered readers retain all root charges
++            Ok(false) => {}
++            Err(_) => {
++                self.phase = AudioPreparationPhase::FailedIncomplete;
++                return false;
++            }
++        }
+         match catch_unwind(AssertUnwindSafe(|| {
+             self.revision
+                 .restore(&mut self.arrangement_clips, &mut self.assembly)?;
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs
+index 55b61ed7..bc1d8b3f 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs
+@@ -195,7 +195,8 @@ fn four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity(
+         assert_eq!(report.revision_roots.reserved_handle_destinations, 4);
+         assert_eq!(
+             report.revision_roots.actual_payload_bytes
+-                + report.revision_roots.actual_declared_overhead_bytes,
++                + report.revision_roots.actual_declared_overhead_bytes
++                + report.revision_roots.reader_registration_bytes,
+             report.revision_roots.reserved_data_bytes
+         );
+         assert!(report.revision_roots.constructed);
+@@ -598,8 +599,9 @@ fn four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumptio
+     }
+     let (project, mut bank) = fixture(false);
+     // One bank, two Arrangement clips, cache+Session clip, two Track handles,
+-    // two Return handles, preview slice, three shared anchors and four roots.
+-    bank.reservation.handle_obligations = 17;
++    // two Return handles, preview slice, three shared anchors, four revision
++    // roots and the separate actual reader-registration allocation.
++    bank.reservation.handle_obligations = 18;
+     let mut c = AudioPreparationCustody::try_new_on_control().unwrap();
+     let token = begin(&mut c, &project, bank).ok().unwrap();
+     let report = c.capacity_report();
+@@ -610,7 +612,7 @@ fn four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumptio
+     for pressure in 0..3 {
+         let (project, mut bank) = fixture(false);
+         match pressure {
+-            0 => bank.reservation.handle_obligations = 16,
++            0 => bank.reservation.handle_obligations = 17,
+             1 => bank.reservation.max_prepared_data_bytes = report.retained_stage_bytes - 1,
+             _ => bank.reservation.max_construction_data_bytes = report.construction_peak_bytes - 1,
+         }
+@@ -748,7 +750,7 @@ fn borrowed_storage_inventory_covers_real_roots_without_retirement_admission() {
+                     .arrangement_clips
+                     .preview
+                     .independent_handle_obligations
+-                + 4
++                + 5 // four revision fields plus actual reader-registration field
+         );
+         assert_eq!(ledger.streamed_sources().count(), usize::from(streamed));
+         assert!(summary.data_allocations > 20);
+diff --git a/crates/hex-engine/src/lib.rs b/crates/hex-engine/src/lib.rs
+index b3141ccf..d01dc9bf 100644
+--- a/crates/hex-engine/src/lib.rs
++++ b/crates/hex-engine/src/lib.rs
+@@ -3220,8 +3220,10 @@ pub use playback::{
+     PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
+     PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
+ };
+-pub use prepared_revision::PreparedRevision;
+ pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
++pub use prepared_revision::{
++    AudioCompiledRevision, AudioCompiledRevisionIdentity, PreparedRevision,
++};
+ pub use prepared_tempo::{
+     MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap,
+ };
+diff --git a/crates/hex-engine/src/prepared_revision.rs b/crates/hex-engine/src/prepared_revision.rs
+index 21f140c3..306edaff 100644
+--- a/crates/hex-engine/src/prepared_revision.rs
++++ b/crates/hex-engine/src/prepared_revision.rs
+@@ -4,6 +4,8 @@ use crate::{
+     compile::PreparedAudioSource,
+ };
+ pub(crate) mod assembly;
++mod compiled_reader;
++pub use compiled_reader::{AudioCompiledRevision, AudioCompiledRevisionIdentity};
+ mod descriptor_storage;
+ use hex_project::{
+     Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity, Project,
+diff --git a/crates/hex-engine/src/prepared_revision/assembly.rs b/crates/hex-engine/src/prepared_revision/assembly.rs
+index 59ab47d0..1bd3f3ba 100644
+--- a/crates/hex-engine/src/prepared_revision/assembly.rs
++++ b/crates/hex-engine/src/prepared_revision/assembly.rs
+@@ -22,6 +22,9 @@ pub struct AudioRevisionRootCapacity {
+     pub actual_declared_overhead_bytes: usize,
+     pub control_extracted_allocations: usize,
+     pub constructed: bool,
++    /// Separate constructor-declared external-reader registration allocation.
++    pub reader_registration_bytes: usize,
++    pub reader_registration_constructed: bool,
+     /// Actual descriptor Vec backings, not a preconstruction allowance.
+     pub mutable_descriptor_backing_bytes: usize,
+ }
+@@ -44,6 +47,8 @@ pub struct AudioPreparedRevisionMetadata {
+ #[derive(Default)]
+ pub(crate) struct RevisionAssembly {
+     owner: Option<OwnedShared<PreparedRevision>>,
++    reader_registration: Option<super::compiled_reader::ReaderOwner>,
++    reader_registration_handle: u64,
+     revision_value: Option<PreparedRevision>,
+     arrangement: Option<OwnedShared<PlaybackProject>>,
+     session: Option<OwnedShared<PreparedSessionInventory>>,
+@@ -131,6 +136,29 @@ impl RevisionAssembly {
+         Ok(owner.arc())
+     }
+ 
++    pub(crate) fn registered_reader(
++        &self,
++        root: u64,
++        incarnation: u64,
++    ) -> Result<super::AudioCompiledRevision, Error> {
++        self.capacity()?;
++        super::AudioCompiledRevision::register(
++            self.owner.as_ref().ok_or(Error::SourceMismatch)?,
++            self.reader_registration
++                .as_ref()
++                .ok_or(Error::SourceMismatch)?,
++            super::AudioCompiledRevisionIdentity { root, incarnation },
++        )
++    }
++    pub(crate) fn external_readers_pending(&self) -> Result<bool, Error> {
++        match (&self.owner, &self.reader_registration) {
++            (Some(revision), Some(registration)) => {
++                super::compiled_reader::retirement_pending(revision, registration)
++            }
++            (_, None) => Ok(false), // construction failed before reader registration
++            (None, Some(_)) => Err(Error::UnknownStorage),
++        }
++    }
+     fn fresh_tuning_family(&self) -> Result<TuningContinuationFamily, Error> {
+         #[cfg(test)]
+         if self.fail_tuning_family {
+@@ -141,6 +169,8 @@ impl RevisionAssembly {
+     pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
+         if self.reserved
+             || self.owner.is_some()
++            || self.reader_registration.is_some()
++            || self.reader_registration_handle != 0
+             || self.revision_value.is_some()
+             || self.arrangement.is_some()
+             || self.session.is_some()
+@@ -179,6 +209,8 @@ impl RevisionAssembly {
+                 hex_project::SessionCellContent::Midi(_) => return Err(Error::UnsupportedGraph),
+             }
+         }
++        // Identity failure precedes mutation of every reservation field.
++        let tuning_family = self.fresh_tuning_family()?;
+         self.reserved_bytes = 0;
+         for parts in [
+             OwnedShared::<PlaybackProject>::declared_parts(),
+@@ -193,9 +225,17 @@ impl RevisionAssembly {
+                 .and_then(|n| n.checked_add(overhead))
+                 .ok_or(Error::Overflow)?;
+         }
++        let (payload, overhead) = super::compiled_reader::ReaderOwner::declared_parts()
++            .ok_or(Error::UnsupportedConstructor)?;
++        self.reserved_bytes = self
++            .reserved_bytes
++            .checked_add(payload)
++            .and_then(|n| n.checked_add(overhead))
++            .ok_or(Error::Overflow)?;
++        self.reader_registration_handle = crate::audio_only_inputs::handle()?;
+         // This fallible identity reservation precedes all prepared child
+         // transfers. Exhaustion cannot strand or drop a taken child locally.
+-        self.preallocated_tuning_family = Some(self.fresh_tuning_family()?);
++        self.preallocated_tuning_family = Some(tuning_family);
+         self.reserved = true;
+         for index in 0..4 {
+             self.handles[index] = crate::audio_only_inputs::handle()?;
+@@ -294,6 +334,17 @@ impl RevisionAssembly {
+             .reserved_data_bytes
+             .checked_add(report.mutable_descriptor_backing_bytes)
+             .ok_or(Error::Overflow)?;
++        if let Some(registration) = &self.reader_registration {
++            if self.reader_registration_handle == 0
++                || self.handles.contains(&self.reader_registration_handle)
++            {
++                return Err(Error::SourceMismatch);
++            }
++            let (payload, overhead) = registration.parts().ok_or(Error::UnknownStorage)?;
++            report.reader_registration_bytes =
++                payload.checked_add(overhead).ok_or(Error::Overflow)?;
++            report.reader_registration_constructed = true;
++        }
+         if let Some(owner) = &self.owner {
+             add_parts(owner, &mut report)?;
+         }
+@@ -331,6 +382,8 @@ impl RevisionAssembly {
+             .actual_payload_bytes
+             .checked_add(report.actual_declared_overhead_bytes)
+             .ok_or(Error::Overflow)?
++            .checked_add(report.reader_registration_bytes)
++            .ok_or(Error::Overflow)?
+             > report.reserved_data_bytes
+         {
+             return Err(Error::ReservationExceeded);
+@@ -415,6 +468,7 @@ impl RevisionAssembly {
+         }
+         #[cfg(test)]
+         self.fault(11)?;
++        self.reader_registration = Some(OwnedShared::new_owned(std::sync::Mutex::default()));
+         self.capacity()?;
+         Ok(())
+     }
+@@ -427,6 +481,9 @@ impl RevisionAssembly {
+             return Ok(());
+         }
+         self.capacity()?;
++        if self.external_readers_pending()? {
++            return Err(Error::Capacity);
++        }
+         // Only destinations for children already moved here must be vacant.
+         let view = self.storage_view()?;
+         if (view.arrangement.is_some() || view.preview.is_some())
+@@ -484,6 +541,8 @@ impl RevisionAssembly {
+         if self.session_value.is_some() {
+             session.restore_revision(&mut self.session_value);
+         }
++        drop(self.reader_registration.take());
++        self.reader_registration_handle = 0;
+         self.reserved = false;
+         self.preallocated_tuning_family = None;
+         self.handles = [0; 4];
+@@ -562,6 +621,8 @@ impl RevisionAssembly {
+         self.capacity()?;
+         let Self {
+             owner,
++            reader_registration,
++            reader_registration_handle,
+             revision_value,
+             arrangement,
+             session,
+@@ -588,6 +649,15 @@ impl RevisionAssembly {
+         fn copy_leaf<T: Copy>(_: T) {}
+         copy_leaf(*preallocated_tuning_family);
+         super::descriptor_storage::visit(mutable_descriptors, l)?;
++        if let Some(registration) = reader_registration {
++            l.shared(
++                registration.arc(),
++                registration.parts(),
++                Owner::exclusive(registration),
++                *reader_registration_handle,
++                None,
++            )?;
++        }
+         if let Some(owner) = owner {
+             l.shared(
+                 owner.arc(),
+diff --git a/crates/hex-engine/src/prepared_revision/compiled_reader.rs b/crates/hex-engine/src/prepared_revision/compiled_reader.rs
+new file mode 100644
+index 00000000..f5342468
+--- /dev/null
++++ b/crates/hex-engine/src/prepared_revision/compiled_reader.rs
+@@ -0,0 +1,323 @@
++//! Constructor-paired immutable readers. Root custody, never the last reader,
++//! remains responsible for the revision and its descendants' final retirement.
++use super::*;
++use crate::{AudioPreparedRevisionMetadata, AudioStorageError as Error, owned_shared::OwnedShared};
++use std::sync::Mutex;
++
++#[derive(Default)]
++pub(super) struct ReaderState {
++    readers: usize,
++    closing: bool,
++    failed: bool,
++}
++
++pub(super) type ReaderOwner = OwnedShared<Mutex<ReaderState>>;
++
++/// Correlation of a reader with its actual sealed constructor incarnation.
++/// Scalar equality alone grants no storage, cleanup or publication authority.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct AudioCompiledRevisionIdentity {
++    pub(crate) root: u64,
++    pub(crate) incarnation: u64,
++}
++
++/// One registered immutable compiled input. There is no raw-Arc adoption,
++/// owning revision getter or automatic Clone. Native mutable Playback remains
++/// in its existing candidate/control/reaper custody.
++/// ```compile_fail
++/// fn adopt(raw: std::sync::Arc<hex_engine::PreparedRevision>) {
++///     let _: hex_engine::AudioCompiledRevision = raw.into();
++/// }
++/// ```
++pub struct AudioCompiledRevision {
++    identity: AudioCompiledRevisionIdentity,
++    revision: Option<OwnedShared<PreparedRevision>>,
++    registration: ReaderOwner,
++    revision_handle: u64,
++    registration_handle: u64,
++}
++
++impl AudioCompiledRevision {
++    pub(super) fn register(
++        revision: &OwnedShared<PreparedRevision>,
++        registration: &ReaderOwner,
++        identity: AudioCompiledRevisionIdentity,
++    ) -> Result<Self, Error> {
++        if revision.parts().is_none() || registration.parts().is_none() {
++            return Err(Error::UnknownStorage);
++        }
++        let mut state = registration.lock().map_err(|_| Error::UnknownStorage)?;
++        if state.closing || state.failed {
++            return Err(Error::SourceMismatch);
++        }
++        let next = state.readers.checked_add(1).ok_or(Error::Overflow)?;
++        // Reserve both observation identities BEFORE either paired clone.
++        let revision_handle = crate::audio_only_inputs::handle()?;
++        let registration_handle = crate::audio_only_inputs::handle()?;
++        let result = Self {
++            identity,
++            revision: Some(revision.clone_on_control()),
++            registration: registration.clone_on_control(),
++            revision_handle,
++            registration_handle,
++        };
++        state.readers = next;
++        Ok(result)
++    }
++
++    /// Reserve another actual registered field before moving it into an export
++    /// or compiled record. This cannot reopen a root that started retirement.
++    pub fn try_duplicate_on_control(&self) -> Result<Self, Error> {
++        Self::register(
++            self.revision.as_ref().ok_or(Error::SourceMismatch)?,
++            &self.registration,
++            self.identity,
++        )
++    }
++
++    pub fn identity(&self) -> AudioCompiledRevisionIdentity {
++        self.identity
++    }
++
++    pub fn metadata(&self) -> AudioPreparedRevisionMetadata {
++        let revision = self.revision.as_ref().expect("live registered revision");
++        AudioPreparedRevisionMetadata {
++            sample_rate: revision.arrangement.sample_rate(),
++            track_count: revision.arrangement.tracks.len(),
++            return_count: revision.arrangement.return_buses.len(),
++            contains_streamed_sources: revision.contains_streamed_sources(),
++        }
++    }
++
++    /// Observe BOTH physical paired handles at their actual retained location.
++    /// Root/child declarations and lifetime closure still require the actual
++    /// existing preparation custodian; this is not an admission operation.
++    pub fn visit_shared_storage_on_control<'a>(
++        &'a self,
++        ledger: &mut crate::AudioRootStorageLedger<'a>,
++    ) -> Result<(), Error> {
++        use crate::audio_storage::Owner;
++        let revision = self.revision.as_ref().ok_or(Error::UnknownStorage)?;
++        ledger.shared(
++            revision.arc(),
++            revision.parts(),
++            Owner::exclusive(revision),
++            self.revision_handle,
++            None,
++        )?;
++        ledger.shared(
++            self.registration.arc(),
++            self.registration.parts(),
++            Owner::exclusive(&self.registration),
++            self.registration_handle,
++            None,
++        )
++    }
++}
++
++impl Drop for AudioCompiledRevision {
++    fn drop(&mut self) {
++        // This lock is control-only and independent of the revision allocation.
++        // Drop its Arc BEFORE releasing the registration, while root retirement
++        // is excluded. The root's retained owner prevents a final child drop.
++        let mut state = match self.registration.lock() {
++            Ok(state) => state,
++            Err(poisoned) => {
++                let mut state = poisoned.into_inner();
++                state.failed = true;
++                state
++            }
++        };
++        drop(self.revision.take());
++        match state.readers.checked_sub(1) {
++            Some(next) => state.readers = next,
++            None => state.failed = true,
++        }
++    }
++}
++
++/// Must run only AFTER native mutable runtime aliases have retired. Registration
++/// is sealed before checking aliases, so no reader can appear after this check.
++pub(super) fn retirement_pending(
++    revision: &OwnedShared<PreparedRevision>,
++    registration: &ReaderOwner,
++) -> Result<bool, Error> {
++    let mut state = registration.lock().map_err(|_| Error::UnknownStorage)?;
++    state.closing = true;
++    if state.failed
++        || revision.parts().is_none()
++        || registration.parts().is_none()
++        || Arc::weak_count(revision.arc()) != 0
++        || Arc::strong_count(revision.arc())
++            != state.readers.checked_add(1).ok_or(Error::Overflow)?
++    {
++        state.failed = true; // unexplained alias is sticky; never retry adoption
++        return Err(Error::UnknownStorage);
++    }
++    // A dropping reader can still own its registration field after releasing
++    // the lock. Retain that small allocation until this final field drop too.
++    Ok(state.readers != 0 || Arc::strong_count(registration.arc()) != 1)
++}
++
++#[cfg(test)]
++mod tests {
++    use crate::{AudioPreparationPhase, AudioStorageLedgerReservation, AudioStorageRole};
++
++    fn fixture() -> Option<(crate::AudioPreparationCustody, crate::AudioPreparationToken)> {
++        crate::audio_preparation::candidate_test_fixture(false)
++            .map(|(custody, token, _, _)| (custody, token))
++    }
++
++    #[test]
++    fn compiled_reader_holds_actual_root_through_cancel_until_last_registered_release() {
++        let Some((mut custody, token)) = fixture() else {
++            return;
++        };
++        let reader = custody.register_compiled_reader_on_control(&token).unwrap();
++        let second = reader.try_duplicate_on_control().unwrap();
++        let metadata = reader.metadata();
++        assert_eq!(metadata.sample_rate, 48_000);
++        let before = custody.capacity_report().revision_roots;
++        assert!(before.constructed && before.reader_registration_constructed);
++        assert!(before.reader_registration_bytes > 0);
++        assert!(custody.cancel(&token));
++        custody.cleanup_on_control();
++        assert_eq!(custody.phase(), AudioPreparationPhase::Cleaning);
++        assert_eq!(custody.capacity_report().revision_roots, before);
++        assert!(reader.try_duplicate_on_control().is_err());
++        assert!(custody.recover_on_control(&token).is_none());
++        drop(reader);
++        custody.cleanup_on_control();
++        assert_eq!(custody.phase(), AudioPreparationPhase::Cleaning);
++        assert_eq!(second.metadata(), metadata);
++        drop(second);
++        custody.cleanup_on_control();
++        assert_eq!(custody.phase(), AudioPreparationPhase::Recoverable);
++        assert!(custody.recover_on_control(&token).is_some());
++        assert!(custody.recover_on_control(&token).is_none());
++        custody.cleanup_on_control();
++    }
++
++    #[test]
++    fn compiled_reader_does_not_qualify_unregistered_revision_alias_or_foreign_token() {
++        let Some((mut custody, token)) = fixture() else {
++            return;
++        };
++        let Some((_, other_token)) = fixture() else {
++            return;
++        };
++        assert!(
++            custody
++                .register_compiled_reader_on_control(&other_token)
++                .is_err()
++        );
++        let (_, _, unexplained) = custody.candidate_root(&token).unwrap();
++        let reader = custody.register_compiled_reader_on_control(&token).unwrap();
++        assert!(custody.cancel(&token));
++        custody.cleanup_on_control();
++        assert_eq!(custody.phase(), AudioPreparationPhase::FailedIncomplete);
++        assert!(custody.recover_on_control(&token).is_none());
++        assert!(custody.capacity_report().revision_roots.constructed);
++        drop(unexplained);
++        drop(reader);
++        custody.cleanup_on_control();
++        assert_eq!(custody.phase(), AudioPreparationPhase::FailedIncomplete);
++    }
++
++    #[test]
++    fn compiled_reader_inventory_requires_each_actual_registered_handle() {
++        let Some((mut custody, token)) = fixture() else {
++            return;
++        };
++        let reader = custody.register_compiled_reader_on_control(&token).unwrap();
++        for include in [false, true] {
++            let mut ledger =
++                crate::AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
++                    data_rows: 4096,
++                    handle_rows: 4096,
++                    root_rows: 8,
++                    max_retained_bytes: 64 * 1024 * 1024,
++                    max_construction_peak_bytes: 64 * 1024 * 1024,
++                })
++                .unwrap();
++            ledger.root(&custody, AudioStorageRole::Current).unwrap();
++            custody
++                .visit_audio_storage(&mut ledger, AudioStorageRole::Current)
++                .unwrap();
++            if include {
++                ledger.root(&reader, AudioStorageRole::Current).unwrap();
++                reader.visit_shared_storage_on_control(&mut ledger).unwrap();
++            }
++            ledger.summary().unwrap().require_known_storage().unwrap();
++            assert_eq!(ledger.validate_closed_shared_handles().is_ok(), include);
++        }
++        drop(reader);
++        assert!(custody.cancel(&token));
++        custody.cleanup_on_control();
++        assert!(custody.recover_on_control(&token).is_some());
++    }
++
++    #[test]
++    fn compiled_reader_release_races_retirement_without_false_unknown_or_final_child_drop() {
++        for _ in 0..32 {
++            let Some((mut custody, token)) = fixture() else {
++                return;
++            };
++            let reader = custody.register_compiled_reader_on_control(&token).unwrap();
++            let release = std::thread::spawn(move || drop(reader));
++            assert!(custody.cancel(&token));
++            custody.cleanup_on_control();
++            assert!(matches!(
++                custody.phase(),
++                AudioPreparationPhase::Cleaning | AudioPreparationPhase::Recoverable
++            ));
++            release.join().unwrap();
++            custody.cleanup_on_control();
++            assert_eq!(custody.phase(), AudioPreparationPhase::Recoverable);
++            assert!(custody.recover_on_control(&token).is_some());
++        }
++    }
++
++    #[test]
++    fn compiled_reader_pending_candidate_disposes_mutable_runtime_once_and_retries_root_only() {
++        let Some((custody, token)) = fixture() else {
++            return;
++        };
++        let mut candidate = crate::AudioCandidateOwner::try_new_on_control(custody, token)
++            .ok()
++            .unwrap();
++        let reader = candidate.register_compiled_reader_on_control().unwrap();
++        let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
++        let counter = drops.clone();
++        candidate
++            .test_observe_runtime_drop(move |_| {
++                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++            })
++            .unwrap();
++        assert!(matches!(
++            candidate.dispose_on_control(),
++            Err(crate::AudioStorageError::ExternalReadersPending)
++        ));
++        assert_eq!(
++            candidate.phase(),
++            crate::AudioCandidateDisposalPhase::RootsCleaning
++        );
++        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
++        assert!(candidate.recover_inputs_on_control().is_none());
++        assert!(matches!(
++            candidate.dispose_on_control(),
++            Err(crate::AudioStorageError::ExternalReadersPending)
++        ));
++        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
++        assert!(reader.try_duplicate_on_control().is_err());
++        drop(reader);
++        candidate.dispose_on_control().unwrap();
++        assert_eq!(
++            candidate.phase(),
++            crate::AudioCandidateDisposalPhase::Complete
++        );
++        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
++        assert!(candidate.recover_inputs_on_control().is_some());
++        assert!(candidate.recover_inputs_on_control().is_none());
++    }
++}
+diff --git a/docs/sampler.md b/docs/sampler.md
+index b63802f5..9e43d991 100644
+--- a/docs/sampler.md
++++ b/docs/sampler.md
+@@ -1415,3 +1415,43 @@ mechanism is distinct from the allocation-free lifecycle checker/bootstrap.
+ This is construction-local source evidence, not an all-constructor destructor
+ proof, a complete public retirement receipt, retained Service/worker incarnation
+ integration, native full-live-union admission, registration or usable Sampler UI.
++
++### Qualified compiled readers: Service integration in progress
++
++The next Service deliverable uses an `AudioCompiledRevision` created only from
++the actual `RevisionAssembly` constructor and validated preparation incarnation.
++It retains the paired revision declaration; it cannot adopt a caller Arc or
++return an owning revision/Playback. Explicit duplication registers another
++physical field, with its own ledger observations. Scalar identity and metadata
++queries confer no publication or cleanup authority.
++
++The existing revision root retains a separate constructor-declared reader-state
++allocation. Its body/header, inline fields and observation destination are
++included in the same preparation reservation and ledger. Reader release drops
++the paired revision alias before decrementing its registration under a small
++control-only mutex. Retirement seals registration under that same exclusion.
++No callback takes this lock. An unexplained revision/Weak alias is a sticky
++Unknown refusal; a real registered reader instead leaves the existing parent
++Cleaning with every constructor-root charge intact. Release does not itself
++clear those charges or perform final child disposal.
++
++Candidate/runtime retirement and native preparation/archive cleanup preserve
++`ExternalReadersPending` as a retryable retained state. The mutable runtime is
++disposed once; later ticks retry root retirement only. Once all actual readers
++release, the existing root restores children and retires normally. Panic and
++unknown-alias failures remain terminal. Tests exercise physical omitted-handle
++closure, foreign token refusal, concurrent release, repeat cleanup, and the real
++native preparation slot retaining its incarnation and full reservation until
++release. This additional allocation changes current root-layout costs; historical
++source-bound byte boundaries above are not relabeled for this increment.
++
++This is an intermediate Engine/native-custody component. Startup still uses the
++legacy compiled/Event path, all four opaque Service mpsc queues remain in use,
++and the resource-aware complete candidate bridge and final joint publication
++frontier remain closed. The next work replaces admitted native transport with
++purpose-specific fixed-capacity records in the same registered Session family,
++including compiled, export, seek and real input ownership. Registered startup,
++exact captured-source/current-history inventory, original-rate loading and
++publication/replacement/terminal retirement must then compose together. No
++Sampler registration, playable Service request, native app or musical acceptance
++is implied by the reader component.

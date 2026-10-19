@@ -1,0 +1,110 @@
+{
+  "LIMITS.md": {
+    "bytes": 2975,
+    "sha256": "58934191f7f8847a7c4982038f293ed800a3a29840eb2d451f09aaa68b638bda"
+  },
+  "PATCH.diff": {
+    "bytes": 40807,
+    "sha256": "680421be5929fe2b9c640ccb0673fdb5acbc356d5091dbc89b071f37e87cc112"
+  },
+  "SOURCE.json": {
+    "bytes": 3102,
+    "sha256": "e9467d74bf0568b6ba217760b756d29bd3618f20819ea547ff522d0bea160bc4"
+  },
+  "logs/hex395-readers-architecture.log": {
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  "logs/hex395-readers-audio-first.log": {
+    "bytes": 877,
+    "sha256": "4d085075a0a8655d56ef34d81dbaf0256560dd53f0ce6f7e8265faacf5d60d64"
+  },
+  "logs/hex395-readers-audio-suite.log": {
+    "bytes": 20719,
+    "sha256": "b1c161d2d17ae423f4c2409801b238ac4b7aa67b4cbe4a87b2490a44b26a4dfa"
+  },
+  "logs/hex395-readers-check-first.log": {
+    "bytes": 156,
+    "sha256": "2471dc25054229a31323289907b239605a141fbb1d6ff02a83ae21da4386688a"
+  },
+  "logs/hex395-readers-clippy-audio.log": {
+    "bytes": 532,
+    "sha256": "3074ed95d2ebc8c3c7240f8b2aaf160423a9cdc81ad2df1dbb5e62f0c763e2c6"
+  },
+  "logs/hex395-readers-clippy-engine-first.log": {
+    "bytes": 256,
+    "sha256": "f440b01ffb6b527dd359d9b9a1a01eb39543931e5aa9aae7ae4c3f43ebb3c4bd"
+  },
+  "logs/hex395-readers-doc.log": {
+    "bytes": 366,
+    "sha256": "169cccc9e4d3f7473085b046816cc892e559fc5b73cc89e996bc874cf786bc65"
+  },
+  "logs/hex395-readers-engine-first.log": {
+    "bytes": 94968,
+    "sha256": "12ac87d4bbf65f4a781ce35c57baced2a6032ae26c2e5ca652c442af5dfab203"
+  },
+  "logs/hex395-readers-preparation-first.log": {
+    "bytes": 73747,
+    "sha256": "104241212397d5129ff5242da313d25c11c2ac400a2756e0a5e288463c1cb0fb"
+  },
+  "logs/hex395-readers-tests-first.log": {
+    "bytes": 2247,
+    "sha256": "073b495e477eb5ec1212b2ac27805753d22eae987d62b9c6669aa26d859cb8a8"
+  },
+  "logs/hex395-readers-tests-second.log": {
+    "bytes": 4120,
+    "sha256": "22b46650af197357cda1e690adcca3d7f1d9c3518642913078f248694ee3d293"
+  },
+  "source/crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs": {
+    "bytes": 18700,
+    "sha256": "588bc568dba4d049d1ebdb050492a162725d166a3d6097f0535863c9ee1146b1"
+  },
+  "source/crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs": {
+    "bytes": 58110,
+    "sha256": "79ad67b93d2553f925fc01384d2dc8aab954ea83e53a48888f5e2c93f2c1b6e1"
+  },
+  "source/crates/hex-engine/src/audio_candidate/preparation.rs": {
+    "bytes": 19832,
+    "sha256": "bca020a5f84df47125699fc68f5b343206280757c7c6841230892412223e4615"
+  },
+  "source/crates/hex-engine/src/audio_candidate/preparation_operations.rs": {
+    "bytes": 5416,
+    "sha256": "b6d949fd1dd9d65aa526dc2dbff4bbde1ff481923d0e179bf2266cc8645f1a6c"
+  },
+  "source/crates/hex-engine/src/audio_candidate.rs": {
+    "bytes": 27037,
+    "sha256": "89fb9b78cb082f8190e131ae7a31c7295d042b176276e51c4ee9a4ad148b54e7"
+  },
+  "source/crates/hex-engine/src/audio_only_inputs.rs": {
+    "bytes": 45756,
+    "sha256": "712bf2a2a72384e990442d845eae3dc0c3bf9fe5e05fc8bcf91e0a27649b1ff9"
+  },
+  "source/crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs": {
+    "bytes": 35523,
+    "sha256": "e4ca5f4e9d4e62fd3d9a7d2302a6c7e705fdf5efc478250ca24c7f3bd7f2723f"
+  },
+  "source/crates/hex-engine/src/audio_preparation.rs": {
+    "bytes": 72893,
+    "sha256": "7c84e86625f2392b00e9cfd3629e7565f31414112d6344dbb17501590d0bd7a2"
+  },
+  "source/crates/hex-engine/src/lib.rs": {
+    "bytes": 122081,
+    "sha256": "479383ce614f0e35b822a3d1f6be3fdc4ae34138e0edb4882dd54badacc5cf5f"
+  },
+  "source/crates/hex-engine/src/prepared_revision/assembly.rs": {
+    "bytes": 28067,
+    "sha256": "f8f673400148fe54454cf6e94c841eae100baf89de87d2545d0572a4ca36ec88"
+  },
+  "source/crates/hex-engine/src/prepared_revision/compiled_reader.rs": {
+    "bytes": 13068,
+    "sha256": "ccbfeec2b517c29482d39987fa5fda3cab3d2fc58e43ce9c62222022ff3946a2"
+  },
+  "source/crates/hex-engine/src/prepared_revision.rs": {
+    "bytes": 36212,
+    "sha256": "2ad4fa973727f7bdfc177003ed2a8eb710e0b089ac60fdc971d5f0a3f848d80b"
+  },
+  "source/docs/sampler.md": {
+    "bytes": 98869,
+    "sha256": "2425dbdf5f42d3a9010590e2e2cad94d6a319cd9129c0a420ee220b50cb81366"
+  }
+}
