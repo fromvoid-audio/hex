@@ -1,0 +1,30 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.49s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_boundary_wheel_outer_hits_but_not_blank_or_outside' (145072) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:1017:9:
+assertion `left == right` failed: outer visible half frequency20/q1.3416408
+  left: EqState { next_node_id: 5, mode: 0, output_gain: 1.0, nodes: [Node { id: NodeId(4), enabled: true, kind: LowCut, frequency_hz: 20.0, gain_db: 0.0, q: 1.3416408, slope: 0, bank: 0, legacy_shelf: false }], lanes: [] }
+ right: EqState { next_node_id: 5, mode: 0, output_gain: 1.0, nodes: [Node { id: NodeId(4), enabled: true, kind: LowCut, frequency_hz: 20.0, gain_db: 0.0, q: 1.3416408, slope: 1, bank: 0, legacy_shelf: false }], lanes: [] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_boundary_wheel_outer_hits_but_not_blank_or_outside ... FAILED
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_start' (145073) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:1109:9:
+physical fingers still held after >250ms, zero_start=false
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_start ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_boundary_wheel_outer_hits_but_not_blank_or_outside
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_start
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 934 filtered out; finished in 0.95s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

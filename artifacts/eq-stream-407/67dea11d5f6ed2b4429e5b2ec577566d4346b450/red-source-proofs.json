@@ -1,0 +1,10 @@
+{
+  "original-red": {
+    "exact_original_full_content_sha256": "0a9f1cfc0a903377c3ee2105db0a41a8f693f292afc4a7349a6839f917d40608",
+    "executed_fixture_sha256": "a07ee6ffeb3b45d3d416022d87c97c61d3ddb4674bafeb5403b38472f435e1b7"
+  },
+  "confirmed-red": {
+    "exact_original_full_content_sha256": "87c3fab93e653b8423ca121653da4796a272b67a4b510a88585679b6d535dd84",
+    "executed_fixture_sha256": "9c7589e5b366b9f2910da5e57aad6d92dadc0aae558e903427eda26d9a6c66b8"
+  }
+}

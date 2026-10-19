@@ -1,0 +1,472 @@
+{
+  "schema": 1,
+  "ticket": 2801,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/407",
+  "source": {
+    "base": "8724e3edd639c864600ed4a1dabc9ebcfb76cc8d",
+    "head": "67dea11d5f6ed2b4429e5b2ec577566d4346b450",
+    "tree": "4dc547a0712fe773c4f124024766080cc43c6aff",
+    "files": [
+      "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs",
+      "crates/hex-widgets/src/response_graph/scroll.rs"
+    ]
+  },
+  "file_hashes": {
+    "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+      "before_blob": "8f8585cfce7ccf6b870cf316f604f6fb4711b7c1",
+      "before_sha256": "e2a8e65d7b483642baba5cb18b88045368fee738b89de070d0b2118f4cb97302",
+      "after_blob": "537eba563a03fd6620834245f4d63f26570c2f18",
+      "after_sha256": "9c7589e5b366b9f2910da5e57aad6d92dadc0aae558e903427eda26d9a6c66b8"
+    },
+    "crates/hex-widgets/src/response_graph/scroll.rs": {
+      "before_blob": "16a20486454c5ad497745965ce90b4d471503670",
+      "before_sha256": "c52d95fc277246adfbd184b31acc6420ab5968852662b304f7de08dffa928c91",
+      "after_blob": "50c28784ec258e5e7482218b4375125d0611deba",
+      "after_sha256": "e16c4a608fb533b0ccdd207ec4a7d2d948ce06cdf7e4f81cd9d603851eefd556"
+    }
+  },
+  "runs": {
+    "original-red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 59.681,
+      "start_tree": {
+        "commit": "8724e3edd639c864600ed4a1dabc9ebcfb76cc8d",
+        "content_sha256": "0a9f1cfc0a903377c3ee2105db0a41a8f693f292afc4a7349a6839f917d40608",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "eq_review_stream_",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:23:45Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/eq-stream-407-original-red/01-rendered-boundary-and-pause.log",
+          "started_at": "2026-10-19T01:22:45Z",
+          "status": "failed",
+          "step_id": "rendered-boundary-and-pause"
+        }
+      ]
+    },
+    "confirmed-red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 37.759,
+      "start_tree": {
+        "commit": "8724e3edd639c864600ed4a1dabc9ebcfb76cc8d",
+        "content_sha256": "87c3fab93e653b8423ca121653da4796a272b67a4b510a88585679b6d535dd84",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "eq_review_stream_",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:24:49Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/eq-stream-407-confirmed-red/01-rendered-boundary-and-pause.log",
+          "started_at": "2026-10-19T01:24:12Z",
+          "status": "failed",
+          "step_id": "rendered-boundary-and-pause"
+        }
+      ]
+    },
+    "targeted-green": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 40.377,
+      "start_tree": {
+        "commit": "8724e3edd639c864600ed4a1dabc9ebcfb76cc8d",
+        "content_sha256": "ab71ba6e9f7ec199f9ef6251fa60682be8ffd9c81acf45101b4ef4194f8218cf",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs",
+          " M crates/hex-widgets/src/response_graph/scroll.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "eq_review_stream_",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:25:57Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-targeted-green/01-rendered-boundary-and-pause.log",
+          "started_at": "2026-10-19T01:25:17Z",
+          "status": "passed",
+          "step_id": "rendered-boundary-and-pause"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 155.124,
+      "start_tree": {
+        "commit": "67dea11d5f6ed2b4429e5b2ec577566d4346b450",
+        "content_sha256": "ab71ba6e9f7ec199f9ef6251fa60682be8ffd9c81acf45101b4ef4194f8218cf",
+        "dirty": false,
+        "dirty_files": []
+      },
+      "steps": [
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-19T01:26:09Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/01-architecture.log",
+          "started_at": "2026-10-19T01:26:09Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-19T01:26:09Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/02-gpui-patch.log",
+          "started_at": "2026-10-19T01:26:09Z",
+          "status": "passed",
+          "step_id": "gpui-patch"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-19T01:26:09Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/03-ui-style.log",
+          "started_at": "2026-10-19T01:26:09Z",
+          "status": "passed",
+          "step_id": "ui-style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-19T01:26:09Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/04-device-layout.log",
+          "started_at": "2026-10-19T01:26:09Z",
+          "status": "passed",
+          "step_id": "device-layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T01:26:15Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/05-format.log",
+          "started_at": "2026-10-19T01:26:09Z",
+          "status": "passed",
+          "step_id": "format"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T01:26:15Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/06-diff.log",
+          "started_at": "2026-10-19T01:26:15Z",
+          "status": "passed",
+          "step_id": "diff"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "eq_ui_tests::node_gesture_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:27:00Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/07-node-gestures.log",
+          "started_at": "2026-10-19T01:26:15Z",
+          "status": "passed",
+          "step_id": "node-gestures"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "eq_review_boundary_node_outer_hit_wins_but_blank_axis_never_creates",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T01:27:39Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/08-existing-pointer-boundary.log",
+          "started_at": "2026-10-19T01:27:00Z",
+          "status": "passed",
+          "step_id": "existing-pointer-boundary"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-widgets",
+            "--locked"
+          ],
+          "ended_at": "2026-10-19T01:28:04Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/09-widgets.log",
+          "started_at": "2026-10-19T01:27:39Z",
+          "status": "passed",
+          "step_id": "widgets"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-widgets",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T01:28:14Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/10-widgets-clippy.log",
+          "started_at": "2026-10-19T01:28:04Z",
+          "status": "passed",
+          "step_id": "widgets-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T01:28:44Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-stream-407-qualification/11-ui-clippy.log",
+          "started_at": "2026-10-19T01:28:14Z",
+          "status": "passed",
+          "step_id": "ui-clippy"
+        }
+      ]
+    }
+  },
+  "payloads": {
+    "407-stream-component.py": {
+      "bytes": 542,
+      "sha256": "eecb211118cd44d097902873828e117396fb24dae27b205fa7014cadb4741dcc"
+    },
+    "407-stream-confirmed-red-fixture.rs": {
+      "bytes": 43869,
+      "sha256": "9c7589e5b366b9f2910da5e57aad6d92dadc0aae558e903427eda26d9a6c66b8"
+    },
+    "407-stream-confirmed-red.stdout": {
+      "bytes": 183,
+      "sha256": "3b638b6546a62814e0c1cc4a386a4cbd409a2b7e256275ebd770bb3c67632d44"
+    },
+    "407-stream-evidence.py": {
+      "bytes": 7933,
+      "sha256": "0603e3eddf41354fe1dd9bf4026f44005ef0f96dbd03d1f5795ddcc616b1c148"
+    },
+    "407-stream-first-red-fixture.rs": {
+      "bytes": 43544,
+      "sha256": "a07ee6ffeb3b45d3d416022d87c97c61d3ddb4674bafeb5403b38472f435e1b7"
+    },
+    "407-stream-original-red.stdout": {
+      "bytes": 182,
+      "sha256": "ba4b32006d3c42d4e9f44eedbdf4d7f8b7c4b5edfd8e1fa46a91cecc9b1f7376"
+    },
+    "407-stream-qualification-steps.json": {
+      "bytes": 1028,
+      "sha256": "2902452a7f9a0ba1bcb752ff85c31091451b4307c584b5a23bab9f476b3308e6"
+    },
+    "407-stream-qualification.stdout": {
+      "bytes": 707,
+      "sha256": "00646ef3d19b28e777a73c88584dafdbe8f5e5f831322ebd5b7fbb8230b13d30"
+    },
+    "407-stream-source.json": {
+      "bytes": 313,
+      "sha256": "589f5c8761764f31c450baa868b2bc91fa54d964124e82cf4812694d9dab0a39"
+    },
+    "407-stream-targeted-green.stdout": {
+      "bytes": 184,
+      "sha256": "c24f26a55d2c36c73c6ae5868b606209952690affcfe102833ec1a14e9c10bd4"
+    },
+    "407-stream-tests.rs": {
+      "bytes": 5276,
+      "sha256": "890e6fc203606355d8f29cf5b94fd645611c4ae81400321105fd3f48e2677cd3"
+    },
+    "HANDOFF.md": {
+      "bytes": 3385,
+      "sha256": "bc179938d1c76ae015960fff25c71dbb630531eaaaebdcf0bef5e15e86b29199"
+    },
+    "before-after-hashes.json": {
+      "bytes": 746,
+      "sha256": "0a27feb48b10d8dfb034781226f3b9ac29496a5cf2b42ad261a35c26c233b502"
+    },
+    "owner.patch": {
+      "bytes": 11830,
+      "sha256": "eb17172eadc4839a8b4acddb86d488cca0faee5135505e4f30c0fa79954d3397"
+    },
+    "red-source-proofs.json": {
+      "bytes": 470,
+      "sha256": "ae68935325a693a620fea6a5d61f02bf6a1bbc326d59e41125aa1f03bf5a579a"
+    },
+    "runs/confirmed-red/01-rendered-boundary-and-pause.log": {
+      "bytes": 2533,
+      "sha256": "7d561427b7d93def4684db3d97d52e77746515f133250115775807f0c7abad06"
+    },
+    "runs/confirmed-red/summary.json": {
+      "bytes": 10017,
+      "sha256": "462ccbbbe026bd3f5afb0ce3e69bd62b53dcb911b251fc257ad6af35770a49f9"
+    },
+    "runs/original-red/01-rendered-boundary-and-pause.log": {
+      "bytes": 3448,
+      "sha256": "974475062dcae11f100138eb693cc7ca01d18eb9ec3657205209ba5ac76548a9"
+    },
+    "runs/original-red/summary.json": {
+      "bytes": 10014,
+      "sha256": "cc4140f73ccd0b016992012966a5ab0418827f86b7ece4fb79e42852c808db53"
+    },
+    "runs/qualification/01-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/02-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/03-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/04-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/05-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/06-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/07-node-gestures.log": {
+      "bytes": 5919,
+      "sha256": "efa72d0c15b85d2fe853dc646220808569a130ab9e3b36f6f5a47b9f4b30d1bd"
+    },
+    "runs/qualification/08-existing-pointer-boundary.log": {
+      "bytes": 728,
+      "sha256": "66021a8fc240e317e852572e7b9776337e1564413557f88cc9c93b7854f1e05d"
+    },
+    "runs/qualification/09-widgets.log": {
+      "bytes": 6466,
+      "sha256": "c566c9492f277cf6009ea0b2a2940586b7743e70ad7cf14348d61159e8ce42bd"
+    },
+    "runs/qualification/10-widgets-clippy.log": {
+      "bytes": 200,
+      "sha256": "024ddb339410387470cf07db1a5c537ce20b6679cdc637c426ac40d8d5654b43"
+    },
+    "runs/qualification/11-ui-clippy.log": {
+      "bytes": 1025,
+      "sha256": "d72597e81ee533c8c6a136f6cc65ca85b07f656b225d73f3f659cb7298b9cc68"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 14797,
+      "sha256": "8d039e2469480ceab6de745f451062e3d9f4f2d4bec09fb452c3ed3052e77870"
+    },
+    "runs/targeted-green/01-rendered-boundary-and-pause.log": {
+      "bytes": 1216,
+      "sha256": "8248a1f428e3aebb1181f22507d49f54779b1fd8a43927f14a108e801bc1a1e3"
+    },
+    "runs/targeted-green/summary.json": {
+      "bytes": 10256,
+      "sha256": "83085b8b785a629e1c2439fb023006f6dc630c18a58a6f0b5c8ee3ee20f65268"
+    }
+  }
+}

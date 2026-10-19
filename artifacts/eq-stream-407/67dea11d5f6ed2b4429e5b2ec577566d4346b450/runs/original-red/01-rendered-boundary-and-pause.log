@@ -1,0 +1,40 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.62s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_boundary_wheel_outer_hits_but_not_blank_or_outside' (144923) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:1017:9:
+assertion `left == right` failed: outer visible half frequency20/q1.3416408
+  left: EqState { next_node_id: 5, mode: 0, output_gain: 1.0, nodes: [Node { id: NodeId(4), enabled: true, kind: LowCut, frequency_hz: 20.0, gain_db: 0.0, q: 1.3416408, slope: 0, bank: 0, legacy_shelf: false }], lanes: [] }
+ right: EqState { next_node_id: 5, mode: 0, output_gain: 1.0, nodes: [Node { id: NodeId(4), enabled: true, kind: LowCut, frequency_hz: 20.0, gain_db: 0.0, q: 1.3416408, slope: 1, bank: 0, legacy_shelf: false }], lanes: [] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_boundary_wheel_outer_hits_but_not_blank_or_outside ... FAILED
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_start' (144924) panicked at crates/hex-ui/src/editor/device_panel/tests.rs:208:9:
+worker-backed device action did not complete: worker=0 queued=0 gesture=Some(GestureSnapshot { key: GestureKey { generation: 0, token: 1 }, target: DeviceParameter { device: DeviceId(3), parameter: ParameterId(1037) }, sequence: 2, value: Choice(2), secondary_value: None, parameters: None }) barriers=0 error=None revision=Some(3)
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_start ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_boundary_wheel_outer_hits_but_not_blank_or_outside
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_start
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 934 filtered out; finished in 5.69s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

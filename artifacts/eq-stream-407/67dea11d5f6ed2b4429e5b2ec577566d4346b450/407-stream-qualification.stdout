@@ -1,0 +1,23 @@
+[1/11] architecture: running
+[1/11] architecture: passed
+[2/11] gpui-patch: running
+[2/11] gpui-patch: passed
+[3/11] ui-style: running
+[3/11] ui-style: passed
+[4/11] device-layout: running
+[4/11] device-layout: passed
+[5/11] format: running
+[5/11] format: passed
+[6/11] diff: running
+[6/11] diff: passed
+[7/11] node-gestures: running
+[7/11] node-gestures: passed
+[8/11] existing-pointer-boundary: running
+[8/11] existing-pointer-boundary: passed
+[9/11] widgets: running
+[9/11] widgets: passed
+[10/11] widgets-clippy: running
+[10/11] widgets-clippy: passed
+[11/11] ui-clippy: running
+[11/11] ui-clippy: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/eq-stream-407-qualification/summary.json

@@ -1,0 +1,16 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.75s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_start ... ok
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_stream_boundary_wheel_outer_hits_but_not_blank_or_outside ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 934 filtered out; finished in 3.29s
+
