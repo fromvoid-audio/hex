@@ -1,0 +1,37 @@
+[
+  {
+    "path": "PROPOSAL.md",
+    "bytes": 4128,
+    "sha256": "63be9dabc96e4dced69c0019cce8f9af08515eb7ee59be83f3717ec8919c97a8"
+  },
+  {
+    "path": "before-mixed-matrix-red.log",
+    "bytes": 2682,
+    "sha256": "4e3b863ce5a9b610212df49fbda2fbc64d86570622f5d98fa720aecefcc8cbd6"
+  },
+  {
+    "path": "before-mixed-red.log",
+    "bytes": 1758,
+    "sha256": "7cc7d02afc1dbbf76217898009c48b7ca31da3dfbbcdef70f41c243f7f5e145c"
+  },
+  {
+    "path": "before-source.json",
+    "bytes": 246,
+    "sha256": "01aa91497fee9670d1bd13a78916b205867990c9e5347fe3c634a50549d84632"
+  },
+  {
+    "path": "mixed-matrix-tests-only.patch",
+    "bytes": 2895,
+    "sha256": "e9da0a5b7804f786b5eb0d914357124aa50d944418a988b39ae7c608298b449b"
+  },
+  {
+    "path": "repro-tests-only.patch",
+    "bytes": 2579,
+    "sha256": "f3c5fd583fa2dc020dda983cd52c12a4216e1c72db8bf80ac6678f7a2d1e4fc5"
+  },
+  {
+    "path": "source-before-musical_time.rs",
+    "bytes": 62756,
+    "sha256": "f900b7f0af9b9ab76433845d35b2de925d787a3eaa9439aae1b280b6aa238d04"
+  }
+]
