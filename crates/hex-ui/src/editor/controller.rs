@@ -1886,8 +1886,21 @@ impl EditorView {
                 self.session_copy_source = None;
             }
             self.track_selection.reconcile(&state.project);
+            // A completed time range deliberately has no primary clip. The
+            // generic stale-clip fallback must not reselect its first original
+            // after a range copy (or on a later unrelated worker response).
+            let time_range_owns_selection = self.selected_clip.is_none()
+                && self.time_selection_gesture.is_none()
+                && self.time_range_move_gesture.is_none()
+                && self
+                    .edit_cursor
+                    .is_some_and(|cursor| cursor.generation == self.project_generation)
+                && self.normalized_time_selection().is_some();
             (self.selected_track, self.selected_clip) =
                 selection::reconcile(&state.project, self.selected_track, self.selected_clip);
+            if time_range_owns_selection {
+                self.selected_clip = None;
+            }
             if let Some(clip) = self.selected_clip
                 && state.project.session_midi_clip(clip).is_some()
                 && let Some(cell) = state.project.session_cells().iter().find(|cell| {
