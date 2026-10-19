@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 36.89s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 1 test
+
+thread 'editor::device_panel::tests::main_chain_ui_tests::main_header_add_effect_uses_actual_main_chain_and_history' (344993) panicked at crates/hex-ui/src/editor/device_panel/tests/main_chain_ui_tests.rs:134:9:
+Some(DisplayError { message: "device drag canceled · project or source changed", batch_member: None })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::main_chain_ui_tests::main_header_add_effect_uses_actual_main_chain_and_history ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::main_chain_ui_tests::main_header_add_effect_uses_actual_main_chain_and_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 1.12s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

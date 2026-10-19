@@ -1,0 +1,11 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 4.76s
+     Running unittests src/lib.rs (target/debug/deps/hex_audio-fbd7b065f8b64058)
+
+running 2 tests
+test spectrum_target::tests::main_owner_preserves_exact_target_and_rejects_invalid_inputs ... ok
+test processor_audition::tests::main_owner_preserves_exact_target_and_rejects_invalid_inputs ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 162 filtered out; finished in 0.00s
+

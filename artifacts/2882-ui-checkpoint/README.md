@@ -1,0 +1,7 @@
+# Main UI partial checkpoint
+Source ba212d7b02f898aaf683947f3a5d3d52ee2c6bb8; tree 3cb7a534e86c1946dcd69425c46ee85b1421bdc2; canonical PR484/Pulse2882, In Progress/Draft.
+Parent b51 owns previously accepted carrier/runtime. This commit is21files Main UI +2Audio production arms +3cfgtest Snapshot fields. The component ran dirty parentb51; all21committed source files are byte-compared to tested files here. Next untracked Engine history test is outside this checkpoint.
+Actual69distinct controls:13Audio target +56Main/Track/Return UI,0ignored; Audio lib strict, UI default/feature lib strict -Dwarnings pluscheap7 passed12stages.
+Two separate executed UI negatives: Main click retained ordinary target; Main reorder refused because existing freshness inventory lacked Main. Current test preserves both sequences plus actual Service ACK and canonical snapshot Undo/Redo. Compile-only diagnostics are separate and not counted as product REDs.
+No whole Main readiness: stateful normal/fast handoff, current accounting/export, additional Main edit/save/refusal coverage remain incomplete. Not native/full21/merge acceptance. Root has not authorized whole395 imports; none copied. Shared controller Main hunks must preserve outstanding2880 range-handoff guard on eventual ordinary composition.
+Source bytes remain canonical Git objects in source-index; no recursive archives. Exact-source primary logs/summary included, no repeated old carrier archive.

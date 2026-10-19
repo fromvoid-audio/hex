@@ -1,0 +1,14 @@
+    Checking typenum v1.20.1
+    Checking alsa-sys v0.4.0
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+    Checking generic-array v0.14.7
+    Checking bitflags v2.13.2
+    Checking alsa v0.11.0
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.7
+    Checking digest v0.10.7
+    Checking sha2 v0.10.9
+    Checking hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+    Checking cpal v0.17.3
+    Checking hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `dev` profile [unoptimized] target(s) in 3.96s
