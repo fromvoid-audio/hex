@@ -1,0 +1,40 @@
+{
+  "canonical_head": "22bc20a94cf9d22e4d25684dfc7613baab193ef4",
+  "canonical_tree": "f3d5176fd1004a1de4ae63b7cbd24a718e03d365",
+  "test_only_unpublished_patch_sha256": "701466045f0c4fa4dcb948204fb3ad0180c3988d8a44044521d1ece245edbf85",
+  "status": "FIRST CHECKPOINT: FIVE ACTUAL REDS; NO PRODUCT FIX/GREEN CLAIM",
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+  "test_commands": [
+    {
+      "argv": "cargo test -p hex-project --locked --lib copy_overlap_preserves_ -- --nocapture",
+      "exit": 101,
+      "passed": 0,
+      "failed": 3,
+      "ignored": 0,
+      "log": "before-copy-red.log"
+    },
+    {
+      "argv": "cargo test -p hex-ui --features ui-test-support --locked --lib group_outside_lane_ -- --nocapture",
+      "exit": 101,
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "log": "before-outside-red.log"
+    },
+    {
+      "argv": "cargo test -p hex-ui --features ui-test-support --locked --lib group_vertical_autoscroll_ -- --nocapture",
+      "exit": 101,
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "log": "before-vertical-red.log"
+    }
+  ],
+  "env": {
+    "CARGO_TARGET_DIR": "/dev/shm/hex-beats-ui-target",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "activation": "/workspace/.hex-tools/activate.sh"
+  },
+  "unpublished": "Only TWO owning test files modified; no source commits/push/production/cache/todo/other-owner edits."
+}

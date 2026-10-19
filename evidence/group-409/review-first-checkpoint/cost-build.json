@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "rustc",
+    "--edition=2024",
+    "-C",
+    "opt-level=3",
+    "/dev/shm/hex-group-409-review-evidence/preview-cost.rs",
+    "-L",
+    "dependency=/dev/shm/hex-beats-ui-target/debug/deps",
+    "--extern",
+    "hex_project=/dev/shm/hex-beats-ui-target/debug/deps/libhex_project-7d387a03ad7daf6a.rlib",
+    "-o",
+    "/dev/shm/hex-group-409-review-evidence/preview-cost"
+  ],
+  "library": "/dev/shm/hex-beats-ui-target/debug/deps/libhex_project-7d387a03ad7daf6a.rlib",
+  "library_sha256": "1765d79afa9b00ce1cc5c29f30f986ed2ad3167a901ce2a406b80bbc2ca08448",
+  "source": "22bc production unchanged; local test-only additions",
+  "profile": "unoptimized production project rlib + optimized standalone harness; counting allocator overhead included; NOT native/release/deadline evidence",
+  "platform": "Linux"
+}

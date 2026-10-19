@@ -1,0 +1,50 @@
+[
+  {
+    "path": "crates/hex-project/src/clip_group_tests.rs",
+    "before_sha256": "ecff692a64874d4fd3889b61a7922904a8dcbc7e7be7518d2c767f80e9cc0d02",
+    "actual_sha256": "a6020debbfc8d96a6dd05b127790257583ad792f44435b69e6fa663c1cfa028a",
+    "production_unchanged": false
+  },
+  {
+    "path": "crates/hex-ui/src/editor/group_drag_ui_test.rs",
+    "before_sha256": "efee50ae6ff4184d48ece4c8bf2273983f75d8e737dadb6f20465b2647dd6a86",
+    "actual_sha256": "c1d04603a8a0daf7bef295872a9da6d1cf19ffdca66ab9b36588904937ff9139",
+    "production_unchanged": false
+  },
+  {
+    "path": "crates/hex-project/src/clip_group.rs",
+    "before_sha256": "84270de888ad432d451e2b9c539bfb957a7b9f33072a09117628d29487665c33",
+    "actual_sha256": "84270de888ad432d451e2b9c539bfb957a7b9f33072a09117628d29487665c33",
+    "production_unchanged": true
+  },
+  {
+    "path": "crates/hex-project/src/edit.rs",
+    "before_sha256": "aea43fa039cc394d2619f9f73719ad38c7195ca6412c153e332d15c06bb6eddb",
+    "actual_sha256": "aea43fa039cc394d2619f9f73719ad38c7195ca6412c153e332d15c06bb6eddb",
+    "production_unchanged": true
+  },
+  {
+    "path": "crates/hex-project/src/midi.rs",
+    "before_sha256": "924acb6229a558782926764648765b7cef6ccc2d321b2e4520031383e66f8086",
+    "actual_sha256": "924acb6229a558782926764648765b7cef6ccc2d321b2e4520031383e66f8086",
+    "production_unchanged": true
+  },
+  {
+    "path": "crates/hex-ui/src/editor/drag.rs",
+    "before_sha256": "18b55439f64f5e71f9b38a3ec5885be9c3b5cb9f57c39bb559be030003f9f707",
+    "actual_sha256": "18b55439f64f5e71f9b38a3ec5885be9c3b5cb9f57c39bb559be030003f9f707",
+    "production_unchanged": true
+  },
+  {
+    "path": "crates/hex-ui/src/editor/drag_autoscroll.rs",
+    "before_sha256": "17ba628bc99c71846740f185296eade4c855e5ebc2807ba17fdae1030131d7fa",
+    "actual_sha256": "17ba628bc99c71846740f185296eade4c855e5ebc2807ba17fdae1030131d7fa",
+    "production_unchanged": true
+  },
+  {
+    "path": "crates/hex-ui/src/editor/tracks.rs",
+    "before_sha256": "6aa9670c99f399741a424677e46db0e1c61a278c281f898cde521b44db2aa133",
+    "actual_sha256": "6aa9670c99f399741a424677e46db0e1c61a278c281f898cde521b44db2aa133",
+    "production_unchanged": true
+  }
+]

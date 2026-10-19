@@ -1,0 +1,269 @@
+diff --git a/crates/hex-project/src/clip_group_tests.rs b/crates/hex-project/src/clip_group_tests.rs
+index 6e61f43a..ba29deec 100644
+--- a/crates/hex-project/src/clip_group_tests.rs
++++ b/crates/hex-project/src/clip_group_tests.rs
+@@ -453,3 +453,140 @@ fn canonical_subframe_midi_member_is_retained_in_whole_group_move() {
+     assert!(f.editor.undo());
+     assert_eq!(f.editor.project(), &before);
+ }
++
++fn copied_group_preserves_overlapped_selected_originals(kind: u8) {
++    let mut f = fixture();
++    let track = f.tracks[0];
++    let (a, b, victim, destination) = match kind {
++        0 => {
++            let Created::Clip(b) = f
++                .editor
++                .execute(Command::CopyClipTo {
++                    clip: f.audio,
++                    track,
++                    start: 144_000,
++                })
++                .unwrap()
++            else {
++                panic!("copy")
++            };
++            let Created::Clip(victim) = f
++                .editor
++                .execute(Command::CopyClipTo {
++                    clip: f.audio,
++                    track,
++                    start: 240_000,
++                })
++                .unwrap()
++            else {
++                panic!("victim")
++            };
++            (f.audio, b, victim, ClipGroupPosition::Audio(144_000))
++        }
++        1 => {
++            let track = f.tracks[1];
++            let Created::Clip(b) = f
++                .editor
++                .execute(Command::CopyMidiClipTo {
++                    clip: f.midi,
++                    track,
++                    start: BeatTime::from_quarters(10).unwrap(),
++                })
++                .unwrap()
++            else {
++                panic!("copy")
++            };
++            let Created::Clip(victim) = f
++                .editor
++                .execute(Command::CopyMidiClipTo {
++                    clip: f.midi,
++                    track,
++                    start: BeatTime::from_quarters(12).unwrap(),
++                })
++                .unwrap()
++            else {
++                panic!("victim")
++            };
++            (
++                f.midi,
++                b,
++                victim,
++                ClipGroupPosition::Midi(BeatTime::from_quarters(10).unwrap()),
++            )
++        }
++        _ => {
++            f.editor
++                .execute(Command::MoveMidiClip {
++                    clip: f.midi,
++                    track,
++                    start: BeatTime::from_quarters(6).unwrap(),
++                })
++                .unwrap();
++            let asset = f.editor.project().clip(f.audio).unwrap().asset();
++            let Created::Clip(victim) = f
++                .editor
++                .execute(Command::PlaceClip {
++                    track,
++                    asset,
++                    start: 240_000,
++                    duration: 48_000,
++                    source_offset: 0,
++                    source_length: 48_000,
++                    looping: false,
++                })
++                .unwrap()
++            else {
++                panic!("victim")
++            };
++            (f.audio, f.midi, victim, ClipGroupPosition::Audio(144_000))
++        }
++    };
++    let track = if kind == 1 { f.tracks[1] } else { track };
++    let before = f.editor.project().clone();
++    f.editor
++        .execute(Command::MoveClipsWithOverwrite {
++            clips: vec![a, b],
++            anchor: a,
++            track,
++            position: destination,
++            copy: true,
++        })
++        .unwrap();
++    for id in [a, b] {
++        assert_eq!(
++            f.editor.project().clip(id),
++            before.clip(id),
++            "selected audio original must retain exact metadata/ID: kind={kind} id={id:?}"
++        );
++        assert_eq!(
++            f.editor.project().midi_clip(id),
++            before.midi_clip(id),
++            "selected MIDI original must retain exact metadata/ID: kind={kind} id={id:?}"
++        );
++    }
++    assert!(
++        f.editor.project().clip(victim).is_none() && f.editor.project().midi_clip(victim).is_none(),
++        "unselected destination is still overwritten"
++    );
++    let after = f.editor.project().snapshot();
++    assert_eq!(
++        Project::from_snapshot(after.clone()).unwrap().snapshot(),
++        after
++    );
++    assert!(f.editor.undo());
++    assert_eq!(f.editor.project().snapshot(), before.snapshot());
++    assert!(f.editor.redo());
++    assert_eq!(f.editor.project().snapshot(), after);
++}
++#[test]
++fn copy_overlap_preserves_audio_selected_originals() {
++    copied_group_preserves_overlapped_selected_originals(0);
++}
++#[test]
++fn copy_overlap_preserves_midi_selected_originals() {
++    copied_group_preserves_overlapped_selected_originals(1);
++}
++#[test]
++fn copy_overlap_preserves_mixed_selected_originals() {
++    copied_group_preserves_overlapped_selected_originals(2);
++}
+diff --git a/crates/hex-ui/src/editor/group_drag_ui_test.rs b/crates/hex-ui/src/editor/group_drag_ui_test.rs
+index c312a3e4..5d7cb371 100644
+--- a/crates/hex-ui/src/editor/group_drag_ui_test.rs
++++ b/crates/hex-ui/src/editor/group_drag_ui_test.rs
+@@ -494,3 +494,119 @@ fn mixed_audio_midi_group_uses_real_track_offsets_or_refuses_whole_vertical_move
+         }
+     }
+ }
++
++#[gpui::test]
++fn group_outside_lane_clears_all_previews_and_restores_originals(cx: &mut TestAppContext) {
++    let (_files, handle, editor, clips) = fixture(cx);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++    let target = begin_group(&mut visual, &clips);
++    visual.run_until_parked();
++    for id in &clips {
++        let selector = Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
++        assert!(
++            visual.debug_bounds(selector).is_some(),
++            "valid landing preview actually painted"
++        );
++    }
++    // A real pointer move left of every painted timeline lane, as the ordinary
++    // single-clip drag fixture does; no fabricated planner error.
++    let outside = point(px(200.0), target.y);
++    visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
++    visual.run_until_parked();
++    editor.read_with(&visual, |v, _| {
++        let drag = v.active_clip_drag.as_ref().unwrap();
++        assert!(drag.preview.get().is_none());
++        assert!(drag.destination.get().is_none());
++        assert!(
++            drag.group.borrow().previews.is_empty(),
++            "outside lane must invalidate all group destinations"
++        );
++    });
++    for id in &clips {
++        let preview = Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
++        let original = Box::leak(format!("clip-name-{}", id.value()).into_boxed_str());
++        assert!(
++            visual.debug_bounds(preview).is_none(),
++            "stale group overlay hidden"
++        );
++        assert!(
++            visual.debug_bounds(original).is_some(),
++            "original reappears outside lane"
++        );
++    }
++    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
++    pump(&editor, &mut visual);
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
++        assert_eq!(v.worker_requests_pending, 0);
++        assert!(
++            v.last_enqueued_edit.is_none(),
++            "outside release cannot commit old landing"
++        );
++    });
++}
++
++#[gpui::test]
++fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut TestAppContext) {
++    let (_files, handle, editor, clips) = fixture(cx);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    for index in 0..24 {
++        editor.update(&mut visual, |v, cx| {
++            v.enqueue(Request::Edit(Command::AddTrack {
++                name: format!("scroll {index}"),
++            }))
++        });
++        pump(&editor, &mut visual);
++    }
++    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++    begin_group(&mut visual, &clips);
++    visual.run_until_parked();
++    let target = editor.read_with(&visual, |v, _| {
++        let body = v.arrangement_bounds.unwrap();
++        point(
++            px(body.left + body.width * 0.6),
++            px(body.top + body.height - 5.0),
++        )
++    });
++    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++    visual.run_until_parked();
++    editor.update(&mut visual, |v, cx| {
++        assert_eq!(
++            v.active_clip_drag
++                .as_ref()
++                .unwrap()
++                .group
++                .borrow()
++                .previews
++                .len(),
++            3
++        );
++        let offset = v.track_scroll.offset().y;
++        let generation = v.drag_layout_generation;
++        let now = Instant::now();
++        v.tick_clip_gesture_autoscroll(now, cx);
++        if v.track_scroll.offset().y == offset {
++            assert!(v.tick_clip_gesture_autoscroll(now + Duration::from_millis(50), cx));
++        }
++        assert!(
++            v.track_scroll.offset().y < offset,
++            "actual UniformList scroll occurred"
++        );
++        assert!(v.drag_layout_generation > generation);
++        assert_ne!(v.arrangement_bounds_epoch, v.drag_layout_generation);
++        let drag = v.active_clip_drag.as_ref().unwrap();
++        assert!(drag.preview.get().is_none());
++        assert!(drag.destination.get().is_none());
++        assert!(
++            drag.group.borrow().previews.is_empty(),
++            "vertical autoscroll invalidates every group destination before repaint"
++        );
++    });
++    // No repaint may turn the stale row into authority for this release.
++    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
++        assert_eq!(v.worker_requests_pending, 0);
++    });
++}

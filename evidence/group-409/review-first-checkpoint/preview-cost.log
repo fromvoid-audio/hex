@@ -1,0 +1,4 @@
+total=128 selected=128 iterations=8 ns_per_call=62110 allocs_per_call=142 requested_bytes_per_call=23360 frees_per_call=142
+total=1024 selected=1024 iterations=8 ns_per_call=731616 allocs_per_call=1122 requested_bytes_per_call=195064 frees_per_call=1122
+total=16384 selected=128 iterations=8 ns_per_call=6000024 allocs_per_call=142 requested_bytes_per_call=23360 frees_per_call=142
+total=16384 selected=16384 iterations=8 ns_per_call=12746955 allocs_per_call=17878 requested_bytes_per_call=3116184 frees_per_call=17878

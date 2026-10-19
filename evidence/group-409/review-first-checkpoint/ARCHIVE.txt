@@ -1,0 +1,5 @@
+Canonical22bc20a94cf9d22e4d25684dfc7613baab193ef4/treef3d5176fd1004a1de4ae63b7cbd24a718e03d365 unchanged.
+Test-only unpublished patchSHA701466045f0c4fa4dcb948204fb3ad0180c3988d8a44044521d1ece245edbf85
+Archive72758B/SHA262400b0cb6f640f596c40fc6d768a67897b62b26d5562d7175b2b5d29768ecb
+22payloads/selfexcluded manifest62c69e3c7a234681a2d6c908f71def314c2f79034656ca094a0f070e43e5aba5
+FIVE actual REDS, no product repair or green/fullCI/native claim. Evidence only: never build/merge this ref.
