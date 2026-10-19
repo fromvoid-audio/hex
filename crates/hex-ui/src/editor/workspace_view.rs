@@ -40,6 +40,7 @@ impl EditorView {
             || self.save_dialog_open
             || self.preset_dialog_open
             || self.track_resize_active()
+            || self.arrangement_pan.is_some()
             || self.clip_paint_gesture.is_some()
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
