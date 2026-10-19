@@ -4187,6 +4187,7 @@ mod explicit_focus;
 // Diagnostic only: copied verbatim onto both pinned production baselines.
 fn review_row_navigation_fixture(
     cx: &mut TestAppContext,
+    sample: bool,
 ) -> (
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
@@ -4196,8 +4197,11 @@ fn review_row_navigation_fixture(
     cx.update(super::super::bind_editor_keys);
     let directory = PreferencesTestDirectory::new();
     let samples = directory.0.join("samples");
-    std::fs::create_dir_all(samples.join("a")).unwrap();
-    std::fs::write(samples.join("a/child.hex"), []).unwrap();
+    std::fs::create_dir_all(&samples).unwrap();
+    if !sample {
+        std::fs::create_dir(samples.join("a")).unwrap();
+        std::fs::write(samples.join("a/child.hex"), []).unwrap();
+    }
     std::fs::write(samples.join("loop.wav"), mono_pcm_wav(24)).unwrap();
     let handle = *cx.add_window(|_, _| Empty);
     let editor = cx
@@ -4227,11 +4231,11 @@ fn review_unhighlighted_row_action(
     escape: bool,
     left: bool,
 ) {
-    let (handle, editor, _directory, samples) = review_row_navigation_fixture(cx);
+    let (handle, editor, _directory, samples) = review_row_navigation_fixture(cx, sample);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let category = if sample {
-        "browser-section-samples"
+        "browser-place-0"
     } else {
         "browser-section-projects"
     };
@@ -4311,11 +4315,11 @@ fn review_unhighlighted_row_escape_folder_left(cx: &mut TestAppContext) {
 #[gpui::test]
 fn review_unhighlighted_row_selected_controls(cx: &mut TestAppContext) {
     for sample in [false, true] {
-        let (handle, editor, _directory, samples) = review_row_navigation_fixture(cx);
+        let (handle, editor, _directory, samples) = review_row_navigation_fixture(cx, sample);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let category = if sample {
-            "browser-section-samples"
+            "browser-place-0"
         } else {
             "browser-section-projects"
         };
