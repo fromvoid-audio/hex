@@ -117,3 +117,28 @@ Undo/Redo, pending preview and disposable current-format save/open. Generic A/B
 payload ownership is retained; actual combined A/B acceptance awaits its generic
 integration. Native appearance, listening and Live comparison remain open under
 the coordinator's single Mac lane; this does not complete Auto Pan or W12.
+
+## retained static preview and combined a/b acceptance
+
+The compact panel retains its provider-sampled preview in the existing device
+panel state. Its key is the stable device ID, project generation, active A/B
+variant, full canonical provider state and all four effective pending parameters.
+Unchanged redraws reuse the curve without cloning/patching provider state or
+resampling the 129 points per channel. Equal invalid float drafts compare by bits,
+so an error result can be retained without displaying an older successful curve.
+The existing project/owner transitions clear previews; removal or type replacement
+retires entries. Pending-value retirement reveals the canonical curve immediately.
+This is a private panel cache, not a second device model or an audio callback path.
+
+A rendered regression measured eight provider evaluations for eight unchanged
+notified redraws before caching and zero afterward. These are actual helper-call
+counts in headless GPUI, not native frame-budget or listening measurements. Both
+Track and Return tests now use the merged generic A/B UI and Service APIs with
+shape ID4: triangle in A, square in B, both directional copies without switching
+the active bank, exact one-edit Undo/Redo, and current-format project/preset
+save/open preserving distinct banks and global host trims. Reopening through the
+same controller retires the old generation and renders the correct bank. Private
+cache-boundary tests cover each effective parameter, pending retirement, errors,
+type replacement and removal; actual UI cases cover canonical worker completion.
+The original Sine PCM/phase/5ms transition and runtime-allocation evidence remains
+separate. Native appearance, input, listening and full Auto Pan parity remain open.

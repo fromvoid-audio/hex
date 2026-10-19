@@ -26,21 +26,39 @@ pub(super) fn take_preview_evaluations() -> usize {
     PREVIEW_EVALUATIONS.with(|count| count.replace(0))
 }
 
+pub(super) struct PreviewCache {
+    generation: u64,
+    variant: hex_project::DeviceVariant,
+    state: hex_lattice_contract::NativeDeviceState,
+    values: [hex_lattice_contract::ParameterValue; 4],
+    curve: Result<AutoPanWaveformPreview, String>,
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn cached_preview(
+    view: &EditorView,
+    device: DeviceId,
+) -> Option<&Result<AutoPanWaveformPreview, String>> {
+    Some(&view.device_panel.auto_pan_previews.get(&device)?.curve)
+}
+
 pub(super) fn preview(
     view: &mut EditorView,
     device: DeviceId,
     device_view: &NativeDeviceView,
 ) -> Result<AutoPanWaveformPreview, String> {
-    let mut state = view
-        .state
-        .as_ref()
-        .and_then(|s| s.project.device(device))
-        .ok_or("missing auto pan")?
-        .state()
-        .clone();
-    for parameter in &device_view.parameters {
-        let id = parameter.descriptor.id;
-        let value = effective_parameter_value(
+    use hex_lattice_contract::ParameterValue;
+    let mut values = [ParameterValue::Float(0.0); 4];
+    let mut canonical_values = values;
+    for (index, value) in values.iter_mut().enumerate() {
+        let id = ParameterId::from_static(index as u32 + 1);
+        let parameter = device_view
+            .parameters
+            .iter()
+            .find(|p| p.descriptor.id == id)
+            .ok_or("missing auto pan parameter")?;
+        canonical_values[index] = parameter.value;
+        *value = effective_parameter_value(
             view,
             ParameterKey {
                 device,
@@ -48,19 +66,57 @@ pub(super) fn preview(
             },
             parameter.value,
         );
-        if value != parameter.value {
-            state = hex_engine::patch_native_device_parameter_for_class(
-                NativeDeviceClass::Effect,
-                &state,
-                id,
-                value,
-            )
-            .map_err(|e| e.to_string())?;
-        }
     }
-    #[cfg(all(test, feature = "ui-test-support"))]
-    PREVIEW_EVALUATIONS.with(|count| count.set(count.get() + 1));
-    hex_engine::native_auto_pan_waveform_preview(&state).map_err(|e| e.to_string())
+    let Some(entry) = view.state.as_ref().and_then(|s| s.project.device(device)) else {
+        view.device_panel.auto_pan_previews.remove(&device);
+        return Err("missing auto pan".to_owned());
+    };
+    let state = entry.state();
+    let variant = entry.active_variant();
+    let same_value = |a: ParameterValue, b: ParameterValue| match (a, b) {
+        (ParameterValue::Float(a), ParameterValue::Float(b)) => a.to_bits() == b.to_bits(),
+        _ => a == b,
+    };
+    if let Some(cached) = view.device_panel.auto_pan_previews.get(&device)
+        && cached.generation == view.project_generation
+        && cached.variant == variant
+        && cached.state == *state
+        && cached
+            .values
+            .into_iter()
+            .zip(values)
+            .all(|(a, b)| same_value(a, b))
+    {
+        return cached.curve.clone();
+    }
+    let curve = (|| {
+        let mut draft = state.clone();
+        for (index, value) in values.into_iter().enumerate() {
+            if !same_value(value, canonical_values[index]) {
+                draft = hex_engine::patch_native_device_parameter_for_class(
+                    NativeDeviceClass::Effect,
+                    &draft,
+                    ParameterId::from_static(index as u32 + 1),
+                    value,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        #[cfg(all(test, feature = "ui-test-support"))]
+        PREVIEW_EVALUATIONS.with(|count| count.set(count.get() + 1));
+        hex_engine::native_auto_pan_waveform_preview(&draft).map_err(|e| e.to_string())
+    })();
+    view.device_panel.auto_pan_previews.insert(
+        device,
+        PreviewCache {
+            generation: view.project_generation,
+            variant,
+            state: state.clone(),
+            values,
+            curve: curve.clone(),
+        },
+    );
+    curve
 }
 
 pub(super) fn render_body(
