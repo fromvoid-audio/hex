@@ -1,0 +1,94 @@
+{
+  "head": "3892bd9215c24e0767656b3acf3199e50ff10f4a",
+  "tree": "6d711917ab2e2422d3bcae675b72cb2d143e6ca7",
+  "parent": "dd997584b7407eb1cf50fb00420c36644587e53c",
+  "branch": "pulse/task-2789-g1-ffdf4fa9c769",
+  "files": [
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "bytes": 21598,
+      "sha256": "3d95ebfbb1f08e6a9965ac2d04e5cb74cd5809cd5b95b5f5c1aaaa4a721cfe29"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs",
+      "bytes": 6995,
+      "sha256": "5dc68c44e4359b98069f69ab6922099f4a297d2a6c3a3040b4f69efd23b2a541"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
+      "bytes": 28889,
+      "sha256": "68f022dfa87445a13b4891e9760aacf9fec200b4b4b06549d2fe9664be8c6156"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs",
+      "bytes": 22536,
+      "sha256": "1f7818814bdcebcce093c7a9fc7023b16c61362fe87e1515578d6f03fff56414"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs",
+      "bytes": 24243,
+      "sha256": "a5ef3e3ed598875bec88f633f5c22f9e77407e0b614770dac0c8adbbefe74573"
+    },
+    {
+      "path": "crates/hex-engine/src/midi_compile.rs",
+      "bytes": 26571,
+      "sha256": "7296ce26cb47725974be0ac3f609e6615d2083e5347dcc7b79ab0e79269125ac"
+    },
+    {
+      "path": "crates/hex-engine/src/midi_preview/persistent.rs",
+      "bytes": 15665,
+      "sha256": "bf80679bb874c46135de900ccd8db545add30fa2c28cc1fb111b6980aea7b884"
+    },
+    {
+      "path": "crates/hex-engine/src/midi_preview/persistent/compiler.rs",
+      "bytes": 4050,
+      "sha256": "3436ad81a21d3e04bb047d81ccfbd7af4cc0ab04730b4d3be839bc223d2fa079"
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision.rs",
+      "bytes": 37113,
+      "sha256": "af720059e546601eae2e6764711bbef470927661e3ea4a5f15e001e19b5b2ce6"
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/assembly.rs",
+      "bytes": 29216,
+      "sha256": "c5b1407b5215fc5e7f979e979a79d1a51f9414f79c1b27a216b8e238fcde138f"
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/assembly/compiler.rs",
+      "bytes": 3019,
+      "sha256": "0c980e3d570c1490deb192bda238b03fa8aa372c5da7b63048e1b1e564f852fd"
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/audio_assembly.rs",
+      "bytes": 42323,
+      "sha256": "7b5ebb64a060383049af42c6aea8ef2ea1c153d48dc12c96dff60cd6ea1e31a6"
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/audio_assembly/compiler.rs",
+      "bytes": 4253,
+      "sha256": "f5a488846783ab0bfa75021bd71065bae62de0c930732ef2faa676fcbc885f15"
+    },
+    {
+      "path": "crates/hex-engine/src/session_shared_preparation.rs",
+      "bytes": 19536,
+      "sha256": "92ecc77a520acddf12f2bd8381a3e64a0300dec34458c009b74b6d3860718a8f"
+    },
+    {
+      "path": "crates/hex-engine/src/session_shared_preparation/compiler.rs",
+      "bytes": 2737,
+      "sha256": "d9dee1c16b44b1759bb0118cb34ff1953de9c1ff8f9f1444fb947dd9d59edb68"
+    },
+    {
+      "path": "crates/hex-engine/src/session_structure_preparation.rs",
+      "bytes": 23710,
+      "sha256": "2d810ce4bbbf4853c4db9686616c6ca8cac16b980ddccd695ccc21e36f329e09"
+    },
+    {
+      "path": "docs/sampler.md",
+      "bytes": 108163,
+      "sha256": "fb08e2a5b076e9261f11a2bcd6a666e19f99162a5c76f0dff2cc95ef99144593"
+    }
+  ],
+  "dirty": ""
+}
