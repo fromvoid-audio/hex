@@ -382,3 +382,55 @@ fn project_spectrum_compact_live_header_restores_height_and_keeps_device_details
     );
     editor.read_with(cx, |view, _| assert!(view.project_spectrum.expanded));
 }
+
+#[gpui::test]
+fn workspace_three_returns_spectrum_resize_preserves_capture(cx: &mut TestAppContext) {
+    for cancel in [false, true] {
+        let cx = &mut cx.new_app();
+        cx.update(crate::editor::bind_editor_keys);
+        let (project, _, _, _) = audio_project();
+        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1280.0), px(800.0)));
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let grip = visual
+            .debug_bounds("project-spectrum-resize")
+            .unwrap()
+            .center();
+        let original = editor.read_with(&visual, |v, _| v.project_spectrum.height);
+        let end = grip + point(px(0.0), px(12.0));
+        visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        let (before, height) = editor.read_with(&visual, |v, _| {
+            assert!(v.project_spectrum.resize.is_some());
+            assert_ne!(v.project_spectrum.height, original);
+            (v.state.as_ref().unwrap().clone(), v.project_spectrum.height)
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, crate::editor::EditorMode::Arrangement);
+            assert!(v.project_spectrum.resize.is_some());
+            assert_eq!(v.project_spectrum.height, height);
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+        if cancel {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |v, _| {
+            assert!(v.project_spectrum.resize.is_none());
+            assert_eq!(
+                v.project_spectrum.height,
+                if cancel { original } else { height }
+            );
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, crate::editor::EditorMode::Session)
+        });
+    }
+}

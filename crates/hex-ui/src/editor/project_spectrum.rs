@@ -18,6 +18,12 @@ pub(super) struct ProjectSpectrumState {
     output_identity: Option<u64>,
     plot_cache: Option<PlotCache>,
 }
+impl ProjectSpectrumState {
+    pub(super) fn resize_is_active(&self) -> bool {
+        self.resize.is_some()
+    }
+}
+
 impl Default for ProjectSpectrumState {
     fn default() -> Self {
         Self {

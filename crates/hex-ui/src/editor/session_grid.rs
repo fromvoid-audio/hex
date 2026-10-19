@@ -631,7 +631,7 @@ impl EditorView {
             ))
             .child(self.session_icon(
                 "↩",
-                "back to arrangement",
+                "back to arrange view",
                 "session-back-arrangement",
                 cx.listener(move |view, _, _, cx| {
                     if let Some(revision) = revision
@@ -841,7 +841,7 @@ impl EditorView {
             row = row
                 .child(self.session_icon(
                     "⇥",
-                    "copy audio source from arrangement · one-shot source only",
+                    "copy audio source from arrange view · one-shot source only",
                     "session-copy-audio-source",
                     cx.listener(move |view, _, _, cx| {
                         if revision.is_some_and(|revision| {
@@ -854,7 +854,7 @@ impl EditorView {
                 ))
                 .child(self.session_icon(
                     "♪",
-                    "copy selected arrangement midi clip",
+                    "copy selected arrange view midi clip",
                     "session-copy-midi",
                     cx.listener(move |view, _, _, cx| {
                         if revision.is_some_and(|revision| {
@@ -1614,7 +1614,9 @@ impl EditorView {
         if self.mode != mode {
             self.cancel_arrangement_pan();
             self.cancel_active_browser_audio_drag();
-            self.cancel_time_selection_gesture();
+            if self.time_selection_gesture.is_some() || self.time_range_move_gesture.is_some() {
+                self.cancel_time_selection_gesture();
+            }
             self.cancel_scene_duplicate_selection();
         }
         if mode == EditorMode::Session
