@@ -1053,3 +1053,78 @@ fn rms_quadrature_channels_have_independently_averaged_energy_and_choice_preserv
         assert!(e[0].max(e[1]) < 0.51, "not instantaneous stereo-max power");
     }
 }
+
+#[test]
+fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
+    let mut failures = Vec::new();
+    let mut cases = 0;
+    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
+        for impulse in [false, true] {
+            for path in 0..8 {
+                let initial_mode = u32::from(matches!(path, 1 | 3 | 5 | 6));
+                let mut state = mode(
+                    &COMPRESSOR_DEFINITION.default_state().unwrap(),
+                    initial_mode,
+                );
+                if path >= 6 {
+                    state = patch(&state, parameter::DRY_WET, 0.0);
+                }
+                let mut actual = runtime(&state, rate);
+                let mut prime = [[0.5, -0.25]; 257];
+                if impulse {
+                    prime[1..].fill([0.0; 2]);
+                }
+                actual.process_block(&mut prime, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                assert!(
+                    history(actual.as_ref())
+                        .energy
+                        .iter()
+                        .all(|energy| *energy > 0.0)
+                );
+                if matches!(path, 4 | 5) {
+                    let changed = mode(&state, 1 - initial_mode);
+                    let mut next = runtime(&changed, rate);
+                    next.copy_history_from(actual.as_ref());
+                    actual = next;
+                }
+                let mut silence = [[0.0; 2]; 257];
+                let mut remaining = rate as usize * 8;
+                while remaining > 0 {
+                    let count = remaining.min(silence.len());
+                    if matches!(path, 2 | 3) {
+                        actual.process_bypassed_block(
+                            &mut silence[..count],
+                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        );
+                    } else {
+                        actual.process_block(
+                            &mut silence[..count],
+                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        );
+                    }
+                    assert!(silence[..count].iter().all(|frame| *frame == [0.0; 2]));
+                    remaining -= count;
+                }
+                let energy = history(actual.as_ref()).energy;
+                actual.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                let later = history(actual.as_ref()).energy;
+                println!(
+                    "RMS_SILENCE rate={rate} impulse={impulse} path={path} energy={energy:?} subnormal={:?} persistent_nonzero={}",
+                    energy.map(f64::is_subnormal),
+                    energy == later && energy != [0.0; 2]
+                );
+                assert!(energy.iter().all(|value| value.is_finite()));
+                if energy != [0.0; 2] || later != [0.0; 2] {
+                    failures.push((rate, impulse, path, energy, later));
+                }
+                cases += 1;
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{}/{cases} real runtime paths retain nonzero energy after eight seconds of digital silence: {failures:?}",
+        failures.len()
+    );
+    println!("RMS_SILENCE_CASES {cases} finite exact-zero histories, no native timing claim");
+}
