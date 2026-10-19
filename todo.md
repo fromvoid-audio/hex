@@ -5359,3 +5359,16 @@ Original reds, invalid offscreen click and own test-compilation/freshness-fixtur
 failures are preserved, not relabeled. Owner patch is isolated from canonical2918
 until sole-merger composition/fresh full21/review; source passing is not native,
 worker-acknowledgement, audible full445, installed-app or user acceptance.
+
+### 2026-10-19 — PR436 active spectrum fill integration
+
+- Composed ownerfa67814c active-fill repair with qualified main35ea; shared EQ/global painter keeps the total257-input cap while budgeting alpha only across valid non-floor fills.
+- Verified all71 original and26 repair evidence payloads. Original actualpaint alpha RED and final68widget component results remain scope-bound; coordinator changednative2 positive is separate from repository qualification and physical pixels.
+- Resolved shared painter composition using existing406 axes::plot_bounds exactly once, preserving grids, node hits, analyzer lifecycle and current GPUI support. No extra7px inset or unqualified407 gesture import.
+- Exact prospective full21/fresh review are pending; no merge, framebuffer/listening, installation or user acceptance claim.
+
+### 2026-10-19 — PR456 coherent placement return integration
+
+- Composed ownera6061328 onto qualified mainbd54; only append-only todo conflict retained both histories. No unmerged447/399/407/419 import.
+- Verified all27 original and42 repair payloads plus exact six before/after owning hashes. Growth-tail overwrite, raw source-looping versus optional placement mode, and current32 return assertion retain original actual reds and separate targeted37+7 positives.
+- New exact prospective full21 and independent review remain pending; old2918 negative and component receipts are source-bound. No full445 playback/Engine, native physical, installation or user acceptance claim.
