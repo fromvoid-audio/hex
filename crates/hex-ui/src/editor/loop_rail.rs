@@ -242,7 +242,7 @@ impl EditorView {
         true
     }
 
-    fn cancel_loop_rail_gesture(&mut self) -> bool {
+    pub(super) fn cancel_loop_rail_gesture(&mut self) -> bool {
         self.loop_rail_gesture.take().is_some()
     }
 
@@ -358,6 +358,7 @@ pub(super) fn view(
                                     }
                                     if event.pressed_button != Some(MouseButton::Left) {
                                         let hover = move_entity.update(cx, |view, _| {
+                                            let cancelled = view.cancel_loop_rail_gesture();
                                             let hover = if move_bounds.contains(&event.position) {
                                                 match view.loop_rail_hover(
                                                     f32::from(event.position.x),
@@ -372,7 +373,7 @@ pub(super) fn view(
                                                 CursorStyle::Crosshair
                                             };
                                             if view.loop_rail_cursor == hover {
-                                                return false;
+                                                return cancelled;
                                             }
                                             view.loop_rail_cursor = hover;
                                             true

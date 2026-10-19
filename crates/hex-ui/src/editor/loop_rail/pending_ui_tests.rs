@@ -353,3 +353,115 @@ fn active_loop_retires_on_real_revision_or_document_replacement(cx: &mut TestApp
         });
     }
 }
+
+#[gpui::test]
+fn reverse_free_final_release_and_repeated_replacement_keep_exact_worker_geometry(
+    cx: &mut TestAppContext,
+) {
+    for enabled in [false, true] {
+        let (_environment, editor, mut visual) =
+            fixture(cx, LoopRegion::new(24_000, 48_000, enabled).unwrap());
+        for (anchor, movement, release, modifiers) in [
+            (0.7, 0.5, 0.4, Modifiers::default()),
+            (
+                0.2,
+                0.4,
+                0.613,
+                Modifiers {
+                    platform: true,
+                    ..Modifiers::default()
+                },
+            ),
+        ] {
+            let before =
+                editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+            let start = rail_point(&mut visual, anchor);
+            let moved = rail_point(&mut visual, movement);
+            let final_point = rail_point(&mut visual, release);
+            visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+            // No final MouseMove: the MouseUp resolver must use its real final x/modifier.
+            visual.simulate_mouse_up(final_point, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            let expected = editor.read_with(&visual, |v, _| v.pending_loop.unwrap().region);
+            let submitted_paint = painted_range(&mut visual);
+            let response = hold_real_response(&editor, &mut visual);
+            assert!(response.error.is_none(), "{:?}", response.error);
+            assert_eq!(response.state.project.loop_region(), Some(expected));
+            assert_eq!(
+                response
+                    .playback
+                    .as_ref()
+                    .unwrap()
+                    .prepared_revision()
+                    .unwrap()
+                    .arrangement()
+                    .loop_region(),
+                Some(expected)
+            );
+            install(&editor, &mut visual, response);
+            assert_eq!(painted_range(&mut visual), submitted_paint);
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+            });
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+            pump(&editor, &mut visual);
+            assert_eq!(painted_range(&mut visual), submitted_paint);
+            let saved = _environment
+                .root()
+                .join(format!("replacement-{}.hex", expected.start()));
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::SaveNew(saved.clone())))
+            });
+            pump(&editor, &mut visual);
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(saved))));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert!(v.error.is_none(), "{:?}", v.error);
+                assert_eq!(
+                    v.state.as_ref().unwrap().project.loop_region(),
+                    Some(expected)
+                );
+                assert!(v.pending_loop.is_none());
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn another_paint_while_deferred_keeps_the_original_pending_intent(cx: &mut TestAppContext) {
+    let (_environment, editor, mut visual) =
+        fixture(cx, LoopRegion::new(24_000, 48_000, true).unwrap());
+    let held = begin_paint(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        v.pending_requests
+            .push_back(Request::Edit(Command::MasterGain { gain: 0.75 }))
+    });
+    let end = rail_point(&mut visual, 0.5);
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    let start = rail_point(&mut visual, 0.7);
+    let other = rail_point(&mut visual, 0.8);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(other, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(other, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.loop_rail_gesture.is_none());
+        assert_eq!(v.pending_requests.len(), 2);
+    });
+    assert_eq!(painted_range(&mut visual), held);
+    editor.update(&mut visual, |v, cx| {
+        v.tick(cx);
+        cx.notify();
+    });
+    let before = hold_real_response(&editor, &mut visual);
+    let own = hold_real_response(&editor, &mut visual);
+    assert!(before.error.is_none() && own.error.is_none());
+    install(&editor, &mut visual, before);
+    editor.read_with(&visual, |v, _| assert!(v.pending_loop.is_some()));
+    assert_eq!(painted_range(&mut visual), held);
+    install(&editor, &mut visual, own);
+    editor.read_with(&visual, |v, _| assert!(v.pending_loop.is_none()));
+    assert_eq!(painted_range(&mut visual), held);
+}
