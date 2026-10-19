@@ -2887,6 +2887,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -6101,6 +6102,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -6564,6 +6566,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),

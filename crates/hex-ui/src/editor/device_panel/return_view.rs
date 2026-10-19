@@ -6,17 +6,11 @@ pub(super) fn render(
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
-    return_id: hex_project::ReturnId,
+    owner: EffectBusOwner,
 ) -> Stateful<Div> {
-    let Some(return_track) = state
-        .project
-        .return_tracks()
-        .iter()
-        .find(|track| track.id() == return_id)
-    else {
-        return empty_panel("return target is no longer available");
+    let Some(devices) = owner.devices(&state.project).map(<[_]>::to_vec) else {
+        return empty_panel("effect target is no longer available");
     };
-    let devices = return_track.devices().to_vec();
     let alive: HashSet<_> = devices.iter().map(hex_project::Device::id).collect();
     view.device_panel.selected_device = view
         .device_panel
@@ -115,7 +109,7 @@ pub(super) fn render(
         .retain(|device, _| alive_eq8.contains(device));
     if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.spectrum_desired()
-        && matches!(target.identity.owner, hex_engine::ProcessorChainOwner::Return(id) if id == return_id.value())
+        && target.identity.owner == owner.processor()
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
                 && device.state().type_id() == target.identity.device_type
@@ -130,7 +124,7 @@ pub(super) fn render(
     }
     if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.audition_desired()
-        && matches!(target.identity.owner, hex_engine::ProcessorChainOwner::Return(id) if id == return_id.value())
+        && target.identity.owner == owner.processor()
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
                 && device.state().type_id() == target.identity.device_type
@@ -199,7 +193,7 @@ pub(super) fn render(
         .device_panel
         .message
         .clone()
-        .unwrap_or_else(|| format!("{} · return effects", return_track.name()));
+        .unwrap_or_else(|| owner.title(&state.project).unwrap_or_default());
     let track_name_view = title_label(title, view.device_panel.message.is_some());
     let header = div()
         .id("device-panel-header")
@@ -214,11 +208,11 @@ pub(super) fn render(
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .child(track_name_view)
         .child(add_button);
-    let chain = super::return_drag::render_chain(view, window, cx, return_id, &devices);
+    let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);
     let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
-        root = root.child(render_return_add_menu(cx, return_id, catalog));
+        root = root.child(render_return_add_menu(cx, owner, catalog));
     }
     root
 }
@@ -227,7 +221,7 @@ pub(super) fn render_return_effect(
     view: &mut EditorView,
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
-    return_id: hex_project::ReturnId,
+    owner: EffectBusOwner,
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let id = device.id();
@@ -300,7 +294,7 @@ pub(super) fn render_return_effect(
                     view,
                     cx,
                     id,
-                    hex_engine::ProcessorChainOwner::Return(return_id.value()),
+                    owner.processor(),
                     device.state(),
                     device_view,
                     sample_rate,
@@ -310,7 +304,7 @@ pub(super) fn render_return_effect(
                     view,
                     cx,
                     id,
-                    hex_engine::ProcessorChainOwner::Return(return_id.value()),
+                    owner.processor(),
                     device.state(),
                     device_view,
                     view.state
@@ -409,7 +403,7 @@ pub(super) fn render_return_effect(
 
 fn render_return_add_menu(
     cx: &mut Context<EditorView>,
-    return_track: hex_project::ReturnId,
+    owner: EffectBusOwner,
     effects: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
 ) -> impl IntoElement {
     let mut menu = div()
@@ -430,7 +424,8 @@ fn render_return_add_menu(
                 let type_id = entry.type_id;
                 let label = format!("effect · {}", entry.name);
                 let id = format!(
-                    "add-return-effect-{}",
+                    "add-{}-effect-{}",
+                    owner.prefix(),
                     type_id.as_str().unwrap_or("unknown")
                 );
                 menu = menu.child(
@@ -451,11 +446,7 @@ fn render_return_add_menu(
                                 NativeDeviceClass::Effect,
                                 type_id,
                             ) {
-                                Ok(state) => Request::Edit(Command::InsertReturnDevice {
-                                    return_track,
-                                    before: None,
-                                    state,
-                                }),
+                                Ok(state) => Request::Edit(owner.insert(None, state)),
                                 Err(error) => {
                                     view.device_panel.message =
                                         Some(error.to_string().to_lowercase());

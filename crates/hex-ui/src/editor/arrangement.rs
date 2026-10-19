@@ -711,6 +711,9 @@ impl EditorView {
             .child(
                 div()
                     .id("main-track-header")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        super::device_panel::select_main(view, window, cx)
+                    }))
                     .relative()
                     .child(self.track_width_resize_handle(None, cx))
                     .debug_selector(|| "main-track-header".to_owned())

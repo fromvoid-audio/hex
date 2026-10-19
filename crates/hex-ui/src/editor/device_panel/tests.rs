@@ -5352,3 +5352,5 @@ fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestA
         }
     }
 }
+
+mod main_chain_ui_tests;
