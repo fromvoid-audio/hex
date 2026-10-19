@@ -25,6 +25,27 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_current_review_malformed_ci_report_is_explicit_refusal(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        evidence = {"schema_version": 2, "mode": "full", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False, "start_tree": tree, "end_tree": tree,
+                    "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for s in delivery.ci.FULL_STEPS]}
+        report = self.root / "malformed-ci.json"
+        cases = [None, [], {**evidence, "steps": None}, {**evidence, "steps": [None]},
+                 {**evidence, "steps": [7]}, {**evidence, "steps": "bad"},
+                 {**evidence, "steps": [{**evidence["steps"][0], "test_results": None}]},
+                 {**evidence, "start_tree": None, "end_tree": None}]
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            for value in cases:
+                report.write_text(json.dumps(value))
+                with self.subTest(value=value), self.assertRaises(delivery.DeliveryError):
+                    delivery.validate_ci(report, runner, tree["commit"])
+            report.write_text(json.dumps(evidence))
+            self.assertEqual(delivery.validate_ci(report, runner, tree["commit"]), evidence)
+
     def test_review_ci_gate_rejects_legacy_and_changed_guarded_inputs(self):
         runner = delivery.ci.LocalCiRunner(self.root)
         tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}

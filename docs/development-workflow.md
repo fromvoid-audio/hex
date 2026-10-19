@@ -116,3 +116,21 @@ checkout identity, expected owner hash and recovery refusal checks still apply.
 A metadata-only report contains no executed-runtime or dependency witness and is
 refused by the locked CI-qualified release receiver. Build-only launch remains
 explicitly `tests: not_run`; this does not turn prose checks into runtime tests.
+
+
+The completed freshness fence also includes already-future input mtimes. Changed
+content with an unchanged timestamp witness is never treated as a normal fresh
+edit. This keeps clock-skew/backdating cases conservative without cleaning
+unchanged builds or ordinary later edits. Semantic native inputs include the
+pinned cc target spellings (`VAR_target`, `VAR_normalized_target`, `HOST_VAR`,
+`TARGET_VAR`), compiler/archiver flags, `CRATE_CC_NO_DEFAULTS` and `CROSS_COMPILE`.
+The existing PCM gate's `SYSROOT`/`CLIPPY_ARGS` inputs are recorded too; their
+unsupported-layout refusals remain intact. Malformed report/step/count records
+raise a controlled delivery refusal before they can qualify a build.
+
+The actual UI build script observes the complete guarded source token. Real
+Cargo consumer controls verify retained-mtime out-of-crate font/changelog bytes
+are refreshed in development and optimized artifacts, including dirty-to-dirty
+changes, without an extra cleanup. These specific existing inputs therefore do
+not require duplicate invalidation. This is compiled-consumer evidence, not
+native font rendering or general attestation of arbitrary build-script inputs.

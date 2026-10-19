@@ -389,8 +389,21 @@ def activate(app: Path, stage: Path) -> None:
 
 def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False) -> dict:
     evidence = json.loads(report.read_text())
+    if not isinstance(evidence, dict):
+        raise DeliveryError("CI certificate must be an object")
     if type(evidence.get("schema_version")) is not int or evidence["schema_version"] != 2:
         raise DeliveryError("CI certificate requires schema 2 with executed test counts")
+    if (not isinstance(evidence.get("steps"), list)
+            or any(not isinstance(step, dict) for step in evidence["steps"])
+            or any(not isinstance(evidence.get(key), dict) for key in ("start_tree", "end_tree"))
+            or "target_cache" in evidence and not isinstance(evidence["target_cache"], dict)):
+        raise DeliveryError("CI certificate has malformed steps/source/input records")
+    for step in evidence["steps"]:
+        counts = step.get("test_results", {})
+        if (not isinstance(counts, dict) or any(not isinstance(counts.get(key, []), list)
+                or any(type(n) is not int or n < 0 for n in counts.get(key, []))
+                for key in ("rust_passed_by_binary", "python_executions", "python_skipped"))):
+            raise DeliveryError("CI certificate has malformed executed test counts")
     if not runner._capture_repository_state("start_tree"):
         raise DeliveryError("cannot identify current source")
     current = runner.summary["start_tree"]

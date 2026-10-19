@@ -28,6 +28,48 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_current_review_future_timestamp_content_change_is_unproven(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_text("fixture")
+            source = root / "lib.rs"
+            source.write_text("old")
+            import time
+            future = time.time_ns() + 3600 * 10**9
+            os.utime(source, ns=(future, future))
+            def git(*argv):
+                return subprocess.check_output(["git", *argv], cwd=root).decode().strip()
+            git("init", "-q");git("config", "user.name", "timestamp fixture");git("config", "user.email", "fixture@invalid")
+            git("add", ".");git("commit", "-qm", "old")
+            metadata = {"workspace_members": ["fixture"], "packages": [
+                {"id": "fixture", "manifest_path": str(root / "Cargo.toml")}]}
+            before = inputs.workspace_snapshot(root, os.environ, metadata)
+            before.update(checked=True, commit=git("rev-parse", "HEAD"), dirty=False)
+            source.write_text("new")
+            os.utime(source, ns=(future, future))
+            git("add", ".");git("commit", "-qm", "new content same future mtime")
+            after = inputs.workspace_snapshot(root, os.environ, metadata)
+            self.assertNotEqual(before["packages"][0]["sha256"], after["packages"][0]["sha256"])
+            self.assertEqual(before["packages"][0]["timestamps"], after["packages"][0]["timestamps"])
+            self.assertEqual(inputs.stale_workspace_packages(root, os.environ, before, after), ["fixture"])
+
+    def test_current_review_native_build_environment_variants_are_semantic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = {"workspace_members": [], "packages": [], "target_directory": str(root / "target")}
+            env = {"CARGO_HOME": str(root / "home")}
+            families = ("CC", "CXX", "AR", "RANLIB", "NVCC", "CFLAGS", "CPPFLAGS", "CXXFLAGS", "ARFLAGS", "RANLIBFLAGS", "LDFLAGS", "CXXSTDLIB", "CXXSTDLIB_STATIC")
+            names = [key for name in families for key in (name, "HOST_" + name, "TARGET_" + name,
+                name + "_aarch64-apple-darwin", name + "_aarch64_apple_darwin")]
+            names += ["CRATE_CC_NO_DEFAULTS", "CROSS_COMPILE", "CC_SHELL_ESCAPED_FLAGS", "CC_KNOWN_WRAPPER_CUSTOM",
+                      "SYSROOT", "CLIPPY_ARGS"]
+            for name in names:
+                with self.subTest(name=name):
+                    self.assertNotEqual(inputs.fingerprint(root, {**env, name: "FIRST"}, metadata, {}),
+                                        inputs.fingerprint(root, {**env, name: "SECOND"}, metadata, {}))
+            self.assertEqual(inputs.fingerprint(root, {**env, "CARGO_TARGET_DIR": "first"}, metadata, {}),
+                             inputs.fingerprint(root, {**env, "CARGO_TARGET_DIR": "second"}, metadata, {}))
+
     def test_nested_single_component_member_owns_its_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
