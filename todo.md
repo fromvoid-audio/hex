@@ -1,3 +1,41 @@
+## group batch capacity, copied selection and victim accent — pulse2803 / PR409
+
+The accepted review repair plans the complete final Arrangement state before
+installation, with Session-inclusive clip/note counts, separate occurrence bounds
+and all fragment IDs before copied IDs. One existing candidate/preparation/history
+commit owns the result. Additive Created::Clips reports actual copied endpoints;
+request-ordered scalar intent selects real committed clips only after canonical
+installation and never steals newer selection. Passive row-local victim accents
+follow all ghosts, exclude selected originals in both modes and use one bounded
+scalar sweep. Targeted canonical/rendered/strict evidence is recorded in Pulse2803;
+original three review REDs and intermediate compile failures remain preserved.
+No final prospective full CI, native deadline/listening or installed acceptance
+is implied. See docs/group-clip-drag.md. Sole merger owns final integration.
+
+## selected group drag review return — pulse2803 / PR409, 19 october2026
+
+Original22bc source implemented whole-selection Audio/MIDI drag with one prepared
+edit/Undo and received12 focused Mac positives; those receipts did not cover the
+later copy-overlap or stale-preview findings. New canonical tests reproduced
+selected-original loss for Audio/MIDI/mixed copies. Actual GPUI pointer tests
+reproduced stale row previews outside lanes and after vertical autoscroll.
+The bounded repair protects selected IDs in existing overwrite bodies without
+removing originals, and retires all invalid group previews before repaint.
+Single-clip conversion, capacity/refusal, subframe and history laws stay intact.
+Source checks and immutable raw failure/green receipts are recorded in Pulse2803;
+Undo comparisons explicitly retain canonical allocator high-water. No new native
+run, final combined-tree full CI, physical acceptance or merge is implied here.
+The accepted bounded capture now retains a Weak immutable Project witness and
+checked original indices with reusable selected metadata. Updates preserve the
+canonical placement law without per-event metadata/backing allocations; rendering
+uses indexed originals and context retirement clears the shared payload owner.
+Equal-counter replacement and selection changes refuse stale capture. Canonical
+release still revalidates IDs/position in the original prepared transaction.
+Exact capture/UI/strict checks, debug allocation and separate redraw measurements
+are retained in Pulse2803; no optimized/native deadline or final merge claim.
+See docs/group-clip-drag.md. Sole merger owns final integration/qualification;
+root owns serial native/delivery and user-present group/waveform/capture testing.
+
 ## project File actions after focus loss — pulse2815 / PR421
 
 Actual rendered dispatch reproduced New/Open being lost without editor focus,
@@ -5511,3 +5549,22 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Cohort needs one exact shared source candidate: workspace names expose the known compact-toolbar width failure, so no unchanged419-only full21 retry. Publish the same coherent candidate to both canonical PRs and independently read back their review/merge outcomes; checks bind the exact candidate, never a different head.
 - Mode conflict preserves current Browser cancellation and conditional active time-gesture cancellation; completed time selections survive as owner contract requires. Current comparison/Open/constructor/Console/deferred-release/Warp/launcher/changelog source retained. Group409 diagnostic/semantic repair and draftSampler395 are not imported.
 - Focused affected compile then fresh exact full21/review required, no native physical keyboard/IME/toolbar pixels/delivery acceptance claim.
+
+### 2026-10-19 — PR409 complete group-copy return integration
+
+- Composed preserved72beb/fd80/6fc fixture-custody and full2e5 diagnostic/production return with qualifiedConsole420mainf920. All86 owner payloads/archive87members and all14 production/diagnostic/after hashes verified; canonical ancestry retained.
+- One Stop-handler conflict combines owning clip-capture retirement with current Browser cancellation, preserving Console receiver-before-deferred-cleanup and current Trim/FIFO/Open/comparison/native-window lifecycle. No production planner/intent/painter rewrite by merger and no unready395/456 import.
+- Source focused328 cases include3 expected privacy compile-fail docs, not328 runtime. New affected compile then actual exact full21/fresh review required; prior6fc native9 is historical only, no physical drag/audio/optimized deadline/installed claim.
+
+### 2026-10-19 — PR409 atomic Console receiver return
+
+- Preserved canonical144d metadata correction and actuald411 group-to-Console partial-copy failure, then integrated complete owner416cc history. All43 corrected-v2 evidence payloads and both source files verified; owner immediateparent0daba is distinct from patch-based411.
+- Existing single-clip Console receiver now refuses multi-selected Arrangement payloads before any subset command is queued, with existing exact capture retirement and clear error. Original Audio diagnostic stays unchanged; mixed MIDI, scene insertion, stale revision and single-clip positives preserve canonical selection/history/highwater assertions. No multi-cell mapping or model/Service policy expansion.
+- Owner68 distinct component positives remain bound to their actual source revisions, not relabelled final-head/fullCI. Current qualifiedConsolemainf920 is already an ancestor; new exact affected compile, requiredfull21 and freshreview remain necessary. No unchanged oldfull run, new native/app job, physical drag, callback deadline or installed acceptance claim.
+
+### 2026-10-19 — PR419/458 held-pan repair and loading disproof qualification
+
+- Preserved the shared09b canonical histories and its passing-but-review-blocked receipt, composed exact419ccd813 held-pan refusal with458121f loading-state disproof coverage, then ordinary-merged qualifiedGroup409maina2d47. Both canonical419 and458 must retain authenticated actual merge readbacks; shared code inclusion alone does not mark either ticket Ready.
+- The only new runtime refusal is existing arrangement_pan ownership in workspace Tab. The loading hypothesis was disproved by actual constructor None then actual Service Init measurements: absent tempo input pays for loading status; the supplement adds only layout-neutral debug selectors and regression tests, with no invented sizing/focus/content fix.
+- Current group-copy/capture/Console atomic receiver and private shared-Environment custody remain intact; module-declaration and appended-tracking conflicts keep both sides. All32 held-pan and28 loading payloads verified; original pan RED, Escape fixture correction and earlier status0/46px negatives retained source-bound.
+- New guarded affected compile and exact joint full21/fresh per-PR reviews required before actual separate merge/readiness proof. Prior09b full21 does not qualify new source; no physical keyboard/IME/font/pixels/native/app/delivery acceptance claim. Earlier09b tracking describes its historical pre409 composition; current qualified409 is included here.
