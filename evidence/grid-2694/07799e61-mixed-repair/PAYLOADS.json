@@ -1,0 +1,132 @@
+[
+  {
+    "path": "HANDOFF.md",
+    "bytes": 3237,
+    "sha256": "ea5a3a63c7bd10d7bc6dc423ef09edd6ec1b2984cf127b579178475194b7a0b0"
+  },
+  {
+    "path": "NATIVE-REQUEST.md",
+    "bytes": 899,
+    "sha256": "6fd4f74ef098bdbad99bd1426378ebd5d434b1b95af964355dcfe3b4b730f453"
+  },
+  {
+    "path": "after-mixed-initial.log",
+    "bytes": 1049,
+    "sha256": "2366ca267c48c102802c1d8493536d3934a43ace85102ec6314d86482278b52e"
+  },
+  {
+    "path": "after-mixed-snap-once.log",
+    "bytes": 4116,
+    "sha256": "80b27b1732759a8bb57e25ff92e08605f860c0b65ee3223b2aa5ff29d3c55d32"
+  },
+  {
+    "path": "architecture.log",
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  {
+    "path": "before-mixed-matrix-red.log",
+    "bytes": 2682,
+    "sha256": "4e3b863ce5a9b610212df49fbda2fbc64d86570622f5d98fa720aecefcc8cbd6"
+  },
+  {
+    "path": "before-mixed-red.log",
+    "bytes": 1758,
+    "sha256": "7cc7d02afc1dbbf76217898009c48b7ca31da3dfbbcdef70f41c243f7f5e145c"
+  },
+  {
+    "path": "before-source.json",
+    "bytes": 246,
+    "sha256": "01aa91497fee9670d1bd13a78916b205867990c9e5347fe3c634a50549d84632"
+  },
+  {
+    "path": "candidate-checks.json",
+    "bytes": 3706,
+    "sha256": "0e91d6327e117fa3d7a8ea79db69d584cabaf1cc7e555c52448a730580950aea"
+  },
+  {
+    "path": "debug-work.json",
+    "bytes": 2094,
+    "sha256": "c44f57c6d0f2ee398006d5b84723798e99838624e141a6d6df1a991fd0647a21"
+  },
+  {
+    "path": "dependency-patches.log",
+    "bytes": 113,
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+  },
+  {
+    "path": "device-layout.log",
+    "bytes": 84,
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+  },
+  {
+    "path": "format.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "gpui-patch.log",
+    "bytes": 149,
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+  },
+  {
+    "path": "menu.log",
+    "bytes": 1491,
+    "sha256": "4c092f9b23ec839971543e8329a98d4d494deadba0d2534ccdf2905403785473"
+  },
+  {
+    "path": "mixed-matrix-tests-only.patch",
+    "bytes": 2895,
+    "sha256": "e9da0a5b7804f786b5eb0d914357124aa50d944418a988b39ae7c608298b449b"
+  },
+  {
+    "path": "repair.patch",
+    "bytes": 15945,
+    "sha256": "b252bbe55b32e4e9e01315d8debd037d70a9993610c9bf73a67dfc156f912e2e"
+  },
+  {
+    "path": "repro-tests-only.patch",
+    "bytes": 2579,
+    "sha256": "f3c5fd583fa2dc020dda983cd52c12a4216e1c72db8bf80ac6678f7a2d1e4fc5"
+  },
+  {
+    "path": "resolver.log",
+    "bytes": 8419,
+    "sha256": "488a850248da5dd8b683d09b2427e47fb32221a134454925e54a80cf93d2af96"
+  },
+  {
+    "path": "source/crates/hex-ui/src/editor/adaptive_grid_density_tests.rs",
+    "bytes": 23163,
+    "sha256": "5e20d535a83a10138187f3d5ff6d9f6084239d065d2de4d5419c667bf09f90c1"
+  },
+  {
+    "path": "source/crates/hex-ui/src/editor/musical_time.rs",
+    "bytes": 66778,
+    "sha256": "7a759333611ec7f2a26714bee3c202790458309638af279f87719afd7fd1a57e"
+  },
+  {
+    "path": "source/docs/adaptive-grid-menu.md",
+    "bytes": 10653,
+    "sha256": "3dc6cf5faaa2aa95fba8c5407333f443d1532d238d5af43b2d54841f577ef120"
+  },
+  {
+    "path": "source-ledger.json",
+    "bytes": 882,
+    "sha256": "b20398ae5e515cc996f9d667b18cebac7a4b655df2b58fda372203528256ebf5"
+  },
+  {
+    "path": "strict-ui.log",
+    "bytes": 820,
+    "sha256": "295d88a7ffb2ef328e65e37ca2897aec173b7b277ada86f4aabbfd70a6e257aa"
+  },
+  {
+    "path": "ui-style.log",
+    "bytes": 82,
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+  },
+  {
+    "path": "verify-candidate.py",
+    "bytes": 1812,
+    "sha256": "b80c4739df1668576563d7adf6d091aefbd9509a0f90f4ead78a36fc707ba977"
+  }
+]
