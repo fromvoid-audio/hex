@@ -720,3 +720,69 @@ fn workspace_three_returns_delayed_click_preserves_other_pointer_identity(cx: &m
         });
     }
 }
+
+#[gpui::test]
+fn workspace_four_returns_completed_range_survives_console_controller_ticks(
+    cx: &mut TestAppContext,
+) {
+    let (_files, handle, editor) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.read(cx).focus.focus(window);
+    });
+    visual.run_until_parked();
+    let track = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
+    let selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let lane = visual.debug_bounds(selector).unwrap();
+    let start = lane.origin + gpui::point(lane.size.width * 0.25, gpui::px(22.0));
+    let end = lane.origin + gpui::point(lane.size.width * 0.5, gpui::px(22.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| assert!(v.time_selection_gesture.is_some()));
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| {
+        assert!(v.time_selection_gesture.is_none());
+        let selection = v.time_selection.unwrap();
+        assert_ne!(selection.anchor_frame, selection.end_frame);
+        assert_eq!(v.edit_cursor.unwrap().generation, v.project_generation);
+        (
+            selection,
+            v.selected_clip_ids(),
+            v.state.as_ref().unwrap().clone(),
+            v.project_generation,
+        )
+    });
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+    for _ in 0..3 {
+        visual.executor().advance_clock(Duration::from_millis(16));
+        visual.run_until_parked();
+        // Execute the real periodic controller body even on test constructors
+        // that intentionally omit the production detached timer.
+        editor.update(&mut visual, |v, cx| {
+            if v.tick(cx) {
+                cx.notify();
+            }
+        });
+    }
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.time_selection,
+            Some(before.0),
+            "completed range after real Console tick"
+        );
+        assert_eq!(v.selected_clip_ids(), before.1);
+        assert_eq!(v.project_generation, before.3);
+        assert_eq!(v.state.as_ref().unwrap().project, before.2.project);
+        assert_eq!(v.state.as_ref().unwrap().revision, before.2.revision);
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+    });
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, EditorMode::Arrangement);
+        assert_eq!(v.time_selection, Some(before.0));
+    });
+}

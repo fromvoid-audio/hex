@@ -451,3 +451,71 @@ fn workspace_three_returns_device_navigation_preserves_capture(cx: &mut TestAppC
         });
     }
 }
+
+#[gpui::test]
+fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.update(cx, |v, cx| {
+            v.mode = crate::editor::EditorMode::Arrangement;
+            v.focus.focus(window);
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    let add = visual.debug_bounds("device-add-toggle").unwrap().center();
+    visual.simulate_click(add, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_some());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Arrangement);
+        assert!(v.device_panel.add_menu_open);
+    });
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    let toggle = visual
+        .debug_bounds("device-panel-bottom-toggle")
+        .unwrap()
+        .center();
+    visual.simulate_click(toggle, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
+    editor.read_with(&visual, |v, _| assert!(!v.clip_view_open));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| assert!(v.focus.is_focused(window))));
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.mode,
+            crate::editor::EditorMode::Session,
+            "hidden menu must not own Tab"
+        );
+        assert_eq!(v.state.as_ref().unwrap().project, before.project);
+        assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+    });
+    // Reopening makes the retained menu visible and its local refusal applies again.
+    let toggle = visual
+        .debug_bounds("device-panel-bottom-toggle")
+        .unwrap()
+        .center();
+    visual.simulate_click(toggle, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_some());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Session)
+    });
+    let add = visual.debug_bounds("device-add-toggle").unwrap().center();
+    visual.simulate_click(add, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
+    });
+}
