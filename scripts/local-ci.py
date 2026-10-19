@@ -348,7 +348,7 @@ class LocalCiRunner:
                     digest.update(b"symlink\0")
                     digest.update(os.fsencode(os.readlink(path)))
                 elif path.is_file():
-                    digest.update(b"symlink\0" if stat.S_ISLNK(before.st_mode) else b"file\0")
+                    digest.update(b"file\0")
                     with path.open("rb") as source:
                         while chunk := source.read(1024 * 1024):
                             digest.update(chunk)
@@ -619,7 +619,7 @@ class LocalCiRunner:
                 before = path.lstat()
                 if not stat.S_ISREG(before.st_mode) and not stat.S_ISLNK(before.st_mode):
                     raise TargetCacheError(f"local dependency input is not a regular file: {path}")
-                digest.update(b"file\0")
+                digest.update(b"symlink\0" if stat.S_ISLNK(before.st_mode) else b"file\0")
                 digest.update(len(relative).to_bytes(8, "big"))
                 digest.update(relative)
                 digest.update(str(before.st_mode & 0o111).encode("ascii") + b"\0")
