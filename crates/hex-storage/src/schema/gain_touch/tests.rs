@@ -165,6 +165,17 @@ fn decoder_limits_count_endpoints_and_base_points_together() {
 #[test]
 fn empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refuse_loss() {
     let project = fixture();
+    // This case intentionally authors old-writer-compatible input; ordinary
+    // new-track fixtures keep their automatically assigned non-gray colors.
+    let track = project.tracks()[0].id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    editor
+        .execute(Command::SetTrackColor {
+            track,
+            color: hex_project::ElementColor::Gray,
+        })
+        .unwrap();
+    let project = editor.project().clone();
     for bytes in [
         crate::encode(&project).unwrap(),
         crate::encode_schema22(&project).unwrap(),
