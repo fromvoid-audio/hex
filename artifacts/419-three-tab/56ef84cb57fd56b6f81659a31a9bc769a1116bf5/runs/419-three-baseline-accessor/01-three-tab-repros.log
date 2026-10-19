@@ -1,0 +1,44 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.46s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 4 tests
+
+thread 'editor::workspace_view_ui_test::workspace_three_returns_held_left_before_drag_preserves_capture' (188182) panicked at crates/hex-ui/src/editor/workspace_view_ui_test.rs:627:13:
+assertion `left == right` failed: pre-drag trim=false
+  left: Session
+ right: Arrangement
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::workspace_view_ui_test::workspace_three_returns_held_left_before_drag_preserves_capture ... FAILED
+
+thread 'editor::project_spectrum::tests::workspace_three_returns_spectrum_resize_preserves_capture' (188181) panicked at crates/hex-ui/src/editor/project_spectrum/tests.rs:412:13:
+assertion `left == right` failed
+  left: Session
+ right: Arrangement
+test editor::project_spectrum::tests::workspace_three_returns_spectrum_resize_preserves_capture ... FAILED
+
+thread 'editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus' (188179) panicked at crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs:350:13:
+assertion `left == right` failed: menu header=false
+  left: Session
+ right: Arrangement
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus ... FAILED
+
+thread 'editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_navigation_preserves_capture' (188180) panicked at crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs:420:13:
+assertion `left == right` failed: overview=false
+  left: Arrangement
+ right: Session
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_navigation_preserves_capture ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus
+    editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_navigation_preserves_capture
+    editor::project_spectrum::tests::workspace_three_returns_spectrum_resize_preserves_capture
+    editor::workspace_view_ui_test::workspace_three_returns_held_left_before_drag_preserves_capture
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 993 filtered out; finished in 1.44s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

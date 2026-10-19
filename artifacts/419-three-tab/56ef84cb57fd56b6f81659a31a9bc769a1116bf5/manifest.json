@@ -1,0 +1,94 @@
+{
+  "source": "56ef84cb57fd56b6f81659a31a9bc769a1116bf5",
+  "base": "38c3d466e2b6ef0b136f31d42116b8512b4305c6",
+  "payloads": {
+    "PROPOSAL.md": {
+      "bytes": 1787,
+      "sha256": "f9a18a476d8388b57e00b5838173402a542d54a71645e250305475fced542f6f"
+    },
+    "baseline-accessor.stdout": {
+      "bytes": 181,
+      "sha256": "c7d2c7d2fd92e33c49f93becc8db39d2a9db6e4e6997a2d14a57161e2e220099"
+    },
+    "baseline.stdout": {
+      "bytes": 172,
+      "sha256": "8a96c5adb6608c333b44f7c06296891d39ac3869b75ddb7981b0e577468e7cf6"
+    },
+    "before-sha256.txt": {
+      "bytes": 913,
+      "sha256": "c053a5a3416b1f7194aea2bf368ef62109351904e9b4ac548db5309b7acaac57"
+    },
+    "guards-fixed.stdout": {
+      "bytes": 176,
+      "sha256": "39eac0f78018b168f3448dc023ecdf2c6f0ba007b0430b6fbcfc26abe2f70b7f"
+    },
+    "owner.patch": {
+      "bytes": 16041,
+      "sha256": "3835a26c701ec9a735cdda08d285cd15b53090d8b777f7379e3b86ce644624d7"
+    },
+    "plain-click-control.stdout": {
+      "bytes": 183,
+      "sha256": "f7e4d7586039aee677fcb62d6d7c4bcf1e5e7fc600c984a0eca2a65f0b523224"
+    },
+    "runs/419-plain-click-control/01-plain-click-control.log": {
+      "bytes": 1060,
+      "sha256": "66d8c8e9a6cc24adbe67f47fe110dc6bc03e41917fc4344a82e84114fe52bbbc"
+    },
+    "runs/419-plain-click-control/summary.json": {
+      "bytes": 11229,
+      "sha256": "0b5df529738e1d4137b24334c590711b9f56b5bc069f75de87343d75b92fff8d"
+    },
+    "runs/419-three-baseline/01-three-tab-repros.log": {
+      "bytes": 1449,
+      "sha256": "d49e58fb90cff0e5feb3a44bff0aef5530bc64435a5df434c2c951a6dd06bae7"
+    },
+    "runs/419-three-baseline/summary.json": {
+      "bytes": 10513,
+      "sha256": "d7c74cff96d0b6763848965f3ff63601a3bf597ca28716128bfcfdf980a3d7db"
+    },
+    "runs/419-three-baseline-accessor/01-three-tab-repros.log": {
+      "bytes": 2648,
+      "sha256": "a3e6e057841e0824ac9fab5b9388fe8a3da31706273c507bf0941a60c6f2cd7d"
+    },
+    "runs/419-three-baseline-accessor/summary.json": {
+      "bytes": 10794,
+      "sha256": "54ac98f0aef78c6d0dd17179c6d651c0f8db46a52dde76466bab8f0174c091ea"
+    },
+    "runs/419-three-guards-fixed/01-three-tab-repros.log": {
+      "bytes": 1403,
+      "sha256": "d78812e904d0471279b4f0313b8515b09701b8089947e4a6c35ba62c88d12a00"
+    },
+    "runs/419-three-guards-fixed/summary.json": {
+      "bytes": 10933,
+      "sha256": "5fc7f93b73255b7e5841c5a2cb02de539dc8e0176863e5ca630cb4e64f767784"
+    },
+    "source/crates/hex-ui/src/editor/device_panel/navigation.rs": {
+      "bytes": 16855,
+      "sha256": "d3d088a466f776675212c75a9521736d432bba1a63110e12d2726035b38d7e78"
+    },
+    "source/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs": {
+      "bytes": 17477,
+      "sha256": "46ede3c9eb995cb7dff4ad8ffa6ab3cf625f3462087deb6a30f811f468aa064e"
+    },
+    "source/crates/hex-ui/src/editor/device_panel.rs": {
+      "bytes": 92341,
+      "sha256": "ec85178a5c4673d1fc1e7052a548a3fd38c6324e727f8e27a0988e77262984a4"
+    },
+    "source/crates/hex-ui/src/editor/project_spectrum/tests.rs": {
+      "bytes": 17467,
+      "sha256": "6bbe78e3e79e0e09244717e6ddea333f24c27d49a55a482bc8109954e11a970b"
+    },
+    "source/crates/hex-ui/src/editor/project_spectrum.rs": {
+      "bytes": 19548,
+      "sha256": "2108d3a352c89da194abe8a314a02aa6fe6a312e394a36621497a7dfdd222d16"
+    },
+    "source/crates/hex-ui/src/editor/workspace_view.rs": {
+      "bytes": 2832,
+      "sha256": "603a2430cc5cd267ca8acd315874a13b11907d1c7f556099523e2024cb6358be"
+    },
+    "source/crates/hex-ui/src/editor/workspace_view_ui_test.rs": {
+      "bytes": 29817,
+      "sha256": "7c015dabcfb247ded21ffb1a558fa1bc327c2c064bec2d3cc511eee21e03a342"
+    }
+  }
+}

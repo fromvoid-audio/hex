@@ -1,0 +1,8 @@
+284ca59266b80fb8f59e06438c26da6b956ac0f86e8d6584717c0b3b848d9f7e  crates/hex-ui/src/editor/workspace_view.rs
+cb9d422058337dbcd5357c84281a6c08dbf0a1bc530ae6363db00f3dd8718eb3  crates/hex-ui/src/editor/workspace_view_ui_test.rs
+ae85ad0fdebb1228f59d0d519516c582184444cbb092200db81563823fe5ccf7  crates/hex-ui/src/editor/project_spectrum.rs
+c7e80523ecec30a774dc9060a8c0f5b3c55559b72b13fa36fca4475399283404  crates/hex-ui/src/editor/project_spectrum/tests.rs
+e96491159210c6c3fabb453c98292388e72bf0fabba7695911f89993b5fc89b7  crates/hex-ui/src/editor/device_panel.rs
+a2cfe5ae09dac217b6da05c820fbd0ac3649de29547a332a9c848fe7e3f60544  crates/hex-ui/src/editor/device_panel/navigation.rs
+1f9fae44c5f352d1f0c9f3625be05ad1421ef337c7b42fc84362700a7aedbbfa  crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs
+adee7589d9c668a507bef690b43d9ed1e32074cc6b43b84a973a3eda2226b375  crates/hex-ui/src/editor/tracks.rs
