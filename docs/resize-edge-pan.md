@@ -125,3 +125,27 @@ Shift stretch and enabled Warp cover both edges, exact displayed-to-worker
 extent and one Undo/Redo. Existing Escape/stale/release/pending-horizon cases
 remain separate controls. Track-height resizing is not a timeline-pan gesture.
 These headless results do not claim native physical input acceptance.
+
+
+## Clip-local resize styling (Pulse2860 / PR462)
+
+Clip resize feedback belongs to the clip. The source lane keeps its ordinary
+border during normal audio trimming, Shift stretching and MIDI resizing; it does
+not acquire a transient full-track accent outline. The existing clip preview
+border, handles, waveform, actual selection, track hue strip and header styling
+remain unchanged. This removes only the audio TrimDrag lane drag-over styling;
+its drop receiver and every capture/command/timer/terminal path are retained.
+This explicit resize exception supersedes the older general selected-track
+outline request in Pulse2711; do not restore the resize outline through that work.
+
+Completed GPUI scene tests retain the original two audio accent-border failures
+and already-correct MIDI control. Both edges, selected/other-selected track
+origins, clip-local feedback, actual Service commit/Undo/Redo and logical cancellation
+are checked. A mistaken header-center fixture hit the controls row and stopped
+selection propagation; its diagnostic is retained separately from paint failure.
+Corrected tests click the actual track-name area. Optimized native colors,
+waveform appearance and pointer acceptance remain Root-owned, not established by
+headless scene quads. The separate inherited MIDI focus-cancel preview-paint
+failure remains open as Pulse2871/PR473; this change does not repair or claim
+preview disappearance after that cancellation. Track-height/header resizing and other drag hover styles
+are separate behaviors.
