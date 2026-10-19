@@ -1,0 +1,6 @@
+{
+  "CLIPPY_ARGS": "-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__",
+  "SYSROOT": "",
+  "RUSTC_WORKSPACE_WRAPPER": "/workspace/.hex-tools/rustup/toolchains/1.94.0-x86_64-unknown-linux-gnu/bin/clippy-driver",
+  "RUSTC_WRAPPER": ""
+}

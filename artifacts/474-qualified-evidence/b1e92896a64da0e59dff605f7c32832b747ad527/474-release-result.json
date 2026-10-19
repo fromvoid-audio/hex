@@ -1,0 +1,24 @@
+{
+  "source": "b1e92896a64da0e59dff605f7c32832b747ad527",
+  "tree": "46868df41e962d063b2adf8f2f3179acd1f8245d",
+  "guarded_transaction_state": "ready",
+  "build_exit_code": 0,
+  "build_argv": [
+    "cargo",
+    "build",
+    "--release",
+    "-p",
+    "hex-desktop",
+    "--locked",
+    "--message-format=json"
+  ],
+  "artifact": {
+    "path": "/workspace/hex/target/release/hex-desktop",
+    "sha256": "71f82f8b87ca4084cf3f2a792db56b86b219f9804d57d1da1e35110df8cd5ae7"
+  },
+  "duration_seconds": 506.058,
+  "warning_count": 0,
+  "summary_status_note": "guard-only context retains schema status incomplete; release_target_cache is ready, not full21",
+  "raw_log_sha256": "1e6203bd66e0a3e45043c0715396d550c1324f5726e82dbd1763fc25ecda0976",
+  "guard_summary_sha256": "d3264aea7e0d8f9f6d3c21aa5c72ca0d9f7a2aac8fadac864237a0468e66f0b7"
+}

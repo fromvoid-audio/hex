@@ -1,0 +1,3 @@
+[1/1] workspace test artifact warnings baseline: running
+[1/1] workspace test artifact warnings baseline: failed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/474-warnings-workspace-build-baseline/summary.json

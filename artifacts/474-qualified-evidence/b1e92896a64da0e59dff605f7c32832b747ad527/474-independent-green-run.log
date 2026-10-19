@@ -1,0 +1,7 @@
+[1/3] denied actual dependency ABI lints: running
+[1/3] denied actual dependency ABI lints: passed
+[2/3] workspace test build unique outputs: running
+[2/3] workspace test build unique outputs: passed
+[3/3] strict workspace all targets: running
+[3/3] strict workspace all targets: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/474-warnings-independent-green/summary.json

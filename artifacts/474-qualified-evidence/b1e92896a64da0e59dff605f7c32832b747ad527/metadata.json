@@ -1,0 +1,28 @@
+{
+  "base": "d303cbf4d0e92f2fede3a9957063593a820d6384",
+  "source": "b1e92896a64da0e59dff605f7c32832b747ad527",
+  "tree": "46868df41e962d063b2adf8f2f3179acd1f8245d",
+  "files": [
+    "crates/hex-engine/build.rs",
+    "crates/hex-engine/build_support/pcm_clippy.rs",
+    "crates/hex-engine/src/pcm_arc.rs",
+    "crates/hex-warp/Cargo.toml",
+    "docs/dependency-warnings.md",
+    "docs/musical-editing.md",
+    "scripts/check-dependency-future-lints.py",
+    "scripts/check-dependency-patches.py",
+    "scripts/tests/test_pcm_build_gate.py",
+    "third_party/block/HEX-PATCHES.md",
+    "third_party/block/hex-patches.diff",
+    "third_party/block/hex-provenance.json",
+    "third_party/block/src/lib.rs",
+    "todo.md"
+  ],
+  "platform": "Rust 1.94.0 x86_64-unknown-linux-gnu",
+  "limits": [
+    "No native Mac app/build acceptance",
+    "No PR395 Audio unpublished change",
+    "No full21/merge claim; merger owns prospective qualification",
+    "Unknown remains for unsupported toolchain/flags/wrappers/evidence failure"
+  ]
+}

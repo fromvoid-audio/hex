@@ -1,0 +1,13 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized] target(s) in 12.80s
+     Running unittests src/lib.rs (target/debug/deps/hex_engine-6d11557fa9a26bde)
+
+running 5 tests
+test pcm_arc::build_clippy_tests::tests::metadata_queries_do_not_substitute_for_args_or_compiler_pin ... ok
+test pcm_arc::build_gate_tests::tests::ordinary_native_supported_and_every_unsupported_input_refuses ... ok
+test pcm_arc::build_clippy_tests::tests::exact_actual_lint_args_only ... ok
+test pcm_arc::tests::unverified_family_empty_capacity_and_overflow_stay_unknown ... ok
+test pcm_arc::build_clippy_tests::tests::private_install_identity_manifest_and_replacement_negatives ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 543 filtered out; finished in 0.00s
+

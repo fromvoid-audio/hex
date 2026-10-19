@@ -1,0 +1,9 @@
+{
+  "compiled_source": "f2c4aa0ec4536cd16ebc12f244066cbf1bcfc404",
+  "final_source": "b1e92896a64da0e59dff605f7c32832b747ad527",
+  "changed_paths": [
+    "docs/dependency-warnings.md",
+    "todo.md"
+  ],
+  "all_implementation_bytes_equal": true
+}

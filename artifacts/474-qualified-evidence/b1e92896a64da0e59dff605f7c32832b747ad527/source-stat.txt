@@ -1,0 +1,15 @@
+ crates/hex-engine/build.rs                    |  39 +++-
+ crates/hex-engine/build_support/pcm_clippy.rs | 289 ++++++++++++++++++++++++++
+ crates/hex-engine/src/pcm_arc.rs              |   3 +
+ crates/hex-warp/Cargo.toml                    |   4 +
+ docs/dependency-warnings.md                   |  53 +++++
+ docs/musical-editing.md                       |   7 +
+ scripts/check-dependency-future-lints.py      |   2 +-
+ scripts/check-dependency-patches.py           |  14 +-
+ scripts/tests/test_pcm_build_gate.py          |  83 ++++++++
+ third_party/block/HEX-PATCHES.md              |   6 +
+ third_party/block/hex-patches.diff            |  37 +++-
+ third_party/block/hex-provenance.json         |   2 +-
+ third_party/block/src/lib.rs                  |  20 +-
+ todo.md                                       |  28 +++
+ 14 files changed, 562 insertions(+), 25 deletions(-)

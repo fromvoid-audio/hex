@@ -1,0 +1,9 @@
+    Checking hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+    Checking hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+    Checking hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Checking hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+    Checking hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Checking hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+    Checking hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+    Finished `dev` profile [unoptimized] target(s) in 8.59s

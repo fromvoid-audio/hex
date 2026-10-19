@@ -1,0 +1,7 @@
+[1/3] real build script qualification and refusal: running
+[1/3] real build script qualification and refusal: passed
+[2/3] private engine PCM layout and installation predicates: running
+[2/3] private engine PCM layout and installation predicates: passed
+[3/3] strict Engine build and all targets: running
+[3/3] strict Engine build and all targets: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/474-warnings-pcm-functional/summary.json

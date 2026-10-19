@@ -1,0 +1,818 @@
+diff --git a/crates/hex-engine/build.rs b/crates/hex-engine/build.rs
+index 852dd3ef..426a22d2 100644
+--- a/crates/hex-engine/build.rs
++++ b/crates/hex-engine/build.rs
+@@ -1,4 +1,6 @@
+ //! Build-only declared-layout evidence; unsupported observations remain Unknown.
++#[path = "build_support/pcm_clippy.rs"]
++mod pcm_clippy;
+ #[path = "build_support/pcm_gate.rs"]
+ mod pcm_gate;
+ use std::{
+@@ -66,6 +68,7 @@ fn ordinary_install(root: &Path, target: &str, evidence: &mut String) -> bool {
+ fn main() {
+     println!("cargo:rerun-if-changed=build.rs");
+     println!("cargo:rerun-if-changed=build_support/pcm_gate.rs");
++    println!("cargo:rerun-if-changed=build_support/pcm_clippy.rs");
+     let host = env::var("HOST").unwrap_or_default();
+     let target = env::var("TARGET").unwrap_or_default();
+     let target_flags = format!(
+@@ -89,11 +92,13 @@ fn main() {
+         "RUST_SYSROOT",
+         "RUSTC_SYSROOT",
+         "CARGO_BUILD_TARGET",
++        "SYSROOT",
+         "RUSTC_STAGE",
+         "CARGO_UNSTABLE_BUILD_STD",
+         "CARGO_UNSTABLE_BUILD_STD_FEATURES",
+         "CARGO_BUILD_RUSTC_WRAPPER",
+         "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
++        "CLIPPY_ARGS",
+     ];
+     for input in inputs
+         .iter()
+@@ -104,13 +109,13 @@ fn main() {
+     }
+     let unsupported = [
+         "RUSTC_WRAPPER",
+-        "RUSTC_WORKSPACE_WRAPPER",
+         "RUSTFLAGS",
+         "CARGO_ENCODED_RUSTFLAGS",
+         "CARGO_BUILD_RUSTFLAGS",
+         "RUSTC_BOOTSTRAP",
+         "RUST_SYSROOT",
+         "RUSTC_SYSROOT",
++        "SYSROOT",
+         "RUSTC_STAGE",
+         "CARGO_UNSTABLE_BUILD_STD",
+         "CARGO_UNSTABLE_BUILD_STD_FEATURES",
+@@ -119,7 +124,8 @@ fn main() {
+     ]
+     .into_iter()
+     .chain(std::iter::once(target_flags.as_str()))
+-    .any(nonempty);
++    .any(nonempty)
++        || !pcm_clippy::benign_args(env::var_os("CLIPPY_ARGS").as_deref());
+     let compiler = env::var_os("RUSTC").map(PathBuf::from);
+     let mut evidence = format!(
+         "contract: pinned-std-arc-audiodata-retained-vec-v1\nhost: {host}\ntarget: {target}\n"
+@@ -140,7 +146,34 @@ fn main() {
+                 target: &target,
+                 ordinary_install: installed,
+                 unsupported_inputs: unsupported,
+-            })
++            })?;
++            if let Some(wrapper) = env::var_os("RUSTC_WORKSPACE_WRAPPER").filter(|s| !s.is_empty()) {
++                let wrapper = PathBuf::from(wrapper);
++                // Watch missing/repaired installation entries too, before qualification.
++                for path in [root.join("bin/clippy-driver"), root.join("lib/rustlib").join(format!("manifest-clippy-preview-{target}"))] {
++                    println!("cargo:rerun-if-changed={}", path.display());
++                }
++                let files = pcm_clippy::InstalledFiles::capture(root, compiler, &wrapper, &target)
++                    .ok_or("unqualified_workspace_wrapper_installation")?;
++                for path in files.paths() {
++                    println!("cargo:rerun-if-changed={}", path.display());
++                }
++                evidence.push_str(&format!("installed Clippy files before probes: {files:?}\n"));
++                let driver_verbose = invoke(&wrapper, &["-Vv"], &mut evidence)
++                    .ok_or("clippy_metadata_command_failed")?;
++                let driver_sysroot = invoke(&wrapper, &["--print", "sysroot"], &mut evidence)
++                    .ok_or("clippy_sysroot_command_failed")?;
++                let driver_version = invoke(&wrapper, &["--version"], &mut evidence)
++                    .ok_or("clippy_version_command_failed")?;
++                if !pcm_clippy::matching_driver(&verbose, &driver_verbose, &driver_sysroot, root, &driver_version) {
++                    return Err("clippy_compiler_or_sysroot_mismatch");
++                }
++                if !files.unchanged() {
++                    return Err("clippy_installation_changed_during_probes");
++                }
++                evidence.push_str("installed Clippy files unchanged after probes; separately validated benign CLIPPY_ARGS; declared storage layout only\n");
++            }
++            Ok(())
+         });
+     evidence.push_str(&format!("decision: {decision:?}\nrequested layout declaration only; no security/RSS/physical allocator claim\n"));
+     let saved = env::var_os("OUT_DIR")
+diff --git a/crates/hex-engine/build_support/pcm_clippy.rs b/crates/hex-engine/build_support/pcm_clippy.rs
+new file mode 100644
+index 00000000..a6abb3a4
+--- /dev/null
++++ b/crates/hex-engine/build_support/pcm_clippy.rs
+@@ -0,0 +1,289 @@
++//! Build-only qualification under the same installed-toolchain trust as rustc/std.
++//! Not a signature, security, physical-allocation or runtime-behavior attestation.
++use std::{
++    fs,
++    path::{Path, PathBuf},
++};
++
++pub fn benign_args(value: Option<&std::ffi::OsStr>) -> bool {
++    match value {
++        None => true,
++        Some(value) => matches!(
++            value.to_str(),
++            Some("") | Some("-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__")
++        ),
++    }
++}
++
++pub fn matching_driver(
++    compiler: &str,
++    driver: &str,
++    sysroot: &str,
++    root: &Path,
++    version: &str,
++) -> bool {
++    driver.trim() == compiler.trim()
++        && Path::new(sysroot.trim()) == root
++        && version.trim() == "clippy 0.1.94 (4a4ef493e3 2026-03-02)"
++}
++
++#[cfg(unix)]
++#[derive(Debug, PartialEq, Eq)]
++struct Stamp {
++    dev: u64,
++    ino: u64,
++    size: u64,
++    mode: u32,
++    links: u64,
++    mtime: (i64, i64),
++    ctime: (i64, i64),
++}
++#[cfg(unix)]
++fn stamp(path: &Path) -> Option<Stamp> {
++    use std::os::unix::fs::MetadataExt;
++    if !path.is_absolute()
++        || path
++            .ancestors()
++            .any(|p| fs::symlink_metadata(p).map_or(true, |m| m.file_type().is_symlink()))
++    {
++        return None;
++    }
++    let m = fs::symlink_metadata(path).ok()?;
++    if !m.is_file() {
++        return None;
++    }
++    Some(Stamp {
++        dev: m.dev(),
++        ino: m.ino(),
++        size: m.len(),
++        mode: m.mode(),
++        links: m.nlink(),
++        mtime: (m.mtime(), m.mtime_nsec()),
++        ctime: (m.ctime(), m.ctime_nsec()),
++    })
++}
++#[cfg(not(unix))]
++#[derive(Debug, PartialEq, Eq)]
++struct Stamp;
++#[cfg(not(unix))]
++fn stamp(_: &Path) -> Option<Stamp> {
++    None
++}
++
++#[derive(Debug)]
++pub struct InstalledFiles(Vec<(PathBuf, Stamp)>);
++impl InstalledFiles {
++    pub fn capture(root: &Path, compiler: &Path, wrapper: &Path, target: &str) -> Option<Self> {
++        if compiler != root.join("bin/rustc") || wrapper != root.join("bin/clippy-driver") {
++            return None;
++        }
++        let rustlib = root.join("lib/rustlib");
++        let files = [
++            compiler.to_path_buf(),
++            wrapper.to_path_buf(),
++            rustlib.join("components"),
++            rustlib.join("rust-installer-version"),
++            rustlib.join(format!("manifest-clippy-preview-{target}")),
++            rustlib.join(format!("manifest-rust-std-{target}")),
++        ];
++        let snapshots = files
++            .iter()
++            .map(|p| Some((p.clone(), stamp(p)?)))
++            .collect::<Option<Vec<_>>>()?;
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            if files[..2]
++                .iter()
++                .any(|p| fs::metadata(p).map_or(true, |m| m.permissions().mode() & 0o111 == 0))
++            {
++                return None;
++            }
++        }
++        if !fs::read_to_string(&files[2])
++            .ok()?
++            .lines()
++            .any(|l| l == format!("clippy-preview-{target}"))
++            || !fs::read_to_string(&files[4])
++                .ok()?
++                .lines()
++                .any(|l| l == "file:bin/clippy-driver")
++        {
++            return None;
++        }
++        Some(Self(snapshots))
++    }
++    pub fn paths(&self) -> impl Iterator<Item = &Path> {
++        self.0.iter().map(|(p, _)| p.as_path())
++    }
++    pub fn unchanged(&self) -> bool {
++        self.0.iter().all(|(p, s)| stamp(p).as_ref() == Some(s))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::{
++        ffi::OsStr,
++        sync::atomic::{AtomicU64, Ordering},
++    };
++    #[test]
++    fn exact_actual_lint_args_only() {
++        for s in [
++            None,
++            Some(""),
++            Some("-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__"),
++        ] {
++            assert!(benign_args(s.map(OsStr::new)));
++        }
++        for s in [
++            "-Dwarnings",
++            "-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__--sysroot=x",
++            "@args",
++            "--cfg__CLIPPY_HACKERY__layout",
++            "__CLIPPY_HACKERY__",
++            "--no-deps",
++            "-Zrandomize-layout",
++        ] {
++            assert!(!benign_args(Some(OsStr::new(s))), "{s}");
++        }
++        #[cfg(unix)]
++        {
++            use std::os::unix::ffi::OsStrExt;
++            assert!(!benign_args(Some(OsStr::from_bytes(b"\xff"))));
++        }
++    }
++    #[test]
++    fn metadata_queries_do_not_substitute_for_args_or_compiler_pin() {
++        let root = Path::new("/installed");
++        let v = "rustc pinned complete metadata";
++        assert!(matching_driver(
++            v,
++            v,
++            "/installed\n",
++            root,
++            "clippy 0.1.94 (4a4ef493e3 2026-03-02)\n"
++        ));
++        for (driver, sysroot, version) in [
++            (
++                "other",
++                "/installed",
++                "clippy 0.1.94 (4a4ef493e3 2026-03-02)",
++            ),
++            (v, "/foreign", "clippy 0.1.94 (4a4ef493e3 2026-03-02)"),
++            (v, "/installed", "clippy 0.1.95 (other)"),
++        ] {
++            assert!(!matching_driver(v, driver, sysroot, root, version));
++        }
++    }
++    struct Fixture(PathBuf);
++    impl Fixture {
++        fn new() -> Self {
++            static NEXT: AtomicU64 = AtomicU64::new(0);
++            let p = std::env::temp_dir().join(format!(
++                "hex-pcm-clippy-{}-{}",
++                std::process::id(),
++                NEXT.fetch_add(1, Ordering::Relaxed)
++            ));
++            fs::create_dir(&p).unwrap();
++            let p = p.canonicalize().unwrap();
++            fs::create_dir_all(p.join("bin")).unwrap();
++            fs::create_dir_all(p.join("lib/rustlib")).unwrap();
++            for (name, data) in [
++                ("bin/rustc", "compiler"),
++                ("bin/clippy-driver", "driver"),
++                ("lib/rustlib/components", "clippy-preview-test\n"),
++                ("lib/rustlib/rust-installer-version", "3\n"),
++                (
++                    "lib/rustlib/manifest-clippy-preview-test",
++                    "file:bin/clippy-driver\n",
++                ),
++                ("lib/rustlib/manifest-rust-std-test", "file:std\n"),
++            ] {
++                fs::write(p.join(name), data).unwrap();
++            }
++            #[cfg(unix)]
++            {
++                use std::os::unix::fs::PermissionsExt;
++                for f in ["bin/rustc", "bin/clippy-driver"] {
++                    fs::set_permissions(p.join(f), fs::Permissions::from_mode(0o755)).unwrap();
++                }
++            }
++            Self(p)
++        }
++        fn capture(&self) -> Option<InstalledFiles> {
++            InstalledFiles::capture(
++                &self.0,
++                &self.0.join("bin/rustc"),
++                &self.0.join("bin/clippy-driver"),
++                "test",
++            )
++        }
++    }
++    impl Drop for Fixture {
++        fn drop(&mut self) {
++            fs::remove_dir_all(&self.0).unwrap();
++        }
++    }
++    #[cfg(unix)]
++    #[test]
++    fn private_install_identity_manifest_and_replacement_negatives() {
++        let f = Fixture::new();
++        assert!(f.capture().unwrap().unchanged());
++        assert_eq!(f.capture().unwrap().paths().count(), 6);
++        assert!(
++            InstalledFiles::capture(
++                &f.0,
++                &f.0.join("bin/other-rustc"),
++                &f.0.join("bin/clippy-driver"),
++                "test"
++            )
++            .is_none()
++        );
++        assert!(
++            InstalledFiles::capture(
++                &f.0,
++                &f.0.join("bin/rustc"),
++                &f.0.join("lookalike/clippy-driver"),
++                "test"
++            )
++            .is_none()
++        );
++        assert!(
++            InstalledFiles::capture(
++                &f.0,
++                &f.0.join("bin/rustc"),
++                &f.0.join("bin/clippy-driver"),
++                "foreign-target"
++            )
++            .is_none()
++        );
++        for file in [
++            "lib/rustlib/components",
++            "lib/rustlib/manifest-clippy-preview-test",
++        ] {
++            let p = f.0.join(file);
++            let bytes = fs::read(&p).unwrap();
++            fs::write(&p, "missing").unwrap();
++            assert!(f.capture().is_none());
++            fs::write(&p, bytes).unwrap();
++        }
++        let captured = f.capture().unwrap();
++        let p = f.0.join("bin/clippy-driver");
++        fs::rename(&p, f.0.join("old-driver")).unwrap();
++        fs::copy(f.0.join("old-driver"), &p).unwrap();
++        assert!(!captured.unchanged());
++        let captured = f.capture().unwrap();
++        fs::write(&p, "changed driver").unwrap();
++        assert!(!captured.unchanged());
++        fs::remove_file(&p).unwrap();
++        std::os::unix::fs::symlink(f.0.join("old-driver"), &p).unwrap();
++        assert!(f.capture().is_none());
++        fs::remove_file(&p).unwrap();
++        fs::rename(f.0.join("old-driver"), &p).unwrap();
++        fs::rename(f.0.join("bin"), f.0.join("real-bin")).unwrap();
++        std::os::unix::fs::symlink(f.0.join("real-bin"), f.0.join("bin")).unwrap();
++        assert!(f.capture().is_none());
++    }
++}
+diff --git a/crates/hex-engine/src/pcm_arc.rs b/crates/hex-engine/src/pcm_arc.rs
+index d6cd9a07..319f1cd9 100644
+--- a/crates/hex-engine/src/pcm_arc.rs
++++ b/crates/hex-engine/src/pcm_arc.rs
+@@ -59,6 +59,9 @@ pub(crate) fn native_layout_known() -> bool {
+         && option_env!("HEX_PCM_ARC_CONSTRUCTOR_FAMILY") == Some("arc-audiodata-retained-vec-v1")
+ }
+ 
++#[cfg(test)]
++#[path = "../build_support/pcm_clippy.rs"]
++mod build_clippy_tests;
+ #[cfg(test)]
+ #[path = "../build_support/pcm_gate.rs"]
+ mod build_gate_tests;
+diff --git a/crates/hex-warp/Cargo.toml b/crates/hex-warp/Cargo.toml
+index cbb50596..6da912fb 100644
+--- a/crates/hex-warp/Cargo.toml
++++ b/crates/hex-warp/Cargo.toml
+@@ -7,3 +7,7 @@ publish.workspace = true
+ 
+ [lints]
+ workspace = true
++
++[[example]]
++name = "warp_profile"
++path = "examples/profile.rs"
+diff --git a/docs/dependency-warnings.md b/docs/dependency-warnings.md
+index a97e82ae..3d9f2092 100644
+--- a/docs/dependency-warnings.md
++++ b/docs/dependency-warnings.md
+@@ -100,3 +100,56 @@ is integrated here as a prerequisite, preserving its exact vendor files, guard,
+ license/provenance and unchanged package version. The two warning patches remain
+ identical. This integration creates a new source revision; earlier exact-commit
+ Mac CI/release evidence must be renewed before acceptance.
++
++## current warning cleanup — pulse2872 / pr474
++
++The historical 46 `missing_abi` warnings above are now addressed by explicit C
++ABI on all ten external declaration/function sites in the actual block source.
++The previous implicit external ABI was C, including function-pointer and macro
++callback declarations; signatures, symbols, ownership and marker layout remain
++unchanged. The existing provenance guard reverses this finite ABI spelling delta
++as well as the opaque marker change, then verifies the original published hash
++and complete patch. Original archive identity, retained files/licenses, package
++version and lockfile remain unchanged. The actual dependency-lint compilation
++now denies `missing_abi` too. This compiler evidence does not renew native block
++callback/lifetime acceptance on macOS.
++
++The declaration spelling follows the [Rust Reference's explicit C/default ABI
++contract](https://doc.rust-lang.org/reference/items/external-blocks.html#abi).
++The zero-context recorded vendor diff avoids whitespace-only patch context;
++its exact reconstruction/hash guard still verifies every original byte.
++
++### pinned clippy and declared pcm layout
++
++The old PCM `Unknown: unsupported_wrapper_or_ambiguous_flags` warning in strict
++Clippy was real: Cargo sets `RUSTC_WORKSPACE_WRAPPER` to its installed driver.
++The default gate still refuses unsupported flags, targets, compilers, nested or
++foreign wrappers, sysroot/bootstrap/build-std overrides and missing evidence.
++A finite build-only exception now qualifies the pinned official Clippy component
++under the existing ordinary installed-toolchain trust: exact native Rust 1.94.0
++commit/std installation, exact non-symlink installed compiler/driver paths and
++component manifests, matching complete compiler metadata, sysroot and pinned
++Clippy version, and unchanged file identities before/after probes. Missing or
++repaired component entries are tracked for Cargo reruns too.
++
++The [actual pinned driver source](https://github.com/rust-lang/rust/blob/4a4ef493e3a1488c6e321570238084b38948f6db/src/tools/clippy/src/driver.rs)
++uses embedded rustc, consumes `SYSROOT` and parses `CLIPPY_ARGS`; info queries
++bypass those arguments. Consequently `SYSROOT` is refused independently and only
++empty args or the exact observed Cargo `-D warnings` encoding is accepted. No
++arbitrary option prefix, response file or wrapper filename is trusted.
++
++Clippy adds `cfg(clippy)` and changes MIR passes. The concrete `Frame = [f32; 2]`,
++`AudioData` retained Vec/optional reservation, source constructor and receipt
++paths have no `cfg(clippy)` layout alternatives. The pinned std `ArcInner` is
++`repr(C, align(2))` with strong/weak atomic counters followed by the payload;
++receipt payload layout is measured from the actual compiled type. This supports
++the existing declared-storage-layout law, not runtime equivalence or physical
++allocator usage. A modified/hostile installed toolchain is outside the existing
++installation trust; metadata/version checks are not binary authenticity proof.
++No production PCM, Audio construction, audio callback or allocator law changed.
++
++Native macOS compilation and optimized physical behavior remain separate checks.
++The native owner reports PR395's original two Audio unused-host errors cleared in
++its intermediate cfg(test) source (Pulse29631/29634); production promotion and
++any other build diagnostics remain with that owner. This PR does not edit those
++in-flight files or use Linux checks to establish Mac acceptance.
+diff --git a/docs/musical-editing.md b/docs/musical-editing.md
+index 0c269440..00124865 100644
+--- a/docs/musical-editing.md
++++ b/docs/musical-editing.md
+@@ -279,3 +279,10 @@ suite passed in `20261016T071608Z-c8c5da7e`. The derived-only ownership probe no
+ also uses a routed gain-lane graph. Initial codec/version/fixture failures remain
+ in development logs. These targeted checks do not replace the clean merge
+ candidate's final full local CI, optimized comparison or optional native tests.
++
++### distinct warp profiling target — pulse2872
++
++The current command is `cargo run --release -p hex-warp --example warp_profile --locked`.
++Its source remains `examples/profile.rs`; only its Cargo target name changed to
++avoid collision with the retained Engine `profile` example in workspace builds.
++Historical commands and measurements above describe their original source.
+diff --git a/scripts/check-dependency-future-lints.py b/scripts/check-dependency-future-lints.py
+index be207cc9..2fa923ca 100644
+--- a/scripts/check-dependency-future-lints.py
++++ b/scripts/check-dependency-future-lints.py
+@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
+ with tempfile.TemporaryDirectory(prefix="hex-dependency-lints-") as scratch:
+     subprocess.run([
+         "rustc", "--crate-name", "block", "--crate-type", "lib", "--emit", "metadata",
+-        "-D", "uninhabited_static", str(ROOT / "third_party/block/src/lib.rs"),
++        "-D", "uninhabited_static", "-D", "missing_abi", str(ROOT / "third_party/block/src/lib.rs"),
+         "-o", str(Path(scratch) / "block.rmeta"),
+     ], check=True, cwd=ROOT)
+ env = os.environ.copy()
+diff --git a/scripts/check-dependency-patches.py b/scripts/check-dependency-patches.py
+index 5e3fa262..3bfad294 100644
+--- a/scripts/check-dependency-patches.py
++++ b/scripts/check-dependency-patches.py
+@@ -67,14 +67,22 @@ def check():
+             assert sha((vendor / path).read_bytes()) == manifest["patched_files"].get(path, original), path
+         patched = (vendor / "src/lib.rs").read_text()
+         assert patched.count(new) == 1
+-        original = patched.replace(new, old, 1)
++        # Explicit C is the previous implicit ABI, including macro-expanded callbacks.
++        # Reverse this exact finite delta before checking the published archive hash.
++        if name == "block":
++            assert patched.count('extern "C" ') == 10
++            assert not re.search(r'extern\s+(?:fn|\{)', patched)
++            original = patched.replace('extern "C" ', 'extern ')
++        else:
++            original = patched
++        original = original.replace(new, old, 1)
+         assert sha(original.encode()) == manifest["original_files"]["src/lib.rs"]
+         diff = "".join(difflib.unified_diff(
+             original.splitlines(keepends=True), patched.splitlines(keepends=True),
+-            fromfile="a/src/lib.rs", tofile="b/src/lib.rs",
++            fromfile="a/src/lib.rs", tofile="b/src/lib.rs", n=0 if name == "block" else 3,
+         ))
+         assert (vendor / "hex-patches.diff").read_text() == diff
+-    print("dependency patches passed: pinned baselines, exact opaque-marker/visibility deltas, excluded native dependencies")
++    print("dependency patches passed: pinned baselines, exact opaque-marker/C-ABI/visibility deltas, excluded native dependencies")
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/scripts/tests/test_pcm_build_gate.py b/scripts/tests/test_pcm_build_gate.py
+new file mode 100644
+index 00000000..d0095b90
+--- /dev/null
++++ b/scripts/tests/test_pcm_build_gate.py
+@@ -0,0 +1,83 @@
++"""Exercise the real build script with isolated output and explicit compiler inputs."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++import unittest
++
++ROOT = Path(__file__).resolve().parents[2]
++UNSUPPORTED = (
++    "RUSTC_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS",
++    "RUSTC_BOOTSTRAP", "RUST_SYSROOT", "RUSTC_SYSROOT", "SYSROOT", "RUSTC_STAGE",
++    "CARGO_UNSTABLE_BUILD_STD", "CARGO_UNSTABLE_BUILD_STD_FEATURES",
++    "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
++)
++STRICT_ARGS = "-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__"
++
++
++class PcmBuildGateTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.scratch = tempfile.TemporaryDirectory(prefix="hex-pcm-build-gate-")
++        cls.base = Path(cls.scratch.name)
++        cls.sysroot = Path(subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip())
++        cls.compiler = cls.sysroot / "bin/rustc"
++        cls.driver = cls.sysroot / "bin/clippy-driver"
++        cls.verbose = subprocess.check_output([str(cls.compiler), "-Vv"], text=True)
++        cls.host = next(s.removeprefix("host: ") for s in cls.verbose.splitlines() if s.startswith("host: "))
++        cls.supported = cls.host in {"x86_64-unknown-linux-gnu", "aarch64-apple-darwin"} and "commit-hash: 4a4ef493e3a1488c6e321570238084b38948f6db\n" in cls.verbose
++        cls.binary = cls.base / "build-gate"
++        subprocess.run([str(cls.compiler), "--edition=2024", "--deny=warnings", str(ROOT / "crates/hex-engine/build.rs"), "-o", str(cls.binary)], check=True)
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.scratch.cleanup()
++
++    def run_gate(self, changes=None, *, writable=True):
++        env = os.environ.copy()
++        for key in (*UNSUPPORTED, "RUSTC_WORKSPACE_WRAPPER", "CLIPPY_ARGS", "CARGO_TARGET_" + self.host.replace("-", "_").upper() + "_RUSTFLAGS"):
++            env.pop(key, None)
++        with tempfile.TemporaryDirectory(dir=self.base) as out:
++            env.update(RUSTC=str(self.compiler), HOST=self.host, TARGET=self.host, OUT_DIR=out if writable else str(Path(out)/"missing"))
++            env.update(changes or {})
++            result = subprocess.run([str(self.binary)], env=env, cwd=ROOT, text=True, capture_output=True, check=True)
++            evidence = Path(out)/"pcm-arc-build-evidence.txt"
++            return result.stdout, evidence.read_text() if evidence.exists() else ""
++
++    def test_real_installed_ordinary_and_official_clippy_default_and_strict(self):
++        for args in [None, "", STRICT_ARGS]:
++            changes = {} if args is None else {"RUSTC_WORKSPACE_WRAPPER":str(self.driver), "CLIPPY_ARGS":args}
++            output, evidence = self.run_gate(changes)
++            self.assertIn("HEX_PCM_ARC_LAYOUT_KNOWN=" + str(int(self.supported)), output)
++            if self.supported:
++                self.assertNotIn("cargo:warning=", output)
++                self.assertIn("decision: Ok(())", evidence)
++                if args is not None:
++                    self.assertIn("installed Clippy files unchanged after probes", evidence)
++            else:
++                self.assertIn("cargo:warning=PCM declared Arc layout Unknown:", output)
++
++    def test_every_unsupported_input_still_refuses_even_with_official_driver(self):
++        target_flags="CARGO_TARGET_" + self.host.replace("-", "_").upper() + "_RUSTFLAGS"
++        for name in (*UNSUPPORTED, target_flags):
++            with self.subTest(name=name):
++                output, evidence = self.run_gate({"RUSTC_WORKSPACE_WRAPPER":str(self.driver), "CLIPPY_ARGS":STRICT_ARGS, name:"unsupported"})
++                self.assertIn("HEX_PCM_ARC_LAYOUT_KNOWN=0", output)
++                self.assertIn("cargo:warning=PCM declared Arc layout Unknown:", output)
++                self.assertIn("decision: Err(", evidence)
++
++    def test_arbitrary_clippy_args_lookalike_nested_and_response_files_refuse(self):
++        for args in ["@args", STRICT_ARGS+"--sysroot=foreign", "--cfg__CLIPPY_HACKERY__different", "-Zrandomize-layout", "-Dwarnings"]:
++            with self.subTest(args=args):
++                output, _ = self.run_gate({"RUSTC_WORKSPACE_WRAPPER":str(self.driver), "CLIPPY_ARGS":args})
++                self.assertIn("HEX_PCM_ARC_LAYOUT_KNOWN=0", output)
++        for wrapper in [str(self.base/"clippy-driver"), str(self.compiler)]:
++            output, _ = self.run_gate({"RUSTC_WORKSPACE_WRAPPER":wrapper})
++            self.assertIn("HEX_PCM_ARC_LAYOUT_KNOWN=0", output)
++
++    def test_cross_target_and_evidence_write_failure_never_qualify(self):
++        output, _ = self.run_gate({"TARGET":"unsupported-target"})
++        self.assertIn("HEX_PCM_ARC_LAYOUT_KNOWN=0", output)
++        output, _ = self.run_gate(writable=False)
++        self.assertIn("HEX_PCM_ARC_LAYOUT_KNOWN=0", output)
++        self.assertIn("cargo:warning=PCM declared Arc layout Unknown:", output)
+diff --git a/third_party/block/HEX-PATCHES.md b/third_party/block/HEX-PATCHES.md
+index a1503209..0f26903f 100644
+--- a/third_party/block/HEX-PATCHES.md
++++ b/third_party/block/HEX-PATCHES.md
+@@ -11,3 +11,9 @@ Run `python3 scripts/check-dependency-patches.py` after any dependency change.
+ 
+ Refresh only from a checksum-verified published archive, review upstream fixes,
+ retain licensing/provenance, reapply only necessary delta and revalidate.
++
++Pulse2872 adds explicit `"C"` to all ten external declaration/function sites,
++including macro templates. Rust's previous implicit external ABI is C; calling
++conventions, argument/return types and ownership are unchanged. The guard reverses
++both finite deltas and checks the exact original published source hash. The real
++source now also compiles with `missing_abi` denied; no lint suppression is added.
+diff --git a/third_party/block/hex-patches.diff b/third_party/block/hex-patches.diff
+index 4b179b03..4cfc3827 100644
+--- a/third_party/block/hex-patches.diff
++++ b/third_party/block/hex-patches.diff
+@@ -1,14 +1,37 @@
+ --- a/src/lib.rs
+ +++ b/src/lib.rs
+-@@ -54,7 +54,10 @@
+- use std::os::raw::{c_int, c_ulong, c_void};
+- use std::ptr;
+- 
++@@ -57 +57,4 @@
+ -enum Class { }
+ +#[repr(C)]
+ +struct Class {
+ +    _private: [u8; 0],
+ +}
+- 
+- #[cfg_attr(any(target_os = "macos", target_os = "ios"),
+-            link(name = "System", kind = "dylib"))]
++@@ -63 +66 @@
++-extern {
+++extern "C" {
++@@ -83 +86 @@
++-                let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+++                let invoke: unsafe extern "C" fn(*mut Block<Self, R> $(, $t)*) -> R = {
++@@ -113 +116 @@
++-    invoke: unsafe extern fn(*mut Block<A, R>, ...) -> R,
+++    invoke: unsafe extern "C" fn(*mut Block<A, R>, ...) -> R,
++@@ -203 +206 @@
++-                unsafe extern fn $f<$($t,)* R, X>(
+++                unsafe extern "C" fn $f<$($t,)* R, X>(
++@@ -211 +214 @@
++-                let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+++                let f: unsafe extern "C" fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
++@@ -257 +260 @@
++-    unsafe fn with_invoke(invoke: unsafe extern fn(*mut Self, ...) -> R,
+++    unsafe fn with_invoke(invoke: unsafe extern "C" fn(*mut Self, ...) -> R,
++@@ -311 +314 @@
++-unsafe extern fn block_context_dispose<B>(block: &mut B) {
+++unsafe extern "C" fn block_context_dispose<B>(block: &mut B) {
++@@ -316 +319 @@
++-unsafe extern fn block_context_copy<B>(_dst: &mut B, _src: &B) {
+++unsafe extern "C" fn block_context_copy<B>(_dst: &mut B, _src: &B) {
++@@ -324,2 +327,2 @@
++-    copy_helper: unsafe extern fn(&mut B, &B),
++-    dispose_helper: unsafe extern fn(&mut B),
+++    copy_helper: unsafe extern "C" fn(&mut B, &B),
+++    dispose_helper: unsafe extern "C" fn(&mut B),
+diff --git a/third_party/block/hex-provenance.json b/third_party/block/hex-provenance.json
+index 9d727d82..4bcb417e 100644
+--- a/third_party/block/hex-provenance.json
++++ b/third_party/block/hex-provenance.json
+@@ -10,6 +10,6 @@
+     "src/test_utils.rs": "271bd579b67e2440134227cf8ee52c1b8c22854eb0c7923b46306b51810c2cf1"
+   },
+   "patched_files": {
+-    "src/lib.rs": "e4f938c6b43dec86560f60799c84502565d52d80f66f92d4fc9517fcd59d8973"
++    "src/lib.rs": "bf799f4d01bb497fdcffe7a5e28d998e721ed45c1be866ed1b454df39ce876a9"
+   }
+ }
+diff --git a/third_party/block/src/lib.rs b/third_party/block/src/lib.rs
+index ccebbc5c..2f06a0fd 100644
+--- a/third_party/block/src/lib.rs
++++ b/third_party/block/src/lib.rs
+@@ -63,7 +63,7 @@ struct Class {
+            link(name = "System", kind = "dylib"))]
+ #[cfg_attr(not(any(target_os = "macos", target_os = "ios")),
+            link(name = "BlocksRuntime", kind = "dylib"))]
+-extern {
++extern "C" {
+     static _NSConcreteStackBlock: Class;
+ 
+     fn _Block_copy(block: *const c_void) -> *mut c_void;
+@@ -83,7 +83,7 @@ macro_rules! block_args_impl {
+     ($($a:ident : $t:ident),*) => (
+         impl<$($t),*> BlockArguments for ($($t,)*) {
+             unsafe fn call_block<R>(self, block: *mut Block<Self, R>) -> R {
+-                let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
++                let invoke: unsafe extern "C" fn(*mut Block<Self, R> $(, $t)*) -> R = {
+                     let base = block as *mut BlockBase<Self, R>;
+                     mem::transmute((*base).invoke)
+                 };
+@@ -113,7 +113,7 @@ struct BlockBase<A, R> {
+     isa: *const Class,
+     flags: c_int,
+     _reserved: c_int,
+-    invoke: unsafe extern fn(*mut Block<A, R>, ...) -> R,
++    invoke: unsafe extern "C" fn(*mut Block<A, R>, ...) -> R,
+ }
+ 
+ /// An Objective-C block that takes arguments of `A` when called and
+@@ -203,7 +203,7 @@ macro_rules! concrete_block_impl {
+             type Ret = R;
+ 
+             fn into_concrete_block(self) -> ConcreteBlock<($($t,)*), R, X> {
+-                unsafe extern fn $f<$($t,)* R, X>(
++                unsafe extern "C" fn $f<$($t,)* R, X>(
+                         block_ptr: *mut ConcreteBlock<($($t,)*), R, X>
+                         $(, $a: $t)*) -> R
+                         where X: Fn($($t,)*) -> R {
+@@ -211,7 +211,7 @@ macro_rules! concrete_block_impl {
+                     (block.closure)($($a),*)
+                 }
+ 
+-                let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
++                let f: unsafe extern "C" fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+                 unsafe {
+                     ConcreteBlock::with_invoke(mem::transmute(f), self)
+                 }
+@@ -257,7 +257,7 @@ impl<A, R, F> ConcreteBlock<A, R, F> {
+     /// Constructs a `ConcreteBlock` with the given invoke function and closure.
+     /// Unsafe because the caller must ensure the invoke function takes the
+     /// correct arguments.
+-    unsafe fn with_invoke(invoke: unsafe extern fn(*mut Self, ...) -> R,
++    unsafe fn with_invoke(invoke: unsafe extern "C" fn(*mut Self, ...) -> R,
+             closure: F) -> Self {
+         ConcreteBlock {
+             base: BlockBase {
+@@ -311,12 +311,12 @@ impl<A, R, F> DerefMut for ConcreteBlock<A, R, F> {
+     }
+ }
+ 
+-unsafe extern fn block_context_dispose<B>(block: &mut B) {
++unsafe extern "C" fn block_context_dispose<B>(block: &mut B) {
+     // Read the block onto the stack and let it drop
+     ptr::read(block);
+ }
+ 
+-unsafe extern fn block_context_copy<B>(_dst: &mut B, _src: &B) {
++unsafe extern "C" fn block_context_copy<B>(_dst: &mut B, _src: &B) {
+     // The runtime memmoves the src block into the dst block, nothing to do
+ }
+ 
+@@ -324,8 +324,8 @@ unsafe extern fn block_context_copy<B>(_dst: &mut B, _src: &B) {
+ struct BlockDescriptor<B> {
+     _reserved: c_ulong,
+     block_size: c_ulong,
+-    copy_helper: unsafe extern fn(&mut B, &B),
+-    dispose_helper: unsafe extern fn(&mut B),
++    copy_helper: unsafe extern "C" fn(&mut B, &B),
++    dispose_helper: unsafe extern "C" fn(&mut B),
+ }
+ 
+ impl<B> BlockDescriptor<B> {
+diff --git a/todo.md b/todo.md
+index ae0e41bf..f4af5fc5 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5772,3 +5772,31 @@ User rejected device-local automation editing. Remove its button, graph mode and
+ - Sole merger owns prospective full validation/review/merge. Root-only optimized
+   physical edge-pan/release/keyboard-modifier/waveform acceptance remains open.
+   This is separate from Pulse2867's new outside-source-track release requirement.
++
++
++## 19 october 2026 — pulse2872 / pr474 current warning cleanup
++
++- Current canonical baseline is `d303cbf4` / main `53ad3087` tree `f6c31b50`.
++  Rust 1.94.0 x86_64 Linux reproduced 46 vendored block missing-ABI warnings,
++  duplicate Engine/Warp `profile` and `profile.dwp` outputs, and fail-closed PCM
++  Unknown under the installed Clippy workspace wrapper. These are distinct from
++  Cargo cleanup package-qualifier notices and the historical native395 errors
++  (reported cleared in intermediate cfg(test) source; production promotion stays
++  native-owner work).
++- Spell the existing C ABI explicitly in block, retain the complete original
++  archive/license inventory and exact reverse provenance guard, deny missing_abi
++  in the real dependency compile. Name the Warp example `warp_profile`; preserve
++  both profiling implementations and Engine's existing command.
++- Qualify only the pinned ordinary official Clippy installation for the existing
++  declared-layout gate, checking actual args independently from info queries;
++  all other unsupported inputs and evidence-write failure remain Unknown.
++  Four real build-script policy tests and three new private installation/args
++  tests cover positive/default/strict and refusal paths; old PCM tests remain.
++- Original five-stage baseline passed. Workspace no-run reproduced collisions
++  then failed ENOSPC; preserve that infrastructure negative. Guarded cleanup of
++  seven owned dev packages reclaimed space, preserving dependency/release artifacts.
++  Subsequent independent workspace test-build/strict checks passed; final exact
++  source matrix and immutable receipts are retained in Pulse, not inferred here.
++- No warning suppression, lint weakening, unfinished-feature deletion, native
++  Audio-owner edit, full21 merge claim or application operation. Native/release
++  qualification and source-specific final integration remain explicitly separate.

@@ -1,0 +1,10 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+    Checking hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+    Checking hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+    Checking hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Checking hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Checking hex-desktop v0.1.0 (/workspace/hex/crates/hex-desktop)
+    Checking hex-cli v0.1.0 (/workspace/hex/crates/hex-cli)
+    Finished `dev` profile [unoptimized] target(s) in 35.49s

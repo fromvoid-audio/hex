@@ -1,0 +1,31 @@
+[1/15] real build script exact policy: running
+[1/15] real build script exact policy: passed
+[2/15] PCM exact private policies: running
+[2/15] PCM exact private policies: passed
+[3/15] dependency actual denied warnings: running
+[3/15] dependency actual denied warnings: passed
+[4/15] workspace all target test build: running
+[4/15] workspace all target test build: passed
+[5/15] strict workspace default all targets: running
+[5/15] strict workspace default all targets: passed
+[6/15] strict UI documented feature: running
+[6/15] strict UI documented feature: passed
+[7/15] strict export documented feature: running
+[7/15] strict export documented feature: passed
+[8/15] strict allocation documented features: running
+[8/15] strict allocation documented features: passed
+[9/15] architecture: running
+[9/15] architecture: passed
+[10/15] dependency provenance: running
+[10/15] dependency provenance: passed
+[11/15] GPUI patch: running
+[11/15] GPUI patch: passed
+[12/15] UI style: running
+[12/15] UI style: passed
+[13/15] device layout: running
+[13/15] device layout: passed
+[14/15] format: running
+[14/15] format: passed
+[15/15] diff: running
+[15/15] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/474-warnings-final-f2c4/summary.json

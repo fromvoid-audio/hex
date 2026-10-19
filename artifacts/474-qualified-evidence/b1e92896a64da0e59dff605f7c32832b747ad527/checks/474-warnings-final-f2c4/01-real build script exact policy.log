@@ -1,0 +1,9 @@
+test_arbitrary_clippy_args_lookalike_nested_and_response_files_refuse (test_pcm_build_gate.PcmBuildGateTests.test_arbitrary_clippy_args_lookalike_nested_and_response_files_refuse) ... ok
+test_cross_target_and_evidence_write_failure_never_qualify (test_pcm_build_gate.PcmBuildGateTests.test_cross_target_and_evidence_write_failure_never_qualify) ... ok
+test_every_unsupported_input_still_refuses_even_with_official_driver (test_pcm_build_gate.PcmBuildGateTests.test_every_unsupported_input_still_refuses_even_with_official_driver) ... ok
+test_real_installed_ordinary_and_official_clippy_default_and_strict (test_pcm_build_gate.PcmBuildGateTests.test_real_installed_ordinary_and_official_clippy_default_and_strict) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.977s
+
+OK

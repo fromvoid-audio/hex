@@ -1,0 +1,5 @@
+    Finished `dev` profile [unoptimized] target(s) in 0.02s
+     Running `target/debug/hex-warning-consumer`
+    Finished `dev` profile [unoptimized] target(s) in 0.01s
+     Running `target/debug/hex-warning-consumer`
+dependency future lints passed: block declaration and downstream proc-macro consumer, default and no-default features

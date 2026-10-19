@@ -1,0 +1,3 @@
+RELEASE_PID 295709
+RELEASE_ARTIFACT {"path": "/workspace/hex/target/release/hex-desktop", "sha256": "71f82f8b87ca4084cf3f2a792db56b86b219f9804d57d1da1e35110df8cd5ae7"}
+GUARDED_RELEASE_PASS /workspace/hex/artifacts/local-ci/474-warnings-release-f2c4/summary.json

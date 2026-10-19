@@ -1,0 +1,11 @@
+[1/5] dependency future warnings baseline: running
+[1/5] dependency future warnings baseline: passed
+[2/5] workspace all targets baseline: running
+[2/5] workspace all targets baseline: passed
+[3/5] UI documented feature baseline: running
+[3/5] UI documented feature baseline: passed
+[4/5] export documented feature baseline: running
+[4/5] export documented feature baseline: passed
+[5/5] allocation documented features baseline: running
+[5/5] allocation documented features baseline: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/474-warnings-baseline/summary.json

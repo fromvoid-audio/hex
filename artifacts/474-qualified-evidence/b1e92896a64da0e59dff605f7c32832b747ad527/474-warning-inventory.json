@@ -1,0 +1,470 @@
+[
+  {
+    "summary": "artifacts/local-ci/474-warnings-baseline/summary.json",
+    "summary_sha256": "b9e0f1b6117bc8359b3ee6919a5ffaa56659bdcef115c0e0dcdc4d3253938c24",
+    "status": "passed",
+    "source": {
+      "commit": "d303cbf4d0e92f2fede3a9957063593a820d6384",
+      "content_sha256": "08f136abaa6e58ae6cab906a272de3b2c8f65cebdfc15dc5476cf2937e01b8bb",
+      "dirty": false,
+      "dirty_files": []
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-baseline/01-dependency future warnings baseline.log",
+        "sha256": "91d394794edc864f03c3500701c5829ff2073e76641bd32ac725d83c8b5013c7",
+        "warning_lines": [
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: `extern` declarations without an explicit ABI are deprecated",
+          "warning: 46 warnings emitted"
+        ],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-baseline/02-workspace all targets baseline.log",
+        "sha256": "af209bf39cfc4dd67d88462d0005c86854789ab4f79729ee695ec67ff91cea31",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-baseline/03-UI documented feature baseline.log",
+        "sha256": "b26aac241e8e2b3355517df0021c4bee8c2962ebae5969823554ecbe27fd4b46",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-baseline/04-export documented feature baseline.log",
+        "sha256": "c2e2098bbf7e4cbe33435571b8e1a63f756f55d26b03f09f8a1579aa3b841913",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-baseline/05-allocation documented features baseline.log",
+        "sha256": "71778c55e80bfee61abb08d8566dc1f24aaa3e3077622aaee0f210e97d1653d3",
+        "warning_lines": [],
+        "errors": []
+      }
+    ]
+  },
+  {
+    "summary": "artifacts/local-ci/474-warnings-collision-baseline/summary.json",
+    "summary_sha256": "2f8fe27dede72f64d9b6631a99b0712c137e4f21c65765df2d970d25a3174242",
+    "status": "passed",
+    "source": {
+      "commit": "d303cbf4d0e92f2fede3a9957063593a820d6384",
+      "content_sha256": "08f136abaa6e58ae6cab906a272de3b2c8f65cebdfc15dc5476cf2937e01b8bb",
+      "dirty": false,
+      "dirty_files": []
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-collision-baseline/01-profile artifact collision baseline.log",
+        "sha256": "bb57609ce765fcc6f146804713800fe2ff02f014afea11bed88966b369e96d5f",
+        "warning_lines": [],
+        "errors": []
+      }
+    ]
+  },
+  {
+    "summary": "artifacts/local-ci/474-warnings-final-doc-default/summary.json",
+    "summary_sha256": "15265f25b530cd14f8f4a7cb45efa1274748f0ae3553306b5ed2918dd09d5fe6",
+    "status": "passed",
+    "source": {
+      "commit": "b1e92896a64da0e59dff605f7c32832b747ad527",
+      "content_sha256": "227dbfd87781da38a05476b5748532ff4edcaabd290450aa07ef279c952da8d2",
+      "dirty": false,
+      "dirty_files": []
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-final-doc-default/01-actual default official Clippy.log",
+        "sha256": "102ff722840e7c57d7a81cd33e924524904ea3f9dff614391abe19af84b1f5e0",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-doc-default/02-format after documentation correction.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-doc-default/03-final diff.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warning_lines": [],
+        "errors": []
+      }
+    ]
+  },
+  {
+    "summary": "artifacts/local-ci/474-warnings-final-f2c4/summary.json",
+    "summary_sha256": "cb0ab54754c70a4408d2cd51dd08f57037f1f8bb01c543687c13b40e27254f69",
+    "status": "passed",
+    "source": {
+      "commit": "f2c4aa0ec4536cd16ebc12f244066cbf1bcfc404",
+      "content_sha256": "5b8db40c24a35649a94ee68915446b4080bcabff6ba609053eb730055f0c71fa",
+      "dirty": false,
+      "dirty_files": []
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/01-real build script exact policy.log",
+        "sha256": "c117276c9dfbaee37062e71f5fa480f8373826891e689036b5e33e74ad3530a4",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/02-PCM exact private policies.log",
+        "sha256": "a67c31393417b02dd08ba052c55dc5d70ccdaa0ffe2f1f83f4a7f3e29e2c8bc6",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/03-dependency actual denied warnings.log",
+        "sha256": "dac0f77fff852a106834840bf2ac7fcbf266d6e8176706e687efa90e6ee6a76d",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/04-workspace all target test build.log",
+        "sha256": "d16628bd84411357d1890e8a158a52f01a5963663954ac203e41a8aae0754f1e",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/05-strict workspace default all targets.log",
+        "sha256": "56b919e630512998f677fd1f97e45ae4af2ad1d64b39ceb74a12bde0ca54277d",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/06-strict UI documented feature.log",
+        "sha256": "afab2a40eecb2cc5cdbf02cf3aa134858d9bbf7312615f479018cc3a6ed7a2aa",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/07-strict export documented feature.log",
+        "sha256": "e5cfc9cc6692dc0aea89899d0092dfc66e862c5168acb861ed40966e9a26778a",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/08-strict allocation documented features.log",
+        "sha256": "d7bab12254e88c5ea41a90fa303d5350f97a1076953b35458caa7ab2011f5c1f",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/09-architecture.log",
+        "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/10-dependency provenance.log",
+        "sha256": "9c0c3fd09b9b22707639566251a286248f3daf5eda36c9145e10c1f7cee736eb",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/11-GPUI patch.log",
+        "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/12-UI style.log",
+        "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/13-device layout.log",
+        "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/14-format.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-final-f2c4/15-diff.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warning_lines": [],
+        "errors": []
+      }
+    ]
+  },
+  {
+    "summary": "artifacts/local-ci/474-warnings-independent-green/summary.json",
+    "summary_sha256": "e1cba453dde748fc28e8265efc930a61d442ac865485e92f070a574747b55859",
+    "status": "passed",
+    "source": {
+      "commit": "d303cbf4d0e92f2fede3a9957063593a820d6384",
+      "content_sha256": "ffed1ccef785daa08342b37b4edefdc2911efea756aaa028b33cb4fe27e3758d",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-warp/Cargo.toml",
+        " M docs/dependency-warnings.md",
+        " M docs/musical-editing.md",
+        " M scripts/check-dependency-future-lints.py",
+        " M scripts/check-dependency-patches.py",
+        " M third_party/block/HEX-PATCHES.md",
+        " M third_party/block/hex-patches.diff",
+        " M third_party/block/hex-provenance.json",
+        " M third_party/block/src/lib.rs"
+      ]
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-independent-green/01-denied actual dependency ABI lints.log",
+        "sha256": "b732661ac6b385176db612291369a4543117f2fe6a4bd577beafd414ca5a6c89",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-independent-green/02-workspace test build unique outputs.log",
+        "sha256": "9b40674aec5003a8c0981efd28d3df25355463e023def05db5b877218bcc820f",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-independent-green/03-strict workspace all targets.log",
+        "sha256": "9e36bd10b50ce4f2ea23af936242fb9ed9c9247583f515c4d87e963dffef4c31",
+        "warning_lines": [
+          "warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags"
+        ],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-independent-green/target-handoff-clean.log",
+        "sha256": "150cb0ca42bca5f98227f5b47358c75dd199fb6cadbf653742f8acfb9e6bc7a0",
+        "warning_lines": [
+          "warning: version qualifier in `-p path+file:///workspace/hex/third_party/block#0.1.6` is ignored, cleaning all versions of `block` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/third_party/block#0.1.6` ignored, cleaning all versions of `block` found"
+        ],
+        "errors": []
+      }
+    ]
+  },
+  {
+    "summary": "artifacts/local-ci/474-warnings-pcm-functional/summary.json",
+    "summary_sha256": "9a2647d32e31802a8c77ce264034a29a43680d127cbbd3659f5c1394b8f64c6b",
+    "status": "passed",
+    "source": {
+      "commit": "d303cbf4d0e92f2fede3a9957063593a820d6384",
+      "content_sha256": "8f17805bfa03101efffa6d6841677c1f205061e779b0e680c36e18dafe8c9dda",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/build.rs",
+        " M crates/hex-engine/src/pcm_arc.rs",
+        " M crates/hex-warp/Cargo.toml",
+        " M docs/dependency-warnings.md",
+        " M docs/musical-editing.md",
+        " M scripts/check-dependency-future-lints.py",
+        " M scripts/check-dependency-patches.py",
+        " M third_party/block/HEX-PATCHES.md",
+        " M third_party/block/hex-patches.diff",
+        " M third_party/block/hex-provenance.json",
+        " M third_party/block/src/lib.rs",
+        "?? crates/hex-engine/build_support/pcm_clippy.rs",
+        "?? scripts/tests/test_pcm_build_gate.py"
+      ]
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-pcm-functional/01-real build script qualification and refusal.log",
+        "sha256": "9b532caa5678fbe548dec847f1a2fa749e9349fc0de93629846f23b5d7516079",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-pcm-functional/02-private engine PCM layout and installation predicates.log",
+        "sha256": "173114ea73cd4a0ef9479d74559823f3684f068e8abf1fdceeb0ae91ff753665",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-pcm-functional/03-strict Engine build and all targets.log",
+        "sha256": "e8679357d46c6c1fb7af2d6e8eab63482eb861dbb2870cbe6e3ce79e57b26ea0",
+        "warning_lines": [],
+        "errors": []
+      }
+    ]
+  },
+  {
+    "summary": "artifacts/local-ci/474-warnings-reclaim-owned-debug-v2/summary.json",
+    "summary_sha256": "16a25f81e2438fa9f801c1feadc662701faa2573b2e9e8f113f13d32ab7dea9f",
+    "status": "passed",
+    "source": {
+      "commit": "d303cbf4d0e92f2fede3a9957063593a820d6384",
+      "content_sha256": "08f136abaa6e58ae6cab906a272de3b2c8f65cebdfc15dc5476cf2937e01b8bb",
+      "dirty": false,
+      "dirty_files": []
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-reclaim-owned-debug-v2/01-reclaim owned workspace dev artifacts after ENOSPC.log",
+        "sha256": "27a6eb58ddbdc36a8c2647bc6a9161f8596c04c71b56d94aafc9c40cfc7af87f",
+        "warning_lines": [],
+        "errors": []
+      }
+    ]
+  },
+  {
+    "summary": "artifacts/local-ci/474-warnings-release-f2c4/summary.json",
+    "summary_sha256": "d3264aea7e0d8f9f6d3c21aa5c72ca0d9f7a2aac8fadac864237a0468e66f0b7",
+    "status": "incomplete",
+    "source": {
+      "commit": "b1e92896a64da0e59dff605f7c32832b747ad527",
+      "content_sha256": "227dbfd87781da38a05476b5748532ff4edcaabd290450aa07ef279c952da8d2",
+      "dirty": false,
+      "dirty_files": []
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-release-f2c4/release-build.log",
+        "sha256": "1e6203bd66e0a3e45043c0715396d550c1324f5726e82dbd1763fc25ecda0976",
+        "warning_lines": [],
+        "errors": []
+      },
+      {
+        "log": "artifacts/local-ci/474-warnings-release-f2c4/release-handoff-clean.log",
+        "sha256": "fd848a71f83c959a35293dcdb9ee5efd109daf91e21be88af3703d66001b1607",
+        "warning_lines": [
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-mts#0.1.0` is ignored, cleaning all versions of `hex-mts` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-mts#0.1.0` ignored, cleaning all versions of `hex-mts` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-tuning#0.1.0` is ignored, cleaning all versions of `hex-tuning` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-tuning#0.1.0` ignored, cleaning all versions of `hex-tuning` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-dsp#0.1.0` is ignored, cleaning all versions of `hex-dsp` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-dsp#0.1.0` ignored, cleaning all versions of `hex-dsp` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-midi#0.1.0` is ignored, cleaning all versions of `hex-midi` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-midi#0.1.0` ignored, cleaning all versions of `hex-midi` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-clap-scan#0.1.0` is ignored, cleaning all versions of `hex-clap-scan` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-clap-scan#0.1.0` ignored, cleaning all versions of `hex-clap-scan` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0` is ignored, cleaning all versions of `hex-plugin-scan` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0` ignored, cleaning all versions of `hex-plugin-scan` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-warp#0.1.0` is ignored, cleaning all versions of `hex-warp` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-warp#0.1.0` ignored, cleaning all versions of `hex-warp` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-diagnostics#0.1.0` is ignored, cleaning all versions of `hex-diagnostics` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-diagnostics#0.1.0` ignored, cleaning all versions of `hex-diagnostics` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-session#0.1.0` is ignored, cleaning all versions of `hex-session` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-session#0.1.0` ignored, cleaning all versions of `hex-session` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-engine#0.1.0` is ignored, cleaning all versions of `hex-engine` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-engine#0.1.0` ignored, cleaning all versions of `hex-engine` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-devices#0.1.0` is ignored, cleaning all versions of `hex-devices` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-devices#0.1.0` ignored, cleaning all versions of `hex-devices` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-lattice#0.1.0` is ignored, cleaning all versions of `hex-lattice` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-lattice#0.1.0` ignored, cleaning all versions of `hex-lattice` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0` is ignored, cleaning all versions of `hex-lattice-contract` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0` ignored, cleaning all versions of `hex-lattice-contract` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-project#0.1.0` is ignored, cleaning all versions of `hex-project` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-project#0.1.0` ignored, cleaning all versions of `hex-project` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-export#0.1.0` is ignored, cleaning all versions of `hex-export` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-export#0.1.0` ignored, cleaning all versions of `hex-export` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-media#0.1.0` is ignored, cleaning all versions of `hex-media` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-media#0.1.0` ignored, cleaning all versions of `hex-media` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-storage#0.1.0` is ignored, cleaning all versions of `hex-storage` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-storage#0.1.0` ignored, cleaning all versions of `hex-storage` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-stream#0.1.0` is ignored, cleaning all versions of `hex-stream` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-stream#0.1.0` ignored, cleaning all versions of `hex-stream` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-library#0.1.0` is ignored, cleaning all versions of `hex-library` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-library#0.1.0` ignored, cleaning all versions of `hex-library` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-cli#0.1.0` is ignored, cleaning all versions of `hex-cli` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-cli#0.1.0` ignored, cleaning all versions of `hex-cli` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-desktop#0.1.0` is ignored, cleaning all versions of `hex-desktop` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-desktop#0.1.0` ignored, cleaning all versions of `hex-desktop` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-audio#0.1.0` is ignored, cleaning all versions of `hex-audio` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-audio#0.1.0` ignored, cleaning all versions of `hex-audio` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-ui#0.1.0` is ignored, cleaning all versions of `hex-ui` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-ui#0.1.0` ignored, cleaning all versions of `hex-ui` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-preferences#0.1.0` is ignored, cleaning all versions of `hex-preferences` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-preferences#0.1.0` ignored, cleaning all versions of `hex-preferences` found",
+          "warning: version qualifier in `-p path+file:///workspace/hex/crates/hex-widgets#0.1.0` is ignored, cleaning all versions of `hex-widgets` found",
+          "warning: url qualifier in `-p path+file:///workspace/hex/crates/hex-widgets#0.1.0` ignored, cleaning all versions of `hex-widgets` found"
+        ],
+        "errors": []
+      }
+    ]
+  },
+  {
+    "summary": "artifacts/local-ci/474-warnings-workspace-build-baseline/summary.json",
+    "summary_sha256": "28232f15bfa303238f8b5e33cf015bfb160ebb0c99127995e48e3a284de59e33",
+    "status": "failed",
+    "source": {
+      "commit": "d303cbf4d0e92f2fede3a9957063593a820d6384",
+      "content_sha256": "08f136abaa6e58ae6cab906a272de3b2c8f65cebdfc15dc5476cf2937e01b8bb",
+      "dirty": false,
+      "dirty_files": []
+    },
+    "logs": [
+      {
+        "log": "artifacts/local-ci/474-warnings-workspace-build-baseline/01-workspace test artifact warnings baseline.log",
+        "sha256": "89efa1d3cd3648385ec40e52e2671c002fa0042ae47281c9df4650eb7682a50e",
+        "warning_lines": [
+          "warning: output filename collision at /workspace/hex/target/debug/examples/profile",
+          "warning: output filename collision at /workspace/hex/target/debug/examples/profile.dwp",
+          "warning: build failed, waiting for other jobs to finish..."
+        ],
+        "errors": [
+          "error: couldn't create a temp dir: No space left on device (os error 28) at path \"/workspace/hex/target/debug/deps/rustcyc6Hci\"",
+          "error: could not compile `hex-audio` (test \"eq8_oversampling_study\") due to 1 previous error",
+          "error: couldn't create a temp dir: No space left on device (os error 28) at path \"/workspace/hex/target/debug/deps/rustcW07pt1\"",
+          "error: could not compile `hex-storage` (lib test) due to 1 previous error",
+          "error: couldn't create a temp dir: No space left on device (os error 28) at path \"/workspace/hex/target/debug/deps/rmetaKibPgW\"",
+          "error: could not compile `hex-ui` (lib test) due to 1 previous error",
+          "error: couldn't create a temp dir: No space left on device (os error 28) at path \"/workspace/hex/target/debug/deps/rustcZIe46P\"",
+          "error: could not compile `hex-ui` (lib) due to 1 previous error"
+        ]
+      }
+    ]
+  }
+]

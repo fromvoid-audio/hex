@@ -1,0 +1,3 @@
+[1/1] reclaim owned workspace dev artifacts after ENOSPC: running
+[1/1] reclaim owned workspace dev artifacts after ENOSPC: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/474-warnings-reclaim-owned-debug-v2/summary.json

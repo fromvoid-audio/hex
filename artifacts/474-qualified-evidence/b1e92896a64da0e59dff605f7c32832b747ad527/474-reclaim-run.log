@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "/tmp/474-component.py", line 5, in <module>
+    result=r.run();print('COMPONENT_ONLY_SUMMARY',r.summary_path);raise SystemExit(result)
+           ^^^^^^^
+  File "/workspace/hex/artifacts/310-approved-guard-runner.py", line 1203, in run
+    self.output_dir.mkdir(parents=True, exist_ok=False)
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1311, in mkdir
+    os.mkdir(self, mode)
+OSError: [Errno 28] No space left on device: '/workspace/hex/artifacts/local-ci/474-warnings-reclaim-owned-debug'
