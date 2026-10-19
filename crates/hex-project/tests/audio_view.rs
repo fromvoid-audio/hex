@@ -1686,3 +1686,60 @@ fn review_phase_repeat_cycle_end_refuses_at_or_before_start_without_history_chan
         }
     }
 }
+
+#[test]
+fn review_phase_musical_cycle_boundary_is_exact_or_refused_without_once_restriction() {
+    for mode in [AudioViewMode::Repeat, AudioViewMode::Once] {
+        for delta in [-1i64, 0, 1] {
+            let (setup, clip) = beat_fixture();
+            let mut snapshot = setup.project().snapshot();
+            snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+                .edit
+                .as_mut()
+                .unwrap()
+                .placement
+                .as_mut()
+                .unwrap()
+                .mode = mode;
+            let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+            let before = e.project().snapshot();
+            let start = e.project().clip(clip).unwrap().start();
+            let target = u64::try_from(i128::from(start) + i128::from(delta)).unwrap();
+            let old =
+                AudioViewProjection::new(e.project().clip(clip).unwrap(), e.project().tempo_map())
+                    .unwrap();
+            let old_origin = old.root_origin();
+            let old_outer = old.outer_frame_bounds();
+            let result = e.execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleEnd {
+                    project_frame: target,
+                },
+            });
+            if mode == AudioViewMode::Repeat && delta <= 0 {
+                assert!(result.is_err());
+                assert_eq!(e.project().snapshot(), before);
+                assert!(!e.can_undo());
+            } else {
+                result.unwrap();
+                let c = e.project().clip(clip).unwrap();
+                let p = AudioViewProjection::new(c, e.project().tempo_map()).unwrap();
+                assert_eq!(p.logical_first_boundary(), i128::from(target));
+                assert_eq!(p.root_origin(), old_origin);
+                assert_eq!(p.outer_frame_bounds(), old_outer);
+                assert_eq!(
+                    c.audio_edit().unwrap().placement.unwrap().cycle_phase,
+                    Q / 2
+                );
+                if delta <= 0 {
+                    assert_eq!(p.occurrence_count(), 0);
+                }
+                let after = e.project().snapshot();
+                assert!(e.undo());
+                assert_eq!(e.project().snapshot(), before);
+                assert!(e.redo());
+                assert_eq!(e.project().snapshot(), after);
+            }
+        }
+    }
+}

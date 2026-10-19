@@ -341,14 +341,19 @@ pub(crate) fn set_clip_fade_envelope(
         .clone()
         .ok_or(Invalid("audio domain is missing"))?;
     let edit = Arc::make_mut(&mut owned_edit);
+    let projection = if edit.musical_start.is_some() {
+        Some(AudioFadeProjection {
+            tempo: tempo.clone(),
+            origin_beat_raw: edit.projection_origin()? + i128::from(edit.view_start),
+            local_start_raw: edit.view_start,
+        })
+    } else {
+        None
+    };
     let domain = Arc::make_mut(&mut edit.domain);
     domain.fade = fade;
     domain.fade_start = edit.view_start;
-    domain.fade_projection = edit.musical_start.map(|beat| AudioFadeProjection {
-        tempo: tempo.clone(),
-        origin_beat_raw: i128::from(beat.raw()),
-        local_start_raw: edit.view_start,
-    });
+    domain.fade_projection = projection;
     clip.edit = Some(owned_edit);
     project_clip(clip, tempo)
 }

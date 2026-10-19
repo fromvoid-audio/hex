@@ -343,6 +343,9 @@ pub fn preview_view_resize(
             if old.is_none() {
                 return Err(Invalid("first repeat boundary requires a captured cycle"));
             }
+            if placement.mode == AudioViewMode::Repeat && delta <= 0 {
+                return Err(Invalid("repeat boundary must follow clip start"));
+            }
             let cycle = u64::try_from(delta + i128::from(placement.cycle_phase))
                 .ok()
                 .filter(|n| *n > 0)

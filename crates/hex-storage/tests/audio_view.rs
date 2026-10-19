@@ -299,3 +299,98 @@ fn projection_codec_matches_signed_model_endpoints_and_refuses_malformed_origins
         );
     }
 }
+
+#[test]
+fn phased_musical_fade_preserves_authored_age_across_tempo_and_current_codec() {
+    use hex_project::{BeatTime, Tempo, audio_projection_frame};
+    const Q: u64 = 1 << 32;
+    for mode in [AudioViewMode::Once, AudioViewMode::Repeat] {
+        let (project, clip) = fixture(mode);
+        let mut editor = Editor::new(project, 16).unwrap();
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::from_raw(Q / 4),
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        let authored = editor.project().tempo_map().clone();
+        let fade = ClipFade::new(
+            editor.project().clip(clip).unwrap().duration(),
+            0,
+            48_000,
+            0,
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        for changed in [false, true] {
+            if changed {
+                editor
+                    .execute(Command::SetTempoPoint {
+                        beat: BeatTime::from_raw(Q / 8),
+                        tempo: Tempo::new(90_000_000).unwrap(),
+                    })
+                    .unwrap();
+            }
+            let bytes = hex_storage::encode(editor.project()).unwrap();
+            let loaded = hex_storage::decode(&bytes).unwrap();
+            assert_eq!(loaded.snapshot(), editor.project().snapshot());
+            let source = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+            let edit = loaded.clip(clip).unwrap().audio_edit().unwrap();
+            assert!(edit.placement.unwrap().cycle_phase > 0);
+            assert_eq!(
+                edit.domain.fade_projection.as_ref().unwrap().tempo,
+                authored
+            );
+            let root = AudioViewProjection::new(loaded.clip(clip).unwrap(), loaded.tempo_map())
+                .unwrap()
+                .root_origin();
+            let anchor = root + i128::from(edit.domain.fade_start);
+            assert_eq!(
+                edit.domain
+                    .fade_projection
+                    .as_ref()
+                    .unwrap()
+                    .origin_beat_raw,
+                anchor
+            );
+            let probe = edit.view_start + edit.placement.unwrap().cycle_phase + Q / 2;
+            let delta = i128::from(probe - edit.domain.fade_start);
+            let age = u64::try_from(
+                audio_projection_frame(&authored, anchor + delta).unwrap()
+                    - audio_projection_frame(&authored, anchor).unwrap(),
+            )
+            .unwrap();
+            let frame = edit.root_frame_at(probe, loaded.tempo_map()).unwrap();
+            let actual = edit
+                .projected_fade(loaded.tempo_map())
+                .unwrap()
+                .gain_at(frame)
+                .unwrap();
+            assert!((actual - fade.gain_at(age)).abs() < 1e-6);
+            let (_, length, _, _) = edit.projected_domain(loaded.tempo_map()).unwrap();
+            for position in [0, length / 4, length / 2, length - 1] {
+                assert_eq!(
+                    edit.projected_fade(loaded.tempo_map())
+                        .unwrap()
+                        .gain_at(position)
+                        .unwrap()
+                        .to_bits(),
+                    source
+                        .projected_fade(editor.project().tempo_map())
+                        .unwrap()
+                        .gain_at(position)
+                        .unwrap()
+                        .to_bits()
+                );
+            }
+        }
+    }
+}

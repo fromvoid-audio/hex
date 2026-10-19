@@ -5562,3 +5562,22 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - New guarded affected default/feature tests and current-format Storage roundtrips, exact full21 and fresh review remain pending. Historical770 and2918 failures are retained; no native full445 playback, physical loop, audio, installation or user acceptance claim.
 
 - First guarded current integration focused run passed default four cases but feature test-target compilation failed E0063 in the single reconstructed ViewState fixture. Carry comparison_audio from the existing old state, matching the current Group409 fixture pattern and preserving all captured scalar freshness oracles. Original exact failure remains; model/Storage phases were not run. Fresh corrected affected qualification and full21/review are still required.
+
+### 2026-10-19 — PR456 phased fade origin and Repeat boundary review return
+
+- Preserve the combined current1c2 placement32/A/B/tuning/both-slot-asset source,
+  original13bd cfg/codec repair, f5 compile negative and mechanical fixture carry.
+  Two actual canonical model regressions reproduce the previously source-backed
+  phase fade-age and before-start Repeat-boundary findings; zero-phase control
+  and original22 placement cases remain intact.
+- Fade authoring reuses the existing projection_origin plus its existing local
+  fade_start, retaining the frozen authored tempo map. Repeat CycleEnd refuses a
+  requested at/before-start boundary before cycle normalization; Once retains
+  valid exhausted cursors and earlier logical boundaries. No guessed DSP law,
+  schema/version/legacy reader, rendering/export or Engine/resource change.
+- New independent curve-age, frame/beat boundary/refusal, exact history and
+  current-format frozen-envelope roundtrip cases precede source handoff. Existing
+  malformed/range, phase/source/fade, ordinary trim and current-format integrity
+  assertions remain. New combined full21/fresh review/actual merge are merger
+  work; old1c2 receipt does not qualify the changed source. Native/installed
+  listening and parent445 full runtime/waveform acceptance remain open.
