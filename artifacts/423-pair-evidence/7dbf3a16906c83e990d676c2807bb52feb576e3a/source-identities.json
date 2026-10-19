@@ -1,0 +1,18 @@
+{
+  "crates/hex-ui/src/editor/browser_search_selection_ui_test.rs": {
+    "before_sha256": "404dda961e7da2f3f97ff8d7aab522129186eb2905d1e4e9aecabb81c0bf20c3",
+    "after_sha256": "c96a0f17c48108e2502900220a9e879d3d57f03a91b2a60055f620734ecb8606"
+  },
+  "crates/hex-widgets/src/text_click_selection.rs": {
+    "before_sha256": "9216ced4a60d6785210144063e54b4e4b3a75df454fc36b429c1317e307ff691",
+    "after_sha256": "016125d647087d402be86ec6c90f4a519cabc0b31bf0325f253ae33d02380733"
+  },
+  "docs/browser-places.md": {
+    "before_sha256": "968ec363e4b188c81d3fc5deffbbf8ce0b23d078bd029a21b6125888c4cca458",
+    "after_sha256": "69ed0e5526a9a140373442b0713e12cd3b89f6ebb38947a630a1ca5b1eb9a26a"
+  },
+  "todo.md": {
+    "before_sha256": "edc269b464de289e52debaf413dc57c0b573ddd70948c3fa4faa19a1e1241c87",
+    "after_sha256": "8329a267b457918e3f28efe68b6dc463d20b1ec89a56e4ebe99cd9a73ea9310d"
+  }
+}

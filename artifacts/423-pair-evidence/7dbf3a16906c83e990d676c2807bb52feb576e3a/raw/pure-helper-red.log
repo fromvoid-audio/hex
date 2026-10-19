@@ -1,0 +1,17 @@
+
+running 1 test
+test tests::invalidated_pair_does_not_invent_a_second_click ... FAILED
+
+failures:
+
+failures:
+    tests::invalidated_pair_does_not_invent_a_second_click
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+thread 'tests::invalidated_pair_does_not_invent_a_second_click' (225338) panicked at crates/hex-widgets/src/text_click_selection.rs:39:21:
+assertion `left == right` failed
+  left: Some(true)
+ right: None
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -1,0 +1,59 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.62s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-37079ce5a713602d)
+
+running 6 tests
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_escape_sample_right' (226828) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:4244:9:
+assertion `left == right` failed
+  left: "/tmp/hex-ui-browser-test-226825-3/samples"
+ right: "/tmp/hex-ui-browser-test-226825-3/samples/loop.wav"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::ui_test::review_unhighlighted_row_escape_sample_right ... FAILED
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=true left=true before=(0, "▾", 1) after=(0, "▸", 1)
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_escape_folder_left' (226826) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:4285:9:
+assertion `left == right` failed: unhighlighted navigation must not dispatch a row action
+  left: (0, "▸", 1)
+ right: (0, "▾", 1)
+test editor::browser::ui_test::review_unhighlighted_row_escape_folder_left ... FAILED
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=true left=false before=(0, "▸", 0) after=(0, "▾", 1)
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_escape_folder_right' (226827) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:4285:9:
+assertion `left == right` failed: unhighlighted navigation must not dispatch a row action
+  left: (0, "▾", 1)
+ right: (0, "▸", 0)
+test editor::browser::ui_test::review_unhighlighted_row_escape_folder_right ... FAILED
+ACTUAL_UNHIGHLIGHTED_ROW sample=false escape=false left=false before=(0, "▸", 0) after=(0, "▾", 1)
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_source_folder_right' (226853) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:4285:9:
+assertion `left == right` failed: unhighlighted navigation must not dispatch a row action
+  left: (0, "▾", 1)
+ right: (0, "▸", 0)
+test editor::browser::ui_test::review_unhighlighted_row_source_folder_right ... FAILED
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_source_sample_right' (226857) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:4244:9:
+assertion `left == right` failed
+  left: "/tmp/hex-ui-browser-test-226825-5/samples"
+ right: "/tmp/hex-ui-browser-test-226825-5/samples/loop.wav"
+test editor::browser::ui_test::review_unhighlighted_row_source_sample_right ... FAILED
+
+thread 'editor::browser::ui_test::review_unhighlighted_row_selected_controls' (226829) panicked at crates/hex-ui/src/editor/browser_ui_test.rs:4335:17:
+assertion failed: v.browser.playback_generation > before
+test editor::browser::ui_test::review_unhighlighted_row_selected_controls ... FAILED
+
+failures:
+
+failures:
+    editor::browser::ui_test::review_unhighlighted_row_escape_folder_left
+    editor::browser::ui_test::review_unhighlighted_row_escape_folder_right
+    editor::browser::ui_test::review_unhighlighted_row_escape_sample_right
+    editor::browser::ui_test::review_unhighlighted_row_selected_controls
+    editor::browser::ui_test::review_unhighlighted_row_source_folder_right
+    editor::browser::ui_test::review_unhighlighted_row_source_sample_right
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 757 filtered out; finished in 0.91s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

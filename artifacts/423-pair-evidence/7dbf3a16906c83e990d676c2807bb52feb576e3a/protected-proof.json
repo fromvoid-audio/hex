@@ -1,0 +1,26 @@
+{
+  "crates/hex-ui/src/editor/browser_input.rs": "9b925760d9da9152b09ecaad397649437378383461b8699b4ef4fe7af6780310",
+  "crates/hex-ui/src/editor/browser.rs": "28229763d055da2c7810d57ed1c6cbf08b6dd65f1e99ac5b01eb7dfc8fce6fd2",
+  "crates/hex-widgets/src/numeric_control.rs": "306c58edf9efe611be422256735a509d8e9637b58083d589b7f59682719ccfd9",
+  "crates/hex-widgets/src/numeric_text.rs": "7d3aca37f479eee83a5b588daa343b7eff75a2ca4a8c743b5910285a0cd34a1f",
+  "crates/hex-widgets/src/tests.rs": "bc6f6948bd8a0e40696a6746d67502059ea4d12be477ec9d0725dd1d92ed29d6",
+  "crates/hex-widgets/src/lib.rs": "78804e83082f6fc620a98498e9fed1937c042aad0acbb0b9668ac93a8448ac6c",
+  "crates/hex-widgets/src/style.rs": "51872dc1013a6705fc56a55c925dde0c7f30d83d49f8b1f8f5985f42a6500288",
+  "crates/hex-widgets/src/text_case.rs": "1b3bd21b72791d5a15e10e45daaac6288a525eeab1782dc5a45f35169f6d016e",
+  "original_search_selection_tests_unchanged_prefix": "404dda961e7da2f3f97ff8d7aab522129186eb2905d1e4e9aecabb81c0bf20c3",
+  "diagnostic_production_exact_base": true,
+  "row_test_comparison": {
+    "b017": {
+      "base": "b017d848dd7df7d7578d59f046ef269e5ea561ba",
+      "diagnostic": "7e19dd3266e1dff1a0879740cc4786ba66c90b76",
+      "test_sha256": "589599661de2439b6cce5b0b44920f7edc38be91d3a384daca1a0a9927ab6c77",
+      "only_changed_file": "crates/hex-ui/src/editor/browser_ui_test.rs"
+    },
+    "main": {
+      "base": "2683942bcb355010ea3f397d3428213178ea8ad9",
+      "diagnostic": "853686a20ad112cbc70743a78e4817bac6dfbf57",
+      "test_sha256": "589599661de2439b6cce5b0b44920f7edc38be91d3a384daca1a0a9927ab6c77",
+      "only_changed_file": "crates/hex-ui/src/editor/browser_ui_test.rs"
+    }
+  }
+}

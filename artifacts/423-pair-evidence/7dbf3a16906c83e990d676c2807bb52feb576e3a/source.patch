@@ -1,0 +1,205 @@
+diff --git a/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+index 235fd1de..277dd585 100644
+--- a/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
++++ b/crates/hex-ui/src/editor/browser_search_selection_ui_test.rs
+@@ -457,3 +457,113 @@ fn search_empty_double_click_is_selection_only(cx: &mut TestAppContext) {
+         assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+     });
+ }
++
++fn invalidated_pair_caller(cx: &mut TestAppContext, invalidation: &str) {
++    cx.update(super::super::super::bind_editor_keys);
++    let (handle, editor, _directory, _samples) = toggle_fixture(cx);
++    let visual = &mut VisualTestContext::from_window(handle, cx);
++    visual.simulate_keystrokes("cmd-f");
++    visual.simulate_input("kick hats");
++    visual.simulate_keystrokes("cmd-f");
++    let first = caret_point(&editor, visual, 4);
++    visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(first, MouseButton::Left, Modifiers::default());
++    match invalidation {
++        "keyboard" => visual.simulate_keystrokes("left"),
++        "text" => visual.simulate_input("x"),
++        "ime" => visual.update(|window, cx| {
++            let input = editor.read(cx).browser.search.clone();
++            input.update(cx, |input, cx| {
++                input.replace_and_mark_text_in_range(None, "İ🎛", Some(1..1), window, cx);
++                input.unmark_text(window, cx);
++            });
++        }),
++        "shift" => {
++            let at = caret_point(&editor, visual, 6);
++            let modifiers = Modifiers {
++                shift: true,
++                ..Default::default()
++            };
++            visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
++            visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
++        }
++        "drag" => {
++            let at = caret_point(&editor, visual, 6);
++            visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
++            visual.simulate_mouse_move(at, MouseButton::Left, Modifiers::default());
++            visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
++        }
++        _ => unreachable!(),
++    }
++    let at = caret_point(&editor, visual, 2);
++    let before = editor.read_with(visual, |view, cx| {
++        (
++            view.browser.search.read(cx).content.clone(),
++            view.browser.playback_generation,
++            view.browser.preview_preparations,
++            view.browser.tree.requests_started,
++        )
++    });
++    for down in [true, false] {
++        if down {
++            visual.simulate_event(gpui::MouseDownEvent {
++                position: at,
++                button: MouseButton::Left,
++                modifiers: Modifiers::default(),
++                click_count: 2,
++                first_mouse: false,
++            });
++        } else {
++            visual.simulate_event(gpui::MouseUpEvent {
++                position: at,
++                button: MouseButton::Left,
++                modifiers: Modifiers::default(),
++                click_count: 2,
++            });
++        }
++    }
++    assert_eq!(
++        selection(&editor, visual),
++        2..2,
++        "invalidated {invalidation} pair must use normal caret input"
++    );
++    editor.read_with(visual, |view, cx| {
++        assert_eq!(
++            (
++                view.browser.search.read(cx).content.clone(),
++                view.browser.playback_generation,
++                view.browser.preview_preparations,
++                view.browser.tree.requests_started
++            ),
++            before
++        );
++        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
++    });
++    double_click_at(visual, at, 3);
++    assert_eq!(
++        selection(&editor, visual),
++        0..before.0.encode_utf16().count(),
++        "fresh rapid3/4 pair remains valid"
++    );
++}
++
++#[gpui::test]
++fn search_invalidated_pair_keyboard(cx: &mut TestAppContext) {
++    invalidated_pair_caller(cx, "keyboard");
++}
++#[gpui::test]
++fn search_invalidated_pair_text(cx: &mut TestAppContext) {
++    invalidated_pair_caller(cx, "text");
++}
++#[gpui::test]
++fn search_invalidated_pair_ime(cx: &mut TestAppContext) {
++    invalidated_pair_caller(cx, "ime");
++}
++#[gpui::test]
++fn search_invalidated_pair_shift(cx: &mut TestAppContext) {
++    invalidated_pair_caller(cx, "shift");
++}
++#[gpui::test]
++fn search_invalidated_pair_drag(cx: &mut TestAppContext) {
++    invalidated_pair_caller(cx, "drag");
++}
+diff --git a/crates/hex-widgets/src/text_click_selection.rs b/crates/hex-widgets/src/text_click_selection.rs
+index dd26227d..f182f0f3 100644
+--- a/crates/hex-widgets/src/text_click_selection.rs
++++ b/crates/hex-widgets/src/text_click_selection.rs
+@@ -11,7 +11,7 @@ impl TextClickSelection {
+     /// records the pre-gesture state. Rapid pairs may arrive as 1/2 then 3/4.
+     pub fn selection_for_down(&mut self, click_count: usize, all: bool) -> Option<bool> {
+         if click_count >= 2 && click_count % 2 == 0 {
+-            Some(!self.before_all.take().unwrap_or(all))
++            self.before_all.take().map(|before| !before)
+         } else {
+             self.before_all = Some(all);
+             None
+@@ -23,3 +23,27 @@ impl TextClickSelection {
+         self.before_all = None;
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::TextClickSelection;
++
++    #[test]
++    fn invalidated_pair_does_not_invent_a_second_click() {
++        for count in [1, 3] {
++            for before in [false, true] {
++                for current in [false, true] {
++                    let mut policy = TextClickSelection::default();
++                    assert_eq!(policy.selection_for_down(count, before), None);
++                    policy.clear();
++                    assert_eq!(policy.selection_for_down(count + 1, current), None);
++                    assert_eq!(policy.selection_for_down(count + 2, current), None);
++                    assert_eq!(
++                        policy.selection_for_down(count + 3, !current),
++                        Some(!current)
++                    );
++                }
++            }
++        }
++    }
++}
+diff --git a/docs/browser-places.md b/docs/browser-places.md
+index a7ecc43b..54932b84 100644
+--- a/docs/browser-places.md
++++ b/docs/browser-places.md
+@@ -159,3 +159,18 @@ value edit. Knob reset and nonediting numeric adjustment remain separate gesture
+ Rendered tests exercise actual down/up click counts, partial/drag/release,
+ filesystem worker/tick/resize updates, Unicode composition and empty text. Native
+ physical mouse/IME/accessibility acceptance remains coordinator-owned and open.
++
++### invalidated text double-click pairs
++
++A text/keyboard/IME update, Shift selection or drag invalidates the saved first
++click. If the platform subsequently sends an even click count, the shared policy
++returns no toggle and the field uses its normal caret/selection path. It never
++substitutes current selection for the discarded snapshot. Fresh rapid1/2 and3/4
++pairs still toggle from their own pre-gesture state. No text/query/value event,
++formatter, numeric knob reset or geometry policy changes.
++
++New bounded actual-caller regressions cover keyboard, text, IME, Shift and drag
++invalidation followed by click2, then a fresh3/4 pair. The shared pure policy
++covers both prior/current full-selection states. Original browser/name/numeric
++and physical input evidence remains source-bound; native click-count/IME and
++clipboard acceptance is separate from headless source checks.
+diff --git a/todo.md b/todo.md
+index d89ff076..34d3c713 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5193,3 +5193,18 @@ Focused source tests cover real click pairs, rapid pairs, partial drag/release,
+ workers/window resize, composition and empty text. Frozen426+returned7c4d is a
+ material input dependency, not new main integration. Sole merger owns final
+ prospective full CI/integration; native physical mouse/IME acceptance stays open.
++
++### 2026-10-19 — PR423 invalidated first-click review return
++
++- Preserve canonical b017 and its declared426/416 history. Actual helper and
++  five actual browser-input caller regressions reproduced a stale even-count
++  toggle after keyboard/text/IME/Shift/drag invalidation.
++- Replace only the shared helper's current-state fallback with optional saved
++  snapshot mapping. Missing snapshot falls through to each existing caller's
++  normal text click. No browser/numeric consumer, formatter, CompactSlider,
++  value-event, knob-reset or geometry production change.
++- Preserve original negatives and all original tests; qualify new invalidation
++  cases plus valid paired-click/numeric/Unicode controls. Row navigation review
++ 4308115090 remains a separate diagnostic/baseline attribution, not a silently
++  folded423 production repair. Sole merger owns integration/full21/review/merge;
++  physical/native acceptance remains separate.

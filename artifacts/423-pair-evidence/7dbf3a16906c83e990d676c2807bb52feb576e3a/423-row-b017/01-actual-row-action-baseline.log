@@ -1,0 +1,36 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0616]: field `expanded` of struct `tree::Tree` is private
+    --> crates/hex-ui/src/editor/browser_ui_test.rs:4261:40
+     |
+4261 |                 assert!(v.browser.tree.expanded.contains(&samples.join("a")))
+     |                                        ^^^^^^^^ private field
+
+error[E0616]: field `expanded` of struct `tree::Tree` is private
+    --> crates/hex-ui/src/editor/browser_ui_test.rs:4276:28
+     |
+4276 |             v.browser.tree.expanded.clone(),
+     |                            ^^^^^^^^ private field
+
+error[E0616]: field `expanded` of struct `tree::Tree` is private
+    --> crates/hex-ui/src/editor/browser_ui_test.rs:4283:68
+     |
+4283 |         let after = (v.browser.playback_generation, v.browser.tree.expanded.clone(), v.browser.tree.requests_started);
+     |                                                                    ^^^^^^^^ private field
+
+error[E0616]: field `expanded` of struct `tree::Tree` is private
+    --> crates/hex-ui/src/editor/browser_ui_test.rs:4337:40
+     |
+4337 |                 assert!(v.browser.tree.expanded.contains(&samples.join("a")));
+     |                                        ^^^^^^^^ private field
+
+error[E0616]: field `expanded` of struct `tree::Tree` is private
+    --> crates/hex-ui/src/editor/browser_ui_test.rs:4343:41
+     |
+4343 |                 assert!(!v.browser.tree.expanded.contains(&samples.join("a")))
+     |                                         ^^^^^^^^ private field
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `hex-ui` (lib test) due to 5 previous errors

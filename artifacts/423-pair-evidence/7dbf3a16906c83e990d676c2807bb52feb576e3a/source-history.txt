@@ -1,0 +1,15 @@
+commit 7dbf3a16906c83e990d676c2807bb52feb576e3a
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 13:37:10 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 13:37:10 2026 +0000
+
+    fix: require a retained first click before text selection toggle
+
+commit 924ad65b035d0328cabd766d70e773f8f3383507
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 13:35:16 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 13:35:16 2026 +0000
+
+    test: reproduce invalidated text click pairs through actual input
