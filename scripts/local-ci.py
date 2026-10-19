@@ -828,6 +828,11 @@ class LocalCiRunner:
                     record = None
                     malformed = True
             if record is not None:
+                # Automatic restart recovery retains the inspected owner, not
+                # manual adoption's permission to take over another target.
+                if expected_owner_sha256 is not None and (
+                        record["target_identity"] != identity or record["workspace_owner"] != workspace):
+                    raise TargetCacheError("release target identity/workspace changed since restart inspection; preserved unchanged")
                 old_scope = [(p["name"], p["version"]) for p in record["packages"]]
                 old_names = {name for name, _version in old_scope}
                 retained_scope = [(p["name"], p["version"]) for p in scope if p["name"] in old_names]

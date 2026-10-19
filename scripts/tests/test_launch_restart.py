@@ -378,6 +378,47 @@ class OwnershipTests(ReleaseFixture):
         self.assertFalse(self.runner.summary.get('release_target_cache'))
         self.assertNotIn('cargo clean',self.f.call_log.read_text())
 
+    def assert_recovery_refuses_without_mutation(self, expected, raw):
+        sentinel = self.f.base / 'unrelated-directory' / 'keep'
+        sentinel.parent.mkdir(exist_ok=True)
+        sentinel.write_bytes(b'unrelated data')
+        calls = self.f.call_log.read_text()
+        with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError, 'identity|workspace'):
+            with self.runner.guarded_release(adopt=True, expected_owner_sha256=expected):
+                self.fail('automatic recovery entered mutation after identity changed')
+        self.assertEqual(self.owner.read_bytes(), raw)
+        self.assertEqual(sentinel.read_bytes(), b'unrelated data')
+        self.assertIsNone(self.runner.target_lock)
+        self.assertFalse(self.runner.summary.get('release_target_cache'))
+        self.assertNotIn('cargo clean', self.f.call_log.read_text()[len(calls):])
+
+    def test_owner_cas_refuses_replaced_target_with_unchanged_marker(self):
+        expected = self.read()  # Actual read-only automatic restart preflight.
+        raw = self.owner.read_bytes()
+        self.target.rename(self.f.repo / 'retained-target')
+        self.target.mkdir()
+        keep = self.target / 'foreign-cache'
+        keep.write_bytes(b'not the inspected target')
+        self.assert_recovery_refuses_without_mutation(expected, raw)
+        self.assertEqual(keep.read_bytes(), b'not the inspected target')
+
+    def test_owner_cas_refuses_missing_target_with_unchanged_marker(self):
+        expected = self.read()
+        raw = self.owner.read_bytes()
+        self.target.rename(self.f.repo / 'retained-target')
+        self.assert_recovery_refuses_without_mutation(expected, raw)
+        self.assertFalse(self.target.exists())
+
+    def test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash(self):
+        for field in ('workspace_root', 'git_common_dir'):
+            with self.subTest(field=field):
+                previous = self.record['workspace_owner'][field]
+                self.record['workspace_owner'][field] = str(self.f.base / 'foreign')
+                self.save()
+                raw = self.owner.read_bytes()
+                self.assert_recovery_refuses_without_mutation(hashlib.sha256(raw).hexdigest(), raw)
+                self.record['workspace_owner'][field] = previous
+
     def test_matching_owner_cas_uses_existing_release_rebuild_and_commits_ready(self):
         expected=hashlib.sha256(self.owner.read_bytes()).hexdigest()
         keep=self.target/'external-cache';keep.write_bytes(b'external')
