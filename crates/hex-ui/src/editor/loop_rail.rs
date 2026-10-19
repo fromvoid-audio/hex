@@ -549,3 +549,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "loop_rail/pending_ui_tests.rs"]
+mod pending_ui_tests;
