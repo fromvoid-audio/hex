@@ -439,20 +439,26 @@ pub(super) fn trim_placement(
     Ok(result)
 }
 
-pub(crate) fn resize_view(
-    project: &mut crate::Project,
-    id: crate::ClipId,
+/// Materialize a checked metadata preview for the existing trim display owner.
+/// The scalar query remains allocation-free; this wrapper may detach only the
+/// small edit metadata. It shares the retained root and never prepares audio.
+/// Canonical edits still submit an operation and recompute against current state.
+pub fn preview_audio_view_resize(
+    clip: &Clip,
+    tempo: &TempoMap,
+    asset_playback_frames: u64,
     operation: AudioViewResizeOperation,
-) -> Result<crate::Created, Invalid> {
-    let original = project.clip(id).ok_or(Invalid("audio clip is missing"))?;
-    // Only the operation is admitted. Recompute all scalars from current state.
-    let next = preview_view_resize(original, project.tempo_map(), operation)?;
-    let track = project
-        .tracks()
-        .iter()
-        .find(|track| track.clips().iter().any(|c| c.id() == id))
-        .map(|track| track.id())
-        .ok_or(Invalid("audio clip track is missing"))?;
+) -> Result<Clip, Invalid> {
+    let next = preview_view_resize(clip, tempo, operation)?;
+    materialize_view_resize(clip, tempo, asset_playback_frames, next)
+}
+
+fn materialize_view_resize(
+    original: &Clip,
+    tempo: &TempoMap,
+    asset_playback_frames: u64,
+    next: AudioViewResize,
+) -> Result<Clip, Invalid> {
     let mut clip = original.clone();
     let mut edit = clip
         .edit
@@ -464,13 +470,32 @@ pub(crate) fn resize_view(
     value.musical_start = next.musical_start;
     value.placement = Some(next.placement);
     clip.edit = Some(edit);
-    super::commands::project_clip(&mut clip, project.tempo_map())?;
-    let asset = project
-        .asset(clip.asset())
-        .ok_or(Invalid("audio media missing"))?;
+    super::commands::project_clip(&mut clip, tempo)?;
     clip.audio_edit()
         .ok_or(Invalid("audio domain missing"))?
-        .validate(&clip, project.tempo_map(), asset.playback_frames())?;
+        .validate(&clip, tempo, asset_playback_frames)?;
+    Ok(clip)
+}
+
+pub(crate) fn resize_view(
+    project: &mut crate::Project,
+    id: crate::ClipId,
+    operation: AudioViewResizeOperation,
+) -> Result<crate::Created, Invalid> {
+    let original = project.clip(id).ok_or(Invalid("audio clip is missing"))?;
+    // Only the operation is admitted. Recompute all scalars from current state.
+    let next = preview_view_resize(original, project.tempo_map(), operation)?;
+    let asset = project
+        .asset(original.asset())
+        .ok_or(Invalid("audio media missing"))?;
+    let clip =
+        materialize_view_resize(original, project.tempo_map(), asset.playback_frames(), next)?;
+    let track = project
+        .tracks()
+        .iter()
+        .find(|track| track.clips().iter().any(|c| c.id() == id))
+        .map(|track| track.id())
+        .ok_or(Invalid("audio clip track is missing"))?;
     if matches!(
         operation,
         AudioViewResizeOperation::OuterEnd { .. } | AudioViewResizeOperation::RepeatOuterEnd { .. }

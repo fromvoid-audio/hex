@@ -665,7 +665,7 @@ pub(crate) use commands::{
 pub(crate) use view::resize_view;
 pub use view::{
     AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
-    AudioViewResizeOperation, preview_view_resize,
+    AudioViewResizeOperation, preview_audio_view_resize, preview_view_resize,
 };
 
 mod stretch;

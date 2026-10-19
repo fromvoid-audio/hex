@@ -2,7 +2,7 @@
 use hex_project::{
     AudioDomainClock, AudioViewMode, AudioViewPlacement, AudioViewProjection,
     AudioViewResizeOperation, BeatTime, ClipFade, ClipId, Command, Created, Editor, Project, Tempo,
-    TrimEdge, preview_view_resize,
+    TrimEdge, preview_audio_view_resize, preview_view_resize,
 };
 const Q: u64 = 1 << 32;
 fn beat(raw: u64) -> BeatTime {
@@ -1191,4 +1191,118 @@ fn explicit_repeat_outer_overwrites_both_kinds_and_refusal_preserves_history() {
     assert_eq!(e.project().snapshot(), undone);
     assert!(e.redo());
     assert_eq!(e.project().snapshot(), after);
+}
+
+#[test]
+fn materialized_audio_view_preview_matches_canonical_candidate_without_editing_source() {
+    for musical in [false, true] {
+        let (mut e, id) = if musical {
+            beat_fixture()
+        } else {
+            frame_fixture(AudioViewMode::Once)
+        };
+        for marker in [false, true] {
+            let before = e.project().snapshot();
+            let original = e.project().clip(id).unwrap();
+            let root = original.audio_edit().unwrap().domain.clone();
+            let frame = if musical {
+                e.project()
+                    .tempo_map()
+                    .beat_to_frame(beat(if marker { 2 * Q } else { 10 * Q }))
+                    .unwrap()
+            } else if marker {
+                12_000
+            } else {
+                96_000
+            };
+            let operation = if marker {
+                AudioViewResizeOperation::CycleEnd {
+                    project_frame: frame,
+                }
+            } else {
+                AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: frame,
+                }
+            };
+            let scalar = preview_view_resize(original, e.project().tempo_map(), operation).unwrap();
+            let preview =
+                preview_audio_view_resize(original, e.project().tempo_map(), 480_000, operation)
+                    .unwrap();
+            assert_eq!(
+                (preview.start(), preview.start() + preview.duration()),
+                (scalar.frame_start, scalar.frame_end)
+            );
+            assert_eq!(
+                preview.audio_edit().unwrap().placement,
+                Some(scalar.placement)
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &root,
+                &preview.audio_edit().unwrap().domain
+            ));
+            assert_eq!(e.project().snapshot(), before);
+            e.execute_prepared(
+                Command::ResizeAudioClipView {
+                    clip: id,
+                    operation,
+                },
+                |candidate| {
+                    assert_eq!(candidate.clip(id), Some(&preview));
+                    Ok::<_, hex_project::Invalid>(())
+                },
+            )
+            .unwrap();
+            assert!(e.undo());
+            assert_eq!(e.project().snapshot(), before);
+            println!(
+                "materialized_audio_view musical={musical} marker={marker} bounds={:?}",
+                (scalar.frame_start, scalar.frame_end)
+            );
+        }
+    }
+}
+
+#[test]
+fn materialized_audio_view_refuses_wrong_asset_and_does_not_submit_stale_preview() {
+    let (mut e, id) = base(false);
+    let operation = AudioViewResizeOperation::RepeatOuterEnd {
+        project_frame: 960_000,
+    };
+    let original = e.project().clip(id).unwrap();
+    assert!(preview_view_resize(original, e.project().tempo_map(), operation).is_ok());
+    assert!(preview_audio_view_resize(original, e.project().tempo_map(), 0, operation).is_err());
+    let old =
+        preview_audio_view_resize(original, e.project().tempo_map(), 480_000, operation).unwrap();
+    e.execute(Command::TrimClipEdge {
+        clip: id,
+        edge: TrimEdge::Right,
+        frame: 240_000,
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    let current = preview_audio_view_resize(
+        e.project().clip(id).unwrap(),
+        e.project().tempo_map(),
+        480_000,
+        operation,
+    )
+    .unwrap();
+    assert_ne!(
+        old.audio_edit().unwrap().view_end,
+        current.audio_edit().unwrap().view_end
+    );
+    e.execute_prepared(
+        Command::ResizeAudioClipView {
+            clip: id,
+            operation,
+        },
+        |candidate| {
+            assert_eq!(candidate.clip(id), Some(&current));
+            assert_ne!(candidate.clip(id), Some(&old));
+            Ok::<_, hex_project::Invalid>(())
+        },
+    )
+    .unwrap();
+    assert!(e.undo());
+    assert_eq!(e.project().snapshot(), before);
 }

@@ -108,6 +108,12 @@ retain fixed-frame timing. Consumers still must admit aggregate counts, distinct
 root projections, buffers and work before allocation or iteration.
 
 The allocation-free `preview_view_resize` returns Copy scalars.
+`preview_audio_view_resize` materializes these through the model's existing
+metadata construction and validation for the current trim display. It may detach
+small edit metadata, shares the processing-domain Arc, and validates the actual
+asset bounds without PCM, DSP or project copies. Canonical execution shares the
+same private materializer but still recomputes the operation against current
+state; a previous preview is never an accepted replacement.
 `ResizeAudioClipView` admits only the operation and recomputes from the current
 clip; it does not accept a GUI-prepared clip. Outer changes call the existing
 audio and MIDI overwrite helpers in the same private candidate; marker edits
