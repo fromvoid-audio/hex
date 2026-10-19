@@ -1,0 +1,173 @@
+{
+  "source": "44adc21330a62353e3250e6b1fb5c549e9d34a1b",
+  "tree": "724550ceffc07f55e47c04970c4867dc0b8274e3",
+  "canonical_pr": 420,
+  "ticket": 2814,
+  "source_baseline": "bb210e3b16b0add89f58c3b4d3571e8a7ee854f0",
+  "original_linkage_plan": "4427113e59ab1a829dc1888c89b5a8f50b3adc37",
+  "changed_files": [
+    "crates/hex-project/src/edit.rs",
+    "crates/hex-project/src/session.rs",
+    "crates/hex-session/src/import_batch.rs",
+    "crates/hex-session/src/import_batch/console.rs",
+    "crates/hex-session/src/import_batch_decode.rs",
+    "crates/hex-session/src/import_batch_decode/tests.rs",
+    "crates/hex-session/src/import_batch_decode/tests/console.rs",
+    "crates/hex-session/src/verified_import.rs",
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/console_drop.rs",
+    "crates/hex-ui/src/editor/console_drop_ui_test.rs",
+    "crates/hex-ui/src/editor/context_menu.rs",
+    "crates/hex-ui/src/editor/controller.rs",
+    "crates/hex-ui/src/editor/drag.rs",
+    "crates/hex-ui/src/editor/mod.rs",
+    "crates/hex-ui/src/editor/render.rs",
+    "crates/hex-ui/src/editor/session_grid.rs",
+    "crates/hex-ui/src/editor/tracks.rs",
+    "docs/session-audio.md"
+  ],
+  "original_runs": [
+    {
+      "run": "20261018T231242Z-9b413585",
+      "source": "f01d46a24aeec47affb8e30d5d5261fddc982dc1",
+      "summary_sha256": "9abaff2a79df148fc508f82cf38b2b6693692782d4cf034c468511aa85201a01",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261018T231442Z-873802ae",
+      "source": "bf0f11dca682ad49eede4a30505941808887fc4c",
+      "summary_sha256": "064b08055a68eb589a3f4961882d06c71ca059e41f9c48575236ff085e06ffaa",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261018T231924Z-cb2ce3dd",
+      "source": "b6d59c925ce6a9670f903ba175d8b3a4aefa6786",
+      "summary_sha256": "8e0d53e21157f22cdd807191e689ff1e6094a86b5e973d430fd43de92f2f5fa4",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261018T232041Z-c59d81da",
+      "source": "d27a8c09c91e0bcd86a95f4c802326f1c53e95a3",
+      "summary_sha256": "76d952f4e973c67bf90a2590fca560d062811808f14b17be5196a6d005759870",
+      "status": "passed",
+      "stale": false,
+      "exit_code": 0
+    },
+    {
+      "run": "20261019T004123Z-89738984",
+      "source": "9e928775cafa95b24448207846fe49c51828745d",
+      "summary_sha256": "72176445654767a55847a27684de04aaa587843b979105784f20c3ac5938daf6",
+      "status": "passed",
+      "stale": false,
+      "exit_code": 0
+    },
+    {
+      "run": "20261019T005240Z-70e99cd8",
+      "source": "d95a0246de39761e2c2fdf1075bdfc37c5c0fb91",
+      "summary_sha256": "9215a99a39fe1c5787ef0c9f4a20ddc7c783f2e75f5e67f5b1ee20e4b2173658",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T005450Z-c475146f",
+      "source": "7aa51d52f84e6d7b39a01b611d0fa3b26fe139b2",
+      "summary_sha256": "e20d78471053386a0566e2c4234b0c3756a444e65d826ddd43462d0d607d7e01",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T005658Z-0316482e",
+      "source": "9eef219d6699a77f054409fb37a95070669fd3f5",
+      "summary_sha256": "5a294d974d0ea7333a30bbed9989e1fa521a01a1d1c3ab9254e53b1c71f820bb",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T005937Z-85e8bef3",
+      "source": "24b189ace5ada1607feb730643df737d13d303bb",
+      "summary_sha256": "588d27529bbb4852c2d482cc6003742f4884febe4a9edd5529420b06dd414b0a",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T010038Z-e763fe80",
+      "source": "c7c224b954d9f541e68d33630fdb8702a588de6f",
+      "summary_sha256": "169b4d07fc185133f1ecbbcdf2b5908d0a6302a796dc76994eba080336b7ccff",
+      "status": "passed",
+      "stale": false,
+      "exit_code": 0
+    },
+    {
+      "run": "20261019T010317Z-a323c998",
+      "source": "33bd790ad9ba340a4898807a668d9338ba876baf",
+      "summary_sha256": "4f400ac2e7707be2d3f361cb06150b92eb8e64349bf6b69a39589b9e13acb820",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T011012Z-17e6ce51",
+      "source": "268fca55cc4903d6b26e1a45bf13f29a7ebf4b3a",
+      "summary_sha256": "0bdd400063138107b4c56de05a05b8786eb7b89f73cd05bbd52d934ec84f786f",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T011248Z-46b3e9ef",
+      "source": "e000c09f63982dc748092ab4e971481859dd8db7",
+      "summary_sha256": "0f674567d2c502c075aea9d631e111a831a8fc9e6f2c97c95411b8e30199500d",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T012047Z-e9a45a9b",
+      "source": "c6a05fd5b8d414184902be98db614e792b1183e2",
+      "summary_sha256": "d2185b16a851f5c1fa13a3cff3cb5ffb98d0a91a55534296afd5962695686477",
+      "status": "failed",
+      "stale": false,
+      "exit_code": 1
+    },
+    {
+      "run": "20261019T012257Z-17f07d90",
+      "source": "44adc21330a62353e3250e6b1fb5c549e9d34a1b",
+      "summary_sha256": "20449227b576333bde8acd5fda81d3228ea63e09dddde23acf77ddeb467f1309",
+      "status": "passed",
+      "stale": false,
+      "exit_code": 0
+    }
+  ],
+  "final_original_run": {
+    "run": "20261019T012257Z-17f07d90",
+    "source": "44adc21330a62353e3250e6b1fb5c549e9d34a1b",
+    "summary_sha256": "20449227b576333bde8acd5fda81d3228ea63e09dddde23acf77ddeb467f1309",
+    "status": "passed",
+    "stale": false,
+    "exit_code": 0
+  },
+  "source_identity": {
+    "commit": "44adc21330a62353e3250e6b1fb5c549e9d34a1b",
+    "content_sha256": "8d702d7da0c9c2fcf47d9781dd382c0432751e2d5f7427c9cb1e0328ae7b1c09",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-console-drop-2814"
+  },
+  "tracked_files": 1924,
+  "scope": "owner focused component qualification; sole merger prospective full21/review required",
+  "native": "pending root serial lane; no cloud native/app claim",
+  "history_law": "all authored fields restore; ID allocation highwater deliberately monotonic",
+  "unsupported_clip_payloads": "existing same-track empty-existing-cell canonical copy only; cross-track/occupied/insert clean refusal",
+  "existing_media_formats": "all formats accepted by current browser/decoder, no new extension restriction/multifile UI"
+}

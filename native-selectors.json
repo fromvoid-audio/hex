@@ -1,0 +1,34 @@
+[
+  {
+    "name": "Actual rendered Console Browser/context/lifecycle",
+    "expected_unique": 9,
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-ui",
+      "--features",
+      "ui-test-support",
+      "--lib",
+      "--locked",
+      "console_drop_ui_test",
+      "--",
+      "--nocapture"
+    ]
+  },
+  {
+    "name": "Atomic model/media imports both modes",
+    "expected_unique": 4,
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "hex-session",
+      "--lib",
+      "--locked",
+      "import_batch_decode::tests::console",
+      "--",
+      "--nocapture"
+    ]
+  }
+]
