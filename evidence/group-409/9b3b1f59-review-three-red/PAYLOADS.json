@@ -1,0 +1,74 @@
+{
+  "payloads": [
+    {
+      "path": "PROPOSAL.md",
+      "bytes": 7391,
+      "sha256": "626b2e92c3dbf8d8ce2b74310fa5ee69040bbdcc46f6a0e793eae9ce43081cd5"
+    },
+    {
+      "path": "before-model-tests.rs",
+      "bytes": 28171,
+      "sha256": "514c1cc16c8411739bea98821d0a3a2815900051ce9f5d1ca0a741ebd4e8060f"
+    },
+    {
+      "path": "before-ui-tests.rs",
+      "bytes": 41282,
+      "sha256": "a0ce0cf88ba74520cb7c91a078d18d10b808a02d41cdd8c9b6c51a90a4dea365"
+    },
+    {
+      "path": "capacity-minus-one-control-red.log",
+      "bytes": 1210,
+      "sha256": "abc246f2c94d52a0c4651f24bb350d0593f51e09b65b1010a5f22270456cf201"
+    },
+    {
+      "path": "checks.json",
+      "bytes": 1033,
+      "sha256": "79849c4b8741cac5a3b89829fcb00186e0df7f77edfc617b11f503cddbc88eba"
+    },
+    {
+      "path": "duplicate-capacity-no-control-insertion.log",
+      "bytes": 1027,
+      "sha256": "e08a8f8c157b8c885338141ea2ec7733d2c67a6ecf007dc3238d96499a617844"
+    },
+    {
+      "path": "initial-model-tests.rs",
+      "bytes": 32965,
+      "sha256": "8d4c759a356f7bb0cbea8df023fa0320b01e5642616c947c2e4cc802dd1b26db"
+    },
+    {
+      "path": "model-controlled-red.log",
+      "bytes": 1632,
+      "sha256": "1c7a6ed17107b44bc5796a131fc94c9a32e513d3c858a8770b812cb9809ba273"
+    },
+    {
+      "path": "model-red.log",
+      "bytes": 11386,
+      "sha256": "b407a512f4e1b952e34f93f56574b962874c9a0e28dcfe87669f7abbfcdee176"
+    },
+    {
+      "path": "production-before-sha256.txt",
+      "bytes": 605,
+      "sha256": "d3bf12ac460dd6d9358d0a3cb871f556a201085aaae22cf5995aea6777531ab6"
+    },
+    {
+      "path": "repro-model-tests.rs",
+      "bytes": 34293,
+      "sha256": "e37775b21c364eb0abf21561b3b55742dc9dce02e431ec44f35f98ae5d639fa4"
+    },
+    {
+      "path": "repro-ui-tests.rs",
+      "bytes": 43149,
+      "sha256": "4fcc43692c862f71d1834161eaa516c494ddfbfbbfc0f793593fb60bb844ef92"
+    },
+    {
+      "path": "repro.patch",
+      "bytes": 9062,
+      "sha256": "0c990c83a091d0afd9a9d1ee297774d6535e804972a9afb1c3a324f97ea027d1"
+    },
+    {
+      "path": "ui-victim-red.log",
+      "bytes": 2892,
+      "sha256": "d87f3c9fe2f3e565033d1a66fb6835fabcb16a9942b7aa40dc706bc3393b5526"
+    }
+  ]
+}
