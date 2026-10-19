@@ -2136,10 +2136,13 @@ impl EditorView {
         if let Some(result) = event.tuning_library.as_ref() {
             self.tuning_library_complete(result);
         }
+        let mut matched_scroll_ack = None;
         if event.gesture_protocol_ack
             && let Some(ack) = event.gesture_ack.as_ref()
         {
-            self.acknowledge_device_gesture(ack);
+            if self.acknowledge_device_gesture(ack) {
+                matched_scroll_ack = Some(ack);
+            }
         } else if let Some(reason) = event
             .gesture_ack
             .as_ref()
@@ -2170,6 +2173,11 @@ impl EditorView {
                 event.project_replaced,
             );
         }
+        super::device_panel::eq_scroll_after_worker_event(
+            self,
+            matched_scroll_ack,
+            event.project_replaced,
+        );
         let playback_capability =
             event
                 .playback

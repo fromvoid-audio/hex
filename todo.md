@@ -5203,6 +5203,12 @@ for original failed/green/control evidence and native limits. Canonical PR363;
 final focused checks and dedicated-merger prospective-tree full CI remain
 separate, with no production browser/Tab/audition or installed-app change.
 
+18 October 2026 source follow-up, Pulse2801/PR407: sparse-EQ cut-node wheel
+uses existing typed slope choices; Option-bell drag uses canonical paired Q.
+Focused source/evidence and native limits are recorded in docs/eq-node-gestures.md.
+Canonical integration/full20/merge belong to the dedicated merger; native visual,
+input/listening and optimized delivery remain coordinator-owned and open.
+
 ### inline-tree refresh of query-hidden expansions — pulse2728 / PR341
 
 Returned review PRRT_kwDOVB_C-s6trg4M reproduced on canonical29d97330: refresh during
@@ -5438,6 +5444,13 @@ changed native/physical acceptance and delivery remain coordinator-owned.
   history, not this repair's qualification. Actual OS chooser, physical save/open
   and installation acceptance remain open.
 
+### 2026-10-19 — PR407 prospective integration
+
+- Composed owner c2ceadfa nearest-node return and prior Option-Q/cut-wheel repairs with qualified main35ea, preserving current406 analyzer lifecycle/raw-radius hit ownership and424 private picker support.
+- Verified all28 new evidence payloads and both changed source hashes; original407 packets remain separately verified. Original rendered overlap RED and final97 positives remain source-scoped.
+- Rebuilt cumulative GPUI patch metadata from the pinned original archive; all183 originals/21 patched/3 added source files match a fresh patch application. Only additive momentum metadata changes platform input; no other consumer opts in.
+- Full21 on this exact prospective tree and fresh review are pending; no merge, native physical trackpad/listening or installation claim.
+
 - 19 October 2026 — Pulse2793 / PR399 import-equivalence fixture return: first
   exact candidate e66a9102 failed workspace checks in two Session import cases
   whose independently created tracks drew different valid automatic hues. The
@@ -5556,6 +5569,12 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Cohort needs one exact shared source candidate: workspace names expose the known compact-toolbar width failure, so no unchanged419-only full21 retry. Publish the same coherent candidate to both canonical PRs and independently read back their review/merge outcomes; checks bind the exact candidate, never a different head.
 - Mode conflict preserves current Browser cancellation and conditional active time-gesture cancellation; completed time selections survive as owner contract requires. Current comparison/Open/constructor/Console/deferred-release/Warp/launcher/changelog source retained. Group409 diagnostic/semantic repair and draftSampler395 are not imported.
 - Focused affected compile then fresh exact full21/review required, no native physical keyboard/IME/toolbar pixels/delivery acceptance claim.
+### 2026-10-19 — PR407 coherent outside-terminal integration
+
+- Integrated complete owner67dea ->30cd ->8bb ->baf16 history with qualifiedmain420f920; verified all43 final outside-terminal payloads and four source files, retaining prior boundary/phase/nearest-node repairs and original runtime negatives.
+- Conflict resolution preserves merged457 removal of EQ-local automation: ordinary response model plus Bell-only relative Option-Q configuration and both the local-removal and gesture test suites. Qualified436 shared spectrum painter,406 raw-radius/axes/status lifetime and current comparison metadata remain intact.
+- New exact UI/widget test-target compile, full21 and independent review required; owner89 component positives and historical8724 full21 are not this candidate's qualification. Physical trackpad/font/pixels/listening and installed acceptance remain open; no native or app action by merger.
+- Focused compile preserved a stale-GPUI metadata failure, then after narrow GPUI development-cache invalidation exposed two owner gesture guards referencing local automation/preview fields intentionally removed by merged457. Mechanical integration drops only these nonexistent-field checks, retaining editing/creation refusal; no local editor state or UI is restored, and tests/oracles remain unchanged.
 
 ### 2026-10-19 — PR409 complete group-copy return integration
 
@@ -5604,3 +5623,21 @@ User rejected device-local automation editing. Remove its button, graph mode and
   PRs require separate authenticated merge readbacks after new combined required
   CI and fresh review; source readiness remains In Progress. Physical keyboard,
   IME, native fonts/pixels/audio and installed/user acceptance remain open.
+### 2026-10-19 — PR407 four scroll review returns integration
+
+- Retain the complete81e050 owner chain over actual0bd plus the byte-identical local mechanical sibling via ordinary merge, then compose qualified main3cda. Original4RED diagnostics, stale queued Cancel and post-blur Begin failures remain preserved; source owner final29EQ cases/strict and prior unchanged-input108 components stay scoped to their actual receipts.
+- Add explicit Cancelled input and optional known physical wheel ticks while preserving content deltas, parameter fallback and all non-EQ consumers. Private bounded32-stream EQ intent waits for matching accepted terminal ACK and canonical installation, checks owner/context/identity and preserves monotonic retired-token watermark. No generic queue, audio/Engine/API ownership redesign.
+- Verify all106 immutable payloads and19 source bytes; preserve406axes/436paint/457local-automation removal, current409Console/group capture/ACK paths and324browser feedback. Only appended todo conflict joins both histories. All Cargo phases, including focused compilation, require existing target ownership handoff and bounded audited GPUI invalidation for the changed vendored API; no blanket clean.
+- New exact prospective full21/fresh review/merge remain pending. Actual platform compile/physical wheel/trackpad/focus and installed acceptance remain coordinator-owned; Windows/nativeMac results are not inferred from Linux source checks.
+
+### 2026-10-19 — PR407 Wayland v9 physical direction return
+
+- Preserve canonical0134 and normal ownerb03cd2ed five-file delta. Per-original-axis direction consensus and paired-report metadata normalize only physical parameter ticks before Shift routing; raw content arithmetic/preferences, unknown/pre-v9 fallback, non-Wayland producers, consumer getters and bounded EQ FIFO/lifecycle remain unchanged. New metadata drains at every Frame before missing-window delivery checks.
+- All83 owner payloads and exactly five shipping source files were verified. Owner clean13 checks235.244s include117 distinct component cases:29 EQ nodes,78 widgets,two Operator traversal cases,seven real typed production-fold tests and one4096-frame literal-old-arm raw differential. These remain owner-source results, not new prospective full21. Direct excluded-package attempts, fixture unit mismatch, harness setup failures and original direction REDs remain distinct evidence.
+- Current actual main3cda is already an ancestor; preserve qualified406 axes/status,436 painter,457 local-automation removal, Group409 and Browser324. Current code does not import unmerged419/458/456 or draft395. Earlier0134 full21PASS904.159s is historical/review-blocked and cannot qualify changed source.
+- New guarded GPUI-only target handoff, actual production fold/protocol checks, exact full21 and fresh review remain required before merge. No Linux compositor/hardware or Mac/Windows native build/physical wheel/trackpad/font/pixels/listening/installed acceptance is claimed. No new native job or blanket cache cleanup is requested; independent2857 invalidation work remains queued.
+
+### 2026-10-19 — PR419/458 periodic range and hidden-menu return integration
+
+- Compose precise f16 owner return with actual qualified EQ main2dc7 using ordinary history. Retain both appended integration histories; only todo.md conflicts. Preserve all merged407 gesture/FIFO/Wayland behavior and 457 removal of local EQ automation.
+- Existing c385 full21 positives remain historical and review-blocked; new combined affected tests, exact full21 and fresh review of each canonical PR are required. Both PRs remain unmerged until their own authenticated merge readbacks. Physical keyboard/IME/fonts/pixels/listening and installed acceptance remain open.
