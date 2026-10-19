@@ -1,0 +1,32 @@
+{
+  "crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs": {
+    "before_sha256": "1b616e8ec01f85362cbe8481373a5aab60e1f0f43ea154686d37776b2404a207",
+    "after_sha256": "76672d697e519d5002e60561bea1bc12be9a83f8dd29bb3b37d06ba29bf7de9c",
+    "bytes": 20786
+  },
+  "crates/hex-ui/src/editor/edit_cursor.rs": {
+    "before_sha256": "370bf4c17bdb499f1c7c689637f649f41c30ae79068e914c45c718ebe5ee6a53",
+    "after_sha256": "120f5bcf367fe07ea32ec9e93d80f62046fae4da3f918f54725834f155863729",
+    "bytes": 15584
+  },
+  "crates/hex-ui/src/editor/workspace_view.rs": {
+    "before_sha256": "603a2430cc5cd267ca8acd315874a13b11907d1c7f556099523e2024cb6358be",
+    "after_sha256": "383e4dbf655f6285c7f0dec97de2f9ed4818535b69a9399431ed6ed485cd8572",
+    "bytes": 2917
+  },
+  "crates/hex-ui/src/editor/workspace_view_ui_test.rs": {
+    "before_sha256": "d0fd79f3866e37a8f6c19aeaffb2f38e95f8a51b412d7eca7f88c51f12568535",
+    "after_sha256": "90d89cb85ccf7be5180c48c670281565ab0d8390e0f4004bd27c6119cbbbd7ec",
+    "bytes": 37715
+  },
+  "docs/workspace-views.md": {
+    "before_sha256": "c91104bc39cfdab55c8227f379843efc2f1271426fdfed6cb8beecfbc242b573",
+    "after_sha256": "2998587ea00cded1a0480d2e39e4fedf879e79d1ac17caa0a25aa9bf9b9931ac",
+    "bytes": 12106
+  },
+  "todo.md": {
+    "before_sha256": "161f639c9d891989f67d9d52d44ae1d957278dae173ab70a25db43caff1f740e",
+    "after_sha256": "f6036b7a3b413d30d159953f47869ea1327870aeb679e1a4334e6fb27adb5de7",
+    "bytes": 383101
+  }
+}

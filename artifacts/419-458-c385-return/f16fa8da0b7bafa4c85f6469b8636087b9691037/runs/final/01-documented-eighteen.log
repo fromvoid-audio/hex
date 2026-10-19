@@ -1,0 +1,32 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.26s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 18 tests
+test editor::workspace_view_ui_test::workspace_four_returns_completed_range_survives_console_controller_ticks ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_four_returns_hidden_add_menu_does_not_block_tab ... ok
+Console invalid context 0: selection=None, active=false, queued=0
+test editor::workspace_view_ui_test::workspace_review_tab_preserves_active_track_resize ... ok
+Console invalid context 1: selection=None, active=false, queued=0
+Console invalid context 2: selection=None, active=false, queued=0
+test editor::workspace_view_ui_test::workspace_review_tab_preserves_held_clip_paint_until_release_or_escape ... ok
+Console invalid context 3: selection=Some(TimeSelection { anchor_track: TrackId(1), end_track: TrackId(1), anchor_frame: 96000, end_frame: 96000 }), active=false, queued=0
+test editor::workspace_view_ui_test::workspace_four_returns_console_still_retires_active_or_invalid_range ... ok
+test editor::workspace_view_ui_test::workspace_review_tab_preserves_held_ruler_until_release_or_cancel ... ok
+test editor::workspace_view_ui_test::workspace_review_tab_preserves_selected_open_confirmation_until_cancel ... ok
+test editor::workspace_view_ui_test::workspace_review_tab_preserves_held_middle_pan_until_release_or_cancel ... ok
+test editor::workspace_view_ui_test::workspace_review_toolbar_console_returns_tab_to_workspace ... ok
+test editor::workspace_view_ui_test::workspace_tab_from_track_header_preserves_rename_input_and_returns_to_workspace ... ok
+test editor::workspace_view_ui_test::workspace_tab_leaves_browser_numeric_and_nested_focus_in_charge ... ok
+test editor::workspace_view_ui_test::workspace_tab_switches_both_directions_without_edit_or_view_state_loss ... ok
+test editor::workspace_view_ui_test::workspace_tab_respects_modifiers_and_retained_root_modal_state ... ok
+test editor::workspace_view_ui_test::workspace_three_returns_delayed_click_preserves_other_pointer_identity ... ok
+test editor::workspace_view_ui_test::workspace_three_returns_held_left_before_drag_preserves_capture ... ok
+test editor::workspace_view_ui_test::workspace_three_returns_plain_clip_click_retires_pending_pointer ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_tab_cycle_with_saved_places_excludes_unrelated_cached_media ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 988 filtered out; finished in 14.86s
+

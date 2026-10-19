@@ -1,0 +1,8 @@
+{
+  "crates/hex-ui/src/editor/tracks.rs": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9",
+  "crates/hex-ui/src/editor/drag.rs": "7fb6a2fc3fd57ba31166eabb5dcd638b74095e2fad07e87f7415f01958fd4137",
+  "crates/hex-ui/src/editor/session_grid.rs": "71c32d65049dc3721e7affe66fbf1a68b1d51336d9fe7cbdc66f1f0f6f814fc3",
+  "crates/hex-ui/src/editor/controller.rs": "7bb78e1964ef3404b287fcc1f4e03d2903a4345a0f6a0ea8cc63e17407d6b5c1",
+  "crates/hex-ui/src/editor/device_panel/navigation.rs": "d3d088a466f776675212c75a9521736d432bba1a63110e12d2726035b38d7e78",
+  "crates/hex-ui/src/editor/header.rs": "282a618103f28e38f3dfc02bbf9dfec56897798e3ca66eaaf2303e0ed898454c"
+}

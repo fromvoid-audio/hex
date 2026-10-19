@@ -1,0 +1,13 @@
+{
+  "source": "f16fa8da0b7bafa4c85f6469b8636087b9691037",
+  "tree": "d78a4441dedaece301719b29b7db0e72f3c81753",
+  "base": "c385fb5c735bae227125f4ada2c7077bc6e0b329",
+  "steps": 11,
+  "duration_seconds": 193.5,
+  "summary_sha256": "37077711f3c748501e887f18d764765d015c3be0ffea3cde29574097554efd1b",
+  "content_sha256": "b47898bd73f38be65cb801e2142cdb4b7ec6dec45eed285b0f4b1104fcfa3ec7",
+  "unique_cases": 100,
+  "documented_union": 18,
+  "retained_controls": 82,
+  "kind": "source component, not prospective full21/native/merge"
+}

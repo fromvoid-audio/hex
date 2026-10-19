@@ -1,0 +1,142 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.85s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 82 tests
+test editor::clip_drag_ui_test::audio_clip_drop_uses_option_state_at_release_even_without_modifier_event ... ok
+test editor::clip_drag_ui_test::command_modifier_bypasses_adaptive_snap_while_drag_is_held_and_on_release ... ok
+test editor::clip_drag_ui_test::command_modifier_temporarily_bypasses_beat_anchored_midi_drag_snap ... ok
+test editor::clip_drag_ui_test::arrangement_scroll_rebuilds_drag_lane_eligibility_from_painted_rows ... ok
+test editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project ... ok
+test editor::clip_drag_ui_test::dropping_clip_on_pinned_main_cancels_instead_of_appending_track ... ok
+test editor::clip_drag_ui_test::option_drag_copies_audio_clip_and_modifier_changes_apply_without_pointer_motion ... ok
+test editor::clip_drag_ui_test::option_drag_copies_audio_clip_into_an_appended_track ... ok
+test editor::clip_drag_ui_test::option_drag_copies_midi_clip_into_a_track_between_rows ... ok
+test editor::clip_drag_ui_test::rendered_audio_clip_drag_starts_previews_and_commits_a_move ... ok
+test editor::clip_drag_ui_test::rendered_audio_clip_drop_below_last_track_inserts_without_workspace_jump ... ok
+test editor::clip_drag_ui_test::rendered_audio_clip_drop_between_tracks_inserts_and_preserves_pointer_grab ... ok
+test editor::clip_drag_ui_test::rendered_audio_trim_release_outside_cancels_without_edit ... ok
+test editor::clip_drag_ui_test::rendered_clip_drop_excludes_moved_source_but_highlights_copied_source ... ok
+test editor::clip_drag_ui_test::rendered_clip_drop_highlights_only_occupied_audio_and_midi_spans ... ok
+test editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap ... ok
+test editor::clip_drag_ui_test::rendered_midi_clip_drop_below_last_track_inserts_without_workspace_jump ... ok
+test editor::clip_drag_ui_test::rendered_midi_clip_drop_between_tracks_inserts_and_preserves_beat_anchor ... ok
+test editor::clip_drag_ui_test::rendered_midi_left_trim_keeps_source_note_timeline_position ... ok
+test editor::clip_drag_ui_test::rendered_midi_drag_moves_between_rows_and_remains_pickable ... ok
+test editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap ... ok
+test editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release ... ok
+test editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release ... ok
+test editor::clip_paint_ui_test::clip_paint_cancels_and_rejects_clip_headers_and_stale_state ... ok
+test editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit ... ok
+test editor::clip_drag_ui_test::shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit ... ok
+test editor::clip_paint_ui_test::clip_paint_free_drag_uses_pointer_beats ... ok
+test editor::clip_paint_ui_test::clip_paint_minimum_length ... ok
+test editor::clip_paint_ui_test::clip_paint_double_click_hold_previews_then_commits_once ... ok
+test editor::clip_paint_ui_test::clip_review_visible_body_wins_over_occluded_edges ... ok
+test editor::clip_paint_ui_test::clip_review_header_selects_while_pending_and_when_leaving_rename ... ok
+test editor::clip_paint_ui_test::clip_headers_grab_while_audio_and_midi_bodies_select_and_paint ... ok
+test editor::device_panel::tests::navigation_ui_tests::device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_from_root_or_track_focus ... ok
+test editor::device_panel::tests::navigation_ui_tests::device_chain_navigation_pan_overview_release_escape_and_resize ... ok
+test editor::device_panel::tests::sine_and_effect_share_canonical_compact_header_and_body_bounds ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_navigation_preserves_capture ... ok
+test editor::drag::group_drag_ui_test::console_single_audio_arrangement_payload_still_copies_once_with_one_history_step ... ok
+group anchor=6 clip=5 delta=19215 actual=67215 expected=67215
+group anchor=6 clip=6 delta=19215 actual=115215 expected=115215
+group anchor=6 clip=7 delta=19215 actual=163215 expected=163215
+test editor::drag::group_drag_ui_test::dragging_nonprimary_selected_header_moves_all_three_clips_with_gaps_and_one_undo ... ok
+test editor::drag::group_drag_ui_test::copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_copies ... ok
+group capture profile total=128 selected=3 projection_ns_per_update=1533 full_gpui_redraw_ns=50565273 profile=debug/no_deadline_claim
+test editor::drag::group_drag_ui_test::group_capture_reenters_valid_lane_and_commits_only_current_projection ... ok
+test editor::drag::group_drag_ui_test::console_midi_primary_group_cell_insertion_and_stale_release_are_atomic ... ok
+group capture profile total=16384 selected=3 projection_ns_per_update=1548 full_gpui_redraw_ns=60956476 profile=debug/no_deadline_claim
+test editor::drag::group_drag_ui_test::group_capture_profiles_actual_redraw_separately_from_projection ... ok
+test editor::drag::group_drag_ui_test::group_capture_checks_source_allocation_and_selection_epoch ... ok
+
+thread 'editor::drag::group_drag_ui_test::group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup' (197567) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:965:13:
+intentional post-ACK fixture unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+group_fixture_catalog_custody unwind=true actual_save=true same_root=true cleaned=true
+test editor::drag::group_drag_ui_test::group_fixture_post_ack_unwind_keeps_actual_job_root_until_save_and_cleanup ... ok
+
+thread 'editor::drag::group_drag_ui_test::group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory' (197572) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:29:9:
+Some("could not read media file: no such file or directory (os error 2)")
+retained editor test root after unacknowledged setup: "/tmp/hex-editor-test-197260-67"
+group_fixture_pre_ack_retention actual_refusal=true weak_expired=true disk_retained=true root="/tmp/hex-editor-test-197260-67"
+test editor::drag::group_drag_ui_test::group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory ... ok
+test editor::drag::group_drag_ui_test::group_copy_actual_completion_does_not_steal_new_selection_and_keeps_ancillary_error ... ok
+test editor::drag::group_drag_ui_test::group_copy_deferred_submission_counts_only_own_fifo_terminal_and_actual_refusal ... ok
+group_fixture_catalog_custody unwind=false actual_save=true same_root=true cleaned=true
+test editor::drag::group_drag_ui_test::group_fixture_same_root_survives_real_catalog_job_after_view_retirement ... ok
+test editor::drag::group_drag_ui_test::group_outside_lane_clears_all_previews_and_restores_originals ... ok
+test editor::drag::group_drag_ui_test::group_escape_and_actual_gpui_capture_loss_never_commit_any_member ... ok
+test editor::drag::group_drag_ui_test::group_pending_or_actual_revision_change_refuses_all_members_without_losing_independent_edit ... ok
+test editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes ... ok
+actual selected=3 submitted=None cell=None error=Some(DisplayError { message: "selected clips require an arrangement target", batch_member: None })
+test editor::drag::group_drag_ui_test::integration_group_console_refuses_partial_primary_copy ... ok
+test editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim ... ok
+test editor::drag::tests::pointer_down_is_keyed_to_trim_edge_and_survives_render_replacement ... ok
+test editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled ... ok
+test editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint ... ok
+test editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release ... ok
+test editor::edit_cursor_ui_test::captured_selection_edge_scrolls_while_pointer_is_stationary ... ok
+test editor::drag::group_drag_ui_test::mixed_audio_midi_group_uses_real_track_offsets_or_refuses_whole_vertical_move ... ok
+test editor::edit_cursor_ui_test::captured_time_selection_projects_outside_pointer_and_release_position ... ok
+test editor::edit_cursor_ui_test::clicked_audio_cursor_is_visible_and_command_e_uses_it_offline ... ok
+test editor::edit_cursor_ui_test::command_click_is_free_and_command_e_routes_midi_split ... ok
+test editor::edit_cursor_ui_test::command_modifier_reprojects_captured_selection_without_pointer_motion ... ok
+test editor::edit_cursor_ui_test::empty_position_and_missing_cursor_do_not_dispatch_a_split ... ok
+test editor::edit_cursor_ui_test::main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split ... ok
+test editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination ... ok
+test editor::edit_cursor_ui_test::multi_row_move_preview_maps_each_source_row_to_its_destination_offset ... ok
+test editor::edit_cursor_ui_test::empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction ... ok
+test editor::edit_cursor_ui_test::option_drag_copies_time_range_and_keeps_source_preview_visible ... ok
+test editor::edit_cursor_ui_test::ripple_shortcuts_route_to_insert_and_respect_editor_focus ... ok
+test editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source ... ok
+test editor::edit_cursor_ui_test::completed_time_selection_survives_idle_ticks_and_remains_rendered ... ok
+test editor::edit_cursor_ui_test::space_restarts_from_selection_then_edit_cursor_and_respects_focus ... ok
+test editor::edit_cursor_ui_test::selected_time_range_drag_shows_and_dispatches_a_contiguous_move ... ok
+test editor::edit_cursor_ui_test::stale_or_canceled_time_gesture_cannot_autoscroll ... ok
+header bounds window=Bounds { origin: Point { x: 0px, y: 0px }, size: Size { 880px × 540px } } title=Bounds { origin: Point { x: 232px, y: 1px }, size: Size { 416px × 19px } } version=Bounds { origin: Point { x: 686px, y: 2.5px }, size: Size { 96px × 16px } } log=Bounds { origin: Point { x: 786px, y: 0.5px }, size: Size { 20px × 20px } } changelog=Bounds { origin: Point { x: 810px, y: 0.5px }, size: Size { 62px × 20px } } tempo=Bounds { origin: Point { x: 0px, y: 22px }, size: Size { 78px × 25px } } import=Bounds { origin: Point { x: 138px, y: 24.5px }, size: Size { 20px × 20px } }
+header bounds window=Bounds { origin: Point { x: 0px, y: 0px }, size: Size { 960px × 540px } } title=Bounds { origin: Point { x: 232px, y: 1px }, size: Size { 496px × 19px } } version=Bounds { origin: Point { x: 766px, y: 2.5px }, size: Size { 96px × 16px } } log=Bounds { origin: Point { x: 866px, y: 0.5px }, size: Size { 20px × 20px } } changelog=Bounds { origin: Point { x: 890px, y: 0.5px }, size: Size { 62px × 20px } } tempo=Bounds { origin: Point { x: 0px, y: 22px }, size: Size { 78px × 25px } } import=Bounds { origin: Point { x: 138px, y: 24.5px }, size: Size { 20px × 20px } }
+header bounds window=Bounds { origin: Point { x: 0px, y: 0px }, size: Size { 1440px × 540px } } title=Bounds { origin: Point { x: 360px, y: 1px }, size: Size { 720px × 19px } } version=Bounds { origin: Point { x: 1246px, y: 2.5px }, size: Size { 96px × 16px } } log=Bounds { origin: Point { x: 1346px, y: 0.5px }, size: Size { 20px × 20px } } changelog=Bounds { origin: Point { x: 1370px, y: 0.5px }, size: Size { 62px × 20px } } tempo=Bounds { origin: Point { x: 0px, y: 22px }, size: Size { 78px × 25px } } import=Bounds { origin: Point { x: 138px, y: 24.5px }, size: Size { 20px × 20px } }
+test editor::header::ui_tests::compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights ... ok
+actual startup loading=true width=880 mode=Arrangement status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 61.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 805px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 661.5px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=881 mode=Arrangement status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 62.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 806px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 661.5px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=960 mode=Arrangement status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 141.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 885px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 661.5px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=1440 mode=Arrangement status=Bounds { origin: Point { x: 1134px, y: 25px }, size: Size { 230px × 19px } } name=Bounds { origin: Point { x: 574px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 1113px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 1365px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 662px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=880 mode=Arrangement status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 61.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 805px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 661.5px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=880 mode=Session status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 61.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 805px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 661.5px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=881 mode=Session status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 62.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 806px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 661.5px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=960 mode=Session status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 141.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 885px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 661.5px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=1440 mode=Session status=Bounds { origin: Point { x: 1134px, y: 25px }, size: Size { 230px × 19px } } name=Bounds { origin: Point { x: 574px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 1113px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 1365px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 662px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=true width=880 mode=Session status=Bounds { origin: Point { x: 742.5px, y: 25px }, size: Size { 61.5px × 19px } } name=Bounds { origin: Point { x: 573.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 721.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual loading indicator=Bounds { origin: Point { x: 805px, y: 25px }, size: Size { 67px × 19px } } position=Bounds { origin: Point { x: 661.5px, y: 25px }, size: Size { 58px × 19px } }
+actual startup loading=false width=880 mode=Arrangement status=Bounds { origin: Point { x: 820px, y: 25px }, size: Size { 52px × 19px } } name=Bounds { origin: Point { x: 651px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 799px, y: 24.5px }, size: Size { 20px × 20px } }
+test editor::edit_cursor_ui_test::selection_handle_and_reselect_zones_own_gestures_over_selected_clips ... ok
+actual startup loading=false width=881 mode=Arrangement status=Bounds { origin: Point { x: 820px, y: 25px }, size: Size { 53px × 19px } } name=Bounds { origin: Point { x: 651px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 799px, y: 24.5px }, size: Size { 20px × 20px } }
+actual startup loading=false width=960 mode=Arrangement status=Bounds { origin: Point { x: 820.5px, y: 25px }, size: Size { 131.5px × 19px } } name=Bounds { origin: Point { x: 651.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 799.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual startup loading=false width=1440 mode=Arrangement status=Bounds { origin: Point { x: 1202px, y: 25px }, size: Size { 230px × 19px } } name=Bounds { origin: Point { x: 652px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 1181px, y: 24.5px }, size: Size { 20px × 20px } }
+actual startup loading=false width=880 mode=Arrangement status=Bounds { origin: Point { x: 820px, y: 25px }, size: Size { 52px × 19px } } name=Bounds { origin: Point { x: 651px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 799px, y: 24.5px }, size: Size { 20px × 20px } }
+actual startup loading=false width=880 mode=Session status=Bounds { origin: Point { x: 820px, y: 25px }, size: Size { 52px × 19px } } name=Bounds { origin: Point { x: 651px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 799px, y: 24.5px }, size: Size { 20px × 20px } }
+actual startup loading=false width=881 mode=Session status=Bounds { origin: Point { x: 820px, y: 25px }, size: Size { 53px × 19px } } name=Bounds { origin: Point { x: 651px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 799px, y: 24.5px }, size: Size { 20px × 20px } }
+actual startup loading=false width=960 mode=Session status=Bounds { origin: Point { x: 820.5px, y: 25px }, size: Size { 131.5px × 19px } } name=Bounds { origin: Point { x: 651.5px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 799.5px, y: 24.5px }, size: Size { 20px × 20px } }
+actual startup loading=false width=1440 mode=Session status=Bounds { origin: Point { x: 1202px, y: 25px }, size: Size { 230px × 19px } } name=Bounds { origin: Point { x: 652px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 1181px, y: 24.5px }, size: Size { 20px × 20px } }
+actual startup loading=false width=880 mode=Session status=Bounds { origin: Point { x: 820px, y: 25px }, size: Size { 52px × 19px } } name=Bounds { origin: Point { x: 651px, y: 25px }, size: Size { 87px × 19px } } restart=Bounds { origin: Point { x: 799px, y: 24.5px }, size: Size { 20px × 20px } }
+test editor::header::ui_tests::compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators ... ok
+test editor::header::ui_tests::compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces ... ok
+test editor::project_spectrum::tests::project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history ... ok
+
+test result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 924 filtered out; finished in 26.07s
+

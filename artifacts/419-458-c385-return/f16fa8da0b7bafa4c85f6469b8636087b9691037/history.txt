@@ -1,0 +1,15 @@
+commit f16fa8da0b7bafa4c85f6469b8636087b9691037
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 11:56:12 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 11:56:12 2026 +0000
+
+    fix(ui): retain completed ranges and ignore hidden menu Tab barriers
+
+commit f2b5ecdba38933c7a7a29c501848d6399e0eb57d
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 11:51:49 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 11:51:49 2026 +0000
+
+    test(ui): reproduce Console tick range loss and hidden menu Tab

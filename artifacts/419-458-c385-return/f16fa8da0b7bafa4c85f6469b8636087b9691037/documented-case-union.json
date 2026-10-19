@@ -1,0 +1,32 @@
+{
+  "filters": [
+    "workspace_view_ui_test",
+    "operator_tab_cycle",
+    "workspace_four_returns_"
+  ],
+  "workspace_module": [
+    "workspace_review_tab_preserves_held_clip_paint_until_release_or_escape",
+    "workspace_review_tab_preserves_active_track_resize",
+    "workspace_review_toolbar_console_returns_tab_to_workspace",
+    "workspace_tab_switches_both_directions_without_edit_or_view_state_loss",
+    "workspace_tab_leaves_browser_numeric_and_nested_focus_in_charge",
+    "workspace_tab_respects_modifiers_and_retained_root_modal_state",
+    "workspace_review_tab_preserves_selected_open_confirmation_until_cancel",
+    "workspace_review_tab_preserves_held_ruler_until_release_or_cancel",
+    "workspace_tab_from_track_header_preserves_rename_input_and_returns_to_workspace",
+    "workspace_review_tab_preserves_held_middle_pan_until_release_or_cancel",
+    "workspace_three_returns_held_left_before_drag_preserves_capture",
+    "workspace_three_returns_plain_clip_click_retires_pending_pointer",
+    "workspace_three_returns_delayed_click_preserves_other_pointer_identity",
+    "workspace_four_returns_completed_range_survives_console_controller_ticks",
+    "workspace_four_returns_console_still_retires_active_or_invalid_range"
+  ],
+  "operator": [
+    "operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits",
+    "operator_tab_cycle_with_saved_places_excludes_unrelated_cached_media"
+  ],
+  "additional_navigation": [
+    "workspace_four_returns_hidden_add_menu_does_not_block_tab"
+  ],
+  "unique": 18
+}

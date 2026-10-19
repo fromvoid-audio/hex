@@ -1,0 +1,336 @@
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs
+index 689c1703..c28f5f54 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs
+@@ -451,3 +451,71 @@ fn workspace_three_returns_device_navigation_preserves_capture(cx: &mut TestAppC
+         });
+     }
+ }
++
++#[gpui::test]
++fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppContext) {
++    cx.update(crate::editor::bind_editor_keys);
++    let (service, state, track, _, _, _) = actor_utility_fixture();
++    let (handle, editor) = actor_editor_window(cx, service, state, track);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.update(|window, cx| {
++        window.activate_window();
++        editor.update(cx, |v, cx| {
++            v.mode = crate::editor::EditorMode::Arrangement;
++            v.focus.focus(window);
++            cx.notify();
++        });
++    });
++    visual.run_until_parked();
++    let add = visual.debug_bounds("device-add-toggle").unwrap().center();
++    visual.simulate_click(add, Modifiers::default());
++    visual.run_until_parked();
++    assert!(visual.debug_bounds("device-add-menu").is_some());
++    visual.simulate_keystrokes("tab");
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.mode, crate::editor::EditorMode::Arrangement);
++        assert!(v.device_panel.add_menu_open);
++    });
++    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
++    let toggle = visual
++        .debug_bounds("device-panel-bottom-toggle")
++        .unwrap()
++        .center();
++    visual.simulate_click(toggle, Modifiers::default());
++    visual.run_until_parked();
++    assert!(visual.debug_bounds("device-add-menu").is_none());
++    editor.read_with(&visual, |v, _| assert!(!v.clip_view_open));
++    visual.update(|window, cx| editor.read_with(cx, |v, _| assert!(v.focus.is_focused(window))));
++    visual.simulate_keystrokes("tab");
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(
++            v.mode,
++            crate::editor::EditorMode::Session,
++            "hidden menu must not own Tab"
++        );
++        assert_eq!(v.state.as_ref().unwrap().project, before.project);
++        assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
++        assert_eq!(v.worker_requests_pending, 0);
++        assert!(v.pending_requests.is_empty());
++    });
++    // Reopening makes the retained menu visible and its local refusal applies again.
++    let toggle = visual
++        .debug_bounds("device-panel-bottom-toggle")
++        .unwrap()
++        .center();
++    visual.simulate_click(toggle, Modifiers::default());
++    visual.run_until_parked();
++    assert!(visual.debug_bounds("device-add-menu").is_some());
++    visual.simulate_keystrokes("tab");
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.mode, crate::editor::EditorMode::Session)
++    });
++    let add = visual.debug_bounds("device-add-toggle").unwrap().center();
++    visual.simulate_click(add, Modifiers::default());
++    visual.run_until_parked();
++    assert!(visual.debug_bounds("device-add-menu").is_none());
++    visual.simulate_keystrokes("tab");
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
++    });
++}
+diff --git a/crates/hex-ui/src/editor/edit_cursor.rs b/crates/hex-ui/src/editor/edit_cursor.rs
+index ca939297..af668ca4 100644
+--- a/crates/hex-ui/src/editor/edit_cursor.rs
++++ b/crates/hex-ui/src/editor/edit_cursor.rs
+@@ -129,7 +129,9 @@ impl EditorView {
+     pub(super) fn tick_edit_cursor(&mut self, now: Instant) -> bool {
+         if self.context_menu.is_some()
+             || self.close_prompt_open
+-            || self.mode != EditorMode::Arrangement
++            || (self.mode != EditorMode::Arrangement
++                && (self.time_selection_gesture.is_some()
++                    || self.time_range_move_gesture.is_some()))
+             || self.save_dialog_open
+             || self.export_dialog_open
+         {
+@@ -193,7 +195,9 @@ impl EditorView {
+         {
+             return false;
+         }
+-        cursor.pulse(now)
++        // A completed range belongs to Arrangement even while Console is shown.
++        // Its stale-source checks above still run; hidden point cursors need no pulse.
++        self.mode == EditorMode::Arrangement && cursor.pulse(now)
+     }
+ 
+     pub(super) fn edit_cursor_layer(&self, viewport: super::viewport::Viewport) -> Option<Div> {
+diff --git a/crates/hex-ui/src/editor/workspace_view.rs b/crates/hex-ui/src/editor/workspace_view.rs
+index 852492a8..c74034e9 100644
+--- a/crates/hex-ui/src/editor/workspace_view.rs
++++ b/crates/hex-ui/src/editor/workspace_view.rs
+@@ -27,7 +27,9 @@ impl EditorView {
+             || self.theme_settings.open
+             || self.controller_input_is_open()
+             || self.context_menu.is_some()
+-            || self.device_panel.add_menu_is_open()
++            || (self.clip_view_open
++                && self.device_panel_active
++                && self.device_panel.add_menu_is_open())
+             || self.send_menu_track.is_some()
+             || self.project_tempo_editing(cx)
+             || self.gain_numeric_editing(cx)
+diff --git a/crates/hex-ui/src/editor/workspace_view_ui_test.rs b/crates/hex-ui/src/editor/workspace_view_ui_test.rs
+index 805c6506..309554e8 100644
+--- a/crates/hex-ui/src/editor/workspace_view_ui_test.rs
++++ b/crates/hex-ui/src/editor/workspace_view_ui_test.rs
+@@ -720,3 +720,132 @@ fn workspace_three_returns_delayed_click_preserves_other_pointer_identity(cx: &m
+         });
+     }
+ }
++
++#[gpui::test]
++fn workspace_four_returns_completed_range_survives_console_controller_ticks(
++    cx: &mut TestAppContext,
++) {
++    let (_files, handle, editor) = fixture(cx);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.update(|window, cx| {
++        window.activate_window();
++        editor.read(cx).focus.focus(window);
++    });
++    visual.run_until_parked();
++    let track = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
++    let selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
++    let lane = visual.debug_bounds(selector).unwrap();
++    let start = lane.origin + gpui::point(lane.size.width * 0.25, gpui::px(22.0));
++    let end = lane.origin + gpui::point(lane.size.width * 0.5, gpui::px(22.0));
++    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++    editor.read_with(&visual, |v, _| assert!(v.time_selection_gesture.is_some()));
++    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++    visual.run_until_parked();
++    let before = editor.read_with(&visual, |v, _| {
++        assert!(v.time_selection_gesture.is_none());
++        let selection = v.time_selection.unwrap();
++        assert_ne!(selection.anchor_frame, selection.end_frame);
++        assert_eq!(v.edit_cursor.unwrap().generation, v.project_generation);
++        (
++            selection,
++            v.selected_clip_ids(),
++            v.state.as_ref().unwrap().clone(),
++            v.project_generation,
++        )
++    });
++    visual.simulate_keystrokes("tab");
++    editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
++    for _ in 0..3 {
++        visual.executor().advance_clock(Duration::from_millis(16));
++        visual.run_until_parked();
++        // Execute the real periodic controller body even on test constructors
++        // that intentionally omit the production detached timer.
++        editor.update(&mut visual, |v, cx| {
++            if v.tick(cx) {
++                cx.notify();
++            }
++        });
++    }
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(
++            v.time_selection,
++            Some(before.0),
++            "completed range after real Console tick"
++        );
++        assert_eq!(v.selected_clip_ids(), before.1);
++        assert_eq!(v.project_generation, before.3);
++        assert_eq!(v.state.as_ref().unwrap().project, before.2.project);
++        assert_eq!(v.state.as_ref().unwrap().revision, before.2.revision);
++        assert_eq!(v.worker_requests_pending, 0);
++        assert!(v.pending_requests.is_empty());
++    });
++    visual.simulate_keystrokes("tab");
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.mode, EditorMode::Arrangement);
++        assert_eq!(v.time_selection, Some(before.0));
++    });
++}
++
++#[gpui::test]
++fn workspace_four_returns_console_still_retires_active_or_invalid_range(cx: &mut TestAppContext) {
++    // These deliberately injected invalid view contexts exercise validation;
++    // they are not fabricated worker events or accepted project edits.
++    for invalid in 0..4 {
++        let cx = &mut cx.new_app();
++        let (_files, handle, editor) = fixture(cx);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.update(|window, cx| {
++            window.activate_window();
++            editor.read(cx).focus.focus(window);
++        });
++        visual.run_until_parked();
++        let track = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
++        let selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
++        let lane = visual.debug_bounds(selector).unwrap();
++        let start = lane.origin + gpui::point(lane.size.width * 0.25, gpui::px(22.0));
++        let end = lane.origin + gpui::point(lane.size.width * 0.5, gpui::px(22.0));
++        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++        if invalid != 3 {
++            visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++        }
++        editor.update(&mut visual, |v, cx| {
++            assert!(
++                v.time_selection
++                    .is_some_and(|s| s.anchor_frame != s.end_frame)
++            );
++            v.mode = EditorMode::Session;
++            match invalid {
++                0 => v.project_generation = v.project_generation.wrapping_add(1),
++                1 => v.state = None,
++                2 => v.edit_cursor = None,
++                _ => assert!(v.time_selection_gesture.is_some()),
++            }
++            v.tick(cx);
++            assert!(
++                v.normalized_time_selection().is_none(),
++                "invalid context {invalid}"
++            );
++            if invalid < 3 {
++                assert!(
++                    v.time_selection.is_none(),
++                    "invalid selection retired {invalid}"
++                );
++            }
++            if invalid < 2 {
++                assert!(v.edit_cursor.is_none(), "stale cursor retired {invalid}");
++            }
++            eprintln!(
++                "Console invalid context {invalid}: selection={:?}, active={}, queued={}",
++                v.time_selection,
++                v.time_selection_gesture.is_some(),
++                v.worker_requests_pending
++            );
++            assert!(v.time_selection_gesture.is_none());
++            assert!(v.time_range_move_gesture.is_none());
++            assert_eq!(v.worker_requests_pending, 0);
++            assert!(v.pending_requests.is_empty());
++        });
++    }
++}
+diff --git a/docs/workspace-views.md b/docs/workspace-views.md
+index e9fbc34e..dcae35af 100644
+--- a/docs/workspace-views.md
++++ b/docs/workspace-views.md
+@@ -102,11 +102,14 @@ Root's sole Mac lane may run this exact source once with:
+ 
+ ```sh
+ cargo test -p hex-ui --features ui-test-support --locked --lib -- \
+-  --nocapture workspace_view_ui_test operator_tab_cycle
++  --nocapture workspace_view_ui_test operator_tab_cycle workspace_four_returns_
+ ```
+ 
+-Expected on the repaired source: **11 unique positive tests**, zero failures/ignored
+-(9 workspace cases and 2 unchanged Operator traversal cases). The previous exact
++Expected on the current repaired source: **18 unique positive tests**, zero
++failures/ignored (15 workspace-module cases, 2 unchanged Operator traversal cases,
++and the separate hidden-device-menu case). Rust test filters form a union: the
++`workspace_four_returns_` filter repeats two workspace cases without executing
++them twice. The historical 11-case receipt above remains bound to its old source. The previous exact
+ six-case native run remains historical; this checklist does not request its
+ automatic repetition or dispatch a new native job. Preserve the actual case list,
+ exit status, source/tree, raw log/hash and bounded fixture startup evidence; a
+@@ -168,3 +171,27 @@ and allow switching again after the existing release/cancel/close path.
+ Headless pointer/key evidence is not physical/native acceptance. The immutable
+ handoff retains all original review failures and the separate fixture focus
+ assumption failures. Final prospective-tree qualification remains merger-owned.
++
++
++## 19 October follow-up: completed ranges and hidden device menu
++
++A released, valid Arrangement range survives entering Console, actual periodic
++controller ticks, and returning to Arrange. Active selection/move gestures still
++cancel on a mode change; missing source/state/cursor and stale generation still
++retire invalid ranges. Console does not animate a hidden point cursor. The actual
++pointer regression retains canonical project/revision and selection identity.
++
++The device add-menu blocks workspace Tab only while its existing detail panel is
++visible (`clip_view_open && device_panel_active`). Hiding through the real bottom
++button keeps the panel's retained state, but cannot leave an invisible keyboard
++barrier. Reopening restores the visible menu and its refusal; closing the menu
++restores Tab. No device insertion, source/track retargeting or new focus operation
++is introduced. The ordinary menu-toggle and native-entry close handlers remain
++unchanged; existing device/navigation controls retain their behavior.
++
++The checklist command above enumerates the current 18-case union; the evidence
++packet records every fully qualified match and actual result. The original two
++runtime REDs and every historical receipt remain source-bound. Required combined
++full CI and fresh reviews of both canonical PRs remain merger-owned; physical
++keyboard/IME, native typography/pixels and installed acceptance remain open.
++This document does not dispatch a native job or claim delivery.
+diff --git a/todo.md b/todo.md
+index 0d67dc4b..ed63473f 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5580,3 +5580,27 @@ User rejected device-local automation editing. Remove its button, graph mode and
+ - Preserve the original e934 owner history and compose actual qualified main a2d47. Both dividers paint their own active cyan state, retain normal idle hover, and publish release/lost-Left retirement. Original owner actual twoREDs and final90browser controls remain historical component evidence.
+ - Resolve only the overlapping sidebar transitions around the current444 THREE-field pointer/width/locked tuple and existing snap hysteresis; preserve325 stationary tag-column geometry,414 private constructor/FS leases, Console/group receiver and all current main source outside the six owning files. Keep all appended test registrations/docs/history.
+ - Verified all original payload and source hashes; exact new guarded focused and required full21/fresh review remain pending. Native physical hover/capture-loss/GPU flicker and delivery remain separate. Thin divider323 is not imported.
++
++
++### 2026-10-19 — PR419/458 auxiliary guards, keyed click and periodic state repair
++
++- Preserve the historical held-pan record above. Its later d9b owner supplement
++  adds the four existing-owner Tab guards: held pre-drag pointer, visible device
++  add-menu, spectrum resize and device-chain navigation. Matching clip click
++  cleanup uses the original generation/ClipId/None-edge key before selection and
++  propagation stop; delayed foreign generation/clip/edge capture stays protected.
++- On exact joint c385, two actual GPUI regressions reproduce a completed range
++  collapsing on a Console controller tick and an add-menu blocking Tab after the
++  real bottom-panel hide. Restrict non-Arrangement cancellation to active range
++  gestures while retaining stale-source/generation/cursor validation; gate the
++  existing menu guard by actual panel visibility. No model/worker/focus/framework
++  change, no hidden cursor pulse and no blanket cancellation/keyboard bypass.
++- Preserve the original 13 workspace-module cases, both Operator traversal cases,
++  navigation/drag/paint/capture/selection and compact status oracles. The new two
++  workspace cases plus separate navigation case make the documented native union
++  18, not the stale 11. Real input and Service/controller tests, invalid-context
++  controls, strict/guard checks and exact source evidence precede source handoff.
++- Old d9b/38c3/c385 positives do not qualify this changed source. Both canonical
++  PRs require separate authenticated merge readbacks after new combined required
++  CI and fresh review; source readiness remains In Progress. Physical keyboard,
++  IME, native fonts/pixels/audio and installed/user acceptance remain open.

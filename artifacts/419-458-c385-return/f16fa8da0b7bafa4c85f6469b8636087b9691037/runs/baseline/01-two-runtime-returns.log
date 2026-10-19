@@ -1,0 +1,32 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 03s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+
+thread 'editor::workspace_view_ui_test::workspace_four_returns_completed_range_survives_console_controller_ticks' (196585) panicked at crates/hex-ui/src/editor/workspace_view_ui_test.rs:771:9:
+assertion `left == right` failed: completed range after real Console tick
+  left: Some(TimeSelection { anchor_track: TrackId(1), end_track: TrackId(1), anchor_frame: 96000, end_frame: 96000 })
+ right: Some(TimeSelection { anchor_track: TrackId(1), end_track: TrackId(1), anchor_frame: 96000, end_frame: 192000 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::workspace_view_ui_test::workspace_four_returns_completed_range_survives_console_controller_ticks ... FAILED
+
+thread 'editor::device_panel::tests::navigation_ui_tests::workspace_four_returns_hidden_add_menu_does_not_block_tab' (196584) panicked at crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs:491:9:
+assertion `left == right` failed: hidden menu must not own Tab
+  left: Arrangement
+ right: Session
+test editor::device_panel::tests::navigation_ui_tests::workspace_four_returns_hidden_add_menu_does_not_block_tab ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::navigation_ui_tests::workspace_four_returns_hidden_add_menu_does_not_block_tab
+    editor::workspace_view_ui_test::workspace_four_returns_completed_range_survives_console_controller_ticks
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1003 filtered out; finished in 0.83s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

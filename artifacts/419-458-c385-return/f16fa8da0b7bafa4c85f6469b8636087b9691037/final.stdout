@@ -1,0 +1,23 @@
+[1/11] documented-eighteen: running
+[1/11] documented-eighteen: passed
+[2/11] retained-capture-range-navigation-header: running
+[2/11] retained-capture-range-navigation-header: passed
+[3/11] ui-default-strict: running
+[3/11] ui-default-strict: passed
+[4/11] ui-feature-strict: running
+[4/11] ui-feature-strict: passed
+[5/11] architecture: running
+[5/11] architecture: passed
+[6/11] gpui-patch: running
+[6/11] gpui-patch: passed
+[7/11] dependency-patches: running
+[7/11] dependency-patches: passed
+[8/11] ui-style: running
+[8/11] ui-style: passed
+[9/11] device-layout: running
+[9/11] device-layout: passed
+[10/11] format: running
+[10/11] format: passed
+[11/11] diff: running
+[11/11] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-419-c385-final/summary.json
