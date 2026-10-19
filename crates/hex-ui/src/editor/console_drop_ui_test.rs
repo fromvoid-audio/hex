@@ -584,3 +584,63 @@ fn console_actual_verified_worker_drop_uses_typed_session_clip_and_file_source(
     history(&editor, cx, Request::Redo);
     assert_eq!(*project(&editor, cx), *after);
 }
+
+#[gpui::test]
+fn console_release_hit_not_last_move_or_selection_owns_the_drop(cx: &mut TestAppContext) {
+    let (handle, editor, track, first, _) = fixture(cx);
+    history(
+        &editor,
+        cx,
+        Request::Edit(Command::AddScene {
+            name: "second".into(),
+        }),
+    );
+    let second = project(&editor, cx).scenes()[1].id();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let first_at = bounds(
+        &mut visual,
+        format!("console-cell-{}-{}", track.value(), first.value()),
+    )
+    .center();
+    let second_at = bounds(
+        &mut visual,
+        format!("console-cell-{}-{}", track.value(), second.value()),
+    )
+    .center();
+    let drag = begin_browser(&mut visual, &editor);
+    visual.simulate_mouse_move(first_at, MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        drag.destination.get(),
+        Some(super::super::drag::BrowserDropDestination::Console(
+            hex_session::import_batch::ConsoleDestination::Cell {
+                track,
+                scene: first
+            }
+        ))
+    );
+    // A fast release can carry a new position without an intervening Move.
+    // The real receiver must run before deferred Browser cleanup and use its hit.
+    visual.simulate_mouse_up(second_at, MouseButton::Left, Modifiers::default());
+    assert_retired(&drag);
+    receive_worker(&editor, cx);
+    let state = project(&editor, cx);
+    assert!(state.session_cell(track, first).is_none());
+    assert!(matches!(
+        state.session_cell(track, second),
+        Some(hex_project::SessionCellContent::Audio(_))
+    ));
+    // A stale captured menu cannot append after its actual anchor is removed.
+    visual.run_until_parked();
+    let menu_at = bounds(&mut visual, format!("console-scene-menu-{}", first.value())).center();
+    visual.simulate_mouse_down(menu_at, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(menu_at, MouseButton::Right, Modifiers::default());
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_some()));
+    history(&editor, cx, Request::Edit(Command::RemoveScene(first)));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+    let before = project(&editor, cx);
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx);
+    assert_eq!(*project(&editor, cx), *before);
+}
