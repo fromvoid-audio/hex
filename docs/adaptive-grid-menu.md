@@ -118,3 +118,19 @@ identities. Final candidate integration/full20 and inherited333 qualification
 remain the dedicated merger's responsibility; no old report qualifies another
 tree. The production menu is still available only after actual merge/delivery;
 no installed-app or native visual/input acceptance is inferred.
+
+## returned visible-section remainder repair
+
+The next review boundary compared128 and129 long visible sections. Applying the
+same floored quota to every section painted256 lines for128 sections but only129
+for129 sections; later candidate sampling could not restore discarded targets.
+The resolver now distributes the available quota's remainder in visible-section
+order before dyadic coarsening, matching candidate allocation. The256-line cap
+and exceptional frame-quantized edge-marker reservation are unchanged.
+
+A focused regression compares both section counts across all presets and three
+pan phases, checks the actual painted identities, snap and directional targets,
+and temporary bypass. Existing pan stability, dense-map sampling, offscreen
+history and edge-marker cases remain. This source repair does not qualify
+physical menu interaction, delivery, inherited feature ancestry or the merger's
+final combined tree; earlier source-bound receipts remain historical.

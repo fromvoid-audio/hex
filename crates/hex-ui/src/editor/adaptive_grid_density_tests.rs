@@ -381,3 +381,58 @@ fn adaptive_review_frame_quantized_edge_markers_remain_painted_snap_targets() {
         );
     }
 }
+
+#[test]
+fn adaptive_review_section_remainder_preserves_painted_and_snap_density() {
+    for section_count in [128, 129] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        for index in 1..section_count {
+            editor
+                .execute(Command::SetMeterPoint {
+                    beat: BeatTime::from_quarters(index * 64).unwrap(),
+                    meter: Meter::new(if index % 2 == 0 { 4 } else { 3 }, 4).unwrap(),
+                })
+                .unwrap();
+        }
+        let project = editor.project();
+        let length = project
+            .tempo_map()
+            .beat_to_frame(BeatTime::from_quarters(section_count * 64).unwrap())
+            .unwrap();
+        for density in AdaptiveGridDensity::ALL {
+            let grid = SnapGrid::Adaptive.with_density(density);
+            for start in [0, 1, 3_000] {
+                let viewport = Viewport { start, length };
+                let lines = grid_lines(project, viewport, 100_000.0, grid);
+                eprintln!(
+                    "section remainder sections={section_count} density={density:?} start={start} painted={}",
+                    lines.len()
+                );
+                // The same 256-slot budget supports 128*2 and 127*2+2*1.
+                // Panning can exclude the first origin, never half the grid.
+                assert_eq!(lines.len(), MAX_GRID_LINES - usize::from(start != 0));
+                assert!(lines.windows(2).all(|pair| pair[0].frame < pair[1].frame));
+                for pair in lines.windows(2).step_by(17) {
+                    let candidate = pair[0].frame + 1;
+                    assert_eq!(
+                        grid.snap_frame(project, pair[0].frame, viewport, 100_000.0),
+                        Some(pair[0].frame)
+                    );
+                    let snapped = grid
+                        .snap_frame(project, candidate, viewport, 100_000.0)
+                        .unwrap();
+                    assert!(lines.iter().any(|line| line.frame == snapped));
+                    assert_eq!(
+                        grid.adjacent_frame(project, pair[0].frame, viewport, 100_000.0, true),
+                        Some(pair[1].frame)
+                    );
+                    assert_eq!(
+                        grid.with_platform_modifier(true)
+                            .snap_frame(project, candidate, viewport, 100_000.0),
+                        Some(candidate)
+                    );
+                }
+            }
+        }
+    }
+}

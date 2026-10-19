@@ -587,14 +587,16 @@ fn adaptive_grid_step(
         }));
         // Larger-than-paint-budget maps still share the final bounded painted
         // identities for snapping; no hidden extra subdivision is introduced.
-        let quota = MAX_GRID_LINES
-            .saturating_sub(extra_markers)
-            .checked_div(sections)
-            .unwrap_or(1)
-            .max(1) as u64;
         let section = points
             .partition_point(|point| point.beat() <= beat)
             .saturating_sub(1);
+        let available = MAX_GRID_LINES.saturating_sub(extra_markers);
+        // Match candidate sampling's quotient/remainder order BEFORE dyadic
+        // coarsening discards subdivisions. At129 sections,127 receive two
+        // slots and two receive one, rather than every section receiving one.
+        let quota = (available / sections
+            + usize::from(section.saturating_sub(first_section) < available % sections))
+        .max(1) as u64;
         let start = first.raw().max(beat.raw());
         let end = points
             .get(section + 1)
