@@ -75,6 +75,7 @@ pub(super) struct Panel {
 
 struct Creation {
     expected: NativeDeviceState,
+    expected_variant: hex_project::DeviceVariant,
     state: EqState,
     next_id: u64,
     id: NodeId,
@@ -752,6 +753,12 @@ fn submit(
         return;
     };
     let next = project.next_identity();
+    let Some(expected_variant) = project
+        .device(device)
+        .map(hex_project::Device::active_variant)
+    else {
+        return;
+    };
     let reserved_ids = if reserve == 0 {
         0
     } else {
@@ -763,6 +770,7 @@ fn submit(
         Command::ReplaceDeviceStateWithIdentityReservation {
             device,
             expected_state: expected,
+            expected_variant,
             state,
             expected_next_id: next,
             reserved_ids,
@@ -1114,6 +1122,12 @@ fn begin_creation(
         return;
     };
     let next_id = project.next_identity();
+    let Some(expected_variant) = project
+        .device(device)
+        .map(hex_project::Device::active_variant)
+    else {
+        return;
+    };
     let sample_rate = project.sample_rate();
     let result = EqState::decode(&expected).and_then(|mut state| {
         let id = NodeId::new(next_id.max(u64::from(state.next_node_id)))?;
@@ -1122,6 +1136,7 @@ fn begin_creation(
         state.add(node)?;
         let mut creation = Creation {
             expected,
+            expected_variant,
             state,
             next_id,
             id,
@@ -1166,10 +1181,12 @@ fn creation_event(
         return;
     };
     let valid = current(view, device).as_ref() == Some(&creation.expected)
-        && view
-            .state
-            .as_ref()
-            .is_some_and(|s| s.project.next_identity() == creation.next_id)
+        && view.state.as_ref().is_some_and(|s| {
+            s.project.next_identity() == creation.next_id
+                && s.project
+                    .device(device)
+                    .is_some_and(|entry| entry.active_variant() == creation.expected_variant)
+        })
         && view
             .device_panel
             .eq_panels
@@ -1213,6 +1230,7 @@ fn creation_event(
                     Command::ReplaceDeviceStateWithIdentityReservation {
                         device,
                         expected_state: creation.expected,
+                        expected_variant: creation.expected_variant,
                         state,
                         expected_next_id: creation.next_id,
                         reserved_ids: u64::from(creation.state.next_node_id)

@@ -26,6 +26,8 @@ use audio_sources::MediaBank;
 pub use audio_sources::{
     AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
 };
+mod comparison_transition;
+mod device_comparison;
 pub mod device_gesture;
 mod device_snapshot;
 pub mod import_batch;
@@ -293,6 +295,7 @@ impl Session {
         prepared_assets: Vec<(AssetId, PreparedImport)>,
         sine_table: Arc<hex_engine::SineTable>,
     ) -> Result<Self, SessionError> {
+        device_comparison::validate_project(&project)?;
         let asset_count = project.assets().count();
         let editor = Editor::new(project, history_capacity)?;
         if asset_count != prepared_assets.len() {
@@ -1511,6 +1514,7 @@ fn prepare_with_waveforms(
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
     retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
 ) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    device_comparison::validate_project(project)?;
     let mut old = retained
         .try_borrow_mut()
         .map_err(|_| hex_engine::Invalid("audio waveform state is already borrowed"))?;

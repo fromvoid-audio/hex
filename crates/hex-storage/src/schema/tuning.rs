@@ -1,10 +1,10 @@
-//! One current schema31 requires project tuning and the complete device manifest.
+//! One current schema32 requires project tuning and the complete device manifest.
 use super::{Project, StorageError};
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
-pub(crate) struct DocumentV31<'a> {
+pub(crate) struct DocumentV32<'a> {
     #[serde(flatten)]
     base: super::fade_shapes::DocumentV29<'a>,
     tuning: Tuning,
@@ -128,7 +128,7 @@ impl Tuning {
         ProjectTuning::new(self.enabled, scale, audition).map_err(|e| StorageError::Invalid(e.0))
     }
 }
-impl<'a> DocumentV31<'a> {
+impl<'a> DocumentV32<'a> {
     pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
         let base = super::fade_shapes::DocumentV29::for_current_envelope(project)?;
         Ok(Self {
@@ -145,7 +145,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid tuning envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(31) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(32) {
         return Err(StorageError::Invalid("invalid tuning envelope version"));
     }
     let tuning: Tuning = serde_json::from_value(

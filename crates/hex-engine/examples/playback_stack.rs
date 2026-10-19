@@ -356,11 +356,13 @@ fn project_fixture(
             muted: false,
             soloed: false,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: effect_id,
                 bypassed: false,
                 state: utility_state.clone(),
             }],
             instrument: Some(DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: NativeDeviceState::new(instrument_type, 1, Vec::new())?,
@@ -404,6 +406,7 @@ fn project_fixture(
         gain: 1.0,
         muted: false,
         devices: vec![DeviceSnapshot {
+            comparison: None,
             id: return_effect_id,
             bypassed: false,
             state: utility_state,
