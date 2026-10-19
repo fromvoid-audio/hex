@@ -5809,3 +5809,22 @@ User rejected device-local automation editing. Remove its button, graph mode and
   focused positives remain source-bound. Fresh focused qualification/immutable
   transport is reported in Pulse. Merger owns prospective full21/review/merge;
   no native app operation or acceptance claim.
+
+## 19 October 2026 — Pulse2867 / PR469 single-root fixture custody return
+
+- Root29830 confirms structural BatchFiles/independent Environment root mismatch,
+  without claiming an executed filesystem race or new product release failure.
+  Correct only the upper-rail Service fixture: one precreated Arc Environment,
+  WAV/samples/default paths before startup, injected existing constructor.
+- Reuse existing PendingSetup custody pattern; only a real successful matching
+  Import ACK with exact source path/48kHz/96k frames disarms retention. Actual
+  view/browser/assets/four preferences/catalog share that root, checked through
+  two feature-test-only private path accessors following existing test_path APIs.
+- Actual paused catalog worker holds root after view+caller drop, saves then
+  permits cleanup. Actual pre-ACK missing-file import refusal retains disk
+  evidence without leaking Arc; controlled artificial case cleans its own root
+  only after observing the sole request finish, with no UI jobs started.
+- All original release/preview/raw192000/canonical-before-ACK/actual worker and
+  one-UndoRedo assertions are byte-identical; no production runtime behavior,
+  owner framework, Service join, global fixture sweep or native operation.
+  Prior f3d56-case/required-negative evidence stays independently source-bound.

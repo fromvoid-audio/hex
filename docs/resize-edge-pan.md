@@ -171,3 +171,14 @@ retained as diagnostic evidence; it was not a new production failure. The
 original required full-run failure remains failed/historical until the merger
 qualifies a fresh combined candidate. Native captured-release acceptance remains
 separate, as do the inherited focus-cancel paint issue and warning-cleanup PR474.
+
+The PR469 upper-rail regression fixture now creates one existing test Environment
+before Service/import/startup and injects that same Arc into the editor. Its WAV,
+samples, four preferences and derived catalog all belong to that root. The
+existing pre-ACK retention pattern disarms only on the actual matching successful
+Import response (48kHz, 96k frames). A paused real catalog save proves the root
+survives view/caller retirement until filesystem completion, then cleans up;
+a real missing-import refusal preserves evidence without leaking an Arc. This
+is fixture custody, not a Service join or new production release behavior. The
+original pointer/geometry/typed192000/pre-ACK/worker/UndoRedo assertion block is
+byte-identical. Earlier 56-case evidence remains tied to its original source.
