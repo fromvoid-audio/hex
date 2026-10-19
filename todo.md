@@ -5354,3 +5354,17 @@ source handoff is separate from final integration/full CI/merge and delivery.
 - Verified all28 immutable owner payloads and exact11-line insertion; production random color assignment, strict older-writer loss refusal and shared fixtures remain unchanged.
 - Original Session-equivalence failures/fixes and later storage failure remain separate negative evidence. Previous full21 stages do not qualify this changed candidate.
 - New exact prospective full21 and fresh review pending; no merge, installation or physical palette acceptance claim. Unqualified456 placement schema32 is not imported.
+
+### 2026-10-19 — PR436 active spectrum fill integration
+
+- Composed ownerfa67814c active-fill repair with qualified main35ea; shared EQ/global painter keeps the total257-input cap while budgeting alpha only across valid non-floor fills.
+- Verified all71 original and26 repair evidence payloads. Original actualpaint alpha RED and final68widget component results remain scope-bound; coordinator changednative2 positive is separate from repository qualification and physical pixels.
+- Resolved shared painter composition using existing406 axes::plot_bounds exactly once, preserving grids, node hits, analyzer lifecycle and current GPUI support. No extra7px inset or unqualified407 gesture import.
+- Exact prospective full21/fresh review are pending; no merge, framebuffer/listening, installation or user acceptance claim.
+
+### 2026-10-19 — PR399 coherent palette and Storage return
+
+- Preserved both owner commits e1729d2a then d44a7b59 over8258; three named legacy-compatible fixtures explicitly author Gray while every full Project/Snapshot and strict loss assertion remains. Shared fixtures and current31 schema are unchanged.
+- Private palette selection now derives counts from the palette and uses a bounded ordered tie loop; exact ticket mapping is covered across1024 legal authored profiles. Original fixed-nine panic reachability was disproved, so this is a policy cleanup rather than a reproduced runtime crash fix.
+- Verified all35 immutable owner payloads/four source-file hashes. Owner completeStorage baseline117PASS3FAIL then all120PASS and final125 positives remain component evidence; all three prior required-run negatives stay preserved.
+- Composed actualqualified mainbd54 with newly merged spectrum painter; no unqualified407/456/447 imports. New exact full21/freshreview pending before any merge, installation or user acceptance claim.
