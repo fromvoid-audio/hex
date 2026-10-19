@@ -1,0 +1,985 @@
+diff --git a/crates/hex-engine/src/audio_preparation.rs b/crates/hex-engine/src/audio_preparation.rs
+index 8c9e9e99..60bb8639 100644
+--- a/crates/hex-engine/src/audio_preparation.rs
++++ b/crates/hex-engine/src/audio_preparation.rs
+@@ -852,6 +852,7 @@ impl AudioPreparationCustody {
+         capacity: &mut AudioArrangementCapacity,
+     ) -> Result<u64, AudioStorageError> {
+         if self.phase != AudioPreparationPhase::Vacant
++            || self.arrangement_clips.has_next()
+             || self.bank.is_some()
+             || self.original_resources.is_some()
+             || self.original_resources_drop_pending
+@@ -1086,8 +1087,12 @@ impl AudioPreparationCustody {
+     /// panic makes an irreversible tombstone, preserving bank and remaining rows.
+     pub fn cleanup_on_control(&mut self) {
+         if self.phase == AudioPreparationPhase::Vacant {
+-            self.dispose_original_resources_on_control();
+-            return;
++            if self.arrangement_clips.has_next() {
++                self.phase = AudioPreparationPhase::Cleaning;
++            } else {
++                self.dispose_original_resources_on_control();
++                return;
++            }
+         }
+         if self.phase != AudioPreparationPhase::Cleaning {
+             return;
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips.rs
+index 1c3386bd..4c8edc0f 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips.rs
+@@ -461,7 +461,11 @@ impl ArrangementClips {
+         self.root.context_at(external)
+     }
+     pub(super) fn has_next(&self) -> bool {
+-        !matches!(self.phase, Phase::Vacant | Phase::Complete) || self.root.has_metadata_disposal()
++        !matches!(self.phase, Phase::Vacant | Phase::Complete)
++            || self.preview.has_next()
++            || self.returns.has_next()
++            || self.tracks.has_next()
++            || self.root.has_metadata_disposal()
+     }
+     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
+         if self.preview.has_next() {
+@@ -547,7 +551,11 @@ impl ArrangementClips {
+         Ok(())
+     }
+     pub(super) fn clear_disposed(&mut self) -> Result<(), AudioStorageError> {
+-        if self.phase == Phase::Vacant {
++        if self.phase == Phase::Vacant && !self.has_next() {
++            self.root.clear_context_retirement()?;
++            self.preview.clear_disposed()?;
++            self.returns.clear_disposed()?;
++            self.tracks.clear_disposed()?;
+             return Ok(());
+         }
+         if self.phase != Phase::Complete
+@@ -561,6 +569,7 @@ impl ArrangementClips {
+         {
+             return Err(AudioStorageError::Capacity);
+         }
++        self.root.clear_context_retirement()?;
+         self.preview.clear_disposed()?;
+         self.returns.clear_disposed()?;
+         self.tracks.clear_disposed()?;
+@@ -732,7 +741,7 @@ impl ArrangementClips {
+         if let Some(metadata) = pending_metadata {
+             l.clip_metadata(metadata)?;
+         }
+-        Ok(root.context_at(project))
++        Ok(root.legacy_context_at(project))
+     }
+ }
+ 
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs
+index c1ef64be..fd448cba 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs
+@@ -47,6 +47,16 @@ impl<'a> RootStorageView<'a> {
+         self.feed.filter(|_| self.feed_is_paired)
+     }
+ }
++/// Disposal routing only; actual fields/receipts remain storage authority.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++enum ContextLifecycle {
++    #[default]
++    None,
++    LegacyProducer,
++    CompilerOwned,
++    RetirementPending,
++    RetirementComplete,
++}
+ #[derive(Default)]
+ pub(super) struct ArrangementRootAssembly {
+     project: Option<Project>,
+@@ -54,6 +64,7 @@ pub(super) struct ArrangementRootAssembly {
+     returns: Vec<ReturnBus>,
+     feed: ReturnFeedPlan,
+     contexts: Option<OwnedShared<SharedAnalyticContextTable>>,
++    context_lifecycle: ContextLifecycle,
+     tempo_map: Option<hex_project::TempoMap>,
+     midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
+     topology: Option<OwnedShared<crate::signal_graph::SignalGraph>>,
+@@ -67,6 +78,8 @@ pub(super) struct ArrangementRootAssembly {
+     pub(super) panic_after: Option<usize>,
+     #[cfg(test)]
+     pub(super) panic_after_metadata_take: bool,
++    #[cfg(test)]
++    pub(super) context_probe: Option<crate::audio_preparation::DropProbe>,
+ }
+ impl ArrangementRootAssembly {
+     #[cfg(test)]
+@@ -91,13 +104,62 @@ impl ArrangementRootAssembly {
+             && self.topology.is_none()
+             && self.midi_routing.capacity() == 0
+             && !self.metadata_drop_pending
++            && self.context_lifecycle != ContextLifecycle::RetirementPending
+             && self.feed.has_no_owned_storage()
+     }
+     pub(super) fn restore_project(&mut self, source: &mut Option<Project>) {
+         *self.compiler_destination_on_control() = source.take();
+     }
+     pub(super) fn compiler_destinations_vacant(&self) -> bool {
+-        self.project.is_none() && self.contexts.is_none() && !self.metadata_drop_pending
++        self.project.is_none()
++            && self.contexts.is_none()
++            && !self.metadata_drop_pending
++            && self.context_lifecycle == ContextLifecycle::None
++    }
++    pub(super) fn begin_compiler_context(&mut self) -> Result<(), AudioStorageError> {
++        if !self.compiler_destinations_vacant() {
++            return Err(AudioStorageError::SourceMismatch);
++        }
++        self.context_lifecycle = ContextLifecycle::CompilerOwned;
++        Ok(())
++    }
++    #[cfg(test)]
++    pub(super) fn record_external_legacy_transfer(
++        &mut self,
++        shared: &crate::session_shared_preparation::SessionSharedConstruction,
++    ) -> Result<(), AudioStorageError> {
++        if !self.compiler_destinations_vacant() {
++            return Err(AudioStorageError::SourceMismatch);
++        }
++        // The two direct common-compiler fixtures transfer from the actual
++        // producer outside construct(); validate its real transfer state.
++        shared.preflight_arrangement_restore()?;
++        self.context_lifecycle = ContextLifecycle::LegacyProducer;
++        Ok(())
++    }
++    pub(super) fn legacy_context_at<'a>(
++        &'a self,
++        external: Option<&'a Project>,
++    ) -> Option<&'a OwnedShared<SharedAnalyticContextTable>> {
++        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
++            None
++        } else {
++            self.context_at(external)
++        }
++    }
++    pub(super) fn clear_context_retirement(&mut self) -> Result<(), AudioStorageError> {
++        if self.metadata_drop_pending
++            || self.context_lifecycle == ContextLifecycle::RetirementPending
++        {
++            return Err(AudioStorageError::UnknownStorage);
++        }
++        if self.project.is_some() || self.contexts.is_some() || self.has_metadata_disposal() {
++            return Err(AudioStorageError::Capacity);
++        }
++        if self.context_lifecycle == ContextLifecycle::RetirementComplete {
++            self.context_lifecycle = ContextLifecycle::None;
++        }
++        Ok(())
+     }
+     pub(super) fn compiler_destinations(
+         &mut self,
+@@ -118,6 +180,7 @@ impl ArrangementRootAssembly {
+             || !self.tracks.is_empty()
+             || !self.returns.is_empty()
+             || self.contexts.is_some()
++            || self.context_lifecycle != ContextLifecycle::None
+             || self.has_feed
+             // A fresh compiler feed remains here after root restoration; it
+             // must finish guarded metadata retirement before this slot reopens.
+@@ -197,7 +260,9 @@ impl ArrangementRootAssembly {
+         &'a self,
+         external: Option<&'a Project>,
+     ) -> Result<RootStorageView<'a>, AudioStorageError> {
+-        if self.metadata_drop_pending {
++        if self.metadata_drop_pending
++            || self.context_lifecycle == ContextLifecycle::RetirementPending
++        {
+             return Err(AudioStorageError::UnknownStorage);
+         }
+         if self.project.is_some() && external.is_some() {
+@@ -339,6 +404,7 @@ impl ArrangementRootAssembly {
+             || !self.returns.is_empty()
+             || self.has_feed
+             || self.contexts.is_some()
++            || self.context_lifecycle != ContextLifecycle::None
+             || self.tempo_map.is_some()
+             || self.topology.is_some()
+             || self.midi_routing.capacity() != 0
+@@ -370,6 +436,7 @@ impl ArrangementRootAssembly {
+         #[cfg(test)]
+         self.fault(frontier)?;
+         shared.commit_arrangement_transfer(&mut self.contexts);
++        self.context_lifecycle = ContextLifecycle::LegacyProducer;
+         #[cfg(test)]
+         self.fault(frontier + 1)?;
+         // Every field was validated/reserved before any owner move. The only
+@@ -410,8 +477,19 @@ impl ArrangementRootAssembly {
+         let view = self.view_at(None)?;
+         tracks.preflight_root_restore(view.tracks)?;
+         returns.preflight_root_restore(view.returns, self.has_feed)?;
+-        if self.context_at(None).is_some() {
+-            shared.preflight_arrangement_restore()?;
++        match self.context_lifecycle {
++            ContextLifecycle::CompilerOwned => {
++                if let Some(context) = self.context_at(None) {
++                    context.refuse_opaque_control_drop()?;
++                }
++            }
++            ContextLifecycle::LegacyProducer => shared.preflight_arrangement_restore()?,
++            ContextLifecycle::None | ContextLifecycle::RetirementComplete => {
++                if self.context_at(None).is_some() {
++                    return Err(AudioStorageError::SourceMismatch);
++                }
++            }
++            ContextLifecycle::RetirementPending => return Err(AudioStorageError::UnknownStorage),
+         }
+         // Validate the whole restoration batch before unpacking any final owner.
+         if let Some(Project {
+@@ -438,7 +516,10 @@ impl ArrangementRootAssembly {
+             self.topology = signal_graph;
+             self.install_restored_metadata(tempo_map, midi_routing);
+         }
+-        shared.restore_arrangement(&mut self.contexts);
++        if self.context_lifecycle == ContextLifecycle::LegacyProducer {
++            shared.restore_arrangement(&mut self.contexts);
++            self.context_lifecycle = ContextLifecycle::None;
++        }
+         returns.restore_root(&mut self.returns, &mut self.feed, self.has_feed);
+         tracks.restore_root_rows(&mut self.tracks);
+         self.has_feed = false;
+@@ -457,22 +538,42 @@ impl ArrangementRootAssembly {
+     }
+     pub(super) fn has_metadata_disposal(&self) -> bool {
+         self.metadata_drop_pending
++            || self.contexts.is_some()
++            || self.project.is_some()
++            || matches!(
++                self.context_lifecycle,
++                ContextLifecycle::CompilerOwned | ContextLifecycle::RetirementPending
++            )
+             || self.tempo_map.is_some()
+             || self.topology.is_some()
+             || self.midi_routing.capacity() != 0
+             || !self.feed.has_no_owned_storage()
+     }
+     pub(super) fn dispose_metadata_on_control(&mut self) -> Result<(), AudioStorageError> {
+-        if self.metadata_drop_pending {
++        if self.metadata_drop_pending
++            || self.context_lifecycle == ContextLifecycle::RetirementPending
++        {
+             return Err(AudioStorageError::UnknownStorage);
+         }
+         if self.project.is_some()
+             || !self.tracks.is_empty()
+             || !self.returns.is_empty()
+-            || self.contexts.is_some()
++            || (self.contexts.is_some()
++                && self.context_lifecycle != ContextLifecycle::CompilerOwned)
+         {
+             return Err(AudioStorageError::Capacity);
+         }
++        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
++            if let Some(context) = &self.contexts {
++                context.refuse_opaque_control_drop()?;
++            }
++            self.context_lifecycle = ContextLifecycle::RetirementPending;
++            drop(self.contexts.take());
++            #[cfg(test)]
++            drop(self.context_probe.take());
++            self.context_lifecycle = ContextLifecycle::RetirementComplete;
++            return Ok(());
++        }
+         if self
+             .topology
+             .as_ref()
+@@ -532,6 +633,7 @@ impl ArrangementRootAssembly {
+             returns,
+             feed,
+             contexts: _,
++            context_lifecycle: _,
+             tempo_map,
+             midi_routing,
+             topology,
+@@ -545,8 +647,17 @@ impl ArrangementRootAssembly {
+                 panic_after: _,
+             #[cfg(test)]
+                 panic_after_metadata_take: _,
++            #[cfg(test)]
++                context_probe: _,
+         } = self;
+         let view = self.view_at(external)?;
++        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
++            if let Some(context) = self.context_at(external) {
++                if !l.skip_observed_shared_field(context) {
++                    crate::shared_analytic::resource_storage::visit_table_contents(context, l)?;
++                }
++            }
++        }
+         l.vec(tracks)?;
+         l.vec(returns)?;
+         feed.visit_audio_storage(l)?;
+@@ -595,3 +706,6 @@ impl ArrangementRootAssembly {
+ 
+ #[cfg(test)]
+ mod metadata_tests;
++
++#[cfg(test)]
++mod lifecycle_tests;
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/root/lifecycle_tests.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/root/lifecycle_tests.rs
+new file mode 100644
+index 00000000..a5204788
+--- /dev/null
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/root/lifecycle_tests.rs
+@@ -0,0 +1,235 @@
++use super::*;
++use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
++fn limits() -> AudioStorageLedgerReservation {
++    AudioStorageLedgerReservation {
++        data_rows: 1024,
++        handle_rows: 1024,
++        root_rows: 128,
++        max_retained_bytes: 16 * 1024 * 1024,
++        max_construction_peak_bytes: 16 * 1024 * 1024,
++    }
++}
++fn compiled(context_only: bool) -> ArrangementClips {
++    compiled_mode(if context_only {
++        "context-only"
++    } else {
++        "project"
++    })
++}
++fn compiled_mode(mode: &str) -> ArrangementClips {
++    super::super::sampler_compile::tests::compiled_root_owned_rows(mode)
++}
++#[test]
++fn root_owned_actual_inventory_closes_in_both_placements_and_after_restoration() {
++    for placement in [
++        "context-only",
++        "project",
++        "track-error",
++        "selector-panic",
++        "restored",
++        "revision-return",
++    ] {
++        eprintln!("root-owned actual inventory placement={placement}");
++        let mut rows = compiled_mode(placement);
++        let context = rows.root_context().unwrap().as_ref() as *const _;
++        let mut shared = crate::session_shared_preparation::SessionSharedConstruction::default();
++        let mut external = None;
++        if placement == "restored" {
++            rows.restore_root(&mut shared).unwrap();
++        }
++        if placement == "revision-return" {
++            rows.transfer_project_revision(&mut external);
++            assert!(rows.can_restore_revision_partial(true, false));
++        }
++        {
++            let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
++            ledger.root(&rows, AudioStorageRole::Current).unwrap();
++            if external.is_some() {
++                ledger.root(&external, AudioStorageRole::Current).unwrap();
++            }
++            assert!(
++                rows.visit_audio_storage(&mut ledger, external.as_ref(), None)
++                    .unwrap()
++                    .is_none()
++            );
++            ledger
++                .validate_selected_shared_handles_on_control()
++                .unwrap();
++            let first = ledger.summary().unwrap();
++            first.require_known_storage().unwrap();
++            // The new embedded-root observer must deduplicate the same field.
++            // Existing paired Track observers deliberately reject duplicate
++            // fixed constructor IDs, so do not rerun that separate interface.
++            rows.root
++                .visit_audio_storage(&mut ledger, external.as_ref())
++                .unwrap();
++            assert_eq!(ledger.summary().unwrap(), first);
++            // The previous-context operand may be this SAME actual field
++            // already covered by the enclosing root/Project inspection.
++            crate::shared_analytic::resource_storage::visit_table(
++                rows.root.context_at(external.as_ref()).unwrap(),
++                &mut ledger,
++                AudioStorageRole::Predecessor,
++            )
++            .unwrap();
++            assert_eq!(ledger.summary().unwrap(), first);
++            assert!(first.require_complete().is_err()); // not publication
++        }
++        if placement == "revision-return" {
++            rows.restore_revision_values(&mut external, &mut None);
++            assert!(external.is_none());
++            assert_eq!(rows.root_context().unwrap().as_ref() as *const _, context);
++            rows.restore_root(&mut shared).unwrap();
++        }
++        let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++        parent.arrangement_clips = rows;
++        parent.cleanup_on_control();
++        assert_eq!(
++            parent.phase(),
++            AudioPreparationPhase::Recoverable,
++            "{placement}"
++        );
++    }
++}
++#[test]
++fn root_owned_omitted_real_child_alias_fails_closure() {
++    let rows = compiled(false);
++    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
++    ledger.root(&rows, AudioStorageRole::Current).unwrap();
++    crate::shared_analytic::resource_storage::visit_table_contents(
++        rows.root_context().unwrap(),
++        &mut ledger,
++    )
++    .unwrap();
++    // The actual compiled Track's table handle is still live but unvisited.
++    assert_eq!(
++        ledger.validate_selected_shared_handles_on_control(),
++        Err(AudioStorageError::UnknownStorage)
++    );
++}
++#[test]
++fn root_owned_wrong_route_and_occupied_slot_refuse_before_any_move() {
++    for occupied in [false, true] {
++        let mut rows = compiled(false);
++        let context = rows.root_context().unwrap().as_ref() as *const _;
++        if occupied {
++            rows.root.contexts = Some(rows.root_context().unwrap().clone_on_control());
++        } else {
++            rows.root.context_lifecycle = ContextLifecycle::None;
++        }
++        let mut shared = crate::session_shared_preparation::SessionSharedConstruction::default();
++        assert!(rows.restore_root(&mut shared).is_err());
++        assert!(rows.root.project.is_some());
++        assert_eq!(
++            rows.root.project.as_ref().unwrap().shared_contexts.as_ref() as *const _,
++            context
++        );
++        drop(rows.root.contexts.take());
++        rows.root.context_lifecycle = ContextLifecycle::CompilerOwned;
++        let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++        parent.arrangement_clips = rows;
++        parent.cleanup_on_control();
++        assert_eq!(parent.phase(), AudioPreparationPhase::Recoverable);
++    }
++}
++#[test]
++fn root_owned_opaque_context_refuses_before_children_or_context_are_moved() {
++    let crate::shared_analytic::cleanup_tests::OpaqueFixture {
++        table,
++        owner,
++        drops,
++    } = crate::shared_analytic::cleanup_tests::opaque_fixture();
++    drop(owner);
++    let mut rows = ArrangementClips::default();
++    rows.root.begin_compiler_context().unwrap();
++    rows.root.contexts = Some(table);
++    let context = rows.root_context().unwrap().as_ref() as *const _;
++    let mut shared = crate::session_shared_preparation::SessionSharedConstruction::default();
++    assert_eq!(
++        rows.restore_root(&mut shared),
++        Err(AudioStorageError::UnknownStorage)
++    );
++    assert_eq!(
++        rows.root.dispose_metadata_on_control(),
++        Err(AudioStorageError::UnknownStorage)
++    );
++    assert_eq!(rows.root_context().unwrap().as_ref() as *const _, context);
++    assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
++    assert_eq!(rows.root.context_lifecycle, ContextLifecycle::CompilerOwned);
++    drop(rows); // explicit test teardown, never the refused production operation
++    assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
++}
++
++#[test]
++fn root_owned_retirement_unwind_keeps_remaining_metadata_and_first_payload_rooted() {
++    use std::sync::{
++        Arc,
++        atomic::{AtomicUsize, Ordering},
++    };
++    let mut rows = compiled(false);
++    let project = rows.root.project.as_ref().unwrap();
++    // This actual unrouted fixture has no topology allocation. Its authored
++    // tempo backing remains live after the context retirement frontier.
++    assert!(project.signal_graph.is_none());
++    let tempo = project.tempo_map.as_ref().unwrap().points().as_ptr();
++    let calls = Arc::new(AtomicUsize::new(0));
++    let count = calls.clone();
++    rows.root.context_probe = Some(crate::audio_preparation::DropProbe(Some(Box::new(
++        move || {
++            count.fetch_add(1, Ordering::SeqCst);
++            panic!("retirement pending keeps remaining metadata");
++        },
++    ))));
++    let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++    parent.arrangement_clips = rows;
++    parent.cleanup_on_control();
++    assert_eq!(parent.phase(), AudioPreparationPhase::FailedIncomplete);
++    let root = &parent.arrangement_clips.root;
++    assert_eq!(root.context_lifecycle, ContextLifecycle::RetirementPending);
++    assert!(root.contexts.is_none());
++    assert!(root.topology.is_none());
++    assert_eq!(root.tempo_map.as_ref().unwrap().points().as_ptr(), tempo);
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    let payload = parent.first_panic.as_ref().unwrap().as_ref() as *const _;
++    parent.cleanup_on_control();
++    assert!(std::ptr::eq(
++        parent.first_panic.as_ref().unwrap().as_ref() as *const _,
++        payload
++    ));
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    assert!(
++        parent
++            .arrangement_clips
++            .root
++            .clear_context_retirement()
++            .is_err()
++    );
++    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
++    assert!(
++        ledger
++            .borrow_custody_on_control(&parent, AudioStorageRole::FailedConstruction)
++            .is_err()
++    );
++}
++
++#[test]
++fn actual_context_only_wrong_route_is_discovered_and_parent_refuses_without_drop() {
++    let mut rows = compiled(true);
++    let context = rows.root_context().unwrap().as_ref() as *const _;
++    rows.root.context_lifecycle = ContextLifecycle::None;
++    assert!(rows.has_next()); // actual field, not scalar route, discovers it
++    let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++    parent.arrangement_clips = rows;
++    parent.cleanup_on_control();
++    assert_eq!(parent.phase(), AudioPreparationPhase::FailedIncomplete);
++    assert_eq!(
++        parent.arrangement_clips.root_context().unwrap().as_ref() as *const _,
++        context
++    );
++    assert!(parent.first_panic.is_none());
++    parent.cleanup_on_control();
++    assert_eq!(
++        parent.arrangement_clips.root_context().unwrap().as_ref() as *const _,
++        context
++    );
++}
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
+index b8b50a60..a8ba8a65 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
+@@ -219,6 +219,9 @@ impl ArrangementClips {
+         let instruments = hex_devices::native_instrument_registry()
+             .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+         let result = transforms.compile_transaction(|| {
++            self.root
++                .begin_compiler_context()
++                .map_err(|_| crate::Invalid("sampler context destination is occupied"))?;
+             let (destination, contexts) = self.root.compiler_destinations();
+             *contexts = Some(
+                 SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
+@@ -277,4 +280,4 @@ impl ArrangementClips {
+ }
+ 
+ #[cfg(test)]
+-mod tests;
++pub(super) mod tests;
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
+index 702d373b..4017a9a0 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
+@@ -464,7 +464,7 @@ fn actual_context_aliases_close_without_duplicate_pcm_or_reservation_enlargement
+ }
+ 
+ #[test]
+-fn actual_compiler_error_and_panic_keep_original_and_reject_unqualified_restore_destination() {
++fn actual_compiler_error_and_panic_restore_same_context_without_legacy_producer() {
+     for panic in [false, true] {
+         let f = Fixture::new();
+         let original = f.original(4096);
+@@ -501,17 +501,37 @@ fn actual_compiler_error_and_panic_keep_original_and_reject_unqualified_restore_
+         }
+         assert_eq!(original.summary().unwrap(), before);
+         assert!(rows.root.context_at(None).is_some());
+-        // New Sampler contexts do not possess the existing empty-context
+-        // producer's transfer state. Refuse before moving any retained owner;
+-        // this is an explicit integration limit, NOT successful restoration.
+-        let context = rows.root.context_at(None).unwrap() as *const _;
++        let context = rows.root.context_at(None).unwrap().as_ref() as *const _;
+         let mut unrelated = crate::session_shared_preparation::SessionSharedConstruction::default();
++        let shared_before = unrelated.observe().unwrap();
++        let clones_before_restore = crate::owned_shared::clone_count();
++        let mut restore = Ok(());
++        let allocations = allocation_counter::measure(|| {
++            restore = rows
++                .root
++                .restore(&mut rows.tracks, &mut rows.returns, &mut unrelated);
++        });
++        restore.unwrap();
++        assert_eq!(allocations.count_total, 0);
++        assert_eq!(crate::owned_shared::clone_count(), clones_before_restore);
+         assert_eq!(
+-            rows.root
+-                .restore(&mut rows.tracks, &mut rows.returns, &mut unrelated),
+-            Err(AudioStorageError::SourceMismatch)
++            rows.root.context_at(None).unwrap().as_ref() as *const _,
++            context
+         );
+-        assert_eq!(rows.root.context_at(None).unwrap() as *const _, context);
++        assert_eq!(unrelated.observe().unwrap(), shared_before);
++        rows.restore_root(&mut unrelated).unwrap();
++        assert_eq!(
++            rows.root.context_at(None).unwrap().as_ref() as *const _,
++            context
++        );
++        let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++        parent.arrangement_clips = rows;
++        assert_eq!(parent.phase(), AudioPreparationPhase::Vacant);
++        parent.cleanup_on_control();
++        assert_eq!(parent.phase(), AudioPreparationPhase::Recoverable);
++        assert!(parent.arrangement_clips.root_context().is_none());
++        parent.arrangement_clips.clear_disposed().unwrap();
++        assert!(!parent.arrangement_clips.has_next());
+         assert_eq!(original.summary().unwrap(), before);
+     }
+ }
+@@ -551,3 +571,201 @@ fn actual_existing_cancellation_poll_seam_preserves_each_closed_operation_fronti
+         f.transforms.compile_transaction(|| Ok(())).unwrap();
+     }
+ }
++
++#[test]
++fn root_owned_context_only_cancellation_is_discovered_and_retired_by_actual_parent() {
++    let f = Fixture::new();
++    f.transforms.cancel_after_polls_for_test(2);
++    let original = f.original(4096);
++    let before = original.summary().unwrap();
++    let mut rows = ArrangementClips::default();
++    assert!(
++        rows.compile_original_sampler_on_control(
++            &f.editor,
++            &f.preparation,
++            &f.bank,
++            Some(&f.previous),
++            &original,
++            &f.transforms,
++            limits()
++        )
++        .is_err()
++    );
++    assert!(rows.root.project().is_none());
++    assert!(rows.root_context().is_some());
++    assert!(rows.has_next());
++    assert!(rows.clear_disposed().is_err());
++    let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++    parent.arrangement_clips = rows;
++    parent.cleanup_on_control();
++    assert_eq!(parent.phase(), AudioPreparationPhase::Recoverable);
++    assert!(parent.arrangement_clips.root_context().is_none());
++    parent.cleanup_on_control();
++    parent.arrangement_clips.clear_disposed().unwrap();
++    parent.arrangement_clips.clear_disposed().unwrap();
++    assert_eq!(original.summary().unwrap(), before);
++}
++
++#[test]
++fn root_owned_successful_project_restores_same_table_and_real_parent_retires_once() {
++    let f = Fixture::new();
++    let original = f.original(4096);
++    let before = original.summary().unwrap();
++    let mut rows = ArrangementClips::default();
++    rows.compile_original_sampler_on_control(
++        &f.editor,
++        &f.preparation,
++        &f.bank,
++        Some(&f.previous),
++        &original,
++        &f.transforms,
++        limits(),
++    )
++    .unwrap();
++    let context = rows.root_context().unwrap().as_ref() as *const _;
++    let mut unrelated = crate::session_shared_preparation::SessionSharedConstruction::default();
++    rows.restore_root(&mut unrelated).unwrap();
++    assert_eq!(rows.root_context().unwrap().as_ref() as *const _, context);
++    rows.restore_root(&mut unrelated).unwrap();
++    let order = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let children = order.clone();
++    rows.tracks.probe = Some(crate::audio_preparation::DropProbe(Some(Box::new(
++        move || {
++            assert_eq!(
++                children.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
++                0
++            );
++        },
++    ))));
++    let context_drop = order.clone();
++    rows.root.context_probe = Some(crate::audio_preparation::DropProbe(Some(Box::new(
++        move || {
++            assert_eq!(
++                context_drop.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
++                1
++            );
++        },
++    ))));
++    let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++    parent.arrangement_clips = rows;
++    parent.cleanup_on_control();
++    assert_eq!(parent.phase(), AudioPreparationPhase::Recoverable);
++    assert_eq!(order.load(std::sync::atomic::Ordering::SeqCst), 2);
++    parent.cleanup_on_control();
++    assert_eq!(order.load(std::sync::atomic::Ordering::SeqCst), 2);
++    assert!(parent.arrangement_clips.root_context().is_none());
++    assert_eq!(original.summary().unwrap(), before);
++}
++
++#[test]
++fn root_owned_retirement_unwind_is_pending_and_actual_parent_preserves_first_payload() {
++    let f = Fixture::new();
++    f.transforms.cancel_after_polls_for_test(2);
++    let original = f.original(4096);
++    let before = original.summary().unwrap();
++    let mut rows = ArrangementClips::default();
++    assert!(
++        rows.compile_original_sampler_on_control(
++            &f.editor,
++            &f.preparation,
++            &f.bank,
++            Some(&f.previous),
++            &original,
++            &f.transforms,
++            limits()
++        )
++        .is_err()
++    );
++    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let count = calls.clone();
++    rows.root.context_probe = Some(crate::audio_preparation::DropProbe(Some(Box::new(
++        move || {
++            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++            panic!("root-owned context retirement probe");
++        },
++    ))));
++    let mut parent = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++    parent.arrangement_clips = rows;
++    parent.cleanup_on_control();
++    assert_eq!(parent.phase(), AudioPreparationPhase::FailedIncomplete);
++    let payload = parent
++        .first_panic
++        .as_ref()
++        .unwrap()
++        .downcast_ref::<&'static str>()
++        .unwrap()
++        .to_owned();
++    assert_eq!(payload, "root-owned context retirement probe");
++    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
++    assert!(parent.arrangement_clips.root_context().is_none());
++    assert!(parent.arrangement_clips.has_next());
++    assert!(
++        parent
++            .arrangement_clips
++            .capacity_at(false, None, None)
++            .is_err()
++    );
++    assert!(parent.arrangement_clips.clear_disposed().is_err());
++    parent.cleanup_on_control();
++    assert_eq!(
++        parent
++            .first_panic
++            .as_ref()
++            .unwrap()
++            .downcast_ref::<&'static str>()
++            .unwrap(),
++        &payload
++    );
++    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
++    assert!(
++        parent
++            .arrangement_clips
++            .root
++            .dispose_metadata_on_control()
++            .is_err()
++    );
++    assert!(
++        parent
++            .arrangement_clips
++            .root
++            .begin_compiler_context()
++            .is_err()
++    );
++    assert_eq!(original.summary().unwrap(), before);
++}
++
++pub(in crate::audio_preparation::arrangement_clips) fn compiled_root_owned_rows(
++    mode: &str,
++) -> ArrangementClips {
++    let f = Fixture::new();
++    if mode == "context-only" {
++        f.transforms.cancel_after_polls_for_test(2);
++    }
++    let original = f.original(4096);
++    let mut rows = ArrangementClips::default();
++    if mode == "track-error" {
++        rows.tracks.fail_after = Some(0);
++    }
++    if mode == "selector-panic" {
++        rows.tracks.panic_after = Some(0);
++    }
++    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        rows.compile_original_sampler_on_control(
++            &f.editor,
++            &f.preparation,
++            &f.bank,
++            Some(&f.previous),
++            &original,
++            &f.transforms,
++            limits(),
++        )
++    }));
++    match mode {
++        "context-only" | "track-error" => assert!(result.unwrap().is_err()),
++        "selector-panic" => assert!(result.is_err()),
++        _ => result.unwrap().unwrap(),
++    }
++    // External bank/history/previous owners disappear normally; only actual
++    // persistent compiler destinations and their real resource leases remain.
++    rows
++}
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/track_tests.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/track_tests.rs
+index 02663d28..feebfa6e 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/track_tests.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/track_tests.rs
+@@ -1821,6 +1821,7 @@ fn selected_joint_children_keep_both_feed_plans_in_actual_root_and_retire_fresh_
+         shared.construct().unwrap();
+         let mut contexts = None;
+         shared.commit_arrangement_transfer(&mut contexts);
++        rows.root.record_external_legacy_transfer(&shared).unwrap();
+         let effects = hex_devices::native_registry().unwrap();
+         let instruments = hex_devices::native_instrument_registry().unwrap();
+         let transforms = crate::audio_transform::AudioTransformPreparation::default();
+@@ -1962,6 +1963,7 @@ fn selected_joint_children_partial_track_or_return_failure_restores_same_persist
+             shared.construct().unwrap();
+             let mut contexts = None;
+             shared.commit_arrangement_transfer(&mut contexts);
++            rows.root.record_external_legacy_transfer(&shared).unwrap();
+             let effects = hex_devices::native_registry().unwrap();
+             let instruments = hex_devices::native_instrument_registry().unwrap();
+             let transforms = crate::audio_transform::AudioTransformPreparation::default();
+diff --git a/crates/hex-engine/src/shared_analytic.rs b/crates/hex-engine/src/shared_analytic.rs
+index 0e150b62..417e69f6 100644
+--- a/crates/hex-engine/src/shared_analytic.rs
++++ b/crates/hex-engine/src/shared_analytic.rs
+@@ -12,7 +12,7 @@ use std::sync::{
+ };
+ 
+ #[cfg(test)]
+-mod cleanup_tests;
++pub(crate) mod cleanup_tests;
+ #[cfg(feature = "instrument-test-support")]
+ pub(crate) mod inline_fixture;
+ pub(crate) mod resource_storage;
+diff --git a/crates/hex-engine/src/shared_analytic/cleanup_tests.rs b/crates/hex-engine/src/shared_analytic/cleanup_tests.rs
+index 444191d4..b8d54d48 100644
+--- a/crates/hex-engine/src/shared_analytic/cleanup_tests.rs
++++ b/crates/hex-engine/src/shared_analytic/cleanup_tests.rs
+@@ -33,8 +33,12 @@ impl PreparedSharedAnalyticContext for OpaqueDrop {
+     }
+ }
+ 
+-#[test]
+-fn retained_context_drop_preflight_refuses_opaque_without_releasing_any_owner() {
++pub(crate) struct OpaqueFixture {
++    pub(crate) table: crate::owned_shared::OwnedShared<SharedAnalyticContextTable>,
++    pub(crate) owner: SharedContextLease,
++    pub(crate) drops: Arc<AtomicUsize>,
++}
++pub(crate) fn opaque_fixture() -> OpaqueFixture {
+     let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+     let hex_project::Created::Track(track) = editor
+         .execute(hex_project::Command::AddMidiTrack {
+@@ -63,6 +67,19 @@ fn retained_context_drop_preflight_refuses_opaque_without_releasing_any_owner()
+             None,
+         ));
+     let table = sampler_tests::retained_table_fixture(owner.clone());
++    OpaqueFixture {
++        table,
++        owner,
++        drops,
++    }
++}
++#[test]
++fn retained_context_drop_preflight_refuses_opaque_without_releasing_any_owner() {
++    let OpaqueFixture {
++        table,
++        owner,
++        drops,
++    } = opaque_fixture();
+     for _ in 0..128 {
+         assert_eq!(
+             table.refuse_opaque_control_drop(),
+diff --git a/crates/hex-engine/src/shared_analytic/resource_storage.rs b/crates/hex-engine/src/shared_analytic/resource_storage.rs
+index acc75f6e..075e23eb 100644
+--- a/crates/hex-engine/src/shared_analytic/resource_storage.rs
++++ b/crates/hex-engine/src/shared_analytic/resource_storage.rs
+@@ -317,7 +317,7 @@ pub(crate) fn visit_table<'a>(
+     // One cached template can be held by multiple real revisions. Its one
+     // physical table field is counted once, while distinct table aliases still
+     // require distinct headers/handles even when their allocation is shared.
+-    if ledger.skip_observed_root(table) {
++    if ledger.skip_observed_root(table) || ledger.skip_observed_shared_field(table) {
+         return Ok(());
+     }
+     ledger.root(table, role)?;
+diff --git a/docs/sampler.md b/docs/sampler.md
+index 14d8e43a..46e7ca16 100644
+--- a/docs/sampler.md
++++ b/docs/sampler.md
+@@ -1326,8 +1326,8 @@ Injected paired Track error/panic preserves the original ledger and retains new
+ owners in persistent destinations; the original assertion panic payload survives.
+ These are control-side tests, not callback, native or musical-use acceptance.
+ 
+-Successful generic once-only restoration of the newly constructed contexts is
+-STILL OPEN. Existing `RootAssembly::restore` requires the actual producer's
++At checkpoint `a456846c`, successful generic once-only restoration of the newly
++constructed contexts remained open. Existing `RootAssembly::restore` requires the actual producer's
+ `SessionSharedConstruction` arrangement-transfer state. New Sampler contexts
+ constructed directly into the persistent root have no such prior empty-context
+ transfer. An unrelated/default restore destination refuses before moving owners;
+@@ -1335,3 +1335,39 @@ no transfer state is fabricated. A genuine new-context destination/retirement
+ contract, complete unwind custody, Service incarnation, normal selected-summary
+ completeness, publication/registration and the usable native panel remain open.
+ This closed operation remains private and unconnected to Service.
++
++
++The next focused lifecycle checkpoint keeps compiler-created contexts in the
++existing Arrangement root through Project and revision value moves. A private
++scalar distinguishes no context, a genuine legacy producer transfer, root-owned
++compiler context, pending retirement and completed retirement. This routes
++disposal only; actual fields, constructor receipts, mandatory visitors and closure
++remain the storage authority. Legacy SessionShared transfer/empty-table checks
++are unchanged. The two direct compiler test fixtures explicitly record their
++actual external producer transfer without changing any legacy assertions.
++
++Root-owned restoration validates all current Track/Return destinations and the
++context's supported destructor before unpacking. It restores the same context
++to the vacant existing root slot, with no allocation or clone, and never touches
++an unrelated SessionShared producer. Child retirement precedes context retirement.
++A pending marker precedes take/drop; normal completion is explicit. A destructor
++probe unwind leaves pending irreversible, preserves the parent's first payload
++and remaining tempo storage, and blocks repeat disposal, inspection and reuse.
++Context-only cancellation and partial children are discoverable even while the
++Arrangement or enclosing preparation phase is Vacant. Root-owned contexts use
++the actual embedded resource-table contents visitor and are excluded from the
++legacy empty-table visitor. Exact same-field observations deduplicate while
++separate physical aliases remain separately observed; arithmetic always traverses
++descendants. Omitting a real compiled-child alias still fails normal closure.
++
++Focused tests cover successful compilation, immediate post-install cancellation,
++ordinary Track failure and caught selector panic followed by same-field restore
++and actual parent retirement. Inventory covers context-only, Project, failed,
++restored and revision-value placements; wrong route, occupied slot and opaque
++provider destructor refuse before moving owners. Actual pending unwind retains
++its payload/metadata and invokes the drop probe once. The changed test layout's
++conservative fixture boundary is 714,362 retained / 785,908 peak bytes; both
++minus-one limits still refuse before allocation or paired owner activity. These
++are actual source-bound control-side tests. They do not close every compiler
++constructor/unwind frontier, Service incarnation, complete selected summaries,
++publication/registration, the functional Sampler panel or native musical use.

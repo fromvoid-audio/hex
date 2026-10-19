@@ -1,0 +1,5 @@
+PUBLIC_ZERO_SCALARS: AudioRootStorageSummary { data_allocations: 0, unresolved_handles: 0, unresolved_retirements: 0, unknown_storage: 0, data_bytes: 0, ledger_bytes: 0, retained_bytes: 0, construction_peak_bytes: 0 }; complete=Err(RetirementReceiptUnknown)
+ACTUAL_EMPTY_LEDGER: AudioRootStorageSummary { data_allocations: 0, unresolved_handles: 0, unresolved_retirements: 0, unknown_storage: 0, data_bytes: 0, ledger_bytes: 35224, retained_bytes: 35224, construction_peak_bytes: 35224 }; complete=Err(RetirementReceiptUnknown)
+ACTUAL_FIRST_BOUND_ROOT: owner=AudioPreparationCustody address=0x7ffe891f02e0 role=Current phase=Vacant; AudioRootStorageSummary { data_allocations: 0, unresolved_handles: 0, unresolved_retirements: 1, unknown_storage: 0, data_bytes: 10088, ledger_bytes: 35224, retained_bytes: 45312, construction_peak_bytes: 45312 }; complete=Err(RetirementReceiptUnknown)
+DUPLICATE_ROOT_VISITOR_REFUSED: Err(SourceMismatch); ledger discarded
+4 diagnostic discriminators PASS; no retirement/admission upgrade

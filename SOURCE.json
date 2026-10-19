@@ -1,0 +1,14 @@
+{
+  "source": "f20804ccc24283ade79dcff2e5bb8a11b04568ac",
+  "tree": "ec26909cbbfd24fdde179d12838029ddee21fc75",
+  "dirty": false,
+  "kind": "read-only retirement-receipt diagnostic; proposal only; no admission",
+  "test_executable_sha256": "04c26d0979c0cc188ac9fce9379e74a87682f3488ce544f87fa6883d2a05de61",
+  "built_rlib_sha256": "2073f831efd7b63c4a446bbbd1b0dd32aabca99c19a40194d9007e755ca1b249",
+  "probe_executable_sha256": "61c112b46098eceac98f634419d7f3422dc43f754ac23b7d86514d2accc76a5f",
+  "rustc": "configured Rust1.94.0; original build log and toolchain retained",
+  "real_fixture_cargo_tests": 1,
+  "public_api_probe_discriminators": 4,
+  "native_claim": false,
+  "production_patch": false
+}

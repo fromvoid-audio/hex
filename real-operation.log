@@ -1,0 +1,10 @@
+
+running 1 test
+ACTUAL bound exact: conservative retained=714362 peak=785908, outcome=Ok(()), alloc=AllocationInfo { count_total: 38, count_current: 14, count_max: 25, bytes_total: 336890, bytes_current: 56992, bytes_max: 278528 }, paired births=5 clones=3
+ACTUAL bound retained-minus1: conservative retained=714362 peak=785908, outcome=Err(ReservationExceeded), alloc=AllocationInfo { count_total: 0, count_current: 0, count_max: 0, bytes_total: 0, bytes_current: 0, bytes_max: 0 }, paired births=0 clones=0
+ACTUAL bound peak-minus1: conservative retained=714362 peak=785908, outcome=Err(ReservationExceeded), alloc=AllocationInfo { count_total: 0, count_current: 0, count_max: 0, bytes_total: 0, bytes_current: 0, bytes_max: 0 }, paired births=0 clones=0
+ACTUAL bound row-shortage: conservative retained=714362 peak=785908, outcome=Err(Capacity), alloc=AllocationInfo { count_total: 3, count_current: 0, count_max: 3, bytes_total: 155768, bytes_current: 0, bytes_max: 155768 }, paired births=0 clones=0
+test audio_preparation::arrangement_clips::sampler_compile::tests::actual_aggregate_exact_and_minus_one_limits_refuse_before_inspection_or_owner_birth ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 754 filtered out; finished in 0.11s
+
