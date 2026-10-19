@@ -1085,28 +1085,6 @@ fn browser_release_review_original_labeled_outside_point_commits_audio_and_midi(
         } else {
             audio
         };
-        if enabled_warp {
-            let settings = editor.read_with(&visual, |v, _| {
-                let p = &v.state.as_ref().unwrap().project;
-                hex_project::default_audio_warp(
-                    p.clip(clip).unwrap(),
-                    p.tempo_map(),
-                    hex_project::WarpMode::Beats {
-                        preserve: hex_project::BeatsPreserve::Transients,
-                        tail: hex_project::BeatsTail::Forward,
-                        decay: 100,
-                    },
-                )
-                .unwrap()
-            });
-            editor.update(&mut visual, |v, _| {
-                assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
-                    clip,
-                    settings: Some(settings),
-                })))
-            });
-            pump(&editor, &mut visual);
-        }
         visual.run_until_parked();
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         let prefix = if midi { "midi-clip" } else { "clip" };
@@ -1216,6 +1194,28 @@ fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enable
         } else {
             audio
         };
+        if enabled_warp {
+            let settings = editor.read_with(&visual, |v, _| {
+                let p = &v.state.as_ref().unwrap().project;
+                hex_project::default_audio_warp(
+                    p.clip(clip).unwrap(),
+                    p.tempo_map(),
+                    hex_project::WarpMode::Beats {
+                        preserve: hex_project::BeatsPreserve::Transients,
+                        tail: hex_project::BeatsTail::Forward,
+                        decay: 100,
+                    },
+                )
+                .unwrap()
+            });
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings),
+                })))
+            });
+            pump(&editor, &mut visual);
+        }
         visual.run_until_parked();
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         let selector = format!(
