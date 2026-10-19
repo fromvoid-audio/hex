@@ -833,5 +833,127 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         )
 
 
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
+    def test_real_cargo_vendored_api_change_with_older_mtime_rebuilds(self) -> None:
+        """A changed vendored struct must not reuse metadata from an older checkout."""
+        root = self.base / "vendored-workspace"
+        vendor = root / "third_party/vendor-api"
+        api = root / "crates/fixture-api"
+        app = root / "crates/fixture-app"
+        helper = root / "external-helper"
+        for directory in (vendor, api, app, helper):
+            (directory / "src").mkdir(parents=True)
+        (root / "Cargo.toml").write_text(
+            '[workspace]\nmembers=["crates/*"]\n'
+            'exclude=["external-helper", "third_party/vendor-api"]\nresolver="2"\n'
+        )
+        (root / ".gitignore").write_text("/artifacts/\n")
+        for directory, name in ((vendor, "vendor-api"), (api, "fixture-api"),
+                                (app, "fixture-app"), (helper, "external-helper")):
+            (directory / "Cargo.toml").write_text(
+                f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2021"\n'
+            )
+        with (api / "Cargo.toml").open("a") as manifest:
+            manifest.write('[dependencies]\nvendor-api={path="../../third_party/vendor-api"}\n')
+        with (app / "Cargo.toml").open("a") as manifest:
+            manifest.write('[dependencies]\nfixture-api={path="../fixture-api"}\n'
+                           'external-helper={path="../../external-helper"}\n')
+        (vendor / "src/lib.rs").write_text("pub struct Sample { pub old_field: u32 }\n")
+        (api / "src/lib.rs").write_text(
+            "pub fn value() -> vendor_api::Sample { vendor_api::Sample { old_field: 7 } }\n"
+        )
+        (app / "src/main.rs").write_text(
+            'fn main() { println!("{}", fixture_api::value().old_field + external_helper::helper()); }\n'
+        )
+        (helper / "src/lib.rs").write_text("pub fn helper() -> u32 { 1 }\n")
+
+        def command(argv, cwd=root):
+            result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout.strip()
+
+        command(["git", "init", "-q"])
+        command(["git", "config", "user.email", "local-ci-test@example.invalid"])
+        command(["git", "config", "user.name", "local ci fixture"])
+        command(["cargo", "generate-lockfile", "--offline"])
+        command(["git", "add", "."])
+        command(["git", "commit", "-qm", "vendored fixture base"])
+        worktree_b = self.base / "vendored-worktree-b"
+        command(["git", "worktree", "add", "-qb", "vendored-b", str(worktree_b)])
+        target = self.base / "vendored-cargo-target"
+        state = self.base / "vendored-target-owner"
+        env = {**os.environ, "CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "0"}
+        steps = (
+            local_ci.Step("debug-build", ("cargo", "build", "--offline", "--locked")),
+            local_ci.Step("release-build", ("cargo", "build", "--offline", "--locked", "--release")),
+        )
+        # Preserve raw runner logs before TemporaryDirectory teardown, including on failure.
+        evidence_dir = os.environ.get("HEX_PRIVATE_CARGO_EVIDENCE")
+        try:
+            runner_a = local_ci.LocalCiRunner(
+                root, run_id="vendor-a", env=env, steps=steps,
+                min_free_bytes=0, target_state_dir=state,
+            )
+            self.assertEqual(runner_a.run(), 0)
+            self.assertEqual(command([str(target / "debug/fixture-app")]), "8")
+            release = target / "release/fixture-app"
+            release_hash = hashlib.sha256(release.read_bytes()).hexdigest()
+            helper_hashes = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (target / "debug/deps").glob("libexternal_helper-*.rlib")
+            }
+            self.assertTrue(helper_hashes)
+            vendor_artifacts = list((target / "debug/deps").glob("libvendor_api-*.rlib"))
+            self.assertTrue(vendor_artifacts)
+            old_timestamp = min(path.stat().st_mtime_ns for path in vendor_artifacts) - 10_000_000_000
+            vendor_b = worktree_b / "third_party/vendor-api/src/lib.rs"
+            vendor_b.write_text("pub struct Sample { pub new_field: u32 }\n")
+            (worktree_b / "crates/fixture-api/src/lib.rs").write_text(
+                "pub fn value() -> vendor_api::Sample { vendor_api::Sample { new_field: 17 } }\n"
+            )
+            (worktree_b / "crates/fixture-app/src/main.rs").write_text(
+                'fn main() { println!("{}", fixture_api::value().new_field + external_helper::helper()); }\n'
+            )
+            command(["git", "add", "."], cwd=worktree_b)
+            command(["git", "commit", "-qm", "change vendored struct field"], cwd=worktree_b)
+            os.utime(vendor_b, ns=(old_timestamp, old_timestamp))
+            self.assertLess(vendor_b.stat().st_mtime_ns, min(path.stat().st_mtime_ns for path in vendor_artifacts))
+            provenance = {
+                "source_sha256": hashlib.sha256(vendor_b.read_bytes()).hexdigest(),
+                "source_mtime_ns": vendor_b.stat().st_mtime_ns,
+                "old_artifact_mtime_ns": {path.name: path.stat().st_mtime_ns for path in vendor_artifacts},
+                "base_commit": command(["git", "rev-parse", "HEAD"]),
+                "changed_commit": command(["git", "rev-parse", "HEAD"], cwd=worktree_b),
+                "target": str(target),
+            }
+            (worktree_b / "artifacts").mkdir(exist_ok=True)
+            (worktree_b / "artifacts/source-provenance.json").write_text(json.dumps(provenance, indent=2))
+            runner_b = local_ci.LocalCiRunner(
+                worktree_b, run_id="vendor-b", env=env, steps=(steps[0],),
+                min_free_bytes=0, target_state_dir=state,
+            )
+            result_b = runner_b.run()
+            self.assertEqual(hashlib.sha256(release.read_bytes()).hexdigest(), release_hash)
+            self.assertEqual({
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (target / "debug/deps").glob("libexternal_helper-*.rlib")
+            }, helper_hashes, "unrelated external dependency changed")
+            self.assertEqual(result_b, 0, "real Cargo rejected changed vendored struct; inspect vendor-b log")
+            self.assertEqual(command([str(target / "debug/fixture-app")]), "18")
+        finally:
+            if evidence_dir:
+                destination = Path(evidence_dir)
+                destination.mkdir(parents=True, exist_ok=True)
+                for label, checkout in (("a", root), ("b", worktree_b)):
+                    if (checkout / "artifacts").exists():
+                        shutil.copytree(checkout / "artifacts", destination / label, dirs_exist_ok=True)
+                if state.exists():
+                    shutil.copytree(state, destination / "ownership", dirs_exist_ok=True)
+                fingerprints = target / "debug/.fingerprint"
+                if fingerprints.exists():
+                    shutil.copytree(fingerprints, destination / "fingerprints", dirs_exist_ok=True)
+
+
+
 if __name__ == "__main__":
     unittest.main()
