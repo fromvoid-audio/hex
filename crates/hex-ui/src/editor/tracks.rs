@@ -898,15 +898,6 @@ impl EditorView {
                     view.drop_browser_audio(drag, window, cx);
                 }),
             )
-            .drag_over::<TrimDrag>(move |style, drag, _, _| {
-                if drag.source_track == track_id {
-                    style
-                        .border_1()
-                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                } else {
-                    style
-                }
-            })
             .on_drop(cx.listener(move |view, drag: &TrimDrag, window, cx| {
                 view.drop_trim(drag, track_id, window, cx);
             }))
