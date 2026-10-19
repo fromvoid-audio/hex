@@ -591,6 +591,34 @@ fn compile_project_inner<'a>(
             device_chain: std::sync::Arc::from(effect_plan.device_chain),
         });
     }
+    let main_plan = compile_effect_devices(
+        snapshot.main_devices(),
+        hex_lattice::ProcessorChainOwner::Main,
+        0,
+        &device_context,
+        registry,
+    )?;
+    for device in &main_plan.device_chain {
+        if let Some(definition) = &device.definition {
+            stateful_count = stateful_count
+                .checked_add(1)
+                .ok_or(Invalid("stateful device count overflow"))?;
+            stateful_bytes = stateful_bytes
+                .checked_add(
+                    definition
+                        .declared_pair_bytes()
+                        .ok_or(Invalid("stateful pair byte count overflow"))?,
+                )
+                .ok_or(Invalid("stateful device runtime budget overflow"))?;
+            if stateful_count > hex_lattice::MAX_STATEFUL_PROCESSORS
+                || stateful_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2
+            {
+                return Err(Invalid(
+                    "stateful device runtime exceeds its bounded budget",
+                ));
+            }
+        }
+    }
     let mut project = Project::with_compiled_tracks(
         snapshot.sample_rate(),
         tracks,
@@ -599,6 +627,7 @@ fn compile_project_inner<'a>(
         snapshot.master_gain(),
         shared_contexts,
     )?;
+    project.main_device_chain = std::sync::Arc::from(main_plan.device_chain);
     project.audio_clip_views = audio_clip_views;
     project.return_feed_plan = return_feed_plan;
     let feeds = snapshot

@@ -13,6 +13,7 @@ impl RendererRuntime {
             .device_chains
             .iter_mut()
             .chain(self.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.main_chain))
         {
             chain.begin_block();
         }
@@ -157,11 +158,23 @@ impl RendererRuntime {
             output.fill([0.0; 2]);
             return Err(error);
         }
+        crate::main_chain::process(
+            &mut self.main_chain,
+            output,
+            0,
+            Some(&crate::effect_clock::ArrangementEffectClock::canonical(
+                project.tempo_map.as_ref(),
+                start,
+            )),
+            &mut None,
+        )
+        .map_err(|_| Invalid("main effect runtime failed"))?;
         compensation.delays.commit_transaction().map_err(error)?;
         for chain in self
             .device_chains
             .iter_mut()
             .chain(self.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.main_chain))
         {
             chain.commit_block();
         }

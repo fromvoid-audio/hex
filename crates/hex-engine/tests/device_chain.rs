@@ -810,3 +810,71 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
         .unwrap();
     assert_eq!(rendered(editor.project(), asset), [0.125, -0.25]);
 }
+
+#[test]
+fn main_effects_process_once_after_sum_in_order_and_session_matches() {
+    let (mut editor, asset, _) = imported_audio_project();
+    let initial = UTILITY_DEFINITION.default_state().unwrap();
+    let invert_state = utility_patch(
+        &initial,
+        parameter::INVERT_RIGHT,
+        ParameterValue::Bool(true),
+    );
+    let swap_state = utility_patch(&initial, parameter::CHANNEL, ParameterValue::Choice(3));
+    let Created::Device(invert) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: invert_state,
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let Created::Device(swap) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: swap_state,
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let mut snapshot = editor.project().snapshot();
+    snapshot.master_gain = 0.5;
+    let model = Project::from_snapshot(snapshot).unwrap();
+    // Input .25,-.5 -> invert-right -> swap -> existing master .5 ONCE.
+    assert_eq!(rendered(&model, asset), [0.25, 0.125]);
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.25, -0.5]]).unwrap())]);
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            &model,
+            &media,
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut actual = [[0.0; 2]; 1];
+    playback.render(&mut actual).unwrap();
+    assert_eq!(actual, [[0.25, 0.125]]);
+    editor
+        .execute(Command::MoveMainDevice {
+            device: swap,
+            before: Some(invert),
+        })
+        .unwrap();
+    assert_eq!(rendered(editor.project(), asset), [-0.5, -0.25]);
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: invert,
+            bypassed: true,
+        })
+        .unwrap();
+    assert_eq!(rendered(editor.project(), asset), [-0.5, 0.25]);
+    editor.execute(Command::RemoveDevice(swap)).unwrap();
+    assert_eq!(rendered(editor.project(), asset), [0.25, -0.5]);
+}
