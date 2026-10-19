@@ -1,6 +1,223 @@
 use super::*;
 use hex_project::DeviceVariant;
 
+fn compressor_mix(state: &hex_lattice_contract::NativeDeviceState) -> f32 {
+    let view = hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, state).unwrap();
+    match view
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.id.value() == 7)
+        .unwrap()
+        .value
+    {
+        ParameterValue::Float(value) => value,
+        _ => panic!("compressor mix float"),
+    }
+}
+
+fn compressor_pair(
+    editor: &Entity<EditorView>,
+    cx: &TestAppContext,
+    device: DeviceId,
+    active: DeviceVariant,
+    current: f32,
+    inactive: f32,
+) {
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let entry = view.state.as_ref().unwrap().project.device(device).unwrap();
+        assert_eq!(entry.active_variant(), active);
+        assert_eq!(compressor_mix(entry.state()), current);
+        let other = entry.comparison().unwrap().inactive();
+        assert_eq!(compressor_mix(other), inactive);
+        for state in [entry.state(), other] {
+            assert_eq!(state.input_gain_millidb(), -1234);
+            assert_eq!(state.output_gain_millidb(), 4321);
+        }
+    });
+}
+
+fn enter_compressor_mix(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    cx: &mut TestAppContext,
+    device: DeviceId,
+    value: &str,
+) {
+    let field = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-7-value", device.value()).into_boxed_str(),
+        ))
+        .expect("actual dry/wet numeric field");
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input(value);
+    visual.simulate_keystrokes("enter");
+    pump_until(editor, cx, settled);
+    visual.run_until_parked();
+}
+
+fn compressor_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
+    let directory = Directory::new();
+    let (service, state, track, bus, device) = catalog_fixture(
+        NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.compressor"),
+        on_return,
+    );
+    // Global host trims belong to the device, not either provider payload bank.
+    let trimmed = state
+        .project
+        .device(device)
+        .unwrap()
+        .state()
+        .clone()
+        .with_input_gain_millidb(-1234)
+        .unwrap()
+        .with_output_gain_millidb(4321)
+        .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: trimmed,
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let (handle, editor) = directory.window(cx, service, state, track, bus);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(800.0)));
+    visual.run_until_parked();
+    enter_compressor_mix(&mut visual, &editor, cx, device, "25%");
+    title(&mut visual, device);
+    menu(&mut visual, device);
+    labels(&editor, cx, &["switch to b", "copy a to b"]);
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    compressor_pair(&editor, cx, device, DeviceVariant::B, 0.25, 0.25);
+    enter_compressor_mix(&mut visual, &editor, cx, device, "75%");
+    compressor_pair(&editor, cx, device, DeviceVariant::B, 0.75, 0.25);
+
+    // Persist the *distinct* pair before copies erase the discriminator.
+    let saved = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    let project_path = directory.0.join("distinct-banks.hex");
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(project_path.clone())))
+    });
+    pump_until(&editor, cx, settled);
+    let reopened = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive_service_event(&reopened);
+    reopened.submit(Request::Open(project_path)).unwrap();
+    let loaded = receive_service_event(&reopened);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    assert_eq!(loaded.state.project, saved);
+    let preset_path = directory.0.join("distinct-banks.hex-device-preset.json");
+    let owner = |view: &EditorView| hex_session::service::preset::Owner {
+        project_generation: view.project_generation,
+        revision: view.state.as_ref().unwrap().revision,
+        device,
+        class: NativeDeviceClass::Effect,
+        type_id: view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .type_id(),
+    };
+    editor.update(cx, |view, _| {
+        let owner = owner(view);
+        assert!(view.enqueue(Request::SaveDevicePreset {
+            owner,
+            path: preset_path.clone()
+        }));
+    });
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error)
+    });
+    let preset_bytes = std::fs::read(&preset_path).unwrap();
+    enter_compressor_mix(&mut visual, &editor, cx, device, "50%");
+    compressor_pair(&editor, cx, device, DeviceVariant::B, 0.5, 0.25);
+    let before_load = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    editor.update(cx, |view, _| {
+        let owner = owner(view);
+        assert!(view.enqueue(Request::LoadDevicePreset {
+            owner,
+            path: preset_path.clone()
+        }));
+    });
+    pump_until(&editor, cx, settled);
+    compressor_pair(&editor, cx, device, DeviceVariant::B, 0.75, 0.25);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before_load)
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, settled);
+    compressor_pair(&editor, cx, device, DeviceVariant::B, 0.75, 0.25);
+    assert_eq!(std::fs::read(&preset_path).unwrap(), preset_bytes);
+    visual.run_until_parked();
+
+    // Both directional menu copies retain the active slot and are exactly one edit.
+    for (active, current, inactive, next) in [
+        (DeviceVariant::B, 0.75, 0.25, DeviceVariant::A),
+        (DeviceVariant::A, 0.25, 0.75, DeviceVariant::B),
+    ] {
+        title(&mut visual, device);
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        menu(&mut visual, device);
+        labels(
+            &editor,
+            cx,
+            if active == DeviceVariant::A {
+                &["switch to b", "copy a to b"]
+            } else {
+                &["switch to a", "copy b to a"]
+            },
+        );
+        visual.simulate_keystrokes("down enter");
+        pump_until(&editor, cx, settled);
+        compressor_pair(&editor, cx, device, active, current, current);
+        let copied = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, before)
+        });
+        compressor_pair(&editor, cx, device, active, current, inactive);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, copied)
+        });
+        compressor_pair(&editor, cx, device, active, current, current);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, settled);
+        visual.run_until_parked();
+        title(&mut visual, device);
+        visual.simulate_keystrokes("p");
+        pump_until(&editor, cx, settled);
+        visual.run_until_parked();
+        compressor_pair(&editor, cx, device, next, inactive, current);
+    }
+    eprintln!(
+        "compressor generic A/B: return={on_return}; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved"
+    );
+}
+
+#[gpui::test]
+fn compressor_generic_ab_track_mix_banks_copy_and_persistence(cx: &mut TestAppContext) {
+    compressor_banks_roundtrip(cx, false);
+}
+
+#[gpui::test]
+fn compressor_generic_ab_return_mix_banks_copy_and_persistence(cx: &mut TestAppContext) {
+    compressor_banks_roundtrip(cx, true);
+}
+
 struct Directory(std::path::PathBuf);
 impl Directory {
     fn new() -> Self {

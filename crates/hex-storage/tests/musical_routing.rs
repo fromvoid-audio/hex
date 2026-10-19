@@ -274,9 +274,19 @@ fn development(version: u32) -> Value {
 #[test]
 fn private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds() {
     for version in [20, 21] {
+        // These private envelopes omit track colors; their authored expected
+        // project is neutral while the current-format fixtures stay colored.
+        let mut expected = Editor::new(fixture(version == 21), 8).unwrap();
+        let track = expected.project().tracks()[0].id();
+        expected
+            .execute(Command::SetTrackColor {
+                track,
+                color: hex_project::ElementColor::Gray,
+            })
+            .unwrap();
         let doc = development(version);
         let restored = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
-        assert_eq!(restored, fixture(version == 21));
+        assert_eq!(restored, *expected.project());
         for edit in 0..5 {
             let mut bad = doc.clone();
             match edit {
