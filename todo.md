@@ -5299,6 +5299,13 @@ to normal; existing selection/hover/focus/audition regressions remain applicable
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
 
+18 October2026 — Pulse2708/PR324: actual active picker drag lost cyan beyond its
+moving hit bounds; outer resize activity survived lost-Left movement. Bind paint
+to each existing gesture and notify on state transitions; clear stale outer latch
+on no-Left movement. Keep resize widths/cursors/laws and existing close cancellation.
+Focused paint/input regressions and evidence in Pulse;2707 thin dividers separate.
+Sole merger owns prospective fullCI/merge; root owns optimized native acceptance.
+
 18 October2026 — Pulse2709/PR325: reproduced rail width480→624px on tag-editor
 open plus mini-strip open-only click. Keep toolbar/body in one fixed base column
 and append editor beside the whole browser; both original controls toggle at a
@@ -5498,3 +5505,9 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Preserved canonical144d metadata correction and actuald411 group-to-Console partial-copy failure, then integrated complete owner416cc history. All43 corrected-v2 evidence payloads and both source files verified; owner immediateparent0daba is distinct from patch-based411.
 - Existing single-clip Console receiver now refuses multi-selected Arrangement payloads before any subset command is queued, with existing exact capture retirement and clear error. Original Audio diagnostic stays unchanged; mixed MIDI, scene insertion, stale revision and single-clip positives preserve canonical selection/history/highwater assertions. No multi-cell mapping or model/Service policy expansion.
 - Owner68 distinct component positives remain bound to their actual source revisions, not relabelled final-head/fullCI. Current qualifiedConsolemainf920 is already an ancestor; new exact affected compile, requiredfull21 and freshreview remain necessary. No unchanged oldfull run, new native/app job, physical drag, callback deadline or installed acceptance claim.
+
+### 2026-10-19 — PR324 active browser resize feedback integration
+
+- Preserve the original e934 owner history and compose actual qualified main a2d47. Both dividers paint their own active cyan state, retain normal idle hover, and publish release/lost-Left retirement. Original owner actual twoREDs and final90browser controls remain historical component evidence.
+- Resolve only the overlapping sidebar transitions around the current444 THREE-field pointer/width/locked tuple and existing snap hysteresis; preserve325 stationary tag-column geometry,414 private constructor/FS leases, Console/group receiver and all current main source outside the six owning files. Keep all appended test registrations/docs/history.
+- Verified all original payload and source hashes; exact new guarded focused and required full21/fresh review remain pending. Native physical hover/capture-loss/GPU flicker and delivery remain separate. Thin divider323 is not imported.
