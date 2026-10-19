@@ -1,0 +1,4 @@
+{
+  "baseline_extraction_equals_instrumented712fdeba_except_rustfmt_whitespace_and_three_declared_UI_only_import_removals": true,
+  "normalized_sha256": "78231114fb0244aa208f250ee83a9b8bca7f92ac6a1989c2d67792d5f8debed0"
+}

@@ -1,0 +1,398 @@
+{
+  "HANDOFF.md": {
+    "sha256": "18e83a174a6f296812c595d07dbd623eebea7545b9fa4111fd5cdca47334621c",
+    "size": 5087
+  },
+  "actual-original-work-bound-red.log": {
+    "sha256": "0043764757ffc44afa66c2a65dea54f1675445853430c2c30f83dac43d3e0d56",
+    "size": 1352
+  },
+  "actual-work-matrix.json": {
+    "sha256": "bbcb3e2a1758cef7249fc60b63e47516811c604f95a956521e229d4b13f5ab64",
+    "size": 28337
+  },
+  "after-outer.log": {
+    "sha256": "38d99739ac374f2baeb0f6eba3cbf5a973c7436f767ec11ffa8a93f10ceb474f",
+    "size": 179
+  },
+  "baseline-outer.log": {
+    "sha256": "c13ea85a9e7ed24610011659ede270479ae0564e5c570afb15b6a7c37d2dee21",
+    "size": 204
+  },
+  "differential-outer.log": {
+    "sha256": "421f93ad4911c548b41e657f5f7b3681b666a74ba9c14ae613691630ad1f4de7",
+    "size": 228
+  },
+  "extraction-proof.json": {
+    "sha256": "959ed0811062a48606b80ba2b832d29db1249e910103eef9fb6d2ab36742b751",
+    "size": 222
+  },
+  "final-outer.log": {
+    "sha256": "a1f5ee2e9592fc97d1433027112099ca0c962e376600f73e474aa0352ef50142",
+    "size": 330
+  },
+  "final-v2-outer.log": {
+    "sha256": "85b2f8e00aa6c2061b9301ca8222deb193a2882bee2b7247aa439116599fa1ae",
+    "size": 947
+  },
+  "functional-outer.log": {
+    "sha256": "7f0d19b00f3685cf5c009e0ece6f6d1b251107b1424097d09c4bc002643f9809",
+    "size": 405
+  },
+  "harness/after/Cargo.lock": {
+    "sha256": "9357f385912c37432852db54d4b0098181665750cbbec906491d3f8caf0d235e",
+    "size": 425
+  },
+  "harness/after/Cargo.toml": {
+    "sha256": "a41b40215df57918d3a94cdf0cdba21917992186a8d822b67afb2fe5c2ee9f5c",
+    "size": 154
+  },
+  "harness/after/EXTRACTION.json": {
+    "sha256": "18c11e8f8f1142a7810412d0163e722f9fc476d18177fc6c16af3017571fdb37",
+    "size": 302
+  },
+  "harness/after/src/adaptive_grid_density.rs": {
+    "sha256": "3283fdd96367e58e34fac30c99b497842bd6b44d6d8e9fa3d447aee44117a3df",
+    "size": 826
+  },
+  "harness/after/src/adaptive_grid_density_tests.rs": {
+    "sha256": "d45d53161df435e0aa3c4f6cf96c2c53dd0f2b3e4c247ac2deafdba6f0d4e229",
+    "size": 26191
+  },
+  "harness/after/src/lib.rs": {
+    "sha256": "3a343c018b8d4f8689065b2c74d94a0f7d969a0eccbf0c3560c559d41056476e",
+    "size": 128
+  },
+  "harness/after/src/musical_time.rs": {
+    "sha256": "1f2f04887516a88b03de2e9c4f58b40598b2d6e4b44a4681cc3603a0d768ef21",
+    "size": 64828
+  },
+  "harness/after/src/viewport.rs": {
+    "sha256": "727f12de8aa4ae1657a4a9b25069e719bdf075f76599562b981dc419ebbf706c",
+    "size": 7823
+  },
+  "harness/baseline/Cargo.lock": {
+    "sha256": "9357f385912c37432852db54d4b0098181665750cbbec906491d3f8caf0d235e",
+    "size": 425
+  },
+  "harness/baseline/Cargo.toml": {
+    "sha256": "a41b40215df57918d3a94cdf0cdba21917992186a8d822b67afb2fe5c2ee9f5c",
+    "size": 154
+  },
+  "harness/baseline/EXTRACTION.json": {
+    "sha256": "9aa5eb7dc1be3bdcc278f2e051fdcb17fdad596bb6e051220e59d4d7e744718c",
+    "size": 302
+  },
+  "harness/baseline/src/adaptive_grid_density.rs": {
+    "sha256": "3283fdd96367e58e34fac30c99b497842bd6b44d6d8e9fa3d447aee44117a3df",
+    "size": 826
+  },
+  "harness/baseline/src/adaptive_grid_density_tests.rs": {
+    "sha256": "a9dad115f3006088cdeafed7af5178aae327020d3540cad9e31a767d0242ecaf",
+    "size": 25257
+  },
+  "harness/baseline/src/lib.rs": {
+    "sha256": "3a343c018b8d4f8689065b2c74d94a0f7d969a0eccbf0c3560c559d41056476e",
+    "size": 128
+  },
+  "harness/baseline/src/musical_time.rs": {
+    "sha256": "78231114fb0244aa208f250ee83a9b8bca7f92ac6a1989c2d67792d5f8debed0",
+    "size": 63329
+  },
+  "harness/baseline/src/viewport.rs": {
+    "sha256": "727f12de8aa4ae1657a4a9b25069e719bdf075f76599562b981dc419ebbf706c",
+    "size": 7823
+  },
+  "harness/bound-red/Cargo.lock": {
+    "sha256": "479d3b2cebbc14b0d5900de8a375239fd4b7888cd7eef4b000f5f46c2777b879",
+    "size": 435
+  },
+  "harness/bound-red/Cargo.toml": {
+    "sha256": "28927083a1c91c1257459f0fef3173b4196ca5af17b10ab9ead48d9cd0319753",
+    "size": 164
+  },
+  "harness/bound-red/src/adaptive_grid_density.rs": {
+    "sha256": "3283fdd96367e58e34fac30c99b497842bd6b44d6d8e9fa3d447aee44117a3df",
+    "size": 826
+  },
+  "harness/bound-red/src/adaptive_grid_density_tests.rs": {
+    "sha256": "0e8ce05976080ab7e994c0f551a1c66b01748e7d773546fc0e1689816be6d4f3",
+    "size": 26570
+  },
+  "harness/bound-red/src/baseline.rs": {
+    "sha256": "83f78c7f8e4306b0fef13646c3a8dea3115f75575fc4696bf74acb3a1ce561f6",
+    "size": 40186
+  },
+  "harness/bound-red/src/lib.rs": {
+    "sha256": "d148eb26263be004037e203242222dec882a0276657f79d2c5438ce03a515e51",
+    "size": 1734
+  },
+  "harness/bound-red/src/musical_time.rs": {
+    "sha256": "9487d0642d5b6a2ba7b7695e0e8981a8de4cfa6eefd89e74c5e651652edae923",
+    "size": 64157
+  },
+  "harness/bound-red/src/viewport.rs": {
+    "sha256": "727f12de8aa4ae1657a4a9b25069e719bdf075f76599562b981dc419ebbf706c",
+    "size": 7823
+  },
+  "harness/differential/Cargo.lock": {
+    "sha256": "9357f385912c37432852db54d4b0098181665750cbbec906491d3f8caf0d235e",
+    "size": 425
+  },
+  "harness/differential/Cargo.toml": {
+    "sha256": "a41b40215df57918d3a94cdf0cdba21917992186a8d822b67afb2fe5c2ee9f5c",
+    "size": 154
+  },
+  "harness/differential/EXTRACTION.json": {
+    "sha256": "18c11e8f8f1142a7810412d0163e722f9fc476d18177fc6c16af3017571fdb37",
+    "size": 302
+  },
+  "harness/differential/src/adaptive_grid_density.rs": {
+    "sha256": "3283fdd96367e58e34fac30c99b497842bd6b44d6d8e9fa3d447aee44117a3df",
+    "size": 826
+  },
+  "harness/differential/src/adaptive_grid_density_tests.rs": {
+    "sha256": "0e8ce05976080ab7e994c0f551a1c66b01748e7d773546fc0e1689816be6d4f3",
+    "size": 26570
+  },
+  "harness/differential/src/baseline.rs": {
+    "sha256": "83f78c7f8e4306b0fef13646c3a8dea3115f75575fc4696bf74acb3a1ce561f6",
+    "size": 40186
+  },
+  "harness/differential/src/lib.rs": {
+    "sha256": "d148eb26263be004037e203242222dec882a0276657f79d2c5438ce03a515e51",
+    "size": 1734
+  },
+  "harness/differential/src/musical_time.rs": {
+    "sha256": "1aa9f347be17cab473334d6b4261e7151a09afe521eb967d6303b31417bfb45f",
+    "size": 65656
+  },
+  "harness/differential/src/viewport.rs": {
+    "sha256": "727f12de8aa4ae1657a4a9b25069e719bdf075f76599562b981dc419ebbf706c",
+    "size": 7823
+  },
+  "harness/final/Cargo.lock": {
+    "sha256": "1fba8f3e0600b1a37fb11bfabed6fb8de6def0f282cdd9c765d4900ca1adcf22",
+    "size": 431
+  },
+  "harness/final/Cargo.toml": {
+    "sha256": "2a70bce790c265bdce8c01a5d32af1fb219747404bc3f9b8819cc7c992492808",
+    "size": 160
+  },
+  "harness/final/EXTRACTION.json": {
+    "sha256": "c82423ddd97e737f75100d992c21c372048ee312518ab03a07ac051cfe4643e7",
+    "size": 302
+  },
+  "harness/final/src/adaptive_grid_density.rs": {
+    "sha256": "3283fdd96367e58e34fac30c99b497842bd6b44d6d8e9fa3d447aee44117a3df",
+    "size": 826
+  },
+  "harness/final/src/adaptive_grid_density_tests.rs": {
+    "sha256": "0e8ce05976080ab7e994c0f551a1c66b01748e7d773546fc0e1689816be6d4f3",
+    "size": 26570
+  },
+  "harness/final/src/baseline.rs": {
+    "sha256": "83f78c7f8e4306b0fef13646c3a8dea3115f75575fc4696bf74acb3a1ce561f6",
+    "size": 40186
+  },
+  "harness/final/src/lib.rs": {
+    "sha256": "d148eb26263be004037e203242222dec882a0276657f79d2c5438ce03a515e51",
+    "size": 1734
+  },
+  "harness/final/src/musical_time.rs": {
+    "sha256": "c18b27b6e3797afe05461cc9fda7cba9e9bc7fba3246d10e3e3b343a51384506",
+    "size": 65966
+  },
+  "harness/final/src/viewport.rs": {
+    "sha256": "727f12de8aa4ae1657a4a9b25069e719bdf075f76599562b981dc419ebbf706c",
+    "size": 7823
+  },
+  "orchestration/310-add-oracles.py": {
+    "sha256": "7266d54a215f8b5c381be0b7c2337e91d50afbb3ccff1dd43ec895ec21f2258c",
+    "size": 3920
+  },
+  "orchestration/310-approved-guard-runner.py": {
+    "sha256": "ba6ab952481fde1bbea79d3168393b8ef8e0552d6fbc62ec710a3800ed1abd33",
+    "size": 71789
+  },
+  "orchestration/310-bound-red.py": {
+    "sha256": "024f257a7ba99daba35dead3d58e062c9938d898463d6ed65f7435e6423b9586",
+    "size": 698
+  },
+  "orchestration/310-component.py": {
+    "sha256": "8ec215a9632ae80e44b78ee997d6aa33464917145a311504dade30575ce34aa3",
+    "size": 537
+  },
+  "orchestration/310-guarded-component.py": {
+    "sha256": "95ac3b1f51cb3193b859dc53cd6c06772484e8ebb9fa5f6718ac6ef50bb56943",
+    "size": 568
+  },
+  "orchestration/310-instrument.py": {
+    "sha256": "dc88f0d03f83beaa1d0c974afa6493d1309fd9714d8d4d5e8b2d768772488d7a",
+    "size": 3162
+  },
+  "orchestration/310-metadata-harness.py": {
+    "sha256": "758a5e2e22f343badb5d10131d7f9d41e52ea81dca567656fae3e3fefc1317dc",
+    "size": 4748
+  },
+  "orchestration/310-repair.py": {
+    "sha256": "a5c52413a0e7a19c9d4278090530c6be45b119917f252f31ea4e79e4abae5800",
+    "size": 10654
+  },
+  "orchestration/seal-310.py": {
+    "sha256": "984b7667b7d963c86aef0ce3b108ed184f5cb120a54d95ee71a95a460c339ca2",
+    "size": 6643
+  },
+  "protected-proof.json": {
+    "sha256": "2d6ab9949f6c47f01a7d23009a5c3c80b5976a3b18473e11e43e1dad19d8f817",
+    "size": 1532
+  },
+  "runs/after/01-optimized actual metadata after.log": {
+    "sha256": "f6bc8176959afa6839f1615ec90049dc137f5b9c7c4a143d8b569d4fd4f7f0cd",
+    "size": 16306
+  },
+  "runs/after/summary.json": {
+    "sha256": "ecdbdf368b87dda8cc28d8d021de496089a4a88c2673e33a29558eccdf3b999a",
+    "size": 10002
+  },
+  "runs/baseline/01-optimized literal production metadata work.log": {
+    "sha256": "4a2a40ab98f8034d459d7877205a5ea38cce7c7442cb4927a76bd0004ede4b26",
+    "size": 8060
+  },
+  "runs/baseline/summary.json": {
+    "sha256": "68f813c53831757f666876907c3ac90f02ad7ebc7a29fcb85d12d19bcb261462",
+    "size": 10399
+  },
+  "runs/differential/01-optimized exact baseline differential and work bound.log": {
+    "sha256": "ed236883e2f25a2d0fd1ea9001c1817614a4eacbe35dbe368d86a2eeabbe71f7",
+    "size": 17094
+  },
+  "runs/differential/summary.json": {
+    "sha256": "ef76136327237323a7cde9c97751e74a5b81f11ce10b2cf455ec1fcf005dde92",
+    "size": 10371
+  },
+  "runs/final-v2/01-original work bound RED isolated package.log": {
+    "sha256": "5538c5801a5c777208595cca5951546b2590aa263e4d9b10462154f9482688a6",
+    "size": 135
+  },
+  "runs/final-v2/02-optimized exact differential isolated package.log": {
+    "sha256": "7bf4b5ecbe5d9911620eb55738f5444f1c8e0dcca23b914038d4519df50dcc63",
+    "size": 17052
+  },
+  "runs/final-v2/03-actual UI resolver.log": {
+    "sha256": "4ac5cd0b396ea53ce15d481d7af5398233fe153b340bf837ccacd765c85d35cd",
+    "size": 15336
+  },
+  "runs/final-v2/04-actual context menu input.log": {
+    "sha256": "4cfc08f3f5795d2e846695599b702a17e377e85156b4faa35958f88a853c0f60",
+    "size": 1002
+  },
+  "runs/final-v2/05-strict UI default.log": {
+    "sha256": "5b46d464f7be764272c43dd8da05acd1cbc3d29e41944c00d05fbdf5a7c3cd86",
+    "size": 360
+  },
+  "runs/final-v2/06-strict UI feature.log": {
+    "sha256": "25b7dcd04a460659187ee1dc08fae69dc9de8823d06c17bc07f7df49fefdfb5e",
+    "size": 360
+  },
+  "runs/final-v2/07-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "runs/final-v2/08-UI style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "runs/final-v2/09-GPUI provenance.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "runs/final-v2/10-dependency provenance.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "runs/final-v2/11-format.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final-v2/12-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final-v2/summary.json": {
+    "sha256": "c1931c035baaf015ed72d2fe444d7c4838b9b643fefd620ca2f7d539d592aa71",
+    "size": 18597
+  },
+  "runs/final/01-original work bound actual RED retained.log": {
+    "sha256": "5538c5801a5c777208595cca5951546b2590aa263e4d9b10462154f9482688a6",
+    "size": 135
+  },
+  "runs/final/02-optimized production differential and bounded work.log": {
+    "sha256": "d43f79ae636e9180561714e04ee60765098f1c7455f6cc38265c191492029ed5",
+    "size": 10531
+  },
+  "runs/final/summary.json": {
+    "sha256": "a227b636e25d6756a1295eddd6d4afea7ec10c91ef81c146258de2a823623c1c",
+    "size": 18016
+  },
+  "runs/functional/01-actual UI resolver cases.log": {
+    "sha256": "8e01e51e8ce64dc000c6b23bd732aaa6aaf9aadeed9cf8d186eb183f24895057",
+    "size": 16492
+  },
+  "runs/functional/02-actual context menu and input routing.log": {
+    "sha256": "969e67ea411cb0689ea74d306e7efd700b76cafbe694a7814ad5fe0d9bc385ab",
+    "size": 1002
+  },
+  "runs/functional/03-strict UI default.log": {
+    "sha256": "60b33713b33a3d622f49cafc05265df8b0d381e796787cfeb80a6c1b1050fa2d",
+    "size": 1527
+  },
+  "runs/functional/04-strict UI feature.log": {
+    "sha256": "b6ad2540c6f28e42136c36d3af19c4e89f45609082e8a8cb3aefd3b96d7e4a06",
+    "size": 726
+  },
+  "runs/functional/summary.json": {
+    "sha256": "eb97a3bc6c04a328d0d2a27f69b6221208a7ef8b70dec881d2fa6ee95b99a44b",
+    "size": 16316
+  },
+  "runs/functional/target-handoff-clean.log": {
+    "sha256": "c2b28bc8560e0696d6b57161d9d8d51996cd19f8afd9afd225b5411f5766d71e",
+    "size": 1498
+  },
+  "source-history.txt": {
+    "sha256": "a9d78a2dcba5fe448053715ca4ee822162c7abab54f00b073c7ffe2c015510a8",
+    "size": 569
+  },
+  "source-identities.json": {
+    "sha256": "1d417ec605e476268e10d75f6a864b6f48867bd826874e340afcdc059ab0bacb",
+    "size": 1165
+  },
+  "source.patch": {
+    "sha256": "e14c0142407350bcdbd6e2e785f21e1b61927ee3b231e16f1bfb3e1e306f180e",
+    "size": 27029
+  },
+  "source/after/crates/hex-ui/src/editor/adaptive_grid_density_tests.rs": {
+    "sha256": "0e8ce05976080ab7e994c0f551a1c66b01748e7d773546fc0e1689816be6d4f3",
+    "size": 26570
+  },
+  "source/after/crates/hex-ui/src/editor/musical_time.rs": {
+    "sha256": "ba9642bf5b0ddd63647fc2822160279220a32178bf278ebe9948493c38a81193",
+    "size": 69180
+  },
+  "source/after/docs/adaptive-grid-menu.md": {
+    "sha256": "40d66b0024510f955f2f8cbbec5aa29fd8b8a473783ce6914ffaefa28d716aef",
+    "size": 12207
+  },
+  "source/before/crates/hex-ui/src/editor/adaptive_grid_density_tests.rs": {
+    "sha256": "5e20d535a83a10138187f3d5ff6d9f6084239d065d2de4d5419c667bf09f90c1",
+    "size": 23163
+  },
+  "source/before/crates/hex-ui/src/editor/musical_time.rs": {
+    "sha256": "7a759333611ec7f2a26714bee3c202790458309638af279f87719afd7fd1a57e",
+    "size": 66778
+  },
+  "source/before/docs/adaptive-grid-menu.md": {
+    "sha256": "3dc6cf5faaa2aa95fba8c5407333f443d1532d238d5af43b2d54841f577ef120",
+    "size": 10653
+  }
+}

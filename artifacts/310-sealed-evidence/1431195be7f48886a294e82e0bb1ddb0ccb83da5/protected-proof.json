@@ -1,0 +1,21 @@
+{
+  "only_three_declared_files_changed": [
+    "crates/hex-ui/src/editor/adaptive_grid_density_tests.rs",
+    "crates/hex-ui/src/editor/musical_time.rs",
+    "docs/adaptive-grid-menu.md"
+  ],
+  "all_original_density_test_bytes_preserved": true,
+  "guard_runner_sha256": "ba6ab952481fde1bbea79d3168393b8ef8e0552d6fbc62ec710a3800ed1abd33",
+  "guard_runner_git_blob": "1ca915e9fd078ae1fb3e1a08d726f40fbe1242ec",
+  "AGENTS.md": "e5b4332338d62a9ae9294002d2fb359a05f6acf0bdb3e4c309867ed075fd1e66",
+  "scripts/local-ci.py": "5f664427b366f0a883f17abb1030cf15aef7ad0e9695cfffc48b3b81230ccea0",
+  "scripts/check-ui-style.py": "0a2c9597c13340a8583487ac3916afdf7de92e14ba115f38aa425f027a6f4bb7",
+  "scripts/check-gpui-patch.py": "0e3f84eed04567930b166c6005a8e0887b859bdfb4e646e699d00c7412fc0d89",
+  "Cargo.toml": "54ed59421044312ac6949e2a30ae3a609dbac0554e662f4cc62cf917075ca862",
+  "Cargo.lock": "c3eadb5a23be864f1c2d9839bb594774a65485b8b94abe5bbdfcbb269e31250f",
+  "crates/hex-ui/src/editor/trim.rs": "0a19f55c4c0cd6eba74a8f705920c4568f8b7c38c403d66ea15088e09737d002",
+  "crates/hex-ui/src/editor/controller.rs": "fc92289b133cb3e26efba1ee186f862741276d1bc881bc318cbfc0ee4a03f793",
+  "crates/hex-ui/src/editor/context_menu.rs": "b4fb9649aee1cdcc249088d0bb163ce7201e95226be3fc335d72d3e1646ae74f",
+  "crates/hex-ui/src/editor/adaptive_grid_menu.rs": "ce70c69f9445d9692ae47d7d20737b948bd62e293c788331abb96b37061679e6",
+  "crates/hex-ui/src/editor/adaptive_grid_menu_tests.rs": "650a96bdb52cc4f8472f59137222bf2a388d3ff791436997a3350d12bca17dc1"
+}

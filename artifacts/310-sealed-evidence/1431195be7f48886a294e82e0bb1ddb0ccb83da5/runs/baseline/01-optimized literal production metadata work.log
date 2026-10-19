@@ -1,0 +1,85 @@
+     Locking 3 packages to latest Rust 1.94.0 compatible versions
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-grid-metadata-probe v0.0.0 (/workspace/hex/artifacts/310-metadata-harness/baseline)
+    Finished `release` profile [optimized] target(s) in 6.19s
+     Running unittests src/lib.rs (artifacts/310-private-target/release/deps/hex_grid_metadata_probe-d925bfdf40772293)
+
+running 1 test
+GRID_WORK count=1 density=Fine operation=paint step=1 base=13 shares=2 demand=12 ns=42583
+GRID_WORK count=1 density=Fine operation=ruler step=1 base=13 shares=2 demand=12 ns=13040
+GRID_WORK count=1 density=Fine operation=snap step=1 base=13 shares=1 demand=12 ns=611
+GRID_WORK count=1 density=Fine operation=next step=1 base=13 shares=1 demand=12 ns=541
+GRID_WORK count=1 density=Fine operation=previous step=1 base=13 shares=1 demand=12 ns=501
+GRID_WORK count=1 density=Fine operation=bands step=1 base=13 shares=1 demand=12 ns=1843
+GRID_WORK count=1 density=Medium operation=paint step=1 base=13 shares=2 demand=12 ns=29794
+GRID_WORK count=1 density=Medium operation=ruler step=1 base=13 shares=2 demand=12 ns=66458
+GRID_WORK count=1 density=Medium operation=snap step=1 base=13 shares=1 demand=12 ns=411
+GRID_WORK count=1 density=Medium operation=next step=1 base=13 shares=1 demand=12 ns=431
+GRID_WORK count=1 density=Medium operation=previous step=1 base=13 shares=1 demand=12 ns=370
+GRID_WORK count=1 density=Medium operation=bands step=1 base=13 shares=1 demand=12 ns=1582
+GRID_WORK count=1 density=Coarse operation=paint step=1 base=13 shares=2 demand=12 ns=28242
+GRID_WORK count=1 density=Coarse operation=ruler step=1 base=13 shares=2 demand=12 ns=10976
+GRID_WORK count=1 density=Coarse operation=snap step=1 base=13 shares=1 demand=12 ns=310
+GRID_WORK count=1 density=Coarse operation=next step=1 base=13 shares=1 demand=12 ns=401
+GRID_WORK count=1 density=Coarse operation=previous step=1 base=13 shares=1 demand=12 ns=371
+GRID_WORK count=1 density=Coarse operation=bands step=1 base=13 shares=1 demand=12 ns=1412
+GRID_WORK count=129 density=Fine operation=paint step=129 base=158412 shares=130 demand=158283 ns=2087731
+GRID_WORK count=129 density=Fine operation=ruler step=129 base=158412 shares=129 demand=158283 ns=2457488
+GRID_WORK count=129 density=Fine operation=snap step=132 base=162096 shares=133 demand=161964 ns=2188200
+GRID_WORK count=129 density=Fine operation=next step=258 base=316824 shares=259 demand=316566 ns=4187270
+GRID_WORK count=129 density=Fine operation=previous step=258 base=316824 shares=259 demand=316566 ns=4326456
+GRID_WORK count=129 density=Fine operation=bands step=129 base=158412 shares=129 demand=158283 ns=2169242
+GRID_WORK count=129 density=Medium operation=paint step=129 base=158412 shares=130 demand=158283 ns=2198385
+GRID_WORK count=129 density=Medium operation=ruler step=129 base=158412 shares=129 demand=158283 ns=1975084
+GRID_WORK count=129 density=Medium operation=snap step=132 base=162096 shares=133 demand=161964 ns=2179156
+GRID_WORK count=129 density=Medium operation=next step=258 base=316824 shares=259 demand=316566 ns=4528214
+GRID_WORK count=129 density=Medium operation=previous step=258 base=316824 shares=259 demand=316566 ns=4256752
+GRID_WORK count=129 density=Medium operation=bands step=129 base=158412 shares=129 demand=158283 ns=2072468
+GRID_WORK count=129 density=Coarse operation=paint step=129 base=158412 shares=130 demand=158283 ns=2454414
+GRID_WORK count=129 density=Coarse operation=ruler step=129 base=158412 shares=129 demand=158283 ns=1976947
+GRID_WORK count=129 density=Coarse operation=snap step=132 base=162096 shares=133 demand=161964 ns=2132757
+GRID_WORK count=129 density=Coarse operation=next step=258 base=316824 shares=259 demand=316566 ns=4312615
+GRID_WORK count=129 density=Coarse operation=previous step=258 base=316824 shares=259 demand=316566 ns=6052451
+GRID_WORK count=129 density=Coarse operation=bands step=129 base=158412 shares=129 demand=158283 ns=2095623
+GRID_WORK count=256 density=Fine operation=paint step=256 base=688768 shares=257 demand=688512 ns=10102077
+GRID_WORK count=256 density=Fine operation=ruler step=256 base=623232 shares=256 demand=622976 ns=8932134
+GRID_WORK count=256 density=Fine operation=snap step=259 base=696841 shares=260 demand=696582 ns=9376572
+GRID_WORK count=256 density=Fine operation=next step=512 base=1377536 shares=513 demand=1377024 ns=19633308
+GRID_WORK count=256 density=Fine operation=previous step=512 base=1377536 shares=513 demand=1377024 ns=18262738
+GRID_WORK count=256 density=Fine operation=bands step=256 base=688768 shares=256 demand=688512 ns=9146101
+GRID_WORK count=256 density=Medium operation=paint step=256 base=688768 shares=257 demand=688512 ns=9179481
+GRID_WORK count=256 density=Medium operation=ruler step=256 base=623232 shares=256 demand=622976 ns=8356052
+GRID_WORK count=256 density=Medium operation=snap step=259 base=696841 shares=260 demand=696582 ns=9819528
+GRID_WORK count=256 density=Medium operation=next step=512 base=1377536 shares=513 demand=1377024 ns=19600139
+GRID_WORK count=256 density=Medium operation=previous step=512 base=1377536 shares=513 demand=1377024 ns=18470626
+GRID_WORK count=256 density=Medium operation=bands step=256 base=688768 shares=256 demand=688512 ns=9601115
+GRID_WORK count=256 density=Coarse operation=paint step=256 base=688768 shares=257 demand=688512 ns=9427047
+GRID_WORK count=256 density=Coarse operation=ruler step=256 base=623232 shares=256 demand=622976 ns=8132630
+GRID_WORK count=256 density=Coarse operation=snap step=259 base=696841 shares=260 demand=696582 ns=10374760
+GRID_WORK count=256 density=Coarse operation=next step=512 base=1377536 shares=513 demand=1377024 ns=18603744
+GRID_WORK count=256 density=Coarse operation=previous step=512 base=1377536 shares=513 demand=1377024 ns=20202611
+GRID_WORK count=256 density=Coarse operation=bands step=256 base=688768 shares=256 demand=688512 ns=9576519
+GRID_WORK count=1024 density=Fine operation=paint step=1024 base=1024 shares=0 demand=0 ns=272153
+GRID_WORK count=1024 density=Fine operation=ruler step=1024 base=1024 shares=0 demand=0 ns=232614
+GRID_WORK count=1024 density=Fine operation=snap step=1027 base=1027 shares=0 demand=0 ns=369087
+GRID_WORK count=1024 density=Fine operation=next step=2048 base=2048 shares=0 demand=0 ns=344981
+GRID_WORK count=1024 density=Fine operation=previous step=2048 base=2048 shares=0 demand=0 ns=418259
+GRID_WORK count=1024 density=Fine operation=bands step=256 base=256 shares=0 demand=0 ns=23875
+GRID_WORK count=1024 density=Medium operation=paint step=1024 base=1024 shares=0 demand=0 ns=281517
+GRID_WORK count=1024 density=Medium operation=ruler step=1024 base=1024 shares=0 demand=0 ns=228888
+GRID_WORK count=1024 density=Medium operation=snap step=1027 base=1027 shares=0 demand=0 ns=246034
+GRID_WORK count=1024 density=Medium operation=next step=2048 base=2048 shares=0 demand=0 ns=358160
+GRID_WORK count=1024 density=Medium operation=previous step=2048 base=2048 shares=0 demand=0 ns=408525
+GRID_WORK count=1024 density=Medium operation=bands step=256 base=256 shares=0 demand=0 ns=23434
+GRID_WORK count=1024 density=Coarse operation=paint step=1024 base=1024 shares=0 demand=0 ns=245113
+GRID_WORK count=1024 density=Coarse operation=ruler step=1024 base=1024 shares=0 demand=0 ns=227527
+GRID_WORK count=1024 density=Coarse operation=snap step=1027 base=1027 shares=0 demand=0 ns=278112
+GRID_WORK count=1024 density=Coarse operation=next step=2048 base=2048 shares=0 demand=0 ns=338772
+GRID_WORK count=1024 density=Coarse operation=previous step=2048 base=2048 shares=0 demand=0 ns=339232
+GRID_WORK count=1024 density=Coarse operation=bands step=256 base=256 shares=0 demand=0 ns=23515
+test editor::musical_time::density_tests::adaptive_operation_work_profile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.29s
+

@@ -1,0 +1,135 @@
+     Locking 3 packages to latest Rust 1.94.0 compatible versions
+   Compiling hex-grid-metadata-probe v0.0.0 (/workspace/hex/artifacts/310-metadata-harness/final)
+warning: unused imports: `Command` and `Meter`
+ --> src/editor/../baseline.rs:8:29
+  |
+8 | use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
+  |                             ^^^^^^^  ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `hex-grid-metadata-probe` (lib test) generated 1 warning (run `cargo fix --lib -p hex-grid-metadata-probe --tests` to apply 1 suggestion)
+warning: unused imports: `Command` and `Meter`
+ --> src/editor/../musical_time.rs:8:29
+  |
+8 | use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
+  |                             ^^^^^^^  ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Command` and `Meter`
+ --> src/editor/../baseline.rs:8:29
+  |
+8 | use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
+  |                             ^^^^^^^  ^^^^^
+
+warning: `hex-grid-metadata-probe` (lib) generated 2 warnings (run `cargo fix --lib -p hex-grid-metadata-probe` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.24s
+     Running unittests src/lib.rs (artifacts/310-private-target/release/deps/hex_grid_metadata_probe-d925bfdf40772293)
+
+running 37 tests
+test editor::musical_time::density_tests::adaptive_density_bands_share_selected_four_unit_span_and_stay_bounded ... ok
+test editor::musical_time::density_tests::adaptive_density_presets_resolve_distinct_current_zoom_without_changing_default ... ok
+test editor::musical_time::density_tests::adaptive_density_survives_toggle_and_temporary_inversion_without_enabling_off ... ok
+test editor::musical_time::density_tests::adaptive_density_painted_snap_and_directional_landmarks_match_through_zoom_and_map_seams ... ok
+
+thread 'editor::musical_time::density_tests::adaptive_operation_work_profile' (254974) panicked at src/editor/../adaptive_grid_density_tests.rs:632:17:
+paint: [1, 13, 2, 12]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::musical_time::density_tests::adaptive_operation_work_profile ... FAILED
+test editor::musical_time::density_tests::adaptive_density_over_budget_meter_markers_share_bounded_visible_targets ... ok
+test editor::musical_time::density_tests::adaptive_review_frame_quantized_edge_markers_remain_painted_snap_targets ... ok
+test editor::musical_time::density_tests::adaptive_review_dense_visible_markers_use_available_bounded_budget ... ok
+test editor::musical_time::density_tests::adaptive_density_wide_view_never_snaps_to_hidden_subdivision ... ok
+test editor::musical_time::density_tests::adaptive_review_offscreen_meter_history_does_not_allocate_paint_lists_for_snap ... ok
+test editor::musical_time::density_tests::adaptive_review_panning_preserves_subdivision_at_fixed_zoom ... ok
+section remainder sections=128 density=Fine start=0 painted=256
+debug_visible_work sections=129 paint_us=3518 snap_us=3640 adjacent_us=7053; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Fine start=0 painted=256
+section remainder sections=128 density=Fine start=1 painted=255
+section remainder sections=128 density=Fine start=3000 painted=255
+section remainder sections=128 density=Medium start=0 painted=256
+debug_visible_work sections=129 paint_us=3585 snap_us=50 adjacent_us=7089; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Fine start=1 painted=255
+test editor::musical_time::density_tests::adaptive_review_meter_origins_do_not_consume_a_second_landmark_quota ... ok
+test editor::musical_time::tests::adaptive_background_bands_are_bounded_and_pan_anchored ... ok
+test editor::musical_time::tests::adaptive_background_bands_restart_at_meter_origins ... ok
+test editor::musical_time::tests::adaptive_grid_stays_visible_and_bounded_at_zoom_extremes ... ok
+test editor::musical_time::tests::adaptive_snap_matches_painted_landmarks_across_tempo_meter_and_zoom_seams ... ok
+test editor::musical_time::tests::arranger_snap_toggles_between_adaptive_and_off ... ok
+test editor::musical_time::tests::bounded_ruler_marks_quarter_positions_and_fragmentary_meter_changes ... ok
+test editor::musical_time::tests::conversion_failures_cannot_make_band_candidate_enumeration_unbounded ... ok
+test editor::musical_time::tests::directional_nudge_landmarks_are_distinct_off_grid_and_across_meter_tempo_seams ... ok
+test editor::musical_time::tests::fractional_meter_section_starts_its_denominator_beat_landmarks ... ok
+section remainder sections=128 density=Medium start=1 painted=255
+test editor::musical_time::tests::full_meter_map_keeps_marker_priority_spacing_and_tick_cap ... ok
+test editor::musical_time::tests::grid_returns_empty_when_time_conversion_and_viewport_bounds_are_invalid ... ok
+test editor::musical_time::tests::huge_fractional_meter_viewport_keeps_tick_attempts_and_markers_bounded ... ok
+test editor::musical_time::tests::ruler_keeps_only_visible_landmarks_across_section_end ... ok
+test editor::musical_time::tests::ruler_landmarks_follow_tempo_boundaries_and_deduplicate_quantized_markers ... ok
+test editor::musical_time::tests::six_eight_ruler_uses_denominator_beats ... ok
+test editor::musical_time::tests::snap_resolution_uses_canonical_map_and_rounds_exact_ties_later ... ok
+test editor::viewport::tests::fit_and_end_are_checked ... ok
+test editor::viewport::tests::frame_pan_preserves_scale_and_respects_both_horizon_edges ... ok
+test editor::viewport::tests::pan_moves_by_half_and_stays_inside_horizon ... ok
+test editor::viewport::tests::wheel_zoom_keeps_pointer_frame_at_the_same_fraction_and_clamps ... ok
+test editor::viewport::tests::zoom_anchors_at_playhead_or_center_and_clamps ... ok
+test editor::viewport::tests::zoom_and_pan_handle_large_horizons_without_overflow ... ok
+section remainder sections=128 density=Medium start=3000 painted=255
+section remainder sections=128 density=Coarse start=0 painted=256
+section remainder sections=128 density=Coarse start=1 painted=255
+debug_visible_work sections=129 paint_us=3596 snap_us=50 adjacent_us=7109; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Fine start=3000 painted=255
+section remainder sections=128 density=Coarse start=3000 painted=255
+section remainder sections=129 density=Fine start=0 painted=256
+debug_visible_work sections=129 paint_us=4366 snap_us=5801 adjacent_us=5177; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Medium start=0 painted=256
+section remainder sections=129 density=Fine start=1 painted=255
+debug_visible_work sections=129 paint_us=3684 snap_us=50 adjacent_us=7084; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Medium start=1 painted=255
+section remainder sections=129 density=Fine start=3000 painted=255
+section remainder sections=129 density=Medium start=0 painted=256
+debug_visible_work sections=129 paint_us=2016 snap_us=27 adjacent_us=5367; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Medium start=3000 painted=255
+debug_visible_work sections=129 paint_us=2450 snap_us=2164 adjacent_us=4414; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Coarse start=0 painted=256
+section remainder sections=129 density=Medium start=1 painted=255
+section remainder sections=129 density=Medium start=3000 painted=255
+debug_visible_work sections=129 paint_us=3548 snap_us=50 adjacent_us=7045; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Coarse start=1 painted=255
+section remainder sections=129 density=Coarse start=0 painted=256
+debug_visible_work sections=129 paint_us=3588 snap_us=50 adjacent_us=7112; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Coarse start=3000 painted=255
+section remainder sections=129 density=Coarse start=1 painted=255
+debug_visible_work sections=129 paint_us=3578 snap_us=3602 adjacent_us=7020; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Fine start=0 painted=256
+section remainder sections=129 density=Coarse start=3000 painted=255
+test editor::musical_time::density_tests::adaptive_review_section_remainder_preserves_painted_and_snap_density ... ok
+debug_visible_work sections=129 paint_us=3636 snap_us=51 adjacent_us=7110; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Fine start=1 painted=255
+debug_visible_work sections=129 paint_us=3613 snap_us=51 adjacent_us=7151; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Fine start=3000 painted=255
+debug_visible_work sections=129 paint_us=2856 snap_us=3378 adjacent_us=4680; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Medium start=0 painted=256
+debug_visible_work sections=129 paint_us=2167 snap_us=28 adjacent_us=4231; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Medium start=1 painted=255
+debug_visible_work sections=129 paint_us=3519 snap_us=50 adjacent_us=7057; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Medium start=3000 painted=255
+debug_visible_work sections=129 paint_us=3909 snap_us=3628 adjacent_us=7035; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Coarse start=0 painted=256
+debug_visible_work sections=129 paint_us=3611 snap_us=51 adjacent_us=7177; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Coarse start=1 painted=255
+debug_visible_work sections=129 paint_us=3580 snap_us=51 adjacent_us=7187; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Coarse start=3000 painted=255
+test editor::musical_time::density_tests::adaptive_review_mixed_short_sections_reassign_unused_paint_and_snap_capacity ... ok
+LITERAL_BASELINE_DIFFERENTIAL 840 complete operation result vectors equal
+test editor::literal_production_baseline_differential ... ok
+
+failures:
+
+failures:
+    editor::musical_time::density_tests::adaptive_operation_work_profile
+
+test result: FAILED. 36 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.71s
+
+error: test failed, to rerun pass `--lib`

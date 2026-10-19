@@ -1,0 +1,5 @@
+[1/12] original work bound actual RED retained: running
+[1/12] original work bound actual RED retained: passed
+[2/12] optimized production differential and bounded work: running
+[2/12] optimized production differential and bounded work: failed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/310-quota-final/summary.json

@@ -1,0 +1,25 @@
+[1/12] original work bound RED isolated package: running
+[1/12] original work bound RED isolated package: passed
+[2/12] optimized exact differential isolated package: running
+[2/12] optimized exact differential isolated package: passed
+[3/12] actual UI resolver: running
+[3/12] actual UI resolver: passed
+[4/12] actual context menu input: running
+[4/12] actual context menu input: passed
+[5/12] strict UI default: running
+[5/12] strict UI default: passed
+[6/12] strict UI feature: running
+[6/12] strict UI feature: passed
+[7/12] architecture: running
+[7/12] architecture: passed
+[8/12] UI style: running
+[8/12] UI style: passed
+[9/12] GPUI provenance: running
+[9/12] GPUI provenance: passed
+[10/12] dependency provenance: running
+[10/12] dependency provenance: passed
+[11/12] format: running
+[11/12] format: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/310-quota-final-v2/summary.json

@@ -1,0 +1,1446 @@
+{
+  "baseline": [
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "paint",
+      "step": "1",
+      "base": "13",
+      "shares": "2",
+      "demand": "12",
+      "ns": "42583"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "ruler",
+      "step": "1",
+      "base": "13",
+      "shares": "2",
+      "demand": "12",
+      "ns": "13040"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "snap",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "611"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "next",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "541"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "previous",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "501"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "bands",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "1843"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "paint",
+      "step": "1",
+      "base": "13",
+      "shares": "2",
+      "demand": "12",
+      "ns": "29794"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "ruler",
+      "step": "1",
+      "base": "13",
+      "shares": "2",
+      "demand": "12",
+      "ns": "66458"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "snap",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "411"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "next",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "431"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "previous",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "370"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "bands",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "1582"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "paint",
+      "step": "1",
+      "base": "13",
+      "shares": "2",
+      "demand": "12",
+      "ns": "28242"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "ruler",
+      "step": "1",
+      "base": "13",
+      "shares": "2",
+      "demand": "12",
+      "ns": "10976"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "snap",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "310"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "next",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "401"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "previous",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "371"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "bands",
+      "step": "1",
+      "base": "13",
+      "shares": "1",
+      "demand": "12",
+      "ns": "1412"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "paint",
+      "step": "129",
+      "base": "158412",
+      "shares": "130",
+      "demand": "158283",
+      "ns": "2087731"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "ruler",
+      "step": "129",
+      "base": "158412",
+      "shares": "129",
+      "demand": "158283",
+      "ns": "2457488"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "snap",
+      "step": "132",
+      "base": "162096",
+      "shares": "133",
+      "demand": "161964",
+      "ns": "2188200"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "next",
+      "step": "258",
+      "base": "316824",
+      "shares": "259",
+      "demand": "316566",
+      "ns": "4187270"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "previous",
+      "step": "258",
+      "base": "316824",
+      "shares": "259",
+      "demand": "316566",
+      "ns": "4326456"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "bands",
+      "step": "129",
+      "base": "158412",
+      "shares": "129",
+      "demand": "158283",
+      "ns": "2169242"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "paint",
+      "step": "129",
+      "base": "158412",
+      "shares": "130",
+      "demand": "158283",
+      "ns": "2198385"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "ruler",
+      "step": "129",
+      "base": "158412",
+      "shares": "129",
+      "demand": "158283",
+      "ns": "1975084"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "snap",
+      "step": "132",
+      "base": "162096",
+      "shares": "133",
+      "demand": "161964",
+      "ns": "2179156"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "next",
+      "step": "258",
+      "base": "316824",
+      "shares": "259",
+      "demand": "316566",
+      "ns": "4528214"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "previous",
+      "step": "258",
+      "base": "316824",
+      "shares": "259",
+      "demand": "316566",
+      "ns": "4256752"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "bands",
+      "step": "129",
+      "base": "158412",
+      "shares": "129",
+      "demand": "158283",
+      "ns": "2072468"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "paint",
+      "step": "129",
+      "base": "158412",
+      "shares": "130",
+      "demand": "158283",
+      "ns": "2454414"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "ruler",
+      "step": "129",
+      "base": "158412",
+      "shares": "129",
+      "demand": "158283",
+      "ns": "1976947"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "snap",
+      "step": "132",
+      "base": "162096",
+      "shares": "133",
+      "demand": "161964",
+      "ns": "2132757"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "next",
+      "step": "258",
+      "base": "316824",
+      "shares": "259",
+      "demand": "316566",
+      "ns": "4312615"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "previous",
+      "step": "258",
+      "base": "316824",
+      "shares": "259",
+      "demand": "316566",
+      "ns": "6052451"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "bands",
+      "step": "129",
+      "base": "158412",
+      "shares": "129",
+      "demand": "158283",
+      "ns": "2095623"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "paint",
+      "step": "256",
+      "base": "688768",
+      "shares": "257",
+      "demand": "688512",
+      "ns": "10102077"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "ruler",
+      "step": "256",
+      "base": "623232",
+      "shares": "256",
+      "demand": "622976",
+      "ns": "8932134"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "snap",
+      "step": "259",
+      "base": "696841",
+      "shares": "260",
+      "demand": "696582",
+      "ns": "9376572"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "next",
+      "step": "512",
+      "base": "1377536",
+      "shares": "513",
+      "demand": "1377024",
+      "ns": "19633308"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "previous",
+      "step": "512",
+      "base": "1377536",
+      "shares": "513",
+      "demand": "1377024",
+      "ns": "18262738"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "bands",
+      "step": "256",
+      "base": "688768",
+      "shares": "256",
+      "demand": "688512",
+      "ns": "9146101"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "paint",
+      "step": "256",
+      "base": "688768",
+      "shares": "257",
+      "demand": "688512",
+      "ns": "9179481"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "ruler",
+      "step": "256",
+      "base": "623232",
+      "shares": "256",
+      "demand": "622976",
+      "ns": "8356052"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "snap",
+      "step": "259",
+      "base": "696841",
+      "shares": "260",
+      "demand": "696582",
+      "ns": "9819528"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "next",
+      "step": "512",
+      "base": "1377536",
+      "shares": "513",
+      "demand": "1377024",
+      "ns": "19600139"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "previous",
+      "step": "512",
+      "base": "1377536",
+      "shares": "513",
+      "demand": "1377024",
+      "ns": "18470626"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "bands",
+      "step": "256",
+      "base": "688768",
+      "shares": "256",
+      "demand": "688512",
+      "ns": "9601115"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "paint",
+      "step": "256",
+      "base": "688768",
+      "shares": "257",
+      "demand": "688512",
+      "ns": "9427047"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "ruler",
+      "step": "256",
+      "base": "623232",
+      "shares": "256",
+      "demand": "622976",
+      "ns": "8132630"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "snap",
+      "step": "259",
+      "base": "696841",
+      "shares": "260",
+      "demand": "696582",
+      "ns": "10374760"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "next",
+      "step": "512",
+      "base": "1377536",
+      "shares": "513",
+      "demand": "1377024",
+      "ns": "18603744"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "previous",
+      "step": "512",
+      "base": "1377536",
+      "shares": "513",
+      "demand": "1377024",
+      "ns": "20202611"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "bands",
+      "step": "256",
+      "base": "688768",
+      "shares": "256",
+      "demand": "688512",
+      "ns": "9576519"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "paint",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "272153"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "ruler",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "232614"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "snap",
+      "step": "1027",
+      "base": "1027",
+      "shares": "0",
+      "demand": "0",
+      "ns": "369087"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "next",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "344981"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "previous",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "418259"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "bands",
+      "step": "256",
+      "base": "256",
+      "shares": "0",
+      "demand": "0",
+      "ns": "23875"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "paint",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "281517"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "ruler",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "228888"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "snap",
+      "step": "1027",
+      "base": "1027",
+      "shares": "0",
+      "demand": "0",
+      "ns": "246034"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "next",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "358160"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "previous",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "408525"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "bands",
+      "step": "256",
+      "base": "256",
+      "shares": "0",
+      "demand": "0",
+      "ns": "23434"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "paint",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "245113"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "ruler",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "227527"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "snap",
+      "step": "1027",
+      "base": "1027",
+      "shares": "0",
+      "demand": "0",
+      "ns": "278112"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "next",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "338772"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "previous",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "339232"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "bands",
+      "step": "256",
+      "base": "256",
+      "shares": "0",
+      "demand": "0",
+      "ns": "23515"
+    }
+  ],
+  "final": [
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "paint",
+      "step": "1",
+      "base": "2",
+      "shares": "2",
+      "demand": "1",
+      "ns": "31437"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "ruler",
+      "step": "1",
+      "base": "2",
+      "shares": "2",
+      "demand": "1",
+      "ns": "11867"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "snap",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "361"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "next",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "371"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "previous",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "411"
+    },
+    {
+      "count": "1",
+      "density": "Fine",
+      "operation": "bands",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "1773"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "paint",
+      "step": "1",
+      "base": "2",
+      "shares": "2",
+      "demand": "1",
+      "ns": "29714"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "ruler",
+      "step": "1",
+      "base": "2",
+      "shares": "2",
+      "demand": "1",
+      "ns": "10826"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "snap",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "261"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "next",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "280"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "previous",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "241"
+    },
+    {
+      "count": "1",
+      "density": "Medium",
+      "operation": "bands",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "1392"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "paint",
+      "step": "1",
+      "base": "2",
+      "shares": "2",
+      "demand": "1",
+      "ns": "27471"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "ruler",
+      "step": "1",
+      "base": "2",
+      "shares": "2",
+      "demand": "1",
+      "ns": "11638"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "snap",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "360"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "next",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "440"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "previous",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "450"
+    },
+    {
+      "count": "1",
+      "density": "Coarse",
+      "operation": "bands",
+      "step": "1",
+      "base": "2",
+      "shares": "1",
+      "demand": "1",
+      "ns": "2224"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "paint",
+      "step": "129",
+      "base": "258",
+      "shares": "2",
+      "demand": "129",
+      "ns": "378779"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "ruler",
+      "step": "129",
+      "base": "258",
+      "shares": "1",
+      "demand": "129",
+      "ns": "40820"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "snap",
+      "step": "132",
+      "base": "261",
+      "shares": "2",
+      "demand": "129",
+      "ns": "57054"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "next",
+      "step": "258",
+      "base": "387",
+      "shares": "2",
+      "demand": "129",
+      "ns": "61942"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "previous",
+      "step": "258",
+      "base": "387",
+      "shares": "2",
+      "demand": "129",
+      "ns": "61631"
+    },
+    {
+      "count": "129",
+      "density": "Fine",
+      "operation": "bands",
+      "step": "129",
+      "base": "258",
+      "shares": "1",
+      "demand": "129",
+      "ns": "10966"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "paint",
+      "step": "129",
+      "base": "258",
+      "shares": "2",
+      "demand": "129",
+      "ns": "123833"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "ruler",
+      "step": "129",
+      "base": "258",
+      "shares": "1",
+      "demand": "129",
+      "ns": "39298"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "snap",
+      "step": "132",
+      "base": "261",
+      "shares": "2",
+      "demand": "129",
+      "ns": "181408"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "next",
+      "step": "258",
+      "base": "387",
+      "shares": "2",
+      "demand": "129",
+      "ns": "63013"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "previous",
+      "step": "258",
+      "base": "387",
+      "shares": "2",
+      "demand": "129",
+      "ns": "67289"
+    },
+    {
+      "count": "129",
+      "density": "Medium",
+      "operation": "bands",
+      "step": "129",
+      "base": "258",
+      "shares": "1",
+      "demand": "129",
+      "ns": "57725"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "paint",
+      "step": "129",
+      "base": "258",
+      "shares": "2",
+      "demand": "129",
+      "ns": "52227"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "ruler",
+      "step": "129",
+      "base": "258",
+      "shares": "1",
+      "demand": "129",
+      "ns": "38476"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "snap",
+      "step": "132",
+      "base": "261",
+      "shares": "2",
+      "demand": "129",
+      "ns": "55853"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "next",
+      "step": "258",
+      "base": "387",
+      "shares": "2",
+      "demand": "129",
+      "ns": "61871"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "previous",
+      "step": "258",
+      "base": "387",
+      "shares": "2",
+      "demand": "129",
+      "ns": "61891"
+    },
+    {
+      "count": "129",
+      "density": "Coarse",
+      "operation": "bands",
+      "step": "129",
+      "base": "258",
+      "shares": "1",
+      "demand": "129",
+      "ns": "10706"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "paint",
+      "step": "256",
+      "base": "512",
+      "shares": "2",
+      "demand": "256",
+      "ns": "88310"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "ruler",
+      "step": "256",
+      "base": "512",
+      "shares": "1",
+      "demand": "256",
+      "ns": "59968"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "snap",
+      "step": "259",
+      "base": "515",
+      "shares": "2",
+      "demand": "256",
+      "ns": "87589"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "next",
+      "step": "512",
+      "base": "768",
+      "shares": "2",
+      "demand": "256",
+      "ns": "88831"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "previous",
+      "step": "512",
+      "base": "768",
+      "shares": "2",
+      "demand": "256",
+      "ns": "89152"
+    },
+    {
+      "count": "256",
+      "density": "Fine",
+      "operation": "bands",
+      "step": "256",
+      "base": "512",
+      "shares": "1",
+      "demand": "256",
+      "ns": "17626"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "paint",
+      "step": "256",
+      "base": "512",
+      "shares": "2",
+      "demand": "256",
+      "ns": "72277"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "ruler",
+      "step": "256",
+      "base": "512",
+      "shares": "1",
+      "demand": "256",
+      "ns": "68241"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "snap",
+      "step": "259",
+      "base": "515",
+      "shares": "2",
+      "demand": "256",
+      "ns": "77935"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "next",
+      "step": "512",
+      "base": "768",
+      "shares": "2",
+      "demand": "256",
+      "ns": "96462"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "previous",
+      "step": "512",
+      "base": "768",
+      "shares": "2",
+      "demand": "256",
+      "ns": "220436"
+    },
+    {
+      "count": "256",
+      "density": "Medium",
+      "operation": "bands",
+      "step": "256",
+      "base": "512",
+      "shares": "1",
+      "demand": "256",
+      "ns": "17856"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "paint",
+      "step": "256",
+      "base": "512",
+      "shares": "2",
+      "demand": "256",
+      "ns": "73458"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "ruler",
+      "step": "256",
+      "base": "512",
+      "shares": "1",
+      "demand": "256",
+      "ns": "59477"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "snap",
+      "step": "259",
+      "base": "515",
+      "shares": "2",
+      "demand": "256",
+      "ns": "78706"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "next",
+      "step": "512",
+      "base": "768",
+      "shares": "2",
+      "demand": "256",
+      "ns": "87119"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "previous",
+      "step": "512",
+      "base": "768",
+      "shares": "2",
+      "demand": "256",
+      "ns": "149210"
+    },
+    {
+      "count": "256",
+      "density": "Coarse",
+      "operation": "bands",
+      "step": "256",
+      "base": "512",
+      "shares": "1",
+      "demand": "256",
+      "ns": "24506"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "paint",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "417186"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "ruler",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "295677"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "snap",
+      "step": "1027",
+      "base": "1027",
+      "shares": "0",
+      "demand": "0",
+      "ns": "322326"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "next",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "467840"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "previous",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "442133"
+    },
+    {
+      "count": "1024",
+      "density": "Fine",
+      "operation": "bands",
+      "step": "256",
+      "base": "256",
+      "shares": "0",
+      "demand": "0",
+      "ns": "20380"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "paint",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "350197"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "ruler",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "301946"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "snap",
+      "step": "1027",
+      "base": "1027",
+      "shares": "0",
+      "demand": "0",
+      "ns": "349275"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "next",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "436595"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "previous",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "423695"
+    },
+    {
+      "count": "1024",
+      "density": "Medium",
+      "operation": "bands",
+      "step": "256",
+      "base": "256",
+      "shares": "0",
+      "demand": "0",
+      "ns": "21021"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "paint",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "524385"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "ruler",
+      "step": "1024",
+      "base": "1024",
+      "shares": "0",
+      "demand": "0",
+      "ns": "298150"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "snap",
+      "step": "1027",
+      "base": "1027",
+      "shares": "0",
+      "demand": "0",
+      "ns": "330528"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "next",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "434412"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "previous",
+      "step": "2048",
+      "base": "2048",
+      "shares": "0",
+      "demand": "0",
+      "ns": "416114"
+    },
+    {
+      "count": "1024",
+      "density": "Coarse",
+      "operation": "bands",
+      "step": "256",
+      "base": "256",
+      "shares": "0",
+      "demand": "0",
+      "ns": "21291"
+    }
+  ]
+}

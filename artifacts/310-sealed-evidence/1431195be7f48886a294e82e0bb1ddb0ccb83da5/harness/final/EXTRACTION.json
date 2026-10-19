@@ -1,0 +1,5 @@
+{
+  "source_commit": "1431195be7f48886a294e82e0bb1ddb0ccb83da5",
+  "production_sha256": "ba9642bf5b0ddd63647fc2822160279220a32178bf278ebe9948493c38a81193",
+  "note": "Literal pure production functions, actual Project/Viewport. UI-only imports and EditorView controls omitted. Not GPUI/native timing."
+}

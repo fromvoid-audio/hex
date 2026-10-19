@@ -1,0 +1,9 @@
+[1/4] actual UI resolver cases: running
+[1/4] actual UI resolver cases: passed
+[2/4] actual context menu and input routing: running
+[2/4] actual context menu and input routing: passed
+[3/4] strict UI default: running
+[3/4] strict UI default: passed
+[4/4] strict UI feature: running
+[4/4] strict UI feature: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/310-quota-functional/summary.json

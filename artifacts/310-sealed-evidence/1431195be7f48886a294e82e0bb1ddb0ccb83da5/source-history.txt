@@ -1,0 +1,15 @@
+commit 1431195be7f48886a294e82e0bb1ddb0ccb83da5
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 15:28:24 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 15:28:24 2026 +0000
+
+    perf(ui): resolve adaptive grid quotas once per operation
+
+commit 712fdebaf5be412a1a4b9006176feb46c1ab6cca
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 15:21:51 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 15:21:51 2026 +0000
+
+    test(ui): measure repeated adaptive grid quota work

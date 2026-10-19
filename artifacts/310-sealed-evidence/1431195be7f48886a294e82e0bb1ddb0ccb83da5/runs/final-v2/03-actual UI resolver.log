@@ -1,0 +1,166 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.34s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-06f3ca1078ca4914)
+
+running 30 tests
+test editor::musical_time::density_tests::adaptive_density_presets_resolve_distinct_current_zoom_without_changing_default ... ok
+test editor::musical_time::density_tests::adaptive_density_survives_toggle_and_temporary_inversion_without_enabling_off ... ok
+test editor::musical_time::density_tests::adaptive_density_bands_share_selected_four_unit_span_and_stay_bounded ... ok
+GRID_WORK count=1 density=Fine operation=paint step=1 base=2 shares=2 demand=1 ns=191773
+GRID_WORK count=1 density=Fine operation=ruler step=1 base=2 shares=2 demand=1 ns=127898
+GRID_WORK count=1 density=Fine operation=snap step=1 base=2 shares=1 demand=1 ns=6569
+GRID_WORK count=1 density=Fine operation=next step=1 base=2 shares=1 demand=1 ns=5398
+GRID_WORK count=1 density=Fine operation=previous step=1 base=2 shares=1 demand=1 ns=4536
+GRID_WORK count=1 density=Fine operation=bands step=1 base=2 shares=1 demand=1 ns=25207
+GRID_WORK count=1 density=Medium operation=paint step=1 base=2 shares=2 demand=1 ns=184843
+GRID_WORK count=1 density=Medium operation=ruler step=1 base=2 shares=2 demand=1 ns=88711
+GRID_WORK count=1 density=Medium operation=snap step=1 base=2 shares=1 demand=1 ns=4827
+GRID_WORK count=1 density=Medium operation=next step=1 base=2 shares=1 demand=1 ns=4647
+GRID_WORK count=1 density=Medium operation=previous step=1 base=2 shares=1 demand=1 ns=4286
+GRID_WORK count=1 density=Medium operation=bands step=1 base=2 shares=1 demand=1 ns=42883
+GRID_WORK count=1 density=Coarse operation=paint step=1 base=2 shares=2 demand=1 ns=183270
+GRID_WORK count=1 density=Coarse operation=ruler step=1 base=2 shares=2 demand=1 ns=87649
+GRID_WORK count=1 density=Coarse operation=snap step=1 base=2 shares=1 demand=1 ns=4446
+GRID_WORK count=1 density=Coarse operation=next step=1 base=2 shares=1 demand=1 ns=4556
+GRID_WORK count=1 density=Coarse operation=previous step=1 base=2 shares=1 demand=1 ns=4146
+GRID_WORK count=1 density=Coarse operation=bands step=1 base=2 shares=1 demand=1 ns=26018
+GRID_WORK count=129 density=Fine operation=paint step=129 base=258 shares=2 demand=129 ns=727474
+GRID_WORK count=129 density=Fine operation=ruler step=129 base=258 shares=1 demand=129 ns=454061
+GRID_WORK count=129 density=Fine operation=snap step=132 base=261 shares=2 demand=129 ns=655468
+GRID_WORK count=129 density=Fine operation=next step=258 base=387 shares=2 demand=129 ns=776446
+GRID_WORK count=129 density=Fine operation=previous step=258 base=387 shares=2 demand=129 ns=804177
+GRID_WORK count=129 density=Fine operation=bands step=129 base=258 shares=1 demand=129 ns=207807
+test editor::musical_time::density_tests::adaptive_density_painted_snap_and_directional_landmarks_match_through_zoom_and_map_seams ... ok
+GRID_WORK count=129 density=Medium operation=paint step=129 base=258 shares=2 demand=129 ns=626435
+GRID_WORK count=129 density=Medium operation=ruler step=129 base=258 shares=1 demand=129 ns=450255
+GRID_WORK count=129 density=Medium operation=snap step=132 base=261 shares=2 demand=129 ns=650250
+GRID_WORK count=129 density=Medium operation=next step=258 base=387 shares=2 demand=129 ns=792480
+GRID_WORK count=129 density=Medium operation=previous step=258 base=387 shares=2 demand=129 ns=858778
+GRID_WORK count=129 density=Medium operation=bands step=129 base=258 shares=1 demand=129 ns=208168
+GRID_WORK count=129 density=Coarse operation=paint step=129 base=258 shares=2 demand=129 ns=695477
+GRID_WORK count=129 density=Coarse operation=ruler step=129 base=258 shares=1 demand=129 ns=426580
+GRID_WORK count=129 density=Coarse operation=snap step=132 base=261 shares=2 demand=129 ns=678502
+GRID_WORK count=129 density=Coarse operation=next step=258 base=387 shares=2 demand=129 ns=798138
+GRID_WORK count=129 density=Coarse operation=previous step=258 base=387 shares=2 demand=129 ns=1114616
+GRID_WORK count=129 density=Coarse operation=bands step=129 base=258 shares=1 demand=129 ns=209339
+GRID_WORK count=256 density=Fine operation=paint step=256 base=512 shares=2 demand=256 ns=1078753
+GRID_WORK count=256 density=Fine operation=ruler step=256 base=512 shares=1 demand=256 ns=732302
+GRID_WORK count=256 density=Fine operation=snap step=259 base=515 shares=2 demand=256 ns=1027617
+GRID_WORK count=256 density=Fine operation=next step=512 base=768 shares=2 demand=256 ns=1325367
+GRID_WORK count=256 density=Fine operation=previous step=512 base=768 shares=2 demand=256 ns=1311266
+GRID_WORK count=256 density=Fine operation=bands step=256 base=512 shares=1 demand=256 ns=411458
+GRID_WORK count=256 density=Medium operation=paint step=256 base=512 shares=2 demand=256 ns=1003642
+GRID_WORK count=256 density=Medium operation=ruler step=256 base=512 shares=1 demand=256 ns=754755
+GRID_WORK count=256 density=Medium operation=snap step=259 base=515 shares=2 demand=256 ns=996872
+GRID_WORK count=256 density=Medium operation=next step=512 base=768 shares=2 demand=256 ns=1488718
+GRID_WORK count=256 density=Medium operation=previous step=512 base=768 shares=2 demand=256 ns=1307230
+GRID_WORK count=256 density=Medium operation=bands step=256 base=512 shares=1 demand=256 ns=411758
+GRID_WORK count=256 density=Coarse operation=paint step=256 base=512 shares=2 demand=256 ns=1085663
+GRID_WORK count=256 density=Coarse operation=ruler step=256 base=512 shares=1 demand=256 ns=754183
+GRID_WORK count=256 density=Coarse operation=snap step=259 base=515 shares=2 demand=256 ns=1026756
+GRID_WORK count=256 density=Coarse operation=next step=512 base=768 shares=2 demand=256 ns=1321241
+GRID_WORK count=256 density=Coarse operation=previous step=512 base=768 shares=2 demand=256 ns=1354060
+GRID_WORK count=256 density=Coarse operation=bands step=256 base=512 shares=1 demand=256 ns=410746
+test editor::musical_time::density_tests::adaptive_review_dense_visible_markers_use_available_bounded_budget ... ok
+test editor::musical_time::density_tests::adaptive_review_frame_quantized_edge_markers_remain_painted_snap_targets ... ok
+test editor::musical_time::density_tests::adaptive_density_over_budget_meter_markers_share_bounded_visible_targets ... ok
+debug_visible_work sections=129 paint_us=704 snap_us=682 adjacent_us=830; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Fine start=0 painted=256
+test editor::musical_time::density_tests::adaptive_density_wide_view_never_snaps_to_hidden_subdivision ... ok
+test editor::musical_time::density_tests::adaptive_review_offscreen_meter_history_does_not_allocate_paint_lists_for_snap ... ok
+test editor::musical_time::density_tests::adaptive_review_meter_origins_do_not_consume_a_second_landmark_quota ... ok
+section remainder sections=128 density=Fine start=0 painted=256
+section remainder sections=128 density=Fine start=1 painted=255
+debug_visible_work sections=129 paint_us=674 snap_us=86 adjacent_us=939; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Fine start=1 painted=255
+section remainder sections=128 density=Fine start=3000 painted=255
+test editor::musical_time::density_tests::adaptive_review_panning_preserves_subdivision_at_fixed_zoom ... ok
+test editor::musical_time::tests::adaptive_background_bands_are_bounded_and_pan_anchored ... ok
+test editor::musical_time::tests::adaptive_background_bands_restart_at_meter_origins ... ok
+test editor::musical_time::tests::adaptive_grid_stays_visible_and_bounded_at_zoom_extremes ... ok
+test editor::musical_time::tests::adaptive_snap_matches_painted_landmarks_across_tempo_meter_and_zoom_seams ... ok
+test editor::musical_time::tests::arranger_snap_toggles_between_adaptive_and_off ... ok
+test editor::musical_time::tests::bounded_ruler_marks_quarter_positions_and_fragmentary_meter_changes ... ok
+test editor::musical_time::tests::conversion_failures_cannot_make_band_candidate_enumeration_unbounded ... ok
+test editor::musical_time::tests::directional_nudge_landmarks_are_distinct_off_grid_and_across_meter_tempo_seams ... ok
+test editor::musical_time::tests::fractional_meter_section_starts_its_denominator_beat_landmarks ... ok
+section remainder sections=128 density=Medium start=0 painted=256
+GRID_WORK count=1024 density=Fine operation=paint step=1024 base=1024 shares=0 demand=0 ns=5596835
+GRID_WORK count=1024 density=Fine operation=ruler step=1024 base=1024 shares=0 demand=0 ns=2219397
+section remainder sections=128 density=Medium start=1 painted=255
+GRID_WORK count=1024 density=Fine operation=snap step=1027 base=1027 shares=0 demand=0 ns=2429647
+GRID_WORK count=1024 density=Fine operation=next step=2048 base=2048 shares=0 demand=0 ns=3551504
+section remainder sections=128 density=Medium start=3000 painted=255
+GRID_WORK count=1024 density=Fine operation=previous step=2048 base=2048 shares=0 demand=0 ns=3597382
+GRID_WORK count=1024 density=Fine operation=bands step=256 base=256 shares=0 demand=0 ns=274736
+GRID_WORK count=1024 density=Medium operation=paint step=1024 base=1024 shares=0 demand=0 ns=2368407
+GRID_WORK count=1024 density=Medium operation=ruler step=1024 base=1024 shares=0 demand=0 ns=2236583
+section remainder sections=128 density=Coarse start=0 painted=256
+debug_visible_work sections=129 paint_us=621 snap_us=74 adjacent_us=763; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Fine start=3000 painted=255
+GRID_WORK count=1024 density=Medium operation=snap step=1027 base=1027 shares=0 demand=0 ns=2382288
+GRID_WORK count=1024 density=Medium operation=next step=2048 base=2048 shares=0 demand=0 ns=3546587
+section remainder sections=128 density=Coarse start=1 painted=255
+GRID_WORK count=1024 density=Medium operation=previous step=2048 base=2048 shares=0 demand=0 ns=3540288
+GRID_WORK count=1024 density=Medium operation=bands step=256 base=256 shares=0 demand=0 ns=294104
+GRID_WORK count=1024 density=Coarse operation=paint step=1024 base=1024 shares=0 demand=0 ns=2407545
+section remainder sections=128 density=Coarse start=3000 painted=255
+GRID_WORK count=1024 density=Coarse operation=ruler step=1024 base=1024 shares=0 demand=0 ns=2207189
+GRID_WORK count=1024 density=Coarse operation=snap step=1027 base=1027 shares=0 demand=0 ns=2404230
+GRID_WORK count=1024 density=Coarse operation=next step=2048 base=2048 shares=0 demand=0 ns=3548800
+section remainder sections=129 density=Fine start=0 painted=256
+GRID_WORK count=1024 density=Coarse operation=previous step=2048 base=2048 shares=0 demand=0 ns=3563823
+GRID_WORK count=1024 density=Coarse operation=bands step=256 base=256 shares=0 demand=0 ns=278110
+test editor::musical_time::density_tests::adaptive_operation_work_profile ... ok
+test editor::musical_time::tests::grid_returns_empty_when_time_conversion_and_viewport_bounds_are_invalid ... ok
+test editor::musical_time::tests::huge_fractional_meter_viewport_keeps_tick_attempts_and_markers_bounded ... ok
+test editor::musical_time::tests::ruler_keeps_only_visible_landmarks_across_section_end ... ok
+test editor::musical_time::tests::ruler_landmarks_follow_tempo_boundaries_and_deduplicate_quantized_markers ... ok
+test editor::musical_time::tests::six_eight_ruler_uses_denominator_beats ... ok
+test editor::musical_time::tests::snap_resolution_uses_canonical_map_and_rounds_exact_ties_later ... ok
+debug_visible_work sections=129 paint_us=351 snap_us=365 adjacent_us=525; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Medium start=0 painted=256
+test editor::musical_time::tests::full_meter_map_keeps_marker_priority_spacing_and_tick_cap ... ok
+debug_visible_work sections=129 paint_us=372 snap_us=53 adjacent_us=572; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Medium start=1 painted=255
+section remainder sections=129 density=Fine start=1 painted=255
+debug_visible_work sections=129 paint_us=350 snap_us=43 adjacent_us=460; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Medium start=3000 painted=255
+section remainder sections=129 density=Fine start=3000 painted=255
+section remainder sections=129 density=Medium start=0 painted=256
+debug_visible_work sections=129 paint_us=901 snap_us=423 adjacent_us=802; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Coarse start=0 painted=256
+section remainder sections=129 density=Medium start=1 painted=255
+debug_visible_work sections=129 paint_us=629 snap_us=73 adjacent_us=810; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Coarse start=1 painted=255
+section remainder sections=129 density=Medium start=3000 painted=255
+debug_visible_work sections=129 paint_us=603 snap_us=102 adjacent_us=786; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=false density=Coarse start=3000 painted=255
+section remainder sections=129 density=Coarse start=0 painted=256
+debug_visible_work sections=129 paint_us=624 snap_us=653 adjacent_us=794; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Fine start=0 painted=256
+section remainder sections=129 density=Coarse start=1 painted=255
+debug_visible_work sections=129 paint_us=626 snap_us=77 adjacent_us=824; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Fine start=1 painted=255
+section remainder sections=129 density=Coarse start=3000 painted=255
+debug_visible_work sections=129 paint_us=668 snap_us=81 adjacent_us=788; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Fine start=3000 painted=255
+test editor::musical_time::density_tests::adaptive_review_section_remainder_preserves_painted_and_snap_density ... ok
+debug_visible_work sections=129 paint_us=352 snap_us=435 adjacent_us=454; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Medium start=0 painted=256
+debug_visible_work sections=129 paint_us=359 snap_us=46 adjacent_us=1705; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Medium start=1 painted=255
+debug_visible_work sections=129 paint_us=353 snap_us=375 adjacent_us=478; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Medium start=3000 painted=255
+debug_visible_work sections=129 paint_us=387 snap_us=370 adjacent_us=463; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Coarse start=0 painted=256
+debug_visible_work sections=129 paint_us=429 snap_us=45 adjacent_us=552; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Coarse start=1 painted=255
+debug_visible_work sections=129 paint_us=427 snap_us=70 adjacent_us=455; no optimized/native deadline claim
+mixed sections=129 short=128 long_first=true density=Coarse start=3000 painted=255
+test editor::musical_time::density_tests::adaptive_review_mixed_short_sections_reassign_unused_paint_and_snap_capacity ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 738 filtered out; finished in 0.55s
+

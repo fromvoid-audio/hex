@@ -1,0 +1,14 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.02s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-06f3ca1078ca4914)
+
+running 4 tests
+test editor::context_menu::adaptive_grid_menu::tests::adaptive_grid_menu_disabled_choice_and_stale_project_refusal_are_ui_only ... ok
+test editor::context_menu::adaptive_grid_menu::tests::adaptive_grid_menu_empty_arranger_choice_survives_keyboard_snap_toggle ... ok
+test editor::context_menu::adaptive_grid_menu::tests::adaptive_grid_menu_right_click_keyboard_choice_and_cancel_preserve_project_and_focus ... ok
+test editor::context_menu::adaptive_grid_menu::tests::adaptive_grid_menu_choice_renders_the_same_landmark_used_by_keyboard_edit ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 764 filtered out; finished in 1.50s
+

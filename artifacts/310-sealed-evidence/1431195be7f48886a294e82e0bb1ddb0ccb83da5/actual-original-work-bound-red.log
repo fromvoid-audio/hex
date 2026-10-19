@@ -1,0 +1,28 @@
+   Compiling hex-grid-metadata-probe-bound-red v0.0.0 (/workspace/hex/artifacts/310-metadata-harness/bound-red)
+warning: unused imports: `Command` and `Meter`
+ --> src/editor/../baseline.rs:8:29
+  |
+8 | use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
+  |                             ^^^^^^^  ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `hex-grid-metadata-probe-bound-red` (lib test) generated 1 warning (run `cargo fix --lib -p hex-grid-metadata-probe-bound-red --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1.58s
+     Running unittests src/lib.rs (artifacts/310-private-target/release/deps/hex_grid_metadata_probe_bound_red-03328478f74e0fa4)
+
+running 1 test
+
+thread 'editor::musical_time::density_tests::adaptive_operation_work_profile' (255116) panicked at src/editor/../adaptive_grid_density_tests.rs:632:17:
+paint: [1, 13, 2, 12]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::musical_time::density_tests::adaptive_operation_work_profile ... FAILED
+
+failures:
+
+failures:
+    editor::musical_time::density_tests::adaptive_operation_work_profile
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

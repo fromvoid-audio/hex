@@ -1,0 +1,32 @@
+{
+  "crates/hex-ui/src/editor/adaptive_grid_density_tests.rs": {
+    "before": {
+      "git_blob": "5a512f781671a36cb44699c52a1f05e4b83471c6",
+      "sha256": "5e20d535a83a10138187f3d5ff6d9f6084239d065d2de4d5419c667bf09f90c1"
+    },
+    "after": {
+      "git_blob": "63371c6f63b7a576781d4b3324b60407f39d78cc",
+      "sha256": "0e8ce05976080ab7e994c0f551a1c66b01748e7d773546fc0e1689816be6d4f3"
+    }
+  },
+  "crates/hex-ui/src/editor/musical_time.rs": {
+    "before": {
+      "git_blob": "77679c8a011609e03afe091cd8f4aca9a7173693",
+      "sha256": "7a759333611ec7f2a26714bee3c202790458309638af279f87719afd7fd1a57e"
+    },
+    "after": {
+      "git_blob": "8a0caf2c7ec8bd89d3c7843ee76a40e46d4f6477",
+      "sha256": "ba9642bf5b0ddd63647fc2822160279220a32178bf278ebe9948493c38a81193"
+    }
+  },
+  "docs/adaptive-grid-menu.md": {
+    "before": {
+      "git_blob": "8eca965963bbc2958e8cccf3e315648f1c1d2baa",
+      "sha256": "3dc6cf5faaa2aa95fba8c5407333f443d1532d238d5af43b2d54841f577ef120"
+    },
+    "after": {
+      "git_blob": "edac8f7323f7549ed19398412bf54e6bb487320e",
+      "sha256": "40d66b0024510f955f2f8cbbec5aa29fd8b8a473783ce6914ffaefa28d716aef"
+    }
+  }
+}
