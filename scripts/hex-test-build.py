@@ -55,7 +55,7 @@ def sha(path: Path) -> str:
 def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False,
                        expected_owner_sha256: str | None = None,
                        expected_recreated_target_identity: dict[str, int] | None = None,
-                       recovery_inactive_check=None):
+                       recovery_inactive_check=None, verification_check=None):
     """Build/identify only; shared by delivery and nonactivating review staging.
 
     The target lock spans compilation, source validation and the caller's copy.
@@ -64,6 +64,8 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
     recovery = {"adopt": adopt}
     argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
     recovery["requested_build_argv"] = argv
+    if verification_check is not None:
+        recovery["verification_check"] = verification_check
     if expected_owner_sha256 is not None:
         recovery["expected_owner_sha256"] = expected_owner_sha256
     if expected_recreated_target_identity is not None:
@@ -88,6 +90,8 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
             raise DeliveryError("no unique optimized artifact from Cargo")
         ownership["artifact"] = runner.identify_release_artifact(binaries[0], argv)
         runner.validate_release_inputs(ownership)
+        if verification_check is not None:
+            verification_check()
         if (not runner._capture_repository_state("release_artifact_tree")
                 or runner.summary["release_artifact_tree"] != runner.summary["start_tree"]):
             raise DeliveryError("source changed during optimized compilation")
@@ -385,6 +389,8 @@ def activate(app: Path, stage: Path) -> None:
 
 def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False) -> dict:
     evidence = json.loads(report.read_text())
+    if type(evidence.get("schema_version")) is not int or evidence["schema_version"] != 2:
+        raise DeliveryError("CI certificate requires schema 2 with executed test counts")
     if not runner._capture_repository_state("start_tree"):
         raise DeliveryError("cannot identify current source")
     current = runner.summary["start_tree"]
@@ -432,6 +438,15 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
                 ["git", "rev-parse", f"{candidate}^{{tree}}"], runner.root):
             raise DeliveryError("merged source differs from locally verified candidate")
         run(["git", "merge-base", "--is-ancestor", candidate, head], runner.root)
+    if runner.target_lock is not None:
+        # The release driver calls this under the SAME target lock before
+        # pending/cleanup/build, again before consumption, and before publish.
+        try:
+            expected = evidence.get("target_cache", {}).get("dependency_inputs")
+            if not isinstance(expected, dict) or runner._dependency_context() != expected:
+                raise DeliveryError("CI toolchain/configuration inputs differ from the guarded delivery")
+        except (OSError, ValueError, RuntimeError, ci.TargetCacheError) as error:
+            raise DeliveryError(f"cannot revalidate CI toolchain/configuration inputs: {error}") from error
     return evidence
 
 
@@ -529,6 +544,7 @@ def build(args) -> dict:
                         "recovery_inactive_check": lambda: assert_recovery_inactive(app)}
         with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False),
                                 expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
+                                verification_check=revalidate,
                                 **recovery) as (binary, release_ownership):
             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")

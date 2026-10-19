@@ -28,6 +28,68 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_review_selected_tool_override_bytes_participate_in_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "selected-compiler"
+            tool.write_text("#!/bin/sh\nexit 0\n")
+            tool.chmod(0o755)
+            metadata = {"workspace_members": [], "packages": [], "target_directory": str(root / "target")}
+            for name in ("RUSTC", "CARGO_BUILD_RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                         "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"):
+                env = {"CARGO_HOME": str(root / "home"), name: str(tool)}
+                before = inputs.fingerprint(root, env, metadata, {})
+                tool.write_text(tool.read_text() + "# replaced executable\n")
+                self.assertNotEqual(before, inputs.fingerprint(root, env, metadata, {}), name)
+            env = {"CARGO_HOME": str(root / "home"), "RUSTC": tool.name, "PATH": "."}
+            before = inputs.fingerprint(root, env, metadata, {})
+            tool.write_text(tool.read_text() + "# relative PATH replacement\n")
+            self.assertNotEqual(before, inputs.fingerprint(root, env, metadata, {}))
+            tool.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "executable"):
+                inputs.fingerprint(root, env, metadata, {})
+
+    def test_review_relative_cargo_home_is_rooted_at_cargo_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = {"workspace_members": [], "packages": [], "target_directory": str(root / "target")}
+            env = {"CARGO_HOME": "relative-home"}
+            before = inputs.fingerprint(root, env, metadata, {})
+            home = root / "relative-home"
+            home.mkdir()
+            (home / "config.toml").write_text("unsupported config")
+            self.assertNotEqual(before, inputs.fingerprint(root, env, metadata, {}))
+            (home / "config.toml").write_text('[build]\nrustc="untracked-compiler"\n')
+            with self.assertRaisesRegex(ValueError, "compiler/wrapper"):
+                inputs.fingerprint(root, env, metadata, {})
+
+    def test_review_qualifying_executable_source_symlinks_refuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root).decode().strip()
+            git("init", "-q"); git("config", "user.name", "source fixture"); git("config", "user.email", "fixture@invalid")
+            (root / "Cargo.toml").write_text("fixture")
+            (root / ".gitignore").write_text("/artifacts/\n")
+            (root / "runtime.rs").write_text("base")
+            git("add", "."); git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            external = root.parent / "external.rs"
+            external.write_text("external input")
+            (root / "runtime.rs").unlink()
+            (root / "runtime.rs").symlink_to(external)
+            git("add", "."); git("commit", "-qm", "linked candidate")
+            metadata = {"workspace_members": ["fixture"], "packages": [dict(id="fixture", name="fixture",
+                        manifest_path=str(root / "Cargo.toml"), features={}, targets=[], dependencies=[])]}
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                plan.resolve(root, profile="merge", base=base, source="HEAD", metadata=metadata)
+            runner = ci.LocalCiRunner(root, mode="full", min_free_bytes=0,
+                                      steps=(ci.Step("must-not-run", (sys.executable, "-c", "raise AssertionError()")),))
+            self.assertEqual(runner.run(), 2)
+            self.assertIn("symlink", runner.summary["repository_error"])
+            self.assertTrue(all(s["status"] == "not_run" for s in runner.summary["steps"]))
+
     def inventory(self):
         return [dict(name=name, manifest=f"crates/{name}/Cargo.toml", features={},
                      dependencies=deps, targets=[]) for name, deps in (
@@ -138,9 +200,8 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
             self.assertEqual(reused["reuse"]["source"], previous)
             (root / "linked-runtime.rs").symlink_to(root / "runtime.rs")
-            linked = plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
             with self.assertRaisesRegex(ValueError, "symlink"):
-                ci.reusable_plan(root, linked, report)
+                plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
             (root / "linked-runtime.rs").unlink()
             for field, value in (("steps", evidence["steps"][:-1]), ("status", "failed"),
                                  ("mode", "edit"), ("schema_version", 1),

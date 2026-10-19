@@ -63,6 +63,11 @@ def changed_paths(root: Path, base: str, source: str) -> list[str]:
     return sorted(paths - {""})
 
 
+def require_qualifying_inputs(inputs: dict) -> None:
+    if any(not metadata_path(name) for name in inputs.get("symlinks", [])):
+        raise ValueError("qualifying executable source inputs cannot be symlinks")
+
+
 def cargo_inventory(metadata: dict, root: Path) -> list[dict]:
     members = set(metadata["workspace_members"])
     inventory = []
@@ -139,6 +144,9 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
     if not paths:
         raise ValueError("empty scope is not qualifying test evidence; use --profile full for an audit")
     inventory = cargo_inventory(metadata, root)
+    inputs = runtime_inputs(root)
+    if profile in {"merge", "full", "release"}:
+        require_qualifying_inputs(inputs)
     scope, affected, reasons = classify(paths, inventory)
     if profile in {"full", "release"}:
         scope = "full"
@@ -148,7 +156,7 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
               "tree": git(root, "rev-parse", source_sha + "^{tree}").decode().strip(),
               "paths": paths, "scope": scope, "reasons": reasons,
               "affected_packages": affected, "cargo_inventory": inventory,
-              "runtime_inputs": runtime_inputs(root),
+              "runtime_inputs": inputs,
               "qualifies_merge": profile in {"merge", "full", "release"}}
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result

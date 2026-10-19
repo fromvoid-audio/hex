@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 
 
@@ -47,6 +48,29 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
             observe(path)
         return digest.hexdigest()
     field(json.dumps(tools, sort_keys=True))
+    # Cargo may execute an override rather than the default PATH compiler.
+    # Bind its actual bytes/mode/resolved path, not merely the env spelling.
+    search = os.pathsep.join(str((root / p).resolve()) if not Path(p).is_absolute() else p
+                             for p in env.get("PATH", os.defpath).split(os.pathsep))
+    for name in ("RUSTC", "CARGO_BUILD_RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                 "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+                 "RUSTDOC", "CARGO_BUILD_RUSTDOC"):
+        selected = env.get(name)
+        if not selected:
+            continue
+        if os.sep in selected:
+            path = Path(selected)
+            if not path.is_absolute():
+                path = root / path
+        else:
+            resolved = shutil.which(selected, path=search)
+            if resolved is None:
+                raise ValueError("selected Cargo executable is unavailable: " + name)
+            path = Path(resolved)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise ValueError("selected Cargo executable is not executable: " + name)
+        field(name)
+        observe(path)
     field(json.dumps({k: v for k, v in env.items() if
                      k.startswith(("CARGO_", "RUST", "CC", "CXX", "AR", "LD", "PKG_CONFIG"))
                      or k in {"PATH", "HOST", "TARGET", "SDKROOT", "DEVELOPER_DIR", "MACOSX_DEPLOYMENT_TARGET"}}, sort_keys=True))
@@ -74,8 +98,17 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
     for directory in workspace_roots:
         config_dirs.update(p / ".cargo" for p in (directory, *directory.parents))
     cargo_home = env.get("CARGO_HOME") or str(Path(env.get("HOME", "~")) / ".cargo")
-    config_dirs.add(Path(cargo_home))
+    home = Path(cargo_home)
+    config_dirs.add(home if home.is_absolute() else root / home)
     for directory in sorted(config_dirs):
         for name in ("config", "config.toml"):
-            observe(directory / name)
+            config = directory / name
+            if config.is_file():
+                # Without a full Cargo TOML interpreter, do not claim selected
+                # compiler identity from arbitrary quoted/escaped config keys.
+                # Explicit executable env overrides above are content-bound.
+                text = config.read_text().lower()
+                if any(token in text for token in ("rustc", "rustdoc", "\\u")):
+                    raise ValueError("compiler/wrapper selection in Cargo config is unsupported; use explicit executable environment")
+            observe(config)
     return digest.hexdigest()

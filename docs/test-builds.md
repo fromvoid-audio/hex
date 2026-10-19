@@ -12,6 +12,12 @@ resolved scoped merge report. Its receipt says `scoped-dev-ci`, not `full-ci`;
 the plan is recomputed against current source/dependencies. Beta/stable/native
 qualification keeps the full-audit requirement. Edit/quick/custom-component
 reports never qualify. This adds no staging/publishing command or automation.
+Schema-2 executed counts and guarded compiler/configuration/dependency identity
+are required. Delivery compares that identity under the same target lock before
+pending/cleanup/build and again before consumption/publication. A prose-only
+report without a runtime witness does not qualify an app as tested; use an
+explicit original runtime continuation or ordinary source-only development
+launch instead. Source-only launch still records that tests were not run.
 See [development-workflow.md](development-workflow.md).
 
 ## launch modes

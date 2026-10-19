@@ -64,6 +64,12 @@ workspace outputs are cleaned, unchanged external dependencies and release
 outputs are retained. Removed/version-changed dependencies or ambiguous cleanup
 names refuse. The lock is acquired before Python's private Cargo fixtures, and
 end snapshots/signals cannot silently advance ownership or retain a live lock.
+Selected compiler, rustdoc and wrapper environment overrides bind actual
+executable bytes, mode and resolved targets. Compiler selection inside Cargo
+config is conservatively refused; use explicit executable environment overrides
+instead. Relative Cargo home and PATH entries resolve from Cargo's working
+directory. Qualifying executable source symlinks are refused, including in the
+no-flag full audit; their external targets are not immutable Git source.
 
 Optimized release cache reuse requires the same known ready owner, target inode,
 checkout, pinned toolchain, arguments, configuration and dependency inputs. An

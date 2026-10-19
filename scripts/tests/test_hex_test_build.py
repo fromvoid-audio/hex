@@ -25,6 +25,30 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_review_ci_gate_rejects_legacy_and_changed_guarded_inputs(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        original = {"version": 1, "sha256": "a" * 64, "packages": []}
+        evidence = {"schema_version": 2, "mode": "full", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "target_cache": {"dependency_inputs": original},
+                    "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for s in delivery.ci.FULL_STEPS]}
+        report = self.root / "review-ci.json"
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            for schema in (None, 1, True):
+                delivery.write_json(report, {**evidence, "schema_version": schema})
+                with self.subTest(schema=schema), self.assertRaisesRegex(delivery.DeliveryError, "schema"):
+                    delivery.validate_ci(report, runner, tree["commit"])
+            runner.target_lock = Mock()
+            delivery.write_json(report, evidence)
+            with patch.object(runner, "_dependency_context", return_value=original):
+                delivery.validate_ci(report, runner, tree["commit"])
+            with patch.object(runner, "_dependency_context", return_value={**original, "sha256": "b" * 64}):
+                with self.assertRaisesRegex(delivery.DeliveryError, "toolchain|configuration"):
+                    delivery.validate_ci(report, runner, tree["commit"])
+
     def test_cli_release_ownership_refusal_is_controlled_and_never_activates(self):
         arguments = ["hex-test-build", "--ci-report", "report.json", "--candidate", "a" * 40,
                      "--included", "included.json", "--checklist", "checklist.md"]
@@ -400,6 +424,7 @@ class DeliveryTests(unittest.TestCase):
         runner = delivery.ci.LocalCiRunner(source)
         runner.summary["start_tree"] = {"commit":candidate, "dirty":False, "dirty_files":[],
                                         "content_sha256":"d" * 64}
+        runner.summary["runtime_inputs"] = {"version": 1, "sha256": "d" * 64, "symlinks": []}
         runner.cargo_identity = {"target_directory":str(target.parent.parent)}
         runner.target_lock = None if rmdir_member else SimpleNamespace(release=Mock(return_value=None))
         runner.target_state_dir = self.root / "target-state"
@@ -619,9 +644,10 @@ class DeliveryTests(unittest.TestCase):
         runner = delivery.ci.LocalCiRunner(self.root, steps=(delivery.ci.Step("fake", ("true",)),))
         tree = {"commit": "a" * 40, "dirty": False, "dirty_files": [], "content_sha256": "digest"}
         runner.summary["start_tree"] = tree
-        evidence = {"mode": "full", "status": "passed", "stale": False, "exit_code": 0,
+        evidence = {"schema_version": 2, "mode": "full", "status": "passed", "stale": False, "exit_code": 0,
                     "commit": tree["commit"], "dirty": False, "start_tree": tree, "end_tree": tree,
-                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed"}
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"rust_passed_by_binary": [1]}}
                               for step in delivery.ci.FULL_STEPS]}
         report = self.root / "ci.json"
         with patch.object(runner, "_capture_repository_state", return_value=True):
@@ -796,7 +822,11 @@ class ReleaseCargoTests(unittest.TestCase):
                     min_free_bytes=0, target_state_dir=state)
             def build(cwd, name, expected, selected_env=env):
                 instance = runner(cwd, name, selected_env)
-                with delivery.optimized_artifact(instance, package="fixture-app") as (binary, ownership):
+                checks = []
+                def verify():
+                    self.assertIsNotNone(instance.target_lock)
+                    checks.append("artifact" if instance.summary.get("release_target_cache", {}).get("artifact") else "before-build")
+                with delivery.optimized_artifact(instance, package="fixture-app", verification_check=verify) as (binary, ownership):
                     self.assertEqual(command([str(binary)]), expected)
                     self.assertEqual(delivery.sha(binary), ownership["artifact"]["sha256"])
                     self.assertIsNotNone(instance.target_lock)
@@ -807,8 +837,17 @@ class ReleaseCargoTests(unittest.TestCase):
                     shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
+                self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
             first = build(root, "release-a", "16")
+            owner_before = Path(first["owner_path"]).read_bytes()
+            def refuse_certificate():
+                raise delivery.DeliveryError("test certificate inputs changed")
+            with self.assertRaisesRegex(delivery.DeliveryError, "certificate"):
+                with delivery.optimized_artifact(runner(root, "ci-refused"), package="fixture-app",
+                                                 verification_check=refuse_certificate):
+                    self.fail("changed CI certificate reached compilation/consumer")
+            self.assertEqual(Path(first["owner_path"]).read_bytes(), owner_before)
             dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
             self.assertTrue(dependencies)
             # Keep a real dev build and ensure release handoff cannot touch it.

@@ -440,11 +440,17 @@ class LocalCiRunner:
         }
         self.summary[key] = snapshot
         if key == "start_tree":
+            self.summary["runtime_inputs"] = ci_plan.runtime_inputs(self.root, self.env)
+            if self.mode in {"full", "merge", "release"}:
+                try:
+                    ci_plan.require_qualifying_inputs(self.summary["runtime_inputs"])
+                except ValueError as error:
+                    self.summary["repository_error"] = str(error)
+                    return False
             if re.fullmatch(r"[0-9a-f]{40}", snapshot["commit"]):
                 self.env["HEX_GUARDED_BUILD_SOURCE"] = (
                     snapshot["commit"] + ":" + snapshot["content_sha256"] + ":"
                     + ("dirty" if snapshot["dirty"] else "clean"))
-                self.summary["runtime_inputs"] = ci_plan.runtime_inputs(self.root, self.env)
             root_path = Path(top_level.stdout.strip()).resolve()
             common_path = Path(common_dir.stdout.strip())
             if not common_path.is_absolute():
@@ -986,7 +992,8 @@ class LocalCiRunner:
     @contextmanager
     def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None,
                         expected_recreated_target_identity: dict[str, int] | None = None,
-                        recovery_inactive_check=None, requested_build_argv: list[str] | None = None):
+                        recovery_inactive_check=None, requested_build_argv: list[str] | None = None,
+                        verification_check=None):
         """Explicit release handoff; caller must identify its artifact before exit.
 
         Uses the dev driver's SAME target-wide lock, but a separate durable
@@ -998,6 +1005,10 @@ class LocalCiRunner:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         if not self._capture_repository_state("start_tree") or self.summary["start_tree"]["dirty"]:
             raise TargetCacheError("release preparation requires exact clean source")
+        try:
+            ci_plan.require_qualifying_inputs(self.summary["runtime_inputs"])
+        except ValueError as error:
+            raise TargetCacheError(str(error)) from error
         if not self._resolve_cargo_identity() or not self._check_disk_headroom():
             raise TargetCacheError(f"release preparation failed: {self.summary}")
         target = Path(str(self.cargo_identity["target_directory"]))
@@ -1041,6 +1052,8 @@ class LocalCiRunner:
             if not self._capture_repository_state("release_locked_tree") or self.summary["release_locked_tree"] != self.summary["start_tree"]:
                 raise TargetCacheError("release source changed before lock acquisition")
             scope = self._release_scope()
+            if verification_check is not None:
+                verification_check()
             cache_key = None
             if requested_build_argv is not None:
                 try:
