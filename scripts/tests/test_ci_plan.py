@@ -137,6 +137,11 @@ class ScopeTests(unittest.TestCase):
             reused = ci.reusable_plan(root, resolved, report)
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
             self.assertEqual(reused["reuse"]["source"], previous)
+            (root / "linked-runtime.rs").symlink_to(root / "runtime.rs")
+            linked = plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                ci.reusable_plan(root, linked, report)
+            (root / "linked-runtime.rs").unlink()
             for field, value in (("steps", evidence["steps"][:-1]), ("status", "failed"),
                                  ("mode", "edit"), ("schema_version", 1),
                                  ("runtime_inputs", {"sha256": "changed"}), ("target_cache", {})):
@@ -238,6 +243,38 @@ class CacheIdentityTests(unittest.TestCase):
                 for s, handler in previous.items():
                     self.assertEqual(signal.getsignal(s), handler)
                 self.assertEqual(fixture.runner("after-signal").run(), 0)
+            finally:
+                fixture.tearDown()
+
+    def test_final_dependency_validation_errors_preserve_owner_release_lock_and_restore_handlers(self):
+        fixtures = module("observer_error_fixtures", "tests/test_local_ci.py")
+        for error in (ValueError("unsupported dependency FIFO"), RuntimeError("symlink loop")):
+            fixture = fixtures.LocalCiRunnerTests()
+            fixture.setUp()
+            try:
+                runner = fixture.runner("final-validation")
+                previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+                identity = {"version": 1, "sha256": "a" * 64, "packages": []}
+                owner_before = None
+                calls = 0
+                def observe():
+                    nonlocal calls, owner_before
+                    calls += 1
+                    if calls == 2:
+                        owner_before = runner.target_owner_path.read_bytes() if runner.target_owner_path.exists() else None
+                        raise error
+                    return identity
+                with patch.object(runner, "_dependency_context", side_effect=observe):
+                    self.assertEqual(runner.run(), 2)
+                self.assertEqual(runner.summary["status"], "incomplete")
+                self.assertIn(type(error).__name__, runner.summary["target_owner_update_error"])
+                owner_after = runner.target_owner_path.read_bytes() if runner.target_owner_path.exists() else None
+                self.assertEqual(owner_before, owner_after)
+                self.assertEqual(json.loads((runner.output_dir / "summary.json").read_text())["exit_code"], 2)
+                self.assertIsNone(runner.target_lock)
+                for s, handler in previous.items():
+                    self.assertEqual(signal.getsignal(s), handler)
+                self.assertEqual(fixture.runner("after-validation").run(), 0)
             finally:
                 fixture.tearDown()
 

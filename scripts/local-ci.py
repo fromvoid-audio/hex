@@ -601,7 +601,7 @@ class LocalCiRunner:
             owner = value.get("workspace_owner")
             target_identity = value.get("target_identity")
             if (
-                value.get("schema_version") not in {1, 2}
+                type(value.get("schema_version")) is not int or value["schema_version"] not in {1, 2}
                 or value.get("target_directory") != str(target)
                 or not isinstance(owner, dict)
                 or not isinstance(owner.get("workspace_root"), str)
@@ -621,11 +621,13 @@ class LocalCiRunner:
             if "dependency_inputs" in value:
                 dependency = value["dependency_inputs"]
                 if (not isinstance(dependency, dict) or set(dependency) != {"version", "sha256", "packages"}
-                        or dependency["version"] != 1 or not isinstance(dependency["sha256"], str)
+                        or type(dependency["version"]) is not int or dependency["version"] != 1
+                        or not isinstance(dependency["sha256"], str)
                         or not re.fullmatch(r"[0-9a-f]{64}", dependency["sha256"])
                         or not isinstance(dependency["packages"], list)
                         or any(not isinstance(p, dict) or set(p) != {"name", "version", "spec", "sha256"}
                                or not all(isinstance(v, str) and v for v in p.values())
+                               or not re.fullmatch(r"[0-9a-f]{64}", p["sha256"])
                                for p in dependency["packages"])):
                     raise ValueError("malformed dependency input identity")
             return value
@@ -1405,58 +1407,74 @@ class LocalCiRunner:
                         entry["ended_at"] = utc_now()
                         entry["error"] = "pipeline interrupted"
         finally:
-            if self.target_lock is not None:
-                if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
+            try:
+                if self.target_lock is not None:
                     try:
-                        if self._dependency_context() != self._dependency_inputs:
-                            raise TargetCacheError("dependency inputs changed during guarded checks")
-                        self._write_target_owner(self.target_owner_path, self.git_identity)
-                    except InterruptedRun:
-                        self.summary.update(status="interrupted", exit_code=130,
-                                            target_owner_update_error="dependency identity interrupted; owner not advanced")
-                    except (OSError, TargetCacheError) as error:
-                        self.summary["target_owner_update_error"] = str(error)
+                        if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
+                            try:
+                                if self._dependency_context() != self._dependency_inputs:
+                                    raise TargetCacheError("dependency inputs changed during guarded checks")
+                                self._write_target_owner(self.target_owner_path, self.git_identity)
+                            except InterruptedRun:
+                                self.summary.update(status="interrupted", exit_code=130,
+                                                    target_owner_update_error="dependency identity interrupted; owner not advanced")
+                            except Exception as error:
+                                # Fingerprinting can refuse malformed paths, cycles or
+                                # unsupported file types. None may bypass cleanup.
+                                self.summary.update(status="incomplete", exit_code=2,
+                                                    target_owner_update_error=f"{type(error).__name__}: {error}")
+                    finally:
+                        try:
+                            release_error = self.target_lock.release()
+                            if release_error is not None:
+                                self.summary.update(status="incomplete", exit_code=2,
+                                                    target_lock_release_error=release_error)
+                        except InterruptedRun:
+                            self.summary.update(status="interrupted", exit_code=130,
+                                                target_lock_release_error="lock release interrupted")
+                        except Exception as error:
+                            self.summary.update(status="incomplete", exit_code=2,
+                                                target_lock_release_error=f"{type(error).__name__}: {error}")
+                        finally:
+                            self.target_lock = None
+                self.summary["ended_at"] = utc_now()
+                self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 3)
+                if self.summary.get("start_tree") is not None:
+                    if self._capture_repository_state("end_tree"):
+                        start_tree = self.summary["start_tree"]
+                        end_tree = self.summary["end_tree"]
+                        stale = start_tree != end_tree
+                        self.summary["stale"] = stale
+                        if stale:
+                            self.summary["verification_status"] = self.summary.get("status")
+                            self.summary["status"] = "stale"
+                            self.summary["exit_code"] = 3
+                    else:
+                        self.summary["stale"] = None
                         self.summary["status"] = "incomplete"
                         self.summary["exit_code"] = 2
-                release_error = self.target_lock.release()
-                if release_error is not None:
-                    self.summary["target_lock_release_error"] = release_error
-                self.target_lock = None
-            self.summary["ended_at"] = utc_now()
-            self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 3)
-            if self.summary.get("start_tree") is not None:
-                if self._capture_repository_state("end_tree"):
-                    start_tree = self.summary["start_tree"]
-                    end_tree = self.summary["end_tree"]
-                    stale = start_tree != end_tree
-                    self.summary["stale"] = stale
-                    if stale:
-                        self.summary["verification_status"] = self.summary.get("status")
-                        self.summary["status"] = "stale"
-                        self.summary["exit_code"] = 3
-                else:
-                    self.summary["stale"] = None
-                    self.summary["status"] = "incomplete"
-                    self.summary["exit_code"] = 2
-            steps = self.summary["steps"]
-            if isinstance(steps, list):
-                next_index = len(steps) + 1
-                for index, step in enumerate(self.steps[next_index - 1 :], start=next_index):
-                    steps.append(
-                        {
-                            "step_id": step.step_id,
-                            "argv": list(step.argv),
-                            "status": "not_run",
-                            "started_at": None,
-                            "ended_at": None,
-                            "exit_code": None,
-                            "log": None,
-                            "error": "pipeline stopped before this step",
-                        }
-                    )
-            self._write_summary()
-            for signum, handler in previous_handlers.items():
-                signal.signal(signum, handler)
+                steps = self.summary["steps"]
+                if isinstance(steps, list):
+                    next_index = len(steps) + 1
+                    for index, step in enumerate(self.steps[next_index - 1 :], start=next_index):
+                        steps.append(
+                            {
+                                "step_id": step.step_id,
+                                "argv": list(step.argv),
+                                "status": "not_run",
+                                "started_at": None,
+                                "ended_at": None,
+                                "exit_code": None,
+                                "log": None,
+                                "error": "pipeline stopped before this step",
+                            }
+                        )
+                self._write_summary()
+            finally:
+                # Even an end-snapshot or summary-write exception must restore
+                # the caller's process-wide signal handlers.
+                for signum, handler in previous_handlers.items():
+                    signal.signal(signum, handler)
         return int(self.summary["exit_code"] if self.summary["exit_code"] is not None else 2)
 
 

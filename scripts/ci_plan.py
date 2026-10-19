@@ -31,6 +31,7 @@ def runtime_inputs(root: Path, env=None) -> dict:
     digest = hashlib.sha256()
     paths = sorted(set(git(root, "ls-files", "-z", "--cached", "--others",
                            "--exclude-standard", env=env).decode().rstrip("\0").split("\0")) - {""})
+    symlinks = [name for name in paths if (root / name).is_symlink()]
     for name in paths:
         if metadata_path(name):
             continue
@@ -43,6 +44,7 @@ def runtime_inputs(root: Path, env=None) -> dict:
             digest.update(len(value).to_bytes(8, "big"))
             digest.update(value)
     return {"version": POLICY_VERSION, "sha256": digest.hexdigest(),
+            "symlinks": symlinks,
             "metadata_exclusions": [p for p in paths if metadata_path(p)]}
 
 
@@ -156,6 +158,8 @@ def reuse_checks(root: Path, plan: dict, report: Path) -> dict:
     """Reuse runtime checks only for an ordered, prose-only continuation."""
     if plan["profile"] != "merge":
         raise ValueError("runtime reuse requires an explicit merge profile")
+    if plan["runtime_inputs"].get("symlinks"):
+        raise ValueError("runtime continuation cannot certify external repository symlink targets")
     raw = report.read_bytes()
     evidence = json.loads(raw)
     old_plan = evidence.get("plan")

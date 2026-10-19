@@ -637,6 +637,36 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(delivery.DeliveryError):
                 delivery.validate_ci(report, runner, tree["commit"])
 
+    def test_scoped_ci_requires_explicit_dev_and_recomputed_plan_with_positive_tests(self):
+        # Fabricated report data tests consumer refusal, not product execution.
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        required = delivery.ci.planned_steps(plan)
+        evidence = {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": plan,
+                    "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for s in required]}
+        report = self.root / "scoped.json"
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", return_value="{}"), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan) as resolve:
+            delivery.write_json(report, evidence)
+            with self.assertRaisesRegex(delivery.DeliveryError, "full audit"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+            resolve.return_value = {**plan, "scope": "full"}
+            with self.assertRaisesRegex(delivery.DeliveryError, "differs"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+            resolve.return_value = plan
+            evidence["steps"][0]["test_results"] = {"python_executions": [2], "python_skipped": [2]}
+            delivery.write_json(report, evidence)
+            with self.assertRaisesRegex(delivery.DeliveryError, "no executed"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+
 
 @unittest.skipUnless(sys.platform == "darwin", "native macOS signature behavior")
 class NativeSignatureTests(unittest.TestCase):

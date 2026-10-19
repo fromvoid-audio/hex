@@ -49,6 +49,8 @@ identical executable inputs and guarded toolchain/dependency identity. Every
 intervening changed path must be prose, and changed links/claims are checked.
 Reference the original runtime report, not a chain of metadata reports. Failed,
 partial, stale, zero-match or custom component results cannot be reused. Source
+continuations with repository symlinks also refuse runtime-evidence reuse;
+external targets cannot be certified by a Git-only source digest. Source
 files, assets, generated data, manifests, build scripts, policy and toolchain are
 executable inputs; only the documented prose paths are excluded. Runtime code
 must not consume these prose paths as data; such a change needs a policy/input

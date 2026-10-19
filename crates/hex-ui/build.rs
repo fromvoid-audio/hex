@@ -41,7 +41,10 @@ fn main() {
                 println!("cargo:rerun-if-changed={}", dataset.display());
             }
             let suffix = if parts[2] == "dirty" { " dirty" } else { "" };
-            println!("cargo:rustc-env=HEX_BUILD_IDENTITY={}{suffix}", &parts[0][..8]);
+            println!(
+                "cargo:rustc-env=HEX_BUILD_IDENTITY={}{suffix}",
+                &parts[0][..8]
+            );
             return;
         }
     }
