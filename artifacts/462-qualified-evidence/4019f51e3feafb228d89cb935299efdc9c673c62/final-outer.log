@@ -1,0 +1,21 @@
+[1/10] all resize release and scoped paint controls: running
+[1/10] all resize release and scoped paint controls: passed
+[2/10] original completed clip-border controls: running
+[2/10] original completed clip-border controls: passed
+[3/10] strict default UI: running
+[3/10] strict default UI: passed
+[4/10] strict feature UI: running
+[4/10] strict feature UI: passed
+[5/10] architecture: running
+[5/10] architecture: passed
+[6/10] UI style: running
+[6/10] UI style: passed
+[7/10] GPUI provenance: running
+[7/10] GPUI provenance: passed
+[8/10] dependency provenance: running
+[8/10] dependency provenance: passed
+[9/10] format: running
+[9/10] format: passed
+[10/10] diff: running
+[10/10] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/462-resize-paint-final/summary.json

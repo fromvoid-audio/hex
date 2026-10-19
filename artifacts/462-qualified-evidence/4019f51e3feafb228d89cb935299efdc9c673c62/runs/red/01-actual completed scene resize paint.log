@@ -1,0 +1,35 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.25s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 3 tests
+RESIZE_LANE_SCENE midi=false shift=false edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.026946105, s: 0.84771574, l: 0.6137255, a: 1.0 }, Edges { top: 2px (scaled), right: 2px (scaled), bottom: 2px (scaled), left: 2px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 470px (scaled) }, size: Size { 2px (scaled) × 84px (scaled) } })
+
+thread 'editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip' (264351) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1389:9:
+assertion `left == right` failed: resize must not replace whole-lane border color
+  left: Hsla { h: 0.026946105, s: 0.84771574, l: 0.6137255, a: 1.0 }
+ right: Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip ... FAILED
+RESIZE_LANE_SCENE midi=false shift=true edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.026946105, s: 0.84771574, l: 0.6137255, a: 1.0 }, Edges { top: 2px (scaled), right: 2px (scaled), bottom: 2px (scaled), left: 2px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 470px (scaled) }, size: Size { 2px (scaled) × 84px (scaled) } })
+
+thread 'editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip' (264352) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1389:9:
+assertion `left == right` failed: resize must not replace whole-lane border color
+  left: Hsla { h: 0.026946105, s: 0.84771574, l: 0.6137255, a: 1.0 }
+ right: Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }
+test editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip ... FAILED
+RESIZE_LANE_SCENE midi=true shift=false edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=true shift=false edge=Right before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+test editor::trim::resize_release_tests::resize_paint_keeps_midi_feedback_local_to_the_clip ... ok
+
+failures:
+
+failures:
+    editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip
+    editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 1.95s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

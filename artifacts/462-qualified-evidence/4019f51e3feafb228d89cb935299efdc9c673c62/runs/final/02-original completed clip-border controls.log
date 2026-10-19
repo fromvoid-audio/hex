@@ -1,0 +1,32 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.98s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+four edges clip=5 height=44 selected=true fragments=4 separator_fragments=1
+four edges clip=6 height=44 selected=true fragments=4 separator_fragments=1
+four edges clip=7 height=44 selected=true fragments=4 separator_fragments=1
+four edges clip=8 height=44 selected=true fragments=4 separator_fragments=1
+four edges clip=9 height=44 selected=true fragments=4 separator_fragments=1
+four edges clip=5 height=44 selected=true fragments=4 separator_fragments=1
+four edges clip=6 height=44 selected=true fragments=4 separator_fragments=1
+four edges clip=7 height=44 selected=false fragments=4 separator_fragments=1
+four edges clip=8 height=44 selected=true fragments=4 separator_fragments=1
+four edges clip=9 height=44 selected=true fragments=4 separator_fragments=1
+test editor::clip_border_ui_test::selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member ... ok
+four edges clip=5 height=88 selected=true fragments=4 separator_fragments=1
+four edges clip=6 height=88 selected=true fragments=4 separator_fragments=1
+four edges clip=7 height=88 selected=true fragments=4 separator_fragments=1
+four edges clip=8 height=88 selected=true fragments=4 separator_fragments=1
+four edges clip=9 height=88 selected=true fragments=4 separator_fragments=1
+four edges clip=5 height=88 selected=true fragments=4 separator_fragments=1
+four edges clip=6 height=88 selected=true fragments=4 separator_fragments=1
+four edges clip=7 height=88 selected=false fragments=4 separator_fragments=1
+four edges clip=8 height=88 selected=true fragments=4 separator_fragments=1
+four edges clip=9 height=88 selected=true fragments=4 separator_fragments=1
+test editor::clip_border_ui_test::all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1056 filtered out; finished in 1.60s
+

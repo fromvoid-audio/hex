@@ -1,0 +1,54 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.71s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 4 tests
+RESIZE_LANE_SCENE midi=false shift=false edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=false shift=false edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+
+thread 'editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip' (264745) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1497:17:
+assertion `left == right` failed
+  left: (Some(TrackId(1)), Some(ClipId(4)))
+ right: (Some(TrackId(1)), None)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip ... FAILED
+RESIZE_LANE_SCENE midi=false shift=true edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=true shift=false edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+
+thread 'editor::trim::resize_release_tests::resize_paint_keeps_midi_feedback_local_to_the_clip' (264744) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1497:17:
+assertion `left == right` failed
+  left: (Some(TrackId(5)), Some(ClipId(7)))
+ right: (Some(TrackId(5)), None)
+test editor::trim::resize_release_tests::resize_paint_keeps_midi_feedback_local_to_the_clip ... FAILED
+RESIZE_LANE_SCENE midi=false shift=false edge=Right before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+
+thread 'editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip' (264746) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1497:17:
+assertion `left == right` failed
+  left: (Some(TrackId(1)), Some(ClipId(4)))
+ right: (Some(TrackId(1)), None)
+test editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip ... FAILED
+RESIZE_LANE_SCENE midi=false shift=false edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=false shift=false edge=Right before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=false shift=true edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=false shift=true edge=Right before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=false shift=true edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=false shift=true edge=Right before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 554px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+RESIZE_LANE_SCENE midi=true shift=false edge=Left before=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } }) held=(Hsla { h: 0.0, s: 0.041666664, l: 0.09411765, a: 1.0 }, Edges { top: 0px (scaled), right: 2px (scaled), bottom: 0px (scaled), left: 0px (scaled) }, Bounds { origin: Point { x: 968px (scaled), y: 642px (scaled) }, size: Size { 2520px (scaled) × 2px (scaled) } })
+
+thread 'editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane' (264743) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1490:17:
+assertion failed: visual.debug_bounds(preview).is_none()
+test editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane ... FAILED
+
+failures:
+
+failures:
+    editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane
+    editor::trim::resize_release_tests::resize_paint_keeps_midi_feedback_local_to_the_clip
+    editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip
+    editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 8.39s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

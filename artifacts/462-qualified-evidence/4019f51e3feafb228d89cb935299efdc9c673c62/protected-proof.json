@@ -1,0 +1,22 @@
+{
+  "production_exact_nine_line_callback_removal": true,
+  "2871_original_evidence_preserved": "14f27991c613d352f3696d585ffac7624666b6b7",
+  "2871_original_checkpoint_preserved": "717e2829c9b47bd8aa7eda86dd791f48dc2e4210",
+  "not_claiming_inherited_preview_disappearance_fixed": true,
+  "crates/hex-ui/src/editor/resize_release_tests.rs": "all original bytes exact prefix",
+  "docs/resize-edge-pan.md": "all original bytes exact prefix",
+  "todo.md": "all original bytes exact prefix",
+  "AGENTS.md": "e5b4332338d62a9ae9294002d2fb359a05f6acf0bdb3e4c309867ed075fd1e66",
+  "scripts/local-ci.py": "864bf57008c9f4d333db395e374557bb5cf52218eda4cf34ac087867120f7587",
+  "Cargo.toml": "54ed59421044312ac6949e2a30ae3a609dbac0554e662f4cc62cf917075ca862",
+  "Cargo.lock": "18f8428da3e4c344a332ad68fc7061294b952353027fd7171e0858d040282304",
+  "crates/hex-ui/src/editor/render.rs": "9d084ee7c4c2cfc1c5cdf1cca8ad7672c7d804066e4ef8f4444c6d662db98a55",
+  "crates/hex-ui/src/editor/trim.rs": "4a458731ffb3a70b6fb4eb65c527377bba3403d1bf9e404b589108bc0c6473b1",
+  "crates/hex-ui/src/editor/drag_autoscroll.rs": "8b4335e9283079b074634ae8d1dff78035da53cf8d52dc6695d500463401d8db",
+  "crates/hex-ui/src/editor/controller.rs": "ab3ec4660fd1948117a04e89dfd68be62bff18bfec7b9d58a78026e5fcd051ae",
+  "crates/hex-ui/src/editor/clip_border_ui_test.rs": "e993b70b5cbd0070a75cb6da520e1721359ee0d4e0ce3674c2ae3d56d26af414",
+  "crates/hex-project/src/edit.rs": "0e3eef0230c80e1b790e2ed0dadb23f6dcaebdaab7da46c6bc834841496a06e9",
+  "crates/hex-project/src/midi.rs": "0ff89e9c191ba3ddcaa08255d75b1242d9d8fba9676cf988b2323fd6c5e6dede",
+  "crates/hex-session/src/lib.rs": "aa48c8191248ccd4ad5aed165fb5e006c1a4400bd93f0629f8ef368e476651b4",
+  "crates/hex-engine/src/lib.rs": "fe9f308d7c3fb1c0e3ced842fc883b215b5f187a793bab2af135328ce9bbb19d"
+}

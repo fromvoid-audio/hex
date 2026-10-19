@@ -1,0 +1,42 @@
+{
+  "crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "before": {
+      "git_blob": "f6184865391b5a0557cf4e8914a4c076d2a29b7e",
+      "sha256": "a78f3c1d063c0cf3b5314919774ebe25ec015ba7f89b468a35c0ad1f7acb21e7"
+    },
+    "after": {
+      "git_blob": "6a0b4b38b040ef723058ea0960ed0d6ef4f0af24",
+      "sha256": "830faa922299b96bdf4e7bdd865effd72d31bff84233ad873fc88f37707ab69a"
+    }
+  },
+  "crates/hex-ui/src/editor/tracks.rs": {
+    "before": {
+      "git_blob": "5b0076281fb3d6264bea8bb39341eef0ef2ad739",
+      "sha256": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9"
+    },
+    "after": {
+      "git_blob": "0ebfa689c534e346daa863b912a098c496231e22",
+      "sha256": "bdd41b0ac2505a77399f18c657bec9dbe6b856a45d2fd37a060db09a94e11d9e"
+    }
+  },
+  "docs/resize-edge-pan.md": {
+    "before": {
+      "git_blob": "9c4812af55f436480b683e4c566948c135fabdaf",
+      "sha256": "7b19e2f4bec06e3182f18948225fc6339f6bc29363ba4086bb39e5586ab2d715"
+    },
+    "after": {
+      "git_blob": "8197779ff31c6c034757b016ccb2ba65d9c8b6b2",
+      "sha256": "e3894ed798a02387802e2b22a43b2385abb88f549eee369d753f73060ab255f6"
+    }
+  },
+  "todo.md": {
+    "before": {
+      "git_blob": "8be4cfbef77417aaa44f561653202e25e2e7f26d",
+      "sha256": "c1724fc69b72baee4bd7f3d43216638cf06c2a39e6a683da413871cd6e517e36"
+    },
+    "after": {
+      "git_blob": "a743d1d36dc320d8e6ac0e7b9765aa127e4b684e",
+      "sha256": "cee1d09cbf6c55130609fec9738ff050ef35910ad9cb1aed66f665585ca51983"
+    }
+  }
+}

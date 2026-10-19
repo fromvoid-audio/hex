@@ -1,0 +1,44 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.63s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 4 tests
+
+thread 'editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane' (264548) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1385:17:
+assertion `left == right` failed
+  left: Some(TrackId(5))
+ right: Some(TrackId(1))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane ... FAILED
+
+thread 'editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip' (264551) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1385:17:
+assertion `left == right` failed
+  left: Some(TrackId(5))
+ right: Some(TrackId(1))
+test editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip ... FAILED
+
+thread 'editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip' (264550) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1385:17:
+assertion `left == right` failed
+  left: Some(TrackId(5))
+ right: Some(TrackId(1))
+test editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip ... FAILED
+
+thread 'editor::trim::resize_release_tests::resize_paint_keeps_midi_feedback_local_to_the_clip' (264549) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1385:17:
+assertion `left == right` failed
+  left: Some(TrackId(9))
+ right: Some(TrackId(5))
+test editor::trim::resize_release_tests::resize_paint_keeps_midi_feedback_local_to_the_clip ... FAILED
+
+failures:
+
+failures:
+    editor::trim::resize_release_tests::resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane
+    editor::trim::resize_release_tests::resize_paint_keeps_midi_feedback_local_to_the_clip
+    editor::trim::resize_release_tests::resize_paint_keeps_normal_audio_feedback_local_to_the_clip
+    editor::trim::resize_release_tests::resize_paint_keeps_shift_audio_feedback_local_to_the_clip
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.71s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,23 @@
+commit 4019f51e3feafb228d89cb935299efdc9c673c62
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 16:38:42 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 16:38:42 2026 +0000
+
+    fix(ui): keep resize accent feedback local to clips
+
+commit 717e2829c9b47bd8aa7eda86dd791f48dc2e4210
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 16:33:08 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 16:33:08 2026 +0000
+
+    wip(ui): preserve resize paint fix and inherited cancel scene diagnostic
+
+commit 5e2f2836fb9f2889890f06ca4e81e0636f9ba16c
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 16:23:10 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 16:23:10 2026 +0000
+
+    test(ui): reproduce whole-lane audio resize accent in completed scene

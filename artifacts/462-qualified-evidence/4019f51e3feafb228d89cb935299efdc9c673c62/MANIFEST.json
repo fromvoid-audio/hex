@@ -1,0 +1,210 @@
+{
+  "HANDOFF.md": {
+    "sha256": "85953c832990cabff6dd5b58c5a1f8e4325498a1bb85477471b0ba7bdc787fb1",
+    "size": 5596
+  },
+  "baseline-cancel-diagnostic-outer.log": {
+    "sha256": "1694bf874504c03a30ac531dc37bd9a16126fe1173e940f90bd4a0a4bb364196",
+    "size": 287
+  },
+  "baseline-scene-probe-outer.log": {
+    "sha256": "9b9eec92ff7e2bc37f1570580c9454eedc8cd977ccea5ca4f526cd1ca4fcf4d2",
+    "size": 255
+  },
+  "final-outer.log": {
+    "sha256": "ae46e29ab8761666a313463556e21f83b69c754a815e534f684b0d9f0d14d0c9",
+    "size": 791
+  },
+  "green-outer.log": {
+    "sha256": "a49ba2dc8dc498e2b998cb9a776d17d4f84b5ffca4cd751b3aec606eea1e97c4",
+    "size": 212
+  },
+  "green-v2-outer.log": {
+    "sha256": "aea3739b3e75d6f28442edf0b95f8374886004b5f25904b41fe88191ccacc5a2",
+    "size": 215
+  },
+  "green-v3-outer.log": {
+    "sha256": "ec3cf77ec5709b5d737614545f998d7a1e2def8dadfc72405d0c5ddb05a017f3",
+    "size": 215
+  },
+  "orchestration/310-approved-guard-runner.py": {
+    "sha256": "ba6ab952481fde1bbea79d3168393b8ef8e0552d6fbc62ec710a3800ed1abd33",
+    "size": 71789
+  },
+  "orchestration/462-component.py": {
+    "sha256": "8d68cbac7e1f83ceac41ce39347666f812c1325e94e9d5d4c05ea4f660db17cd",
+    "size": 575
+  },
+  "orchestration/seal-462.py": {
+    "sha256": "eb5a812682f3275a0c597225760042aef9822edb8925382d83c23af4a9db658e",
+    "size": 5881
+  },
+  "preserved-2871-diagnostics/after-green-v3-wip.patch": {
+    "sha256": "3bb5016c990ac92a9d360d39da8b52b7d189b031f1d41a6020eb732f45afadd6",
+    "size": 16665
+  },
+  "preserved-2871-diagnostics/baseline-scene-probe-tests.rs": {
+    "sha256": "c3056e901381c165dd1caeb443daa3ffe3246bd8a7f063b0daa794ba12f44dd6",
+    "size": 61308
+  },
+  "preserved-2871-diagnostics/baseline-scene-probe-tracks.rs": {
+    "sha256": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9",
+    "size": 92710
+  },
+  "protected-proof.json": {
+    "sha256": "9cb25b99cafebf392a6bf4e9d7c0fcaa6b3384198f8ec497e6d886a707236ae7",
+    "size": 1808
+  },
+  "red-outer.log": {
+    "sha256": "56945da327ae9e97f2622ea37fc2e84c21d2606b6891acfab0ae0d87797a683e",
+    "size": 192
+  },
+  "runs/baseline-cancel-diagnostic/01-same expanded cancellation baseline unrelated paint assertions excluded.log": {
+    "sha256": "195ed2e1ce6a395d225c7c6f76967682b8f21d764c80df06755cc78e1611be12",
+    "size": 7246
+  },
+  "runs/baseline-cancel-diagnostic/summary.json": {
+    "sha256": "6acbdb50980de324370a94977676fc14768c1ba3b21f43b6450794254d0f91fc",
+    "size": 13150
+  },
+  "runs/baseline-scene-probe/01-same MIDI focus baseline scene paint versus debug metadata.log": {
+    "sha256": "026443810c9997ba8bf79bd8cd7778a53756e362d436e199da8750f91dff5067",
+    "size": 2304
+  },
+  "runs/baseline-scene-probe/summary.json": {
+    "sha256": "e9a1e989764d9c92676a30d386e59ed7b8f84aa3a1b95604e4729b4ff970781f",
+    "size": 13093
+  },
+  "runs/final/01-all resize release and scoped paint controls.log": {
+    "sha256": "685bb3167343c07542af23f388bdc0d0742d0492823932f1e598278f1abb989d",
+    "size": 21397
+  },
+  "runs/final/02-original completed clip-border controls.log": {
+    "sha256": "7e3c0ac120eda88a7840f6ba71a88a3e0392593843a128aa903ce0f72ae64347",
+    "size": 2211
+  },
+  "runs/final/03-strict default UI.log": {
+    "sha256": "7e45f86a7e9a895230d2e5241aef97f417532f1624170a2a098ee260d874023a",
+    "size": 360
+  },
+  "runs/final/04-strict feature UI.log": {
+    "sha256": "f508a3ca415c01c96b80c75bf13857637f38786a38817cd259539b45c8cb56d8",
+    "size": 360
+  },
+  "runs/final/05-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "runs/final/06-UI style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "runs/final/07-GPUI provenance.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "runs/final/08-dependency provenance.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "runs/final/09-format.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final/10-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final/summary.json": {
+    "sha256": "855c249d3e5b7d50dd32b22b823b85dde312b4dcf7f6eef09a21d319cc964a4c",
+    "size": 17354
+  },
+  "runs/green-v2/01-actual completed scene resize paint controls.log": {
+    "sha256": "a8fcff7d27c35844a3c61091fbb9b6d043dd0685f406cfdbec968bd8813529d3",
+    "size": 9652
+  },
+  "runs/green-v2/summary.json": {
+    "sha256": "46f77b81db39c2e9ca0231674af9d1aab021ea484a9e4cbcdce9ff5b11352a71",
+    "size": 13139
+  },
+  "runs/green-v3/01-actual completed scene resize paint controls.log": {
+    "sha256": "e276e4a1f906855c9ee1bae238cc08656055e7399e97ca00ae0248ad8b73c0bb",
+    "size": 14016
+  },
+  "runs/green-v3/summary.json": {
+    "sha256": "90aedb0894cba844a203afbf0f2177e4039801ad03311ed9c9ded3f15d9327b4",
+    "size": 13139
+  },
+  "runs/green/01-actual completed scene resize paint controls.log": {
+    "sha256": "eccc6b674719cd8a1cad02f37a87e2f293f50c98f3b974ce553f659d27f9bb5f",
+    "size": 2508
+  },
+  "runs/green/summary.json": {
+    "sha256": "8a3ab7d8186e4eb8ae1be8fe8f911a035056d88ee40ecd53ff4e8dbe3334dbce",
+    "size": 13130
+  },
+  "runs/red/01-actual completed scene resize paint.log": {
+    "sha256": "2cc97f23201c7090031a7f98f38e02bc04ac99653243b4299eab0840b207f108",
+    "size": 4292
+  },
+  "runs/red/summary.json": {
+    "sha256": "d2a6a758c10eb1290ba6e530cbb5421291851e8fa2bfd202ea7db6db84d7c02a",
+    "size": 12923
+  },
+  "runs/scoped-green/01-actual paint and logical cancellation scope.log": {
+    "sha256": "f82fc46bf877dda473fcbc580a6e9b238a48d7a1750e67a18c075dfee2aaef9b",
+    "size": 15061
+  },
+  "runs/scoped-green/summary.json": {
+    "sha256": "bb100243fbfa16d9dd762c41be8248fb4d93bd1ce950dde3a3163345d8375736",
+    "size": 12960
+  },
+  "scoped-green-outer.log": {
+    "sha256": "12204acf0221cb32d530eaae0b8b8e26f755b47cb9e7dfb1c2eccd8664d0442a",
+    "size": 217
+  },
+  "source-history.txt": {
+    "sha256": "e6175b7f53246f866ebfcbb91d46c8c43c4c7c38712b0fa81054f2a902b7d83f",
+    "size": 884
+  },
+  "source-identities.json": {
+    "sha256": "525c8027d22bd0ca021e71d75b90b239fede3027be4267e8db759f0c662c62d7",
+    "size": 1503
+  },
+  "source.patch": {
+    "sha256": "6b21026e5496d251fc6339f8d9a4f18c4857ed250bfea4cf68b2f608ea961a7e",
+    "size": 17331
+  },
+  "source/after/crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "sha256": "830faa922299b96bdf4e7bdd865effd72d31bff84233ad873fc88f37707ab69a",
+    "size": 63106
+  },
+  "source/after/crates/hex-ui/src/editor/tracks.rs": {
+    "sha256": "bdd41b0ac2505a77399f18c657bec9dbe6b856a45d2fd37a060db09a94e11d9e",
+    "size": 92365
+  },
+  "source/after/docs/resize-edge-pan.md": {
+    "sha256": "e3894ed798a02387802e2b22a43b2385abb88f549eee369d753f73060ab255f6",
+    "size": 8593
+  },
+  "source/after/todo.md": {
+    "sha256": "cee1d09cbf6c55130609fec9738ff050ef35910ad9cb1aed66f665585ca51983",
+    "size": 401375
+  },
+  "source/before/crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "sha256": "a78f3c1d063c0cf3b5314919774ebe25ec015ba7f89b468a35c0ad1f7acb21e7",
+    "size": 51601
+  },
+  "source/before/crates/hex-ui/src/editor/tracks.rs": {
+    "sha256": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9",
+    "size": 92710
+  },
+  "source/before/docs/resize-edge-pan.md": {
+    "sha256": "7b19e2f4bec06e3182f18948225fc6339f6bc29363ba4086bb39e5586ab2d715",
+    "size": 7068
+  },
+  "source/before/todo.md": {
+    "sha256": "c1724fc69b72baee4bd7f3d43216638cf06c2a39e6a683da413871cd6e517e36",
+    "size": 400075
+  }
+}
