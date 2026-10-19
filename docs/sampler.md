@@ -1480,3 +1480,35 @@ exact captured-source/current-history inventory, original-rate loading and
 publication/replacement/terminal retirement must then compose together. No
 Sampler registration, playable Service request, native app or musical acceptance
 is implied by the reader component.
+
+### Registered-family compiled slots (transport integration in progress)
+
+The native compiled reference now has two bounded slots in the existing
+`SessionExportFamily` record lock. There is no per-record lock or second
+registry. Its optional record bodies and the family's persistent retirement
+field are inline and included in the existing constructor's actual body quote.
+This changes the quoted layout even for a family without native slots; it does
+not raise a limit. Actual snapshot/read vector capacities remain checked.
+
+Insertion preserves a producer reader on busy/full/foreign/stale refusal. A
+registered duplicate moves directly into an already reserved same-family field;
+a lost single CAS returns Busy, preserving the source and target reservation.
+Public queries return scalar metadata, not an owning revision/Playback. Inventory
+visits both physical paired handles, and still refuses an omitted constructor
+root. Claim/completion stamps correlate actual fields; they grant no origin or
+publication authority.
+
+Compiled cleanup moves into the enclosing family's persistent destination under
+the existing writer, releases that writer, then latches pending before dropping
+the reader. The registered outer custodian remains responsible for retaining the
+first panic and failed charge. An interrupted step cannot become a vacancy or
+repeat its destructive action; the next inventory/cleanup refuses. This is not a
+new mutex certificate: the accepted existing family exclusion and thread costs
+remain required, and no all-blocking-paths allocation claim is made.
+
+These concrete records are not yet the four native Service queues. Legacy
+Service startup/Event Playback, request/event/export/seek payloads, source
+association, complete original-bank compiler bridge and joint publication are
+still separate unfinished parts of the same playable Sampler deliverable. The
+current component tests use a real existing nonempty compiled audio-clip owner;
+they do not claim loaded Sampler PCM or native Service admission.

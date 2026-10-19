@@ -21,6 +21,7 @@ pub struct SessionExportFamily {
     identity: u64,
     records: RwLock<SnapshotExportRecords>,
     abandoned: AtomicBool,
+    retiring_compiled: native_transport::CompiledRetirement,
 }
 /// Control-only structural inventory guard. No records, model, waveform owner
 /// or mutable payload escapes. Atomics for ACK/derive/abandon are NOT frozen.
@@ -42,6 +43,7 @@ pub struct SessionExportFamily {
 /// ```
 pub struct SnapshotFamilyInventoryGuard<'a> {
     records: RwLockReadGuard<'a, SnapshotExportRecords>,
+    retiring_compiled: &'a native_transport::CompiledRetirement,
 }
 impl SnapshotFamilyInventoryGuard<'_> {
     pub fn inventory_revision(&self) -> u64 {
@@ -58,7 +60,8 @@ impl SnapshotFamilyInventoryGuard<'_> {
         &'a self,
         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
     ) -> Result<(), hex_engine::AudioStorageError> {
-        self.records.visit_selected_storage_on_control(ledger)
+        self.records.visit_selected_storage_on_control(ledger)?;
+        self.retiring_compiled.visit(ledger)
     }
 }
 impl SessionExportFamily {
@@ -92,13 +95,17 @@ impl SessionExportFamily {
             identity,
             records,
             abandoned,
+            retiring_compiled,
         } = self;
         let _: (&u64, &AtomicBool) = (identity, abandoned);
         let records = records.try_read().map_err(|error| match error {
             TryLockError::WouldBlock => ExportRecordError::Busy,
             TryLockError::Poisoned(_) => ExportRecordError::Stale,
         })?;
-        Ok(SnapshotFamilyInventoryGuard { records })
+        Ok(SnapshotFamilyInventoryGuard {
+            records,
+            retiring_compiled,
+        })
     }
     pub fn try_new_on_control(
         limits: SnapshotExportReservation,
@@ -120,9 +127,114 @@ impl SessionExportFamily {
                 identity: records.family,
                 records: RwLock::new(records),
                 abandoned: AtomicBool::new(false),
+                retiring_compiled: native_transport::CompiledRetirement::default(),
             },
             key,
         ))
+    }
+    /// Same registered family and SAME record lock. Inline optional storage is
+    /// already part of the ordinary constructor's actual body quote; no backing,
+    /// lock or registry is allocated when enabling these two bounded slots.
+    pub fn try_new_native_on_control(
+        limits: SnapshotExportReservation,
+    ) -> Result<(Self, SnapshotProducerKey), ExportRecordError> {
+        let (mut family, key) = Self::try_new_on_control(limits)?;
+        family
+            .records
+            .get_mut()
+            .map_err(|_| ExportRecordError::Stale)?
+            .native_compiled = Some(native_transport::NativeCompiledRecords::new(
+            family.identity,
+        ));
+        Ok((family, key))
+    }
+    fn with_native_records<R>(
+        &self,
+        key: &SnapshotProducerKey,
+        operation: impl FnOnce(
+            &mut native_transport::NativeCompiledRecords,
+        ) -> Result<R, ExportRecordError>,
+    ) -> Result<R, ExportRecordError> {
+        self.validate_producer_on_control(key)?;
+        let mut records = self
+            .records
+            .try_write()
+            .map_err(|_| ExportRecordError::Busy)?;
+        self.validate_producer_on_control(key)?;
+        let revision = records
+            .revision
+            .checked_add(1)
+            .ok_or(ExportRecordError::Exhausted)?;
+        let native = records
+            .native_compiled
+            .as_mut()
+            .ok_or(ExportRecordError::Stale)?;
+        let result = operation(native)?;
+        records.revision = revision;
+        Ok(result)
+    }
+    pub fn reserve_compiled_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+    ) -> Result<NativeCompiledStamp, ExportRecordError> {
+        self.with_native_records(key, |records| records.reserve())
+    }
+    /// Caller retains its actual producer payload unchanged on refusal. This
+    /// fixed transfer is not constructor/root/publication admission.
+    pub fn insert_compiled_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+        stamp: NativeCompiledStamp,
+        source: &mut Option<hex_engine::AudioCompiledRevision>,
+    ) -> Result<(), ExportRecordError> {
+        self.with_native_records(key, |records| records.install(stamp, source))
+    }
+    /// Duplicate straight into an already reserved field in this same family.
+    /// A CAS collision returns Busy; both source and target remain rooted.
+    pub fn duplicate_compiled_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+        source: NativeCompiledStamp,
+        target: NativeCompiledStamp,
+    ) -> Result<(), ExportRecordError> {
+        self.with_native_records(key, |records| records.duplicate(source, target))
+    }
+    pub fn claim_compiled_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+        stamp: NativeCompiledStamp,
+    ) -> Result<(), ExportRecordError> {
+        self.with_native_records(key, |records| records.claim(stamp))
+    }
+    pub fn complete_compiled_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+        stamp: NativeCompiledStamp,
+    ) -> Result<(), ExportRecordError> {
+        self.with_native_records(key, |records| records.complete(stamp))
+    }
+    pub fn retire_compiled_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+        stamp: NativeCompiledStamp,
+    ) -> Result<(), ExportRecordError> {
+        self.with_native_records(key, |records| records.retire(stamp))
+    }
+    /// Scalar read only. No public callback can clone an unrooted owner.
+    pub fn compiled_metadata_on_control(
+        &self,
+        stamp: NativeCompiledStamp,
+    ) -> Result<hex_engine::AudioPreparedRevisionMetadata, ExportRecordError> {
+        let records = self
+            .records
+            .try_read()
+            .map_err(|_| ExportRecordError::Busy)?;
+        Ok(records
+            .native_compiled
+            .as_ref()
+            .ok_or(ExportRecordError::Stale)?
+            .borrowed(stamp)?
+            .metadata())
     }
     pub fn insert_on_control(
         &self,
@@ -260,7 +372,10 @@ impl SessionExportFamily {
             .records
             .try_read()
             .map_err(|_| ExportRecordError::Busy)?;
-        Ok(read(SnapshotFamilyQueries { records: &records }))
+        Ok(read(SnapshotFamilyQueries {
+            records: &records,
+            retiring_compiled: &self.retiring_compiled,
+        }))
     }
     /// Called only by the already-registered persistent control adapter. One
     /// eligible snapshot owner Drop maximum; no guard waits for UI. Its caller
@@ -274,6 +389,30 @@ impl SessionExportFamily {
         };
         if self.abandoned.load(Ordering::Acquire) {
             records.close_on_control()?;
+        }
+        if !self.retiring_compiled.vacant() {
+            return Err(ExportRecordError::Stale);
+        }
+        if let Some(native) = &mut records.native_compiled {
+            if self.abandoned.load(Ordering::Acquire) {
+                native.close();
+            }
+            if native.begin_cleanup(&mut self.retiring_compiled)? {
+                // Actual persistent destination, then release the family writer
+                // BEFORE capability destruction. Outer &mut custody still holds.
+                drop(records);
+                self.retiring_compiled.release();
+                let records = self
+                    .records
+                    .get_mut()
+                    .map_err(|_| ExportRecordError::Stale)?;
+                records
+                    .native_compiled
+                    .as_mut()
+                    .ok_or(ExportRecordError::Stale)?
+                    .finish_cleanup(&mut self.retiring_compiled)?;
+                return Ok(SnapshotFamilyCleanup::Pending);
+            }
         }
         records.collect_releases_on_control()?;
         if records
@@ -298,7 +437,12 @@ impl SessionExportFamily {
             drop(records.snapshots[index].snapshot.take());
             records.snapshots[index].cleanup_started = false;
         }
-        if records.closed
+        if self.retiring_compiled.vacant()
+            && records
+                .native_compiled
+                .as_ref()
+                .is_none_or(|native| native.disposed())
+            && records.closed
             && records
                 .snapshots
                 .iter()
@@ -317,6 +461,7 @@ impl SessionExportFamily {
 /// No records/owners are extractable, including through a held seal scope.
 pub struct SnapshotFamilyQueries<'a> {
     records: &'a SnapshotExportRecords,
+    retiring_compiled: &'a native_transport::CompiledRetirement,
 }
 impl SnapshotFamilyQueries<'_> {
     /// Actual nested records while the enclosing family read guard stays held.
@@ -326,7 +471,8 @@ impl SnapshotFamilyQueries<'_> {
         &'a self,
         ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
     ) -> Result<(), hex_engine::AudioStorageError> {
-        self.records.visit_selected_storage_on_control(ledger)
+        self.records.visit_selected_storage_on_control(ledger)?;
+        self.retiring_compiled.visit(ledger)
     }
 
     pub fn inventory_revision(&self) -> u64 {

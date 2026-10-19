@@ -55,9 +55,13 @@ impl SnapshotExportRecords {
             closed,
             snapshots,
             reads,
+            native_compiled,
         } = self;
         let _: (&u64, &u64, &bool) = (family, revision, closed);
         self.visit_backings_on_control(ledger)?;
+        if let Some(records) = native_compiled {
+            records.visit(ledger)?;
+        }
         for SnapshotRecord {
             generation,
             snapshot,

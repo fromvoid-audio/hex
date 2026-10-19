@@ -8,6 +8,14 @@ static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
 
 mod event;
 mod family;
+// Record transitions are independent of the platform exclusion primitive. The
+// existing family supplies structural exclusion; Service wiring is in progress.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "native Service transport integration in progress")
+)]
+mod native_transport;
+pub use native_transport::CompiledStamp as NativeCompiledStamp;
 mod storage;
 mod transport;
 mod worker_control;
@@ -89,6 +97,7 @@ pub struct SnapshotExportRecords {
     closed: bool,
     snapshots: Vec<SnapshotRecord>,
     reads: Vec<ReadRecord>,
+    native_compiled: Option<native_transport::NativeCompiledRecords>,
 }
 /// A scoped read surface; even the underlying ViewState cannot be extracted.
 /// Copies are only borrowed queries, not registered readers or owners.
@@ -256,6 +265,7 @@ impl SnapshotExportRecords {
             closed: false,
             snapshots,
             reads,
+            native_compiled: None,
         })
     }
     pub fn inventory_revision(&self) -> u64 {
