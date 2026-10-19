@@ -1,0 +1,17 @@
+{
+  "source": "13bd9fa3b3ba852a2f80cc9f2356f99bf8e9d4b1",
+  "tree": "9bde79d0ff94a9665baa271b7b347eb332035123",
+  "base": "770252f6c6b9461329de6cee50e37fe5f88f5492",
+  "steps": 13,
+  "duration_seconds": 127.407,
+  "suites": {
+    "01-storage-all": 125,
+    "02-model-audio-view": 22,
+    "03-ui-default-pure": 4,
+    "04-ui-feature-controls": 7
+  },
+  "note": "four pure UI cases intentionally run in both configurations; no sum-as-unique claim",
+  "summary_sha256": "647b7088a08ee298a80c176e2919ce521f5321a4f24baa6b65bd017ca5da752e",
+  "content_sha256": "e09c9011de0ae31a1417815a01a2a437aae14d05cab2cc8525c9e7eb111e969e",
+  "kind": "source-only component; not prospective full21/native/merge"
+}

@@ -1,0 +1,22 @@
+{
+  "crates/hex-storage/src/audio_edit.rs": {
+    "before_sha256": "b4a5f8eda1528a1458b01d124d2a1a43227703c022287089762f89caf2661cea",
+    "after_sha256": "675e98bd74351f0c5842e9cd89b9def015d72efe8b46a99e6775b07659e3f87f",
+    "bytes": 13521
+  },
+  "crates/hex-storage/tests/audio_view.rs": {
+    "before_sha256": "16d557867e41ad265a710af80ba06d21d47c9f83350819e2717ba90baf329681",
+    "after_sha256": "df6bd4ad644560bb6b1fc939fdb5390a912a1aa2c6589455311c55c918924f25",
+    "bytes": 11299
+  },
+  "crates/hex-ui/src/editor/arrangement_audio_panel.rs": {
+    "before_sha256": "040624dc50c68ade9a1eaf73297fea9e0b79eff0cb93bd94bd30faa3d626e12c",
+    "after_sha256": "82ea1cca7a5b52a93b071a0e30c67000d517360798454408005c713c0f09415f",
+    "bytes": 40899
+  },
+  "docs/audio-view-model.md": {
+    "before_sha256": "02edaa9c95f185d5f68787c1efa82adfa09aec5c531129ffae9bed23ea713362",
+    "after_sha256": "dfc068aa4b9a0ac5d7f3a483a30acd5a90825b176a3460d110a8557f6c5f7e52",
+    "bytes": 8704
+  }
+}

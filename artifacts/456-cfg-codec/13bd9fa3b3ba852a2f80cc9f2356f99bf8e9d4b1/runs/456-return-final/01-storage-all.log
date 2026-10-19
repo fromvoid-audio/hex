@@ -1,0 +1,247 @@
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.35s
+     Running unittests src/lib.rs (target/debug/deps/hex_storage-457c375e3b9af02a)
+
+running 44 tests
+test files::tests::dangling_symlink_destination_is_a_collision_and_remains_intact ... ok
+test files::tests::legacy_token_checks_original_schema_bytes_instead_of_migrated_encoding ... ok
+test files::tests::opaque_gate_state_survives_project_save_and_load ... ok
+test files::tests::opaque_compressor_state_survives_project_save_and_load ... ok
+test files::tests::opaque_auto_pan_state_survives_project_save_and_load ... ok
+test files::tests::opaque_saturator_state_survives_project_save_and_load ... ok
+test files::tests::postpublication_failure_keeps_complete_loadable_project_and_explains_outcome ... ok
+test journal::tests::crash_child ... ok
+test files::tests::token_preserves_exact_loaded_bytes_and_detects_equivalent_json_reformatting ... ok
+
+running 1 test
+
+running 1 test
+test journal::tests::foreign_lock_files_and_cross_process_contention_preserve_checkpoint ... ok
+test journal::tests::owned_lock_success_and_validation_error_release_inherited_descriptions ... ok
+test journal::tests::latest_slot_has_no_history_and_old_owner_cannot_delete_newer_project ... ok
+
+running 1 test
+test journal::tests::prepublication_failure_preserves_old_checkpoint_and_postpublication_warning_adopts_new_bytes ... ok
+test journal::tests::abrupt_child_exit_during_staging_and_after_publication_leaves_loadable_checkpoint ... ok
+test journal::tests::unlock_failure_reports_actual_state_and_preserves_original_errors ... ok
+test preset::tests::complete_maximum_opaque_payload_roundtrips_without_version_rewriting ... ok
+test preset::tests::create_new_collision_missing_and_oversized_files_are_safe ... ok
+test files::tests::token_loading_and_comparison_refuse_invalid_or_oversized_documents ... ok
+test replacement::tests::formatting_change_conflicts_without_touching_target_or_creating_recovery ... ok
+test replacement::tests::injected_precommit_failure_leaves_old_target_and_published_recovery ... ok
+test replacement::tests::postcommit_sync_failure_returns_adoptable_token_and_recovery_path ... ok
+test replacement::tests::replacement_and_recovery_preserve_existing_basic_mode ... ok
+test replacement::tests::replacement_publishes_exact_recovery_and_returns_new_token ... ok
+test replacement::tests::repeated_replacement_retains_only_the_most_recent_prior_generation ... ok
+test replacement::tests::target_and_sidecar_symlinks_are_refused_without_following_or_replacing ... ok
+test journal::tests::unrecognized_truncated_oversized_wrong_binding_and_symlinks_are_preserved ... ok
+test replacement::tests::unrelated_target_binding_and_long_sidecar_name_are_refused ... ok
+test preset::tests::malformed_unknown_newer_and_unbounded_envelopes_refuse ... ok
+test schema::gain_touch::tests::proposed_trim_fragment_roundtrip_retains_original_held_event_identity ... ok
+test schema::gain_touch::tests::empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refuse_loss ... ok
+test schema::gain_touch::tests::strict_fields_context_events_epochs_and_order_refuse_before_adoption ... ok
+test schema::gain_touch::tests::span_roundtrip_preserves_canonical_value_through_schema22_and_current_writer ... ok
+test replacement::tests::unknown_or_malformed_recovery_files_are_preserved_byte_for_byte ... ok
+test schema::host_gain::tests::main_touch_shapes_and_partial_mixed_duplicate_hybrids_are_distinct ... ok
+test tuning_library::tests::library_roundtrip_rename_duplicate_and_full_refusal ... ok
+test tuning_library::tests::preserves_corrupt_slots_and_existing_exports_and_bounds_reads ... ok
+test schema::return_feeds::tests::typed_candidate_serialization_roundtrips_into_canonical_state ... ok
+test tuning_library::tests::review_create_new_export_does_not_require_hardlinks_or_replace_existing_files ... ok
+test tuning_library::tests::review_final_duplicate_skips_preserved_dangling_symlink_slots ... ok
+test tuning_library::tests::review_followup_nonregular_preset_child ... ok
+test schema::host_gain::tests::published_branch23_encoder_remains_readable_without_replacing_current_writer ... ok
+test tuning_library::tests::review_followup_symlink_preset_preserves_the_target ... ok
+test schema::gain_touch::tests::decoder_limits_count_endpoints_and_base_points_together ... ok
+test tuning_library::tests::review_followup_fifo_preset_never_blocks_the_worker ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/appearance.rs (target/debug/deps/appearance-a77c84e1538bc592)
+
+running 2 tests
+test schema26_defaults_and_strict_appearance_validation ... ok
+test track_colors_and_both_clip_domains_roundtrip_with_history_and_copies ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/audio_edit.rs (target/debug/deps/audio_edit-395c7a2cbffd1de2)
+
+running 2 tests
+test musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bounds ... ok
+test schema29_shapes_preserve_events_appearance_names_and_strict_migrations ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/audio_events.rs (target/debug/deps/audio_events-f40f50e1b0d0020f)
+
+running 2 tests
+test events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references ... ok
+test event_serialization_respects_the_existing_document_byte_limit ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+     Running tests/audio_view.rs (target/debug/deps/audio_view-211d72cf73db5b33)
+
+running 6 tests
+test current32_placement_keeps_required_tuning_manifest_and_refuses_old31 ... ok
+test exhausted_once_consumed_cursor_and_signed_boundary_roundtrip_exactly ... ok
+test once_consumed_cursor_and_selected_root_offset_convert_below_single_signed_range ... ok
+test current_format_rejects_missing_placement_phase_clock_and_unknown_field ... ok
+test current_format_audio_placement_roundtrips_once_and_repeat_without_saved_origin ... ok
+test projection_codec_matches_signed_model_endpoints_and_refuses_malformed_origins ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/beats_warp.rs (target/debug/deps/beats_warp-18c8adc24a7e0288)
+
+running 1 test
+test beats_clip_state_roundtrips_and_each_warp_toggle_has_one_undo_step ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/clip_names.rs (target/debug/deps/clip_names-16aa4b9d73265db4)
+
+running 2 tests
+test names_preserve_case_history_copies_and_storage_in_all_clip_domains ... ok
+test schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25 ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/device_assets.rs (target/debug/deps/device_assets-a889886f619de3fe)
+
+running 4 tests
+test unresolved_stale_or_refused_asset_candidates_preserve_canonical_state_and_redo ... ok
+test superseded_alpha30_variants_refuse_without_rewriting_user_files ... ok
+test device_asset_binding_roundtrips_history_and_all_device_owners_without_payload_branches ... ok
+test device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bindings ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/gain_envelope.rs (target/debug/deps/gain_envelope-76c1e272c400cdfc)
+
+running 5 tests
+test new_writer_uses_complete_schema_even_without_lanes_or_feeds ... ok
+test schema21_roundtrip_retains_every_lane_feed_send_provenance_and_opaque_payload ... ok
+test schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaque_states ... ok
+test schema24_combined_model_roundtrip_keeps_trimmed_devices_routes_automation_and_opaque_data ... ok
+test strict_new_lane_fields_order_modes_roles_limits_and_backports_refuse ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/musical_routing.rs (target/debug/deps/musical_routing-a3bbe684073a3903)
+
+running 3 tests
+test schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims ... ok
+test private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds ... ok
+test state_table_requires_exact_audio_id_bijection_and_strict_nullable_fields ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/persistence.rs (target/debug/deps/persistence-c158500b6de11d55)
+
+running 26 tests
+test invalid_host_input_gain_refuses_loading ... ok
+test literal_schema_eleven_migrates_session_midi_and_stop_cells ... ok
+test host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain ... ok
+test eq8_nondefault_independent_banks_roundtrip_as_generic_opaque_state ... ok
+test literal_schema_twelve_migrates_session_audio_cell_and_asset_window ... ok
+test non_utf8_path_refused_without_lossy_rewrite ... ok
+test new_file_is_complete_and_old_file_survives_failures ... ok
+test registered_operator_authored_feedback_roundtrips_as_opaque_state ... ok
+test malformed_unknown_future_and_oversized_documents_refused ... ok
+test registered_operator_fixed_tuning_roundtrips_as_opaque_state ... ok
+test registered_operator_nondefault_envelope_roundtrips_as_opaque_state ... ok
+test registered_operator_velocity_sensitivities_roundtrip_as_opaque_state ... ok
+test resized_midi_clip_roundtrips_retained_notes_and_source_marker ... ok
+test registered_operator_waveform_choices_roundtrip_as_opaque_state ... ok
+test schema_eleven_session_midi_and_stop_migrate_to_schema_twelve_model ... ok
+test legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state ... ok
+test schema_nine_literal_migrates_midi_source_to_strict_one_shot_defaults ... ok
+test schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_preserves_state ... ok
+test roundtrip_complete_current_state_and_highwater ... ok
+test schema_ten_migrates_to_an_empty_session_grid ... ok
+test schema_thirteen_projects_migrate_with_empty_device_chains ... ok
+test schema_fourteen_roundtrips_generic_opaque_device_envelopes ... ok
+test schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions ... ok
+test schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixteen ... ok
+test schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values ... ok
+test schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/playable_routing.rs (target/debug/deps/playable_routing-f9a296da24498ce2)
+
+running 3 tests
+test schema23_migrates_empty_inputs_and_rejects_playable_field_backports ... ok
+test schema24_roundtrip_preserves_typed_routes_ids_gain_and_midi_bus_selection ... ok
+test schema24_rejects_malformed_ports_identity_cycles_and_unbounded_lists ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/provenance.rs (target/debug/deps/provenance-2b06c11196fe845e)
+
+running 4 tests
+test schema_seventeen_migrates_absent_and_rejects_provenance_backport ... ok
+test exact_original_bytes_survive_edits_history_and_save_reopen ... ok
+test combined_document_limit_refuses_publication_without_dropping_provenance ... ok
+test bounded_envelopes_and_versions_are_strict ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.34s
+
+     Running tests/return_feeds.rs (target/debug/deps/return_feeds-9e042e1b4f1f1290)
+
+running 3 tests
+test explicit_schema20_legacy_and_migrations_keep_provenance_opaque_states_and_default19 ... ok
+test valid_feed_decode_load_and_save_preserve_canonical_state_and_input ... ok
+test schema20_refuses_cycles_id_collisions_zero_gain_unknown_fields_and_capacity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/routing.rs (target/debug/deps/routing-21899ceab836995d)
+
+running 4 tests
+test historical_shape_collisions_and_duplicate_or_null_keys_are_refused ... ok
+test schema19_checks_graph_before_closed_adoption ... ok
+test historical_main_and_branch_shapes_preserve_their_supported_data ... ok
+test required_strict_bounded_typed_edges_refuse_malformed_and_unsupported_ports ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/sample_bpm_stretch.rs (target/debug/deps/sample_bpm_stretch-1ee0be2e87da5ef5)
+
+running 5 tests
+test redeclaring_bpm_preserves_manual_stretch_factor_and_custom_marker_shape ... ok
+test disabled_bpm_and_empty_stretches_refuse_atomically_without_losing_history ... ok
+test both_stretch_edges_preserve_crop_source_phase_pitch_markers_and_one_history_step ... ok
+test original_bpm_sets_musical_duration_and_survives_tempo_undo_and_reopen ... ok
+test source_bpm_uses_musical_extent_across_tempo_points_and_left_stretch_keeps_end ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/schema_lineages.rs (target/debug/deps/schema_lineages-0cc50df5670ffd93)
+
+running 4 tests
+test input_only_gain_legacy_encoder_roundtrip_preserves_project_and_destination ... ok
+test main17_to19_defaults_are_preserved_and_hybrid_shapes_refuse ... ok
+test branch23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields ... ok
+test exact_published_lineages_migrate_edit_and_reopen_without_data_loss ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/tuning.rs (target/debug/deps/tuning-f952cefbe085ecb5)
+
+running 5 tests
+test original_token_duplicates_are_refused_at_every_tuning_level ... ok
+test schema29_migrates_explicit_disabled_equal_temperament_and_refuses_tuning ... ok
+test malformed_tuning_is_refused_without_defaults_or_clamping ... ok
+test fractional_reference_frequencies_roundtrip_without_changing_the_tuning ... ok
+test required_schema32_tuning_roundtrips_every_waveform_enabled_and_disabled ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests hex_storage
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

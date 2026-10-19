@@ -1,0 +1,30 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+     Running tests/audio_view.rs (target/debug/deps/audio_view-da3321c9018e3eb3)
+
+running 22 tests
+test canonical_operation_recomputes_current_crop_instead_of_accepting_old_preview_scalars ... ok
+test canonical_audio_view_loop_toggle_retains_cycle_phase_domain_and_undo ... ok
+test clock_toggle_and_move_retain_selected_cycle_phase_and_project_current_origin ... ok
+test explicit_repeat_outer_overwrites_both_kinds_and_refusal_preserves_history ... ok
+test consumed_once_boundary_toggle_marker_and_clock_conversion_are_explicit ... ok
+test explicit_repeat_outer_recomputes_current_raw_loop_crop_and_preserves_processing ... ok
+test fractional_tempo_occurrences_use_absolute_beats_not_a_repeated_frame_period ... ok
+test invalid_clock_phase_zero_span_and_overflow_refuse_without_altering_original ... ok
+test lower_fade_resize_placement_does_not_clamp_outer_extent_to_single_root_end ... ok
+test explicit_repeat_outer_activates_once_in_both_clocks_without_changing_retained_cycle ... ok
+test materialized_audio_view_refuses_wrong_asset_and_does_not_submit_stale_preview ... ok
+test materialized_audio_view_preview_matches_canonical_candidate_without_editing_source ... ok
+test once_silence_tail_trim_split_and_extend_back_preserve_consumed_origin ... ok
+test review_outer_growth_cuts_only_new_tail_and_prepare_refusal_is_atomic ... ok
+test negative_frame_origin_phase_and_once_tail_share_one_retained_cycle ... ok
+test review_outer_noop_preserves_existing_overlap_ids_and_redo ... ok
+test review_outer_shrink_preserves_existing_audio_midi_overlap_and_one_history_step ... ok
+test scalar_resize_captures_current_crop_and_marker_keeps_outer_bounds ... ok
+test shift_stretch_placement_keeps_requested_edge_and_opposite_outer_edge ... ok
+test session_audio_binding_keeps_ordinary_copy_and_refuses_unrepresented_placement_atomically ... ok
+test trim_across_cycles_and_split_preserve_phase_root_identity_and_single_history_edit ... ok
+test canonical_audio_loop_growth_overwrites_both_kinds_at_capacity_and_marker_keeps_occupancy ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+

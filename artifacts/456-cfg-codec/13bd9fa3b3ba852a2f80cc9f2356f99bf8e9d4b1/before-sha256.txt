@@ -1,0 +1,3 @@
+040624dc50c68ade9a1eaf73297fea9e0b79eff0cb93bd94bd30faa3d626e12c  crates/hex-ui/src/editor/arrangement_audio_panel.rs
+b4a5f8eda1528a1458b01d124d2a1a43227703c022287089762f89caf2661cea  crates/hex-storage/src/audio_edit.rs
+16d557867e41ad265a710af80ba06d21d47c9f83350819e2717ba90baf329681  crates/hex-storage/tests/audio_view.rs

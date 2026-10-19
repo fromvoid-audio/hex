@@ -1,0 +1,15 @@
+commit 13bd9fa3b3ba852a2f80cc9f2356f99bf8e9d4b1
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 11:12:57 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 11:12:57 2026 +0000
+
+    fix(storage): preserve admitted signed placement origins and gate GPUI fixtures
+
+commit 7312a18fe20a44add20709da9b7838acdbd57a3b
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 11:11:04 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 11:11:04 2026 +0000
+
+    test(storage): reproduce consumed Once projection roundtrip rejection

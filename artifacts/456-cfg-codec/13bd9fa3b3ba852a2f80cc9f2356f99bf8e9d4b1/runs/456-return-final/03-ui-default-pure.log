@@ -1,0 +1,16 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.33s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-f344a88576a04e42)
+
+running 4 tests
+test editor::arrangement_audio_panel::tests::gain_steps_use_db_units_and_refuse_the_bounds ... ok
+test editor::arrangement_audio_panel::tests::controls_map_to_typed_clip_edits_and_loop_toggle ... ok
+test editor::arrangement_audio_panel::tests::invalid_edges_and_overflow_refuse_without_partial_command ... ok
+test editor::arrangement_audio_panel::tests::review_play_start_uses_retained_source_looping_independent_of_placement_mode ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 315 filtered out; finished in 0.00s
+

@@ -1,0 +1,86 @@
+{
+  "pr": {
+    "url": "https://github.com/PORTALSURFER/hex/pull/456",
+    "number": 456,
+    "state": "open",
+    "merged": false,
+    "mergeable": false,
+    "draft": false,
+    "body": "Adds Audio-only retained-cycle placement metadata and indexed Once/Repeat projection as the model prerequisite for clip looping. Current format32 requires nullable placement and preserves tuning/assets. No Engine/full445 playback implementation imported.\n\nCurrent prospective `770252f6c6b9461329de6cee50e37fe5f88f5492`, tree `d2c9e0fdfbed39ec6c7c35c24c22dccfa02d9a2f`, composes ownera606 with qualified mainbd54. Only appendtodo conflict; all27 original+42repair payloads/six before-after hashes verified. Growth-tail overwrite and raw-source/placement-mode separation addressed prior two source returns.\n\nRequired new FULL21 **FAILED54.766s**: steps1\u20139 passed;10default workspace compile failed E0433 at arrangement_audio_panel.rs780 private placed_loop_fixture references clip_drag_ui_test::editor_window while that module is gated OUT without ui-test-support, plus3 downstream E0282. Steps11\u201321 **NOTRUN**, no runtime UI results. Clean source/start=end/stale=false. Summary `3059ef0307102b43a360e7f4d894264bb0fcc3918ffd1008d74b2b63255daa7c`.\n\nAdditional existing P2 `PRRT_kwDOVB_C-s6twVMd` remains unresolved: model accepts projection origin to -2*u64MAX; decoder rejects below -u64MAX. Actual default compile failure plus codec source-backed roundtrip risk returned to owner Pulse27010/27002. No merge/unchanged retry/native/full445/installed/acceptance claim.\n\nImmutable negative evidence only (never build or merge): `evidence/hex456-770252f6-default-cfg-failure-20261019` @`d0e59c1aa75dd34a0e3c95507056592862e820ba`, archive `hex456-770252f6-default-cfg-failure-evidence.tar.gz`941046B/SHA256 `3518b9f82a5bfdf5759bd751603c9b5ada2e242242f4d2f42a2a1707bdd97c5b`;124safe123verifiedpayloads including earlier2918negative/allownerreceipts. Sourcefrozen/awaitcoherentownerdelta/newprospectivequalification.",
+    "title": "Add checked audio clip placement model and current codec",
+    "base": "main",
+    "base_sha": "bd54e88325ed46ac0175be64e2b292224b6beeec",
+    "head": "pulse/task-2854-g1-4b43df9c1fb2",
+    "head_sha": "770252f6c6b9461329de6cee50e37fe5f88f5492",
+    "head_repo_id": 1411367674,
+    "head_repo_full_name": "PORTALSURFER/hex",
+    "merge_commit_sha": null,
+    "user": {
+      "login": "pulse-iocore-portalsurfer[bot]",
+      "name": "pulse-iocore-portalsurfer[bot]",
+      "email": null,
+      "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+      "id": 340736319
+    },
+    "requested_reviewers": [
+      {
+        "login": "PORTALSURFER",
+        "name": "PORTALSURFER",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 41680373
+      }
+    ],
+    "requested_team_reviewers": null,
+    "diff": null,
+    "comments": null,
+    "created_at": "2026-10-19T00:07:23Z",
+    "updated_at": "2026-10-19T11:15:20Z",
+    "closed_at": null,
+    "merged_at": null,
+    "commits": 6,
+    "changed_files": 32,
+    "additions": 2937,
+    "deletions": 75,
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/456",
+    "display_title": "Add checked audio clip placement model and current codec"
+  },
+  "issue": {
+    "issue": {
+      "url": "https://github.com/PORTALSURFER/hex/pull/456",
+      "title": "Add checked audio clip placement model and current codec",
+      "issue_number": 456,
+      "body": "Adds Audio-only retained-cycle placement metadata and indexed Once/Repeat projection as the model prerequisite for clip looping. Current format32 requires nullable placement and preserves tuning/assets. No Engine/full445 playback implementation imported.\n\nCurrent prospective `770252f6c6b9461329de6cee50e37fe5f88f5492`, tree `d2c9e0fdfbed39ec6c7c35c24c22dccfa02d9a2f`, composes ownera606 with qualified mainbd54. Only appendtodo conflict; all27 original+42repair payloads/six before-after hashes verified. Growth-tail overwrite and raw-source/placement-mode separation addressed prior two source returns.\n\nRequired new FULL21 **FAILED54.766s**: steps1\u20139 passed;10default workspace compile failed E0433 at arrangement_audio_panel.rs780 private placed_loop_fixture references clip_drag_ui_test::editor_window while that module is gated OUT without ui-test-support, plus3 downstream E0282. Steps11\u201321 **NOTRUN**, no runtime UI results. Clean source/start=end/stale=false. Summary `3059ef0307102b43a360e7f4d894264bb0fcc3918ffd1008d74b2b63255daa7c`.\n\nAdditional existing P2 `PRRT_kwDOVB_C-s6twVMd` remains unresolved: model accepts projection origin to -2*u64MAX; decoder rejects below -u64MAX. Actual default compile failure plus codec source-backed roundtrip risk returned to owner Pulse27010/27002. No merge/unchanged retry/native/full445/installed/acceptance claim.\n\nImmutable negative evidence only (never build or merge): `evidence/hex456-770252f6-default-cfg-failure-20261019` @`d0e59c1aa75dd34a0e3c95507056592862e820ba`, archive `hex456-770252f6-default-cfg-failure-evidence.tar.gz`941046B/SHA256 `3518b9f82a5bfdf5759bd751603c9b5ada2e242242f4d2f42a2a1707bdd97c5b`;124safe123verifiedpayloads including earlier2918negative/allownerreceipts. Sourcefrozen/awaitcoherentownerdelta/newprospectivequalification.",
+      "state": "open",
+      "user": {
+        "login": "pulse-iocore-portalsurfer[bot]",
+        "name": "pulse-iocore-portalsurfer[bot]",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 340736319
+      },
+      "assignees": [
+        {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 41680373
+        }
+      ],
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": 2,
+      "created_at": "2026-10-19T00:07:23Z",
+      "updated_at": "2026-10-19T02:25:55Z",
+      "closed_at": null,
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/456",
+      "display_title": "Add checked audio clip placement model and current codec"
+    },
+    "url": "https://github.com/PORTALSURFER/hex/pull/456",
+    "title": "Add checked audio clip placement model and current codec",
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/456",
+    "display_title": "Add checked audio clip placement model and current codec"
+  }
+}

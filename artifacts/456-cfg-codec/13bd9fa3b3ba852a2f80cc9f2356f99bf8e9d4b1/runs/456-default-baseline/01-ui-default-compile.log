@@ -1,0 +1,267 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+error[E0432]: unresolved import `gpui::VisualTestContext`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:831:31
+    |
+831 |         use gpui::{Modifiers, VisualTestContext};
+    |                               ^^^^^^^^^^^^^^^^^
+    |                               |
+    |                               no `VisualTestContext` in the root
+    |                               help: a similar name exists in the module: `VisualContext`
+
+error[E0432]: unresolved import `gpui::VisualTestContext`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:895:31
+    |
+895 |         use gpui::{Modifiers, VisualTestContext};
+    |                               ^^^^^^^^^^^^^^^^^
+    |                               |
+    |                               no `VisualTestContext` in the root
+    |                               help: a similar name exists in the module: `VisualContext`
+
+error[E0433]: failed to resolve: could not find `clip_drag_ui_test` in `super`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:780:27
+    |
+780 |             super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    |                           ^^^^^^^^^^^^^^^^^ could not find `clip_drag_ui_test` in `super`
+    |
+note: found an item that was configured out
+   --> crates/hex-ui/src/editor/mod.rs:19:5
+    |
+ 18 | #[cfg(all(test, feature = "ui-test-support"))]
+    |                 --------------------------- the item is gated behind the `ui-test-support` feature
+ 19 | mod clip_drag_ui_test;
+    |     ^^^^^^^^^^^^^^^^^
+
+error[E0433]: failed to resolve: could not find `TestAppContext` in `gpui`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:893:5
+    |
+893 |     #[gpui::test]
+    |     ^^^^^^^^^^^^^ could not find `TestAppContext` in `gpui`
+    |
+    = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: a trait with a similar name exists
+    |
+893 -     #[gpui::test]
+893 +     AppContext
+    |
+
+error[E0433]: failed to resolve: could not find `TestAppContext` in `gpui`
+    --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:1007:5
+     |
+1007 |     #[gpui::test]
+     |     ^^^^^^^^^^^^^ could not find `TestAppContext` in `gpui`
+     |
+     = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: a trait with a similar name exists
+     |
+1007 -     #[gpui::test]
+1007 +     AppContext
+     |
+
+error[E0433]: failed to resolve: could not find `TestAppContext` in `gpui`
+    --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:1012:5
+     |
+1012 |     #[gpui::test]
+     |     ^^^^^^^^^^^^^ could not find `TestAppContext` in `gpui`
+     |
+     = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: a trait with a similar name exists
+     |
+1012 -     #[gpui::test]
+1012 +     AppContext
+     |
+
+error[E0425]: cannot find type `TestAppContext` in crate `gpui`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:736:24
+    |
+736 |         cx: &mut gpui::TestAppContext,
+    |                        ^^^^^^^^^^^^^^
+    |
+   ::: third_party/gpui/src/gpui.rs:117:1
+    |
+117 | pub trait AppContext {
+    | -------------------- similarly named trait `AppContext` defined here
+    |
+help: a trait with a similar name exists
+    |
+736 -         cx: &mut gpui::TestAppContext,
+736 +         cx: &mut gpui::AppContext,
+    |
+
+error[E0425]: cannot find type `VisualTestContext` in crate `gpui`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:806:47
+    |
+806 |     fn visible_loop_button(visual: &mut gpui::VisualTestContext) -> gpui::Point<gpui::Pixels> {
+    |                                               ^^^^^^^^^^^^^^^^^
+    |
+   ::: third_party/gpui/src/gpui.rs:206:1
+    |
+206 | pub trait VisualContext: AppContext {
+    | ----------------------------------- similarly named trait `VisualContext` defined here
+    |
+help: a trait with a similar name exists
+    |
+806 -     fn visible_loop_button(visual: &mut gpui::VisualTestContext) -> gpui::Point<gpui::Pixels> {
+806 +     fn visible_loop_button(visual: &mut gpui::VisualContext) -> gpui::Point<gpui::Pixels> {
+    |
+
+error[E0425]: cannot find type `TestAppContext` in crate `gpui`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:830:43
+    |
+830 |     fn placed_loop_control(cx: &mut gpui::TestAppContext, mode: AudioViewMode) {
+    |                                           ^^^^^^^^^^^^^^
+    |
+   ::: third_party/gpui/src/gpui.rs:117:1
+    |
+117 | pub trait AppContext {
+    | -------------------- similarly named trait `AppContext` defined here
+    |
+help: a trait with a similar name exists
+    |
+830 -     fn placed_loop_control(cx: &mut gpui::TestAppContext, mode: AudioViewMode) {
+830 +     fn placed_loop_control(cx: &mut gpui::AppContext, mode: AudioViewMode) {
+    |
+
+error[E0425]: cannot find type `TestAppContext` in crate `gpui`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:894:83
+    |
+894 |     fn review_placed_mode_only_change_invalidates_captured_control(cx: &mut gpui::TestAppContext) {
+    |                                                                                   ^^^^^^^^^^^^^^
+    |
+   ::: third_party/gpui/src/gpui.rs:117:1
+    |
+117 | pub trait AppContext {
+    | -------------------- similarly named trait `AppContext` defined here
+    |
+help: a trait with a similar name exists
+    |
+894 -     fn review_placed_mode_only_change_invalidates_captured_control(cx: &mut gpui::TestAppContext) {
+894 +     fn review_placed_mode_only_change_invalidates_captured_control(cx: &mut gpui::AppContext) {
+    |
+
+error[E0425]: cannot find function `run_test` in crate `gpui`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:893:5
+    |
+893 |     #[gpui::test]
+    |     ^^^^^^^^^^^^^ not found in `gpui`
+    |
+    = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0425]: cannot find type `TestAppContext` in crate `gpui`
+    --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:1008:72
+     |
+1008 |     fn review_placed_repeat_loop_control_dispatches_off(cx: &mut gpui::TestAppContext) {
+     |                                                                        ^^^^^^^^^^^^^^
+     |
+    ::: third_party/gpui/src/gpui.rs:117:1
+     |
+ 117 | pub trait AppContext {
+     | -------------------- similarly named trait `AppContext` defined here
+     |
+help: a trait with a similar name exists
+     |
+1008 -     fn review_placed_repeat_loop_control_dispatches_off(cx: &mut gpui::TestAppContext) {
+1008 +     fn review_placed_repeat_loop_control_dispatches_off(cx: &mut gpui::AppContext) {
+     |
+
+error[E0425]: cannot find function `run_test` in crate `gpui`
+    --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:1007:5
+     |
+1007 |     #[gpui::test]
+     |     ^^^^^^^^^^^^^ not found in `gpui`
+     |
+     = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0425]: cannot find type `TestAppContext` in crate `gpui`
+    --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:1013:69
+     |
+1013 |     fn review_placed_once_loop_control_dispatches_on(cx: &mut gpui::TestAppContext) {
+     |                                                                     ^^^^^^^^^^^^^^
+     |
+    ::: third_party/gpui/src/gpui.rs:117:1
+     |
+ 117 | pub trait AppContext {
+     | -------------------- similarly named trait `AppContext` defined here
+     |
+help: a trait with a similar name exists
+     |
+1013 -     fn review_placed_once_loop_control_dispatches_on(cx: &mut gpui::TestAppContext) {
+1013 +     fn review_placed_once_loop_control_dispatches_on(cx: &mut gpui::AppContext) {
+     |
+
+error[E0425]: cannot find function `run_test` in crate `gpui`
+    --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:1012:5
+     |
+1012 |     #[gpui::test]
+     |     ^^^^^^^^^^^^^ not found in `gpui`
+     |
+     = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:782:13
+    |
+782 |             editor.update(cx, |view, cx| {
+    |             ^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:793:31
+    |
+793 |                         .all(|p| p.starts_with(view.test_environment.root()))
+    |                               ^  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+793 |                         .all(|p: /* Type */| p.starts_with(view.test_environment.root()))
+    |                                ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:782:38
+    |
+782 |             editor.update(cx, |view, cx| {
+    |                                      ^^
+...
+799 |                 cx.notify();
+    |                 -- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+782 |             editor.update(cx, |view, cx: /* Type */| {
+    |                                        ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:893:5
+    |
+893 |     #[gpui::test]
+    |     ^^^^^^^^^^^^^ cannot infer type
+    |
+    = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:1007:5
+     |
+1007 |     #[gpui::test]
+     |     ^^^^^^^^^^^^^ cannot infer type
+     |
+     = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:1012:5
+     |
+1012 |     #[gpui::test]
+     |     ^^^^^^^^^^^^^ cannot infer type
+     |
+     = note: this error originates in the attribute macro `gpui::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0282, E0425, E0432, E0433.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `hex-ui` (lib test) due to 21 previous errors

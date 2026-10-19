@@ -1,0 +1,27 @@
+[1/13] storage-all: running
+[1/13] storage-all: passed
+[2/13] model-audio-view: running
+[2/13] model-audio-view: passed
+[3/13] ui-default-pure: running
+[3/13] ui-default-pure: passed
+[4/13] ui-feature-controls: running
+[4/13] ui-feature-controls: passed
+[5/13] storage-ui-default-strict: running
+[5/13] storage-ui-default-strict: passed
+[6/13] ui-feature-strict: running
+[6/13] ui-feature-strict: passed
+[7/13] architecture: running
+[7/13] architecture: passed
+[8/13] gpui-patch: running
+[8/13] gpui-patch: passed
+[9/13] dependency-patches: running
+[9/13] dependency-patches: passed
+[10/13] ui-style: running
+[10/13] ui-style: passed
+[11/13] device-layout: running
+[11/13] device-layout: passed
+[12/13] format: running
+[12/13] format: passed
+[13/13] diff: running
+[13/13] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-456-return-final/summary.json

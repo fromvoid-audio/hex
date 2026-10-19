@@ -1,0 +1,22 @@
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.06s
+     Running tests/audio_edit.rs (target/debug/deps/audio_edit-395c7a2cbffd1de2)
+
+running 2 tests
+test musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bounds ... ok
+test schema29_shapes_preserve_events_appearance_names_and_strict_migrations ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/audio_view.rs (target/debug/deps/audio_view-211d72cf73db5b33)
+
+running 6 tests
+test current32_placement_keeps_required_tuning_manifest_and_refuses_old31 ... ok
+test exhausted_once_consumed_cursor_and_signed_boundary_roundtrip_exactly ... ok
+test once_consumed_cursor_and_selected_root_offset_convert_below_single_signed_range ... ok
+test current_format_rejects_missing_placement_phase_clock_and_unknown_field ... ok
+test current_format_audio_placement_roundtrips_once_and_repeat_without_saved_origin ... ok
+test projection_codec_matches_signed_model_endpoints_and_refuses_malformed_origins ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

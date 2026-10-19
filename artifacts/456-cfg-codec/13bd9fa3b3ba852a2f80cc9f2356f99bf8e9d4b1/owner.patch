@@ -1,0 +1,204 @@
+diff --git a/crates/hex-storage/src/audio_edit.rs b/crates/hex-storage/src/audio_edit.rs
+index f069d1a0..525dc5e0 100644
+--- a/crates/hex-storage/src/audio_edit.rs
++++ b/crates/hex-storage/src/audio_edit.rs
+@@ -271,7 +271,8 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
+                     .origin_beat_raw
+                     .parse::<i128>()
+                     .map_err(|_| StorageError::Invalid("invalid audio fade projection origin"))?;
+-                if !(-i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
++                // Match audio_projection_frame: consumed Once phase plus root offset.
++                if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
+                     return Err(StorageError::Invalid(
+                         "audio fade projection origin exceeds bounded range",
+                     ));
+diff --git a/crates/hex-storage/tests/audio_view.rs b/crates/hex-storage/tests/audio_view.rs
+index caf00b07..e3fbc57d 100644
+--- a/crates/hex-storage/tests/audio_view.rs
++++ b/crates/hex-storage/tests/audio_view.rs
+@@ -203,3 +203,99 @@ fn current32_placement_keeps_required_tuning_manifest_and_refuses_old31() {
+         assert!(hex_storage::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+     }
+ }
++
++#[test]
++fn once_consumed_cursor_and_selected_root_offset_convert_below_single_signed_range() {
++    use hex_project::{BeatTime, audio_projection_frame};
++    let (project, clip) = fixture(AudioViewMode::Once);
++    // The retained source/root remains bounded (480k frames). Once may have
++    // consumed a much larger cursor and now project only silence.
++    let phase = project
++        .tempo_map()
++        .beat_to_frame(BeatTime::from_raw(u64::MAX))
++        .unwrap()
++        - 2;
++    let mut snapshot = project.snapshot();
++    snapshot.tracks[0].audio_clips_mut().unwrap()[0]
++        .edit
++        .as_mut()
++        .unwrap()
++        .placement
++        .as_mut()
++        .unwrap()
++        .cycle_phase = phase;
++    let mut model = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
++    model
++        .execute(Command::SetAudioClipMusical {
++            clip,
++            enabled: true,
++        })
++        .unwrap();
++    let edit = model.project().clip(clip).unwrap().audio_edit().unwrap();
++    let projection = edit.domain.fade_projection.as_ref().unwrap();
++    assert!(projection.origin_beat_raw < -i128::from(u64::MAX));
++    assert!(projection.origin_beat_raw >= -2 * i128::from(u64::MAX));
++    assert!(audio_projection_frame(&projection.tempo, projection.origin_beat_raw).is_ok());
++    let projected = AudioViewProjection::new(
++        model.project().clip(clip).unwrap(),
++        model.project().tempo_map(),
++    )
++    .unwrap();
++    assert_eq!(
++        projected.occurrence_count(),
++        0,
++        "consumed Once remains silence, not a repeated source"
++    );
++    let bytes = hex_storage::encode(model.project()).unwrap();
++    let reopened = hex_storage::decode(&bytes).unwrap();
++    assert_eq!(reopened.snapshot(), model.project().snapshot());
++}
++
++#[test]
++fn projection_codec_matches_signed_model_endpoints_and_refuses_malformed_origins() {
++    use std::sync::Arc;
++    let (project, clip) = fixture(AudioViewMode::Once);
++    let mut editor = Editor::new(project, 8).unwrap();
++    editor
++        .execute(Command::SetAudioClipMusical {
++            clip,
++            enabled: true,
++        })
++        .unwrap();
++    let minimum = -2 * i128::from(u64::MAX);
++    let maximum = i128::from(u64::MAX);
++    for origin in [minimum, minimum + 1, -maximum - 1, -maximum, 0, maximum] {
++        let mut snapshot = editor.project().snapshot();
++        let edit = snapshot.tracks[0].audio_clips_mut().unwrap()[0]
++            .edit
++            .as_mut()
++            .unwrap();
++        let domain = Arc::make_mut(&mut edit.domain);
++        domain.fade_projection.as_mut().unwrap().origin_beat_raw = origin;
++        let valid = Project::from_snapshot(snapshot).unwrap();
++        let bytes = hex_storage::encode(&valid).unwrap();
++        assert_eq!(
++            hex_storage::decode(&bytes).unwrap().snapshot(),
++            valid.snapshot(),
++            "origin={origin}"
++        );
++    }
++    let original: serde_json::Value =
++        serde_json::from_slice(&hex_storage::encode(editor.project()).unwrap()).unwrap();
++    for origin in [
++        (minimum - 1).to_string(),
++        (maximum + 1).to_string(),
++        "170141183460469231731687303715884105728".into(),
++        "-170141183460469231731687303715884105729".into(),
++        "nan".into(),
++        "1.5".into(),
++    ] {
++        let mut value = original.clone();
++        let edit = placement_object(&mut value).unwrap();
++        edit["domain"]["fade_projection"]["origin_beat_raw"] = origin.clone().into();
++        assert!(
++            hex_storage::decode(&serde_json::to_vec(&value).unwrap()).is_err(),
++            "origin={origin}"
++        );
++    }
++}
+diff --git a/crates/hex-ui/src/editor/arrangement_audio_panel.rs b/crates/hex-ui/src/editor/arrangement_audio_panel.rs
+index a15b29f4..4bde38cf 100644
+--- a/crates/hex-ui/src/editor/arrangement_audio_panel.rs
++++ b/crates/hex-ui/src/editor/arrangement_audio_panel.rs
+@@ -732,6 +732,7 @@ fn source_marker(frame: u64, total: u64, id: &'static str, color: u32) -> Div {
+ mod tests {
+     use super::*;
+ 
++    #[cfg(feature = "ui-test-support")]
+     fn placed_loop_fixture(
+         cx: &mut gpui::TestAppContext,
+         mode: AudioViewMode,
+@@ -803,6 +804,7 @@ mod tests {
+         (handle, editor, clip)
+     }
+ 
++    #[cfg(feature = "ui-test-support")]
+     fn visible_loop_button(visual: &mut gpui::VisualTestContext) -> gpui::Point<gpui::Pixels> {
+         use gpui::Modifiers;
+         visual.run_until_parked();
+@@ -827,6 +829,7 @@ mod tests {
+         button
+     }
+ 
++    #[cfg(feature = "ui-test-support")]
+     fn placed_loop_control(cx: &mut gpui::TestAppContext, mode: AudioViewMode) {
+         use gpui::{Modifiers, VisualTestContext};
+         let (handle, editor, clip) = placed_loop_fixture(cx, mode);
+@@ -890,6 +893,7 @@ mod tests {
+         });
+     }
+ 
++    #[cfg(feature = "ui-test-support")]
+     #[gpui::test]
+     fn review_placed_mode_only_change_invalidates_captured_control(cx: &mut gpui::TestAppContext) {
+         use gpui::{Modifiers, VisualTestContext};
+@@ -1004,11 +1008,13 @@ mod tests {
+         ));
+     }
+ 
++    #[cfg(feature = "ui-test-support")]
+     #[gpui::test]
+     fn review_placed_repeat_loop_control_dispatches_off(cx: &mut gpui::TestAppContext) {
+         placed_loop_control(cx, hex_project::AudioViewMode::Repeat);
+     }
+ 
++    #[cfg(feature = "ui-test-support")]
+     #[gpui::test]
+     fn review_placed_once_loop_control_dispatches_on(cx: &mut gpui::TestAppContext) {
+         placed_loop_control(cx, hex_project::AudioViewMode::Once);
+diff --git a/docs/audio-view-model.md b/docs/audio-view-model.md
+index b78e8890..e6b2e84e 100644
+--- a/docs/audio-view-model.md
++++ b/docs/audio-view-model.md
+@@ -103,3 +103,31 @@ in Pulse2854. Original failure, invalid offscreen fixture and test-compilation
+ logs remain separate from passing receipts. Final prospective full21 and merge
+ belong to the sole merger. No new native run, app operation or full445 audible
+ loop/handle/export acceptance is implied by this prerequisite repair.
++
++## default-test and signed-projection codec return
++
++The placement control's three rendered GPUI cases and their three private
++helpers now use the same `ui-test-support` feature boundary as their existing
++window fixture and GPUI test context. All four pure control-mapping tests remain
++in the default test configuration. This fixes a default-library test compilation
++failure; it does not skip a runtime failure or disable the pure mapping cases.
++
++A bounded retained root with a legal, fully consumed Once cursor can produce a
++signed fade-projection origin below `-u64::MAX` during the actual musical-clock
++conversion. The model admits this state, but the decoder previously rejected its
++own encoded document. The decoder now matches the model's inclusive
++`-2*u64::MAX..=u64::MAX` bound. The original full-domain frame limit, source,
++placement, tempo, fade and overflow validation remain unchanged. Tests retain a
++480k-frame root, use the canonical conversion, compare complete reopened
++snapshots and cover both exact signed endpoints plus malformed/outside values.
++An initial oversized-root fixture was correctly refused by the model before
++serialization; that setup failure is preserved separately from the reproduced
++codec failure.
++
++The change retains current format32, required placement/tuning/asset fields and
++explicit old-format refusal. It introduces no migration or compatibility reader.
++A/B and both-slot asset manifests still require integration with their actual
++current-main implementation; this isolated return does not import or qualify
++another owner's branch. The original Engine, waveform, playback, native and
++full445 acceptance gaps remain open. Exact prospective qualification belongs to
++the merger.
