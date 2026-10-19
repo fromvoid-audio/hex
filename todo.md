@@ -5309,3 +5309,17 @@ source handoff is separate from final integration/full CI/merge and delivery.
   listening and full Sampler395 acceptance remain open. The historical ignored
   keyboard profile is excluded explicitly from focused non-profile commands,
   never counted as passing. This entry records integration evidence only.
+
+- 19 October 2026 — Pulse2793 / PR399 integration: new tracks choose once from
+  the existing nine non-gray hues, using unused colors first and then a random
+  least-used tie. Canonical insertion owns the choice; Undo/Redo and current
+  persistence retain it. Existing explicit gray and return tracks remain valid.
+  Owner focused twelve-step qualification records 286 positive cases; original
+  model/rendered reds and an earlier zero-match selector remain preserved.
+  Merger verified all 56 original payload hashes and all eight owner file hashes,
+  then ordinarily integrated qualified main without conflicts or feature edits.
+  Root exact8c7fffb9 native components passed one UI and one Storage selector;
+  these do not prove physical palette or current combined-tree acceptance.
+  New exact prospective FULL21 and final review remain pending. User review on
+  a qualified delivered build should check nine created hues, recolor, Undo/Redo,
+  save/reopen and existing gray preservation. Empty-track policy408 stays separate.
