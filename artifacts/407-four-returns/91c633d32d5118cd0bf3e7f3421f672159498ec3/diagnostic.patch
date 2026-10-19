@@ -1,0 +1,170 @@
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
+index d75b8485..d62bdcbf 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
+@@ -1305,3 +1305,75 @@ fn eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_s
+         });
+     }
+ }
++
++#[gpui::test]
++fn four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let right = plot(&mut visual, device, 0.98, 0.5);
++    visual.simulate_click(right, Modifiers::default());
++    pump_until(&editor, cx, |view| {
++        settled(view) && read(view, device).nodes.len() == 2
++    });
++    let before = editor.read_with(cx, |view, _| read(view, device));
++    let left = plot(&mut visual, device, 0.02, 0.5);
++    let right = plot(&mut visual, device, 0.98, 0.5);
++    wheel(
++        &mut visual,
++        left,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    // Submit the actual first-node Begin to the real Service; retain its actual
++    // acknowledgement instead of calling tick/receive. Virtual time is unadvanced.
++    editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
++    let held = editor.read_with(cx, |view, _| receive_service_event(&view.service));
++    assert!(held.error.is_none());
++    assert!(held.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
++    assert!(editor.read_with(cx, |view, _| view.worker_requests_pending > 0));
++    wheel(
++        &mut visual,
++        right,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Moved,
++        false,
++    );
++    end_wheel(&mut visual, right);
++    eprintln!(
++        "before releasing actual first ACK: {:?}",
++        editor.read_with(cx, |view, _| view.device_panel.message.clone())
++    );
++    editor.update(cx, |view, _| {
++        view.receive(held);
++    });
++    pump_until(&editor, cx, settled);
++    let after = editor.read_with(cx, |view, _| read(view, device));
++    eprintln!(
++        "two-cut slopes before={:?} after={:?}",
++        before.nodes.iter().map(|n| n.slope).collect::<Vec<_>>(),
++        after.nodes.iter().map(|n| n.slope).collect::<Vec<_>>()
++    );
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 1;
++    expected.nodes[1].slope = 1;
++    assert_eq!(
++        after, expected,
++        "a consumed second-node burst must reach its own canonical parameter"
++    );
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++    pump_until(&editor, cx, |view| {
++        settled(view) && read(view, device).nodes[1].slope == 0
++    });
++    assert_eq!(
++        editor.read_with(cx, |view, _| read(view, device).nodes[0].slope),
++        1
++    );
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++    pump_until(&editor, cx, |view| {
++        settled(view) && read(view, device) == before
++    });
++}
+diff --git a/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs b/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs
+index 27771944..d72b5d59 100644
+--- a/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs
++++ b/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs
+@@ -326,3 +326,85 @@ fn terminal_observer_does_not_late_commit_cancel_blur_missing_or_new_token(
+         f.graph.update(cx, |g, cx| g.cancel(cx));
+     }
+ }
++
++#[gpui::test]
++fn four_review_unfocused_fractional_end_retires_metadata_before_unphased_input(
++    cx: &mut TestAppContext,
++) {
++    let (handle, f) = fixture(cx);
++    let mut v = VisualTestContext::from_window(handle, cx);
++    v.run_until_parked();
++    let inside = v.debug_bounds("terminal-graph").unwrap().center();
++    let other = v.debug_bounds("terminal-other").unwrap().center();
++    v.update(|window, app| assert!(!f.graph.read(app).focus.is_focused(window)));
++    send(&mut v, inside, TouchPhase::Started, 0.25, false);
++    assert!(f.events.borrow().is_empty());
++    assert!(
++        f.graph
++            .read_with(cx, |g, _| g.scroll.gesture.is_some_and(|s| !s.begun))
++    );
++    send(&mut v, other, TouchPhase::Ended, 0.0, false);
++    eprintln!(
++        "fractional outside Ended: active={} phased={}",
++        f.graph.read_with(cx, |g, _| g.scroll.active()),
++        f.graph.read_with(cx, |g, _| g.scroll.phased)
++    );
++    assert!(
++        !f.graph.read_with(cx, |g, _| g.scroll.active()),
++        "unbegun token must retire without taking focus"
++    );
++    assert!(!f.graph.read_with(cx, |g, _| g.scroll.phased));
++    assert!(f.events.borrow().is_empty());
++    send(&mut v, inside, TouchPhase::Moved, 1.0, false);
++    cx.executor().advance_clock(Duration::from_millis(300));
++    v.run_until_parked();
++    assert_eq!(commits(&f), 1);
++    assert!(!f.graph.read_with(cx, |g, _| g.scroll.active()));
++}
++
++#[gpui::test]
++fn four_review_mac_cancelled_mapped_as_moved_cannot_deliver_terminal(cx: &mut TestAppContext) {
++    let (handle, f) = fixture(cx);
++    let mut v = VisualTestContext::from_window(handle, cx);
++    v.run_until_parked();
++    let inside = v.debug_bounds("terminal-graph").unwrap().center();
++    send(&mut v, inside, TouchPhase::Started, 1.0, false);
++    // Exact current Mac adapter representation of NSEventPhaseCancelled.
++    // This is a source-backed adapter-output simulation, NOT native Mac input.
++    send(&mut v, inside, TouchPhase::Moved, 0.0, false);
++    cx.executor().advance_clock(Duration::from_secs(1));
++    v.run_until_parked();
++    eprintln!(
++        "mapped cancellation: active={} commits={} events={:?}",
++        f.graph.read_with(cx, |g, _| g.scroll.active()),
++        commits(&f),
++        f.events.borrow()
++    );
++    assert!(
++        !f.graph.read_with(cx, |g, _| g.scroll.active()),
++        "a cancelled native stream needs a terminal representation"
++    );
++}
++
++#[gpui::test]
++fn four_review_linux_discrete_content_lines_are_not_one_parameter_step(cx: &mut TestAppContext) {
++    let (handle, f) = fixture(cx);
++    let mut v = VisualTestContext::from_window(handle, cx);
++    v.run_until_parked();
++    let inside = v.debug_bounds("terminal-graph").unwrap().center();
++    // Current Wayland axis_discrete=1 and X11 Up produce SCROLL_LINES=3.
++    // Windows WHEEL_DELTA with wheel_scroll_lines=3 has the same output.
++    send(&mut v, inside, TouchPhase::Moved, 3.0, false);
++    cx.executor().advance_clock(Duration::from_millis(300));
++    v.run_until_parked();
++    assert_eq!(commits(&f), 1);
++    eprintln!(
++        "one physical tick's adapter output: {:?}",
++        f.events.borrow()
++    );
++    assert_eq!(
++        f.events.borrow().last().unwrap().steps,
++        1,
++        "one physical detent should advance one slope choice, independent of content-line preference"
++    );
++}

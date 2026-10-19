@@ -1,0 +1,26 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.76s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+before releasing actual first ACK: Some("wait for the current device edit, then retry")
+two-cut slopes before=[0, 0] after=[1, 0]
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held' (183106) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:1363:5:
+assertion `left == right` failed: a consumed second-node burst must reach its own canonical parameter
+  left: EqState { next_node_id: 6, mode: 0, output_gain: 1.0, nodes: [Node { id: NodeId(4), enabled: true, kind: LowCut, frequency_hz: 22.963076, gain_db: 0.0, q: 1.3416408, slope: 1, bank: 0, legacy_shelf: false }, Node { id: NodeId(5), enabled: true, kind: HighCut, frequency_hz: 17419.25, gain_db: 0.0, q: 1.3416408, slope: 0, bank: 0, legacy_shelf: false }], lanes: [] }
+ right: EqState { next_node_id: 6, mode: 0, output_gain: 1.0, nodes: [Node { id: NodeId(4), enabled: true, kind: LowCut, frequency_hz: 22.963076, gain_db: 0.0, q: 1.3416408, slope: 1, bank: 0, legacy_shelf: false }, Node { id: NodeId(5), enabled: true, kind: HighCut, frequency_hz: 17419.25, gain_db: 0.0, q: 1.3416408, slope: 1, bank: 0, legacy_shelf: false }], lanes: [] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 978 filtered out; finished in 1.01s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

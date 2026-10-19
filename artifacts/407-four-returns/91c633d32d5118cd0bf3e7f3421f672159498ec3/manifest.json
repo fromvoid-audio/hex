@@ -1,0 +1,103 @@
+{
+  "kind": "FOUR407-negative-source-diagnostic-only",
+  "source": "91c633d32d5118cd0bf3e7f3421f672159498ec3",
+  "tree": "56db71f6ee09637aa6cd98c1523d69d94f44c219",
+  "payloads": {
+    "README.md": {
+      "bytes": 2100,
+      "sha256": "7d2dc8b4503128953ff26ec0ff09d8809011aa8beb34d3c1dbd1710039eb928a"
+    },
+    "component-runner.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "diagnostic.patch": {
+      "bytes": 7143,
+      "sha256": "6803cdd10de74364a568494f9b8c4d029f8076fc0b86fc5611a7c0dff158aba0"
+    },
+    "runs/407-four-baseline/01-widgets-four-repros.log": {
+      "bytes": 2704,
+      "sha256": "553d25ee3f451bca70950510b9959c6afa38d9df106b89cd600a7ec552728269"
+    },
+    "runs/407-four-baseline/summary.json": {
+      "bytes": 10167,
+      "sha256": "85a67af39af52e860a74a7759c5e8bb8ca394617d0e8f9f38fec797de740b9fd"
+    },
+    "runs/407-two-node-baseline/01-two-cut-held-real-ack.log": {
+      "bytes": 859,
+      "sha256": "e2ec898e94a897ad78268a0561b241fbdd0c7b9b8e705c008e18c0f4c12fb7d1"
+    },
+    "runs/407-two-node-baseline/summary.json": {
+      "bytes": 10277,
+      "sha256": "ff15f87b9b079b630b1e1a26d27c982f742caf889db2d9b729fcbc7521772163"
+    },
+    "runs/407-two-node-baseline-correct-field/01-two-cut-held-real-ack.log": {
+      "bytes": 2254,
+      "sha256": "f4e156434ad37e6a39a598a7dc74e042679ff99a3a32f2e886ef41acf3dddf24"
+    },
+    "runs/407-two-node-baseline-correct-field/summary.json": {
+      "bytes": 10319,
+      "sha256": "9616cf4ab8084ca1caf0a253d24dac12ff21a82990a8d0706c69816d052b3505"
+    },
+    "source/crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs": {
+      "bytes": 11174,
+      "sha256": "2136ae1a539fe8c967a64085c09cbaacccdc95e646f02f5c6dbc2ade611aaba8"
+    },
+    "source/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+      "bytes": 51842,
+      "sha256": "43fd547d70c22edf5cd1d2141bf892e379c15d6ecfea93c27a15637a8cad82b9"
+    },
+    "source/crates/hex-widgets/src/response_graph/scroll.rs": {
+      "bytes": 11088,
+      "sha256": "0dd4d8cbc4dd35a87dc61e0c99508fd40326217a2d3ad777c9a996790f523aba"
+    },
+    "source/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs": {
+      "bytes": 15401,
+      "sha256": "577734d6555bf438b8bd30d790a758656ec965f378220b495144f44de6122681"
+    },
+    "source/crates/hex-widgets/src/response_graph.rs": {
+      "bytes": 45499,
+      "sha256": "057bc2d6ec7a59f9dcc3416beff2eaca7a2d7688c7aff304578fd50be1a6478b"
+    },
+    "source/third_party/gpui/src/interactive.rs": {
+      "bytes": 20911,
+      "sha256": "e72427052aa9bdf43015f24612d1f721816f372ddcfade4ec9ee3168353158ee"
+    },
+    "source/third_party/gpui/src/platform/linux/platform.rs": {
+      "bytes": 37550,
+      "sha256": "7a12e238b597bd9df4581a7764c0265aa43d2c8d9116bff263fcac3a398e39ba"
+    },
+    "source/third_party/gpui/src/platform/linux/wayland/client.rs": {
+      "bytes": 82281,
+      "sha256": "c94fc25769223c54d6982e9a6d2d56362f9c1d47fde02127650ed58a1d67748a"
+    },
+    "source/third_party/gpui/src/platform/linux/x11/client.rs": {
+      "bytes": 95034,
+      "sha256": "3f6efcec64214b23a1964ea785c664a3a2b0da1294e786a29b1a57f1fad5a1dc"
+    },
+    "source/third_party/gpui/src/platform/mac/events.rs": {
+      "bytes": 23627,
+      "sha256": "8da5851e315c6f6c381f30c0095a185d2e8f4821984cb7e0f7d1797c4896b506"
+    },
+    "source/third_party/gpui/src/platform/windows/events.rs": {
+      "bytes": 57280,
+      "sha256": "210c35d596cf4838cdc99f8fe5bc969a8ba24a918c02474a92e4de14c74fe47d"
+    },
+    "source-hashes.json": {
+      "bytes": 3007,
+      "sha256": "cdc062986379196b5d8148c4d5c58c8c99de986ae63334c5052cba4a0e65a880"
+    },
+    "two-node-baseline.stdout": {
+      "bytes": 185,
+      "sha256": "de260d1686687b7fe50106b2cf85bdd788799660d90bbeb0215cd9a766090774"
+    },
+    "two-node-correct-field.stdout": {
+      "bytes": 199,
+      "sha256": "5c06be21bb08e46edfa6b6113c5141c7b9bbdcd4db8dbcfdda8d62b5c3afad25"
+    },
+    "widgets-baseline.stdout": {
+      "bytes": 177,
+      "sha256": "389d4608f776aef0507d3d2379af9cd513a34753e93a91e359d73633f71739b2"
+    }
+  }
+}
