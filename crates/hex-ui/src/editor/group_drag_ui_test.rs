@@ -1704,7 +1704,9 @@ fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_s
         assert_eq!(copied.source_start(), 24_000);
         assert_eq!(copied.source_end(), 48_000);
         assert_eq!(project.tracks()[0].clips().len(), 3);
-        assert_eq!(view.selected_clip_ids(), vec![clips[1]]);
+        // Existing Created::SessionClip completion selects its Console cell.
+        assert_eq!(view.selected_cell, Some((track, scene)));
+        assert!(view.selected_clip_ids().is_empty());
         assert!(view.active_clip_drag.is_none());
         assert_eq!(view.worker_requests_pending, 0);
         assert!(view.pending_requests.is_empty());
