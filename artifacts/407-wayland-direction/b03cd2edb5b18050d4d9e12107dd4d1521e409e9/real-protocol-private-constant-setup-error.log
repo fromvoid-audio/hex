@@ -1,0 +1,15 @@
+error[E0603]: constant `SCROLL_LINES` is private
+  --> /workspace/hex/artifacts/407-wayland-direction/production-fold-real-protocol-tests.rs:1:38
+   |
+ 1 | use gpui::{Point, Pixels, point, px, SCROLL_LINES, ScrollDelta, ScrollWheelEvent};
+   |                                      ^^^^^^^^^^^^ private constant
+   |
+note: the constant `SCROLL_LINES` is defined here
+  --> third_party/gpui/src/gpui.rs:91:9
+   |
+91 | pub use platform::*;
+   |         ^^^^^^^^
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0603`.

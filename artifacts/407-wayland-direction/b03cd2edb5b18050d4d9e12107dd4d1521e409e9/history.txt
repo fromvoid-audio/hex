@@ -1,0 +1,7 @@
+commit b03cd2edb5b18050d4d9e12107dd4d1521e409e9
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 11:43:27 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 11:43:27 2026 +0000
+
+    fix(gpui): retain per-axis Wayland physical wheel direction

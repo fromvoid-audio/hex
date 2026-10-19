@@ -1,0 +1,14 @@
+{
+  "source": "b03cd2edb5b18050d4d9e12107dd4d1521e409e9",
+  "tree": "bd280aac87c61bacc09edd03b937556149270d02",
+  "base": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+  "steps": 13,
+  "duration_seconds": 235.244,
+  "summary_sha256": "733fdc280e96ba20ff1ac01c47ab9959a42796bc9c8828163240fba62a1ab5d3",
+  "content_sha256": "0fbb015047f3d12063408553519994925b181d7bd58072f84fff683a589e8edd",
+  "unique_cases": 117,
+  "old_EQ_widget_controls": 107,
+  "typed_fold_and_differential": 8,
+  "operator_controls": 2,
+  "kind": "source component only; no full21/native/merge"
+}

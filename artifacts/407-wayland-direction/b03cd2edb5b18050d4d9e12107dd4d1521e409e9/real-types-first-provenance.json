@@ -1,0 +1,34 @@
+{
+  "source_client_sha256": "df38fe77ae71cdb6837ba9378e50e11dca85ca465f4d88da36cef927ff368f20",
+  "exact_fold_sha256": "c8d10965c38c3854fe09140b13c067124711354c7beb52257472b0dc8a396c1d",
+  "exact_tests_sha256": "4306ede5ef9f8fa539fa90b7c6741259f896ad3a77aa211734f9623e6e93863d",
+  "compile_argv": [
+    "rustc",
+    "--edition=2024",
+    "--test",
+    "/workspace/hex/artifacts/407-wayland-direction/production-fold-real-protocol-tests.rs",
+    "-L",
+    "dependency=/workspace/hex/target/debug/deps",
+    "-o",
+    "/workspace/hex/artifacts/407-wayland-direction/real-protocol-tests",
+    "--extern",
+    "wayland_client=/workspace/hex/target/debug/deps/libwayland_client-80bd8651ee75e35c.rlib",
+    "--extern",
+    "gpui=/workspace/hex/target/debug/deps/libgpui-08cfd40aac1267e3.rlib"
+  ],
+  "workspace_argv": [
+    "cargo",
+    "test",
+    "-p",
+    "hex-ui",
+    "--lib",
+    "--features",
+    "ui-test-support",
+    "--locked",
+    "--message-format=json",
+    "node_gesture_tests::",
+    "--",
+    "--nocapture"
+  ],
+  "limits": "actual production-used helper/test bytes and actual gpui/Wayland types; no Dispatch connection/window/compositor/hardware"
+}

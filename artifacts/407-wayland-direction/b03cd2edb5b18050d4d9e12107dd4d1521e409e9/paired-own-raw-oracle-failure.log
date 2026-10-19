@@ -1,0 +1,23 @@
+
+running 7 tests
+
+thread 'axis_frame_tests::axis_frame_fractions_large_zero_and_cancellation' (194879) panicked at /workspace/hex/artifacts/407-wayland-direction/production-fold-real-protocol-tests.rs:469:17:
+assertion `left == right` failed
+  left: -0.75
+ right: -0.25
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test axis_frame_tests::axis_frame_conflict_unknown_and_independent_known_axis ... ok
+test axis_frame_tests::axis_frame_fractions_large_zero_and_cancellation ... FAILED
+test axis_frame_tests::axis_frame_pixels_plus_ticks_and_continuous_only ... ok
+test axis_frame_tests::axis_frame_pre_v9_discrete_and_frame_retirement ... ok
+test axis_frame_tests::axis_frame_missing_report_cannot_inherit_a_previous_pair ... ok
+test axis_frame_tests::axis_frame_shift_collapses_only_after_original_direction ... ok
+test axis_frame_tests::axis_frame_v9_direction_order_and_mixed_axes ... ok
+
+failures:
+
+failures:
+    axis_frame_tests::axis_frame_fractions_large_zero_and_cancellation
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

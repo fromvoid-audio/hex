@@ -1,0 +1,18 @@
+{
+  "baseline_source": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+  "archive_sha256_unchanged": "979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707",
+  "original_source_hashes_verified": 21,
+  "cumulative_patched_and_added_bytes_verified": 24,
+  "changed_existing_files": {
+    "src/interactive.rs": {
+      "before_sha256": "968030ec8155161c2fc9b9430bb5a8c293c6ea45a59e49b728fc83ff65e8596b",
+      "after_sha256": "dd5fdbffdd9c7c50af965163ba2380c4868708396a5cd82e4f529bdf99b9710a"
+    },
+    "src/platform/linux/wayland/client.rs": {
+      "before_sha256": "40ad7e00a72de7cdac632864f83e3333731c4832f53535b219aa109c2d42329b",
+      "after_sha256": "602eda28dee3df1c77a3074e678e10928168a3e1ec650e218c7faaca6685bb16"
+    }
+  },
+  "unchanged_patch_blocks_retained": true,
+  "guards_unchanged": true
+}

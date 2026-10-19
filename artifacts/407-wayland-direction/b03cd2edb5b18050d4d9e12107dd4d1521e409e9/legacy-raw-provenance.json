@@ -1,0 +1,5 @@
+{
+  "source": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+  "literal_old_arms_sha256": "9e676fe1aac7194089bec3baf6a5aed07bfa668dec6a9c4ad49c1f6d23ff08d4",
+  "limits": "actual old match-arm bytes; actual gpui/Wayland types; minimal output-window carrier, not Dispatch/server/hardware; mixed synthetic ordering includes malformed protocol to check raw preservation"
+}

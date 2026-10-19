@@ -1,0 +1,6 @@
+{
+  "third_party/gpui/src/platform/mac/events.rs": "e4f972d4353c7352d106aa396754206c6891448685a766ab750687b601070f07",
+  "third_party/gpui/src/platform/windows/events.rs": "57ec8c2a9b6ceda1e25d88ce45334423feec499b995919f3fa92a60e265adf15",
+  "third_party/gpui/src/platform/linux/x11/client.rs": "df5110245cfaec8dcf9df3eec2c11b10d36c9ba365be6f46e238912d27f46ae8",
+  "crates/hex-widgets/src/response_graph/scroll.rs": "ed5ca8a37b14fd7946adc1d9b5122dc15f2c6c53d236d1e0d321327abf284d4c"
+}

@@ -1,0 +1,56 @@
+{
+  "first": {
+    "commit": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 0.377,
+    "content_sha256": "4661adf7cf3ec42631b742e65a446b91cfbd4ae835b59d02f8ba04cc5345a009",
+    "summary_sha256": "a0880ceb30152867954290f3403ff4a062443b917010eac67302b4f0496c0d8b"
+  },
+  "typed": {
+    "commit": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 0.641,
+    "content_sha256": "4661adf7cf3ec42631b742e65a446b91cfbd4ae835b59d02f8ba04cc5345a009",
+    "summary_sha256": "de0c7b55d062c6b2976c994b45a730165b619260f64f68347523b07a011242aa"
+  },
+  "real": {
+    "commit": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 83.47,
+    "content_sha256": "4661adf7cf3ec42631b742e65a446b91cfbd4ae835b59d02f8ba04cc5345a009",
+    "summary_sha256": "b28e6c9dd3402863c0fd45daac26f4538ee42891dcf64d4b04514a6b4a7125f4"
+  },
+  "paired": {
+    "commit": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 80.688,
+    "content_sha256": "fcd2a2059c12e970967ad5d9b5127635ebbe1611be0586d5b7aa895294b54eff",
+    "summary_sha256": "e6cc448469ad866f1e6ce74102fc27e73d3fd21fe6905ecf813758d9fd673ccb"
+  },
+  "oracles": {
+    "commit": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+    "dirty": true,
+    "stale": false,
+    "status": "passed",
+    "duration_seconds": 1.926,
+    "content_sha256": "0fbb015047f3d12063408553519994925b181d7bd58072f84fff683a589e8edd",
+    "summary_sha256": "b4ea1e7ccdb363bca4bdc6beb79a9b0d97edfd80bc7e33a14948f77aa234bcf3"
+  },
+  "final": {
+    "commit": "b03cd2edb5b18050d4d9e12107dd4d1521e409e9",
+    "dirty": false,
+    "stale": false,
+    "status": "passed",
+    "duration_seconds": 235.244,
+    "content_sha256": "0fbb015047f3d12063408553519994925b181d7bd58072f84fff683a589e8edd",
+    "summary_sha256": "733fdc280e96ba20ff1ac01c47ab9959a42796bc9c8828163240fba62a1ab5d3"
+  }
+}

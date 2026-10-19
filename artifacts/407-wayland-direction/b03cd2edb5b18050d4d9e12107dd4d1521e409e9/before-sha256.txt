@@ -1,0 +1,4 @@
+40ad7e00a72de7cdac632864f83e3333731c4832f53535b219aa109c2d42329b  third_party/gpui/src/platform/linux/wayland/client.rs
+968030ec8155161c2fc9b9430bb5a8c293c6ea45a59e49b728fc83ff65e8596b  third_party/gpui/src/interactive.rs
+3ff94893769419d077092ee1ffe933d4a9b99cf47214d2fc9606b18b7d5c4693  third_party/gpui/HEX-PATCHES.md
+00ff31909452f4eaf4e989d22adf7313bc1c1beec147de499b7f94a8f8d9ccb7  third_party/gpui/hex-patches.diff

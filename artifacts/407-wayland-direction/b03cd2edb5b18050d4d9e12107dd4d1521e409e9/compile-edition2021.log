@@ -1,0 +1,14 @@
+error: let chains are only allowed in Rust 2024 or later
+   --> /workspace/hex/artifacts/407-wayland-direction/source-extracted-axis-baseline.rs:199:31
+    |
+199 |                     } else if let Some(discrete) = discrete
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: let chains are only allowed in Rust 2024 or later
+   --> /workspace/hex/artifacts/407-wayland-direction/source-extracted-axis-baseline.rs:200:28
+    |
+200 |                         && let Some(window) = state.mouse_focused_window.clone()
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 2 previous errors
+
