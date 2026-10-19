@@ -5268,3 +5268,21 @@ source handoff is separate from final integration/full CI/merge and delivery.
   cover all source-row/glyph positions, separator scene paint/text non-paint, long
   labels, open settings and repeated capture/expansion. Sole merger owns final full
   candidate checks/merge; native physical interaction and delivery remain open.
+
+## console arrangement midi stop-cell admission — pulse2814 / pr420, 19 october2026
+
+The focused return on frozen44adc reproduces a real UI/model mismatch: an actual
+Arrangement MIDI drag released onto Console Stop queued a copy, then the Service
+refused the occupied cell. MIDI admission now matches Audio and the existing
+canonical empty-cell contract. Stop refuses locally, preserves the complete model
+and history, clears the ghost and queues nothing; browser sample replacement keeps
+its separate atomic contract. No Project/Session/queue/capture semantics changed.
+
+Two real GPUI/Service regressions cover Stop refusal and empty-cell copying with
+fresh IDs, full MIDI source/note payload preservation, one Undo/Redo, and occupied
+MIDI/prepared Audio protection. Baseline1pass1fail becomes2pass; the full focused
+Console set passes11/0ignored. Tests capture the real Arrangement pointer drag,
+use the existing production mode setter, and release over the real Console cell;
+the pinned source predates419's Tab binding. Exact-source strict checks/evidence
+are recorded in Pulse. Full prospective CI/merge belongs to the sole merger;
+changed native/physical acceptance and delivery remain coordinator-owned.

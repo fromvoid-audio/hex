@@ -46,6 +46,9 @@ a retained drag object grants no admission authority. Console moves do not use
 retained Arrangement geometry. Arrangement clip payloads keep only the existing
 same-track, empty-existing-cell copy contract; cross-track, occupied or inserted-
 scene clip-copy payloads refuse explicitly rather than adding a new copy model.
+An explicit Stop cell is occupied for Arrangement copies too: both Audio and
+MIDI payloads refuse it before queueing, leaving the Stop marker and history intact.
+This does not change the separate atomic browser-audio replacement contract.
 
 Focused worker/model and rendered-event checks are source evidence. Native
 component verification, actual audio hardware/listening, physical drag/context
