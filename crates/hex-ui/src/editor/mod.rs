@@ -1025,7 +1025,10 @@ impl EditorView {
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
-            if view.cancel_scrub() | view.cancel_clip_paint() | view.cancel_loop_rail_gesture() {
+            if view.cancel_loop_rail_gesture() {
+                cx.defer_in(window, |_, _, cx| cx.notify());
+            }
+            if view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
             }
         });
