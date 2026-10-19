@@ -1266,3 +1266,6 @@ fn lane_contains(x: f32, y: f32, lane: super::drag::LaneBounds) -> bool {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod duplicate_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod retained_duplicate_tests;
