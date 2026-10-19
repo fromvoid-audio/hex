@@ -1,0 +1,50 @@
+{
+  "source": "fdc1a3631fb2e42fd71f4ae083d5e288327d6662",
+  "tree": "99c21488dc45f093a51f2d1e8ce19c9c60a39f9e",
+  "base": "8c351021b134a4326eec5d0dce6519801a88aef1",
+  "parent": "be242beff34e4cdf977964aa860ec9ddde326564",
+  "files": [
+    "crates/hex-ui/src/editor/browser.rs",
+    "crates/hex-ui/src/editor/browser/folder_places.rs",
+    "crates/hex-ui/src/editor/browser/folder_places_ui_test.rs",
+    "crates/hex-ui/src/editor/browser/layout.rs",
+    "docs/browser-places.md",
+    "todo.md"
+  ],
+  "absent_before": [
+    {
+      "label": "before",
+      "path": "crates/hex-ui/src/editor/browser/folder_places.rs"
+    },
+    {
+      "label": "before",
+      "path": "crates/hex-ui/src/editor/browser/folder_places_ui_test.rs"
+    }
+  ],
+  "git_source_object_index_count": 10,
+  "archived_git_source_bytes": 0,
+  "places_component_block_byte_identical": true,
+  "runtime_unique": 95,
+  "runtime_executions": 98,
+  "counts": [
+    [
+      "7",
+      "0"
+    ],
+    [
+      "88",
+      "0"
+    ],
+    [
+      "3",
+      "0"
+    ]
+  ],
+  "duration_seconds": 215.846,
+  "summary_sha256": "51100fec49476c682ce1ec3a0d944f2d20902de06f0f6691f74afbddde4058b3",
+  "native_acceptance": false,
+  "full21": false,
+  "earlier_zero_match_selector": "browser_focus_ui_test:: (redundant; three actual explicit_focus cases present in 88 and final corrected selector)",
+  "negative_source_limit": "Original ordinary pointer RED retains base pin + actual pre/post dirty tree digest; full pre-extension dirty fixture tree was not separately committed. Do not claim a separately frozen negative source revision. Original production files restored at that run; new helper unreferenced. Raw E0716/E0308 fixture compile failures separate from executed product negative.",
+  "negative_original_digest": "82f1aea216fe68e17a67e6a563cdfacc0619112f3164dfb6bceeb7f7be6a8557"
+}

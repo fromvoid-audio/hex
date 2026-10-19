@@ -1,0 +1,130 @@
+{
+  "2878-final-v2-component.py": {
+    "bytes": 1786,
+    "sha256": "2b98f4a4502a5ec30ea4895a414ab2225272b9357794c5329e39feb0c7edf5b2"
+  },
+  "GIT-OBJECTS.json": {
+    "bytes": 3870,
+    "sha256": "1c3fe3ac024c8e29fc21ad4ccd838411b50751e6b7b5d8a914afe93509b7ee2b"
+  },
+  "HANDOFF.md": {
+    "bytes": 4629,
+    "sha256": "29768f576ab1ebb3c24be80a05d7eb8f4ee20ddc54c17b47c56e44b6094c703a"
+  },
+  "checks/2878-folder-bookmarks-component-final/01-folder bookmarks actual pointer persistence and custody.log": {
+    "bytes": 1278,
+    "sha256": "33a5368983615eefcd670f2b137ba6648fadf7f1fc754432129a30144e30069a"
+  },
+  "checks/2878-folder-bookmarks-component-final/02-existing browser navigation tree icons and audition.log": {
+    "bytes": 29976,
+    "sha256": "285260558645b25fe879e8a08b8d89c4f987de61c2822b517ce00017a8542710"
+  },
+  "checks/2878-folder-bookmarks-component-final/03-existing browser focus controls.log": {
+    "bytes": 820,
+    "sha256": "676bc534976d44a332dd2843a8b0c9e50a69effb8cbc5a208e72605ef432255b"
+  },
+  "checks/2878-folder-bookmarks-component-final/04-strict UI default.log": {
+    "bytes": 249,
+    "sha256": "1b7debc1aa21838fe6197f3c6099494bdaeb9b049938db58a9d89c84fa4a84de"
+  },
+  "checks/2878-folder-bookmarks-component-final/05-strict UI feature.log": {
+    "bytes": 249,
+    "sha256": "27c8c2cdedabb24f8a7c8a096255ea0a5a5efac8f896d9278bfa0923d72b0023"
+  },
+  "checks/2878-folder-bookmarks-component-final/06-architecture.log": {
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  "checks/2878-folder-bookmarks-component-final/07-UI style.log": {
+    "bytes": 82,
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+  },
+  "checks/2878-folder-bookmarks-component-final/08-GPUI patch.log": {
+    "bytes": 149,
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+  },
+  "checks/2878-folder-bookmarks-component-final/09-dependency provenance.log": {
+    "bytes": 119,
+    "sha256": "9c0c3fd09b9b22707639566251a286248f3daf5eda36c9145e10c1f7cee736eb"
+  },
+  "checks/2878-folder-bookmarks-component-final/10-device layout.log": {
+    "bytes": 84,
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+  },
+  "checks/2878-folder-bookmarks-component-final/11-format.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/2878-folder-bookmarks-component-final/12-diff.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/2878-folder-bookmarks-component-final/summary.json": {
+    "bytes": 17419,
+    "sha256": "51100fec49476c682ce1ec3a0d944f2d20902de06f0f6691f74afbddde4058b3"
+  },
+  "diagnostics/2878-expanded-functional/01-actual folder bookmark drag.log": {
+    "bytes": 1298,
+    "sha256": "ed8b83a99e473a27bb475e6ff2c7aeaa612cadabb98133121ced72f7fc5e3d14"
+  },
+  "diagnostics/2878-expanded-functional/summary.json": {
+    "bytes": 13433,
+    "sha256": "0877d2a7f3117202e77257beb10f0f3b6e1a588a5566ef6581263b6bc90f781c"
+  },
+  "diagnostics/2878-first-functional/01-actual folder bookmark drag.log": {
+    "bytes": 1125,
+    "sha256": "3eb1f21c6264907ea3f3a09b1c7376f0f4df85f782eb3ae498ca1981e4f2f1bd"
+  },
+  "diagnostics/2878-first-functional/summary.json": {
+    "bytes": 13424,
+    "sha256": "5ca86a1ff4bf1eca97942186fae48c6f61e32d3501247191cd86f7461ba9830c"
+  },
+  "diagnostics/2878-folder-bookmarks-final/03-existing browser focus controls.log": {
+    "bytes": 444,
+    "sha256": "ae8c5c61f359fa84f82fc737828c242014383d65a3750f48057836f36ff144d6"
+  },
+  "diagnostics/2878-folder-bookmarks-final/04-strict UI default.log": {
+    "bytes": 1094,
+    "sha256": "717a96bf762c20f3405b2918939b3b9a88b55ded25f8cbcd1e58be589efc555e"
+  },
+  "diagnostics/2878-folder-bookmarks-final/summary.json": {
+    "bytes": 16768,
+    "sha256": "d5cbac4238e15401a05cec277254a8ab9a8ed4091231d4eba0b8994f6a8a8774"
+  },
+  "diagnostics/2878-folder-bookmarks-qualified/03-existing browser focus controls.log": {
+    "bytes": 820,
+    "sha256": "2b90a05c7a0f1e148ebfd367871b519b3c61b5d8196373c0d8ff560734c7616c"
+  },
+  "diagnostics/2878-folder-bookmarks-qualified/04-strict UI default.log": {
+    "bytes": 249,
+    "sha256": "bebfe30d2b1cdb0b613bca972bd63eec7feedd1a71bcec4d5657c1ccb84d07fa"
+  },
+  "diagnostics/2878-folder-bookmarks-qualified/07-UI style.log": {
+    "bytes": 113,
+    "sha256": "4d83651042130454671bb8865fc1d3d0be93491142a4a72e77374a464836c964"
+  },
+  "diagnostics/2878-folder-bookmarks-qualified/summary.json": {
+    "bytes": 16996,
+    "sha256": "b53e3b3ab890c17f13bddf4a51861c5ac8c0c276442ec602b54809affbdd87b7"
+  },
+  "diagnostics/2878-original-pointer-red/01-actual folder bookmark drag.log": {
+    "bytes": 704,
+    "sha256": "dd42fa66d96691212ad1d8fee1f5ba81aebe49d18f1965b5a1902642f275c2c5"
+  },
+  "diagnostics/2878-original-pointer-red/summary.json": {
+    "bytes": 13218,
+    "sha256": "2bb8a17aacfd5ed0960698646b23f861b52c7a58b3b9bfe7833aed2e165f0ab4"
+  },
+  "diagnostics/2878-original-pointer-red-v2/01-actual folder bookmark drag.log": {
+    "bytes": 1056,
+    "sha256": "280c120e19aa98fd123d6a3984692ea901940cc17b1ad86874fb25de6d015081"
+  },
+  "diagnostics/2878-original-pointer-red-v2/summary.json": {
+    "bytes": 13227,
+    "sha256": "741c1405712294e9d74172ff13f2a38e19f26368408a25a2c76970ac936708e2"
+  },
+  "metadata.json": {
+    "bytes": 1848,
+    "sha256": "919d512456c4ba61b64d6175e918718e339fb7dbf8120772f5c15783ff8b501c"
+  }
+}

@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 39.57s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+
+thread 'editor::browser::folder_places_ui_test::cancelled_outside_stale_and_missing_folder_do_not_bookmark' (324864) panicked at crates/hex-ui/src/editor/browser/folder_places_ui_test.rs:304:5:
+assertion failed: !visual.update(|_, cx| cx.has_active_drag())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::folder_places_ui_test::cancelled_outside_stale_and_missing_folder_do_not_bookmark ... FAILED
+test editor::browser::folder_places_ui_test::folders_drag_to_places_persists_without_import_or_navigation ... ok
+test editor::browser::folder_places_ui_test::nested_folder_duplicate_preserves_icon_order_and_reopens ... ok
+
+failures:
+
+failures:
+    editor::browser::folder_places_ui_test::cancelled_outside_stale_and_missing_folder_do_not_bookmark
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 0.95s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

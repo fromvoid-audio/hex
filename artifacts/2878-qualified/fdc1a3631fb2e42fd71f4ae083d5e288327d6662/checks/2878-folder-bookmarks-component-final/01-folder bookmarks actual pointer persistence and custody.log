@@ -1,0 +1,17 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 37.35s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 7 tests
+test editor::browser::folder_places_ui_test::bookmark_fixture_catalog_worker_retains_same_root_after_view_drop ... ok
+test editor::browser::folder_places_ui_test::file_drop_is_not_a_bookmark_and_malformed_preferences_remain_untouched ... ok
+test editor::browser::folder_places_ui_test::folder_drag_feedback_and_geometry_are_stable_in_normal_and_compact_places ... ok
+test editor::browser::folder_places_ui_test::cancelled_outside_stale_and_missing_folder_do_not_bookmark ... ok
+test editor::browser::folder_places_ui_test::existing_audio_device_escape_precede_folder_fallback_and_idle_escape_clears_query ... ok
+test editor::browser::folder_places_ui_test::folders_drag_to_places_persists_without_import_or_navigation ... ok
+test editor::browser::folder_places_ui_test::nested_folder_duplicate_preserves_icon_order_and_reopens ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 2.06s
+

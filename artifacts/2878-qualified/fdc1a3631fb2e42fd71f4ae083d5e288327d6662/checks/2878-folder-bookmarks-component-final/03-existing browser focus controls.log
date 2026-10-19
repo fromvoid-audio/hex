@@ -1,0 +1,13 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 38.96s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+test editor::browser::ui_test::explicit_focus::browser_query_entry_navigation_escape_and_close_have_real_focus_owners ... ok
+test editor::browser::ui_test::explicit_focus::browser_stale_unavailable_row_click_leaves_query_focus_without_action ... ok
+test editor::browser::ui_test::explicit_focus::browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1069 filtered out; finished in 13.45s
+

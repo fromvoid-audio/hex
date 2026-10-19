@@ -1,0 +1,105 @@
+{
+  "source": "fdc1a3631fb2e42fd71f4ae083d5e288327d6662",
+  "base": "8c351021b134a4326eec5d0dce6519801a88aef1",
+  "commits": [
+    "8c351021b134a4326eec5d0dce6519801a88aef1",
+    "54f711cafbe94727c39befd8ffbe260e8d4fd60f",
+    "be242beff34e4cdf977964aa860ec9ddde326564",
+    "fdc1a3631fb2e42fd71f4ae083d5e288327d6662"
+  ],
+  "objects": [
+    {
+      "label": "before",
+      "commit": "8c351021b134a4326eec5d0dce6519801a88aef1",
+      "path": "crates/hex-ui/src/editor/browser.rs",
+      "blob": "6078e7ca329058e0fa6a879c000c5faef867f26c",
+      "sha256": "29c4282e1da858e2c23e4f55ccaa07317a2cf2d1d4d651ae445a810461a12c4a",
+      "bytes": 97987
+    },
+    {
+      "label": "after",
+      "commit": "fdc1a3631fb2e42fd71f4ae083d5e288327d6662",
+      "path": "crates/hex-ui/src/editor/browser.rs",
+      "blob": "6579ea8995abdf5e1d4d050d7825b1e4fbe60857",
+      "sha256": "779e95c2525dd5f76de78426aa80eb665bcf85fe9c54b179f5d8e57e9abaf9f1",
+      "bytes": 98777
+    },
+    {
+      "label": "after",
+      "commit": "fdc1a3631fb2e42fd71f4ae083d5e288327d6662",
+      "path": "crates/hex-ui/src/editor/browser/folder_places.rs",
+      "blob": "89f3dc22df6527fdbc817100770b190df4af3e10",
+      "sha256": "acd1e7c74a8c69be7610fe799c5838f4432cfba86734f779ab83a23d318e45ca",
+      "bytes": 4221
+    },
+    {
+      "label": "after",
+      "commit": "fdc1a3631fb2e42fd71f4ae083d5e288327d6662",
+      "path": "crates/hex-ui/src/editor/browser/folder_places_ui_test.rs",
+      "blob": "244c8014b5868a410f21c6cb956ef167258a9237",
+      "sha256": "255a122cda8d70d94a6b348ca16bb1c02f765f3dc46bb1bdd269b9513f4f7825",
+      "bytes": 23998
+    },
+    {
+      "label": "before",
+      "commit": "8c351021b134a4326eec5d0dce6519801a88aef1",
+      "path": "crates/hex-ui/src/editor/browser/layout.rs",
+      "blob": "df38df06368fb1a1fb72e9121a30a0357a77b121",
+      "sha256": "13c71e7069302fa6495a79edd6549c728541aba0b1e53497359e8ff3decd01b2",
+      "bytes": 33331
+    },
+    {
+      "label": "after",
+      "commit": "fdc1a3631fb2e42fd71f4ae083d5e288327d6662",
+      "path": "crates/hex-ui/src/editor/browser/layout.rs",
+      "blob": "2bc2fe1b0229396200393fa21312047b72e24a5a",
+      "sha256": "7a4e35a29226d42461bbfb5c20091a1384574139e8a330e7c4bb63db01699012",
+      "bytes": 34805
+    },
+    {
+      "label": "before",
+      "commit": "8c351021b134a4326eec5d0dce6519801a88aef1",
+      "path": "docs/browser-places.md",
+      "blob": "78f3ed668579d4a621ca147f6c78ba3026192dd2",
+      "sha256": "3d9d4a5c4dbc14a916fbe70d09bc781e7d04dad5795e5883a23c5a3db55315a6",
+      "bytes": 15258
+    },
+    {
+      "label": "after",
+      "commit": "fdc1a3631fb2e42fd71f4ae083d5e288327d6662",
+      "path": "docs/browser-places.md",
+      "blob": "c9b26b667e15704c5410edeb449d5d000511994f",
+      "sha256": "f0bfdca513b79d609395fbcc0a5dfe246b90e396baf4223a12be14c14cc0c9f3",
+      "bytes": 17314
+    },
+    {
+      "label": "before",
+      "commit": "8c351021b134a4326eec5d0dce6519801a88aef1",
+      "path": "todo.md",
+      "blob": "0d13bff7677c6f9ce1d4ec6f2f0aee044690b01d",
+      "sha256": "db87f5e600cf19ad051025c6f83371a15a73b1d0a374fcec39641eb8d0c71654",
+      "bytes": 404654
+    },
+    {
+      "label": "after",
+      "commit": "fdc1a3631fb2e42fd71f4ae083d5e288327d6662",
+      "path": "todo.md",
+      "blob": "58a17347d1fe9708a2011fbfed8b29fc7a8f19f6",
+      "sha256": "f8ecf5653d81f32f3850f14f9b57d4c2980366b3d53c85e6ba9975da0926ac3a",
+      "bytes": 405378
+    }
+  ],
+  "absent_before": [
+    {
+      "label": "before",
+      "path": "crates/hex-ui/src/editor/browser/folder_places.rs"
+    },
+    {
+      "label": "before",
+      "path": "crates/hex-ui/src/editor/browser/folder_places_ui_test.rs"
+    }
+  ],
+  "component_block_sha256": "74eef675ebde31cb1ae93a931be541a2da9c92d2de69db7e3630a0a0a2c144ea",
+  "component_block_byte_identical": true,
+  "source_available_in_canonical_git": true
+}

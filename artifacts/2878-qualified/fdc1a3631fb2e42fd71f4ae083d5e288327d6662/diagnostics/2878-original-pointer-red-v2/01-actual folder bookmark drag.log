@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 38.37s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 1 test
+
+thread 'editor::browser::folder_places_ui_test::folders_drag_to_places_persists_without_import_or_navigation' (324526) panicked at crates/hex-ui/src/editor/browser/folder_places_ui_test.rs:113:9:
+folder drag did not create a bookmark
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::browser::folder_places_ui_test::folders_drag_to_places_persists_without_import_or_navigation ... FAILED
+
+failures:
+
+failures:
+    editor::browser::folder_places_ui_test::folders_drag_to_places_persists_without_import_or_navigation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 5.38s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
