@@ -226,3 +226,34 @@ when opening settings, and closing already-open compact settings does not widen 
 This state is transient editor layout; no new persisted format or global width
 quantization is introduced. Native physical drag/hover and accessibility inspection
 remain coordinator-owned acceptance, separate from headless scene/input tests.
+
+## Folder drag bookmarks (Pulse #2878 / PR #480)
+
+Drag a directory row from the browser listing or an expanded inline folder into
+Places (heading, rows or add-folder area) to bookmark it. The themed target and
+folder-name ghost identify this operation. Files and device drags remain separate;
+this gesture never moves/copies folders or submits an Arrangement/Console import.
+Escape or releasing outside Places cancels the drag without clearing the query.
+
+A single directory validation runs on the background executor. The callback
+rechecks the existing scan/source/directory and visible directory identity before
+adding the exact native path through the existing bounded preferences saver.
+Browsing and query are preserved. Duplicate paths keep their current order and
+icon; Home/Music retain their existing identity. Capacity, corrupt settings and
+filesystem failures use the existing writable/error policy. No new schema or
+path-normalization law is introduced. Wait for saved feedback before closing.
+
+The private fixtures inject one precreated Arc Environment before any workers;
+real catalog-save gating proves the same root survives view/caller retirement
+and is cleaned after the actual job finishes. Source checks cover real pointer
+drags, nested expansion, duplicate/icon preservation, reopen, cancellation,
+stale/missing sources, unrelated file drops and malformed settings. Actual audio/device
+drag Escape precedence and idle query clearing retain their existing behavior. Linux GPUI
+scene/input tests do not establish physical/native drag acceptance.
+
+Finite later native check (Root owns execution): in a disposable folder tree,
+drag ordinary and nested folders into expanded and compact Places; confirm target
+feedback, unchanged source/query and saved/reopened bookmarks. Repeat a bookmark
+with a custom icon, cancel with Escape/outside, and try a file; confirm no duplicate,
+folder move/copy, clip import or lingering ghost. Check write-error feedback using
+only an explicitly owned disposable settings fixture. No native result claimed.

@@ -1,5 +1,6 @@
 //! Compact, bounded left-side media and project browser.
 mod audition;
+mod folder_places;
 mod place_icons;
 mod samples;
 mod tree;
@@ -165,6 +166,7 @@ pub(super) struct BrowserState {
     pub(super) preferences_writable: bool,
     preferences_dirty: bool,
     places_save_in_flight: bool,
+    folder_bookmark_pending: bool,
     pending_places_save: Option<BrowserPlaces>,
     pub(super) places_status: Option<String>,
     samples: samples::SampleBrowser,
@@ -251,6 +253,7 @@ impl BrowserState {
             preferences_writable: true,
             preferences_dirty: false,
             places_save_in_flight: false,
+            folder_bookmark_pending: false,
             pending_places_save: None,
             places_status: None,
             samples: samples::SampleBrowser::default(),
@@ -1422,6 +1425,12 @@ impl EditorView {
     }
 
     pub(super) fn browser_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Browser-only folder drags have no audio/model gesture to cancel.
+        // Retire the existing GPUI drag before query Escape semantics apply.
+        if cx.stop_active_drag(window) {
+            cx.notify();
+            return;
+        }
         if self
             .browser
             .search
@@ -2245,6 +2254,12 @@ impl EditorView {
                 });
             });
         }
+        if entry.kind == EntryKind::Directory && !self.browser_place_unavailable() {
+            let payload = self.browser_folder_drag(path.clone(), name);
+            row = row.on_drag(payload, |payload, _, _, cx| {
+                cx.new(|_| folder_places::FolderGhost(payload.label.clone()))
+            });
+        }
         let depth = self.browser.tree.depth(&path);
         let mut control = div()
             .w(px(16.0))
@@ -2590,3 +2605,7 @@ mod ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "console_drop_ui_test.rs"]
 mod console_drop_ui_test;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "browser/folder_places_ui_test.rs"]
+mod folder_places_ui_test;

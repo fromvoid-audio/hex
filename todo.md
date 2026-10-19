@@ -5820,3 +5820,13 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - No warning suppression, lint weakening, unfinished-feature deletion, native
   Audio-owner edit, full21 merge claim or application operation. Native/release
   qualification and source-specific final integration remain explicitly separate.
+
+- 19 October 2026 — Pulse #2878 / PR #480: folder-row and expanded-tree drags
+  create Places bookmarks through existing exact-native-path dedup and asynchronous
+  preferences; no media/project commands or filesystem work in paint. Preserve
+  source/query, icons/order and bounded failure feedback. Existing browser Escape
+  now retires a GPUI-only drag before query clearing. Seven focused rendered/input,
+  persistence/error and one-root worker-custody cases plus relevant browser controls
+  form the source acceptance scope; native physical dragging and final combined
+  qualification remain separate. Original-source ordinary-folder pointer RED and
+  earlier static-selector setup diagnostics retained independently.
