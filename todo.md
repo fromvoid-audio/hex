@@ -5820,3 +5820,20 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - No warning suppression, lint weakening, unfinished-feature deletion, native
   Audio-owner edit, full21 merge claim or application operation. Native/release
   qualification and source-specific final integration remain explicitly separate.
+
+## 19 october 2026 — pulse2880 / pr482 range duplicate selection
+
+- Reproduced actual keyboard and Option-drag copies reselecting the first original
+  clip after ACK despite retaining destination range coordinates. Preserve an
+  explicitly unselected primary clip while a valid completed time range owns
+  selection; generic no-range/stale-track behavior remains unchanged.
+- Reproduced a copy ACK stealing a later actual pointer range on another track.
+  Reconcile its selection intent only against the same source range/project scope
+  and current cursor generation. The accepted canonical copy still commits and
+  remains one Undo, while newer selection or Escape is respected.
+- One-root real input/Service tests cover repeated copies, mixed partial audio/
+  MIDI, gaps/media/IDs, rendered range and late frames, full snapshot Undo/Redo,
+  and Escape before versus after submission. Exact qualified source receipts and
+  distinct original/fixture negatives are retained in Pulse. No model, worker,
+  schema, DSP, new owner or native/app operation is added; merger qualification
+  and installed user acceptance remain separate.

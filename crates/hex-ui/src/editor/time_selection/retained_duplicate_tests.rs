@@ -459,3 +459,73 @@ fn actual_later_range_selection_is_not_stolen_by_queued_range_copy_ack(cx: &mut 
         assert!(view.selected_clip.is_none());
     });
 }
+
+#[gpui::test]
+fn escape_before_submission_cancels_copy_but_after_submission_only_cancels_selection_intent(
+    cx: &mut TestAppContext,
+) {
+    for submitted in [false, true] {
+        let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+        let source = pointer_range(&mut visual, &editor, &tracks[..1]);
+        let before = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        if submitted {
+            visual.simulate_keystrokes("cmd-d");
+            editor.read_with(&visual, |view, _| {
+                assert!(view.pending_time_range_move.is_some())
+            });
+        } else {
+            let row = lane(&mut visual, tracks[0]);
+            let grab = source.start() + source.duration() / 2;
+            let a = point(
+                row.origin.x + row.size.width * (grab as f32 / 384_000.0),
+                row.origin.y + row.size.height * 0.15,
+            );
+            let b = point(
+                a.x + row.size.width * (source.duration() as f32 / 384_000.0),
+                a.y,
+            );
+            let option = Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(a, MouseButton::Left, option);
+            visual.simulate_mouse_move(b, Some(MouseButton::Left), option);
+            editor.read_with(&visual, |view, _| {
+                assert!(view.time_range_move_gesture.is_some())
+            });
+        }
+        visual.simulate_keystrokes("escape");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.time_range_move_gesture.is_none());
+            assert!(view.pending_time_range_move.is_none());
+            let p = &view.state.as_ref().unwrap().project;
+            if submitted {
+                assert!(
+                    view.normalized_time_selection().is_none(),
+                    "accepted copy cannot restore escaped range intent"
+                );
+                assert_ne!(
+                    p.snapshot(),
+                    before,
+                    "already accepted command still commits"
+                );
+            } else {
+                assert_eq!(p.snapshot(), before, "cancelled preview queued no edit");
+                assert_eq!(view.normalized_time_selection().as_ref(), Some(&source));
+            }
+        });
+        if submitted {
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                let actual = view.state.as_ref().unwrap().project.snapshot();
+                let mut expected = before;
+                expected.next_id = actual.next_id;
+                assert_eq!(actual, expected);
+            });
+        }
+    }
+}

@@ -730,6 +730,16 @@ impl EditorView {
         if event.error.is_some() || event.state.revision <= pending.source_revision {
             return;
         }
+        // The accepted copy still commits, but its selection intent does not
+        // own a later pointer choice or a range the user has cancelled.
+        if self
+            .edit_cursor
+            .is_none_or(|cursor| cursor.generation != self.project_generation)
+            || self.time_selection_project_scope != pending.project_scope
+            || self.normalized_time_selection().as_ref() != Some(&pending.source)
+        {
+            return;
+        }
         let (first_track, last_track) = if pending.project_scope {
             let Some(first) = event.state.project.tracks().first().map(|track| track.id()) else {
                 self.time_selection = None;

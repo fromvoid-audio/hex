@@ -299,3 +299,37 @@ so another press repeats it. Pending edits must finish before another duplicate;
 overflow and invalid ranges make no partial edit. MIDI/detail/session and text or
 numeric focus retain their own commands. Without an active Arrangement range,
 the existing clip/scene duplication behavior remains.
+
+## duplicate selection ownership (pulse2880 / pr482)
+
+Successful Command-D and Option-drag copies retain the destination time rectangle
+through the worker acknowledgement and subsequent cursor/repaint ticks. A valid
+completed range deliberately has no primary clip; ordinary stale-clip
+reconciliation must not replace that choice with the first original clip.
+Unselected point cursors, explicit whole-clip creation/selection and generic
+stale-track fallback keep their existing behavior.
+
+The pending copy's selection intent applies only while its original source range,
+project scope and cursor generation still own the current selection. A newer
+pointer range or Escape supersedes that view intent. An already accepted copy
+still commits normally and remains one Undo operation; this does not cancel or
+roll back the canonical command. Escape before submitting an Option-drag preview
+queues no edit and preserves the previous selection.
+
+Actual input/Service regressions reproduce both original primary-clip reselection
+and a late copy acknowledgement stealing a newer range on another track. Coverage
+includes three consecutive Command-D copies, Option-drag followed by Command-D,
+single/multiple rows, partial audio and MIDI with a trailing gap, exact asset/
+source-offset preservation, fresh IDs, rendered destination bounds, later frames,
+Undo/Redo and cancellation. Fixtures use one precreated private environment for
+media and constructor paths before workers; no fabricated canonical event or
+acceptance is used. Pointer rounding oracles derive from the accepted frame range,
+not a guessed pixel-to-frame equality.
+
+Finite coordinator/user follow-up in a qualified build: repeat Command-D three
+times over a partial mixed-track range with gaps; Option-drag it and immediately
+duplicate again; inspect the stable destination range after worker completion,
+then Undo/Redo. Select another range while a copy is pending, and verify Escape
+before/after submission preserves the documented distinction. Native paint,
+installed-build and physical interaction acceptance remain separate from headless
+source checks. Existing historical PR367 and its evidence are preserved.
