@@ -333,6 +333,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_project_open(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
         self.sync_tuning(cx);
@@ -353,6 +354,7 @@ impl Render for EditorView {
             .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(window, cx);
+        self.reconcile_device_comparison_menu(window, cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
                 .flex_1()
@@ -378,7 +380,17 @@ impl Render for EditorView {
             .flex_1()
             .min_h_0()
             .flex()
-            .child(self.browser_view(window, cx))
+            .child(
+                self.browser_view(window, cx)
+                    .debug_selector(|| "resize-browser-hit-region".to_owned())
+                    .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                        if view.finish_trim_pointer_release(event, true, window, cx) {
+                            cx.stop_active_drag(window);
+                            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                            cx.stop_propagation();
+                        }
+                    })),
+            )
             .child(workspace_content.flex_1().min_w_0());
         let modifier_entity = cx.entity();
         div()
@@ -392,7 +404,9 @@ impl Render for EditorView {
             .child(self.fade_pointer_events(cx))
             .child(self.project_spectrum_pointer_events(cx))
             .track_focus(&self.focus)
-            .key_context(if self.track_name.is_editing() {
+            .key_context(if self.changelog.is_open() {
+                "hex_changelog"
+            } else if self.track_name.is_editing() {
                 "hex_track_name hex_text_editing"
             } else if self.clip_name_edit.is_some() {
                 "hex_clip_name hex_text_editing"
@@ -421,20 +435,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
-                if event.button == MouseButton::Left
-                    && let Some(drag) = view.active_trim_drag.clone()
-                {
-                    drag.snap_modifier.set(event.modifiers.platform);
-                    drag.stretch_modifier.set(event.modifiers.shift);
-                    drag.last_pointer_x.set(Some(f32::from(event.position.x)));
-                    view.update_trim_preview(&drag, f32::from(event.position.x), cx);
-                }
-                if event.button == MouseButton::Left
-                    && let Some(drag) = view.active_midi_trim_drag.clone()
-                {
-                    drag.snap_modifier.set(event.modifiers.platform);
-                    drag.last_pointer_x.set(Some(f32::from(event.position.x)));
-                    view.update_midi_trim_preview(&drag, f32::from(event.position.x), cx);
+                if view.finish_trim_pointer_release(event, false, window, cx) {
+                    cx.stop_active_drag(window);
+                    cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                    cx.stop_propagation();
                 }
             }))
             .on_modifiers_changed(move |event, window, cx| {
@@ -501,7 +505,8 @@ impl Render for EditorView {
                     view.computer_keyboard_down(event, window, cx);
                 }
             }))
-            .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+            .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                super::device_panel::selection_key_up(view, event, window, cx);
                 if view.tuning_audition_up(&event.keystroke.key) {
                     cx.stop_propagation();
                     cx.notify();
@@ -551,6 +556,16 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
+            .on_action(
+                cx.listener(|view, _: &super::changelog::OpenChangelog, window, cx| {
+                    view.open_changelog(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|view, _: &super::changelog::CloseChangelog, window, cx| {
+                    view.close_changelog(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::OpenTuning, window, cx| {
                 view.open_tuning(window, cx);
             }))
@@ -706,11 +721,15 @@ impl Render for EditorView {
                 view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &OpenProject, _, cx| {
-                view.open_dialog(hex_session::DocumentAudioMode::Resident, cx)
+            .on_action(cx.listener(|view, _: &OpenProject, window, cx| {
+                view.open_dialog(hex_session::DocumentAudioMode::Resident, window, cx)
             }))
-            .on_action(cx.listener(|view, _: &OpenStreamingProject, _, cx| {
-                view.open_dialog(hex_session::DocumentAudioMode::VerifiedStreaming, cx)
+            .on_action(cx.listener(|view, _: &OpenStreamingProject, window, cx| {
+                view.open_dialog(
+                    hex_session::DocumentAudioMode::VerifiedStreaming,
+                    window,
+                    cx,
+                )
             }))
             .on_action(cx.listener(|view, _: &OpenRelinkedProject, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Relink, window, cx)
@@ -1160,5 +1179,6 @@ impl Render for EditorView {
             .children(self.controller_input_overlay(cx))
             .children(super::theme_settings::overlay(self, cx))
             .children(self.tuning_overlay(cx))
+            .children(self.changelog_overlay(cx))
     }
 }

@@ -116,7 +116,7 @@ pub(super) fn title_bar(
                 .h_full()
                 .flex()
                 .items_center()
-                .child(crate::build_info::label()),
+                .child(crate::build_info::editor_label()),
         )
         .child(
             div()
@@ -222,9 +222,6 @@ mod ui_tests {
     fn compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights(
         cx: &mut TestAppContext,
     ) {
-        if !cfg!(target_os = "macos") {
-            return;
-        }
         let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
             cx,
             Project::new(48_000).expect("project"),
@@ -235,6 +232,7 @@ mod ui_tests {
             let filename = format!("{}.HEX", "Long Project Name ".repeat(30));
             view.state = Some(Arc::new(hex_session::service::ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -250,84 +248,120 @@ mod ui_tests {
             cx.notify();
         });
         let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.simulate_resize(size(px(880.0), px(540.0)));
-        visual.run_until_parked();
+        // Exercise common rendered geometry on every platform, including the
+        // actual minimum width. Only the OS-specific lights are conditional.
+        for width in [880.0, 960.0, 1440.0] {
+            visual.simulate_resize(size(px(width), px(540.0)));
+            visual.run_until_parked();
 
-        let title = visual
-            .debug_bounds("project-title-bar")
-            .expect("project title row");
-        let title_label = visual
-            .debug_bounds("project-title-label")
-            .expect("centered title label");
-        let version = visual
-            .debug_bounds("application-build-version")
-            .expect("build version remains visible at minimum width");
-        let debug = visual
-            .debug_bounds("open-session-log")
-            .expect("debug button remains visible beside the version");
-        let toolbar = visual
-            .debug_bounds("editor-toolbar")
-            .expect("compact toolbar row");
-        let import = visual
-            .debug_bounds("import audio · cmd+i")
-            .expect("toolbar action remains visible");
-        let restart = visual
-            .debug_bounds("restart default audio output · stays stopped")
-            .expect("right-side audio control remains visible");
-        let output_status = visual
-            .debug_bounds("audio output status")
-            .expect("output status remains visible");
-        let close = visual
-            .debug_bounds("window-control-close")
-            .expect("custom close control");
-        let minimize = visual
-            .debug_bounds("window-control-minimize")
-            .expect("custom minimize control");
-        let fullscreen = visual
-            .debug_bounds("window-control-fullscreen")
-            .expect("custom fullscreen control");
-        let window = visual.update(|window, _| window.bounds());
-        let title_bottom = f32::from(title.origin.y + title.size.height);
-        let toolbar_top = f32::from(toolbar.origin.y);
-        let title_center = f32::from(title_label.origin.x + title_label.size.width / 2.0);
-        let window_center = f32::from(window.origin.x + window.size.width / 2.0);
-        assert!((f32::from(title.size.height) - super::TITLE_HEIGHT).abs() < 1.0);
-        assert!((f32::from(toolbar.size.height) - super::TOOLBAR_HEIGHT).abs() < 1.0);
-        assert!((toolbar_top - title_bottom).abs() < 1.0);
-        assert!((title_center - window_center).abs() < 1.0);
-        assert!(title_label.origin.x + title_label.size.width <= version.origin.x);
-        assert!(version.size.width > px(0.0));
-        assert!(
-            (f32::from(window.origin.x + window.size.width - debug.origin.x - debug.size.width)
-                - 8.0)
-                .abs()
-                < 1.0
-        );
-        assert!(version.origin.y >= title.origin.y);
-        assert!(version.origin.y + version.size.height <= title.origin.y + title.size.height);
-        assert!(version.origin.x + version.size.width <= debug.origin.x);
-        assert_eq!(debug.size.width, px(20.0));
-        assert!(debug.origin.y >= title.origin.y);
-        assert!(debug.origin.y + debug.size.height <= title.origin.y + title.size.height);
-        assert!((f32::from(import.size.width) - super::CONTROL_SIZE).abs() < 1.0);
-        assert!((f32::from(import.size.height) - super::CONTROL_SIZE).abs() < 1.0);
-        assert!(f32::from(import.origin.x) < crate::theme::TITLEBAR_LEADING_INSET);
-        assert!(f32::from(title_label.size.width) <= 720.0);
-        assert!(
-            f32::from(restart.origin.x + restart.size.width)
-                <= f32::from(toolbar.origin.x + toolbar.size.width)
-        );
-        assert!(
-            f32::from(output_status.origin.x + output_status.size.width)
-                <= f32::from(toolbar.origin.x + toolbar.size.width)
-        );
-        assert!(f32::from(output_status.size.width) > 0.0);
-        assert!((f32::from(close.size.width) - 16.0).abs() < 1.0);
-        assert!((f32::from(minimize.size.width) - 16.0).abs() < 1.0);
-        assert!((f32::from(fullscreen.size.width) - 16.0).abs() < 1.0);
-        assert!(f32::from(close.origin.x) < f32::from(minimize.origin.x));
-        assert!(f32::from(minimize.origin.x) < f32::from(fullscreen.origin.x));
-        assert!(f32::from(fullscreen.origin.x + fullscreen.size.width) < window_center);
-        assert!(!gpui::TitlebarOptions::default().hide_native_window_controls);
+            let title = visual
+                .debug_bounds("project-title-bar")
+                .expect("project title row");
+            let title_label = visual
+                .debug_bounds("project-title-label")
+                .expect("centered title label");
+            let version = visual
+                .debug_bounds("application-build-version")
+                .expect("build version remains visible at minimum width");
+            let debug = visual
+                .debug_bounds("open-session-log")
+                .expect("debug button remains visible beside the version");
+            let changelog = visual
+                .debug_bounds("open-changelog")
+                .expect("changelog button");
+            let toolbar = visual
+                .debug_bounds("editor-toolbar")
+                .expect("compact toolbar row");
+            let tempo = visual
+                .debug_bounds("project-tempo-field")
+                .expect("first toolbar field");
+            let import = visual
+                .debug_bounds("import audio · cmd+i")
+                .expect("toolbar action remains visible");
+            let restart = visual
+                .debug_bounds("restart default audio output · stays stopped")
+                .expect("right-side audio control remains visible");
+            let output_status = visual
+                .debug_bounds("audio output status")
+                .expect("output status remains visible");
+            let window = visual.update(|window, _| window.bounds());
+            eprintln!(
+                "header bounds window={window:?} title={title_label:?} version={version:?} log={debug:?} changelog={changelog:?} tempo={tempo:?} import={import:?}"
+            );
+            let title_bottom = f32::from(title.origin.y + title.size.height);
+            let toolbar_top = f32::from(toolbar.origin.y);
+            let title_center = f32::from(title_label.origin.x + title_label.size.width / 2.0);
+            let window_center = f32::from(window.origin.x + window.size.width / 2.0);
+            assert!((f32::from(title.size.height) - super::TITLE_HEIGHT).abs() < 1.0);
+            assert!((f32::from(toolbar.size.height) - super::TOOLBAR_HEIGHT).abs() < 1.0);
+            assert!((toolbar_top - title_bottom).abs() < 1.0);
+            assert!((title_center - window_center).abs() < 1.0);
+            assert!(title_label.origin.x + title_label.size.width <= version.origin.x);
+            assert!(version.size.width > px(0.0));
+            assert!(
+                (f32::from(
+                    window.origin.x + window.size.width - changelog.origin.x - changelog.size.width
+                ) - 8.0)
+                    .abs()
+                    < 1.0
+            );
+            assert!(version.origin.y >= title.origin.y);
+            assert!(version.origin.y + version.size.height <= title.origin.y + title.size.height);
+            // Changelog is the rightmost control; Log remains its compact neighbor.
+            assert_eq!(
+                debug.origin.x - (version.origin.x + version.size.width),
+                px(4.0)
+            );
+            assert_eq!(
+                changelog.origin.x - (debug.origin.x + debug.size.width),
+                px(4.0)
+            );
+            assert!(changelog.size.width > px(0.0));
+            assert_eq!(changelog.size.height, px(super::CONTROL_SIZE));
+            assert!(changelog.origin.y >= title.origin.y);
+            assert!(
+                changelog.origin.y + changelog.size.height <= title.origin.y + title.size.height
+            );
+            assert_eq!(debug.size.width, px(20.0));
+            assert!(debug.origin.y >= title.origin.y);
+            assert!(debug.origin.y + debug.size.height <= title.origin.y + title.size.height);
+            assert!((f32::from(import.size.width) - super::CONTROL_SIZE).abs() < 1.0);
+            assert!((f32::from(import.size.height) - super::CONTROL_SIZE).abs() < 1.0);
+            // Tempo now leads the toolbar; Import follows Tempo and Tuning.
+            // The first field still starts at the row edge, without the title inset.
+            assert_eq!(tempo.origin.x, toolbar.origin.x);
+            assert!(f32::from(tempo.origin.x) < crate::theme::TITLEBAR_LEADING_INSET);
+            assert!(tempo.origin.x + tempo.size.width <= import.origin.x);
+            assert!(import.origin.x + import.size.width <= toolbar.origin.x + toolbar.size.width);
+            assert!(f32::from(title_label.size.width) <= 720.0);
+            assert!(
+                f32::from(restart.origin.x + restart.size.width)
+                    <= f32::from(toolbar.origin.x + toolbar.size.width)
+            );
+            assert!(
+                f32::from(output_status.origin.x + output_status.size.width)
+                    <= f32::from(toolbar.origin.x + toolbar.size.width)
+            );
+            assert!(f32::from(output_status.size.width) > 0.0);
+            if cfg!(target_os = "macos") {
+                let close = visual
+                    .debug_bounds("window-control-close")
+                    .expect("custom close control");
+                let minimize = visual
+                    .debug_bounds("window-control-minimize")
+                    .expect("custom minimize control");
+                let fullscreen = visual
+                    .debug_bounds("window-control-fullscreen")
+                    .expect("custom fullscreen control");
+                assert!((f32::from(close.size.width) - 16.0).abs() < 1.0);
+                assert!((f32::from(minimize.size.width) - 16.0).abs() < 1.0);
+                assert!((f32::from(fullscreen.size.width) - 16.0).abs() < 1.0);
+                assert!(f32::from(close.origin.x) < f32::from(minimize.origin.x));
+                assert!(f32::from(minimize.origin.x) < f32::from(fullscreen.origin.x));
+                assert!(f32::from(fullscreen.origin.x + fullscreen.size.width) < window_center);
+                assert!(fullscreen.origin.x + fullscreen.size.width <= title_label.origin.x);
+            }
+            assert!(!gpui::TitlebarOptions::default().hide_native_window_controls);
+        }
     }
 }
