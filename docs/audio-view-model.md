@@ -103,3 +103,31 @@ in Pulse2854. Original failure, invalid offscreen fixture and test-compilation
 logs remain separate from passing receipts. Final prospective full21 and merge
 belong to the sole merger. No new native run, app operation or full445 audible
 loop/handle/export acceptance is implied by this prerequisite repair.
+
+## default-test and signed-projection codec return
+
+The placement control's three rendered GPUI cases and their three private
+helpers now use the same `ui-test-support` feature boundary as their existing
+window fixture and GPUI test context. All four pure control-mapping tests remain
+in the default test configuration. This fixes a default-library test compilation
+failure; it does not skip a runtime failure or disable the pure mapping cases.
+
+A bounded retained root with a legal, fully consumed Once cursor can produce a
+signed fade-projection origin below `-u64::MAX` during the actual musical-clock
+conversion. The model admits this state, but the decoder previously rejected its
+own encoded document. The decoder now matches the model's inclusive
+`-2*u64::MAX..=u64::MAX` bound. The original full-domain frame limit, source,
+placement, tempo, fade and overflow validation remain unchanged. Tests retain a
+480k-frame root, use the canonical conversion, compare complete reopened
+snapshots and cover both exact signed endpoints plus malformed/outside values.
+An initial oversized-root fixture was correctly refused by the model before
+serialization; that setup failure is preserved separately from the reproduced
+codec failure.
+
+The change retains current format32, required placement/tuning/asset fields and
+explicit old-format refusal. It introduces no migration or compatibility reader.
+A/B and both-slot asset manifests still require integration with their actual
+current-main implementation; this isolated return does not import or qualify
+another owner's branch. The original Engine, waveform, playback, native and
+full445 acceptance gaps remain open. Exact prospective qualification belongs to
+the merger.

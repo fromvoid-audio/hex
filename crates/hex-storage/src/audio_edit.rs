@@ -271,7 +271,8 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                     .origin_beat_raw
                     .parse::<i128>()
                     .map_err(|_| StorageError::Invalid("invalid audio fade projection origin"))?;
-                if !(-i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
+                // Match audio_projection_frame: consumed Once phase plus root offset.
+                if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
                     return Err(StorageError::Invalid(
                         "audio fade projection origin exceeds bounded range",
                     ));

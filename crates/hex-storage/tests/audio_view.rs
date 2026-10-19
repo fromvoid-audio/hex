@@ -250,3 +250,52 @@ fn once_consumed_cursor_and_selected_root_offset_convert_below_single_signed_ran
     let reopened = hex_storage::decode(&bytes).unwrap();
     assert_eq!(reopened.snapshot(), model.project().snapshot());
 }
+
+#[test]
+fn projection_codec_matches_signed_model_endpoints_and_refuses_malformed_origins() {
+    use std::sync::Arc;
+    let (project, clip) = fixture(AudioViewMode::Once);
+    let mut editor = Editor::new(project, 8).unwrap();
+    editor
+        .execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        })
+        .unwrap();
+    let minimum = -2 * i128::from(u64::MAX);
+    let maximum = i128::from(u64::MAX);
+    for origin in [minimum, minimum + 1, -maximum - 1, -maximum, 0, maximum] {
+        let mut snapshot = editor.project().snapshot();
+        let edit = snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+            .edit
+            .as_mut()
+            .unwrap();
+        let domain = Arc::make_mut(&mut edit.domain);
+        domain.fade_projection.as_mut().unwrap().origin_beat_raw = origin;
+        let valid = Project::from_snapshot(snapshot).unwrap();
+        let bytes = hex_storage::encode(&valid).unwrap();
+        assert_eq!(
+            hex_storage::decode(&bytes).unwrap().snapshot(),
+            valid.snapshot(),
+            "origin={origin}"
+        );
+    }
+    let original: serde_json::Value =
+        serde_json::from_slice(&hex_storage::encode(editor.project()).unwrap()).unwrap();
+    for origin in [
+        (minimum - 1).to_string(),
+        (maximum + 1).to_string(),
+        "170141183460469231731687303715884105728".into(),
+        "-170141183460469231731687303715884105729".into(),
+        "nan".into(),
+        "1.5".into(),
+    ] {
+        let mut value = original.clone();
+        let edit = placement_object(&mut value).unwrap();
+        edit["domain"]["fade_projection"]["origin_beat_raw"] = origin.clone().into();
+        assert!(
+            hex_storage::decode(&serde_json::to_vec(&value).unwrap()).is_err(),
+            "origin={origin}"
+        );
+    }
+}

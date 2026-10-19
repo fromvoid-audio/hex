@@ -732,6 +732,7 @@ fn source_marker(frame: u64, total: u64, id: &'static str, color: u32) -> Div {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "ui-test-support")]
     fn placed_loop_fixture(
         cx: &mut gpui::TestAppContext,
         mode: AudioViewMode,
@@ -803,6 +804,7 @@ mod tests {
         (handle, editor, clip)
     }
 
+    #[cfg(feature = "ui-test-support")]
     fn visible_loop_button(visual: &mut gpui::VisualTestContext) -> gpui::Point<gpui::Pixels> {
         use gpui::Modifiers;
         visual.run_until_parked();
@@ -827,6 +829,7 @@ mod tests {
         button
     }
 
+    #[cfg(feature = "ui-test-support")]
     fn placed_loop_control(cx: &mut gpui::TestAppContext, mode: AudioViewMode) {
         use gpui::{Modifiers, VisualTestContext};
         let (handle, editor, clip) = placed_loop_fixture(cx, mode);
@@ -890,6 +893,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn review_placed_mode_only_change_invalidates_captured_control(cx: &mut gpui::TestAppContext) {
         use gpui::{Modifiers, VisualTestContext};
@@ -1004,11 +1008,13 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn review_placed_repeat_loop_control_dispatches_off(cx: &mut gpui::TestAppContext) {
         placed_loop_control(cx, hex_project::AudioViewMode::Repeat);
     }
 
+    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn review_placed_once_loop_control_dispatches_on(cx: &mut gpui::TestAppContext) {
         placed_loop_control(cx, hex_project::AudioViewMode::Once);
