@@ -1,0 +1,130 @@
+{
+  "469-oracle-final-run.log": {
+    "sha256": "09cd50f724f436e9554dfeea4c5e8f3bccf2247209d06ca971a401007cb442d8",
+    "bytes": 1016
+  },
+  "469-oracle-green-run.log": {
+    "sha256": "c9a924883924ea7da88bb3c41ad6b4ad68ec3922ad7ad1d0526525e393744fb3",
+    "bytes": 235
+  },
+  "469-oracle-green-v2-run.log": {
+    "sha256": "932c47692d3b076afc7dde2fb8d311dd91146f55890b72afc9c2561e5cbd411e",
+    "bytes": 260
+  },
+  "HANDOFF.md": {
+    "sha256": "ebc5c2df62e34592da1838f110ed47877adb93436d5dcb26a68b65375c42506b",
+    "bytes": 2612
+  },
+  "checks/469-upper-rail-oracle-final/01-all existing clip drag input cases including upper rail.log": {
+    "sha256": "1a8ff2214b13ef837a4c530422f94419b25da0ec7bb035e5b911495ba352ec1a",
+    "bytes": 3249
+  },
+  "checks/469-upper-rail-oracle-final/02-accepted resize release and actual worker controls.log": {
+    "sha256": "d3c685ff48add2ec2b9dd5aa704351e47bce5a2b44bf076effcc111843aa9400",
+    "bytes": 14833
+  },
+  "checks/469-upper-rail-oracle-final/03-resize terminal cancel stale refusal controls.log": {
+    "sha256": "e24fd99ca2965a5f2e41a79e69c4ce8e164956aa6fa10333ecf2fa4cae5c5516",
+    "bytes": 2240
+  },
+  "checks/469-upper-rail-oracle-final/04-strict UI default.log": {
+    "sha256": "1518e474d4078c7fc7d91225849a570e8f4623bfc6f7984b49bd06955f1cc09d",
+    "bytes": 1218
+  },
+  "checks/469-upper-rail-oracle-final/05-strict UI feature.log": {
+    "sha256": "4b72f17593f87de1a247abe7236e620629cac574b63db8cb0f8a488727d1f322",
+    "bytes": 482
+  },
+  "checks/469-upper-rail-oracle-final/06-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "bytes": 76
+  },
+  "checks/469-upper-rail-oracle-final/07-UI style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "bytes": 82
+  },
+  "checks/469-upper-rail-oracle-final/08-GPUI patch.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "bytes": 149
+  },
+  "checks/469-upper-rail-oracle-final/09-dependency provenance.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "bytes": 113
+  },
+  "checks/469-upper-rail-oracle-final/10-device layout.log": {
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9",
+    "bytes": 84
+  },
+  "checks/469-upper-rail-oracle-final/11-format.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "checks/469-upper-rail-oracle-final/12-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "checks/469-upper-rail-oracle-final/summary.json": {
+    "sha256": "b83f76a2304a2dd8dca692706900286ede747023ea0e582686992259489fa686",
+    "bytes": 18707
+  },
+  "checks/469-upper-rail-oracle-green/01-actual captured upper rail release and worker history.log": {
+    "sha256": "318027c23915b0b2995dc578755e08331d8570a1aef91688120b4373ae416654",
+    "bytes": 1496
+  },
+  "checks/469-upper-rail-oracle-green/summary.json": {
+    "sha256": "2b313b2da62b33826da674f2bec4f631f6a70d1f12a5c53754db6d0a9e4e4301",
+    "bytes": 13446
+  },
+  "checks/469-upper-rail-oracle-green/target-handoff-clean.log": {
+    "sha256": "150cb0ca42bca5f98227f5b47358c75dd199fb6cadbf653742f8acfb9e6bc7a0",
+    "bytes": 288
+  },
+  "checks/469-upper-rail-oracle-green-v2/01-actual captured upper rail command projection and worker history.log": {
+    "sha256": "61901101fb67e4ef01800a6e8a9469545f80764a612e372c6e662e1ff1845dbd",
+    "bytes": 673
+  },
+  "checks/469-upper-rail-oracle-green-v2/summary.json": {
+    "sha256": "383819a2085981c126447e1d4ad74acf0def92014a372ca40a9744c12001a07f",
+    "bytes": 13070
+  },
+  "component-wrapper.py": {
+    "sha256": "1b3bc954409e0f82a8175c215c629a57999a3133e6e7874580958b97aa5d5570",
+    "bytes": 580
+  },
+  "diagnostics/first-geometry-command-assumption.rs": {
+    "sha256": "2db2f65df7f89e2705267bc5407bfdf807bc607c6b4025532cad2cb64837f493",
+    "bytes": 91827
+  },
+  "metadata.json": {
+    "sha256": "a0c551ff35cc097f951b8945d657c95d448c9e854520136abc162fd9737ef6d6",
+    "bytes": 990
+  },
+  "source/after/crates/hex-ui/src/editor/clip_drag_ui_test.rs": {
+    "sha256": "42693f195df6b17055667fdf3504d5827c29c2a972fe50b0117392f1985906ae",
+    "bytes": 92481
+  },
+  "source/after/docs/resize-edge-pan.md": {
+    "sha256": "0172e59d1bedc1f6fa93d43efae50af1313f17426ec1312a214ab11ff5c77e4a",
+    "bytes": 11231
+  },
+  "source/after/todo.md": {
+    "sha256": "57ee2f110de0151c15f2e59e504062285abfaaecde1dfbf3ad4a09640eb18c67",
+    "bytes": 403770
+  },
+  "source/before/crates/hex-ui/src/editor/clip_drag_ui_test.rs": {
+    "sha256": "0a6b3010f0253c64f799c1e6e3e71e23bfc6d8fbfaadb72b4a76601d14c58d29",
+    "bytes": 86278
+  },
+  "source/before/docs/resize-edge-pan.md": {
+    "sha256": "c0e7bf508d852b21c8d0181fc438ef168c546a3580a8e87b5e03fbe8243ab135",
+    "bytes": 9908
+  },
+  "source/before/todo.md": {
+    "sha256": "0b064e4c8bc1c46453a826e681b87588fac619efead41fa6274376849c896b85",
+    "bytes": 402614
+  },
+  "source.patch": {
+    "sha256": "2e28e73599370c00cb9dbdd45216c363791d9b6ad165ec707e1986eebc03896d",
+    "bytes": 12909
+  }
+}

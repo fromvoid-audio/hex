@@ -1,0 +1,25 @@
+[1/12] all existing clip drag input cases including upper rail: running
+[1/12] all existing clip drag input cases including upper rail: passed
+[2/12] accepted resize release and actual worker controls: running
+[2/12] accepted resize release and actual worker controls: passed
+[3/12] resize terminal cancel stale refusal controls: running
+[3/12] resize terminal cancel stale refusal controls: passed
+[4/12] strict UI default: running
+[4/12] strict UI default: passed
+[5/12] strict UI feature: running
+[5/12] strict UI feature: passed
+[6/12] architecture: running
+[6/12] architecture: passed
+[7/12] UI style: running
+[7/12] UI style: passed
+[8/12] GPUI patch: running
+[8/12] GPUI patch: passed
+[9/12] dependency provenance: running
+[9/12] dependency provenance: passed
+[10/12] device layout: running
+[10/12] device layout: passed
+[11/12] format: running
+[11/12] format: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/469-upper-rail-oracle-final/summary.json

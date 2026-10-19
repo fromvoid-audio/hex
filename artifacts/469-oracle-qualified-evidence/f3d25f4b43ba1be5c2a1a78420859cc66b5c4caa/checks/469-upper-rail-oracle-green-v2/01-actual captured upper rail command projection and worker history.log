@@ -1,0 +1,12 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 35.52s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 1 test
+upper-rail release source=TrackId(1) clip=ClipId(4) frame=192000 actual worker accepted extent=95999..96000
+test editor::clip_drag_ui_test::rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1067 filtered out; finished in 0.87s
+

@@ -1,0 +1,34 @@
+{
+  "base": "4454d57a9c1cd14b06cc334f3332f2c2e0026419",
+  "source": "f3d25f4b43ba1be5c2a1a78420859cc66b5c4caa",
+  "tree": "5bdb0623609d60b39a5909388120c47ffcf28f3d",
+  "files": [
+    "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
+    "docs/resize-edge-pan.md",
+    "todo.md"
+  ],
+  "runtime_unique": 56,
+  "counts": [
+    [
+      "25",
+      "0"
+    ],
+    [
+      "22",
+      "0"
+    ],
+    [
+      "9",
+      "0"
+    ]
+  ],
+  "summary_sha256": "b83f76a2304a2dd8dca692706900286ede747023ea0e582686992259489fa686",
+  "production_changed": false,
+  "original_full_failure_evidence": "c2aab7fab0c40492cccbb418c1dc9a6a3ac92671",
+  "original_full_failure_archive_sha256": "1a60e1e23f09c25d634140424b5a98138949cd548a879d63d0121c4866bcdc63",
+  "limits": [
+    "No full21/merge/native claim",
+    "Known PCM build-script Unknown under old parent Clippy; separate accepted474 not imported",
+    "Original required full failure and first wrong-frame test assertion remain distinct negatives"
+  ]
+}
