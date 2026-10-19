@@ -2985,6 +2985,7 @@ impl SessionPlayback {
         if let Some(groups) = groups {
             groups.commit();
         }
+        self.main_chain.inherit_from(&previous.main_chain);
         Ok(report)
     }
 

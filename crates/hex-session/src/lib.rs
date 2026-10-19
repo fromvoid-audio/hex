@@ -406,7 +406,7 @@ impl Session {
         self.editor.project()
     }
 
-    /// Resolve a canonical device's class from its owning track slot. UI
+    /// Resolve a canonical device's class from its actual owning slot. UI
     /// requests carry stable IDs, never authority to select a registry.
     pub(crate) fn native_device_class(
         &self,
@@ -428,6 +428,11 @@ impl Session {
             .return_tracks()
             .iter()
             .any(|track| track.devices().iter().any(|effect| effect.id() == device))
+            || self
+                .project()
+                .main_devices()
+                .iter()
+                .any(|effect| effect.id() == device)
         {
             return Ok(hex_engine::NativeDeviceClass::Effect);
         }

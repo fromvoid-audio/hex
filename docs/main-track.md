@@ -90,3 +90,56 @@ Native user check: disable snap, click Main without moving, then drag a range an
 its upper-third handle after resizing/panning; verify cursor, endpoints and Undo.
 Source validation and merge evidence are retained with PR263; native input is a
 separate acceptance check.
+
+## main audio effects — pulse2882 / pr484
+
+The original row-only implementation above did not add a processing chain.
+Main now has its own effect-only canonical device vector with global DeviceIds;
+it remains a singleton, never a regular TrackId or clip destination. Clicking
+its Arrange or Console header selects its shared device rail. Existing effect
+controls, add/drop/reorder, bypass/remove, A/B comparison and presets address
+that actual Main inventory. Track and Return selection keep their existing
+owners. Instruments are refused in Main; selecting Main never inserts a track.
+
+One prepared Main chain processes the sum of Tracks and Returns, followed by
+existing master gain once, then the Main observer. Track/Return capture taps and
+stems stay before Main/master processing. Arrangement, launched Session audio,
+compensated routing, linear/prepared WAV and controlled range export share this
+boundary. Controlled nonzero-range export reconstructs stateful Main history by
+the existing bounded preroll; the simple linear export helpers retain their
+existing seek semantics. No new DSP law, lookahead or latency cap is introduced.
+
+Current format33 includes the required bounded Main inventory, both A/B banks,
+host trims, bypass, stable IDs and complete device-asset inventory. Earlier
+formats are explicitly refused; no alpha migration or user-data rewrite is
+performed. Main uses existing per-chain/global processor and byte caps. Its
+prepared runtime, physical owner kind9/index0, shared handles and meters join
+current accounting. The narrow audio assembly constructor still explicitly
+refuses authored Main, just as its existing restricted graph class refuses
+other unsupported authored chains; ordinary compile/Session/export works.
+Future395 custody overlays must carry Main on their combined modern source;
+this change does not import or qualify that unpublished implementation.
+
+Matching Main processor histories are inherited only after normal handoff's
+fallible phases commit; the existing stopped compensated fast path also retains
+history. Newly inserted processors start fresh. Unavailable prepared native
+runtime and warmed legacy-history refusal policies include Main, preventing a
+silent fallback or a cold-history substitution. Device-meter lookup resolves
+the same actual prepared Main tap.
+
+Source checks cover real header/add/reorder/parameter/Cancel/A-B/copy/preset and
+project Save/Open requests, refusal without canonical mutation, exact Undo/Redo,
+nonlinear post-sum PCM, stateful normal/fast handoff, exact combined runtime cap,
+range-export history, pre-Main stems, and instrumented callback publication /
+render / retirement. Exact receipt/source identities are recorded in Pulse;
+these component checks are not the sole merger's prospective full integration
+or physical device qualification.
+
+For Root's later optimized native check, record the exact build/source: select
+Main in both views, add an effect and edit it while audio plays; confirm Main
+processes the complete sum once and master gain remains independent. Switch and
+copy distinct A/B banks, reorder/bypass/remove and Undo/Redo, save/open a project
+and preset, and verify ordinary Track/Return selection. Try an instrument and a
+sample on Main: neither may create a Main instrument or clip. Check focused EQ
+and metering against the selected Main device, plus dense/minimum-width layout.
+This task does not claim native output deadlines, listening or user acceptance.

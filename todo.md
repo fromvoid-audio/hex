@@ -5820,3 +5820,23 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - No warning suppression, lint weakening, unfinished-feature deletion, native
   Audio-owner edit, full21 merge claim or application operation. Native/release
   qualification and source-specific final integration remain explicitly separate.
+
+## 19 october 2026 — pulse2882 / pr484 main effect chain
+
+- Singleton canonical effect-only Main with global DeviceIds and strict current
+  format33; original pinned layout, clip destination exclusion and master fader
+  remain. Shared rail/parameter/preset/A-B/history paths target Main explicitly.
+- One Main NativeRuntimeChain after Tracks+Returns, before master gain once;
+  Track/Return taps/stems remain pre-Main. Current prepared handles/runtime bytes
+  and combined effect+mutable-instrument limits include Main. Empty Main assembly
+  Arc is quoted before birth and retained/restored by the same carrier; authored
+  Main remains outside that constructor's existing narrow graph class.
+- Actual stateful normal handoff missing-inheritance, combined cap omission,
+  meter lookup, native fallback/legacy-history and Session class-resolution
+  failures are retained with source-bound positive controls. Real Console input,
+  A/B project/preset round trips, nonlinear/export/stem PCM and callback zero-
+  allocation/history checks supplement the earlier finite UI/carrier receipts.
+- Sole merger owns prospective full checks/review/merge. Root owns optimized
+  native geometry/control/output/listening checks; no physical acceptance is
+  claimed. Future395 overlay must preserve Main accounting on modern combined
+  source, without importing the unfinished old overlay into this task.

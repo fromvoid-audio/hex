@@ -2049,6 +2049,7 @@ impl Project {
         self.return_buses
             .iter()
             .flat_map(|bus| bus.device_chain.iter())
+            .chain(self.main_device_chain.iter())
             .find(|device| device.device_id == device_id)
             .map(|device| &device.meter)
     }
