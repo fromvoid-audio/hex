@@ -19,6 +19,7 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+mod group_copy;
 #[cfg(test)]
 mod test_environment;
 
@@ -616,6 +617,7 @@ pub(super) struct EditorView {
     pending_new_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
+    pending_group_copy: Option<group_copy::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     export_control: Option<hex_session::service::ExportControl>,
@@ -875,6 +877,35 @@ impl EditorView {
         )
     }
 
+    /// Reuse the fixture's actual path owner before any startup work escapes.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_environment(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        environment: Arc<test_environment::Environment>,
+    ) -> Self {
+        let directory = environment.root().join("samples");
+        Self::new_with_browser_paths(
+            window,
+            cx,
+            service,
+            Err("offline ui test".into()),
+            (
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+            ),
+            test_environment::Inputs {
+                existing_environment: Some(environment),
+                directory: Some(directory),
+                defaults: [true; 4],
+                ..Default::default()
+            },
+        )
+    }
+
     fn new_with_browser_preferences_path(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -917,8 +948,10 @@ impl EditorView {
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
         #[cfg(test)]
-        let test_environment = test_environment::Environment::new()
-            .expect("could not create private editor test environment; no ambient fallback");
+        let test_environment = test_paths.existing_environment.unwrap_or_else(|| {
+            test_environment::Environment::new()
+                .expect("could not create private editor test environment; no ambient fallback")
+        });
         #[cfg(test)]
         let paths = test_environment.resolve_paths(paths, test_paths.defaults);
 
@@ -1143,6 +1176,7 @@ impl EditorView {
             pending_new_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
+            pending_group_copy: None,
             close_prompt_open: false,
             export_pending: false,
             export_control: None,
