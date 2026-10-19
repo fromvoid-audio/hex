@@ -436,3 +436,128 @@ fn adaptive_review_section_remainder_preserves_painted_and_snap_density() {
         }
     }
 }
+
+#[test]
+fn adaptive_review_mixed_short_sections_reassign_unused_paint_and_snap_capacity() {
+    // Independent one-slot-per-round oracle, including empty/zero/huge demands.
+    // The helper has at most nine level probes plus its final sum, separately
+    // from demand evaluation cost; a256-wide inclusive domain has257 outcomes.
+    for demands in [
+        vec![],
+        vec![0],
+        vec![1],
+        vec![usize::MAX],
+        vec![0, 1, usize::MAX, 1],
+        vec![2, 2, 2],
+        vec![0, 0, 0],
+    ] {
+        for budget in [0, 1, 255, 256] {
+            let probes = std::cell::Cell::new(0);
+            let (level, mut remainder) = capped_fair_share(demands.len(), budget, |index| {
+                probes.set(probes.get() + 1);
+                demands[index]
+            });
+            assert!(probes.get() <= 10 * demands.len());
+            let actual: Vec<_> = demands
+                .iter()
+                .map(|demand| {
+                    let extra = usize::from(*demand > level && remainder > 0);
+                    remainder -= extra;
+                    demand.min(&level) + extra
+                })
+                .collect();
+            let mut expected = vec![0; demands.len()];
+            let mut remaining = budget;
+            while remaining > 0 {
+                let before = remaining;
+                for (value, demand) in expected.iter_mut().zip(&demands) {
+                    if remaining > 0 && *value < *demand {
+                        *value += 1;
+                        remaining -= 1;
+                    }
+                }
+                if before == remaining {
+                    break;
+                }
+            }
+            assert_eq!(actual, expected);
+        }
+    }
+    let mut counts = Vec::new();
+    for long_first in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let mut quarter = 0;
+        for section in 0..129 {
+            if section > 0 {
+                editor
+                    .execute(Command::SetMeterPoint {
+                        beat: BeatTime::from_quarters(quarter).unwrap(),
+                        meter: Meter::new(if section % 2 == 0 { 4 } else { 3 }, 4).unwrap(),
+                    })
+                    .unwrap();
+            }
+            quarter += if section == if long_first { 0 } else { 128 } {
+                8192
+            } else {
+                1
+            };
+        }
+        let project = editor.project();
+        // Keep all three pans inside the same last section: no extra
+        // 0.125-quarter tail beyond the authored test span changes its quota.
+        let length = project
+            .tempo_map()
+            .beat_to_frame(BeatTime::from_quarters(quarter).unwrap())
+            .unwrap()
+            - 3000;
+        for density in AdaptiveGridDensity::ALL {
+            let grid = SnapGrid::Adaptive.with_density(density);
+            for start in [0, 1, 3000] {
+                let viewport = Viewport { start, length };
+                let paint_start = std::time::Instant::now();
+                let lines = grid_lines(project, viewport, 100_000.0, grid);
+                let paint_us = paint_start.elapsed().as_micros();
+                let snap_start = std::time::Instant::now();
+                let _ = grid.snap_frame(project, viewport.start + 1, viewport, 100_000.0);
+                let snap_us = snap_start.elapsed().as_micros();
+                let adjacent_start = std::time::Instant::now();
+                let _ = grid.adjacent_frame(project, viewport.start, viewport, 100_000.0, true);
+                let adjacent_us = adjacent_start.elapsed().as_micros();
+                eprintln!(
+                    "debug_visible_work sections=129 paint_us={paint_us} snap_us={snap_us} adjacent_us={adjacent_us}; no optimized/native deadline claim"
+                );
+                eprintln!(
+                    "mixed sections=129 short=128 long_first={long_first} density={density:?} start={start} painted={}",
+                    lines.len()
+                );
+                counts.push((long_first, density, start, lines.len()));
+                assert!(lines.windows(2).all(|p| p[0].frame < p[1].frame));
+                for pair in lines.windows(2).step_by(17) {
+                    assert_eq!(
+                        grid.snap_frame(project, pair[0].frame, viewport, 100_000.0),
+                        Some(pair[0].frame)
+                    );
+                    let candidate = pair[0].frame + 1;
+                    let snapped = grid.snap_frame(project, candidate, viewport, 100_000.0);
+                    assert!(lines.iter().any(|line| Some(line.frame) == snapped));
+                    assert_eq!(
+                        grid.adjacent_frame(project, pair[0].frame, viewport, 100_000.0, true),
+                        Some(pair[1].frame)
+                    );
+                    assert_eq!(
+                        grid.with_platform_modifier(true)
+                            .snap_frame(project, candidate, viewport, 100_000.0),
+                        Some(candidate)
+                    );
+                }
+            }
+        }
+    }
+    for (long_first, density, start, count) in counts {
+        assert_eq!(
+            count,
+            MAX_GRID_LINES - usize::from(start != 0),
+            "unused short-section capacity: long_first={long_first} density={density:?} start={start}"
+        );
+    }
+}

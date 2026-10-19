@@ -342,6 +342,36 @@ enum LandmarkDensity {
     Fixed(u64),
 }
 
+// Max-min fair sharing of the existing small paint budget. Every sum is
+// capped at budget+1: enormous raw spans cannot overflow or affect the quota.
+// The inclusive level domain 0..=256 needs at most NINE midpoint probes, plus
+// one final bounded sum. No heap storage or historical-section walk is used.
+fn capped_fair_share(
+    count: usize,
+    budget: usize,
+    demand: impl Fn(usize) -> usize,
+) -> (usize, usize) {
+    let budget = budget.min(MAX_GRID_LINES);
+    if count == 0 || budget == 0 {
+        return (0, 0);
+    }
+    let cost = |level| {
+        (0..count).fold(0_usize, |sum, index| {
+            sum.saturating_add(demand(index).min(level)).min(budget + 1)
+        })
+    };
+    let (mut low, mut high) = (0, budget);
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if cost(middle) <= budget {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    (low, budget - cost(low))
+}
+
 fn ruler_candidates(
     project: &Project,
     viewport: Viewport,
@@ -426,6 +456,20 @@ fn ruler_candidates(
 
     let section_count = sections.len();
     let sampled_sections = section_count.min(target_count);
+    // If all coarsened landmarks fit, preserve them all. Otherwise unused
+    // short-section slots belong to still-unsatisfied sections, in the same
+    // deterministic order as adaptive coarsening. Over-budget section sampling
+    // below retains its existing evenly spaced section identities.
+    let demand = |index: usize| {
+        sections[index]
+            .landmark_count
+            .min((target_count.min(MAX_GRID_LINES) + 1) as u64) as usize
+    };
+    let (level, mut remainder) = if section_count <= target_count {
+        capped_fair_share(section_count, target_count, demand)
+    } else {
+        (0, 0)
+    };
     #[cfg(test)]
     let mut landmark_attempts = 0;
     if sampled_sections > 0 {
@@ -442,11 +486,16 @@ fn ruler_candidates(
             let Some(section) = sections.get(section_index).copied() else {
                 continue;
             };
-            let quota = target_count / sampled_sections
-                + usize::from(sampled_index < target_count % sampled_sections);
-            let quota = u64::try_from(quota)
-                .unwrap_or(u64::MAX)
-                .min(section.landmark_count);
+            let quota = if section_count <= target_count {
+                let wanted = demand(section_index);
+                let extra = usize::from(wanted > level && remainder > 0);
+                remainder -= extra;
+                wanted.min(level) + extra
+            } else {
+                target_count / sampled_sections
+                    + usize::from(sampled_index < target_count % sampled_sections)
+            };
+            let quota = (quota as u64).min(section.landmark_count);
             for sample in 0..quota {
                 let offset = if quota <= 1 {
                     0
@@ -518,7 +567,7 @@ fn visible_meter_sections(project: &Project, viewport: Viewport) -> Option<usize
     Some(end.saturating_sub(start).max(1))
 }
 
-fn adaptive_grid_step(
+fn adaptive_base_step(
     project: &Project,
     viewport: Viewport,
     beat: BeatTime,
@@ -552,6 +601,33 @@ fn adaptive_grid_step(
         pixels *= 2.0;
         multiplier *= 2;
     }
+    step.max(1)
+}
+
+fn adaptive_grid_step(
+    project: &Project,
+    viewport: Viewport,
+    beat: BeatTime,
+    meter_beat_length: u64,
+    pixel_width: f32,
+    target_spacing: f32,
+) -> u64 {
+    if meter_beat_length == 0
+        || viewport.length == 0
+        || !pixel_width.is_finite()
+        || pixel_width <= 0.0
+        || !target_spacing.is_finite()
+    {
+        return meter_beat_length.max(1);
+    }
+    let mut step = adaptive_base_step(
+        project,
+        viewport,
+        beat,
+        meter_beat_length,
+        pixel_width,
+        target_spacing,
+    );
     // Coarsen the SAME step for drawing and snapping before any paint quota
     // could sample away regular landmarks. Use exact visible beat spans, which
     // also cover tempo changes within this meter section.
@@ -591,11 +667,46 @@ fn adaptive_grid_step(
             .partition_point(|point| point.beat() <= beat)
             .saturating_sub(1);
         let available = MAX_GRID_LINES.saturating_sub(extra_markers);
-        // Match candidate sampling's quotient/remainder order BEFORE dyadic
-        // coarsening discards subdivisions. At129 sections,127 receive two
-        // slots and two receive one, rather than every section receiving one.
-        let quota = (available / sections
-            + usize::from(section.saturating_sub(first_section) < available % sections))
+        let quota = if sections <= available && (first_section..last_section).contains(&section) {
+            // Compute natural demand BEFORE coarsening. Only binary-bounded
+            // visible spans participate; short sections cannot strand slots.
+            let demand = |relative: usize| {
+                let index = first_section + relative;
+                let Some(point) = points.get(index) else {
+                    return 0;
+                };
+                let start = first.raw().max(point.beat().raw());
+                let end = points
+                    .get(index + 1)
+                    .and_then(|next| next.beat().raw().checked_sub(1))
+                    .unwrap_or(last.raw())
+                    .min(last.raw());
+                if start > end {
+                    return 0;
+                }
+                let meter_length =
+                    (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
+                let base = adaptive_base_step(
+                    project,
+                    viewport,
+                    point.beat(),
+                    meter_length,
+                    pixel_width,
+                    target_spacing,
+                );
+                ((u128::from(end - start) / u128::from(base) + 1).min((available + 1) as u128))
+                    as usize
+            };
+            let (level, remainder) = capped_fair_share(sections, available, demand);
+            let relative = section - first_section;
+            let earlier_unsatisfied = (0..relative).filter(|index| demand(*index) > level).count();
+            demand(relative).min(level)
+                + usize::from(demand(relative) > level && earlier_unsatisfied < remainder)
+        } else {
+            // Preserve dense-map fallback and out-of-viewport neighbor behavior.
+            available / sections
+                + usize::from(section.saturating_sub(first_section) < available % sections)
+        }
         .max(1) as u64;
         let start = first.raw().max(beat.raw());
         let end = points
