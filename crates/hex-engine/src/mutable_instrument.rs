@@ -232,6 +232,11 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn validate_candidate_constructor_class(
+        &self,
+    ) -> Result<(), crate::AudioStorageError> {
+        self.pair.validate_constructor_class()
+    }
     pub(crate) fn visit_runtime_storage_on_control<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,

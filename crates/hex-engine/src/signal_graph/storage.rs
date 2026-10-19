@@ -90,3 +90,21 @@ fn leaf(send: &Send) {
     fn scalar<T: Copy>(_: T) {}
     scalar((*target, *gain, *edge));
 }
+
+/// Actual new runtime buffers and its independent physical graph alias. The
+/// enclosing Session runtime charges the inline SignalRuntime body already.
+pub(crate) fn visit_runtime<'a>(
+    runtime: &'a SignalRuntime,
+    ledger: &mut AudioRootStorageLedger<'a>,
+) -> Result<(), AudioStorageError> {
+    let SignalRuntime {
+        graph,
+        delays,
+        inputs,
+        main,
+    } = runtime;
+    visit(graph, ledger)?;
+    delays.visit_storage_on_control(ledger)?;
+    ledger.vec(inputs)?;
+    ledger.vec(main)
+}

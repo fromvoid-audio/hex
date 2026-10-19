@@ -145,6 +145,29 @@ pub struct CompensationRuntime {
 }
 
 impl CompensationRuntime {
+    pub(crate) fn visit_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            plan,
+            edges,
+            stamps,
+            storage_bytes,
+            transaction_active,
+        } = self;
+        let _: (&usize, &bool) = (storage_bytes, transaction_active);
+        if *transaction_active {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        plan.visit_storage_on_control(ledger)?;
+        ledger.vec(edges)?;
+        stamps.visit_storage_on_control(ledger)?;
+        for edge in edges {
+            edge.visit_storage_on_control(ledger)?;
+        }
+        Ok(())
+    }
     /// Fallible control-only construction. Budgets charge actual Vec capacities,
     /// including the edge table and immutable plan, rather than requested lengths.
     pub fn new(plan: LatencyPlan, limits: CompensationLimits) -> Result<Self, CompensationError> {

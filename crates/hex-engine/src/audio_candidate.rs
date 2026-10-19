@@ -655,14 +655,15 @@ fn validate_runtime_groups(
     Ok(())
 }
 
-// Closed constructor class: no effects/instruments/MIDI, no retained tails or
-// analytic-context fanout, and no signal-graph compensation. Enumeration includes
+// Closed fresh constructors: existing Utility plus actual constructor-paired
+// Sampler runtime and typed signal compensation. Opaque providers, retained
+// tails and analytic-context fanout remain refused. Enumeration includes
 // every vacant slot; absence is validated, never converted into an owner group.
 fn validate_supported_location(kind: u8, present: bool) -> Result<(), AudioStorageError> {
     match kind {
-        0 | 4 | 7 | 9..=12 => Ok(()),
-        1 | 2 | 3 | 5 | 6 | 8 | 13 if !present => Ok(()),
-        1 | 2 | 3 | 5 | 6 | 8 | 13 => Err(AudioStorageError::UnsupportedGraph),
+        0 | 2 | 4 | 7 | 8 | 9..=12 => Ok(()),
+        1 | 3 | 5 | 6 | 13 if !present => Ok(()),
+        1 | 3 | 5 | 6 | 13 => Err(AudioStorageError::UnsupportedGraph),
         _ => Err(AudioStorageError::SourceMismatch),
     }
 }

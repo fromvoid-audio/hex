@@ -461,6 +461,177 @@ fn captured_complete_revision_partial_session_and_revision_failure_retain_same_p
 }
 
 #[test]
+fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
+    for with_return in [false, true] {
+        let Fixture {
+            bank,
+            mut editor,
+            previous,
+            mut preparation,
+            signal,
+            worker,
+            transforms,
+            ..
+        } = Fixture::new();
+        drop(previous);
+        if with_return {
+            use hex_lattice_contract::NativeDeviceMetadata;
+            editor
+                .execute(Command::AddReturnTrack {
+                    name: "actual sampler return".into(),
+                })
+                .unwrap();
+            let return_track = editor.project().return_tracks()[0].id();
+            editor
+                .execute(Command::InsertReturnDevice {
+                    return_track,
+                    before: None,
+                    state: hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap(),
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetReturnSend {
+                    track: editor.project().tracks()[0].id(),
+                    return_track,
+                    gain: 0.25,
+                })
+                .unwrap();
+        }
+        let target = crate::SharedMetadata::new_on_control(editor.project().clone());
+        preparation.original_resources = Some(bank);
+        let mut original = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
+        signal.visit_storage_on_control(&mut original).unwrap();
+        worker.visit_storage_on_control(&mut original).unwrap();
+        let token = preparation
+            .compile_original_sampler_revision_on_control(
+                &target,
+                &editor,
+                None,
+                &original,
+                &transforms,
+                limits(),
+            )
+            .unwrap();
+        let mut draft = crate::AudioCandidateDraft::new_on_control();
+        draft.prepare_on_control(&preparation, &token).unwrap();
+        let mut custody = Some(preparation);
+        let mut token = Some(token);
+        let mut owner = None;
+        draft
+            .finish_on_control(&mut custody, &mut token, &mut owner)
+            .unwrap();
+        assert!(custody.is_none() && token.is_none());
+        let prepared_owner = owner.as_mut().unwrap();
+        // The earlier compiler fixture's 16 MiB is not the native runtime budget.
+        // Keep that real refusal, then use the EXISTING production composition
+        // (compiled/input allowance plus unchanged 32 MiB mutable runtime ceiling).
+        assert_eq!(
+            prepared_owner.seal_constructor_on_control(limits()),
+            Err(AudioStorageError::ReservationExceeded)
+        );
+        let mut native_limits = limits();
+        native_limits.max_retained_bytes += crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+        native_limits.max_construction_peak_bytes += crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+        eprintln!("actual existing native composition: {native_limits:?}");
+        assert_eq!(
+            prepared_owner.seal_constructor_on_control(native_limits),
+            Err(AudioStorageError::UnknownStorage),
+            "owner-only walker must not hide real authoring aliases"
+        );
+        let unrelated_target = crate::SharedMetadata::new_on_control(
+            hex_project::Project::new(target.sample_rate()).unwrap(),
+        );
+        assert_eq!(
+            prepared_owner.seal_sampler_constructor_on_control(
+                &unrelated_target,
+                &editor,
+                None,
+                &original,
+                &transforms,
+                native_limits
+            ),
+            Err(AudioStorageError::UnknownStorage),
+            "missing real captured fields cannot be replaced by an unrelated equal-rate target"
+        );
+        let unrelated_editor =
+            hex_project::Editor::new(hex_project::Project::new(target.sample_rate()).unwrap(), 8)
+                .unwrap();
+        assert_eq!(
+            prepared_owner.seal_sampler_constructor_on_control(
+                &target,
+                &unrelated_editor,
+                None,
+                &original,
+                &transforms,
+                native_limits
+            ),
+            Err(AudioStorageError::UnknownStorage),
+            "actual current/history aliases remain required"
+        );
+        let omitted_state = target.tracks()[0].instrument().unwrap().state().clone();
+        assert_eq!(
+            prepared_owner.seal_sampler_constructor_on_control(
+                &target,
+                &editor,
+                None,
+                &original,
+                &transforms,
+                native_limits
+            ),
+            Err(AudioStorageError::UnknownStorage),
+            "an additional omitted physical state field remains unknown"
+        );
+        drop(omitted_state);
+        let result = prepared_owner.seal_sampler_constructor_on_control(
+            &target,
+            &editor,
+            None,
+            &original,
+            &transforms,
+            native_limits,
+        );
+        drop(original);
+        assert!(
+            result.is_ok(),
+            "actual qualified Sampler candidate storage must close: {result:?}"
+        );
+        let actual_owner = owner.take().unwrap();
+        let (mut runtime, anchors) = actual_owner.split_constructor_on_control().ok().unwrap();
+        assert!(anchors.matches_current(&runtime));
+        runtime
+            .apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        let mut output = [[0.0; 2]; 8];
+        let mut render = Ok(());
+        let measured = allocation_counter::measure(|| {
+            render = runtime.render(&mut output);
+        });
+        render.unwrap();
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(measured.count_current, 0);
+        let expected = crate::native_device_resources::tests::PCM
+            .map(|frame| frame.map(|value| if with_return { value * 1.25 } else { value }));
+        assert_eq!(
+            &output[..4],
+            &expected,
+            "actual track/Return PCM path {with_return}"
+        );
+        assert_eq!(&output[4..], &[[0.0; 2]; 4]);
+        let proof = runtime.dispose_on_control().unwrap();
+        let mut anchors = [Some(anchors)];
+        proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+        let anchors = anchors[0].as_mut().unwrap();
+        assert!(anchors.original_runtime_disposed());
+        assert!(anchors.all_origins_closed());
+        anchors.finish_disposal_on_control().unwrap();
+    }
+}
+
+#[test]
 fn captured_target_alias_and_unrelated_bank_refuse_before_compiler_birth() {
     for (mode, complete) in [
         ("omitted-target-alias", false),

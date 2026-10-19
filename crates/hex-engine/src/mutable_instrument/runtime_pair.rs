@@ -46,6 +46,26 @@ impl RuntimePair {
     pub(super) fn qualified_sampler_pair(&self) -> Option<&NativeInstrumentRuntimePair> {
         matches!(self.origin, Origin::Sampler).then_some(&self.pair)
     }
+    pub(super) fn validate_constructor_class(&self) -> Result<(), crate::AudioStorageError> {
+        let pair = self
+            .qualified_sampler_pair()
+            .ok_or(crate::AudioStorageError::UnknownStorage)?;
+        if !native_box_layout_known() {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        let boxes = pair.runtime_box_observations();
+        let layout = hex_devices::sampler::PreparedSamplerRuntime::runtime_box_layout_on_control();
+        if layout.size() == 0
+            || boxes[0].same_allocation(&boxes[1])
+            || boxes[0].same_owning_field(&boxes[1])
+            || boxes
+                .iter()
+                .any(|observation| observation.pointee_layout() != layout)
+        {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        Ok(())
+    }
     pub(super) fn visit_storage<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,

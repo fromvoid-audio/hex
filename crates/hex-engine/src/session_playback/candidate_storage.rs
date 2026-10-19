@@ -87,10 +87,8 @@ impl SessionPlayback {
         } = self;
         if live_expression.is_some()
             || computer_keyboard.is_some()
-            || compensation.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
-            || mutable_instruments.iter().any(Option::is_some)
             || tail_groups.iter().any(Option::is_some)
             || tail_mutable_instruments.iter().any(Option::is_some)
             || retained_contexts.iter().any(Option::is_some)
@@ -119,6 +117,13 @@ impl SessionPlayback {
         l.vec(return_scratch)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
+        for runtime in mutable_instruments.iter().flatten() {
+            runtime.validate_candidate_constructor_class()?;
+            runtime.visit_runtime_storage_on_control(l)?;
+        }
+        if let Some(compensation) = compensation {
+            crate::signal_graph::storage::visit_runtime(compensation, l)?;
+        }
         l.vec(mutable_events)?;
         l.vec(tail_groups)?;
         l.vec(tail_mutable_instruments)?;
@@ -141,9 +146,12 @@ impl SessionPlayback {
         for (chain, track) in device_chains.iter().zip(tracks) {
             chain_storage(chain, &track.device_chain, l)?;
         }
-        // Returns stay memoryless/empty in the selected constructor class.
-        for chain in return_chains {
-            chain_storage(chain, &[], l)?;
+        let returns = revision.arrangement().return_buses();
+        if return_chains.len() != returns.len() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        for (chain, bus) in return_chains.iter().zip(returns) {
+            chain_storage(chain, &bus.device_chain, l)?;
         }
         Ok(())
     }

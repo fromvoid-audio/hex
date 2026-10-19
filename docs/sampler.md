@@ -1594,3 +1594,30 @@ Sampler PCM stays in the original device-resource bank. The Service/control-work
 bridge, captured mix and Stems, whole live union, productive buffered export and
 all musical/native acceptance remain required. The public whole-host completion
 summary is still unavailable; these constructors do not turn it into permission.
+
+### Captured Sampler runtime consumer boundary
+
+The fresh candidate runtime can now inspect the actual constructor-paired Sampler
+runtime twins and typed signal-compensation buffers. Opaque providers, retained
+tails, live input/expression and unsupported groups remain refused. Compensation
+inspection visits both delay banks, transport-stamp banks, topology alias and
+actual input/output buffers; it refuses an active transaction.
+
+The Engine-private captured-input seal repeats the same mandatory current/history,
+captured Project, original embedded bank, previous-context and guarded transform
+visitors before constructor alias closure. Owner-only inspection cannot account
+for those external fields and continues to refuse them. An unrelated target or
+editor and an omitted physical state alias also refuse. No generic ledger,
+observation-ID, public completion or source-association authority changes.
+
+A focused real-runtime fixture compiles a captured stereo Sampler into its actual
+parent, constructs/seals/splits the candidate, renders exact original PCM through
+both the direct track and a local Utility Return send, and disposes the runtime
+before closing original anchors. Rendering measures zero total/current Rust
+allocations. The compiler-only 16 MiB fixture budget still refuses; the runtime
+fixture separately composes it with the existing 32 MiB runtime allowance.
+This is an in-process component proof, not Service publication, Mono coverage,
+native backend/ACK, export or musical acceptance. The persistent preparation
+consumer still needs a combined before-birth reservation and one captured-target
+loan through compilation and sealing; final Service live-union and source
+association must not be inferred from this private constructor seal.

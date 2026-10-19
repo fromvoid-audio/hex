@@ -560,6 +560,9 @@ impl SessionPlayback {
             visit(1, index, owner.is_some())?;
         }
         for (index, owner) in mutable_instruments.iter().enumerate() {
+            if let Some(owner) = owner {
+                owner.validate_candidate_constructor_class()?;
+            }
             visit(2, index, owner.is_some())?;
         }
         for (index, owner) in tail_mutable_instruments.iter().enumerate() {

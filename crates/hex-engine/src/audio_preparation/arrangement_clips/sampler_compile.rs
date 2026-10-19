@@ -93,10 +93,24 @@ struct Inputs<'a> {
 }
 impl<'a> Inputs<'a> {
     fn visit<'scope>(
-        &'scope self,
+        &self,
         inventory: &'scope AudioTransformPcmInventory<'scope>,
         ledger: &mut AudioRootStorageLedger<'scope>,
-    ) -> Result<(), AudioStorageError> {
+    ) -> Result<(), AudioStorageError>
+    where
+        'a: 'scope,
+    {
+        self.visit_at(inventory, ledger, true)
+    }
+    fn visit_at<'scope>(
+        &self,
+        inventory: &'scope AudioTransformPcmInventory<'scope>,
+        ledger: &mut AudioRootStorageLedger<'scope>,
+        standalone_parent: bool,
+    ) -> Result<(), AudioStorageError>
+    where
+        'a: 'scope,
+    {
         // Mandatory actual inputs FIRST. Importing old roots before these
         // visitors can turn legitimate repeated observations into root errors.
         if !matches!(
@@ -112,7 +126,9 @@ impl<'a> Inputs<'a> {
         // finishes, so nonempty nested visitors cannot reenter that wrapper.
         // ANY failure here aborts and discards this scoped ledger; no partial
         // ledger can escape or be resumed. Public wrapper behavior is unchanged.
-        ledger.root(self.preparation, AudioStorageRole::Current)?;
+        if standalone_parent {
+            ledger.root(self.preparation, AudioStorageRole::Current)?;
+        }
         self.preparation
             .visit_audio_storage(ledger, AudioStorageRole::Current)?;
         if !std::ptr::eq(self.rows, &self.preparation.arrangement_clips) {
@@ -381,6 +397,32 @@ impl Inputs<'_> {
     }
 }
 impl crate::AudioPreparationCustody {
+    pub(crate) fn visit_sampler_candidate_inputs<'scope>(
+        &'scope self,
+        target: &'scope crate::SharedMetadata<hex_project::Project>,
+        editor: &'scope hex_project::Editor,
+        previous: Option<&'scope OwnedShared<SharedAnalyticContextTable>>,
+        original: &'scope AudioRootStorageLedger<'scope>,
+        inventory: &'scope AudioTransformPcmInventory<'scope>,
+        ledger: &mut AudioRootStorageLedger<'scope>,
+    ) -> Result<(), AudioStorageError> {
+        let inputs = Inputs {
+            rows: &self.arrangement_clips,
+            preparation: self,
+            editor,
+            target: Some(target),
+            resources: self
+                .original_resources
+                .as_ref()
+                .ok_or(AudioStorageError::SourceMismatch)?,
+            previous,
+            original,
+        };
+        // Caller is the actual CandidateOwner closed operation: its existing
+        // CandidateState Box contains this inline parent and charges that body.
+        // This changes only enclosing-field accounting, not mandatory children.
+        inputs.visit_at(inventory, ledger, false)
+    }
     /// Construction-local only. Every new owner is installed directly into
     /// this SAME parent; immutable whole-parent inventory ends before mutation.
     #[cfg(test)]

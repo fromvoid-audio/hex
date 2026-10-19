@@ -66,14 +66,25 @@ impl AudioCandidateOwner {
         external_runtime_bytes: usize,
     ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
         let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
-        ledger.mutate(|l| {
-            l.root(self, crate::AudioStorageRole::Current)?;
-            self.inner
-                .custody
-                .visit_audio_storage(l, crate::AudioStorageRole::Current)
-        })?;
+        // This closed operation owns the local ledger through final closure.
+        // Child typed visitors may use mutate themselves; an outer mutation
+        // wrapper would make their actual nonempty map observations reentrant.
+        // Any failure discards this entire local ledger, never a resumed prefix.
+        ledger.root(self, crate::AudioStorageRole::Current)?;
+        self.inner
+            .custody
+            .visit_audio_storage(&mut ledger, crate::AudioStorageRole::Current)?;
         let before = ledger.summary()?.data_bytes;
-        ledger.mutate(|l| self.inner.visit_fresh_storage(l))?;
+        self.inner.visit_fresh_storage(&mut ledger)?;
+        self.finish_constructor_inspection(&ledger, before, reservation, external_runtime_bytes)
+    }
+    fn finish_constructor_inspection(
+        &self,
+        ledger: &AudioRootStorageLedger<'_>,
+        before: usize,
+        reservation: AudioStorageLedgerReservation,
+        external_runtime_bytes: usize,
+    ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
         let data = ledger
             .summary()?
             .require_known_storage()
@@ -122,6 +133,55 @@ impl AudioCandidateOwner {
                 .ok_or(AudioStorageError::Overflow)?,
             transfer_rows: self.inner.journal.capacity(),
         })
+    }
+    /// Engine-private fixed actual-input traversal, consumed by the same closed
+    /// preparation operation that constructed this target. This grants no
+    /// Service/native source association or whole-host completion authority.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "same-operation preparation consumer in progress")
+    )]
+    pub(crate) fn seal_sampler_constructor_on_control(
+        &mut self,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        editor: &hex_project::Editor,
+        previous: Option<
+            &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        >,
+        original: &AudioRootStorageLedger<'_>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
+        self.inner.constructor_data = None;
+        if self.inner.phase != AudioCandidateDisposalPhase::Owned
+            || self.inner.runtime_receipt.is_some()
+            || self.inner.first_panic.is_some()
+            || self.inner.receipt_taken
+            || self.inner.recovered_inputs.is_some()
+            || self.inner.inputs_drop_pending
+            || self.inner.inputs_disposed
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.inner.validate_groups()?;
+        self.inner.validate_fresh_origins()?;
+        let summary = transforms.with_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
+            ledger.root(self, crate::AudioStorageRole::Current)?;
+            self.inner.custody.visit_sampler_candidate_inputs(
+                target,
+                editor,
+                previous,
+                original,
+                inventory,
+                &mut ledger,
+            )?;
+            let before = ledger.summary()?.data_bytes;
+            self.inner.visit_fresh_storage(&mut ledger)?;
+            self.finish_constructor_inspection(&ledger, before, reservation, 0)
+        })?;
+        self.inner.constructor_data = Some(summary);
+        Ok(summary)
     }
 }
 impl CandidateState {

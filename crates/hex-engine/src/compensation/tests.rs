@@ -25,6 +25,52 @@ fn sample(index: usize) -> Frame {
 }
 
 #[test]
+fn runtime_storage_visitor_covers_real_delay_pairs_without_allocation() {
+    use crate::{
+        AudioRootStorageLedger, AudioStorageError, AudioStorageLedgerReservation, AudioStorageRole,
+    };
+    let compiled = plan(
+        &[node(1, 0), node(2, 7), node(3, 0), node(4, 0)],
+        &[edge(1, 1, 2), edge(2, 1, 3), edge(3, 2, 4), edge(4, 3, 4)],
+    );
+    assert_eq!(compiled.edges()[3].delay_frames, 7);
+    let mut runtime = CompensationRuntime::new(compiled, CompensationLimits::default()).unwrap();
+    let reservation = AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 0,
+        root_rows: 1,
+        max_retained_bytes: 1024 * 1024,
+        max_construction_peak_bytes: 1024 * 1024,
+    };
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger.root(&runtime, AudioStorageRole::Caller).unwrap();
+    let measured =
+        allocation_counter::measure(|| runtime.visit_storage_on_control(&mut ledger).unwrap());
+    assert_eq!(measured.count_total, 0);
+    assert_eq!(measured.count_current, 0);
+    assert_eq!(
+        ledger.summary().unwrap().data_bytes,
+        size_of::<CompensationRuntime>() + runtime.storage_bytes()
+    );
+    drop(ledger);
+    runtime.begin_transaction().unwrap();
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    assert_eq!(
+        runtime.visit_storage_on_control(&mut ledger),
+        Err(AudioStorageError::SourceMismatch)
+    );
+    drop(ledger);
+    runtime.rollback_transaction().unwrap();
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger.root(&runtime, AudioStorageRole::Caller).unwrap();
+    runtime.visit_storage_on_control(&mut ledger).unwrap();
+    assert_eq!(
+        ledger.summary().unwrap().data_bytes,
+        size_of::<CompensationRuntime>() + runtime.storage_bytes()
+    );
+}
+
+#[test]
 fn planner_sums_serial_latency_and_aligns_each_reconvergence() {
     // source -> a(3) -> c(4) -> merge(2) -> sink
     //       \-> b(5) ---------/    \----------> sink
