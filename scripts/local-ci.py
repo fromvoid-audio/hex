@@ -288,6 +288,7 @@ class LocalCiRunner:
         self.target_lock: CargoTargetLock | None = None
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
+        self.path_dependencies: list[dict[str, object]] | None = None
 
     def _write_summary(self) -> None:
         temporary = self.summary_path.with_suffix(".json.tmp")
@@ -535,6 +536,14 @@ class LocalCiRunner:
                 )
             ):
                 raise ValueError("owner fields have invalid types")
+            dependencies = value.get("path_dependencies")
+            if dependencies is not None and (
+                not isinstance(dependencies, dict)
+                or any(not isinstance(key, str) or not isinstance(digest, str)
+                       or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+                       for key, digest in dependencies.items())
+            ):
+                raise ValueError("local dependency identities are malformed")
             return value
         except (OSError, json.JSONDecodeError, ValueError) as error:
             raise TargetCacheError(
@@ -554,10 +563,100 @@ class LocalCiRunner:
             "target_identity": self._directory_identity(
                 Path(str(self.cargo_identity["target_directory"]))
             ) if self.cargo_identity else None,
+            "path_dependencies": {p["key"]: p["sha256"] for p in (self.path_dependencies or [])},
             "recorded_at": utc_now(),
         }
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(path)
+
+    @staticmethod
+    def _dependency_content(root: Path, target: Path) -> dict[str, object]:
+        """Hash package checkout bytes, not mtimes or worktree-specific path spellings."""
+        digest = hashlib.sha256()
+        file_count = byte_count = 0
+        if not root.is_dir() or not (root / "Cargo.toml").is_file():
+            raise TargetCacheError(f"local dependency package is missing: {root}")
+        def walk_error(error: OSError) -> None:
+            raise error
+        def stamp(status):
+            return (status.st_dev, status.st_ino, status.st_mode, status.st_size,
+                    status.st_mtime_ns, status.st_ctime_ns)
+        for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
+            current = Path(directory)
+            directories[:] = sorted(name for name in directories if name != ".git"
+                                    and (current / name).resolve() != target)
+            for name in directories:
+                if (current / name).is_symlink():
+                    raise TargetCacheError(f"local dependency contains a directory symlink: {current / name}")
+            for name in sorted(filenames):
+                if name == ".git":
+                    continue
+                path = current / name
+                relative = os.fsencode(str(path.relative_to(root)))
+                before = path.lstat()
+                if not stat.S_ISREG(before.st_mode) and not stat.S_ISLNK(before.st_mode):
+                    raise TargetCacheError(f"local dependency input is not a regular file: {path}")
+                digest.update(len(relative).to_bytes(8, "big"))
+                digest.update(relative)
+                digest.update(str(before.st_mode & 0o111).encode("ascii") + b"\0")
+                if path.is_symlink():
+                    digest.update(b"symlink\0" + os.fsencode(os.readlink(path)) + b"\0")
+                if not path.is_file():
+                    raise TargetCacheError(f"local dependency input is not a regular file: {path}")
+                with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as source:
+                    source_before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(source_before.st_mode):
+                        raise TargetCacheError(f"local dependency input is not a regular file: {path}")
+                    digest.update(source_before.st_size.to_bytes(8, "big"))
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                        byte_count += len(chunk)
+                    if stamp(os.fstat(source.fileno())) != stamp(source_before):
+                        raise TargetCacheError(f"local dependency changed while hashing: {path}")
+                if stamp(path.lstat()) != stamp(before) or stamp(path.stat()) != stamp(source_before):
+                    raise TargetCacheError(f"local dependency changed while hashing: {path}")
+                file_count += 1
+        return {"sha256": digest.hexdigest(), "files": file_count, "bytes": byte_count}
+
+    def _resolve_path_dependencies(self, target: Path) -> list[dict[str, object]]:
+        """Resolve excluded/patch path packages only after target ownership is established."""
+        command = ["cargo", "metadata", "--format-version", "1", "--locked",
+                   "--manifest-path", str(self.root / "Cargo.toml")]
+        started = time.monotonic()
+        result = command_output(command, self.root, self.env)
+        if result.returncode:
+            raise TargetCacheError(f"local dependency metadata failed: {result.stderr.strip()}")
+        try:
+            metadata = json.loads(result.stdout)
+            if (Path(metadata["target_directory"]).resolve() != target
+                    or Path(metadata["workspace_root"]).resolve() != self.root
+                    or set(metadata["workspace_members"]) != {
+                        package["spec"] for package in self.cargo_identity["workspace_packages"]
+                    }):
+                raise ValueError("workspace/target identity changed during dependency resolution")
+            members = set(metadata["workspace_members"])
+            packages = metadata["packages"]
+            dependencies = []
+            for package in packages:
+                if package["id"] in members or package.get("source") is not None:
+                    continue
+                if not all(isinstance(package.get(field), str) and package[field]
+                           for field in ("id", "name", "version", "manifest_path")):
+                    raise ValueError("local package fields are invalid")
+                root = Path(package["manifest_path"]).resolve().parent
+                relative = root.relative_to(self.root).as_posix() if root.is_relative_to(self.root) else str(root)
+                key = f'{relative}#{package["name"]}@{package["version"]}'
+                dependencies.append({"key": key, "spec": package["id"], "name": package["name"],
+                                     "root": str(root), **self._dependency_content(root, target)})
+            if len({package["key"] for package in dependencies}) != len(dependencies):
+                raise ValueError("duplicate local dependency identity")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise TargetCacheError(f"unsafe local dependency metadata: {error}") from error
+        self.summary["path_dependency_identity_seconds"] = round(time.monotonic() - started, 6)
+        self.summary["path_dependency_metadata_command"] = command
+        self.summary["path_dependencies"] = dependencies
+        self._path_dependency_packages = packages
+        return dependencies
 
     def _prepare_target_cache(self) -> bool:
         if self.cargo_identity is None or self.git_identity is None:
@@ -636,7 +735,26 @@ class LocalCiRunner:
                     ownership_action = "worktree-handoff"
                     cleanup_argv = self._workspace_clean_argv(target)
 
+            self.path_dependencies = self._resolve_path_dependencies(target)
+            previous_dependencies = owner_record.get("path_dependencies", {}) if owner_record else {}
+            changed = [package for package in self.path_dependencies
+                       if previous_dependencies.get(package["key"]) != package["sha256"]]
+            # A newly claimed EMPTY target has no stale artifacts to invalidate.
+            if ownership_action == "claim-empty":
+                changed = []
+            if changed:
+                names = {package["name"] for package in changed}
+                selected_ids = {package["spec"] for package in changed}
+                if any(package["name"] in names and package["id"] not in selected_ids
+                       for package in self._path_dependency_packages):
+                    raise TargetCacheError("local dependency clean names overlap other packages")
+                if cleanup_argv is None:
+                    cleanup_argv = self._workspace_clean_argv(target, packages=[])
+                for package in changed:
+                    cleanup_argv.extend(("--package", package["spec"]))
+
             self.summary["target_cache"] = {
+                "changed_path_dependencies": [package["key"] for package in changed],
                 "action": ownership_action,
                 "previous_workspace_owner": previous_workspace,
                 "current_workspace_owner": current_workspace,
@@ -666,11 +784,12 @@ class LocalCiRunner:
             self.target_lock = None
             return False
 
-    def _workspace_clean_argv(self, target: Path) -> list[str]:
+    def _workspace_clean_argv(self, target: Path, *, packages: list | None = None) -> list[str]:
         if self.cargo_identity is None:
             raise TargetCacheError("workspace package metadata is unavailable")
-        packages = self.cargo_identity["workspace_packages"]
-        if not isinstance(packages, list) or not packages:
+        if packages is None:
+            packages = self.cargo_identity["workspace_packages"]
+        if not isinstance(packages, list):
             raise TargetCacheError("workspace package list is unavailable")
         argv = [
             "cargo",
@@ -1103,6 +1222,21 @@ class LocalCiRunner:
                         entry["ended_at"] = utc_now()
                         entry["error"] = "pipeline interrupted"
         finally:
+            if self.path_dependencies is not None:
+                try:
+                    target = Path(str(self.cargo_identity["target_directory"]))
+                    end_dependencies = {p["key"]: self._dependency_content(Path(p["root"]), target)
+                                        for p in self.path_dependencies}
+                    self.summary["end_path_dependencies"] = end_dependencies
+                    if any(end_dependencies[p["key"]]["sha256"] != p["sha256"]
+                           for p in self.path_dependencies):
+                        self.summary["path_dependencies_stale"] = True
+                        self.summary["status"] = "stale"
+                        self.summary["exit_code"] = 3
+                except (OSError, TargetCacheError) as error:
+                    self.summary["path_dependency_check_error"] = str(error)
+                    self.summary["status"] = "incomplete"
+                    self.summary["exit_code"] = 2
             if self.target_lock is not None:
                 if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
                     try:
@@ -1121,7 +1255,7 @@ class LocalCiRunner:
                 if self._capture_repository_state("end_tree"):
                     start_tree = self.summary["start_tree"]
                     end_tree = self.summary["end_tree"]
-                    stale = start_tree != end_tree
+                    stale = start_tree != end_tree or bool(self.summary.get("path_dependencies_stale"))
                     self.summary["stale"] = stale
                     if stale:
                         self.summary["verification_status"] = self.summary.get("status")

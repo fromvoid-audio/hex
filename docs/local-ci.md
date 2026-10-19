@@ -133,13 +133,43 @@ When the same Git repository is used from a different worktree, the runner
 performs a handoff while holding the lock. It invokes Cargo clean with the
 resolved target and `--profile dev`, naming every workspace package by its full
 package ID from the locked metadata rather than an ambiguous name/version
-selector. It does not clean the whole target. Cargo's external dependency
-artifacts and release profile are preserved. The actual alternate-worktree
-regression fixture in `scripts/tests/test_local_ci.py` changes a workspace API,
-asserts the old API artifact is gone before the second worktree rebuilds, and
-verifies that an external path dependency artifact and release binary remain
-unchanged. Unknown caches require explicit adoption rather than a guessed
-workspace-package cleanup.
+selector. It does not clean the whole target. Unchanged dependency artifacts
+and the release profile are preserved. The original alternate-worktree regression
+fixture changes a workspace API and verifies selective workspace cleanup.
+
+While holding the same lock, after validating target/repository ownership and
+before cleanup or compilation, full locked Cargo metadata identifies local path
+packages outside the workspace membership, including vendored registry patches.
+Their content identities include relative filenames, executable bits and file
+bytes, including manifests, build scripts and assets; mtimes are not identities.
+Checkout-relative package keys survive worktree changes. External package keys
+retain their actual absolute path. The marker and summary record hashes and
+file/byte counts; hashing streams one file at a time. Only `.git` metadata and the
+resolved Cargo target directory are excluded. Directory symlinks, special files,
+unreadable inputs or inputs changing during hashing refuse before cleanup rather
+than silently omitting source. Regular-file symlinks include link spelling and
+target content. This is package checkout provenance, not a sandbox for arbitrary
+build scripts reading files outside their package or external environment state.
+
+Changed or previously unrecorded local packages are added to the selective **dev**
+cleanup. Cargo then rebuilds their necessary dependents; unchanged local packages
+and registry dependencies are not selected. Same-worktree changes receive the same
+check even when checkout mtimes predate cached metadata. Package-name collisions
+refuse before cleanup because Cargo clean does not honor ID qualifiers fully.
+Existing valid dev markers lacking dependency identities require this local-package
+invalidation once; they do not authorize adoption of unknown/foreign targets.
+Failed cleanup preserves the prior marker. End-of-run content checks mark changing
+local inputs stale, including inputs outside the main Git inventory. The marker
+retains the initial identity so the next run invalidates any changed inputs.
+Release ownership and optimized artifact qualification remain separate.
+
+The real vendored fixture uses two Git worktrees and older source mtimes to change
+a public struct field. Before this repair the actual compiler reports E0560 from
+reused dependency metadata. The repaired runner builds and runs the changed API,
+then verifies another older-mtime change in the same worktree and unchanged reuse.
+Unrelated external-helper artifacts and the release binary remain byte-identical.
+All fixture Cargo targets and ownership state are disposable and private. Unknown
+caches still require explicit adoption rather than guessed cleanup.
 
 The ownership protocol coordinates concurrent invocations of this runner only.
 It cannot detect a direct `cargo build`, a separate local-CI implementation, or

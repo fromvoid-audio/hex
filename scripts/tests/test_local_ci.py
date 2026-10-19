@@ -940,6 +940,35 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             }, helper_hashes, "unrelated external dependency changed")
             self.assertEqual(result_b, 0, "real Cargo rejected changed vendored struct; inspect vendor-b log")
             self.assertEqual(command([str(target / "debug/fixture-app")]), "18")
+            # Same-worktree checkout changes are equally unsafe with old mtimes.
+            vendor_b.write_text("pub struct Sample { pub third_field: u32 }\n")
+            (worktree_b / "crates/fixture-api/src/lib.rs").write_text(
+                "pub fn value() -> vendor_api::Sample { vendor_api::Sample { third_field: 27 } }\n"
+            )
+            (worktree_b / "crates/fixture-app/src/main.rs").write_text(
+                'fn main() { println!("{}", fixture_api::value().third_field + external_helper::helper()); }\n'
+            )
+            os.utime(vendor_b, ns=(old_timestamp, old_timestamp))
+            runner_c = local_ci.LocalCiRunner(
+                worktree_b, run_id="vendor-c", env=env, steps=(steps[0],),
+                min_free_bytes=0, target_state_dir=state,
+            )
+            self.assertEqual(runner_c.run(), 0)
+            self.assertEqual(command([str(target / "debug/fixture-app")]), "28")
+            self.assertEqual(runner_c.summary["target_cache"]["action"], "reuse")
+            self.assertEqual(len(runner_c.summary["target_cache"]["changed_path_dependencies"]), 1)
+            runner_d = local_ci.LocalCiRunner(
+                worktree_b, run_id="vendor-d", env=env, steps=(steps[0],),
+                min_free_bytes=0, target_state_dir=state,
+            )
+            self.assertEqual(runner_d.run(), 0)
+            self.assertEqual(runner_d.summary["target_cache"]["changed_path_dependencies"], [])
+            self.assertIsNone(runner_d.summary["target_cache"]["cleanup_argv"])
+            self.assertEqual(hashlib.sha256(release.read_bytes()).hexdigest(), release_hash)
+            self.assertEqual({
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (target / "debug/deps").glob("libexternal_helper-*.rlib")
+            }, helper_hashes)
         finally:
             if evidence_dir:
                 destination = Path(evidence_dir)
@@ -953,6 +982,121 @@ runpy.run_path(sys.argv[1], run_name='__main__')
                 if fingerprints.exists():
                     shutil.copytree(fingerprints, destination / "fingerprints", dirs_exist_ok=True)
 
+
+    def path_dependency_fixture(self):
+        root = self.repo / "third_party/vendor"
+        root.mkdir(parents=True)
+        (root / "Cargo.toml").write_text('[package]\nname="vendor"\nversion="0.1.0"\n')
+        (root / "lib.rs").write_text("pub const VERSION: u32 = 1;\n")
+        package = {"id": "vendor 0.1.0", "name": "vendor", "version": "0.1.0",
+                   "source": None, "manifest_path": str(root / "Cargo.toml")}
+        original = local_ci.command_output
+        def metadata(argv, cwd, env):
+            result = original(argv, cwd, env)
+            if argv[:2] == ["cargo", "metadata"] and "--no-deps" not in argv:
+                value = json.loads(result.stdout)
+                value["packages"].append(package)
+                result.stdout = json.dumps(value)
+            return result
+        return root, package, patch.object(local_ci, "command_output", side_effect=metadata)
+
+    def test_changed_dependency_cleanup_failure_preserves_old_identity_and_skips_build(self):
+        root, _, metadata = self.path_dependency_fixture()
+        with metadata:
+            self.assertEqual(self.runner("dep-first").run(), 0)
+            owner = next(self.target_state_dir.glob("*.owner.json"))
+            before = owner.read_bytes()
+            (root / "lib.rs").write_text("pub const VERSION: u32 = 2;\n")
+            calls_before = self.call_log.read_text()
+            self.assertEqual(self.runner("dep-failed", env={**self.env, "FAIL_MATCH": "clean"}).run(), 1)
+            self.assertEqual(owner.read_bytes(), before)
+            self.assertNotIn("cargo build", self.call_log.read_text()[len(calls_before):])
+            self.assertEqual(self.runner("dep-recover").run(), 0)
+            self.assertEqual(len(self.summary("dep-recover")["target_cache"]["changed_path_dependencies"]), 1)
+
+    def test_legacy_dev_marker_invalidates_only_known_local_dependencies_once(self):
+        _, _, metadata = self.path_dependency_fixture()
+        with metadata:
+            self.assertEqual(self.runner("dep-prime").run(), 0)
+            owner = next(self.target_state_dir.glob("*.owner.json"))
+            value = json.loads(owner.read_text())
+            del value["path_dependencies"]
+            owner.write_text(json.dumps(value))
+            self.assertEqual(self.runner("dep-legacy").run(), 0)
+            self.assertEqual(self.summary("dep-legacy")["target_cache"]["cleanup_argv"][-2:],
+                             ["--package", "vendor 0.1.0"])
+            self.assertEqual(self.runner("dep-known").run(), 0)
+            self.assertIsNone(self.summary("dep-known")["target_cache"]["cleanup_argv"])
+
+    def test_dependency_content_change_during_build_is_stale_even_outside_git_inventory(self):
+        root, _, metadata = self.path_dependency_fixture()
+        with metadata:
+            runner = self.runner("dep-mutating", env={**self.env, "MUTATE_FILE": str(root / "lib.rs")})
+            self.assertEqual(runner.run(), 3)
+            self.assertTrue(self.summary("dep-mutating")["path_dependencies_stale"])
+            self.assertTrue(self.summary("dep-mutating")["stale"])
+
+    def test_dependency_clean_name_collision_refuses_before_marker_or_cleanup(self):
+        _, package, metadata = self.path_dependency_fixture()
+        with metadata:
+            self.assertEqual(self.runner("dep-before-collision").run(), 0)
+            owner = next(self.target_state_dir.glob("*.owner.json"))
+            before = owner.read_bytes()
+            # Cargo clean ignores ID qualifiers: a changed local package may not
+            # select a registry/workspace package with the same name as collateral.
+            package["name"] = "fixture"
+            calls_before = self.call_log.read_text()
+            self.assertEqual(self.runner("dep-collision").run(), 1)
+            self.assertIn("overlap", self.summary("dep-collision")["target_cache_error"])
+            self.assertEqual(owner.read_bytes(), before)
+            self.assertNotIn("cargo clean", self.call_log.read_text()[len(calls_before):])
+
+    def test_malformed_dependency_identity_refuses_and_preserves_marker(self):
+        _, _, metadata = self.path_dependency_fixture()
+        with metadata:
+            self.assertEqual(self.runner("dep-before-malformed").run(), 0)
+            owner = next(self.target_state_dir.glob("*.owner.json"))
+            value = json.loads(owner.read_text())
+            value["path_dependencies"] = {"vendor": "not a digest"}
+            owner.write_text(json.dumps(value))
+            before = owner.read_bytes()
+            self.assertEqual(self.runner("dep-malformed").run(), 1)
+            self.assertEqual(owner.read_bytes(), before)
+            self.assertIn("malformed", self.summary("dep-malformed")["target_cache_error"])
+
+    def test_directory_symlink_dependency_refuses_before_cache_mutation(self):
+        root, _, metadata = self.path_dependency_fixture()
+        (root / "recursive").symlink_to(root, target_is_directory=True)
+        with metadata:
+            self.assertEqual(self.runner("dep-symlink").run(), 1)
+            self.assertIn("directory symlink", self.summary("dep-symlink")["target_cache_error"])
+            self.assertFalse(list(self.target_state_dir.glob("*.owner.json")))
+            self.assertNotIn("cargo clean", self.call_log.read_text())
+
+
+    def test_unknown_target_refuses_before_dependency_resolution(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        sentinel = target / "foreign"
+        sentinel.write_bytes(b"do not mutate")
+        with patch.object(local_ci.LocalCiRunner, "_resolve_path_dependencies",
+                          side_effect=AssertionError("resolved foreign target dependencies")):
+            self.assertEqual(self.runner("dep-unknown").run(), 1)
+        self.assertEqual(sentinel.read_bytes(), b"do not mutate")
+        self.assertFalse(list(self.target_state_dir.glob("*.owner.json")))
+
+    def test_contended_target_refuses_before_dependency_resolution(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        holder = local_ci.CargoTargetLock(lock_path, {"run_id": "dep-holder"})
+        holder.acquire()
+        try:
+            with patch.object(local_ci.LocalCiRunner, "_resolve_path_dependencies",
+                              side_effect=AssertionError("resolved actively owned target dependencies")):
+                self.assertEqual(self.runner("dep-contended").run(), 1)
+        finally:
+            holder.release()
+        self.assertNotIn("cargo clean", self.call_log.read_text())
 
 
 if __name__ == "__main__":
