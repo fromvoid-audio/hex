@@ -1,0 +1,74 @@
+{
+  "419-three-baseline": {
+    "commit": "38c3d466e2b6ef0b136f31d42116b8512b4305c6",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 39.925,
+    "source_content_sha256": "b176ea9415043aac51f5c931d64695141195ed2c155a3dac3ed7acfd366f6f8e",
+    "summary_sha256": "d7c74cff96d0b6763848965f3ff63601a3bf597ca28716128bfcfdf980a3d7db"
+  },
+  "419-three-baseline-accessor": {
+    "commit": "38c3d466e2b6ef0b136f31d42116b8512b4305c6",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 40.251,
+    "source_content_sha256": "49cd207f336703f2a32b41123f64fc248440db18411eeb88da3e480d2db587d7",
+    "summary_sha256": "54ac98f0aef78c6d0dd17179c6d651c0f8db46a52dde76466bab8f0174c091ea"
+  },
+  "419-three-guards-fixed": {
+    "commit": "30b052bd0240dc4deee383484512d95d5b7a986a",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 42.155,
+    "source_content_sha256": "a2ba437ee0e8f997e4f4a9ad56e3f134c5421e7f5dd18a49ae62fdf737569b29",
+    "summary_sha256": "5fc7f93b73255b7e5841c5a2cb02de539dc8e0176863e5ca630cb4e64f767784"
+  },
+  "419-plain-click-control": {
+    "commit": "30b052bd0240dc4deee383484512d95d5b7a986a",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 43.116,
+    "source_content_sha256": "7591d6a11836636e2e5d235c80152f8c2ef88d6c2e350a02afb5d25325c19ce7",
+    "summary_sha256": "0b5df529738e1d4137b24334c590711b9f56b5bc069f75de87343d75b92fff8d"
+  },
+  "419-three-click-cleanup": {
+    "commit": "56ef84cb57fd56b6f81659a31a9bc769a1116bf5",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 46.401,
+    "source_content_sha256": "3bfb8a8e9222afcff6831e33f7ab03d46e6ea69a61e4b871050175a91d191d76",
+    "summary_sha256": "8ca3457fb19830854f11eef87aab355a0399d3bc9d3d867305d4d7f29b632e13"
+  },
+  "419-three-focused": {
+    "commit": "56ef84cb57fd56b6f81659a31a9bc769a1116bf5",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 44.905,
+    "source_content_sha256": "73ca8623da3ec8306e1642d390dace902d04725783d097d658b958985042fbaa",
+    "summary_sha256": "6ea00a819663be7d73e9b65c195ce6a98c91b977f19a4b3cbfdadc06a7d4ff22"
+  },
+  "419-three-menu-focus-context": {
+    "commit": "56ef84cb57fd56b6f81659a31a9bc769a1116bf5",
+    "dirty": true,
+    "stale": false,
+    "status": "failed",
+    "duration_seconds": 42.628,
+    "source_content_sha256": "9e85d5187d70b3147b80ca5bdc3cdfbef0b67157e32c7eeaad3e779e2048bcf5",
+    "summary_sha256": "693e64f3db7ac0ce73fda2c3d0e356b73dffb3db8e7770c3bf913ff4cf7337dd"
+  },
+  "419-three-final": {
+    "commit": "d9b444ffde0c730dd9cad2bfaccefaf804ac5b9a",
+    "dirty": false,
+    "stale": false,
+    "status": "passed",
+    "duration_seconds": 177.549,
+    "source_content_sha256": "b0cb0d6cdaa582a22848a719ff7008ee109a05aaaf9a738ab2a0d6ce142f18f6",
+    "summary_sha256": "0b9164d26de873307464b9b8703056a63aea49b152749e339f3496b4d4952857"
+  }
+}

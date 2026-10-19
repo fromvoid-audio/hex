@@ -1,0 +1,445 @@
+{
+  "prs": [
+    {
+      "url": "https://github.com/PORTALSURFER/hex/pull/419",
+      "number": 419,
+      "state": "open",
+      "merged": false,
+      "mergeable": true,
+      "draft": false,
+      "body": "Names the main workspaces Arrange View and Console View and adds bubbling, unmodified Tab switching in both directions. Local text/control navigation, view state, and active pointer/modal ownership are preserved.\n\nExact coherent joint source: `38c3d466e2b6ef0b136f31d42116b8512b4305c6`, tree `61731718ddded183ddb30421723529def0ddf036`, based on actual qualified main `a2d47ae8`. Both original canonical histories are preserved. Owner `ccd813af` fixes held-pan Tab refusal; `121f4684` disproves the later loading-width hypothesis with a real constructorNone\u2192ServiceInit matrix, adding tests and layout-neutral selectors only. At880px, status is61.5px before init and52px afterwards; tempo is absent while loading.\n\nValidation: **all21 required local steps PASS874.328s**, exact clean unchanged source digest `1d52d9746102450dd5e6491f17e4ff0c56e821091e2ebe85fd33d5f3d5f87e00`, stale=false. SummarySHA256 `1743719b717525950e8598d2f1d93a8799956cbb6b631cf448b9edd166f29a55`. UI990PASS,0FAIL,3existingignored. All10workspace cases and both compact-toolbar cases pass. Guarded focused format+UIcompile PASS60.312s; preceding1a5f format-negative/compileNOTRUN is preserved.\n\n**Unmerged / review-blocked.** Exact419 review completed without findings, but exact458 review5570270997 reported three unresolved Tab hypotheses: held pre-drag `pointer_down`, the device-add menu, and spectrum/device-navigation captures. These are routed to the sole general owner for actual repro/disproof and a focused return. Old pan/loading threads are resolved from current actual cases. Green tests do not clear these new findings or establish either canonical PR's merge.\n\nImmutable evidence-only ref `evidence/hex419-458-38c3d466-review-blocked-20261019` at `e14ad76898c4a2d4ae07a2c6773bf5ecdcc633ef`: `hex419-458-38c3d466-review-blocked-evidence.tar.gz`,617644B/SHA256 `aacf54f64d37697568bdc027ac4e322f4784d4c8a16f9cae2b6793a49bd84919`,184safe members/183hashed payloads. Never build or merge evidence refs. Old09b full21PASS875.523s remains historical review-blocked evidence.\n\nNative physical keyboard/IME/mouse/font/display and delivery remain separate; installed source2eef is unchanged.",
+      "title": "Name Arrange and Console views and switch workspaces with Tab",
+      "base": "main",
+      "base_sha": "a2d47ae83e9c7ec0c28e1850954e4181f5a040c7",
+      "head": "pulse/task-2813-g1-74bcd839a22f",
+      "head_sha": "38c3d466e2b6ef0b136f31d42116b8512b4305c6",
+      "head_repo_id": 1411367674,
+      "head_repo_full_name": "PORTALSURFER/hex",
+      "merge_commit_sha": "43aea99f87e9daf9ca039b1e2ca53a8863f87a13",
+      "user": {
+        "login": "pulse-iocore-portalsurfer[bot]",
+        "name": "pulse-iocore-portalsurfer[bot]",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 340736319
+      },
+      "requested_reviewers": [
+        {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 41680373
+        }
+      ],
+      "requested_team_reviewers": null,
+      "diff": null,
+      "comments": null,
+      "created_at": "2026-10-18T16:21:53Z",
+      "updated_at": "2026-10-19T10:43:29Z",
+      "closed_at": null,
+      "merged_at": null,
+      "commits": 21,
+      "changed_files": 10,
+      "additions": 1157,
+      "deletions": 10,
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/419",
+      "display_title": "Name Arrange and Console views and switch workspaces with Tab"
+    },
+    {
+      "url": "https://github.com/PORTALSURFER/hex/pull/458",
+      "number": 458,
+      "state": "open",
+      "merged": false,
+      "mergeable": true,
+      "draft": false,
+      "body": "Keeps output status readable at the880px minimum with compact toolbar spacing, an intrinsic position readout capped at82px, and preferred230px status width; full names,20px controls, titlebar geometry, clipping and tooltip remain.\n\nExact coherent joint source: `38c3d466e2b6ef0b136f31d42116b8512b4305c6`, tree `61731718ddded183ddb30421723529def0ddf036`, based on actual qualified main `a2d47ae8`. Both original canonical histories are preserved. Owner `ccd813af` fixes held-pan Tab refusal; `121f4684` disproves the later loading-width hypothesis with a real constructorNone\u2192ServiceInit matrix, adding tests and layout-neutral selectors only. At880px, status is61.5px before init and52px afterwards; tempo is absent while loading.\n\nValidation: **all21 required local steps PASS874.328s**, exact clean unchanged source digest `1d52d9746102450dd5e6491f17e4ff0c56e821091e2ebe85fd33d5f3d5f87e00`, stale=false. SummarySHA256 `1743719b717525950e8598d2f1d93a8799956cbb6b631cf448b9edd166f29a55`. UI990PASS,0FAIL,3existingignored. All10workspace cases and both compact-toolbar cases pass. Guarded focused format+UIcompile PASS60.312s; preceding1a5f format-negative/compileNOTRUN is preserved.\n\n**Unmerged / review-blocked.** Exact419 review completed without findings, but exact458 review5570270997 reported three unresolved Tab hypotheses: held pre-drag `pointer_down`, the device-add menu, and spectrum/device-navigation captures. These are routed to the sole general owner for actual repro/disproof and a focused return. Old pan/loading threads are resolved from current actual cases. Green tests do not clear these new findings or establish either canonical PR's merge.\n\nImmutable evidence-only ref `evidence/hex419-458-38c3d466-review-blocked-20261019` at `e14ad76898c4a2d4ae07a2c6773bf5ecdcc633ef`: `hex419-458-38c3d466-review-blocked-evidence.tar.gz`,617644B/SHA256 `aacf54f64d37697568bdc027ac4e322f4784d4c8a16f9cae2b6793a49bd84919`,184safe members/183hashed payloads. Never build or merge evidence refs. Old09b full21PASS875.523s remains historical review-blocked evidence.\n\nNative physical keyboard/IME/mouse/font/display and delivery remain separate; installed source2eef is unchanged.",
+      "title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar",
+      "base": "main",
+      "base_sha": "a2d47ae83e9c7ec0c28e1850954e4181f5a040c7",
+      "head": "pulse/task-2856-g1-d1cf74cba023",
+      "head_sha": "38c3d466e2b6ef0b136f31d42116b8512b4305c6",
+      "head_repo_id": 1411367674,
+      "head_repo_full_name": "PORTALSURFER/hex",
+      "merge_commit_sha": "43aea99f87e9daf9ca039b1e2ca53a8863f87a13",
+      "user": {
+        "login": "pulse-iocore-portalsurfer[bot]",
+        "name": "pulse-iocore-portalsurfer[bot]",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 340736319
+      },
+      "requested_reviewers": [
+        {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 41680373
+        }
+      ],
+      "requested_team_reviewers": null,
+      "diff": null,
+      "comments": null,
+      "created_at": "2026-10-19T07:42:58Z",
+      "updated_at": "2026-10-19T10:43:30Z",
+      "closed_at": null,
+      "merged_at": null,
+      "commits": 21,
+      "changed_files": 10,
+      "additions": 1157,
+      "deletions": 10,
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/458",
+      "display_title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar"
+    }
+  ],
+  "issues": [
+    {
+      "issue": {
+        "url": "https://github.com/PORTALSURFER/hex/pull/419",
+        "title": "Name Arrange and Console views and switch workspaces with Tab",
+        "issue_number": 419,
+        "body": "Names the main workspaces Arrange View and Console View and adds bubbling, unmodified Tab switching in both directions. Local text/control navigation, view state, and active pointer/modal ownership are preserved.\n\nExact coherent joint source: `38c3d466e2b6ef0b136f31d42116b8512b4305c6`, tree `61731718ddded183ddb30421723529def0ddf036`, based on actual qualified main `a2d47ae8`. Both original canonical histories are preserved. Owner `ccd813af` fixes held-pan Tab refusal; `121f4684` disproves the later loading-width hypothesis with a real constructorNone\u2192ServiceInit matrix, adding tests and layout-neutral selectors only. At880px, status is61.5px before init and52px afterwards; tempo is absent while loading.\n\nValidation: **all21 required local steps PASS874.328s**, exact clean unchanged source digest `1d52d9746102450dd5e6491f17e4ff0c56e821091e2ebe85fd33d5f3d5f87e00`, stale=false. SummarySHA256 `1743719b717525950e8598d2f1d93a8799956cbb6b631cf448b9edd166f29a55`. UI990PASS,0FAIL,3existingignored. All10workspace cases and both compact-toolbar cases pass. Guarded focused format+UIcompile PASS60.312s; preceding1a5f format-negative/compileNOTRUN is preserved.\n\n**Unmerged / review-blocked.** Exact419 review completed without findings, but exact458 review5570270997 reported three unresolved Tab hypotheses: held pre-drag `pointer_down`, the device-add menu, and spectrum/device-navigation captures. These are routed to the sole general owner for actual repro/disproof and a focused return. Old pan/loading threads are resolved from current actual cases. Green tests do not clear these new findings or establish either canonical PR's merge.\n\nImmutable evidence-only ref `evidence/hex419-458-38c3d466-review-blocked-20261019` at `e14ad76898c4a2d4ae07a2c6773bf5ecdcc633ef`: `hex419-458-38c3d466-review-blocked-evidence.tar.gz`,617644B/SHA256 `aacf54f64d37697568bdc027ac4e322f4784d4c8a16f9cae2b6793a49bd84919`,184safe members/183hashed payloads. Never build or merge evidence refs. Old09b full21PASS875.523s remains historical review-blocked evidence.\n\nNative physical keyboard/IME/mouse/font/display and delivery remain separate; installed source2eef is unchanged.",
+        "state": "open",
+        "user": {
+          "login": "pulse-iocore-portalsurfer[bot]",
+          "name": "pulse-iocore-portalsurfer[bot]",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 340736319
+        },
+        "assignees": [
+          {
+            "login": "PORTALSURFER",
+            "name": "PORTALSURFER",
+            "email": null,
+            "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+            "id": 41680373
+          }
+        ],
+        "labels": null,
+        "milestone": null,
+        "state_reason": null,
+        "comments": 6,
+        "created_at": "2026-10-18T16:21:53Z",
+        "updated_at": "2026-10-19T10:43:29Z",
+        "closed_at": null,
+        "display_url": "https://github.com/PORTALSURFER/hex/pull/419",
+        "display_title": "Name Arrange and Console views and switch workspaces with Tab"
+      },
+      "url": "https://github.com/PORTALSURFER/hex/pull/419",
+      "title": "Name Arrange and Console views and switch workspaces with Tab",
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/419",
+      "display_title": "Name Arrange and Console views and switch workspaces with Tab"
+    },
+    {
+      "issue": {
+        "url": "https://github.com/PORTALSURFER/hex/pull/458",
+        "title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar",
+        "issue_number": 458,
+        "body": "Keeps output status readable at the880px minimum with compact toolbar spacing, an intrinsic position readout capped at82px, and preferred230px status width; full names,20px controls, titlebar geometry, clipping and tooltip remain.\n\nExact coherent joint source: `38c3d466e2b6ef0b136f31d42116b8512b4305c6`, tree `61731718ddded183ddb30421723529def0ddf036`, based on actual qualified main `a2d47ae8`. Both original canonical histories are preserved. Owner `ccd813af` fixes held-pan Tab refusal; `121f4684` disproves the later loading-width hypothesis with a real constructorNone\u2192ServiceInit matrix, adding tests and layout-neutral selectors only. At880px, status is61.5px before init and52px afterwards; tempo is absent while loading.\n\nValidation: **all21 required local steps PASS874.328s**, exact clean unchanged source digest `1d52d9746102450dd5e6491f17e4ff0c56e821091e2ebe85fd33d5f3d5f87e00`, stale=false. SummarySHA256 `1743719b717525950e8598d2f1d93a8799956cbb6b631cf448b9edd166f29a55`. UI990PASS,0FAIL,3existingignored. All10workspace cases and both compact-toolbar cases pass. Guarded focused format+UIcompile PASS60.312s; preceding1a5f format-negative/compileNOTRUN is preserved.\n\n**Unmerged / review-blocked.** Exact419 review completed without findings, but exact458 review5570270997 reported three unresolved Tab hypotheses: held pre-drag `pointer_down`, the device-add menu, and spectrum/device-navigation captures. These are routed to the sole general owner for actual repro/disproof and a focused return. Old pan/loading threads are resolved from current actual cases. Green tests do not clear these new findings or establish either canonical PR's merge.\n\nImmutable evidence-only ref `evidence/hex419-458-38c3d466-review-blocked-20261019` at `e14ad76898c4a2d4ae07a2c6773bf5ecdcc633ef`: `hex419-458-38c3d466-review-blocked-evidence.tar.gz`,617644B/SHA256 `aacf54f64d37697568bdc027ac4e322f4784d4c8a16f9cae2b6793a49bd84919`,184safe members/183hashed payloads. Never build or merge evidence refs. Old09b full21PASS875.523s remains historical review-blocked evidence.\n\nNative physical keyboard/IME/mouse/font/display and delivery remain separate; installed source2eef is unchanged.",
+        "state": "open",
+        "user": {
+          "login": "pulse-iocore-portalsurfer[bot]",
+          "name": "pulse-iocore-portalsurfer[bot]",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 340736319
+        },
+        "assignees": [
+          {
+            "login": "PORTALSURFER",
+            "name": "PORTALSURFER",
+            "email": null,
+            "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+            "id": 41680373
+          }
+        ],
+        "labels": null,
+        "milestone": null,
+        "state_reason": null,
+        "comments": 5,
+        "created_at": "2026-10-19T07:42:58Z",
+        "updated_at": "2026-10-19T10:43:30Z",
+        "closed_at": null,
+        "display_url": "https://github.com/PORTALSURFER/hex/pull/458",
+        "display_title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar"
+      },
+      "url": "https://github.com/PORTALSURFER/hex/pull/458",
+      "title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar",
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/458",
+      "display_title": "Pulse task #2856: Keep audio output status visible in the compact workspace toolbar"
+    }
+  ],
+  "reviews": {
+    "review_threads": [
+      {
+        "id": "PRRT_kwDOVB_C-s6t2wxc",
+        "is_resolved": true,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/transport.rs",
+        "line": 214,
+        "diff_side": "RIGHT",
+        "start_line": 210,
+        "start_diff_side": "RIGHT",
+        "original_line": 213,
+        "original_start_line": 209,
+        "resolved_by": {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+          "id": null
+        },
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQbAZg",
+            "database_id": 4312186982,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Reserve status width while the project is loading**\n\nAt the supported 880 px minimum, this shrinkable `min_w_0` item only recovers enough space for the short offline label, but when `state()` is `None`, the additional padded `loading` element appended below consumes that space and can collapse the audio status back to zero width. Cover the real loading state in the compact-width test and reserve enough width for both indicators so startup does not reintroduce the original invisible-status failure.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/09b46aefc5b4702cd671167afd82594ce286d316/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T09:22:45Z",
+            "updated_at": "2026-10-19T09:22:45Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQeGTg",
+            "database_id": 4312237646,
+            "body": "Recorded against exact09b46aef in shared Pulse2813/2856 notes28052/28053. This is a source-backed return pending the continuing implementation owner's actual pointer/loading-state reproduction or disproof; I am not resolving it from the existing focused tests. The already-running frozen full21 continues unchanged, and its terminal receipt will remain distinct from review clearance. Both canonical PR identities and prior negative evidence are preserved.",
+            "created_at": "2026-10-19T09:28:48Z",
+            "updated_at": "2026-10-19T09:28:48Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABARDx3g",
+            "database_id": 4312855006,
+            "body": "Disproved for the reported real loading branch by owner121f and now the actual unchanged combined38c3 full UI run: compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators PASS, and compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces PASS. The new case uses the actual constructor with stateNone and then consumes the real Service init event; it traverses both modes and880/881/960/1440/880. At880 status is61.5px whileNone and52px afterinit, each at least seven shaped characters50.75px. Existing project_tempo_input returns an empty element whileNone, which pays for the loading indicator. The return adds127test lines+2layout-neutral selectors, no sizing/content logic change or weakened old loaded/header oracle. Owner baseline initially failed only a missing selector after the width assertion already passed; that fixture error is retained. This resolves this specific loading hypothesis only, not the three newer Tab findings, full21, native fonts/physical display or merge clearance.",
+            "created_at": "2026-10-19T10:38:41Z",
+            "updated_at": "2026-10-19T10:38:41Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6t2wxl",
+        "is_resolved": true,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 45,
+        "diff_side": "RIGHT",
+        "start_line": 42,
+        "start_diff_side": "RIGHT",
+        "original_line": 44,
+        "original_start_line": 42,
+        "resolved_by": {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+          "id": null
+        },
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQbAcg",
+            "database_id": 4312186994,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Refuse Tab while arrangement pan owns the pointer**\n\nWhen the workspace already has focus and the middle mouse button is holding an arrangement pan, this guard does not check `arrangement_pan`, so an unmodified Tab reaches `set_mode`; that method immediately cancels the pan and switches to Console before mouse-up. Treat the active pan like the other pointer gestures here so Tab cannot interrupt a captured timeline interaction.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/09b46aefc5b4702cd671167afd82594ce286d316/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T09:22:45Z",
+            "updated_at": "2026-10-19T09:22:45Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQeFqw",
+            "database_id": 4312237483,
+            "body": "Recorded against exact09b46aef in shared Pulse2813/2856 notes28052/28053. This is a source-backed return pending the continuing implementation owner's actual pointer/loading-state reproduction or disproof; I am not resolving it from the existing focused tests. The already-running frozen full21 continues unchanged, and its terminal receipt will remain distinct from review clearance. Both canonical PR identities and prior negative evidence are preserved.",
+            "created_at": "2026-10-19T09:28:47Z",
+            "updated_at": "2026-10-19T09:28:47Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABARETLg",
+            "database_id": 4312863534,
+            "body": "Addressed by precise ccd813 one-line arrangement_pan ownership refusal, now verified in actual unchanged joint38c3 full UI run: workspace_review_tab_preserves_held_middle_pan_until_release_or_cancel PASS. The rendered test activates a real window, zooms to a pannable viewport, holds Middle and moves24px, verifies Tab preserves the exact pan token/generation/revision/pointer coordinates/viewport/selection/project and queues no edit, then traverses normal release, Escape, and unpressed-Move retirement. Tab works both ways afterwards. Original9workspace bodies remain byte-identical, and all10current workspace tests PASS. Existing Escape's separate time-range cancellation is explicitly asserted rather than weakened. This resolves the old held-pan finding only; three new pre-drag/menu/auxiliary capture findings on38c3 remain open, and full21/merge/native acceptance are separate.",
+            "created_at": "2026-10-19T10:39:43Z",
+            "updated_at": "2026-10-19T10:39:43Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6t4POB",
+        "is_resolved": false,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 45,
+        "diff_side": "RIGHT",
+        "start_line": 45,
+        "start_diff_side": null,
+        "original_line": 45,
+        "original_start_line": null,
+        "resolved_by": null,
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABARAGgg",
+            "database_id": 4312794754,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Guard pre-drag pointer capture from Tab**\n\nWhen the workspace has focus and the user holds the left mouse button on a clip or trim handle without yet crossing GPUI's drag threshold, only `pointer_down` is set; none of the active-drag checks here apply. Pressing Tab therefore switches to Console and unmounts the Arrangement element that owns the pending mouse-up, interrupting the captured interaction and potentially leaving `pointer_down` stale. Refuse the shortcut while `self.pointer_down.is_some()` as well.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/38c3d466e2b6ef0b136f31d42116b8512b4305c6/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T10:32:35Z",
+            "updated_at": "2026-10-19T10:32:35Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABARAhMQ",
+            "database_id": 4312801585,
+            "body": "Recorded against exact joint38c3d466 in Pulse2813/2856 as a source-specific return for the continuing general owner's actual pointer/menu reproduction or disproof and bounded repair. The existing frozen full21 run continues unchanged; I will preserve its terminal result separately from review clearance. This finding remains open. No semantic source edit, skipped test, or merge is being inferred from the current partial checks.",
+            "created_at": "2026-10-19T10:33:18Z",
+            "updated_at": "2026-10-19T10:33:18Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6t4POJ",
+        "is_resolved": false,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 29,
+        "diff_side": "RIGHT",
+        "start_line": 29,
+        "start_diff_side": null,
+        "original_line": 29,
+        "original_start_line": null,
+        "resolved_by": null,
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABARAGjA",
+            "database_id": 4312794764,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Refuse Tab while the device add menu is open**\n\nWhen the workspace or a track header retains focus, clicking the device-panel add toggle only flips `device_panel.add_menu_open` and does not transfer focus (`device_panel.rs:1035-1038`). This guard handles the other popup states but omits that menu, so an unmodified Tab switches the workspace underneath the still-open device menu, contrary to the popup refusal contract in `docs/workspace-views.md:15-17`. Include the device add-menu state in this refusal.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/38c3d466e2b6ef0b136f31d42116b8512b4305c6/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T10:32:35Z",
+            "updated_at": "2026-10-19T10:32:35Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABARAiWQ",
+            "database_id": 4312801881,
+            "body": "Recorded against exact joint38c3d466 in Pulse2813/2856 as a source-specific return for the continuing general owner's actual pointer/menu reproduction or disproof and bounded repair. The existing frozen full21 run continues unchanged; I will preserve its terminal result separately from review clearance. This finding remains open. No semantic source edit, skipped test, or merge is being inferred from the current partial checks.",
+            "created_at": "2026-10-19T10:33:19Z",
+            "updated_at": "2026-10-19T10:33:20Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6t4POO",
+        "is_resolved": false,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 43,
+        "diff_side": "RIGHT",
+        "start_line": 42,
+        "start_diff_side": "RIGHT",
+        "original_line": 43,
+        "original_start_line": 42,
+        "resolved_by": null,
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABARAGlg",
+            "database_id": 4312794774,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Block Tab during root-owned auxiliary drags**\n\nThe spectrum resize explicitly focuses `view.focus` when it begins, and device-chain overview/middle-button navigation can likewise start while that root focus remains, but neither `project_spectrum.resize` nor `device_panel.navigation.gesture` is covered here. Pressing Tab during either drag therefore changes workspaces; the device-navigation gesture is then canceled by its mode-sync path, while the spectrum resize continues over the newly switched view. Refuse Tab while either auxiliary pointer gesture is active, just as this guard already does for track resizing and Arrangement pan.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/38c3d466e2b6ef0b136f31d42116b8512b4305c6/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T10:32:35Z",
+            "updated_at": "2026-10-19T10:32:35Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABARAjJg",
+            "database_id": 4312802086,
+            "body": "Recorded against exact joint38c3d466 in Pulse2813/2856 as a source-specific return for the continuing general owner's actual pointer/menu reproduction or disproof and bounded repair. The existing frozen full21 run continues unchanged; I will preserve its terminal result separately from review clearance. This finding remains open. No semantic source edit, skipped test, or merge is being inferred from the current partial checks.",
+            "created_at": "2026-10-19T10:33:21Z",
+            "updated_at": "2026-10-19T10:33:21Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      }
+    ]
+  }
+}

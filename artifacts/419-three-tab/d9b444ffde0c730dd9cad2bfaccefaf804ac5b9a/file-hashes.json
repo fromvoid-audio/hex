@@ -1,0 +1,47 @@
+{
+  "crates/hex-ui/src/editor/device_panel.rs": {
+    "before_sha256": "e96491159210c6c3fabb453c98292388e72bf0fabba7695911f89993b5fc89b7",
+    "after_sha256": "ec85178a5c4673d1fc1e7052a548a3fd38c6324e727f8e27a0988e77262984a4",
+    "bytes": 92341
+  },
+  "crates/hex-ui/src/editor/device_panel/navigation.rs": {
+    "before_sha256": "a2cfe5ae09dac217b6da05c820fbd0ac3649de29547a332a9c848fe7e3f60544",
+    "after_sha256": "d3d088a466f776675212c75a9521736d432bba1a63110e12d2726035b38d7e78",
+    "bytes": 16855
+  },
+  "crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs": {
+    "before_sha256": "1f9fae44c5f352d1f0c9f3625be05ad1421ef337c7b42fc84362700a7aedbbfa",
+    "after_sha256": "1b616e8ec01f85362cbe8481373a5aab60e1f0f43ea154686d37776b2404a207",
+    "bytes": 17869
+  },
+  "crates/hex-ui/src/editor/project_spectrum.rs": {
+    "before_sha256": "ae85ad0fdebb1228f59d0d519516c582184444cbb092200db81563823fe5ccf7",
+    "after_sha256": "2108d3a352c89da194abe8a314a02aa6fe6a312e394a36621497a7dfdd222d16",
+    "bytes": 19548
+  },
+  "crates/hex-ui/src/editor/project_spectrum/tests.rs": {
+    "before_sha256": "c7e80523ecec30a774dc9060a8c0f5b3c55559b72b13fa36fca4475399283404",
+    "after_sha256": "6bbe78e3e79e0e09244717e6ddea333f24c27d49a55a482bc8109954e11a970b",
+    "bytes": 17467
+  },
+  "crates/hex-ui/src/editor/tracks.rs": {
+    "before_sha256": "adee7589d9c668a507bef690b43d9ed1e32074cc6b43b84a973a3eda2226b375",
+    "after_sha256": "a73e4ba2166bc1bfab729314524ddafaf426190f8ba41fab2a660b94e83bbae9",
+    "bytes": 92710
+  },
+  "crates/hex-ui/src/editor/workspace_view.rs": {
+    "before_sha256": "284ca59266b80fb8f59e06438c26da6b956ac0f86e8d6584717c0b3b848d9f7e",
+    "after_sha256": "603a2430cc5cd267ca8acd315874a13b11907d1c7f556099523e2024cb6358be",
+    "bytes": 2832
+  },
+  "crates/hex-ui/src/editor/workspace_view_ui_test.rs": {
+    "before_sha256": "cb9d422058337dbcd5357c84281a6c08dbf0a1bc530ae6363db00f3dd8718eb3",
+    "after_sha256": "d0fd79f3866e37a8f6c19aeaffb2f38e95f8a51b412d7eca7f88c51f12568535",
+    "bytes": 32082
+  },
+  "docs/workspace-views.md": {
+    "before_sha256": "dd756a65ddfbb4e0b92fa540a48c5c661f31f28910dda808a06499fc89fa28c0",
+    "after_sha256": "c91104bc39cfdab55c8227f379843efc2f1271426fdfed6cb8beecfbc242b573",
+    "bytes": 10348
+  }
+}

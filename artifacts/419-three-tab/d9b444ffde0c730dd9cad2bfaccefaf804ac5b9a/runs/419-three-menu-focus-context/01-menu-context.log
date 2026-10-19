@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.81s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+
+thread 'editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus' (189365) panicked at crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs:354:21:
+assertion failed: v.track_header_focused(window)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 998 filtered out; finished in 1.48s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,26 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.81s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 6 tests
+test editor::project_spectrum::tests::workspace_three_returns_spectrum_resize_preserves_capture ... ok
+test editor::workspace_view_ui_test::workspace_three_returns_delayed_click_preserves_other_pointer_identity ... ok
+
+thread 'editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus' (189122) panicked at crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs:338:21:
+assertion failed: v.track_header_focused(window)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus ... FAILED
+test editor::workspace_view_ui_test::workspace_three_returns_plain_clip_click_retires_pending_pointer ... ok
+test editor::workspace_view_ui_test::workspace_three_returns_held_left_before_drag_preserves_capture ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_navigation_preserves_capture ... ok
+
+failures:
+
+failures:
+    editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_retains_root_or_track_focus
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 993 filtered out; finished in 2.74s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

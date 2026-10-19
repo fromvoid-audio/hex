@@ -1,0 +1,21 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.31s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+
+thread 'editor::workspace_view_ui_test::workspace_three_returns_plain_clip_click_retires_pending_pointer' (188610) panicked at crates/hex-ui/src/editor/workspace_view_ui_test.rs:665:9:
+ordinary clip click did not retire original press
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::workspace_view_ui_test::workspace_three_returns_plain_clip_click_retires_pending_pointer ... FAILED
+
+failures:
+
+failures:
+    editor::workspace_view_ui_test::workspace_three_returns_plain_clip_click_retires_pending_pointer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 997 filtered out; finished in 0.47s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

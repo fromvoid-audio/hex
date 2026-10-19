@@ -1,0 +1,23 @@
+commit d9b444ffde0c730dd9cad2bfaccefaf804ac5b9a
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 11:02:41 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 11:02:41 2026 +0000
+
+    fix(ui): retire matching clip press before click consumption
+
+commit 56ef84cb57fd56b6f81659a31a9bc769a1116bf5
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:56:17 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:56:17 2026 +0000
+
+    checkpoint(ui): guard active controls and expose ordinary click ownership leak
+
+commit 30b052bd0240dc4deee383484512d95d5b7a986a
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:53:20 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:53:20 2026 +0000
+
+    test(ui): reproduce Tab interrupting pending pointers and auxiliary controls

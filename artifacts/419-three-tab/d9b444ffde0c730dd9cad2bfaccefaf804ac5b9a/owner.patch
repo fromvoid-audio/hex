@@ -1,0 +1,474 @@
+diff --git a/crates/hex-ui/src/editor/device_panel.rs b/crates/hex-ui/src/editor/device_panel.rs
+index be797481..6fdddde3 100644
+--- a/crates/hex-ui/src/editor/device_panel.rs
++++ b/crates/hex-ui/src/editor/device_panel.rs
+@@ -161,6 +161,10 @@ pub(super) enum DevicePanelOwner {
+ }
+ 
+ impl DevicePanelState {
++    pub(super) fn add_menu_is_open(&self) -> bool {
++        self.add_menu_open
++    }
++
+     /// A menu selecting another card restores that card only when a card owned
+     /// focus. Nested numeric/text/graph and browser focus remain untouched.
+     pub(super) fn comparison_return_focus(
+diff --git a/crates/hex-ui/src/editor/device_panel/navigation.rs b/crates/hex-ui/src/editor/device_panel/navigation.rs
+index 8f426aad..e48f8176 100644
+--- a/crates/hex-ui/src/editor/device_panel/navigation.rs
++++ b/crates/hex-ui/src/editor/device_panel/navigation.rs
+@@ -23,6 +23,10 @@ struct Gesture {
+ }
+ 
+ impl Navigation {
++    pub(in crate::editor) fn is_active(&self) -> bool {
++        self.gesture.is_some()
++    }
++
+     pub(in crate::editor) fn cancel(&mut self) -> bool {
+         self.gesture.take().is_some()
+     }
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs
+index b58cd7d0..689c1703 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs
+@@ -305,3 +305,149 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
+         assert_eq!(view.device_panel.navigation.scroll.offset().x, px(0.0));
+     });
+ }
++
++#[gpui::test]
++fn workspace_three_returns_device_menu_from_root_or_track_focus(cx: &mut TestAppContext) {
++    for header_focus in [false, true] {
++        let cx = &mut cx.new_app();
++        cx.update(crate::editor::bind_editor_keys);
++        let (service, state, track, _, _, _) = actor_utility_fixture();
++        let (handle, editor) = actor_editor_window(cx, service, state, track);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.update(|window, cx| {
++            window.activate_window();
++            editor.update(cx, |v, cx| {
++                v.mode = crate::editor::EditorMode::Arrangement;
++                v.focus.focus(window);
++                cx.notify();
++            });
++        });
++        visual.run_until_parked();
++        // Configure both real keyboard contexts explicitly; the prior pointer
++        // fixture did not establish header focus, so it cannot prove that route.
++        if header_focus {
++            visual.update(|window, cx| {
++                editor.update(cx, |v, cx| v.track_header_focus(track, cx).focus(window));
++            });
++        }
++        visual.update(|window, cx| {
++            editor.read_with(cx, |v, _| {
++                if header_focus {
++                    assert!(v.track_header_focused(window));
++                } else {
++                    assert!(v.focus.is_focused(window));
++                }
++            });
++        });
++        let add = visual.debug_bounds("device-add-toggle").unwrap().center();
++        visual.simulate_click(add, Modifiers::default());
++        visual.run_until_parked();
++        assert!(visual.debug_bounds("device-add-menu").is_some());
++        let before = editor.read_with(&visual, |v, _| {
++            assert!(v.device_panel.add_menu_open);
++            v.state.as_ref().unwrap().clone()
++        });
++        visual.update(|window, cx| {
++            editor.read_with(cx, |v, _| {
++                // GPUI's existing tracked-parent mouse-down handler focuses
++                // root when this non-focusable add button is clicked.
++                assert!(v.focus.is_focused(window));
++            })
++        });
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(
++                v.mode,
++                crate::editor::EditorMode::Arrangement,
++                "menu header={header_focus}"
++            );
++            assert!(v.device_panel.add_menu_open);
++            assert_eq!(v.state.as_ref().unwrap().project, before.project);
++            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
++            assert_eq!(v.worker_requests_pending, 0);
++            assert!(v.pending_requests.is_empty());
++        });
++        visual.simulate_click(add, Modifiers::default());
++        editor.read_with(&visual, |v, _| assert!(!v.device_panel.add_menu_open));
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.mode, crate::editor::EditorMode::Session)
++        });
++    }
++}
++
++#[gpui::test]
++fn workspace_three_returns_device_navigation_preserves_capture(cx: &mut TestAppContext) {
++    for overview in [false, true] {
++        let cx = &mut cx.new_app();
++        cx.update(crate::editor::bind_editor_keys);
++        let (service, mut state, track, _, _, _) = actor_utility_fixture();
++        for _ in 0..8 {
++            service
++                .submit(Request::AddNativeDevice {
++                    track,
++                    class: NativeDeviceClass::Effect,
++                    type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
++                        "hex.utility",
++                    )),
++                    before: None,
++                })
++                .unwrap();
++            state = receive_service_event(&service).state;
++        }
++        let (handle, editor) = actor_editor_window(cx, service, state, track);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.simulate_resize(size(px(880.0), px(540.0)));
++        visual.update(|window, cx| {
++            window.activate_window();
++            editor.read(cx).focus.focus(window);
++        });
++        visual.run_until_parked();
++        let selector = if overview {
++            "device-chain-overview"
++        } else {
++            "device-chain-scroll"
++        };
++        let start = visual.debug_bounds(selector).unwrap().center();
++        let button = if overview {
++            MouseButton::Left
++        } else {
++            MouseButton::Middle
++        };
++        let end = start - point(px(20.0), px(0.0));
++        visual.simulate_mouse_down(start, button, Modifiers::default());
++        visual.simulate_mouse_move(end, button, Modifiers::default());
++        let (before, offset) = editor.read_with(&visual, |v, _| {
++            assert!(v.device_panel.navigation.is_active());
++            (
++                v.state.as_ref().unwrap().clone(),
++                v.device_panel.navigation.scroll.offset(),
++            )
++        });
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(
++                v.mode,
++                crate::editor::EditorMode::Session,
++                "overview={overview}"
++            );
++            assert!(v.device_panel.navigation.is_active());
++            assert_eq!(v.device_panel.navigation.scroll.offset(), offset);
++            assert_eq!(v.state.as_ref().unwrap().project, before.project);
++            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
++            assert_eq!(v.worker_requests_pending, 0);
++            assert!(v.pending_requests.is_empty());
++        });
++        visual.simulate_mouse_up(end, button, Modifiers::default());
++        editor.update(&mut visual, |v, _| {
++            assert!(
++                !v.device_panel.navigation.cancel(),
++                "released capture already retired"
++            )
++        });
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
++        });
++    }
++}
+diff --git a/crates/hex-ui/src/editor/project_spectrum.rs b/crates/hex-ui/src/editor/project_spectrum.rs
+index 9e123701..a6321c4d 100644
+--- a/crates/hex-ui/src/editor/project_spectrum.rs
++++ b/crates/hex-ui/src/editor/project_spectrum.rs
+@@ -18,6 +18,12 @@ pub(super) struct ProjectSpectrumState {
+     output_identity: Option<u64>,
+     plot_cache: Option<PlotCache>,
+ }
++impl ProjectSpectrumState {
++    pub(super) fn resize_is_active(&self) -> bool {
++        self.resize.is_some()
++    }
++}
++
+ impl Default for ProjectSpectrumState {
+     fn default() -> Self {
+         Self {
+diff --git a/crates/hex-ui/src/editor/project_spectrum/tests.rs b/crates/hex-ui/src/editor/project_spectrum/tests.rs
+index 8b572f2a..21db03f0 100644
+--- a/crates/hex-ui/src/editor/project_spectrum/tests.rs
++++ b/crates/hex-ui/src/editor/project_spectrum/tests.rs
+@@ -382,3 +382,55 @@ fn project_spectrum_compact_live_header_restores_height_and_keeps_device_details
+     );
+     editor.read_with(cx, |view, _| assert!(view.project_spectrum.expanded));
+ }
++
++#[gpui::test]
++fn workspace_three_returns_spectrum_resize_preserves_capture(cx: &mut TestAppContext) {
++    for cancel in [false, true] {
++        let cx = &mut cx.new_app();
++        cx.update(crate::editor::bind_editor_keys);
++        let (project, _, _, _) = audio_project();
++        let (handle, editor) = editor_window(cx, project, Arc::default());
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.simulate_resize(size(px(1280.0), px(800.0)));
++        visual.update(|window, _| window.activate_window());
++        visual.run_until_parked();
++        let grip = visual
++            .debug_bounds("project-spectrum-resize")
++            .unwrap()
++            .center();
++        let original = editor.read_with(&visual, |v, _| v.project_spectrum.height);
++        let end = grip + point(px(0.0), px(12.0));
++        visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
++        let (before, height) = editor.read_with(&visual, |v, _| {
++            assert!(v.project_spectrum.resize.is_some());
++            assert_ne!(v.project_spectrum.height, original);
++            (v.state.as_ref().unwrap().clone(), v.project_spectrum.height)
++        });
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.mode, crate::editor::EditorMode::Arrangement);
++            assert!(v.project_spectrum.resize.is_some());
++            assert_eq!(v.project_spectrum.height, height);
++            assert_eq!(v.state.as_ref().unwrap().project, before.project);
++            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
++            assert_eq!(v.worker_requests_pending, 0);
++            assert!(v.pending_requests.is_empty());
++        });
++        if cancel {
++            visual.simulate_keystrokes("escape");
++        }
++        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
++        editor.read_with(&visual, |v, _| {
++            assert!(v.project_spectrum.resize.is_none());
++            assert_eq!(
++                v.project_spectrum.height,
++                if cancel { original } else { height }
++            );
++        });
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.mode, crate::editor::EditorMode::Session)
++        });
++    }
++}
+diff --git a/crates/hex-ui/src/editor/tracks.rs b/crates/hex-ui/src/editor/tracks.rs
+index e1d20c12..5b007628 100644
+--- a/crates/hex-ui/src/editor/tracks.rs
++++ b/crates/hex-ui/src/editor/tracks.rs
+@@ -1937,6 +1937,7 @@ impl EditorView {
+         let mouse_up_entity = drag_entity.clone();
+         let move_entity = drag_entity.clone();
+         let source_track = payload.source_track;
++        let source_generation = payload.project_generation;
+         let mouse_down_payload = payload.clone();
+         let mouse_up_payload = payload.clone();
+         div()
+@@ -1952,6 +1953,9 @@ impl EditorView {
+             .cursor(gpui::CursorStyle::OpenHand)
+             .on_click(
+                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
++                    // Click consumes the mouse-up before the separate release
++                    // listener; retire only this surface's original press.
++                    view.clear_pointer_down(source_generation, clip_id, None);
+                     cx.stop_propagation();
+                     view.select_clip_header(source_track, clip_id, event.modifiers(), window, cx);
+                     cx.notify();
+diff --git a/crates/hex-ui/src/editor/workspace_view.rs b/crates/hex-ui/src/editor/workspace_view.rs
+index 1be23b1b..852492a8 100644
+--- a/crates/hex-ui/src/editor/workspace_view.rs
++++ b/crates/hex-ui/src/editor/workspace_view.rs
+@@ -27,6 +27,7 @@ impl EditorView {
+             || self.theme_settings.open
+             || self.controller_input_is_open()
+             || self.context_menu.is_some()
++            || self.device_panel.add_menu_is_open()
+             || self.send_menu_track.is_some()
+             || self.project_tempo_editing(cx)
+             || self.gain_numeric_editing(cx)
+@@ -41,6 +42,9 @@ impl EditorView {
+             || self.preset_dialog_open
+             || self.track_resize_active()
+             || self.arrangement_pan.is_some()
++            || self.pointer_down.is_some()
++            || self.project_spectrum.resize_is_active()
++            || self.device_panel.navigation.is_active()
+             || self.clip_paint_gesture.is_some()
+             || self.active_clip_drag.is_some()
+             || self.active_browser_audio_drag.is_some()
+diff --git a/crates/hex-ui/src/editor/workspace_view_ui_test.rs b/crates/hex-ui/src/editor/workspace_view_ui_test.rs
+index 3b6d3050..805c6506 100644
+--- a/crates/hex-ui/src/editor/workspace_view_ui_test.rs
++++ b/crates/hex-ui/src/editor/workspace_view_ui_test.rs
+@@ -595,3 +595,128 @@ fn workspace_review_tab_preserves_held_middle_pan_until_release_or_cancel(cx: &m
+         });
+     }
+ }
++
++#[gpui::test]
++fn workspace_three_returns_held_left_before_drag_preserves_capture(cx: &mut TestAppContext) {
++    for trim in [false, true] {
++        let cx = &mut cx.new_app();
++        cx.update(super::bind_editor_keys);
++        let (project, _, _, clip) = super::clip_drag_ui_test::audio_project();
++        let (handle, editor) =
++            super::clip_drag_ui_test::editor_window(cx, project, Default::default());
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.update(|window, cx| {
++            window.activate_window();
++            editor.read(cx).focus.focus(window);
++        });
++        visual.run_until_parked();
++        let selector = Box::leak(if trim {
++            format!("clip-trim-right-{}", clip.value()).into_boxed_str()
++        } else {
++            format!("clip-drag-surface-{}", clip.value()).into_boxed_str()
++        });
++        let point = visual.debug_bounds(selector).unwrap().center();
++        visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
++        let before = editor.read_with(&visual, |v, _| {
++            assert!(v.pointer_down.is_some());
++            assert!(v.active_clip_drag.is_none() && v.active_trim_drag.is_none());
++            v.state.as_ref().unwrap().clone()
++        });
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.mode, EditorMode::Arrangement, "pre-drag trim={trim}");
++            assert!(v.pointer_down.is_some());
++            assert_eq!(v.state.as_ref().unwrap().project, before.project);
++            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
++            assert_eq!(v.worker_requests_pending, 0);
++            assert!(v.pending_requests.is_empty());
++        });
++        visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
++        editor.read_with(&visual, |v, _| {
++            assert!(v.pointer_down.is_none());
++            assert!(v.last_enqueued_edit.is_none());
++        });
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
++        visual.simulate_keystrokes("tab");
++        editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Arrangement));
++    }
++}
++
++#[gpui::test]
++fn workspace_three_returns_plain_clip_click_retires_pending_pointer(cx: &mut TestAppContext) {
++    cx.update(super::bind_editor_keys);
++    let (project, _, _, clip) = super::clip_drag_ui_test::audio_project();
++    let (handle, editor) = super::clip_drag_ui_test::editor_window(cx, project, Default::default());
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.update(|window, cx| {
++        window.activate_window();
++        editor.read(cx).focus.focus(window);
++    });
++    visual.run_until_parked();
++    let name = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
++    let point = visual.debug_bounds(name).unwrap().center();
++    // No Tab or other keyboard event: the existing click path alone must retire.
++    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
++    editor.read_with(&visual, |v, _| assert!(v.pointer_down.is_some()));
++    visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
++    visual.run_until_parked();
++    editor.read_with(&visual, |v, _| {
++        assert!(
++            v.pointer_down.is_none(),
++            "ordinary clip click did not retire original press"
++        );
++        assert!(v.last_enqueued_edit.is_none());
++        assert_eq!(v.worker_requests_pending, 0);
++    });
++}
++
++#[gpui::test]
++fn workspace_three_returns_delayed_click_preserves_other_pointer_identity(cx: &mut TestAppContext) {
++    for mismatch in 0..3 {
++        let cx = &mut cx.new_app();
++        cx.update(super::bind_editor_keys);
++        let (project, _, target, clip) = super::clip_drag_ui_test::audio_project();
++        let mut model = hex_project::Editor::new(project, 8).unwrap();
++        let hex_project::Created::Clip(other) = model
++            .execute(hex_project::Command::CopyClipTo {
++                clip,
++                track: target,
++                start: 0,
++            })
++            .unwrap()
++        else {
++            panic!("actual second clip");
++        };
++        let (handle, editor) = super::clip_drag_ui_test::editor_window(
++            cx,
++            model.project().clone(),
++            Default::default(),
++        );
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.update(|window, cx| {
++            window.activate_window();
++            editor.read(cx).focus.focus(window);
++        });
++        visual.run_until_parked();
++        let name = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
++        let point = visual.debug_bounds(name).unwrap().center();
++        visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
++        // Deliver the original surface's pending click after a different keyed
++        // press has taken ownership, as with a delayed callback after redraw.
++        let retained = editor.update(&mut visual, |v, _| {
++            let generation = v.project_generation + u64::from(mismatch == 0);
++            let owner = if mismatch == 1 { other } else { clip };
++            let edge = (mismatch == 2).then_some(hex_project::TrimEdge::Right);
++            v.remember_pointer_down(generation, owner, edge, 123.0);
++            v.pointer_down.unwrap()
++        });
++        visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
++        editor.read_with(&visual, |v, _| {
++            assert_eq!(v.pointer_down, Some(retained), "mismatch={mismatch}");
++            assert!(v.last_enqueued_edit.is_none());
++            assert_eq!(v.worker_requests_pending, 0);
++            assert!(v.pending_requests.is_empty());
++        });
++    }
++}
+diff --git a/docs/workspace-views.md b/docs/workspace-views.md
+index 750570f8..e9fbc34e 100644
+--- a/docs/workspace-views.md
++++ b/docs/workspace-views.md
+@@ -140,3 +140,31 @@ Also hold a double-click body-paint drag and press Tab: keep Arrange and the pai
+ preview. Release to paint once, or Escape then release to cancel, then verify Tab
+ switches normally. This checklist does not dispatch a native job or create a new
+ verification gate.
++
++### Auxiliary capture and device-menu review return
++
++The next source-specific review reproduced Tab switching during four actual
++rendered interactions: a held clip press before the drag threshold, an open
++device-add menu, a project-spectrum resize and device-chain navigation. The
++existing workspace refusal now checks those owners too. Private read-only
++queries expose only whether each existing owner is active; capture, focus,
++worker, model and history policies are unchanged.
++
++The pre-drag guard also exposed a pre-existing ordinary-click cleanup gap:
++the clip's click handler consumed mouse-up before its separate release handler
++cleared the recorded press. The click handler now clears only its captured
++project generation, clip and non-trim edge before selecting the clip. A delayed
++click cannot clear a different generation, clip or trim-edge press. There is no
++blanket pointer reset or vendor change.
++
++New rendered cases exercise body/trim press and release, ordinary click without
++Tab, delayed keyed click, menu entry from root and real header keyboard focus,
++spectrum release/Escape, and overview/middle-button device navigation. The add
++button's actual click focuses the existing tracked root parent through GPUI;
++it does not preserve header focus as initially assumed. Menu tests establish
++both starting focus contexts, then assert the real root route after clicking.
++They preserve project/revision and queue state, retain each capture through Tab,
++and allow switching again after the existing release/cancel/close path.
++Headless pointer/key evidence is not physical/native acceptance. The immutable
++handoff retains all original review failures and the separate fixture focus
++assumption failures. Final prospective-tree qualification remains merger-owned.
