@@ -5308,3 +5308,31 @@ source handoff is separate from final integration/full CI/merge and delivery.
   combined-tree/full21 and A/B format composition belong to the sole merger;
   clip-loop audio preparation, waveforms, handles, rounded painting, playback/
   export and native/physical delivery remain open under parent2843/PR445.
+
+- 19 October 2026 — Pulse2831 / PR435 integration: add independent rendered-pitch
+  coverage for the registered Sine, FM4 and current-mode Vector generators in
+  Arrangement, Console, live input, tuning handoffs, seek/loop, WAV export and
+  nonzero-range bounce. The owner adds only two integration test files and the
+  owning audit document; no production tuning, registry, MTS or resource change.
+  Original focused 14-step qualification records 33 positive cases; an earlier
+  zero-match allocation invocation remains negative evidence, with the corrected
+  feature-enabled three positive callback cases kept separate. Root verified
+  exact cd3376b6 native component tests: ten Engine plus one Export, no ignores.
+  Merger verified all 118 original payload hashes and preserved the three source
+  files byte for byte while integrating qualified main. New exact prospective
+  FULL21 and final review remain pending; physical MIDI, installed MTS-client,
+  listening and full Sampler395 acceptance remain open. The historical ignored
+  keyboard profile is excluded explicitly from focused non-profile commands,
+  never counted as passing. This entry records integration evidence only.
+
+- 19 October 2026 — Pulse2818 / PR424 returned startup writer repair: retain
+  both owner commits ee9ac4c8 and67b84e10. Actual named Save during held initial
+  preference load followed by view drop lost the queued folder; the existing
+  owned writer now starts immediately, retaining independent off-UI preference
+  validation and the non-writable refusal. Two actual reds and the condition-only
+  green remain preserved; owner expanded54positive cases and strict checks pass.
+  Merger verified all47new payloads and both owner file identities, then ordinarily
+  integrated qualified main without conflicts or feature edits. New exact FULL21
+  and final review remain pending; previous1f085full21 and4737native51 are scoped
+  history, not this repair's qualification. Actual OS chooser, physical save/open
+  and installation acceptance remain open.

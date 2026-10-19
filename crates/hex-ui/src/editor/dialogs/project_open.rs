@@ -73,6 +73,13 @@ impl EditorView {
         Some((generation, serial))
     }
 
+    pub(in crate::editor) fn open_picker_is_current(&self, generation: u64, serial: u64) -> bool {
+        self.project_generation == generation
+            && matches!(self.project_open.phase,
+            Phase::Picker { generation: active_generation, serial: active_serial }
+                if active_generation == generation && active_serial == serial)
+    }
+
     pub(in crate::editor) fn finish_open_picker(&mut self, generation: u64, serial: u64) -> bool {
         let matches = matches!(self.project_open.phase, Phase::Picker { generation: active_generation, serial: active_serial } if active_generation == generation && active_serial == serial);
         if !matches {
