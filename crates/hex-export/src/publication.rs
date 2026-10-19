@@ -17,6 +17,15 @@ pub enum Publication {
 }
 
 impl Publication {
+    pub(super) fn visit_path_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        if let Self::Replace(consent) = self {
+            ledger.borrow_metadata_path_backing_on_control(&consent.path)?;
+        }
+        Ok(())
+    }
     /// The caller has accepted this concrete path through a native save dialog.
     /// Existing regular files may be replaced; absent paths still publish with
     /// no-replace semantics, so a later collision never truncates another file.

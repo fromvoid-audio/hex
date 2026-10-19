@@ -35,6 +35,7 @@ impl Drop for Scratch {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Case {
     Success,
+    WrongIdentity,
     RetirementClosed,
     RetirementBusyAfterInvoke,
     Duplicate,
@@ -221,7 +222,27 @@ fn exercise(stereo: bool, case: Case) {
         .operations_on_control()
         .begin_main_control_work_on_control(513)
         .unwrap();
-    job.bind_main_on_control(identity).unwrap();
+    let bound_identity = if case == Case::WrongIdentity {
+        let mut foreign = AudioCandidatePreparation::try_new_on_control(0, storage).unwrap();
+        foreign
+            .operations_on_control()
+            .prepare_on_control(
+                &Project::new(44_100).unwrap(),
+                42,
+                hex_engine::AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: 0,
+                },
+            )
+            .unwrap();
+        let stale = foreign.operations_on_control().prepared_identity().unwrap();
+        assert_ne!(stale, identity);
+        foreign.cleanup_on_control().unwrap();
+        stale
+    } else {
+        identity
+    };
+    job.bind_main_on_control(bound_identity).unwrap();
     assert!(job.bind_main_on_control(identity).is_err());
     drop(original);
     if !matches!(
@@ -239,6 +260,7 @@ fn exercise(stereo: bool, case: Case) {
                     let _ = loan.run(&mut parent.operations_on_control());
                 }
                 Case::BusyAfterInvoke => return Err(MainControlHostError::Busy),
+                Case::WrongIdentity => return Ok(()),
                 Case::Panic => panic!("injected main host loan"),
                 _ => unreachable!(),
             }
@@ -246,6 +268,20 @@ fn exercise(stereo: bool, case: Case) {
         });
         assert!(result.is_err());
         assert!(job.failed_incomplete());
+        if case == Case::WrongIdentity {
+            let Progress::Block(block) = parent
+                .operations_on_control()
+                .step_main_control_work_on_control(1)
+                .unwrap()
+            else {
+                panic!("still unrendered actual Main parent")
+            };
+            assert_eq!(
+                block.frames(),
+                1,
+                "wrong job must refuse BEFORE rendering a foreign parent; a retained256 block proves prior rendering"
+            );
+        }
         assert!(!path.exists());
         if case == Case::Panic {
             assert_eq!(
@@ -400,4 +436,85 @@ fn real_main_parent_bad_host_cannot_publish_or_retry() {
 fn reader_pending_cannot_hide_closed_or_busy_after_host_invocation() {
     exercise(false, Case::RetirementClosed);
     exercise(false, Case::RetirementBusyAfterInvoke);
+}
+
+#[test]
+fn actual_reserved_file_slots_charge_spare_body_and_distinct_consent_path() {
+    let dir = Scratch::new();
+    let path = dir.0.join("confirmed-existing.wav");
+    let original_bytes = b"original disposable file must remain untouched";
+    fs::write(&path, original_bytes).unwrap();
+    let consent = hex_export::Publication::confirmed_save(&path).unwrap();
+    let file = StagedWavFile::begin_on_control(&path, 44_100, 513, &consent).unwrap();
+    let mut slots = Vec::with_capacity(3);
+    slots.push(MainControlFileJob::reserve_on_control(file).unwrap());
+    let limits = AudioStorageLedgerReservation {
+        data_rows: 16,
+        handle_rows: 1,
+        root_rows: 1,
+        max_retained_bytes: 1024 * 1024,
+        max_construction_peak_bytes: 1024 * 1024,
+    };
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits).unwrap();
+    MainControlFileJob::visit_reserved_slots_storage_on_control(&slots, &mut ledger).unwrap();
+    let summary = ledger.summary().unwrap();
+    // One real Vec backing (including TWO spare inline job/copy/encoding slots),
+    // destination, temporary and distinct equal-content confirmed-consent path.
+    assert_eq!(summary.data_allocations, 4);
+    assert!(summary.data_bytes > slots.capacity() * size_of::<MainControlFileJob>());
+    assert_eq!(fs::read(&path).unwrap(), original_bytes);
+    drop(ledger);
+    for (retained, peak, expected_ok) in [
+        (
+            summary.retained_bytes,
+            summary.construction_peak_bytes,
+            true,
+        ),
+        (
+            summary.retained_bytes - 1,
+            summary.construction_peak_bytes,
+            false,
+        ),
+        (
+            summary.retained_bytes,
+            summary.construction_peak_bytes - 1,
+            false,
+        ),
+    ] {
+        let mut ledger =
+            AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+                max_retained_bytes: retained,
+                max_construction_peak_bytes: peak,
+                ..limits
+            })
+            .unwrap();
+        let result =
+            MainControlFileJob::visit_reserved_slots_storage_on_control(&slots, &mut ledger);
+        assert_eq!(result.is_ok(), expected_ok);
+        if expected_ok {
+            assert_eq!(ledger.summary().unwrap(), summary);
+            assert!(
+                ledger.summary().unwrap().require_complete().is_err(),
+                "selected bytes do not confer constructor/retirement authority"
+            );
+        } else {
+            assert_eq!(result, Err(AudioStorageError::ReservationExceeded));
+            assert!(
+                ledger.summary().is_err(),
+                "failed partial inventory cannot be reused"
+            );
+        }
+    }
+    drop(slots);
+    assert_eq!(fs::read(&path).unwrap(), original_bytes);
+    assert_eq!(
+        fs::read_dir(&dir.0).unwrap().count(),
+        1,
+        "scratch cleanup only"
+    );
+}
+
+#[test]
+fn stale_main_job_identity_refuses_before_foreign_parent_render() {
+    exercise(false, Case::WrongIdentity);
 }

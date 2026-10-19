@@ -76,6 +76,18 @@ impl StagedWavFile {
         })
     }
 
+    /// Actual owned path backings only. The caller must separately visit the
+    /// real enclosing slot body/capacity, including the inline encoding buffer.
+    /// This is not a renderer/source/whole-application storage declaration.
+    pub fn visit_path_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        ledger.borrow_metadata_path_backing_on_control(&self.destination)?;
+        ledger.borrow_metadata_path_backing_on_control(&self.temporary_path)?;
+        self.publication.visit_path_storage_on_control(ledger)
+    }
+
     /// Nonowning progress only; it does not acknowledge a runtime block.
     pub fn written_frames(&self) -> u64 {
         self.writer

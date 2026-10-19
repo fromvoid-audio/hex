@@ -21,6 +21,8 @@ use std::sync::{
     mpsc::{self, SyncSender, TrySendError},
 };
 
+mod main_control_file;
+
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
 

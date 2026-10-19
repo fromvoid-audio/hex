@@ -317,6 +317,20 @@ impl AudioCandidatePreparation {
         self.control_work = Some(ControlWork::new(runtime, anchors, frames));
         Ok(())
     }
+    pub(in crate::audio_candidate) fn step_main_control_work_for_identity_on_control(
+        &mut self,
+        expected: AudioCandidateIdentity,
+        maximum: usize,
+    ) -> Result<AudioCandidateControlProgress, AudioStorageError> {
+        let work = self
+            .control_work
+            .as_mut()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if work.runtime.identity() != expected {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        work.step(maximum)
+    }
     pub(in crate::audio_candidate) fn step_main_control_work_with_frames_on_control(
         &mut self,
         maximum: usize,

@@ -1145,3 +1145,5 @@ fn generated_100_track_project_uses_actual_verified_service_and_callback() {
         .unwrap();
     h.render();
 }
+
+mod main_file;

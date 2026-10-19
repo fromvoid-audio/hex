@@ -144,6 +144,17 @@ impl AudioCandidatePreparationOperations<'_> {
             .step_main_control_work_with_frames_on_control(maximum)
     }
 
+    /// Match the actual bound Main parent BEFORE any DSP or block copy. An
+    /// opaque identity is correlation only; it grants no source/budget proof.
+    pub fn step_main_control_work_for_identity_on_control(
+        &mut self,
+        expected: AudioCandidateIdentity,
+        maximum: usize,
+    ) -> Result<AudioCandidateControlProgress, AudioStorageError> {
+        self.preparation
+            .step_main_control_work_for_identity_on_control(expected, maximum)
+    }
+
     /// Copy the retained block before releasing the short host loan. File I/O
     /// MUST happen after that loan; the host charges this separate copy buffer.
     pub fn copy_main_control_block_on_control(

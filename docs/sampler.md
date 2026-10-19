@@ -1756,3 +1756,41 @@ preserve a legitimate pending-reader result without returning it as a fatal
 preparation error. No source getter, synchronization primitive or cost permit is
 added by this component. CapturedMix, Stems, seek and complete mixed/offline
 coverage remain required under the original vertical contract.
+
+### Native exact-token bridge and outer-input boundary
+
+The Desktop bridge now runs Main File continuations through the existing actual
+`WorkerPublication` preparation token. Each control borrow ends before concrete
+File I/O. A real `ExternalReadersPending` stays recorded in the continuation,
+while the callback returns nonfatal success to prevent the host from marking
+that same parent terminally refused. `Collecting` describes the preparation cell;
+it never means native installation or file publication. The focused headless
+fixture renders nonzero mono Sampler PCM, repeatedly waits on a registered reader,
+then completes actual same-parent cleanup and File publication. A cancelled token
+cannot invoke a later continuation. This is a token/parent component, not an
+actual admitted Service export.
+
+A separate regression reproduced rendering on the wrong Main parent before the
+job checked its returned block identity. The checked Main step now compares the
+actual parent identity before DSP. The original failing test observed an already
+rendered 256-frame block after requesting one frame; the repaired path refuses
+first and the subsequent valid operation renders only the requested one frame.
+ACK and final-cleanup identity checks remain unchanged.
+
+Reserved File-slot inventory visits actual Vec capacity, including spare inline
+job/copy/encoding bodies, then distinct destination/temporary/consent path
+allocations. It does not count embedded buffers twice or invent a queued PCM
+buffer. Exact and each-minus-one tests cover this selected metadata quote and
+preserved disposable destination/scratch cleanup. Selected bytes confer no
+constructor/retirement permission.
+
+Joining those outer File rows to the unchanged inner compiler's original ledger
+correctly refuses: its mandatory typed input walk does not yet include the File
+slots or other host roots. The original desired whole-union positive failure is
+retained; the separate required-refusal regression is not passing whole-union
+construction. A typed host-operand representation across the existing crate
+layers remains unresolved. No generic ledger/binding rule was relaxed, no public
+host projection type introduced, and actual Service dispatch remains disabled
+until that mandatory union, normal startup/transport and source association are
+verified. Full native/frontier/seek/mixed/offline/CapturedMix/Stems requirements
+and the complete native-library goal remain open.

@@ -49,7 +49,7 @@ enum Phase {
 }
 #[derive(Clone, Copy)]
 enum Action {
-    RenderCopy,
+    RenderCopy(AudioCandidateIdentity),
     Acknowledge(Block),
     Retire(AudioCandidateIdentity),
 }
@@ -68,16 +68,14 @@ impl MainControlFileLoan for Loan<'_> {
         }
         self.invoked = true;
         let result = match self.action {
-            Action::RenderCopy => {
-                operations
-                    .step_main_control_work_on_control(256)
-                    .and_then(|progress| {
-                        if let Progress::Block(block) = progress {
-                            operations.copy_main_control_block_on_control(block, self.output)?;
-                        }
-                        Ok(progress)
-                    })
-            }
+            Action::RenderCopy(identity) => operations
+                .step_main_control_work_for_identity_on_control(identity, 256)
+                .and_then(|progress| {
+                    if let Progress::Block(block) = progress {
+                        operations.copy_main_control_block_on_control(block, self.output)?;
+                    }
+                    Ok(progress)
+                }),
             Action::Acknowledge(block) => operations
                 .acknowledge_main_control_block_on_control(block)
                 .map(|()| Progress::Block(block)),
@@ -104,6 +102,45 @@ pub struct MainControlFileJob {
     first_panic: Option<Box<dyn Any + Send>>,
 }
 impl MainControlFileJob {
+    /// Join ACTUAL worker-local reserved slot storage before compiler birth.
+    /// Vec capacity covers the inline File/job/PCM/encoding buffers, including
+    /// spare slots. Path children are visited at their real owning fields.
+    /// This supplies no source lineage, constructor or publication authority.
+    pub fn visit_reserved_slots_storage_on_control<'a>(
+        slots: &'a Vec<Self>,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        if slots.iter().any(|job| {
+            job.phase != Phase::Unbound
+                || job.identity.is_some()
+                || job.pending.is_some()
+                || job.first_panic.is_some()
+        }) {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        ledger.borrow_metadata_vec_backing_on_control(slots)?;
+        for job in slots {
+            job.file.visit_path_storage_on_control(ledger)?;
+        }
+        Ok(())
+    }
+    /// Concrete CreateNew File entry point for the existing Desktop adapter,
+    /// which deliberately has no dependency on the exporter crate. The host
+    /// still must inventory this actual reserved job before compiler birth.
+    pub fn create_new_on_control(
+        path: &std::path::Path,
+        sample_rate: u32,
+        frames: u64,
+    ) -> Result<Self, MainControlFileError> {
+        let file = StagedWavFile::begin_on_control(
+            path,
+            sample_rate,
+            frames,
+            &hex_export::Publication::CreateNew,
+        )
+        .map_err(MainControlFileError::File)?;
+        Self::reserve_on_control(file)
+    }
     pub fn reserve_on_control(file: StagedWavFile) -> Result<Self, MainControlFileError> {
         if file.written_frames() != 0 {
             return Err(MainControlFileError::Protocol);
@@ -208,7 +245,8 @@ impl MainControlFileJob {
         host: &mut impl FnMut(&mut dyn MainControlFileLoan) -> Result<(), MainControlHostError>,
     ) -> Result<MainControlFileProgress, MainControlFileError> {
         if self.phase == Phase::NeedBlock {
-            match self.loan(Action::RenderCopy, host)? {
+            let identity = self.identity.ok_or(MainControlFileError::Protocol)?;
+            match self.loan(Action::RenderCopy(identity), host)? {
                 None => return Ok(MainControlFileProgress::Busy),
                 Some(Progress::Block(block)) => {
                     if Some(block.runtime_identity()) != self.identity {
