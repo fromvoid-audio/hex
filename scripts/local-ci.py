@@ -636,6 +636,15 @@ class LocalCiRunner:
                 raise ValueError("workspace/target identity changed during dependency resolution")
             members = set(metadata["workspace_members"])
             packages = metadata["packages"]
+            if (not isinstance(packages, list)
+                    or any(not isinstance(package, dict)
+                           or not all(isinstance(package.get(field), str) and package[field]
+                                      for field in ("id", "name", "version"))
+                           or (package.get("source") is not None
+                               and not isinstance(package["source"], str))
+                           for package in packages)
+                    or not members.issubset({package["id"] for package in packages})):
+                raise ValueError("dependency package inventory is incomplete or invalid")
             dependencies = []
             for package in packages:
                 if package["id"] in members or package.get("source") is not None:
@@ -1231,8 +1240,6 @@ class LocalCiRunner:
                     if any(end_dependencies[p["key"]]["sha256"] != p["sha256"]
                            for p in self.path_dependencies):
                         self.summary["path_dependencies_stale"] = True
-                        self.summary["status"] = "stale"
-                        self.summary["exit_code"] = 3
                 except (OSError, TargetCacheError) as error:
                     self.summary["path_dependency_check_error"] = str(error)
                     self.summary["status"] = "incomplete"

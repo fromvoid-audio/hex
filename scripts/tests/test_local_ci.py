@@ -1098,6 +1098,15 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             holder.release()
         self.assertNotIn("cargo clean", self.call_log.read_text())
 
+    def test_invalid_dependency_metadata_refuses_before_marker_or_cleanup(self):
+        _, package, metadata = self.path_dependency_fixture()
+        package["manifest_path"] = False
+        with metadata:
+            self.assertEqual(self.runner("dep-invalid-metadata").run(), 1)
+        self.assertIn("invalid", self.summary("dep-invalid-metadata")["target_cache_error"])
+        self.assertFalse(list(self.target_state_dir.glob("*.owner.json")))
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
