@@ -1,5 +1,8 @@
 //! Bounded, versioned preferences independent of project documents.
 
+mod project_directory;
+pub use project_directory::{load_project_directory, save_project_directory};
+
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -34,6 +37,14 @@ pub fn recent_projects_path(home: &Path) -> PathBuf {
         .join("Application Support")
         .join("hex")
         .join("recent-projects.json")
+}
+
+/// Stable location for the last successfully used project folder.
+pub fn project_directory_preferences_path(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("hex")
+        .join("project-directory.json")
 }
 
 /// Stable app-support location for the independent four-color theme.

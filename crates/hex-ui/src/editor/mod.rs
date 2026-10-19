@@ -19,6 +19,7 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+mod group_copy;
 #[cfg(test)]
 mod test_environment;
 
@@ -31,9 +32,11 @@ mod clip_view;
 mod clip_view_ui_test;
 mod close;
 mod computer_keyboard;
+mod console_drop;
 mod context_menu;
 mod controller;
 mod controller_input;
+mod device_comparison;
 mod device_gesture;
 mod device_panel;
 mod device_preset;
@@ -76,6 +79,7 @@ mod musical_time;
 mod output_meter_ui_test;
 mod overview;
 mod play_intent;
+mod project_directory;
 mod project_recovery;
 mod project_spectrum;
 mod recent_projects;
@@ -329,6 +333,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     theme::load_fonts(cx)?;
     bind_editor_keys(cx);
     menus::install(cx, &[]);
+    dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
             cx.quit();
@@ -605,12 +610,14 @@ pub(super) struct EditorView {
     session_capability_message: Option<String>,
     play_intent: play_intent::Tracker,
     opening_project: bool,
+    project_open: dialogs::project_open::State,
     pending_open_path: Option<std::path::PathBuf>,
     pending_open_mode: Option<hex_session::DocumentAudioMode>,
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
     pending_new_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
+    pending_group_copy: Option<group_copy::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     export_control: Option<hex_session::service::ExportControl>,
@@ -707,6 +714,7 @@ pub(super) struct EditorView {
     test_environment: Arc<test_environment::Environment>,
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
+    project_directory: project_directory::State,
     changelog: changelog::State,
     theme_settings: theme_settings::ThemeSettingsState,
     tuning: tuning::TuningState,
@@ -768,9 +776,10 @@ impl EditorView {
                     std::path::PathBuf::new(),
                     std::path::PathBuf::new(),
                     std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
                 ),
                 test_environment::Inputs {
-                    defaults: [true; 3],
+                    defaults: [true; 4],
                     ..Default::default()
                 },
             )
@@ -795,9 +804,10 @@ impl EditorView {
                 preferences_path,
                 recent_projects_path,
                 std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
             ),
             test_environment::Inputs {
-                defaults: [false, false, true],
+                defaults: [false, false, true, true],
                 ..Default::default()
             },
         )
@@ -824,13 +834,30 @@ impl EditorView {
         )
     }
 
-    /// Bound discovery before any browser worker starts; never change process settings.
+    /// Bound all filesystem discovery before any worker starts.
     #[cfg(all(test, feature = "ui-test-support"))]
     fn new_for_test_with_browser_directory(
         window: &mut Window,
         cx: &mut Context<Self>,
         service: Service,
         directory: &std::path::Path,
+    ) -> Self {
+        Self::new_for_test_with_project_preferences(
+            window,
+            cx,
+            service,
+            directory,
+            directory.join("project-directory.json"),
+        )
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_project_preferences(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        directory: &std::path::Path,
+        project_preferences: std::path::PathBuf,
     ) -> Self {
         Self::new_with_browser_paths(
             window,
@@ -841,9 +868,39 @@ impl EditorView {
                 directory.join("browser.json"),
                 directory.join("recent-projects.json"),
                 directory.join("theme.json"),
+                project_preferences,
             ),
             test_environment::Inputs {
                 directory: Some(directory.join("samples")),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Reuse the fixture's actual path owner before any startup work escapes.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_environment(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        environment: Arc<test_environment::Environment>,
+    ) -> Self {
+        let directory = environment.root().join("samples");
+        Self::new_with_browser_paths(
+            window,
+            cx,
+            service,
+            Err("offline ui test".into()),
+            (
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+            ),
+            test_environment::Inputs {
+                existing_environment: Some(environment),
+                directory: Some(directory),
+                defaults: [true; 4],
                 ..Default::default()
             },
         )
@@ -867,9 +924,13 @@ impl EditorView {
                 preferences_path,
                 recent_projects_path,
                 theme_preferences_path,
+                project_directory::default_preferences_path(),
             ),
             #[cfg(test)]
-            test_environment::Inputs::default(),
+            test_environment::Inputs {
+                defaults: [false, false, false, true],
+                ..Default::default()
+            },
         )
     }
 
@@ -878,16 +939,28 @@ impl EditorView {
         cx: &mut Context<Self>,
         service: Service,
         output: Result<crate::EditorAudio, String>,
-        paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+        paths: (
+            std::path::PathBuf,
+            std::path::PathBuf,
+            std::path::PathBuf,
+            std::path::PathBuf,
+        ),
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
         #[cfg(test)]
-        let test_environment = test_environment::Environment::new()
-            .expect("could not create private editor test environment; no ambient fallback");
+        let test_environment = test_paths.existing_environment.unwrap_or_else(|| {
+            test_environment::Environment::new()
+                .expect("could not create private editor test environment; no ambient fallback")
+        });
         #[cfg(test)]
         let paths = test_environment.resolve_paths(paths, test_paths.defaults);
 
-        let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
+        let (
+            preferences_path,
+            recent_projects_path,
+            theme_preferences_path,
+            project_directory_path,
+        ) = paths;
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
             Err(error) => (
@@ -967,6 +1040,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
                 view.cancel_project_spectrum_resize(cx);
@@ -984,7 +1058,7 @@ impl EditorView {
                     let _ = audio.control.audition_cancel();
                 }
                 device_panel::clear_eq8_audition_gesture_flags(view);
-                if midi_cancelled || scrub_cancelled || paint_cancelled {
+                if browser_cancelled || midi_cancelled || scrub_cancelled || paint_cancelled {
                     cx.notify();
                 }
             }
@@ -1013,6 +1087,7 @@ impl EditorView {
             ),
         );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
+        let project_directory = project_directory::State::new(project_directory_path);
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
@@ -1094,12 +1169,14 @@ impl EditorView {
             session_capability_message: None,
             play_intent: play_intent::Tracker::default(),
             opening_project: false,
+            project_open: dialogs::project_open::State::default(),
             pending_open_path: None,
             pending_open_mode: None,
             requested_audio_mode: None,
             pending_new_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
+            pending_group_copy: None,
             close_prompt_open: false,
             export_pending: false,
             export_control: None,
@@ -1188,6 +1265,7 @@ impl EditorView {
             test_environment,
             browser,
             recent_projects,
+            project_directory,
             changelog: changelog::State::new(cx),
             theme_settings,
             tuning: tuning::TuningState::new(cx),
@@ -1208,6 +1286,7 @@ impl EditorView {
         }
         view.browser_scan_initial(cx);
         view.start_recent_projects_load(cx);
+        view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
         view
     }

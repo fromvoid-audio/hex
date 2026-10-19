@@ -1,6 +1,7 @@
 //! Test-only startup paths and filesystem-job custody. Never built into the app.
 use std::{
     fs, io,
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -12,14 +13,18 @@ use std::{
 /// One test-only constructor input boundary; explicit fixture paths are caller-owned.
 #[derive(Default)]
 pub(super) struct Inputs {
+    pub(super) existing_environment: Option<Arc<Environment>>,
     pub(super) directory: Option<PathBuf>,
     pub(super) home: Option<PathBuf>,
-    pub(super) defaults: [bool; 3],
+    pub(super) defaults: [bool; 4],
 }
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
-struct OwnedRoot(PathBuf);
+struct OwnedRoot {
+    path: PathBuf,
+    retain_for_evidence: AtomicBool,
+}
 impl OwnedRoot {
     fn create() -> io::Result<Self> {
         for _ in 0..128 {
@@ -29,7 +34,12 @@ impl OwnedRoot {
                 NEXT_ROOT.fetch_add(1, Ordering::Relaxed),
             ));
             match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self(path)),
+                Ok(()) => {
+                    return Ok(Self {
+                        path,
+                        retain_for_evidence: AtomicBool::new(false),
+                    });
+                }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),
             }
@@ -42,7 +52,17 @@ impl OwnedRoot {
 }
 impl Drop for OwnedRoot {
     fn drop(&mut self) {
-        let path = self.0.clone();
+        if self.retain_for_evidence.load(Ordering::Acquire) {
+            // Failure evidence outlives uncertain Service completion. Release
+            // memory normally; do not leak an Arc or panic during unwinding.
+            let _ = writeln!(
+                io::stderr().lock(),
+                "retained editor test root after unacknowledged setup: {:?}",
+                self.path
+            );
+            return;
+        }
+        let path = self.path.clone();
         let report_path = path.clone();
         // Teardown must not block the UI. This independent cleanup owns only our
         // exclusively-created root; it is not a Session or application worker join.
@@ -69,25 +89,29 @@ pub(super) struct Environment {
 impl Environment {
     pub(super) fn new() -> io::Result<Arc<Self>> {
         let root = OwnedRoot::create()?;
-        let home = root.0.join("home");
+        let home = root.path.join("home");
         fs::create_dir_all(home.join("Music"))?;
-        fs::create_dir(root.0.join("config"))?;
+        fs::create_dir(root.path.join("config"))?;
         Ok(Arc::new(Self {
             root,
             home,
             catalog_save_gate: Mutex::new(None),
         }))
     }
+    #[cfg(feature = "ui-test-support")]
+    pub(super) fn retain_for_unacknowledged_setup_failure(&self) {
+        self.root.retain_for_evidence.store(true, Ordering::Release);
+    }
     pub(super) fn root(&self) -> &Path {
-        &self.root.0
+        &self.root.path
     }
     pub(super) fn resolve_paths(
         &self,
-        paths: (PathBuf, PathBuf, PathBuf),
-        defaults: [bool; 3],
-    ) -> (PathBuf, PathBuf, PathBuf) {
-        let (browser, recent, theme) = paths;
-        let config = self.root.0.join("config");
+        paths: (PathBuf, PathBuf, PathBuf, PathBuf),
+        defaults: [bool; 4],
+    ) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (browser, recent, theme, project) = paths;
+        let config = self.root.path.join("config");
         // Flags describe constructor intent; explicit paths are never recognized
         // by string comparison or derived from an arbitrary preferences parent.
         (
@@ -105,6 +129,11 @@ impl Environment {
                 config.join("theme.json")
             } else {
                 theme
+            },
+            if defaults[3] {
+                config.join("project-directory.json")
+            } else {
+                project
             },
         )
     }

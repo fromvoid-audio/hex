@@ -39,6 +39,7 @@ mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
 mod gate_panel;
@@ -106,7 +107,7 @@ pub(super) struct DevicePanelState {
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
-    selected_device: Option<DeviceId>,
+    pub(super) selected_device: Option<DeviceId>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, gain_meters::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -161,6 +162,19 @@ pub(super) enum DevicePanelOwner {
 }
 
 impl DevicePanelState {
+    /// A menu selecting another card restores that card only when a card owned
+    /// focus. Nested numeric/text/graph and browser focus remain untouched.
+    pub(super) fn comparison_return_focus(
+        &mut self,
+        device: DeviceId,
+        window: &Window,
+        cx: &App,
+    ) -> Option<gpui::FocusHandle> {
+        let previous = self.selected_device?;
+        self.chain_window
+            .device_is_focused(previous, window)
+            .then(|| self.chain_window.focus(device, cx))
+    }
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn has_control_for(&self, device: DeviceId) -> bool {
         self.controls.keys().any(|key| key.device == device)
@@ -987,7 +1001,8 @@ fn render_track(
             rendered,
         )
         .track_focus(&focus);
-        let card = keyboard::card(view, cx, device.id(), focus, card);
+        let card = keyboard::card(view, cx, device.id(), focus.clone(), card);
+        let card = super::device_comparison::card(view, cx, device.id(), class, focus, card);
         chain = chain.child(card);
     }
     chain = chain.child(render_device_end_target(
@@ -1445,7 +1460,7 @@ fn render_effect(
                 .map_err(|error| error.to_string().to_lowercase())
         });
     let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
-    let header_actions = device_actions(device, selected, device_view.is_ok(), cx);
+    let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -1953,7 +1968,7 @@ fn render_instrument(
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
-    let header_actions = instrument_actions(track, device, selected, device_view.is_ok(), cx);
+    let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         Ok(device_view) => {
             if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
@@ -2061,6 +2076,7 @@ fn render_instrument(
 }
 
 fn instrument_actions(
+    view: &EditorView,
     track: TrackId,
     device: &hex_project::Device,
     selected: bool,
@@ -2083,12 +2099,20 @@ fn instrument_actions(
         })),
     );
     let actions = if presets_available {
-        actions.child(super::device_preset::actions(
-            id,
-            NativeDeviceClass::Instrument,
-            selected,
-            cx,
-        ))
+        actions
+            .child(super::device_preset::actions(
+                id,
+                NativeDeviceClass::Instrument,
+                selected,
+                cx,
+            ))
+            .child(super::device_comparison::actions(
+                view,
+                device,
+                NativeDeviceClass::Instrument,
+                selected,
+                cx,
+            ))
     } else {
         actions
     };
@@ -2237,6 +2261,7 @@ fn bypass_action(
 }
 
 fn device_actions(
+    view: &EditorView,
     device: &hex_project::Device,
     selected: bool,
     presets_available: bool,
@@ -2245,12 +2270,20 @@ fn device_actions(
     let id = device.id();
     let mut actions = div().flex().items_center().gap(px(2.0));
     if presets_available {
-        actions = actions.child(super::device_preset::actions(
-            id,
-            NativeDeviceClass::Effect,
-            selected,
-            cx,
-        ));
+        actions = actions
+            .child(super::device_preset::actions(
+                id,
+                NativeDeviceClass::Effect,
+                selected,
+                cx,
+            ))
+            .child(super::device_comparison::actions(
+                view,
+                device,
+                NativeDeviceClass::Effect,
+                selected,
+                cx,
+            ));
     }
     actions.child(
         action_button(

@@ -2,7 +2,7 @@
 
 The registered `hex.compressor` is an original zero-lookahead, stereo-linked
 feed-forward processor using the shared Lattice stateful effect contract. Its
-version-1 opaque state contains six finite `f32` controls. Generic device
+version-2 opaque state contains seven finite `f32` controls (28 bytes). Generic device
 metadata supplies catalog display, editing, persistence, history, and parameter
 publication.
 
@@ -16,11 +16,11 @@ the uncompressed region has zero gain reduction. Above a hard knee, reduction is
 gain. Makeup is added to the reduction target.
 
 Current gain in dB follows the target through a control-prepared 5 ms one-pole
-smoother, then multiplies both channels by the same linear gain. Runtime state is
-only the scalar detector envelope and gain value. Parameter revisions can carry
+smoother, then multiplies both channels by the same linear gain. Runtime state contains the scalar detector envelope, gain value, current mix
+and remaining mix-ramp frame count. Parameter revisions can carry
 these histories between same-rate compatible instances while keeping the
 candidate's new settings and coefficients. Reset restores zero envelope and the
-configured makeup gain. Bypass advances the same state while preserving the
+configured makeup gain and authored mix. Bypass advances the same state while preserving the
 input.
 
 The effect declares zero algorithmic latency and a zero-frame finite output
@@ -52,10 +52,10 @@ establish native UI or listening acceptance.
 
 The 326px panel uses the shared rounded fixed-height frame and shared editable
 controls. Ratio, attack and release form the left column; threshold and manual
-output (makeup) are inline fields above the curve, with knee below. Ratio uses
+output (makeup) are inline fields above the curve, with knee and a percentage dry/wet field below. Ratio uses
 the shared typed `n:1` display/parse codec; plain numeric entry remains accepted. The read-only
 static curve comes from the actual original gain-reduction law at steady detector
-levels. Input is -60..0 db and output is -66..24 db, including the soft-knee
+levels. Input is -60..0 db and output is -66..24 db, including makeup, the amplitude-domain dry/wet blend and the soft-knee
 dip at the lowest threshold. It is explicitly a static preview, not a live
 gain-reduction meter or timing display. No unsupported modes or lookahead
 controls are drawn. Track and Return instances share the same body.
@@ -64,3 +64,48 @@ Curve samples are bounded and cached by device state and effective local values;
 drafts update before worker acknowledgement. Owner/project/removal retire cached
 state. Headless tests cover Track/Return dimensions, a real Undoable parameter
 drag and pending-draft retirement; visual/listening acceptance awaits the user.
+
+## parallel dry/wet — pulse2851
+
+Stable provider parameter 7, `dry/wet`, is a finite fraction from 0 to 1, default
+1. For original device-input sample `x`, compressed post-makeup sample `w`, and
+current mix `m`, output is `(1-m)*x + m*w`, computed in double precision before
+conversion to PCM. This is an original linear-amplitude law, not a measured Live
+law. At exactly 0 the original input is retained bitwise, including signed zero;
+at exactly 1 the original fully-wet operation order/rounding is retained. Host
+input trim precedes the device and output trim follows it, through unchanged
+host processing. Detector and gain history still advance while fully dry or
+bypassed. Invalid input retains the existing visible fault behavior.
+
+A compatible parameter revision copies the current mix and ramps to its new
+target over `ceil(sample_rate/200)` valid frames (at least 5 ms). The finite ramp
+reaches exact endpoints. Same-settings speculative/scratch history copies also
+copy remaining frames, so block boundaries and rollback do not restart the ramp.
+Fresh/reset runtimes start at authored mix. No callback allocation, queue, extra
+PCM buffer or host registry is introduced; only scalar runtime state and math.
+The static curve and effective pending-draft cache use the same post-makeup blend;
+it is a steady target preview, not a live detector/ramp/meter display.
+
+Codec version 1 is explicitly unsupported, including prior alpha payloads; no
+historical conversion or automatic user-file rewrite is provided. Current state
+continues through generic opaque preset/project/history operations. Independent
+current payloads carry mix without a provider-specific A/B model. Actual combined
+A/B UI acceptance requires the generic A/B integration, absent from the source
+base for this slice; no unmerged A/B branch is imported here.
+
+Focused verification covers dry/wet/intermediate PCM with nonzero makeup,
+asymmetric stereo and signed zero, original fully-wet PCM fingerprints at six
+rates, analytic mix ramps and irregular speculative twin partitions, reset and
+bypass/dry history, current codec/host-trim preservation and invalid/legacy
+refusal. Actual canonical Track/Return tests exercise rendered mix gestures,
+Change/Commit/Cancel, draft preview, Undo/Redo and disposable current save/open.
+These source checks do not establish native musical listening or full Compressor,
+W12 or Ableton parity. Root owns future finite native control/listening checks;
+sole merger owns final prospective full local CI and merge.
+
+A disposable, non-repository allocation-counter 0.8.1 fixture measured zero total
+allocations/bytes and zero signed-net allocations/bytes across process, bypass,
+reset and history transfer for six sample rates and three mix values, with an
+allocation-positive/net-zero sensitivity calibration. The existing actual routed
+Track/Return callback allocation test also remains green at default mix. This is
+finite source/runtime evidence, not a universal native audio deadline claim.

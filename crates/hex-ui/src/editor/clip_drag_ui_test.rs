@@ -107,6 +107,7 @@ pub(super) fn editor_window(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -733,6 +734,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
         );
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&old.project),
             waveforms,
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1615,6 +1617,7 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
         let previous = view.state.as_ref().expect("project state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(moved_project.project().clone()),
             waveforms: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -1798,6 +1801,7 @@ fn held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project(
         let previous = view.state.as_ref().unwrap();
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: previous.project.clone(),
             waveforms: previous.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),

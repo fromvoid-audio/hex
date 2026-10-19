@@ -18,6 +18,7 @@ mod numeric;
 mod numeric_control;
 mod numeric_text;
 mod response_graph;
+mod spectrum_painter;
 mod spectrum_plot;
 mod style;
 mod text_case;
@@ -53,7 +54,8 @@ pub use numeric_control::{
 };
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphEvent,
-    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase, bind_response_graph_keys,
+    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase, ResponseGraphScrollEvent,
+    ResponseGraphScrollPhase, bind_response_graph_keys,
 };
 pub use style::{
     CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceActionStyle, DeviceFrameStyle,

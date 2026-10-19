@@ -291,6 +291,7 @@ mod tests {
                 editor.update(cx, |view, _| {
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::new(Project::new(48_000).expect("project")),
                         waveforms: Default::default(),
                         audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -333,6 +334,7 @@ mod tests {
             let current = view.state.as_ref().expect("state");
             let dirty = ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -350,7 +352,12 @@ mod tests {
             assert_eq!(view.pending_open_path.as_ref(), Some(&first));
             assert!(!view.opening_project);
             view.open_recent_project(&stale_menu_action);
-            assert!(view.opening_project, "second click confirms the same path");
+            assert!(
+                !view.opening_project,
+                "another click must not bypass confirmation"
+            );
+            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert!(view.pending_requests.is_empty());
             let pending_count = view.pending_requests.len();
             view.opening_project = true;
             view.open_recent_project(&OpenRecentProject {

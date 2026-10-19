@@ -145,6 +145,15 @@ impl Session {
                 "verified import differs from document reservation",
             ));
         }
+        let console_cell = match &destination {
+            VerifiedImportDestination::Session { track, scene } => {
+                Some(crate::import_batch::ResolvedCell {
+                    track: *track,
+                    scene: *scene,
+                })
+            }
+            _ => None,
+        };
         let command = verified_import_command(&source, destination);
         let commands = verified_audio_only_commands(self.project(), vec![command])?;
         let mut bank = self.media_bank();
@@ -154,21 +163,22 @@ impl Session {
         let (_, (created, id, prepared)) =
             self.editor
                 .execute_many_prepared(commands, |candidate, results| {
-                    let created = results
-                        .iter()
-                        .find(|created| matches!(created, Created::Imported { .. }))
-                        .cloned()
-                        .ok_or(SessionError::Invalid("verified import result missing"))?;
-                    let mut added = candidate
-                        .assets()
-                        .filter(|asset| !bank.contains_key(&asset.id()));
-                    let id = added
-                        .next()
-                        .map(|a| a.id())
-                        .ok_or(SessionError::Invalid("import candidate has no new source"))?;
-                    if added.next().is_some() {
+                    let created = crate::import_batch::normalize_imports(
+                        candidate,
+                        results,
+                        console_cell,
+                        1,
+                    )?
+                    .into_iter()
+                    .next()
+                    .ok_or(SessionError::Invalid("verified import result missing"))?;
+                    let Created::Imported { asset: id, .. } = &created else {
+                        return Err(SessionError::Invalid("verified import has no typed asset"));
+                    };
+                    let id = *id;
+                    if bank.contains_key(&id) || candidate.asset(id).is_none() {
                         return Err(SessionError::Invalid(
-                            "import candidate has multiple new sources",
+                            "verified import asset differs from candidate",
                         ));
                     }
                     bank.verified.insert(id, source.clone());
@@ -217,16 +227,26 @@ impl Session {
                 ));
             }
         }
-        let mut commands = Vec::new();
+        let (mut commands, console_cell) =
+            crate::import_batch::console::prefix(self.project(), destination, sources.len())?;
         commands
             .try_reserve_exact(sources.len())
             .map_err(|_| SessionError::Allocation)?;
         let mut cursor = match destination {
+            AudioBatchDestination::Console(_) => 0,
             AudioBatchDestination::Track { start, .. }
             | AudioBatchDestination::NewTracks { start, .. } => start,
         };
         for source in &sources {
             let target = match destination {
+                AudioBatchDestination::Console(_) => {
+                    let cell = console_cell
+                        .ok_or(SessionError::Invalid("console import target missing"))?;
+                    VerifiedImportDestination::Session {
+                        track: cell.track,
+                        scene: cell.scene,
+                    }
+                }
                 AudioBatchDestination::Track { track, .. } => VerifiedImportDestination::Track {
                     track,
                     start: cursor,
@@ -251,14 +271,16 @@ impl Session {
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
-        let (created, prepared) =
+        let (_, (created, prepared)) =
             self.editor
                 .execute_many_prepared(commands, |candidate, results| {
-                    for (created, source) in results
-                        .iter()
-                        .filter(|created| matches!(created, Created::Imported { .. }))
-                        .zip(&sources)
-                    {
+                    let created = crate::import_batch::normalize_imports(
+                        candidate,
+                        results,
+                        console_cell,
+                        sources.len(),
+                    )?;
+                    for (created, source) in created.iter().zip(&sources) {
                         let Created::Imported { asset, .. } = created else {
                             return Err(SessionError::Invalid("verified batch has no asset"));
                         };
@@ -276,10 +298,8 @@ impl Session {
                         &self.audio_clip_waveforms,
                     )?);
                     admit()?;
-                    Ok::<_, SessionError>(prepared)
+                    Ok::<_, SessionError>((created, prepared))
                 })?;
-        let mut created = created;
-        created.retain(|created| matches!(created, Created::Imported { .. }));
         for (created, source) in created.iter().zip(sources) {
             if let Created::Imported { asset, .. } = created {
                 self.verified_sources.insert(*asset, source);

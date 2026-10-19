@@ -255,6 +255,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.saturator"), 1, payload)
@@ -296,8 +297,8 @@ mod tests {
         };
         let mut snapshot = editor.project().snapshot();
         let device_id = snapshot.next_id;
-        let mut payload = Vec::with_capacity(24);
-        for value in [-42.0_f32, 8.0, 0.5, 250.0, 9.0, 3.0] {
+        let mut payload = Vec::with_capacity(28);
+        for value in [-42.0_f32, 8.0, 0.5, 250.0, 9.0, 3.0, 0.375] {
             payload.extend_from_slice(&value.to_le_bytes());
         }
         let track_snapshot = snapshot
@@ -306,9 +307,10 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
-            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 1, payload)
+            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 2, payload)
                 .expect("bounded opaque native state"),
         });
         snapshot.next_id = device_id + 1;
@@ -324,7 +326,8 @@ mod tests {
             .and_then(|candidate| candidate.devices().first())
             .expect("saved Compressor");
         assert_eq!(device.state().type_id().as_str(), Ok("hex.compressor"));
-        assert_eq!(device.state().state_version(), 1);
+        assert_eq!(device.state().state_version(), 2);
+        assert_eq!(&device.state().payload()[24..28], &0.375_f32.to_le_bytes());
         assert_eq!(
             device.state().payload(),
             project.tracks()[0].devices()[0].state().payload()
@@ -360,6 +363,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.gate"), 1, payload)
@@ -415,6 +419,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.auto-pan"), 2, payload)
