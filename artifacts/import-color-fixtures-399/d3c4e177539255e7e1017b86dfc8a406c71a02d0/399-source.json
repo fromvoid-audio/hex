@@ -1,0 +1,12 @@
+{
+  "head": "d3c4e177539255e7e1017b86dfc8a406c71a02d0",
+  "tree": "a7e1fa60c0d24c775497bedf0330fae5d2ad2f51",
+  "base": "e66a910275449012cdac35c36eb84b02f17a04c8",
+  "base_tree": "8d45d05b52946cacf5e309b3667d3c46f270fbc5",
+  "branch": "source-fix/399-import-color-fixtures-e66a9102",
+  "files": [
+    "crates/hex-session/src/import_batch/tests.rs",
+    "crates/hex-session/src/import_batch_decode/tests.rs"
+  ],
+  "delta": "crates/hex-session/src/import_batch/tests.rs       | 45 ++++++++++++++++++++--\n .../hex-session/src/import_batch_decode/tests.rs   | 39 ++++++++++++++++++-\n 2 files changed, 78 insertions(+), 6 deletions(-)"
+}

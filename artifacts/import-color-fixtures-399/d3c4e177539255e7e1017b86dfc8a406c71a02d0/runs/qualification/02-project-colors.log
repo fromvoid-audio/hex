@@ -1,0 +1,11 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running tests/automatic_track_colors.rs (target/debug/deps/automatic_track_colors-633ad5e836269101)
+
+running 3 tests
+test explicit_existing_gray_and_hues_are_preserved_and_ignored_only_for_assignment ... ok
+test all_creation_routes_choose_unused_hues_and_keep_history ... ok
+test palette_exhaustion_balances_to_track_limit_without_recoloring ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

@@ -1,0 +1,434 @@
+{
+  "schema": 1,
+  "ticket": 2793,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/399",
+  "source": {
+    "head": "d3c4e177539255e7e1017b86dfc8a406c71a02d0",
+    "tree": "a7e1fa60c0d24c775497bedf0330fae5d2ad2f51",
+    "base": "e66a910275449012cdac35c36eb84b02f17a04c8",
+    "base_tree": "8d45d05b52946cacf5e309b3667d3c46f270fbc5",
+    "branch": "source-fix/399-import-color-fixtures-e66a9102",
+    "files": [
+      "crates/hex-session/src/import_batch/tests.rs",
+      "crates/hex-session/src/import_batch_decode/tests.rs"
+    ],
+    "delta": "crates/hex-session/src/import_batch/tests.rs       | 45 ++++++++++++++++++++--\n .../hex-session/src/import_batch_decode/tests.rs   | 39 ++++++++++++++++++-\n 2 files changed, 78 insertions(+), 6 deletions(-)"
+  },
+  "file_hashes": {
+    "crates/hex-session/src/import_batch/tests.rs": {
+      "before_blob": "cb59436b035cbc41735eb2b61d384f82da5abfec",
+      "before_sha256": "23d1c195efdeeb55b92bef5335fb6cbe930730f6832ae7adf57f93cffcd7f154",
+      "after_blob": "f0bf5270a1659815d2398e32c9f0c2526dbe0397",
+      "after_sha256": "4f6c918cd9bc0de0a15109404aeb2d856526add7d81d0029414c14eee042f806"
+    },
+    "crates/hex-session/src/import_batch_decode/tests.rs": {
+      "before_blob": "3f796fe7dbbce6c5838e803cd67ebe94d86f0c7b",
+      "before_sha256": "72a80d0cae7ed7a97d5843d05da9a57643e0435787eebf467cd507de0c320359",
+      "after_blob": "8310fa3e38643829e72e25b37801a5b531f7e5bd",
+      "after_sha256": "e8f4c7ecbd8691e37f48f77d909c3a834b23ec4cc41ad29ac98af50c00a1921c"
+    }
+  },
+  "runs": {
+    "original-targeted": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 13.922,
+      "start_tree": {
+        "commit": "e66a910275449012cdac35c36eb84b02f17a04c8",
+        "content_sha256": "c437367e109d5e6bbc15f5fadd5958f3c4470d6f8fb1a4f35e5921d8525e5ef2",
+        "dirty": false,
+        "dirty_files": []
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-session",
+            "--locked",
+            "--lib",
+            "--",
+            "--exact",
+            "import_batch::tests::single_file_equivalent_to_existing_methods_for_both_destinations",
+            "import_batch_decode::tests::one_file_matches_existing_worker_decode_and_single_import",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:32:17Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/track-color-fixtures-399-original-targeted/01-original-equivalence.log",
+          "started_at": "2026-10-19T00:32:03Z",
+          "status": "failed",
+          "step_id": "original-equivalence"
+        }
+      ]
+    },
+    "targeted-green": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 4.428,
+      "start_tree": {
+        "commit": "e66a910275449012cdac35c36eb84b02f17a04c8",
+        "content_sha256": "510b4f46bdd7ba6752e36672abc8a7624afb2ecdc01ddec5c5574d428eaefa27",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-session/src/import_batch/tests.rs",
+          " M crates/hex-session/src/import_batch_decode/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-session",
+            "--locked",
+            "--lib",
+            "--",
+            "--exact",
+            "import_batch::tests::single_file_equivalent_to_existing_methods_for_both_destinations",
+            "import_batch_decode::tests::one_file_matches_existing_worker_decode_and_single_import",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:33:15Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-targeted-green/01-equivalence.log",
+          "started_at": "2026-10-19T00:33:11Z",
+          "status": "passed",
+          "step_id": "equivalence"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 22.286,
+      "start_tree": {
+        "commit": "e66a910275449012cdac35c36eb84b02f17a04c8",
+        "content_sha256": "510b4f46bdd7ba6752e36672abc8a7624afb2ecdc01ddec5c5574d428eaefa27",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-session/src/import_batch/tests.rs",
+          " M crates/hex-session/src/import_batch_decode/tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-session",
+            "--locked",
+            "--lib",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:33:40Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/01-session.log",
+          "started_at": "2026-10-19T00:33:38Z",
+          "status": "passed",
+          "step_id": "session"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--test",
+            "automatic_track_colors",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:33:41Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/02-project-colors.log",
+          "started_at": "2026-10-19T00:33:40Z",
+          "status": "passed",
+          "step_id": "project-colors"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-project",
+            "--locked",
+            "--lib",
+            "appearance::automatic_color_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:33:44Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/03-project-policy.log",
+          "started_at": "2026-10-19T00:33:41Z",
+          "status": "passed",
+          "step_id": "project-policy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--test",
+            "automatic_track_colors",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:33:45Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/04-storage-colors.log",
+          "started_at": "2026-10-19T00:33:44Z",
+          "status": "passed",
+          "step_id": "storage-colors"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-storage",
+            "--locked",
+            "--test",
+            "appearance",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:33:45Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/05-storage-appearance.log",
+          "started_at": "2026-10-19T00:33:45Z",
+          "status": "passed",
+          "step_id": "storage-appearance"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-session",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T00:33:54Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/06-session-clippy.log",
+          "started_at": "2026-10-19T00:33:45Z",
+          "status": "passed",
+          "step_id": "session-clippy"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-19T00:33:54Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/07-architecture.log",
+          "started_at": "2026-10-19T00:33:54Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-19T00:33:54Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/08-gpui.log",
+          "started_at": "2026-10-19T00:33:54Z",
+          "status": "passed",
+          "step_id": "gpui"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-19T00:33:54Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/09-style.log",
+          "started_at": "2026-10-19T00:33:54Z",
+          "status": "passed",
+          "step_id": "style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-19T00:33:55Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/10-layout.log",
+          "started_at": "2026-10-19T00:33:54Z",
+          "status": "passed",
+          "step_id": "layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T00:34:00Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/11-fmt.log",
+          "started_at": "2026-10-19T00:33:55Z",
+          "status": "passed",
+          "step_id": "fmt"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T00:34:00Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/track-color-fixtures-399-qualification/12-diff.log",
+          "started_at": "2026-10-19T00:34:00Z",
+          "status": "passed",
+          "step_id": "diff"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "TESTONLY2namedfunctionhunks; productionrandomcolorlaw unchanged.",
+    "Canonical399e66frozen, ownerpatchforsolemergercomposition/full21/review.",
+    "No newnativecase/behavior; existingphysicalacceptance remainsOPEN.",
+    "Originalfull21negative separatelypreserved; only ownpairedREDrawbytesrecoveredhere."
+  ],
+  "payloads": {
+    "399-component.py": {
+      "bytes": 553,
+      "sha256": "f0584be13cc13d3cfa449c1f001e52d1bc5e89de07aad86f0ed3ed162163345f"
+    },
+    "399-evidence.py": {
+      "bytes": 6832,
+      "sha256": "4eb4f719ef1936bc8b316371afa1273283c7c154b46ebf34531901dda7a42d0c"
+    },
+    "399-original-targeted.stdout": {
+      "bytes": 184,
+      "sha256": "2375e555a7e742099101fd4541753ba2f2a638818442febe3548b77de6ccfa3e"
+    },
+    "399-qualification.stdout": {
+      "bytes": 741,
+      "sha256": "ec8d9e57e660b97ec1cc329a56ca443252de8a11ecfc3d74a55d6c481295af77"
+    },
+    "399-source.json": {
+      "bytes": 636,
+      "sha256": "55be0004f1d2ea4995302c477073a4c861fe0d92bfa97d9bada94b3d404c1345"
+    },
+    "399-targeted-green.stdout": {
+      "bytes": 163,
+      "sha256": "2c14904f3167c902c86671b9124be43859e134334c9b55e2d39500314b6e2c7d"
+    },
+    "HANDOFF.md": {
+      "bytes": 3502,
+      "sha256": "8162ffa8b5412797728c127b0053609f6a620a41c254fdea8f6693f411837ee0"
+    },
+    "before-after-hashes.json": {
+      "bytes": 726,
+      "sha256": "64fba2846046066191251a1239d37b8e03c7fecbcd962e332a8cbd0fc004a6ac"
+    },
+    "owner.patch": {
+      "bytes": 5649,
+      "sha256": "2131959a1004a82efcb1a60b848ee1eb54cd8306210b2f3cb7f3c8c55c344004"
+    },
+    "runs/original-targeted/01-original-equivalence.log": {
+      "bytes": 13471,
+      "sha256": "e98549d0d1db6b36c34b6ed711c7a2bd4020bfbc59ee46d3e0ec6f472be9cb63"
+    },
+    "runs/original-targeted/summary.json": {
+      "bytes": 9973,
+      "sha256": "b6bc17ae9e9dd4541d6032bbda8e36a1cd38337450856b5c2c529a6d09b04c1e"
+    },
+    "runs/qualification/01-session.log": {
+      "bytes": 13960,
+      "sha256": "ea76b74fe5bcbcabbf5ed3dc22282a3da9b2948b225d7918ea445fb9ce101d51"
+    },
+    "runs/qualification/02-project-colors.log": {
+      "bytes": 591,
+      "sha256": "403520b261569e520019490c0ada7701a200f4ef59e596805596d249e66aa932"
+    },
+    "runs/qualification/03-project-policy.log": {
+      "bytes": 443,
+      "sha256": "194ba667de842fa9159e7db130d9488aa88980369e54fc5466f7bfe7be85d2f7"
+    },
+    "runs/qualification/04-storage-colors.log": {
+      "bytes": 457,
+      "sha256": "6ea88ce1fe7c04380ade91ab7acc73352a4a279aec888811fcd7426afcdbd8e4"
+    },
+    "runs/qualification/05-storage-appearance.log": {
+      "bytes": 479,
+      "sha256": "adf011236e96333516f97b2f45d1bae34d768609673a95403bd5d5a80d8ca7fa"
+    },
+    "runs/qualification/06-session-clippy.log": {
+      "bytes": 571,
+      "sha256": "eea6c512aca0be475e40dbe09f78beb71316b56031cd91b074b3c9c6f4045e80"
+    },
+    "runs/qualification/07-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/08-gpui.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/09-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/10-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/11-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/12-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 15717,
+      "sha256": "fea8e378c68906957f39f1f8a7eed6ed22916bb08199c57b37bb41ce34fcf028"
+    },
+    "runs/targeted-green/01-equivalence.log": {
+      "bytes": 535,
+      "sha256": "16fc412c04431429a774a2b10dec1929a28e8c89833d350df586de90b35f5375"
+    },
+    "runs/targeted-green/summary.json": {
+      "bytes": 10424,
+      "sha256": "8ffa8f85d36d652f8898917948151cecdcabdaa9470d4352706556ee27fd4706"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+[1/12] session: running
+[1/12] session: passed
+[2/12] project-colors: running
+[2/12] project-colors: passed
+[3/12] project-policy: running
+[3/12] project-policy: passed
+[4/12] storage-colors: running
+[4/12] storage-colors: passed
+[5/12] storage-appearance: running
+[5/12] storage-appearance: passed
+[6/12] session-clippy: running
+[6/12] session-clippy: passed
+[7/12] architecture: running
+[7/12] architecture: passed
+[8/12] gpui: running
+[8/12] gpui: passed
+[9/12] style: running
+[9/12] style: passed
+[10/12] layout: running
+[10/12] layout: passed
+[11/12] fmt: running
+[11/12] fmt: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/track-color-fixtures-399-qualification/summary.json

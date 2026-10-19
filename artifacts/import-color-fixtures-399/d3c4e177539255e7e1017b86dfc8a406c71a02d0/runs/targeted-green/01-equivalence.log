@@ -1,0 +1,10 @@
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.10s
+     Running unittests src/lib.rs (target/debug/deps/hex_session-b2894b41f4ccea91)
+
+running 2 tests
+test import_batch_decode::tests::one_file_matches_existing_worker_decode_and_single_import ... ok
+test import_batch::tests::single_file_equivalent_to_existing_methods_for_both_destinations ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 126 filtered out; finished in 0.03s
+

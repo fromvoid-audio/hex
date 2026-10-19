@@ -1,0 +1,14 @@
+{
+  "crates/hex-session/src/import_batch/tests.rs": {
+    "before_blob": "cb59436b035cbc41735eb2b61d384f82da5abfec",
+    "before_sha256": "23d1c195efdeeb55b92bef5335fb6cbe930730f6832ae7adf57f93cffcd7f154",
+    "after_blob": "f0bf5270a1659815d2398e32c9f0c2526dbe0397",
+    "after_sha256": "4f6c918cd9bc0de0a15109404aeb2d856526add7d81d0029414c14eee042f806"
+  },
+  "crates/hex-session/src/import_batch_decode/tests.rs": {
+    "before_blob": "3f796fe7dbbce6c5838e803cd67ebe94d86f0c7b",
+    "before_sha256": "72a80d0cae7ed7a97d5843d05da9a57643e0435787eebf467cd507de0c320359",
+    "after_blob": "8310fa3e38643829e72e25b37801a5b531f7e5bd",
+    "after_sha256": "e8f4c7ecbd8691e37f48f77d909c3a834b23ec4cc41ad29ac98af50c00a1921c"
+  }
+}
