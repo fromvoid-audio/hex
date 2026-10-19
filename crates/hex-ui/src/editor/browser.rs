@@ -1946,7 +1946,11 @@ impl EditorView {
             .w(px(4.0))
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(if self.browser.resizing {
+                theme::PaletteRole::Secondary
+            } else {
+                theme::PaletteRole::Border
+            })))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))));
         resize = resize.child(
             canvas(
@@ -1971,10 +1975,17 @@ impl EditorView {
                     let move_entity = entity.clone();
                     let available = f32::from(bounds.size.width);
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if !phase.bubble() || !event.dragging() {
+                        if !phase.bubble() {
                             return;
                         }
                         move_entity.update(cx, |view, cx| {
+                            if !event.dragging() {
+                                if view.browser.resizing {
+                                    view.browser.resizing = false;
+                                    cx.notify();
+                                }
+                                return;
+                            }
                             if view.browser.resizing {
                                 view.browser.width = clamped_panel_width(
                                     view.browser.layout.base_width_for_total(
