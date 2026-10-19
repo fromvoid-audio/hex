@@ -103,8 +103,8 @@ impl EditorView {
         )
     }
 
-    pub(super) fn return_tracks_view(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let Some(state) = self.state.as_ref() else {
+    pub(super) fn return_tracks_view(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let Some(state) = self.state.as_ref().cloned() else {
             return div()
                 .id("pinned-return-tracks-empty")
                 .h(px(0.0))
@@ -178,8 +178,67 @@ impl EditorView {
             let id = track.id();
             let selected = self.focused_return == Some(id);
             let name = track.name().to_owned();
-            let gain = track.gain();
             let muted = track.muted();
+            let gain = track.gain();
+            let gain_control = if self.document_audio_mode
+                == hex_session::DocumentAudioMode::Resident
+            {
+                div()
+                    .w(px(82.0))
+                    .flex()
+                    .flex_shrink_0()
+                    .child(self.return_volume(track, cx))
+            } else {
+                // Preserve the real explicit command path when held previews are unavailable.
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .child(
+                        return_button(
+                            format!("return-gain-down-{}", id.value()),
+                            "−",
+                            "decrease return gain",
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            super::device_panel::enqueue_return_edit(
+                                view,
+                                Command::ReturnGain {
+                                    return_track: id,
+                                    gain: (gain - 0.1).clamp(0.0, 2.0),
+                                },
+                                cx,
+                            );
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        div()
+                            .w(px(32.0))
+                            .text_xs()
+                            .text_right()
+                            .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                            .child(theme::text(format!("{:.0}%", gain * 100.0))),
+                    )
+                    .child(
+                        return_button(
+                            format!("return-gain-up-{}", id.value()),
+                            "+",
+                            "increase return gain",
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            super::device_panel::enqueue_return_edit(
+                                view,
+                                Command::ReturnGain {
+                                    return_track: id,
+                                    gain: (gain + 0.1).clamp(0.0, 2.0),
+                                },
+                                cx,
+                            );
+                            cx.notify();
+                        })),
+                    )
+            };
             let row = div()
                 .id(ElementId::Name(
                     format!("return-track-{}", id.value()).into(),
@@ -217,50 +276,7 @@ impl EditorView {
                             }
                         })),
                 )
-                .child(
-                    return_button(
-                        format!("return-gain-down-{}", id.value()),
-                        "−",
-                        "decrease return gain",
-                    )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        super::device_panel::enqueue_return_edit(
-                            view,
-                            Command::ReturnGain {
-                                return_track: id,
-                                gain: (gain - 0.1).clamp(0.0, 2.0),
-                            },
-                            cx,
-                        );
-                        cx.notify();
-                    })),
-                )
-                .child(
-                    div()
-                        .w(px(32.0))
-                        .text_xs()
-                        .text_right()
-                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                        .child(theme::text(format!("{:.0}%", gain * 100.0))),
-                )
-                .child(
-                    return_button(
-                        format!("return-gain-up-{}", id.value()),
-                        "+",
-                        "increase return gain",
-                    )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        super::device_panel::enqueue_return_edit(
-                            view,
-                            Command::ReturnGain {
-                                return_track: id,
-                                gain: (gain + 0.1).clamp(0.0, 2.0),
-                            },
-                            cx,
-                        );
-                        cx.notify();
-                    })),
-                )
+                .child(gain_control)
                 .child(
                     return_button(
                         format!("return-mute-{}", id.value()),

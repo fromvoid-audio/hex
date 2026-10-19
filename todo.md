@@ -5753,3 +5753,17 @@ User rejected device-local automation editing. Remove its button, graph mode and
 
 - Compose complete429ba3b5 owner return over6a8d with actual qualified main2683942b (BOTH419/458 authenticated merged, exact935.723s full21). Only three appended todo conflict regions; retain both histories, original phase/fade/CycleEnd/cfg/codec and private comparison fixture carry. Preserve all current workspace/menu/gain-pointer/header/407/413/main source.
 - All35 Length owner payloads and six before/after Git blobs verified. Actual ordinary control PASS/four placed Length-minus REDs and fixture compile-only negative remain source-bound. New current guarded six actual Length Service cases, prospective full21 and fresh review required before canonical456 merge. Keep current32 placement+tuning+required nullable A/B with BOTH asset slots; no unmerged native395/whole445 import or physical/runtime/listening/delivery claim.
+
+## reference track-header mixer component — Pulse2835 / PR439, 19 october2026
+
+Additive shared filled numeric fields replace the rejected separate resident
+rail/readout composition. Track activator/Solo, gain/pan and Return gain/mute
+retain canonical commands; TrackBalance/ReturnGain reuse existing worker gesture
+custody, transient prepared previews, Cancel and one-step history. Standard widget
+appearances, automation-owned `auto`, streaming +/- and pinned Return placement
+remain. See docs/track-header-volume.md for exact scope and evidence limits.
+Recording arm is disabled/unavailable and remains Pulse26's deferred0.2 dependency;
+Return pan/Solo have no current model and are omitted. Full2835 acceptance and
+optimized native visual/listening checks stay open. No PR438/431 implementation,
+recording backend, codec, new DSP or native app action is included. Final current
+candidate checks/review/merge belong to the sole merger.

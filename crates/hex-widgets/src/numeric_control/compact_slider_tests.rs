@@ -161,3 +161,209 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
         assert_eq!(control.value(), 75.0);
     });
 }
+
+#[gpui::test]
+fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestAppContext) {
+    cx.update(bind_numeric_control_keys);
+    for bipolar in [false, true] {
+        let handle = *cx.add_window(|_, _| Empty);
+        let (control, root) = cx
+            .update_window(handle, |_, window, cx| {
+                let spec = if bipolar {
+                    NumericSpec::new(
+                        -1.0,
+                        1.0,
+                        0.0,
+                        crate::NumericScale::Bipolar,
+                        2,
+                        None::<&str>,
+                    )
+                    .unwrap()
+                } else {
+                    NumericSpec::new(
+                        0.0,
+                        2.0,
+                        1.0,
+                        crate::NumericScale::LinearAmplitudeDecibels,
+                        1,
+                        None::<&str>,
+                    )
+                    .unwrap()
+                };
+                let control = cx.new(|cx| {
+                    NumericControl::from_config(
+                        cx,
+                        NumericControlConfig::new(
+                            "filled-volume",
+                            "volume",
+                            NumericControlKind::HorizontalSlider,
+                            spec.clone(),
+                            spec.default(),
+                            STYLE,
+                        )
+                        .unwrap()
+                        .with_appearance(NumericControlAppearance::FilledSlider),
+                    )
+                });
+                let root = window.replace_root(cx, |_, _| Root {
+                    control: control.clone(),
+                    width: 60.0,
+                });
+                (control, root)
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(400.0), px(140.0)));
+        for width in [60.0, 86.0, 168.0] {
+            root.update(cx, |root, cx| {
+                root.width = width;
+                cx.notify();
+            });
+            for value in if bipolar {
+                [-1.0, 0.0, 1.0]
+            } else {
+                [0.0, 1.0, 2.0]
+            } {
+                control.update(cx, |control, cx| {
+                    control.set_external_value(value, cx).unwrap()
+                });
+                visual.run_until_parked();
+                let slot = visual.debug_bounds("compact-slot").unwrap();
+                let bar = visual.debug_bounds("filled-volume-slider").unwrap();
+                let field = visual.debug_bounds("filled-volume-value").unwrap();
+                let fill = visual.debug_bounds("filled-volume-bar-fill").unwrap();
+                assert_eq!(
+                    bar.size.width,
+                    px(width - 2.0),
+                    "retain shared focus-marker inset"
+                );
+                assert_eq!(field, bar, "text and bar must occupy one combined field");
+                assert!(bar.right() <= slot.right() && bar.bottom() <= slot.bottom());
+                assert!(fill.left() >= bar.left() && fill.right() <= bar.right());
+                if bipolar {
+                    let center = visual.debug_bounds("filled-volume-bar-center").unwrap();
+                    assert_eq!(center.left(), bar.center().x);
+                    if value < 0.0 {
+                        assert_eq!(fill.right(), center.left());
+                    }
+                    if value > 0.0 {
+                        assert_eq!(fill.left(), center.left());
+                    }
+                    if value == 0.0 {
+                        assert_eq!(fill.size.width, px(0.0));
+                    }
+                } else if value == 0.0 {
+                    assert_eq!(fill.size.width, px(0.0));
+                } else if value == 2.0 {
+                    assert_eq!(fill.size.width, bar.size.width);
+                }
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecycle(
+    cx: &mut TestAppContext,
+) {
+    cx.update(bind_numeric_control_keys);
+    let handle = *cx.add_window(|_, _| Empty);
+    let control = cx
+        .update_window(handle, |_, window, cx| {
+            let control = cx.new(|cx| {
+                NumericControl::from_config(
+                    cx,
+                    NumericControlConfig::new(
+                        "filled-edit",
+                        "volume",
+                        NumericControlKind::HorizontalSlider,
+                        NumericSpec::new(
+                            0.0,
+                            2.0,
+                            1.0,
+                            crate::NumericScale::LinearAmplitudeDecibels,
+                            1,
+                            None::<&str>,
+                        )
+                        .unwrap(),
+                        1.0,
+                        STYLE,
+                    )
+                    .unwrap()
+                    .with_appearance(NumericControlAppearance::FilledSlider),
+                )
+            });
+            window.replace_root(cx, |_, _| Root {
+                control: control.clone(),
+                width: 86.0,
+            });
+            control
+        })
+        .unwrap();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let captured = events.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            captured.borrow_mut().push(*event)
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(140.0)));
+    let field = visual.debug_bounds("filled-edit-value").unwrap();
+    let start = field.center();
+    let end = point(start.x + px(20.0), start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    assert!(control.read_with(cx, |c, _| c.value()) > 1.0);
+    assert_eq!(
+        events.borrow().iter().map(|e| e.phase).collect::<Vec<_>>(),
+        [
+            NumericEventPhase::Begin,
+            NumericEventPhase::Change,
+            NumericEventPhase::Commit
+        ]
+    );
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_input("-6 db");
+    visual.simulate_keystrokes("enter");
+    assert!((control.read_with(cx, |c, _| c.value()) - 10.0_f64.powf(-6.0 / 20.0)).abs() < 1e-12);
+    let accepted = control.read_with(cx, |c, _| c.value());
+    for draft in ["+100 db", "NaN", "∞", "é"] {
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_input(draft);
+        visual.simulate_keystrokes("enter");
+        control.read_with(cx, |c, _| {
+            assert!(c.is_editing());
+            assert!(c.invalid_text);
+            assert_eq!(c.value(), accepted);
+        });
+        visual.simulate_keystrokes("escape");
+    }
+    events.borrow_mut().clear();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    assert_eq!(control.read_with(cx, |c, _| c.value()), accepted);
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .any(|e| e.phase == NumericEventPhase::Cancel)
+    );
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|e| e.phase == NumericEventPhase::Commit)
+    );
+    events.borrow_mut().clear();
+    control.update(cx, |c, cx| c.set_enabled(false, cx));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    assert!(events.borrow().is_empty());
+}

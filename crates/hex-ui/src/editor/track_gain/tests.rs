@@ -231,6 +231,50 @@ fn verified_streaming_keeps_explicit_functional_gain_controls(cx: &mut TestAppCo
         );
         assert!(view.device_gesture.snapshot().is_none());
     });
+    editor.update(cx, |view, _| {
+        view.enqueue(hex_session::service::Request::Edit(
+            Command::AddReturnTrack {
+                name: "streamed bus".into(),
+            },
+        ))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .return_tracks()
+                .is_empty()
+    });
+    editor.update(cx, |view, cx| {
+        view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let id = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.return_tracks()[0].id()
+    });
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("return-volume-{}", id.value()).into_boxed_str()
+            ))
+            .is_none()
+    );
+    let up = visual
+        .debug_bounds(Box::leak(
+            format!("return-gain-up-{}", id.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().unwrap().project.return_tracks()[0].gain() > 1.0
+    });
 }
 
 #[gpui::test]
@@ -417,7 +461,11 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
                 assert!(slider.left() >= width_handle.right());
                 assert!(slider.right() <= header.right());
                 assert!(slider.bottom() <= height_handle.top());
-                assert!(rail.size.width >= px(36.0) && rail.right() <= field.left());
+                assert!(rail.size.width >= px(58.0));
+                assert_eq!(
+                    rail, field,
+                    "one filled field replaces the old separate rail/readout"
+                );
                 for prefix in [
                     "gain-lane-show",
                     "track-mute",
@@ -427,7 +475,12 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
                     let control = bounds(&mut visual, prefix, track);
                     assert!(control.left() >= header.left() && control.right() <= header.right());
                     assert!(control.bottom() <= height_handle.top());
-                    assert!(control.right() <= slider.left() || control.left() >= slider.right());
+                    assert!(
+                        control.right() <= slider.left()
+                            || control.left() >= slider.right()
+                            || control.bottom() <= slider.top()
+                            || control.top() >= slider.bottom()
+                    );
                 }
             }
             editor.read_with(&visual, |view, _| {
@@ -529,4 +582,219 @@ fn header_volume_automation_envelope_shows_auto_without_edit(cx: &mut TestAppCon
 #[gpui::test]
 fn header_volume_recorded_touch_lane_shows_auto_without_edit(cx: &mut TestAppContext) {
     automation_readout_owns_gain(cx, true);
+}
+
+#[gpui::test]
+fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAppContext) {
+    #[cfg(target_os = "macos")]
+    {
+        cx.use_native_text_system().unwrap();
+        cx.update(|app| crate::theme::load_fonts(app).unwrap());
+    }
+    let (_browser, mut visual, _editor, [track, _]) = actor_fixture(cx);
+    let bounds = |visual: &mut VisualTestContext, suffix: &str| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-{}{suffix}", track.value()).into_boxed_str(),
+            ))
+            .unwrap()
+    };
+    let whole = bounds(&mut visual, "");
+    let field = bounds(&mut visual, "-value");
+    assert!(
+        field.size.width >= whole.size.width - px(4.0),
+        "reference requires a centered value across the filled bar, not a separate narrow value field: {whole:?} {field:?}"
+    );
+    assert_eq!(field.center().x, whole.center().x);
+    assert!(field.size.height >= px(16.0));
+    let header = self::bounds(&mut visual, "arrangement-track-header", track);
+    let pan = self::bounds(&mut visual, "track-pan", track);
+    let activator = self::bounds(&mut visual, "track-mute", track);
+    let solo = self::bounds(&mut visual, "track-solo", track);
+    let arm = self::bounds(&mut visual, "track-arm-unavailable", track);
+    assert_eq!(activator.top(), solo.top());
+    assert_eq!(solo.top(), arm.top());
+    assert_eq!(whole.top(), pan.top());
+    assert!((activator.left() - whole.left()).abs() <= px(1.0));
+    assert!(activator.bottom() <= whole.top());
+    assert_eq!(arm.right(), pan.right());
+    for rect in [whole, pan, activator, solo, arm] {
+        assert!(rect.left() >= header.left() && rect.right() <= header.right());
+        assert!(rect.top() >= header.top() && rect.bottom() <= header.bottom());
+    }
+    let mut scene = Vec::new();
+    for suffix in [
+        "track-mute",
+        "track-solo",
+        "track-arm-unavailable",
+        "track-volume",
+        "track-pan",
+    ] {
+        let id = Box::leak(format!("{suffix}-{}", track.value()).into_boxed_str());
+        let rect = visual.debug_bounds(id).unwrap();
+        scene.push(serde_json::json!({"id": id, "bounds": [f32::from(rect.left()), f32::from(rect.top()), f32::from(rect.size.width), f32::from(rect.size.height)], "background": visual.rendered_background(id)}));
+    }
+    for prefix in ["track-volume", "track-pan"] {
+        for suffix in ["slider", "bar-fill", "value"] {
+            let id = Box::leak(format!("{prefix}-{}-{suffix}", track.value()).into_boxed_str());
+            let rect = visual.debug_bounds(id).unwrap();
+            let background = visual.rendered_background(id);
+            if suffix == "slider" || (prefix == "track-volume" && suffix == "bar-fill") {
+                assert!(background.is_some());
+            }
+            scene.push(serde_json::json!({"id":id, "bounds":[f32::from(rect.left()), f32::from(rect.top()),f32::from(rect.size.width),f32::from(rect.size.height)], "background":background}));
+        }
+    }
+    let activator_id = Box::leak(format!("track-mute-{}", track.value()).into_boxed_str());
+    let solo_id = Box::leak(format!("track-solo-{}", track.value()).into_boxed_str());
+    assert_eq!(
+        visual.rendered_background(activator_id),
+        Some(gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Primary)).into())
+    );
+    assert_ne!(
+        visual.rendered_background(activator_id),
+        visual.rendered_background(solo_id)
+    );
+    println!(
+        "HEX439_RENDERED_SCENE {}",
+        serde_json::to_string(&scene).unwrap()
+    );
+}
+
+#[gpui::test]
+fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
+    cx: &mut TestAppContext,
+) {
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    let pan = bounds(&mut visual, "track-pan", track);
+    let field = visual
+        .debug_bounds(Box::leak(
+            format!("track-pan-{}-value", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    assert!(field.left() >= pan.left() && field.right() <= pan.right());
+    let start = field.center();
+    let end = point(start.x + px(20.0), start.y);
+    drag(&mut visual, start, end);
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.device_gesture.snapshot().is_none()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .balance()
+                > 0.0
+    });
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.device_gesture.snapshot().is_none()
+    });
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone()),
+        before
+    );
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_input("25 l");
+    visual.simulate_keystrokes("enter");
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.device_gesture.snapshot().is_none()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .balance()
+                == -0.25
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(other).unwrap().balance(), 0.0);
+        assert!(!project.track(track).unwrap().soloed());
+        assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
+    });
+    for prefix in ["track-mute", "track-solo"] {
+        let hit = bounds(&mut visual, prefix, track).center();
+        visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(hit, MouseButton::Left, Modifiers::default());
+        pump(&editor, cx, |view| view.worker_requests_pending == 0);
+    }
+    editor.read_with(cx, |view, _| {
+        let track = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert!(track.muted() && track.soloed());
+    });
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-arm-unavailable-{}", track.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    let name = bounds(&mut visual, "track-name", track).center();
+    visual.simulate_mouse_down(name, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(name, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| assert_eq!(view.selected_track, Some(track)));
+}
+
+#[gpui::test]
+fn return_header_filled_gain_commits_and_keyboard_invalid_draft_blocks_owner_transition(
+    cx: &mut TestAppContext,
+) {
+    let (_browser, mut visual, editor, _) = actor_fixture(cx);
+    editor.update(cx, |view, _| {
+        view.enqueue(hex_session::service::Request::Edit(
+            Command::AddReturnTrack { name: "bus".into() },
+        ))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .return_tracks()
+                .is_empty()
+    });
+    visual.run_until_parked();
+    let id = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.return_tracks()[0].id()
+    });
+    let selector = Box::leak(format!("return-volume-{}-value", id.value()).into_boxed_str());
+    let field = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_input("-12 db");
+    visual.simulate_keystrokes("enter");
+    let expected = 10.0_f32.powf(-12.0 / 20.0);
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.device_gesture.snapshot().is_none()
+            && (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
+                < 1e-6
+    });
+    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_input("+100 db");
+    editor.update(cx, |view, cx| {
+        assert!(!super::device_panel::finalize_controls(view, cx))
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(
+            (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
+                < 1e-6
+        )
+    });
+    visual.simulate_keystrokes("escape");
 }

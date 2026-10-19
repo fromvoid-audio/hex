@@ -665,4 +665,319 @@ fn verified_streaming_refuses_track_gain_begin_without_preview_or_history_change
     let restored = request(&service, Request::Undo);
     assert!(restored.error.is_none());
     assert_eq!(restored.state.project, before.state.project);
+    let bus_event = edit(
+        &service,
+        Command::AddReturnTrack {
+            name: "streamed bus".into(),
+        },
+    );
+    let Some(Created::ReturnTrack(bus)) = bus_event.created else {
+        panic!("return")
+    };
+    for (token, target) in [
+        GestureTarget::TrackBalance { track },
+        GestureTarget::ReturnGain { return_track: bus },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = request(
+            &service,
+            Request::DeviceGesture(GestureRequest::Begin {
+                key: GestureKey {
+                    generation: key.generation,
+                    token: token as u64 + 2,
+                },
+                target,
+            }),
+        );
+        assert!(!refused.gesture_ack.as_ref().unwrap().accepted);
+        assert!(
+            refused
+                .gesture_ack
+                .as_ref()
+                .unwrap()
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("resident")
+        );
+        assert!(
+            refused.active_device_gesture.is_none()
+                && refused.device_preview.is_none()
+                && refused.playback.is_none()
+        );
+        assert_eq!(refused.state.project, bus_event.state.project);
+        assert_eq!(refused.state.revision, bus_event.state.revision);
+    }
+    let changed = edit(
+        &service,
+        Command::ReturnGain {
+            return_track: bus,
+            gain: 0.5,
+        },
+    );
+    assert_eq!(changed.state.project.return_tracks()[0].gain(), 0.5);
+    assert!(changed.playback.is_none());
+    assert_eq!(
+        request(&service, Request::Undo).state.project,
+        bus_event.state.project
+    );
+}
+
+#[test]
+fn header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit() {
+    let (service, track, other) = fixture();
+    let base = edit(&service, Command::Gain { track, gain: 0.75 });
+    let canonical = base.state.project.clone();
+    let revision = base.state.revision;
+    let reference = pcm(base);
+    assert!(reference.iter().flatten().any(|x| x.abs() > 1e-5));
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let begun = request(
+        &service,
+        Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::TrackBalance { track },
+        }),
+    );
+    assert!(begun.gesture_ack.unwrap().accepted);
+    for (sequence, balance) in [-1.0_f32, -0.25, 0.0, 0.75, 1.0].into_iter().enumerate() {
+        let event = change(&service, key, sequence as u64 + 1, balance);
+        assert!(
+            event.gesture_ack.as_ref().unwrap().accepted,
+            "{:?}",
+            event.error
+        );
+        assert_eq!(event.state.project, canonical);
+        assert_eq!(event.state.revision, revision);
+        assert_eq!(
+            event
+                .device_preview
+                .as_ref()
+                .unwrap()
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .balance(),
+            balance
+        );
+        let frames = pcm(event);
+        for (actual, original) in frames.iter().zip(&reference) {
+            for (channel, factor) in [1.0 - balance.max(0.0), 1.0 + balance.min(0.0)]
+                .into_iter()
+                .enumerate()
+            {
+                assert!((actual[channel] - original[channel] * factor).abs() < 1e-6);
+            }
+        }
+    }
+    let committed = request(
+        &service,
+        Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 6,
+            value: ParameterValue::Float(0.75),
+        }),
+    );
+    assert!(committed.gesture_ack.unwrap().accepted);
+    assert_eq!(committed.state.revision, revision + 1);
+    let accepted = committed.state.project.clone();
+    assert_eq!(accepted.track(other).unwrap().balance(), 0.0);
+    assert_eq!(request(&service, Request::Undo).state.project, canonical);
+    assert_eq!(request(&service, Request::Redo).state.project, accepted);
+    let key = GestureKey {
+        generation: 0,
+        token: 2,
+    };
+    assert!(
+        request(
+            &service,
+            Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget::TrackBalance { track }
+            })
+        )
+        .gesture_ack
+        .unwrap()
+        .accepted
+    );
+    assert!(change(&service, key, 1, -0.5).gesture_ack.unwrap().accepted);
+    let canceled = request(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    assert!(canceled.gesture_ack.unwrap().accepted);
+    assert_eq!(canceled.state.project, accepted);
+    assert_eq!(
+        request(&service, Request::Undo).state.project,
+        canonical,
+        "cancel creates no undo step"
+    );
+}
+
+#[test]
+fn header_return_gain_previews_real_bus_pcm_and_preserves_current_save_open_and_history() {
+    let (service, track, _) = fixture();
+    let Some(Created::ReturnTrack(bus)) = edit(
+        &service,
+        Command::AddReturnTrack {
+            name: "header bus".into(),
+        },
+    )
+    .created
+    else {
+        panic!("return")
+    };
+    edit(
+        &service,
+        Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        },
+    );
+    let direct = pcm(edit(
+        &service,
+        Command::ReturnGain {
+            return_track: bus,
+            gain: 0.0,
+        },
+    ));
+    assert!(direct.iter().flatten().any(|x| x.abs() > 1e-5));
+    let base = edit(
+        &service,
+        Command::ReturnGain {
+            return_track: bus,
+            gain: 1.0,
+        },
+    );
+    let canonical = base.state.project.clone();
+    let revision = base.state.revision;
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    assert!(
+        request(
+            &service,
+            Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget::ReturnGain { return_track: bus }
+            })
+        )
+        .gesture_ack
+        .unwrap()
+        .accepted
+    );
+    for (sequence, gain) in [0.0, 0.25, 1.0, 2.0].into_iter().enumerate() {
+        let event = change(&service, key, sequence as u64 + 1, gain);
+        assert!(
+            event.gesture_ack.as_ref().unwrap().accepted,
+            "{:?}",
+            event.error
+        );
+        assert_eq!(event.state.project, canonical);
+        assert_eq!(
+            event
+                .device_preview
+                .as_ref()
+                .unwrap()
+                .state
+                .project
+                .return_tracks()[0]
+                .gain(),
+            gain
+        );
+        for (actual, original) in pcm(event).iter().flatten().zip(direct.iter().flatten()) {
+            assert!(
+                (actual - original * (1.0 + gain)).abs() < 1e-6,
+                "direct plus independent return contribution"
+            );
+        }
+    }
+    let committed = request(
+        &service,
+        Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 5,
+            value: ParameterValue::Float(0.25),
+        }),
+    );
+    assert!(committed.gesture_ack.unwrap().accepted);
+    assert_eq!(committed.state.revision, revision + 1);
+    let accepted = committed.state.project.clone();
+    assert_eq!(request(&service, Request::Undo).state.project, canonical);
+    assert_eq!(request(&service, Request::Redo).state.project, accepted);
+    let path =
+        std::env::temp_dir().join(format!("hex439-return-{}-current.hex", std::process::id()));
+    assert!(!path.exists());
+    let saved = request(&service, Request::SaveNew(path.clone()));
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert!(!saved.state.unsaved);
+    edit(
+        &service,
+        Command::ReturnGain {
+            return_track: bus,
+            gain: 1.5,
+        },
+    );
+    let reopened = request(&service, Request::Open(path.clone()));
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project, accepted);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn header_mix_targets_refuse_nonfinite_out_of_range_and_removed_owners() {
+    let (service, track, _) = fixture();
+    let Some(Created::ReturnTrack(bus)) =
+        edit(&service, Command::AddReturnTrack { name: "bus".into() }).created
+    else {
+        panic!("return")
+    };
+    for (index, target) in [
+        GestureTarget::TrackBalance { track },
+        GestureTarget::ReturnGain { return_track: bus },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let key = GestureKey {
+            generation: 0,
+            token: index as u64 + 1,
+        };
+        let begun = request(
+            &service,
+            Request::DeviceGesture(GestureRequest::Begin { key, target }),
+        );
+        assert!(begun.gesture_ack.unwrap().accepted);
+        let canonical = begun.state.project.clone();
+        for (seq, value) in [f32::NAN, f32::INFINITY, -2.0, 3.0].into_iter().enumerate() {
+            let rejected = change(&service, key, seq as u64 + 1, value);
+            assert!(!rejected.gesture_ack.unwrap().accepted);
+            assert!(rejected.device_preview.is_none());
+            assert_eq!(rejected.state.project, canonical);
+        }
+        let command = match target {
+            GestureTarget::TrackBalance { track } => Command::RemoveTrack(track),
+            GestureTarget::ReturnGain { return_track } => Command::RemoveReturnTrack(return_track),
+            _ => unreachable!(),
+        };
+        let removed = edit(&service, command);
+        let stale = request(
+            &service,
+            Request::DeviceGesture(GestureRequest::Commit {
+                key,
+                sequence: 5,
+                value: ParameterValue::Float(0.5),
+            }),
+        );
+        assert!(!stale.gesture_ack.unwrap().accepted);
+        assert_eq!(stale.state.project, removed.state.project);
+    }
 }
