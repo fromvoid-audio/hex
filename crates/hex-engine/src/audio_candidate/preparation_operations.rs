@@ -97,6 +97,86 @@ impl AudioCandidatePreparationOperations<'_> {
         self.preparation
             .prepare_on_control(project, source_generation, context)
     }
+    /// Construct independent Main playback in this SAME existing custodian,
+    /// using the actual captured target and current/history inputs. Contexts
+    /// are fresh; older native products remain separate mandatory live roots.
+    /// This constructor-local operation does not bind Service incarnations or
+    /// authorize a native publication. Unknown/unbound original rows refuse.
+    pub fn prepare_main_original_sampler_on_control(
+        &mut self,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        producer: &crate::native_device_resources::OriginalResourceBankPlan<'_>,
+        editor: &hex_project::Editor,
+        original: &crate::AudioRootStorageLedger<'_>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        reservation: crate::AudioStorageLedgerReservation,
+    ) -> Result<(), AudioStorageError> {
+        self.preparation
+            .prepare_original_sampler_for_purpose_on_control(
+                target,
+                producer,
+                editor,
+                None,
+                original,
+                transforms,
+                reservation,
+                ConstructorPurpose::MainExport,
+            )
+    }
+
+    /// Reserve/transfer only inside the actual preparation cell. A registered
+    /// immutable compiled reader can be installed before beginning this work.
+    /// Native-purpose owners cannot enter Main control work.
+    pub fn begin_main_control_work_on_control(
+        &mut self,
+        frames: u64,
+    ) -> Result<(), AudioStorageError> {
+        self.preparation.begin_main_control_work_on_control(frames)
+    }
+
+    /// Productive bounded work while the existing host loan is held. This
+    /// returns only nonowning block correlation, never a runtime owner/borrow.
+    pub fn step_main_control_work_on_control(
+        &mut self,
+        maximum: usize,
+    ) -> Result<AudioCandidateControlProgress, AudioStorageError> {
+        self.preparation
+            .step_main_control_work_with_frames_on_control(maximum)
+    }
+
+    /// Copy the retained block before releasing the short host loan. File I/O
+    /// MUST happen after that loan; the host charges this separate copy buffer.
+    pub fn copy_main_control_block_on_control(
+        &self,
+        block: AudioCandidateControlBlock,
+        output: &mut [crate::Frame; 256],
+    ) -> Result<(), AudioStorageError> {
+        self.preparation
+            .copy_main_control_block_on_control(block, output)
+    }
+
+    /// A Busy host retains written-but-not-ACKed correlation outside this loan;
+    /// retry this exact ACK without writing the completed File block again.
+    pub fn acknowledge_main_control_block_on_control(
+        &mut self,
+        block: AudioCandidateControlBlock,
+    ) -> Result<(), AudioStorageError> {
+        self.preparation
+            .acknowledge_main_control_block_on_control(block)
+    }
+
+    /// Complete actual same-parent Main runtime/root/original-input cleanup.
+    /// An unacknowledged/unfinished render or native owner refuses. Legitimate
+    /// compiled readers return ExternalReadersPending; no cached retired flag
+    /// or caller-created receipt can replace this operation.
+    pub fn finish_main_control_work_on_control(
+        &mut self,
+        expected: AudioCandidateIdentity,
+    ) -> Result<(), AudioStorageError> {
+        self.preparation
+            .finish_main_control_work_on_control(expected)
+    }
+
     /// A registered immutable input retained by the existing constructor root.
     pub fn register_compiled_reader_on_control(
         &self,

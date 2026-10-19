@@ -20,6 +20,11 @@ use hex_tuning::ProjectTuning;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
+mod main_control_file;
+pub use main_control_file::{
+    MainControlFileError, MainControlFileJob, MainControlFileLoan, MainControlFileProgress,
+    MainControlHostError,
+};
 mod request_transport;
 use request_transport::{RequestReceiver, RequestSender};
 mod canonical_audio_source;

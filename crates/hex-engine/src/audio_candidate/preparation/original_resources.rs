@@ -43,7 +43,7 @@ impl AudioCandidatePreparation {
         clippy::too_many_arguments,
         reason = "same closed actual inputs and private birth purpose"
     )]
-    pub(super) fn prepare_original_sampler_for_purpose_on_control(
+    pub(in crate::audio_candidate) fn prepare_original_sampler_for_purpose_on_control(
         &mut self,
         target: &crate::SharedMetadata<hex_project::Project>,
         producer: &OriginalResourceBankPlan<'_>,

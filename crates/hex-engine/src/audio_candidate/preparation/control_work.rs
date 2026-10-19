@@ -11,6 +11,10 @@ pub struct AudioCandidateControlBlock {
     frames: usize,
 }
 impl AudioCandidateControlBlock {
+    /// Correlation only, never construction/storage/retirement authority.
+    pub fn runtime_identity(self) -> AudioCandidateIdentity {
+        self.runtime
+    }
     pub fn sequence(self) -> u64 {
         self.sequence
     }
@@ -72,6 +76,14 @@ impl ControlWork {
             output: [[0.0; 2]; 256],
             pending: None,
         }
+    }
+    fn can_finish_main(&self) -> bool {
+        self.pending.is_none()
+            && self.offset == self.total
+            && matches!(
+                self.phase,
+                Phase::Complete | Phase::Proof | Phase::AnchorsRetiring | Phase::OriginalInputs
+            )
     }
     pub(super) fn failed_incomplete(&self) -> bool {
         matches!(
@@ -277,12 +289,8 @@ impl ControlWork {
         Ok(())
     }
 }
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "bounded Main host consumer in progress")
-)]
 impl AudioCandidatePreparation {
-    pub(super) fn begin_main_control_work_on_control(
+    pub(in crate::audio_candidate) fn begin_main_control_work_on_control(
         &mut self,
         frames: u64,
     ) -> Result<(), AudioStorageError> {
@@ -309,15 +317,7 @@ impl AudioCandidatePreparation {
         self.control_work = Some(ControlWork::new(runtime, anchors, frames));
         Ok(())
     }
-    pub(super) fn step_main_control_work_on_control(
-        &mut self,
-    ) -> Result<AudioCandidateControlProgress, AudioStorageError> {
-        self.control_work
-            .as_mut()
-            .ok_or(AudioStorageError::SourceMismatch)?
-            .step(256)
-    }
-    pub(super) fn step_main_control_work_with_frames_on_control(
+    pub(in crate::audio_candidate) fn step_main_control_work_with_frames_on_control(
         &mut self,
         maximum: usize,
     ) -> Result<AudioCandidateControlProgress, AudioStorageError> {
@@ -326,7 +326,20 @@ impl AudioCandidatePreparation {
             .ok_or(AudioStorageError::SourceMismatch)?
             .step(maximum)
     }
-    pub(super) fn copy_main_control_block_on_control(
+    pub(in crate::audio_candidate) fn finish_main_control_work_on_control(
+        &mut self,
+        expected: AudioCandidateIdentity,
+    ) -> Result<(), AudioStorageError> {
+        if self
+            .control_work
+            .as_ref()
+            .is_none_or(|work| work.runtime.identity() != expected || !work.can_finish_main())
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.cleanup_on_control()
+    }
+    pub(in crate::audio_candidate) fn copy_main_control_block_on_control(
         &self,
         block: AudioCandidateControlBlock,
         output: &mut [crate::Frame; 256],
@@ -336,7 +349,7 @@ impl AudioCandidatePreparation {
             .ok_or(AudioStorageError::SourceMismatch)?
             .copy(block, output)
     }
-    pub(super) fn acknowledge_main_control_block_on_control(
+    pub(in crate::audio_candidate) fn acknowledge_main_control_block_on_control(
         &mut self,
         block: AudioCandidateControlBlock,
     ) -> Result<(), AudioStorageError> {

@@ -1724,3 +1724,35 @@ Final Main cleanup keeps `DropPending` through anchor/proof metadata destruction
 and records `Disposed` only after both return. The outer preparation catch retains
 first panic/nonretry behavior; this corrects source ordering without claiming a
 newly reproduced final-metadata destructor panic.
+
+### Short preparation loans to a persistent Main File job
+
+`AudioCandidatePreparationOperations` exposes Main construction and bounded
+step/copy/ACK/final-cleanup operations on the same actual existing parent. Main
+uses the captured target separately from current Editor/history; its contexts
+are fresh, while older native products remain mandatory separate live inputs.
+No runtime, resource bank or owning preparation value escapes the loan.
+
+The Session-owned `MainControlFileJob` reserves its concrete staged File, actual
+paths, encoding and separate PCM copy before compiler construction, then binds
+actual runtime identity once. This scalar is correlation only. Each productive
+turn copies under a short parent loan, ends that loan before File I/O, and
+acknowledges the exact retained block under another loan. A Busy ACK keeps the
+written block and retries no File write. Final publication requires genuine
+same-parent cleanup; registered readers leave retirement pending. Closed hosts,
+duplicate invocation, Busy after invocation and caught panic cannot publish or
+retry a consumed step. Reader-pending cannot mask a newer closed-host result.
+
+Focused tests cover real Mono/direct and Stereo/Utility Return Sampler output,
+513 frames each, captured target after current-track removal, Busy before work
+and after writing, reader-delayed cleanup, exact ACK and failure retention. These
+are parent/File pipeline component tests, not an actual native Service export.
+The NativeAudioSink token adapter, actual Request dispatch, complete prospective
+job/path/three-PCM-buffer union, source/incarnation association and final native
+frontier remain open. The direct fixture contains runtime output and copied PCM;
+it does not invent a third queued block or claim that future queue is charged.
+The existing host treats callback errors as terminal refusal, so an adapter must
+preserve a legitimate pending-reader result without returning it as a fatal
+preparation error. No source getter, synchronization primitive or cost permit is
+added by this component. CapturedMix, Stems, seek and complete mixed/offline
+coverage remain required under the original vertical contract.

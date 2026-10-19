@@ -182,17 +182,16 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
             )
             .unwrap();
         } else {
-            cell.prepare_original_sampler_for_purpose_on_control(
-                &target,
-                &plan,
-                &editor,
-                None,
-                &original,
-                &transforms,
-                limits,
-                purpose,
-            )
-            .unwrap();
+            cell.operations_on_control()
+                .prepare_main_original_sampler_on_control(
+                    &target,
+                    &plan,
+                    &editor,
+                    &original,
+                    &transforms,
+                    limits,
+                )
+                .unwrap();
         }
         assert!(cell.custody.is_none() && cell.token.is_none() && cell.owner.is_some());
         assert!(
@@ -212,7 +211,8 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
             .unwrap();
         if purpose == ConstructorPurpose::NativeFresh {
             assert_eq!(
-                cell.begin_main_control_work_on_control(24001),
+                cell.operations_on_control()
+                    .begin_main_control_work_on_control(24001),
                 Err(AudioStorageError::SourceMismatch)
             );
         } else {
@@ -252,7 +252,9 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
             let mut expected = [[0.0; 2]; 24001];
             oracle.render(&mut expected).unwrap();
             drop(oracle);
-            cell.begin_main_control_work_on_control(24001).unwrap();
+            cell.operations_on_control()
+                .begin_main_control_work_on_control(24001)
+                .unwrap();
             let mut actual = [[0.0; 2]; 24001];
             assert!(cell.test_work_native_claim_refuses());
             let mut previous = None;
@@ -260,9 +262,9 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
             loop {
                 let mut step = Ok(crate::AudioCandidateControlProgress::Complete);
                 let measured = allocation_counter::measure(|| {
-                    step = cell.step_main_control_work_with_frames_on_control(
-                        [1, 17, 251, 83][offset % 4],
-                    );
+                    step = cell
+                        .operations_on_control()
+                        .step_main_control_work_on_control([1, 17, 251, 83][offset % 4]);
                 });
                 assert_eq!(measured.count_total, 0);
                 assert_eq!(measured.count_current, 0);
@@ -272,28 +274,34 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
                 assert_eq!(block.offset(), offset as u64);
                 if let Some(old) = previous {
                     assert_eq!(
-                        cell.acknowledge_main_control_block_on_control(old),
+                        cell.operations_on_control()
+                            .acknowledge_main_control_block_on_control(old),
                         Err(AudioStorageError::SourceMismatch)
                     );
                 }
                 assert!(cell.test_work_native_claim_refuses());
                 assert_eq!(
-                    cell.step_main_control_work_on_control().unwrap(),
+                    cell.operations_on_control()
+                        .step_main_control_work_on_control(256)
+                        .unwrap(),
                     crate::AudioCandidateControlProgress::Block(block)
                 );
                 let mut copy = [[0.0; 2]; 256];
-                cell.copy_main_control_block_on_control(block, &mut copy)
+                cell.operations_on_control()
+                    .copy_main_control_block_on_control(block, &mut copy)
                     .unwrap();
                 actual[offset..offset + block.frames()].copy_from_slice(&copy[..block.frames()]);
                 offset += block.frames();
                 if cancel {
                     break;
                 }
-                cell.acknowledge_main_control_block_on_control(block)
+                cell.operations_on_control()
+                    .acknowledge_main_control_block_on_control(block)
                     .unwrap();
                 previous = Some(block);
                 assert_eq!(
-                    cell.acknowledge_main_control_block_on_control(block),
+                    cell.operations_on_control()
+                        .acknowledge_main_control_block_on_control(block),
                     Err(AudioStorageError::SourceMismatch)
                 );
             }
