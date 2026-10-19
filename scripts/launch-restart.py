@@ -441,6 +441,11 @@ def inspect_recreated_target(root: Path, app: Path, source: str, ci, delivery, a
     report = {"kind": "explicit recreated-target inspection; tests not run",
               "candidate": source, "app": str(app), "status": "incomplete"}
     try:
+        # A supported configured app may not have an output directory yet.
+        # Validate before creation and again before opening its activation lock.
+        delivery.assert_plain_path(app)
+        app.parent.mkdir(parents=True, exist_ok=True)
+        delivery.assert_plain_path(app)
         with delivery.activation_lock(app):
             delivery.assert_inactive(app)
             assert_no_raw(root)

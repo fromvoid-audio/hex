@@ -170,7 +170,11 @@ specifications. Under the target lock the guard checks those facts again, along
 with a required packaging inactivity check immediately before mutation. No
 replacement identity means the existing automatic expected-owner guard still
 requires the retained old target identity. This adds no owner format or general
-adoption permission; see `docs/test-builds.md` for refusal and race limits.
+adoption permission. Exact own PENDING state may retry at the same current
+identity; unchanged READY state cannot use this exception. Recovery plus --test
+uses a fresh invocation-owned verification target with ordinary no-adopt CI,
+leaving the old dev marker and original release packaging target independent.
+See `docs/test-builds.md` for refusal and race limits.
 
 Before incompatible release cleanup, the guard durably writes a pending marker.
 It invokes `cargo clean --profile release` for current workspace package IDs

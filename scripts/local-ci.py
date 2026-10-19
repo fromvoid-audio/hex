@@ -781,7 +781,7 @@ class LocalCiRunner:
                     or not isinstance(old_identity, dict) or set(old_identity) != {"device", "inode"}
                     or any(type(old_identity[k]) is not int or old_identity[k] < (1 if k == "inode" else 0)
                            for k in ("device", "inode"))
-                    or old_identity == identity
+                    or (old_identity == identity and record["state"] != "pending")
                     or not isinstance(previous, dict)
                     or set(previous) != {"commit", "dirty", "dirty_files", "content_sha256"}
                     or previous["dirty"] is not False or previous["dirty_files"] != []

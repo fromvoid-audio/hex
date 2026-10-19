@@ -622,8 +622,7 @@ class RecreatedTargetTests(ReleaseFixture):
                         Mock(side_effect=None if app_running else delivery.DeliveryError('raw running')))
             controller.assert_not_called();self.assertEqual(self.owner.read_bytes(),raw)
             self.assertIsNone(self.runner.target_lock)
-    def test_packaging_artifact_helper_forwards_authority_into_real_guard(self):
-        authority=self.inspect();inactive=Mock()
+    def install_fixture_cargo(self):
         cargo=self.f.bin/'cargo';original=cargo.read_text()
         # The owned executable emits a real Cargo-shaped artifact record and
         # materializes that fixture file; metadata/clean stay the original fake.
@@ -635,6 +634,10 @@ class RecreatedTargetTests(ReleaseFixture):
                 '"target":{"name":"hex-desktop"},"profile":{"opt_level":"3"}}));sys.exit(0)\n'
                 'os.execv("/bin/sh",["/bin/sh",str(Path(__file__).with_name("cargo-original")),*sys.argv[1:]])\n')
         (cargo.with_name('cargo-original')).write_text(original.replace('tool=${0##*/}', 'tool=cargo'));cargo.write_text(prefix)
+
+    def test_packaging_artifact_helper_forwards_authority_into_real_guard(self):
+        authority=self.inspect();inactive=Mock()
+        self.install_fixture_cargo()
         with delivery.optimized_artifact(self.runner,adopt=True,
                 expected_owner_sha256=authority['owner_sha256'],
                 expected_recreated_target_identity=authority['target_identity'],
@@ -645,6 +648,54 @@ class RecreatedTargetTests(ReleaseFixture):
         inactive.assert_called_once_with()
         self.assertEqual(json.loads(self.owner.read_bytes())['state'],'ready')
         self.assertIsNone(self.runner.target_lock)
+
+    def test_missing_plain_configured_app_parent_is_created_before_inspection_lock(self):
+        app=self.f.repo.resolve()/'new-output'/'nested'/'hex.app'
+        self.assertFalse(app.parent.exists());raw=self.owner.read_bytes()
+        with patch.object(fixtures.local_ci,'LocalCiRunner',return_value=self.runner), \
+                patch.object(delivery,'assert_inactive'),patch.object(restart,'NativeController') as controller:
+            authority=restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,Mock())
+        self.assertTrue(app.parent.is_dir());self.assertFalse(app.exists())
+        self.assertEqual(authority['owner_sha256'],hashlib.sha256(raw).hexdigest())
+        self.assertEqual(self.owner.read_bytes(),raw);controller.assert_not_called()
+        self.assertIsNone(self.runner.target_lock)
+
+    def test_failed_explicit_build_consumer_pending_retries_same_target_with_fresh_artifact(self):
+        authority=self.inspect();first_raw=self.owner.read_bytes()
+        with self.assertRaisesRegex(RuntimeError,'fixture consumer failed'):
+            with self.guard(authority):raise RuntimeError('fixture consumer failed')
+        pending=json.loads(self.owner.read_bytes())
+        self.assertEqual(pending['state'],'pending')
+        self.assertEqual(pending['target_identity'],authority['target_identity'])
+        self.assertNotEqual(self.owner.read_bytes(),first_raw)
+        self.assertIsNone(self.runner.target_lock)
+        # This is now an unchanged target, but exactly owned PENDING, not READY.
+        retry=self.inspect()
+        self.assertEqual(retry['owner_sha256'],hashlib.sha256(self.owner.read_bytes()).hexdigest())
+        self.install_fixture_cargo()
+        with delivery.optimized_artifact(self.runner,adopt=True,
+                expected_owner_sha256=retry['owner_sha256'],
+                expected_recreated_target_identity=retry['target_identity'],recovery_inactive_check=Mock()) as (binary,report):
+            self.assertEqual(binary.read_bytes(),b'fresh packaged fixture')
+            self.assertEqual(report['previous_owner'],pending)
+        self.assertEqual(json.loads(self.owner.read_bytes())['state'],'ready')
+        self.assertEqual(self.keep.read_bytes(),b'preserve external data')
+        self.assertEqual((self.retained/'old-artifact').read_bytes(),b'never qualify or erase old build')
+        with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect() # unchanged READY still refuses
+        self.assertIsNone(self.runner.target_lock)
+
+    def test_missing_parent_refuses_symlink_and_nondirectory_without_marker_changes(self):
+        raw=self.owner.read_bytes();foreign=self.f.base/'foreign-parent';foreign.mkdir()
+        alias=self.f.repo/'alias';alias.symlink_to(foreign,target_is_directory=True)
+        plain_file=self.f.repo/'not-directory';plain_file.write_bytes(b'preserve file')
+        for parent in (alias/'nested',plain_file/'nested'):
+            app=parent/'hex.app'
+            with patch.object(fixtures.local_ci,'LocalCiRunner',return_value=self.runner), \
+                    patch.object(delivery,'assert_inactive'),patch.object(restart,'NativeController') as controller:
+                with self.assertRaises((delivery.DeliveryError,OSError)):
+                    restart.inspect_recreated_target(self.f.repo,app,self.source,fixtures.local_ci,delivery,Mock())
+            controller.assert_not_called();self.assertEqual(self.owner.read_bytes(),raw)
+        self.assertFalse((foreign/'nested').exists());self.assertEqual(plain_file.read_bytes(),b'preserve file')
 
 
 class PreflightTests(ReleaseFixture):

@@ -471,6 +471,52 @@ class LaunchTests(unittest.TestCase):
         inspect.assert_not_called()
 
 
+    def test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target(self):
+        import os
+        import test_local_ci as fixtures
+        f=fixtures.LocalCiRunnerTests();f.setUp();self.addCleanup(f.tearDown)
+        self.root=f.repo
+        (self.root/'scripts').mkdir();(self.root/'.git').mkdir()
+        (self.root/'scripts/hex-test-build.json').write_text('{"app_path":"artifacts/hex.app"}')
+        git=f.bin/'git';git.write_text(git.read_text().replace('deadbeef',self.source))
+        cargo=f.bin/'cargo';cargo.write_text(cargo.read_text().replace('"$FAKE_METADATA_TARGET"','"${CARGO_TARGET_DIR:-$FAKE_METADATA_TARGET}"'))
+        target=Path(f.env['FAKE_METADATA_TARGET']);target.mkdir()
+        old=f.runner('old-dev-owner');self.assertEqual(old.run(),0)
+        _,owner=fixtures.local_ci.target_state_paths(target,f.target_state_dir);raw=owner.read_bytes()
+        target.rename(target.with_name('retained-dev'));target.mkdir()
+        (target/'release').mkdir();(target/'release/external').write_bytes(b'preserve release')
+        stale=f.runner('stale-default-control');self.assertEqual(stale.run(),1)
+        self.assertEqual(owner.read_bytes(),raw)
+        authority={'owner_sha256':'e'*64,'target_identity':stale._directory_identity(target)}
+        observed=[];package_targets=[]
+        def verification(root,mode,env=None):
+            selected=dict(f.env)
+            if env is not None and 'CARGO_TARGET_DIR' in env:selected['CARGO_TARGET_DIR']=env['CARGO_TARGET_DIR']
+            runner=f.runner('recovery-verification',root=root,env=selected)
+            observed.append(runner);return runner
+        def command(argv,**kwargs):
+            if argv[:2]==['sh','scripts/bundle-macos.sh']:package_targets.append(os.environ['CARGO_TARGET_DIR'])
+            return self.command(argv,**kwargs)
+        with patch.dict(os.environ,{**f.env,'CARGO_TARGET_DIR':str(target)},clear=True), \
+                patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=command), \
+                patch.object(launch.ci,'LocalCiRunner',side_effect=verification), \
+                patch.object(launch.restart,'inspect_recreated_target',return_value=authority), \
+                patch.object(launch.delivery,'assert_inactive'), \
+                patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}):
+            launch.run_launch(self.root,argv=['--recover-release-target','--test'])
+        self.assertEqual(len(observed),1)
+        runner=observed[0];actual=Path(runner.cargo_identity['target_directory'])
+        self.assertNotEqual(actual,target);self.assertTrue(actual.is_relative_to(self.root/'artifacts/launch'))
+        self.assertFalse(runner.adopt_target);self.assertEqual(runner.summary['target_cache']['action'],'claim-empty')
+        self.assertEqual(runner.summary['status'],'passed');self.assertIsNone(runner.target_lock)
+        self.assertEqual(owner.read_bytes(),raw)
+        self.assertEqual((target/'release/external').read_bytes(),b'preserve release')
+        self.assertEqual(package_targets,[str(target)],'packaging inherits ORIGINAL release target')
+        self.assertNotIn('cargo clean',f.call_log.read_text())
+        package=next(x for x in self.calls if x[0]=='sh')
+        self.assertIn('--ci-report',package);self.assertIn('--expected-recreated-target-inode',package)
+
+
 class ForceRestartFlagTests(unittest.TestCase):
     def test_native_bundle_verification_failure_is_a_controlled_cli_refusal(self):
         with patch.object(launch,'run_launch',side_effect=launch.delivery.DeliveryError('sealed bundle mismatch')), \
