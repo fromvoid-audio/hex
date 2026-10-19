@@ -1,0 +1,69 @@
+{
+  "payloads": [
+    {
+      "path": "PROPOSAL.md",
+      "bytes": 1657,
+      "sha256": "95017bdf38d6f9f2d65568aa16d795b310fd93746414401b9cf0350bfe6accca"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 1870,
+      "sha256": "5003c291a3f68ee328dadefdb0cbe0a427071d5d82cef50a973becc8136546cd"
+    },
+    {
+      "path": "actual-source/crates/hex-engine/src/audio_candidate/draft.rs",
+      "bytes": 16992,
+      "sha256": "96c5261346e378c75940aba39b5c7d878e0d6947dd58b0753da20627bd96dbe4"
+    },
+    {
+      "path": "actual-source/crates/hex-engine/src/audio_candidate/preparation/control_work.rs",
+      "bytes": 7540,
+      "sha256": "925df15f0058d4e07087b6fb6d0caf7d53c0f44cee6538874cf52626de07b795"
+    },
+    {
+      "path": "actual-source/crates/hex-engine/src/audio_candidate/preparation.rs",
+      "bytes": 20281,
+      "sha256": "5ecb5b2c7d79ffd5645237684b45d76bd80ef186c911d146fc62827995502d88"
+    },
+    {
+      "path": "actual-source/crates/hex-engine/src/audio_candidate.rs",
+      "bytes": 27157,
+      "sha256": "3a7f6741b937ad05b40ef0cd4e8d2df7d4c15b25598a798ffe1bfe341181de85"
+    },
+    {
+      "path": "actual-source/crates/hex-engine/src/lib.rs",
+      "bytes": 122144,
+      "sha256": "9a04e6dfec0d7ac12a3fe0f8a39fec551dab385edbdc6e8151cc9ed1e808fac0"
+    },
+    {
+      "path": "actual-source/crates/hex-engine/src/playback.rs",
+      "bytes": 67765,
+      "sha256": "b1660263736519964dbf920b38646b29a33046cf71ff1981b4ec237847534e35"
+    },
+    {
+      "path": "actual-source/crates/hex-engine/src/session_playback/candidate_storage.rs",
+      "bytes": 9655,
+      "sha256": "913e19f05e0c2b6357f4f277018daacc908b3483cb1de9e83e33a0889d22098f"
+    },
+    {
+      "path": "actual-source/crates/hex-engine/src/session_playback.rs",
+      "bytes": 57049,
+      "sha256": "dafc33696abb578c2fbadda9e93614b0e34c87f79bc7898dd0e5c9deb6b11c87"
+    },
+    {
+      "path": "source/control_work.rs",
+      "bytes": 7540,
+      "sha256": "925df15f0058d4e07087b6fb6d0caf7d53c0f44cee6538874cf52626de07b795"
+    },
+    {
+      "path": "tracked-prototype.diff",
+      "bytes": 3368,
+      "sha256": "ec7f0fa202193f36d1d94067f9220be597310733a36949f62be4df841cbeddf7"
+    },
+    {
+      "path": "typecheck-original.log",
+      "bytes": 3343,
+      "sha256": "6c4924ae32ba5cb149ccf29d39d9a69c2f75dba6317033e23e9fc88efdb6074f"
+    }
+  ]
+}

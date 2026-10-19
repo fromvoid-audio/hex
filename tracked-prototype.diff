@@ -1,0 +1,73 @@
+diff --git a/crates/hex-engine/src/audio_candidate.rs b/crates/hex-engine/src/audio_candidate.rs
+index 6d7f3453..fa3c0443 100644
+--- a/crates/hex-engine/src/audio_candidate.rs
++++ b/crates/hex-engine/src/audio_candidate.rs
+@@ -7,7 +7,7 @@ mod preparation_operations;
+ pub use preparation_operations::AudioCandidatePreparationOperations;
+ mod reservation;
+ pub use draft::AudioCandidateDraft;
+-pub use preparation::AudioCandidatePreparation;
++pub use preparation::{AudioCandidatePreparation, AudioCandidateControlBlock, AudioCandidateControlProgress};
+ pub use reservation::AudioCandidateReservationQuote;
+ mod storage;
+ pub use storage::AudioCandidateConstructorSummary;
+diff --git a/crates/hex-engine/src/audio_candidate/preparation.rs b/crates/hex-engine/src/audio_candidate/preparation.rs
+index f1267149..08444c20 100644
+--- a/crates/hex-engine/src/audio_candidate/preparation.rs
++++ b/crates/hex-engine/src/audio_candidate/preparation.rs
+@@ -3,6 +3,8 @@
+ //! cleanup, while a failed cell remains quarantined by its host.
+ use super::*;
+ mod original_resources;
++mod control_work;
++pub use control_work::{AudioCandidateControlBlock, AudioCandidateControlProgress};
+ use hex_project::{AssetId, Project};
+ 
+ pub struct AudioCandidatePreparation {
+@@ -14,6 +16,7 @@ pub struct AudioCandidatePreparation {
+     token: Option<AudioPreparationToken>,
+     draft: Option<AudioCandidateDraft>,
+     owner: Option<AudioCandidateOwner>,
++    control_work: Option<control_work::ControlWork>,
+     owner_runtime_done: bool,
+     original_resource_attempted: bool,
+     original_resource_refused: bool,
+@@ -58,6 +61,7 @@ impl AudioCandidatePreparation {
+             token: None,
+             draft: Some(AudioCandidateDraft::new_on_control()),
+             owner: None,
++            control_work: None,
+             owner_runtime_done: false,
+             original_resource_attempted: false,
+             original_resource_refused: false,
+@@ -270,6 +274,7 @@ impl AudioCandidatePreparation {
+     }
+     pub fn failed_incomplete(&self) -> bool {
+         self.failed
++            || self.control_work.as_ref().is_some_and(control_work::ControlWork::failed_incomplete)
+             || self
+                 .draft
+                 .as_ref()
+@@ -295,6 +300,10 @@ impl AudioCandidatePreparation {
+         }
+         self.cleaning = true;
+         match catch_unwind(AssertUnwindSafe(|| {
++            if let Some(work) = self.control_work.as_mut() {
++                work.cleanup_on_control()?;
++            }
++            drop(self.control_work.take());
+             if let Some(owner) = self.owner.as_mut() {
+                 if !self.owner_runtime_done {
+                     owner.dispose_on_control()?;
+diff --git a/crates/hex-engine/src/lib.rs b/crates/hex-engine/src/lib.rs
+index d01dc9bf..5be1a12c 100644
+--- a/crates/hex-engine/src/lib.rs
++++ b/crates/hex-engine/src/lib.rs
+@@ -32,6 +32,7 @@ mod audio_candidate;
+ mod audio_storage;
+ pub use audio_candidate::{
+     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
++    AudioCandidateControlBlock, AudioCandidateControlProgress,
+     AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateDraft,
+     AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation,
+     AudioCandidatePreparationOperations, AudioCandidatePreparedSplit, AudioCandidateRefusal,
