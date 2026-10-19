@@ -741,3 +741,6 @@ fn ordinary_vertical_motion_off_grid_never_authors_snap_or_toggle(cx: &mut TestA
         assert!(v.pending_requests.is_empty());
     });
 }
+
+#[path = "loop_rail/review_ui_tests.rs"]
+mod review_ui_tests;
