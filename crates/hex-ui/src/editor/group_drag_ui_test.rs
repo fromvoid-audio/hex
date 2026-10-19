@@ -694,6 +694,7 @@ fn with_project_view(
 ) -> std::sync::Arc<hex_session::service::ViewState> {
     std::sync::Arc::new(hex_session::service::ViewState {
         canonical_audio_source: state.canonical_audio_source.clone(),
+        comparison_audio: state.comparison_audio.clone(),
         project,
         waveforms: state.waveforms.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
