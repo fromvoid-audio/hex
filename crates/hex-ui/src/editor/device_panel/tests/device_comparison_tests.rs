@@ -1246,8 +1246,11 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     };
     receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddMidiTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "held".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         }))
         .unwrap();
     receive_service_event(&service);
