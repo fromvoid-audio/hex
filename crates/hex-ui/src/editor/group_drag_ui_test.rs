@@ -1059,3 +1059,45 @@ fn group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_me
     // is safe here; general unacknowledged failures have no automatic cleanup.
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[gpui::test]
+fn review_group_landing_paints_unselected_overwrite_victim(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for (i, clip) in clips[..2].iter().enumerate() {
+        click(&mut visual, *clip, i != 0);
+    }
+    let selector = Box::leak(format!("clip-drag-surface-{}", clips[1].value()).into_boxed_str());
+    let victim = Box::leak(format!("clip-name-{}", clips[2].value()).into_boxed_str());
+    let down = visual.debug_bounds(selector).unwrap().center();
+    let target = visual.debug_bounds(victim).unwrap().center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let drag = view.active_clip_drag.as_ref().unwrap();
+        let group = drag.group.borrow();
+        assert_eq!(group.previews().len(), 2);
+        let state = view.state.as_ref().unwrap();
+        let victim = state.project.clip(clips[2]).unwrap();
+        assert!(
+            group.previews().iter().any(|p| match &p.content {
+                hex_project::ClipGroupContent::Audio(c) =>
+                    c.start() < victim.start() + victim.duration()
+                        && victim.start() < c.start() + c.duration(),
+                _ => false,
+            }),
+            "actual valid group landing must overlap the unselected victim"
+        );
+    });
+    assert!(
+        visual.debug_bounds("clip-drop-overlap-0").is_some(),
+        "group landing must paint actual overwrite victims"
+    );
+    visual.simulate_keystrokes("escape");
+}

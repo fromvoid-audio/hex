@@ -809,3 +809,183 @@ fn capture_rejects_retained_musical_preview_shell_alias_then_recovers_without_cl
             .unwrap(),
     );
 }
+
+#[test]
+fn review_full_capacity_copy_accounts_later_mixed_victims_before_first_split() {
+    let mut f = fixture();
+    let mut project = f.editor.project().clone();
+    let asset = project.clip(f.audio).unwrap().asset();
+    // First projected audio copy192k..288k splits this victim (+1).
+    project
+        .apply(Command::PlaceClip {
+            track: f.tracks[0],
+            asset,
+            start: 168_000,
+            duration: 312_000,
+            source_offset: 0,
+            source_length: 96_000,
+            looping: true,
+        })
+        .unwrap();
+    // The later projected MIDI copy336k..384k removes THREE mixed victims.
+    project
+        .apply(Command::PlaceMidiClip {
+            track: f.tracks[1],
+            start: BeatTime::from_quarters(14).unwrap(),
+            length: BeatTime::ONE,
+        })
+        .unwrap();
+    for start in [360_000, 372_000] {
+        project
+            .apply(Command::PlaceClip {
+                track: f.tracks[1],
+                asset,
+                start,
+                duration: 6_000,
+                source_offset: 0,
+                source_length: 6_000,
+                looping: false,
+            })
+            .unwrap();
+    }
+    let count = project
+        .tracks()
+        .iter()
+        .map(|t| t.clips().len() + t.midi_clips().len())
+        .sum::<usize>();
+    let template = project.clip(f.audio).unwrap().clone();
+    project
+        .audio_clips_mut(f.tracks[2])
+        .unwrap()
+        .try_reserve_exact(MAX_CLIPS - count)
+        .unwrap();
+    for index in 0..MAX_CLIPS - count {
+        let mut clip = template.clone();
+        clip.id = ClipId(project.allocate_id().unwrap());
+        clip.start = 10_000_000 + index as u64 * 2;
+        clip.duration = 1;
+        clip.source_offset = 0;
+        clip.source_length = 1;
+        clip.source_phase = 0;
+        clip.looping = false;
+        clip.edit = None;
+        clip.fade = crate::ClipFade::neutral(1).unwrap();
+        project.audio_clips_mut(f.tracks[2]).unwrap().push(clip);
+    }
+    assert_eq!(Project::from_snapshot(project.snapshot()).unwrap(), project);
+    f.editor = Editor::new(project, 8).unwrap();
+    let before = f.editor.project().clone();
+    let mut preparations = 0;
+    let result = f.editor.execute_validated(
+        Command::MoveClipsWithOverwrite {
+            clips: vec![f.audio, f.midi],
+            anchor: f.audio,
+            track: f.tracks[0],
+            position: ClipGroupPosition::Audio(192_000),
+            copy: true,
+        },
+        |candidate| {
+            preparations += 1;
+            assert_eq!(
+                candidate
+                    .tracks()
+                    .iter()
+                    .map(|t| t.clips().len() + t.midi_clips().len())
+                    .sum::<usize>(),
+                MAX_CLIPS
+            );
+            Ok::<(), Invalid>(())
+        },
+    );
+    if let Err(error) = &result {
+        assert_eq!(f.editor.project(), &before);
+        assert_eq!(preparations, 0);
+        assert!(!f.editor.can_undo() && !f.editor.can_redo());
+        eprintln!(
+            "REVIEW_CAPACITY actual_error={error:?}; final occupancy MAX +1split -3victims +2copies =MAX"
+        );
+    }
+    if result.is_err() {
+        let mut lower = before.clone();
+        lower.audio_clips_mut(f.tracks[2]).unwrap().pop().unwrap();
+        let mut control = Editor::new(lower, 8).unwrap();
+        control
+            .execute(Command::MoveClipsWithOverwrite {
+                clips: vec![f.audio, f.midi],
+                anchor: f.audio,
+                track: f.tracks[0],
+                position: ClipGroupPosition::Audio(192_000),
+                copy: true,
+            })
+            .unwrap();
+        assert_eq!(
+            control
+                .project()
+                .tracks()
+                .iter()
+                .map(|t| t.clips().len() + t.midi_clips().len())
+                .sum::<usize>(),
+            MAX_CLIPS - 1
+        );
+        assert_eq!(control.project().clip(f.audio), before.clip(f.audio));
+        assert_eq!(
+            control.project().midi_clip(f.midi),
+            before.midi_clip(f.midi)
+        );
+        eprintln!(
+            "REVIEW_CAPACITY_MINUS_ONE_CONTROL success final={} originals retained; same split/victims/copies",
+            MAX_CLIPS - 1
+        );
+    }
+    result.expect("legal final occupancy must not refuse at an intermediate split");
+    assert_eq!(preparations, 1);
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project(), &before);
+    assert!(f.editor.redo());
+}
+
+#[test]
+fn review_group_copy_response_identifies_created_members() {
+    let mut f = fixture();
+    let mut before = f.editor.project().clone();
+    let created = f
+        .editor
+        .execute(Command::MoveClipsWithOverwrite {
+            clips: vec![f.audio, f.midi],
+            anchor: f.audio,
+            track: f.tracks[0],
+            position: ClipGroupPosition::Audio(144_000),
+            copy: true,
+        })
+        .unwrap();
+    let copies: Vec<_> = f
+        .editor
+        .project()
+        .tracks()
+        .iter()
+        .flat_map(|t| {
+            t.clips()
+                .iter()
+                .map(|c| c.id())
+                .chain(t.midi_clips().iter().map(|c| c.id()))
+        })
+        .filter(|id| before.clip(*id).is_none() && before.midi_clip(*id).is_none())
+        .collect();
+    assert_eq!(copies.len(), 2);
+    assert_eq!(f.editor.project().clip(f.audio), before.clip(f.audio));
+    assert_eq!(
+        f.editor.project().midi_clip(f.midi),
+        before.midi_clip(f.midi)
+    );
+    assert!(f.editor.undo());
+    // Undo deliberately retains the allocated ID high-water mark.
+    before.next_id = f.editor.project().next_id;
+    assert_eq!(f.editor.project(), &before);
+    assert!(f.editor.redo());
+    eprintln!("REVIEW_RESPONSE actual={created:?} copied_ids={copies:?}; history copy retained");
+    assert_ne!(
+        created,
+        Created::None,
+        "successful group copy must identify its new selection"
+    );
+}
