@@ -201,3 +201,178 @@ fn eq_held_node_space_key_routes_transport_without_retiring_pointer_or_edit(
         editor.update(cx, |view, _| view.last_transport_command = None);
     }
 }
+
+fn pump_output(
+    editor: &gpui::Entity<EditorView>,
+    cx: &mut TestAppContext,
+    output: &mut hex_audio::WorkerPreparedOutput,
+    backend: &mut hex_audio::worker_fixture::HeadlessBackend,
+) {
+    editor.update(cx, |view, cx| {
+        if view.tick(cx) {
+            cx.notify();
+        }
+    });
+    let control = output
+        .publication
+        .control()
+        .expect("actual worker publication owner");
+    control.reclaim();
+    control.poll_resident_publication();
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(cx, |view, cx| {
+        if view.tick(cx) {
+            cx.notify();
+        }
+    });
+    std::thread::yield_now();
+}
+
+#[gpui::test]
+fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::Ordering::Acquire;
+    let _output_guard = graph_layout_tests::status_fixture_guard();
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (mut output, mut backend) = graph_layout_tests::headless_status_output();
+    let client = output.take_client().unwrap();
+    editor.update(cx, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "actual guarded headless fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        cx.notify();
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        if editor.read_with(cx, |view, _| {
+            view.audible_playback.is_some()
+                && view.applied_project_revision() == Some(view.state.as_ref().unwrap().revision)
+                && view.pending_playback.is_none()
+                && view.pending_resident_publication.is_none()
+        }) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture never installed actual canonical output"
+        );
+    }
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.current_seek_requires_preroll(),
+            Some(true),
+            "actual EQ path must use stateful seek"
+        )
+    });
+    let graph = graph(&editor, cx, device);
+    for moving in [false, true] {
+        assert!(!backend.status().unwrap().playing.load(Acquire));
+        let start = plot(&mut visual, device, 0.5, 0.5);
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        let end = if moving {
+            plot(&mut visual, device, 0.62, 0.7)
+        } else {
+            start
+        };
+        if moving {
+            visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        }
+        // Admit the real preview before asking for transport, keeping the mouse held.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        while editor.read_with(cx, |view, _| {
+            let current_preview_applied = !moving
+                || view.audible_playback.as_ref().is_some_and(|audible| {
+                    audible.device_preview_identity.is_some_and(|identity| {
+                        view.device_gesture.snapshot().is_some_and(|snapshot| {
+                            identity.key == snapshot.key && identity.sequence == snapshot.sequence
+                        }) && audible.audio_revision
+                            == view
+                                .audio
+                                .as_ref()
+                                .unwrap()
+                                .control
+                                .status()
+                                .unwrap()
+                                .applied_revision
+                                .load(Acquire)
+                    })
+                });
+            !current_preview_applied
+                || view.worker_requests_pending != 0
+                || !view.pending_requests.is_empty()
+                || view.pending_playback.is_some()
+                || view.pending_resident_publication.is_some()
+                || !view.playback_candidates.is_empty()
+        }) {
+            pump_output(&editor, cx, &mut output, &mut backend);
+            visual.run_until_parked();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual preview did not apply"
+            );
+        }
+        let key = editor.read_with(cx, |view, _| {
+            view.device_gesture.snapshot().map(|snapshot| snapshot.key)
+        });
+        visual.simulate_keystrokes("space");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !backend.status().unwrap().playing.load(Acquire) {
+            pump_output(&editor, cx, &mut output, &mut backend);
+            visual.run_until_parked();
+            if std::time::Instant::now() >= deadline {
+                let detail = editor.read_with(cx, |view, _| {
+                    format!(
+                        "error={:?} prepared={} latched={} key={:?}",
+                        view.error,
+                        view.prepared_seek.is_some(),
+                        view.latched_seek_intent.is_some(),
+                        view.device_gesture.snapshot().map(|snapshot| snapshot.key)
+                    )
+                });
+                panic!("actual Space did not start callback while moving={moving}: {detail}");
+            }
+        }
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.device_gesture.snapshot().map(|snapshot| snapshot.key),
+                key
+            )
+        });
+        graph.read_with(cx, |graph, _| assert_eq!(graph.is_dragging(), moving));
+        visual.simulate_keystrokes("space");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while backend.status().unwrap().playing.load(Acquire) {
+            pump_output(&editor, cx, &mut output, &mut backend);
+            visual.run_until_parked();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual held Space did not pause"
+            );
+        }
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            pump_output(&editor, cx, &mut output, &mut backend);
+            visual.run_until_parked();
+            if editor.read_with(cx, |view, _| settled(view)) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+        }
+    }
+    editor.update(cx, |view, _| {
+        let _ = view.audio.take();
+    });
+    backend.close();
+    drop(output);
+}
