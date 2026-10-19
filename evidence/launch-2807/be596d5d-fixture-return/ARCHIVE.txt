@@ -1,0 +1,5 @@
+source be596d5dbbdc05a3ce8aedbc0f05d90e4920a647
+tree 338a8e6c671de3f15af348b28d898ab908ef0457
+archive bytes36755 SHA256 a3524e328facbb916f392058ec50cbc921a82eaac392f60bb0bc522471fe0867
+30 payload hashes, excluding PAYLOADS.json itself; manifestSHA7126034e7cc31e0fd29e0498ce656a907d9ca802f63363e2d963d96ae5b8f39d
+Evidence only: NEVER build this branch. Canonical source is PR413. No actual Mac or native execution in cloud.

@@ -1,0 +1,156 @@
+{
+  "source": "be596d5dbbdc05a3ce8aedbc0f05d90e4920a647",
+  "tree": "338a8e6c671de3f15af348b28d898ab908ef0457",
+  "files": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 3307,
+      "sha256": "1d450dfca04738ada38b64fef2247d58a058f65cb2420d5bb0b11f558b893288"
+    },
+    {
+      "path": "NATIVE-REQUEST.md",
+      "bytes": 6541,
+      "sha256": "e13c17ef356f641889220d10658e90efac06335df49463a7db1999d0d54cf4b4"
+    },
+    {
+      "path": "after-startup-green.log",
+      "bytes": 574,
+      "sha256": "7b9431e8aa4e6ac6874e010a4832ab708b9a5b9f00dcf7bd96aece573e13609d"
+    },
+    {
+      "path": "before-startup-red.log",
+      "bytes": 3499,
+      "sha256": "2876e2ae6e4f7a1fb79e9c504d7b6810570c598fa2c9fdfb9bd3f04c45a35558"
+    },
+    {
+      "path": "before-test_launch_restart_compile.py",
+      "bytes": 19237,
+      "sha256": "98d9b86a59d095b485a71e60139844a5b52c8efe5f7bf713fabd42481fae978f"
+    },
+    {
+      "path": "checks.json",
+      "bytes": 3825,
+      "sha256": "bd6c4fbbe0dfaf502712eb231c58972590938f9bff25d09118e30845647db0c7"
+    },
+    {
+      "path": "compiled-absent-smoke.py",
+      "bytes": 5603,
+      "sha256": "31bf2c083a9bc2a7a1a15b72d61aec02fb4f09a6be9e5d5455246c1e2960d0ac"
+    },
+    {
+      "path": "fixture-repair.patch",
+      "bytes": 4872,
+      "sha256": "2c4f6b689cea1b199d90d039fab799ffe86e5969aa8139abdfaf6803156dfc31"
+    },
+    {
+      "path": "guard-architecture-missing-activation.log",
+      "bytes": 1145,
+      "sha256": "bb6e129c24b732b60ba301b2b15e264355b845a060eed1bdc138c0fd4ede4424"
+    },
+    {
+      "path": "guard-architecture.log",
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    {
+      "path": "guard-dependency-patches.log",
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    {
+      "path": "guard-device-layout.log",
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    {
+      "path": "guard-gpui-patch.log",
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    {
+      "path": "guard-ui-style.log",
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    {
+      "path": "initial-harness-path-error.log",
+      "bytes": 2921,
+      "sha256": "10385164269cd55ab070eca9d07341c9374dbd0e4bca37ea847de1a251830434"
+    },
+    {
+      "path": "initial-verification-guard-env-error.log",
+      "bytes": 225,
+      "sha256": "75434fe59bd22b64f7c27e568b48ce621397dae2746b09bc1d2bf721a1ac61d6"
+    },
+    {
+      "path": "pre-normalization-report.log",
+      "bytes": 3428,
+      "sha256": "d42ea4e4e9efb78c423e9649214f3dbf6a375888fa861cd226bb6c91ad0d3fde"
+    },
+    {
+      "path": "seal.py",
+      "bytes": 7290,
+      "sha256": "fe44714c0207ea257b6783d945e95c9c896c623ce6ba2c812c8ad1d314f39a45"
+    },
+    {
+      "path": "source/scripts/launch-restart.py",
+      "bytes": 23475,
+      "sha256": "3509dc476f9d8986907d0657e5ef89dcc42b97ec4455aaaa7292cbe09b55b142"
+    },
+    {
+      "path": "source/scripts/launch-restart.swift",
+      "bytes": 2854,
+      "sha256": "5e1cf00760ca6d73f91f0131ce86cf61012a2db46dccc35c99180c69f41d79d0"
+    },
+    {
+      "path": "source/scripts/tests/test_launch_restart_compile.py",
+      "bytes": 21679,
+      "sha256": "905369600f52d20086f3c608c8344047cf152dbab18045c14bf66d4d10db8276"
+    },
+    {
+      "path": "source-identity.json",
+      "bytes": 183,
+      "sha256": "d989341a43a07f41ec3c1d8e0aa1a9937f5827ba24e7a8ff156135cdd0d98cbd"
+    },
+    {
+      "path": "startup-oracle.py",
+      "bytes": 1523,
+      "sha256": "d145ec60d9591fa82fb2e25ace4c9a5b3eecb41ada33991d2e461a6b9b8802ea"
+    },
+    {
+      "path": "test_launch.py.log",
+      "bytes": 4923,
+      "sha256": "cba697939f4b0f92c961bc28962d7b408487680a8153c7cfd3f77da842887d6e"
+    },
+    {
+      "path": "test_launch_restart.py.log",
+      "bytes": 3709,
+      "sha256": "28a8187dc98ad8ac1fb5ab4be70bfb0e13bc1227bcfd26809090bf658ec122e5"
+    },
+    {
+      "path": "test_launch_restart_compile.py.log",
+      "bytes": 4329,
+      "sha256": "281b565392229c965b28e232f5546ad2e9e2ad6da7df274703ae3d839cf45758"
+    },
+    {
+      "path": "unchanged-files.json",
+      "bytes": 1325,
+      "sha256": "65ef2c22145179acd49fd4943f00f4397d81fa54ff0faabfa75d3caef9059a50"
+    },
+    {
+      "path": "verification-summary.log",
+      "bytes": 3825,
+      "sha256": "bd6c4fbbe0dfaf502712eb231c58972590938f9bff25d09118e30845647db0c7"
+    },
+    {
+      "path": "verify-final.py",
+      "bytes": 1989,
+      "sha256": "21fd001daa7e7b5b8d193163d51e73749c36a53036cc5619aed7160fe47d5aa5"
+    },
+    {
+      "path": "verify-remaining.py",
+      "bytes": 1991,
+      "sha256": "eae9a4ac5e3a22df93b6c7c59726901c52a903b02fd2c8bc73e4ade424141569"
+    }
+  ]
+}
