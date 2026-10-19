@@ -5383,6 +5383,11 @@ sole merger owns prospective fullCI/merge, root optimized native acceptance.
 - Current32 comparison/tuning/asset manifest is qualified independently of unmerged456 placement; future composition must retain both required capabilities. No whole395/456/409/420/407/399/419 import.
 - Required new exact prospective full21 and fresh independent review pending; no physical provider listening, native Verified constructor, installed/user acceptance or merge claim.
 
+### 2026-10-19 — PR453 combined generic A/B acceptance base
+
+- Prepared exact dry/wet owner1ce92988 with qualified generic A/B main447e042 for the already-declared owner supplement. Ordinary merge has no conflicts; no provider/parameter/persistence feature fix or source-test implementation by merger.
+- Original53payloads/six-source hashes already verified; provider/TrackReturn/codec/allocation positives remain originalsource-only. Actual distinct mix values through generic Switch/Copy/current project+preset SaveOpen still require owner execution on this combined source.
+- This base is unqualified: no full21/fresh final review/merge/native/install claim and no canonical453 overwrite. Preserve current32 comparison/tuning/assets and globalhosttrims. No unready455/395 or bank fork.
 ## 19 October 2026 — EQ local automation removal (#2855 / PR457)
 
 User rejected device-local automation editing. Remove its button, graph mode and point controls; retain ordinary stable-node parameter bindings, existing stored lane data/runtime evaluation and canonical history. Future central Arrange automation remains #2839/#2674, not implemented here. Actual rendered pre-change regression f31267b3 failed on the automate entry (original component 20261019T060051Z-73bfe14e, clean/stale=false). Targeted final source verification and native limits are recorded in live Pulse2855; sole merger owns prospective full21/review/merge. No app installation or user acceptance claimed.
@@ -5403,3 +5408,9 @@ User rejected device-local automation editing. Remove its button, graph mode and
 
 - Composed owner96ad6ba7 with qualified main399/325/447, preserving ordinary node parameter keys, current spectrum/raw hit lifecycle, A/B state, history and stored automation data. Removed local automate route and point/page state; central Arrange automation remains separate.
 - Verified all21 immutable owner payloads and four owning source byte/blob/mode records; original rendered automate-entry RED and final27UI/strict component receipts remain source-bound. Sole conflict is append-only todo with both histories retained. Focused compile precedes new required exact full21/fresh review. No unmerged407/456 imports or native/installed/user acceptance claim.
+
+### 2026-10-19 — PR453 Dry/Wet and actual generic A/B integration
+
+- Composed complete owner1ce through e80 with actualtest-only owner15c99 A/B supplement and qualified main457/399/325/447; original53 plus supplement16 evidence payloads verified, exact source hashes retained. Onlyappendtodo conflict retains both histories. Current32 comparison/assets/tuning and no-local-EQ mode preserved; no RMS455/AutoPan454/Sampler395 import.
+- Stable Compressor ID7 mix, originalinput/postmakeupwet linear blend and finite5ms history ramp remain owner code. Actual Track/Return genericSwitch/bothCopy directions/UndoRedo/current-project andpresetSaveOpen distinct25/75 mixes/globaltrims are finite ownercomponent evidence, not providerclone proof or finalfullCI.
+- Focused affectedtesttarget compile precedes new required actualfull21/freshreview; no native/listening/physical/installed/useracceptance claim.
