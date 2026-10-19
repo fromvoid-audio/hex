@@ -5619,3 +5619,19 @@ User rejected device-local automation editing. Remove its button, graph mode and
 
 - Compose complete61678dff owner return over canonical1c2 with actual qualified main2dc7. Only appended todo history conflicts; retain both histories, exact model/Storage owner bytes and private comparison fixture carry. Preserve current32 nullable placement, tuning and required nullable comparison with both asset slots; no old reader or schema rollback.
 - Owner39 payloads and all five before/after Git blobs verified; original two model REDs and historical1c2 full21 green/review-blocked receipt preserved. New guarded actual three model and one codec regressions, exact combined full21 and fresh review are required. No unmerged joint419/458 or draft395 import. Parent445 full runtime/native/listening/installed acceptance stays open.
+
+### 2026-10-19 — PR456 placed Length binding review return
+
+- Preserve exact6a8d and prior616 phase/fade/CycleEnd corrections/current32.
+  Actual rendered Length− through Service lost Once/Repeat placement in four
+  zero/nonzero-phase cases; ordinary unplaced control passed. Test-only dc87538c
+  and the earlier compiler-only fixture dependency error remain preserved.
+- Route only already-placed Length edits through existing canonical OuterEnd,
+  checked position+duration; ordinary TrimClip stays unchanged. No model/codec,
+  Engine/Session, shared binding, owner or projection law changes.
+- Real private WAV import/edit/current-format SaveNew/Open fixtures verify both
+  Length directions, retained metadata/fades/pitch/custom tuning/distinct A/B,
+  exact fullProject model-oracle equality and one Undo/Redo. Minimum length
+  refuses without requests/history; old loaded-view tests retain their scope.
+  Sole merger owns prospective full21/fresh review/merge; native/app/parent445
+  completion remains separate.

@@ -560,12 +560,23 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
         }),
         Field::Length => shifted(window.length)
             .filter(|length| *length > 0)
-            .map(|duration| Command::TrimClip {
-                clip: window.clip,
-                start: window.position,
-                duration,
-                source_offset: window.source_start,
-                source_length: window.source_length,
+            .and_then(|duration| {
+                if window.placement_mode.is_some() {
+                    Some(Command::ResizeAudioClipView {
+                        clip: window.clip,
+                        operation: hex_project::AudioViewResizeOperation::OuterEnd {
+                            project_frame: window.position.checked_add(duration)?,
+                        },
+                    })
+                } else {
+                    Some(Command::TrimClip {
+                        clip: window.clip,
+                        start: window.position,
+                        duration,
+                        source_offset: window.source_start,
+                        source_length: window.source_length,
+                    })
+                }
             }),
         Field::SourceStart => {
             let end = window.source_end;
@@ -1409,6 +1420,42 @@ mod tests {
                 pump(&editor, &mut visual);
                 editor.read_with(&visual, |v, _| {
                     assert_eq!(v.state.as_ref().unwrap().project, after.project)
+                });
+            }
+        }
+
+        #[gpui::test]
+        fn placed_length_minimum_refuses_without_worker_or_history(cx: &mut TestAppContext) {
+            for mode in [AudioViewMode::Once, AudioViewMode::Repeat] {
+                let (handle, editor, _clip, _files) = fixture(cx, Some(mode), 6_000, 1);
+                let mut visual = VisualTestContext::from_window(handle, cx);
+                visual.run_until_parked();
+                let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+                let minus = visual
+                    .debug_bounds("audio-clip-length--1")
+                    .unwrap()
+                    .center();
+                visual.simulate_click(minus, Modifiers::default());
+                editor.read_with(&visual, |v, _| {
+                    assert_eq!(v.worker_requests_pending, 0);
+                    assert!(v.pending_requests.is_empty());
+                    assert!(v.last_enqueued_edit.is_none());
+                    let state = v.state.as_ref().unwrap();
+                    assert_eq!(state.project, before.project);
+                    assert_eq!(
+                        (
+                            state.revision,
+                            state.can_undo,
+                            state.can_redo,
+                            state.unsaved
+                        ),
+                        (
+                            before.revision,
+                            before.can_undo,
+                            before.can_redo,
+                            before.unsaved
+                        )
+                    );
                 });
             }
         }

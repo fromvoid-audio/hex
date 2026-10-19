@@ -131,3 +131,21 @@ current-main implementation; this isolated return does not import or qualify
 another owner's branch. The original Engine, waveform, playback, native and
 full445 acceptance gaps remain open. Exact prospective qualification belongs to
 the merger.
+
+## placed Length control, 19 october2026
+
+The Arrangement audio Clip View Length buttons preserve an existing placement:
+Once and Repeat use canonical `ResizeAudioClipView::OuterEnd`, with a checked
+project-frame endpoint. Canonical execution retains the source/root, consumed
+phase and mode while recomputing outer extent and fade projection. Ordinary
+unplaced clips retain their previous `TrimClip` dispatch. No new projection,
+processing, format, source-loop or model law is introduced by this binding.
+
+Four real UI-to-Service baseline cases (Once/Repeat, phase0/6000) lost placement
+on Length−. The repaired six cases cover both ± directions, nonneutral fades and
+pitch, current-format SaveNew/Open, distinct Utility A/B banks with global trims,
+custom432Hz tuning, full canonical-project equality against the existing model
+operation, exact one Undo/Redo, ordinary trim and minimum-length refusal without
+queue/history mutation. The earlier seven injected-view panel/control tests keep
+their original narrower scope; they are not retroactively worker evidence.
+These source checks do not qualify audible placement support or native delivery.
