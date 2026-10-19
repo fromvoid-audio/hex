@@ -531,7 +531,7 @@ fn console_actual_verified_worker_drop_uses_typed_session_clip_and_file_source(
     };
     editor.update(cx, |view, _| {
         view.begin_open_request(Request::OpenWithAudioMode {
-            source: hex_session::service::ProjectSource::Saved(saved),
+            source: hex_session::service::ProjectSource::Saved(saved.clone()),
             relinks: Default::default(),
             mode: hex_session::DocumentAudioMode::VerifiedStreaming,
             reservation: Some(reservation),
@@ -583,6 +583,21 @@ fn console_actual_verified_worker_drop_uses_typed_session_clip_and_file_source(
     restored(&project(&editor, cx), &before, after.next_identity());
     history(&editor, cx, Request::Redo);
     assert_eq!(*project(&editor, cx), *after);
+    history(&editor, cx, Request::SaveCurrent);
+    editor.update(cx, |view, _| {
+        view.begin_open_request(Request::OpenWithAudioMode {
+            source: hex_session::service::ProjectSource::Saved(saved),
+            relinks: Default::default(),
+            mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation),
+        })
+    });
+    receive_worker(&editor, cx);
+    assert_eq!(
+        *project(&editor, cx),
+        *after,
+        "current-format save/reopen retains actual Console clip and scene identity"
+    );
 }
 
 #[gpui::test]

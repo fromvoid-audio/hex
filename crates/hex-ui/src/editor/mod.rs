@@ -968,6 +968,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
                 view.cancel_project_spectrum_resize(cx);
@@ -985,7 +986,7 @@ impl EditorView {
                     let _ = audio.control.audition_cancel();
                 }
                 device_panel::clear_eq8_audition_gesture_flags(view);
-                if midi_cancelled || scrub_cancelled || paint_cancelled {
+                if browser_cancelled || midi_cancelled || scrub_cancelled || paint_cancelled {
                     cx.notify();
                 }
             }
