@@ -2011,3 +2011,71 @@ fn four_review_escape_on_refused_overflow_stream_cancels_only_queued_context(
     editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
     pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
 }
+
+#[gpui::test]
+fn four_review_blurred_queue_cannot_readmit_a_late_old_begin(cx: &mut TestAppContext) {
+    use hex_widgets::{ResponseGraphScrollEvent as Event, ResponseGraphScrollPhase as Phase};
+    let (handle, editor, _root, device) = node_window(cx, 0.02);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    visual.simulate_click(b, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 2
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |v, _| read(v, device));
+    let graph = editor.read_with(cx, |v, _| eq_panel::graph_for_test(v, device));
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Event>::new()));
+    let captured = events.clone();
+    let _subscription = graph.update(cx, |_, cx| {
+        cx.subscribe(&graph, move |_, _, e: &Event, _| {
+            captured.borrow_mut().push(*e)
+        })
+    });
+    let a = plot(&mut visual, device, 0.02, 0.5);
+    let b = plot(&mut visual, device, 0.98, 0.5);
+    wheel(
+        &mut visual,
+        a,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Started,
+        false,
+    );
+    let old = events
+        .borrow()
+        .iter()
+        .find(|e| e.phase == Phase::Begin)
+        .copied()
+        .unwrap();
+    let held = held_real_scroll_begin(&editor, cx);
+    wheel(
+        &mut visual,
+        b,
+        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        gpui::TouchPhase::Moved,
+        false,
+    );
+    end_wheel(&mut visual, b);
+    visual.update(|window, _| window.blur());
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (0, true)
+    );
+    // Controlled stale typed delivery after the real blur, using the actual old
+    // graph identity. Clearing intent must not reset its monotonic watermark.
+    graph.update(cx, |_, cx| cx.emit(old));
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
+        (0, true)
+    );
+    editor.update(cx, |v, _| {
+        v.receive(held);
+    });
+    let mut expected = before.clone();
+    expected.nodes[0].slope = 1;
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
+}
