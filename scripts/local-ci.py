@@ -846,9 +846,11 @@ class LocalCiRunner:
 
     def _release_build_inputs(self, argv: list[str]) -> str:
         tools = {}
+        search = os.pathsep.join(str((self.root / entry).resolve()) if not Path(entry).is_absolute() else entry
+                                 for entry in self.env.get("PATH", os.defpath).split(os.pathsep))
         for tool in ("cargo", "rustc"):
             result = command_output([tool, "-Vv"], self.root, self.env)
-            resolved = shutil.which(tool, path=self.env.get("PATH"))
+            resolved = shutil.which(tool, path=search)
             if result.returncode != 0 or not result.stdout.strip() or resolved is None:
                 raise TargetCacheError("cannot identify release toolchain: " + tool)
             path = Path(resolved).resolve(strict=True)

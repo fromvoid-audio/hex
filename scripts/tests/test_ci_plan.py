@@ -28,6 +28,33 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_review_default_tool_relative_and_empty_path_uses_cargo_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root, caller = base / "repo", base / "caller"
+            for parent in (root, caller):
+                (parent / "bin").mkdir(parents=True)
+                for name in ("cargo", "rustc"):
+                    for folder in (parent, parent / "bin"):
+                        path = folder / name
+                        path.write_text("#!/bin/sh\nprintf 'same stable version\\n'\n")
+                        path.chmod(0o755)
+            original_cwd = Path.cwd()
+            try:
+                os.chdir(caller)
+                for selected in ("bin", ""):
+                    runner = ci.LocalCiRunner(root, env={"PATH": selected, "CARGO_HOME": str(base / "home")})
+                    runner._release_metadata = {"workspace_members": [], "packages": [], "target_directory": str(base / "target")}
+                    before = runner._release_build_inputs(["fixture"])
+                    actual = root / selected / "rustc"
+                    with self.subTest(selected=selected):
+                        self.assertEqual(runner.summary["toolchain"]["rustc"]["path"], str(actual))
+                    actual.write_text(actual.read_text() + "# replaced actual repo compiler\n")
+                    with self.subTest(mutation=selected):
+                        self.assertNotEqual(before, runner._release_build_inputs(["fixture"]))
+            finally:
+                os.chdir(original_cwd)
+
     def test_review_selected_tool_override_bytes_participate_in_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
