@@ -146,6 +146,9 @@ fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Fixture) {
                 action: action.clone(),
                 outside_focus: cx.focus_handle(),
             });
+            // Blur notifications compare active painted focus paths. An inactive
+            // test window has no such path even though FocusHandle changes.
+            window.activate_window();
             graph
         })
         .unwrap();
@@ -295,6 +298,19 @@ fn terminal_observer_does_not_late_commit_cancel_blur_missing_or_new_token(
             0,
             "invalidated before deferred effect: {action:?}"
         );
+        if matches!(action, DuringEnd::Blur) {
+            assert_eq!(
+                f.events
+                    .borrow()
+                    .iter()
+                    .filter(|event| {
+                        event.phase == ResponseGraphScrollPhase::Cancel && event.gesture_id == old
+                    })
+                    .count(),
+                1,
+                "existing blur handler must cancel the original gesture exactly once"
+            );
+        }
         if matches!(action, DuringEnd::NewToken) {
             assert!(
                 f.graph

@@ -108,11 +108,12 @@ impl ResponseGraph {
             self.scroll.phased = false;
             return;
         };
-        cx.defer_in(window, move |graph, _, cx| {
+        cx.defer_in(window, move |graph, window, cx| {
             if graph
                 .scroll
                 .gesture
                 .is_some_and(|gesture| gesture.token == token)
+                && graph.focus.is_focused(window)
             {
                 graph.finish_scroll(false, cx);
             }
