@@ -1,0 +1,152 @@
+{
+  "head": "4f3a39fec474ee2b2fd52633e4e8b0d8950daea3",
+  "tree": "3921506fb977d0eaa77273dabba522ffaba4aa71",
+  "checks": [
+    {
+      "name": "resolver",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--lib",
+        "editor::musical_time::",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "expected_tests": 28,
+      "passed": true,
+      "elapsed": 22.775924650995876,
+      "log": "resolver.log",
+      "sha256": "7660a3e929b598e0ef5ac3486b5e6c6eb9b93c36c41ffb2b4bc001f9bca5a8ec"
+    },
+    {
+      "name": "menu",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--lib",
+        "context_menu",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "expected_tests": 9,
+      "passed": true,
+      "elapsed": 23.892765281998436,
+      "log": "menu.log",
+      "sha256": "154a57056504d1b9ab9ee1e6c0e520c75a3aed835d110c144ce4d64f4d610db5"
+    },
+    {
+      "name": "strict-ui",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "elapsed": 26.425942139001563,
+      "log": "strict-ui.log",
+      "sha256": "22bfc643f89cbb22a8366ffce83e58de40d7b7edab5b9b192d6661125ad89de0"
+    },
+    {
+      "name": "architecture",
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "elapsed": 0.04684007899777498,
+      "log": "architecture.log",
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    {
+      "name": "gpui-patch",
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "elapsed": 0.04156212000816595,
+      "log": "gpui-patch.log",
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    {
+      "name": "dependency-patches",
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "elapsed": 0.036364913001307286,
+      "log": "dependency-patches.log",
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    {
+      "name": "ui-style",
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "elapsed": 0.0940555389970541,
+      "log": "ui-style.log",
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    {
+      "name": "device-layout",
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "elapsed": 0.2897191130032297,
+      "log": "device-layout.log",
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    {
+      "name": "format",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit": 0,
+      "expected_tests": null,
+      "passed": true,
+      "elapsed": 5.517822155990871,
+      "log": "format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "status": "PASS",
+  "source_unchanged": true
+}
