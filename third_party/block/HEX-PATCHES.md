@@ -11,3 +11,9 @@ Run `python3 scripts/check-dependency-patches.py` after any dependency change.
 
 Refresh only from a checksum-verified published archive, review upstream fixes,
 retain licensing/provenance, reapply only necessary delta and revalidate.
+
+Pulse2872 adds explicit `"C"` to all ten external declaration/function sites,
+including macro templates. Rust's previous implicit external ABI is C; calling
+conventions, argument/return types and ownership are unchanged. The guard reverses
+both finite deltas and checks the exact original published source hash. The real
+source now also compiles with `missing_abi` denied; no lint suppression is added.

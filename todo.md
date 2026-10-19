@@ -5753,3 +5753,224 @@ User rejected device-local automation editing. Remove its button, graph mode and
 
 - Compose complete429ba3b5 owner return over6a8d with actual qualified main2683942b (BOTH419/458 authenticated merged, exact935.723s full21). Only three appended todo conflict regions; retain both histories, original phase/fade/CycleEnd/cfg/codec and private comparison fixture carry. Preserve all current workspace/menu/gain-pointer/header/407/413/main source.
 - All35 Length owner payloads and six before/after Git blobs verified. Actual ordinary control PASS/four placed Length-minus REDs and fixture compile-only negative remain source-bound. New current guarded six actual Length Service cases, prospective full21 and fresh review required before canonical456 merge. Keep current32 placement+tuning+required nullable A/B with BOTH asset slots; no unmerged native395/whole445 import or physical/runtime/listening/delivery claim.
+
+### 2026-10-19 — Pulse2861 / PR463 resize pointer delivery past the original handle
+
+- Actual audio and MIDI GPUI failures: after repeated edge-pan moved the original
+  handle out of view, a held move to the interior left the payload at the old edge;
+  viewport192000 advanced to195600. Test-only6b6c6efc/raw negatives remain.
+- Move the existing typed audio/MIDI pointer handlers to the stable editor root,
+  removing virtualized-handle listeners. Preserve their current/stale checks,
+  payload identity, modifiers and preview update; timer, edge law, model bounds,
+  capture/release/ACK/viewport retirement and track-height resizing are unchanged.
+- Both original failures pass; expanded normal audio/MIDI/Shift/permanent-Warp
+  controls cover both edges, stop/re-entry/reversal, exact worker extent and one
+  Undo/Redo. Permanent Warp uses a valid inward retained-root crop; the original
+  unsupported-outward fixture assertion and diagnostic are retained separately.
+  Pre-freeze21pan+18release cases and both strict Clippy configurations passed;
+  exact frozen receipts and remaining terminal controls are recorded in Pulse.
+- Sole merger owns prospective full validation/review/merge. Root-only optimized
+  physical edge-pan/release/keyboard-modifier/waveform acceptance remains open.
+  This is separate from Pulse2867's new outside-source-track release requirement.
+
+
+### 2026-10-19 — Pulse2860 / PR462 clip-local resize feedback
+
+- Actual completed-scene normal/Shift audio resize added accent borders on all
+  four source-lane edges; MIDI retained its ordinary right divider. Preserve the
+  original two paint failures and MIDI positive control.
+- Remove only the nine-line TrimDrag lane styling callback. Preserve clip-local
+  preview/handles/waveform, selection, header/hue strip, drop/command/capture and
+  ordinary non-resize styles. This explicit newer exception overrides2711's older
+  general track-outline request during clip resizing.
+- Real Service/GPUI scene controls cover both edges and selected/other-selected
+  source origins, commits/Undo/Redo and logical Escape/stale/focus cancellation.
+  Separate inherited preview-disappearance failure2871/473 remains open; its
+  original failed assertions and evidence14f are preserved without ignore/pass. Retain
+  the separate controls-row/header-click fixture failure and corrected name-hit
+  setup. Exact source-bound receipts and limitations are in Pulse; merger owns
+  prospective full qualification/review/merge, Root owns physical acceptance.
+- Frozen463 pointer-delivery and469 captured-release packets remain separate;
+  neither their source nor historical evidence is replaced by this paint fix.
+
+
+## 19 october 2026 — pulse2872 / pr474 current warning cleanup
+
+- Current canonical baseline is `d303cbf4` / main `53ad3087` tree `f6c31b50`.
+  Rust 1.94.0 x86_64 Linux reproduced 46 vendored block missing-ABI warnings,
+  duplicate Engine/Warp `profile` and `profile.dwp` outputs, and fail-closed PCM
+  Unknown under the installed Clippy workspace wrapper. These are distinct from
+  Cargo cleanup package-qualifier notices and the historical native395 errors
+  (reported cleared in intermediate cfg(test) source; production promotion stays
+  native-owner work).
+- Spell the existing C ABI explicitly in block, retain the complete original
+  archive/license inventory and exact reverse provenance guard, deny missing_abi
+  in the real dependency compile. Name the Warp example `warp_profile`; preserve
+  both profiling implementations and Engine's existing command.
+- Qualify only the pinned ordinary official Clippy installation for the existing
+  declared-layout gate, checking actual args independently from info queries;
+  all other unsupported inputs and evidence-write failure remain Unknown.
+  Four real build-script policy tests and three new private installation/args
+  tests cover positive/default/strict and refusal paths; old PCM tests remain.
+- Original five-stage baseline passed. Workspace no-run reproduced collisions
+  then failed ENOSPC; preserve that infrastructure negative. Guarded cleanup of
+  seven owned dev packages reclaimed space, preserving dependency/release artifacts.
+  Subsequent independent workspace test-build/strict checks passed; final exact
+  source matrix and immutable receipts are retained in Pulse, not inferred here.
+- No warning suppression, lint weakening, unfinished-feature deletion, native
+  Audio-owner edit, full21 merge claim or application operation. Native/release
+  qualification and source-specific final integration remain explicitly separate.
+
+## 19 October 2026 — Pulse2806 / PR412 explicit recreated release-target recovery
+
+- Root29797 accepts distinct `./launch --recover-release-target`; default and
+  automatic force-restart target identity/CAS protections remain. Never signals
+  an app. Initial and guarded mutation-boundary checks require configured/raw
+  executables inactive; normal latest-main build/install/open, tests opt-in.
+- Read-only inspection binds old regular bounded owner bytes, exact replacement
+  directory identity, same workspace/common repo, ancestor clean source and
+  retained package specs. Guard rechecks under existing lock before pending
+  marker/selective release clean/fresh identified build/ready. No stale artifact
+  qualification, blind marker deletion, shared-target test cleanup or new owner.
+- Source tests cover actual production Runner/private recreated directories,
+  fake Cargo compilation/identification, read-only inspection, explicit routing,
+  old automatic refusal, marker/target/source races, foreign/malformed metadata,
+  package changes, missing/symlink targets, busy lock and running-app refusal.
+  Original29786 causal diagnostic is retained; new fixture setup corrections
+  are distinct from product failures. Exact check receipts accompany handoff.
+- Root alone performs later real Mac recovery after safe app shutdown. Cloud
+  tests do not establish actual machine recovery, native qualification or merge.
+
+## 19 October 2026 — Pulse2806 / PR412 three-path recovery return
+
+- Root29859 accepts three reproduced supported-path repairs on exactc670, keeping
+  merged474 and all413 guards. recover+test uses a retained fresh invocation-owned
+  verification target via runner env only; no old dev-owner adoption/rewrite,
+  original inspected release target/environment still used for packaging.
+- Plain validated app-parent creation/revalidation supports configured new paths;
+  symlink/non-directory parents still refuse. Same-identity explicit retry allows
+  exact own PENDING only, never unchanged READY, with all ownerCAS/source/package/
+  identity/inactivity/lock/final checks before normal clean/freshbuild/ready.
+- Three actual new baseline errors retained: stale devowner stops real verification
+  Runner; missingparent activationlock FileNotFound; failed guardedconsumer leaves
+  pending that explicit reinspection refuses. New source tests prove each path,
+  real stale devmarker preservation/fresh target claim, unchanged release env,
+  realguardedconsumerfailure then actual packaging helper/fakeCargo freshartifact
+  ready, parent negative controls and unchanged READY refusal. No native actions.
+
+
+### 2026-10-19 — Pulse2867 / PR469 captured resize release
+
+- Actual same-window release over another track rejected the captured audio/MIDI
+  resize; generic outside release fell through to cancellation. The corrected
+  outside fixture retains a changed preview; its real baseline failure is kept
+  separately from an earlier no-op assertion and a private-field compile error.
+- Existing root finish now uses the captured source track rather than hovered
+  receiver eligibility. Keep the existing final-coordinate/modifier resolver,
+  model/Warp/source admission, focus/stale/cancel checks and pending FIFO/ACK owner.
+- Both-edge audio/MIDI/Shift/enabled-Warp receiver and pan-stop/outside-release
+  controls use actual GPUI input, Service commits, non-retargeting, full snapshots
+  and Undo/Redo. Exact frozen source/check counts and negative artifacts are in
+  Pulse; sole merger owns prospective qualification/review/merge.
+- This source is stacked explicitly on frozen PR463 pointer-delivery work.
+  Physical outside-window capture and optimized waveform/input acceptance remain
+  Root-owned; no native app action or global reliability claim is implied.
+
+
+## 19 october 2026 — pulse2867 / pr469 upper-rail oracle return
+
+- On exact canonical4454/tree0479, replace the stale upper-rail cancellation
+  expectation with the user's captured-source release law. Test-only owning
+  case plus docs; no production edits or canonical branch overwrite.
+- Retain actual browser/body/no-hover region assertions and real pointer input.
+  Use an owned WAV and actual Service project/events instead of the prior
+  unrelated empty worker, then prove typed command/frame/modifier, canonical
+  before ACK, capture/pending retirement, exact worker clip/untouched track and
+  complete one-Undo/Redo snapshots.
+- Single case passed actual1/0ignored with raw command192000 and accepted
+  extent95999..96000. First fixture assertion equating these values failed and
+  is permanently preserved; final canonical model projection oracle keeps both.
+- Original failed721.767s/fullUI1064PASS1FAIL3oldignore remains negative; old61
+  focused positives remain source-bound. Fresh focused qualification/immutable
+  transport is reported in Pulse. Merger owns prospective full21/review/merge;
+  no native app operation or acceptance claim.
+
+## 19 October 2026 — Pulse2867 / PR469 single-root fixture custody return
+
+- Root29830 confirms structural BatchFiles/independent Environment root mismatch,
+  without claiming an executed filesystem race or new product release failure.
+  Correct only the upper-rail Service fixture: one precreated Arc Environment,
+  WAV/samples/default paths before startup, injected existing constructor.
+- Reuse existing PendingSetup custody pattern; only a real successful matching
+  Import ACK with exact source path/48kHz/96k frames disarms retention. Actual
+  view/browser/assets/four preferences/catalog share that root, checked through
+  two feature-test-only private path accessors following existing test_path APIs.
+- Actual paused catalog worker holds root after view+caller drop, saves then
+  permits cleanup. Actual pre-ACK missing-file import refusal retains disk
+  evidence without leaking Arc; controlled artificial case cleans its own root
+  only after observing the sole request finish, with no UI jobs started.
+- All original release/preview/raw192000/canonical-before-ACK/actual worker and
+  one-UndoRedo assertions are byte-identical; no production runtime behavior,
+  owner framework, Service join, global fixture sweep or native operation.
+  Prior f3d56-case/required-negative evidence stays independently source-bound.
+
+## replacement loop paint custody — pulse2883 / PR485, 19 october2026
+
+A real pointer/Service/completed-scene regression reproduced the old bar flashing
+between release and canonical installation. One private pending loop now retains
+its validated range until its own real FIFO completion installs canonical state;
+earlier ACKs do not retire it, deferred requests stamp only on actual submission,
+and queue refusal rolls back. Held Escape/button/focus cancellation stays separate.
+The existing blur hook clears state synchronously and defers only notification to
+the end of the effect cycle, outside GPUI's Focus paint phase; no frame delay,
+forced refresh, synthetic event or vendor change. Fourteen owning tests passed
+with zero ignored, including old rail controls, actual playback, Undo/Redo and
+save/open; default and feature all-targets strict checks passed. Raw failures and
+source-bound evidence are recorded in Pulse2883. PR329's separate whole-move,
+Shift and marker source needs later precise composition; no wholesale import or
+claim of combined qualification. Native framebuffer/listening and final merger
+qualification remain open; this is source evidence, not installed acceptance.
+
+## shared text double-click toggle — pulse2817 / PR423, 18 october 2026
+
+Original actual input regressions showed repeated query double-clicks never
+select all again and numeric draft clicks reformat the uncommitted text. A tiny
+local shared snapshot now toggles against pre-first-click selection, surviving
+release/repaint and invalidating on text/IME/keyboard/drag. Query/name caret and
+raw Unicode mapping remain; numeric editing-only selection retains draft and
+emits no value events, using the existing active gesture capture. Existing knob
+reset/adjustment/finalization and browser no-doubleclick-import remain separate.
+Focused source tests cover real click pairs, rapid pairs, partial drag/release,
+workers/window resize, composition and empty text. Frozen426+returned7c4d is a
+material input dependency, not new main integration. Sole merger owns final
+prospective full CI/integration; native physical mouse/IME acceptance stays open.
+
+### 2026-10-19 — PR423 invalidated first-click review return
+
+- Preserve canonical b017 and its declared426/416 history. Actual helper and
+  five actual browser-input caller regressions reproduced a stale even-count
+  toggle after keyboard/text/IME/Shift/drag invalidation.
+- Replace only the shared helper's current-state fallback with optional saved
+  snapshot mapping. Missing snapshot falls through to each existing caller's
+  normal text click. No browser/numeric consumer, formatter, CompactSlider,
+  value-event, knob-reset or geometry production change.
+- Preserve original negatives and all original tests; qualify new invalidation
+  cases plus valid paired-click/numeric/Unicode controls. Row navigation review
+ 4308115090 remains a separate diagnostic/baseline attribution, not a silently
+  folded423 production repair. Sole merger owns integration/full21/review/merge;
+  physical/native acceptance remains separate.
+
+## 19 October 2026 — Pulse2817 / PR423 new toggle fixture custody
+
+- Root29870 structural lifetime return: replace only new toggle_fixture caller
+  PathBuf ownership with one precreated existing Arc Environment and injected
+  constructor; samples/WAV before startup. All original toggle/invalidation/IME/
+  query/focus/drag/raw-field assertions byte-identical; production policy intact.
+- Reuse only the two identical accepted469 feature-test-only path accessors for
+  actual four-preference/catalog/root correlation. Actual held catalog job owns
+  root through view+caller drop, then successful save and ordinary cleanup.
+- Correct real Rust filters are editor::browser::ui_test::search_selection:: and
+  editor::browser_input::name_case_ui_test::. Historical351 widget80PASS is kept;
+  its two zero-match UI commands are not qualification. New actual search12PASS
+  includes old4+toggle/invalidation7+custody1, with no ignored tests. Final exact
+  shared-widget/name/input/strict/guard receipts remain separately source-bound.

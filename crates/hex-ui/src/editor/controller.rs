@@ -757,6 +757,7 @@ impl EditorView {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.pending_group_copy.take().is_some();
+                    visible_change |= self.pending_loop.take().is_some();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -768,6 +769,7 @@ impl EditorView {
         if !self.tuning.client.has_pending_requests() {
             while let Some(request) = self.pending_requests.pop_front() {
                 let resize_request = self.pending_trim_matches(&request);
+                let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
@@ -775,6 +777,9 @@ impl EditorView {
                             self.worker_requests_pending.saturating_add(1);
                         if resize_request {
                             self.trim_request_submitted();
+                        }
+                        if loop_request {
+                            self.loop_request_submitted();
                         }
                         if group_copy_request {
                             self.group_copy_submitted();
@@ -787,6 +792,9 @@ impl EditorView {
                     Err(SubmitError::Busy(request)) => {
                         if resize_request {
                             self.retire_pending_trim();
+                        }
+                        if loop_request {
+                            self.pending_loop = None;
                         }
                         if matches!(request, Request::Export(_)) {
                             self.export_pending = false;
@@ -801,6 +809,9 @@ impl EditorView {
                     Err(SubmitError::Closed(request)) => {
                         if resize_request {
                             self.retire_pending_trim();
+                        }
+                        if loop_request {
+                            self.pending_loop = None;
                         }
                         if matches!(&request, Request::ImportAudioBatch { .. }) {
                             if let Some(control) = self.audio_batch.take() {
@@ -1524,6 +1535,7 @@ impl EditorView {
             return None;
         }
         let retired_trim = self.trim_request_complete(&event);
+        let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
         if event.project_replaced {
             self.cancel_open_after_save();
@@ -1772,6 +1784,9 @@ impl EditorView {
             event.project_replaced,
         );
         self.state = Some(event.state);
+        if loop_complete {
+            self.pending_loop = None;
+        }
         if event.project_replaced {
             self.loop_rail_gesture = None;
             self.cancel_midi_note_gesture();
@@ -2542,12 +2557,16 @@ impl EditorView {
             }
         }
         let resize_request = self.pending_trim_matches(&request);
+        let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
                 if resize_request {
                     self.trim_request_submitted();
+                }
+                if loop_request {
+                    self.loop_request_submitted();
                 }
                 if group_copy_request {
                     self.group_copy_submitted();
