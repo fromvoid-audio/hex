@@ -286,6 +286,11 @@ impl BrowserState {
         }
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_preferences_path(&self) -> &std::path::Path {
+        &self.preferences_path
+    }
+
     fn reset_results(&mut self) {
         self.selected_index = 0;
         self.results_focused = false;
@@ -788,7 +793,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_preview_selected(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        if self.browser.section == BrowserSection::Instruments {
+        if !self.browser.results_focused || self.browser.section == BrowserSection::Instruments {
             return;
         }
         if let Some(entry) = self

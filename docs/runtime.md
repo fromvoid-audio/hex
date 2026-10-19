@@ -455,6 +455,25 @@ owned by the rail through release outside its bounds. Generation, project
 revision or canonical loop-region changes discard the preview. No per-move
 project edits or audio-thread state are introduced.
 
+A released replacement remains the rail's displayed range while its real worker
+request is pending. The existing request FIFO stamps it only after submission;
+earlier unrelated completions do not retire it. Its matching completion installs
+the canonical state before retiring the preview, including a truthful refusal.
+Queue refusal rolls back the local intent. Escape, lost held-button and editor
+focus cancel an unreleased gesture without submitting it; document replacement
+and stale revision discard it through the existing lifecycle. No frame delay or
+synthetic acknowledgment is used.
+
+The source regression checks completed GPUI scene quads while holding real
+Service responses, plus deferred submission, unrelated success/error responses,
+queue refusal, both directions, final-release coordinates/modifiers and Undo/Redo.
+The separate PR329 whole-move/Shift/marker changes remain unmerged at this
+checkpoint and require their own combined qualification; this change does not
+import that older rail wholesale. Native GPU/framebuffer and listening acceptance
+remain open. A finite native check is to replace an active bar in both directions,
+release rapidly at a new position, repeat, then cancel a held gesture and check
+one Undo/Redo and the transport's final loop bounds.
+
 The canonical mixer adds validated per-track balance (-1..=1) and master gain
 (0..=2). Center balance is unity; this original Hex linear law attenuates only
 the opposite channel, with no boost or crossfeed. Master gain applies after track

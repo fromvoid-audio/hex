@@ -527,6 +527,9 @@ impl EditorView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.browser.results_focused {
+            return;
+        }
         let entries = self.browser_visible_entries(cx);
         let Some(entry) = entries.get(self.browser.selected_index) else {
             return;
