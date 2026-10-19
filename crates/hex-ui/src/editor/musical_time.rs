@@ -15,6 +15,22 @@ const MAX_METER_MAP_POINTS: usize = 1_024;
 const MAX_GRID_LINES: usize = 256;
 const MAX_GRID_BANDS: usize = 256;
 const RULER_LABEL_SPACING_PX: f32 = 48.0;
+
+#[cfg(test)]
+thread_local! {
+    // Actual resolver work per test thread: step/base/share/natural demand.
+    static GRID_RESOLUTION_WORK: std::cell::Cell<[usize; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+#[cfg(test)]
+fn record_grid_work(kind: usize) {
+    GRID_RESOLUTION_WORK.with(|work| {
+        let mut counts = work.get();
+        counts[kind] += 1;
+        work.set(counts);
+    });
+}
+
 fn adaptive_grid_spacing(pixel_width: f32, density: AdaptiveGridDensity) -> f32 {
     density
         .minimum_spacing()
@@ -351,6 +367,8 @@ fn capped_fair_share(
     budget: usize,
     demand: impl Fn(usize) -> usize,
 ) -> (usize, usize) {
+    #[cfg(test)]
+    record_grid_work(2);
     let budget = budget.min(MAX_GRID_LINES);
     if count == 0 || budget == 0 {
         return (0, 0);
@@ -575,6 +593,8 @@ fn adaptive_base_step(
     pixel_width: f32,
     target_spacing: f32,
 ) -> u64 {
+    #[cfg(test)]
+    record_grid_work(1);
     if meter_beat_length == 0
         || viewport.length == 0
         || !pixel_width.is_finite()
@@ -612,6 +632,8 @@ fn adaptive_grid_step(
     pixel_width: f32,
     target_spacing: f32,
 ) -> u64 {
+    #[cfg(test)]
+    record_grid_work(0);
     if meter_beat_length == 0
         || viewport.length == 0
         || !pixel_width.is_finite()
@@ -671,6 +693,8 @@ fn adaptive_grid_step(
             // Compute natural demand BEFORE coarsening. Only binary-bounded
             // visible spans participate; short sections cannot strand slots.
             let demand = |relative: usize| {
+                #[cfg(test)]
+                record_grid_work(3);
                 let index = first_section + relative;
                 let Some(point) = points.get(index) else {
                     return 0;
