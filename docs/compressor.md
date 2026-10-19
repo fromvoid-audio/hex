@@ -151,3 +151,25 @@ numeric equivalence. No native reference or listening parity is claimed. Sidecha
 lookahead, auto release, alternate follower modes and full Compressor/W12 completion
 remain outside this slice. Combined generic A/B requires its actual integration
 and tests; no provider-specific bank owner is introduced.
+
+## combined generic a/b acceptance
+
+The merged shared comparison UI and Service APIs have now been exercised with
+both detector ID8 and dry/wet ID7 in distinct authored banks: A uses Peak with
+25% mix; B uses RMS with 75% mix. Track and Return cases use the actual detector
+selector, numeric mix field, card comparison menu and keyboard switch. Both copy
+directions retain the active slot; switch, copy and preset load each have exact
+one-edit full-project Undo/Redo checks. Current-format project save/open and preset
+save/load preserve distinct banks, active variant, complete provider payloads and
+global host input/output trims. Reopening through the same controller exercises
+project-generation replacement rather than merely decoding an independent clone.
+
+After each bank operation, the actual rendered detector caption must match the
+selected bank and the opposite caption must be absent. The retained transfer
+curve must equal the provider curve for that bank. Different mix values make a
+stale curve observable; Peak and RMS deliberately share the static constant-level
+calibration, so the tests do not invent a mode-dependent 3db shift. These are real
+headless UI/worker/persistence checks, not native pixels or listening acceptance.
+No production changes were required for this acceptance supplement. Original
+Peak/DryWet PCM, RMS history, 5ms transition and allocation evidence is retained;
+native behavior, listening and full Compressor/W12 parity remain open.
