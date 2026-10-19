@@ -5415,6 +5415,11 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Stable Compressor ID7 mix, originalinput/postmakeupwet linear blend and finite5ms history ramp remain owner code. Actual Track/Return genericSwitch/bothCopy directions/UndoRedo/current-project andpresetSaveOpen distinct25/75 mixes/globaltrims are finite ownercomponent evidence, not providerclone proof or finalfullCI.
 - Focused affectedtesttarget compile precedes new required actualfull21/freshreview; no native/listening/physical/installed/useracceptance claim.
 
+### 2026-10-19 — PR422 supported Warp preview and exact release integration
+
+- Composed shipping owner eb47d9b7 with qualified main453/457/399/325/447 through an ordinary conflict-free merge; canonical53cf history retained. All69 immutable payloads and ten source before/after hashes verified; all ten owning files remain byte-identical to the shipping source. Superseded interval research30e3 is excluded.
+- Requested valid endpoints are admitted directly, including disconnected valid islands. Unsupported requests retain a validated clip and its exact command frame; optional refinement has at most8 probes and a1ms start budget. Preview and release share the resolver; ordinary trim/MIDI, capture/cancel, worker/FIFO and source freshness remain distinct.
+- Original owner5UI,29release controls and measured metadata-cost evidence remain component-scoped. New actual prospective full21/fresh review required; no native optimized pointer deadline, physical release, listening, installed or whole-general-resize acceptance claim.
 ### 2026-10-19 — PR413 complete restart repair-chain integration
 
 - Composed canonical be596 through ordered65aa compiler,143 configured filesystem identity andff89 portable-case fixture repairs with qualified main4531bc9. Git merged without conflicts, retaining changelog preparation/history/package handling and current default no-test launch.
