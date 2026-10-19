@@ -5420,7 +5420,6 @@ changed native/physical acceptance and delivery remain coordinator-owned.
   history, not this repair's qualification. Actual OS chooser, physical save/open
   and installation acceptance remain open.
 
-<<<<<<< HEAD
 ## audio placement review repair — pulse2854 / PR456, 19 october2026
 
 Loaded existing audio/MIDI overlaps exposed full-result overwrite on unchanged,
@@ -5443,7 +5442,6 @@ Original reds, invalid offscreen click and own test-compilation/freshness-fixtur
 failures are preserved, not relabeled. Owner patch is isolated from canonical2918
 until sole-merger composition/fresh full21/review; source passing is not native,
 worker-acknowledgement, audible full445, installed-app or user acceptance.
-=======
 - 19 October 2026 — Pulse2793 / PR399 import-equivalence fixture return: first
   exact candidate e66a9102 failed workspace checks in two Session import cases
   whose independently created tracks drew different valid automatic hues. The
@@ -5462,7 +5460,6 @@ worker-acknowledgement, audible full445, installed-app or user acceptance.
 - Verified all28 immutable owner payloads and exact11-line insertion; production random color assignment, strict older-writer loss refusal and shared fixtures remain unchanged.
 - Original Session-equivalence failures/fixes and later storage failure remain separate negative evidence. Previous full21 stages do not qualify this changed candidate.
 - New exact prospective full21 and fresh review pending; no merge, installation or physical palette acceptance claim. Unqualified456 placement schema32 is not imported.
->>>>>>> origin/main
 
 ### 2026-10-19 — PR436 active spectrum fill integration
 
@@ -5471,13 +5468,11 @@ worker-acknowledgement, audible full445, installed-app or user acceptance.
 - Resolved shared painter composition using existing406 axes::plot_bounds exactly once, preserving grids, node hits, analyzer lifecycle and current GPUI support. No extra7px inset or unqualified407 gesture import.
 - Exact prospective full21/fresh review are pending; no merge, framebuffer/listening, installation or user acceptance claim.
 
-<<<<<<< HEAD
 ### 2026-10-19 — PR456 coherent placement return integration
 
 - Composed ownera6061328 onto qualified mainbd54; only append-only todo conflict retained both histories. No unmerged447/399/407/419 import.
 - Verified all27 original and42 repair payloads plus exact six before/after owning hashes. Growth-tail overwrite, raw source-looping versus optional placement mode, and current32 return assertion retain original actual reds and separate targeted37+7 positives.
 - New exact prospective full21 and independent review remain pending; old2918 negative and component receipts are source-bound. No full445 playback/Engine, native physical, installation or user acceptance claim.
-=======
 ### 2026-10-19 — PR399 coherent palette and Storage return
 
 - Preserved both owner commits e1729d2a then d44a7b59 over8258; three named legacy-compatible fixtures explicitly author Gray while every full Project/Snapshot and strict loss assertion remains. Shared fixtures and current31 schema are unchanged.
@@ -5558,4 +5553,10 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Preserve the original e934 owner history and compose actual qualified main a2d47. Both dividers paint their own active cyan state, retain normal idle hover, and publish release/lost-Left retirement. Original owner actual twoREDs and final90browser controls remain historical component evidence.
 - Resolve only the overlapping sidebar transitions around the current444 THREE-field pointer/width/locked tuple and existing snap hysteresis; preserve325 stationary tag-column geometry,414 private constructor/FS leases, Console/group receiver and all current main source outside the six owning files. Keep all appended test registrations/docs/history.
 - Verified all original payload and source hashes; exact new guarded focused and required full21/fresh review remain pending. Native physical hover/capture-loss/GPU flicker and delivery remain separate. Thin divider323 is not imported.
->>>>>>> origin/main
+
+### 2026-10-19 — PR456 cfg/codec return with current A/B format
+
+- Retain canonical770 and both ordered owner commits through13bd9fa3, including the actual valid Once fade-origin codec RED and original default-feature compilation failure. Six cfg annotations match existing GPUI fixture availability; all four pure default tests remain enabled. The codec lower bound matches the existing model, with upper bound and complete validation unchanged.
+- All44 owner payloads and four source bytes were verified. Owner13 focused steps127.407s are source-bound component evidence, not current combined full qualification. Compose actual qualified main3cda without unmerged419/458/407 or draft395.
+- Current schema32 combines required nullable audio placement, project tuning and complete device manifests with nullable A/B comparison and BOTH active/inactive asset bindings. README conflicts retain all capabilities; there is no format dispatch, old-reader rollback or migration. Main palette fixtures, group/Console capture, waveform body and browser feedback remain.
+- New guarded affected default/feature tests and current-format Storage roundtrips, exact full21 and fresh review remain pending. Historical770 and2918 failures are retained; no native full445 playback, physical loop, audio, installation or user acceptance claim.
