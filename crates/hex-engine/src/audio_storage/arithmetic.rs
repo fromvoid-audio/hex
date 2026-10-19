@@ -260,6 +260,46 @@ impl<'a> AudioRootStorageLedger<'a> {
 mod tests;
 
 impl<'a> AudioRootStorageLedger<'a> {
+    /// All imported roots and physical DATA must already be explained by the
+    /// mandatory input walk. This is a normal-ledger check, never scalar proof.
+    pub(crate) fn require_original_inputs_bound(
+        &self,
+        original: &AudioRootStorageLedger<'_>,
+    ) -> Result<(), AudioStorageError> {
+        if self.arithmetic.is_some() {
+            return Ok(()); // mandatory normal pass below will check every row
+        }
+        self.summary()?
+            .require_known_storage()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
+        original
+            .summary()?
+            .require_known_storage()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
+        if original
+            .roots
+            .iter()
+            .any(|old| !self.roots.iter().any(|actual| actual.owner.same(old.owner)))
+            || original.data.iter().any(|old| {
+                !self.data.iter().any(|actual| {
+                    actual.owner.same(old.owner)
+                        && actual.location == old.location
+                        && actual.declaration == old.declaration
+                })
+            })
+            || original.handles.iter().any(|old| {
+                // An actual original borrowed handle may be another external
+                // alias (for example the cancellation signal/worker). Its
+                // physical BODY must already belong to a mandatory input.
+                // Import then normal closure accounts for that real field;
+                // this grants no cleanup authority over external inputs.
+                !self.data.iter().any(|actual| actual.owner.same(old.owner))
+            })
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        Ok(())
+    }
     /// Revisit the actual opaque original inventory, including its still-live
     /// body and three backings. This never substitutes for the mandatory
     /// compiler input visitors. Old and freshly observed physical fields are

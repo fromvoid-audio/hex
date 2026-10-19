@@ -1371,3 +1371,47 @@ minus-one limits still refuse before allocation or paired owner activity. These
 are actual source-bound control-side tests. They do not close every compiler
 constructor/unwind frontier, Service incarnation, complete selected summaries,
 publication/registration, the functional Sampler panel or native musical use.
+
+The next construction-local integration enters through the actual existing
+`AudioPreparationCustody`. Immutable inventory covers that whole parent and its
+embedded Arrangement destinations before any mutation; after the guarded scoped
+ledger is dropped, the same exclusive borrow constructs directly into those
+fields. Standalone Arrangement-plus-unrelated-parent compilation remains only a
+historical test component. No rows are taken out of a parent or installed into a
+new test parent after compilation. The private lifecycle checker validates actual
+restoration destinations, context route/destructor restrictions, pending source
+and metadata disposal and first-panic state. It performs no allocation, clone,
+identity issue or cleanup. Vacant is not evidence of an empty owner tree.
+
+The normal import check requires original roots and DATA to be explained by the
+mandatory actual inputs. Actual borrowed external cancellation aliases may join
+only physical bodies already in those inputs; their real original fields join
+normal handle closure. This supplies construction-scope liveness, not cleanup
+rights over external inputs or later Service retention. Unknown or invalid
+original inventory still refuses. Public scalar summaries remain fail-closed;
+`require_complete` is deliberately unconditional and is not a production failure
+of this private operation.
+
+The nonempty-parent regression exposed nested `mutate()` refusal in the public
+custody wrapper when its children invoke their own visitors. This private closed
+operation composes its actual typed root and child visitor directly. Failure
+aborts and discards the scoped ledger; public wrapper behavior is unchanged.
+A freshly constructed loaded Sampler context (without previous-factory reuse),
+Track and Return remain in that same parent through actual normal inventory,
+restoration and ordered cleanup. Cancellation and ordinary selector failure
+leave actual partial owners discoverable there. A caught constructor panic runs
+existing ordered cleanup once, preserves the original boxed payload even if
+retirement also panics, and leaves FailedIncomplete. Pending retirement cannot
+be retried or interpreted as vacancy.
+
+The same-parent reused-context fixture has a conservative 710,874 retained /
+782,420 peak-byte boundary with the pinned test layout. Either ceiling minus one
+refuses with zero allocations, owner births, clones or handle issues. Row
+shortage refuses before owner construction after allocating only normal inspection
+backing. These bounds differ from the older standalone-row fixture because the
+embedded Arrangement inline body is already charged in the actual parent.
+Normal ledger backing remains charged and mandatory; its existing observation
+mechanism is distinct from the allocation-free lifecycle checker/bootstrap.
+This is construction-local source evidence, not an all-constructor destructor
+proof, a complete public retirement receipt, retained Service/worker incarnation
+integration, native full-live-union admission, registration or usable Sampler UI.

@@ -468,11 +468,11 @@ impl ArrangementRootAssembly {
         self.fault(frontier + 2)?;
         Ok(())
     }
-    pub(super) fn restore(
-        &mut self,
-        tracks: &mut tracks::TrackAssembly,
-        returns: &mut returns::ReturnAssembly,
-        shared: &mut crate::session_shared_preparation::SessionSharedConstruction,
+    pub(super) fn preflight_restore(
+        &self,
+        tracks: &tracks::TrackAssembly,
+        returns: &returns::ReturnAssembly,
+        shared: &crate::session_shared_preparation::SessionSharedConstruction,
     ) -> Result<(), AudioStorageError> {
         let view = self.view_at(None)?;
         tracks.preflight_root_restore(view.tracks)?;
@@ -491,6 +491,15 @@ impl ArrangementRootAssembly {
             }
             ContextLifecycle::RetirementPending => return Err(AudioStorageError::UnknownStorage),
         }
+        Ok(())
+    }
+    pub(super) fn restore(
+        &mut self,
+        tracks: &mut tracks::TrackAssembly,
+        returns: &mut returns::ReturnAssembly,
+        shared: &mut crate::session_shared_preparation::SessionSharedConstruction,
+    ) -> Result<(), AudioStorageError> {
+        self.preflight_restore(tracks, returns, shared)?;
         // Validate the whole restoration batch before unpacking any final owner.
         if let Some(Project {
             project_track_ids: _,

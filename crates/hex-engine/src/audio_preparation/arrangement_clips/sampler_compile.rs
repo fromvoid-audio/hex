@@ -83,9 +83,18 @@ impl<'a> Inputs<'a> {
         ) {
             return Err(AudioStorageError::UnknownStorage);
         }
-        ledger.borrow_custody_on_control(self.preparation, AudioStorageRole::Current)?;
-        ledger.root(self.rows, AudioStorageRole::FailedConstruction)?;
-        self.rows.visit_audio_storage(ledger, None, None)?;
+        // Closed-operation composition uses the actual typed visitor directly.
+        // The public wrapper's outer mutate() invalidates its ledger until it
+        // finishes, so nonempty nested visitors cannot reenter that wrapper.
+        // ANY failure here aborts and discards this scoped ledger; no partial
+        // ledger can escape or be resumed. Public wrapper behavior is unchanged.
+        ledger.root(self.preparation, AudioStorageRole::Current)?;
+        self.preparation
+            .visit_audio_storage(ledger, AudioStorageRole::Current)?;
+        if !std::ptr::eq(self.rows, &self.preparation.arrangement_clips) {
+            ledger.root(self.rows, AudioStorageRole::FailedConstruction)?;
+            self.rows.visit_audio_storage(ledger, None, None)?;
+        }
         ledger.root(self.editor, AudioStorageRole::Caller)?;
         ledger.borrow_editor_history_buffers_on_control(self.editor)?;
         ledger.borrow_editor_exclusive_buffers_on_control(self.editor)?;
@@ -112,20 +121,17 @@ impl<'a> Inputs<'a> {
         // Charge the actual enclosing preparation body, its cache/pending
         // backing and cancellation; do not confuse PCM-only visitation with it.
         inventory.visit_original_only_body_on_control(ledger)?;
+        if std::ptr::eq(self.rows, &self.preparation.arrangement_clips) {
+            ledger.require_original_inputs_bound(self.original)?;
+        }
         ledger.original_ledger_storage(self.original)
     }
 }
 impl ArrangementClips {
+    #[cfg(test)]
     #[expect(
         clippy::too_many_arguments,
-        reason = "one private operation binds actual input custodies, never a scalar permit"
-    )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "private aggregate compiler awaits Service/publication integration"
-        )
+        reason = "historical independent component oracle"
     )]
     pub(crate) fn compile_original_sampler_on_control(
         &mut self,
@@ -137,78 +143,29 @@ impl ArrangementClips {
         transforms: &AudioTransformPreparation,
         reservation: AudioStorageLedgerReservation,
     ) -> Result<(), AudioStorageError> {
-        if transforms.cancellation_requested_on_control() {
-            return Err(AudioStorageError::SourceMismatch);
-        }
-        let resources = DeviceResourcePreparation {
-            bank,
-            max_scope_metadata_bytes: 65_536,
-        };
-        let construction = self.sampler_construction(editor.project(), resources)?;
-        let ledger_bytes = AudioRootStorageLedger::requested_metadata_bytes(reservation)?;
-        let arithmetic_inline = size_of::<AudioRootStorageLedger<'_>>();
-        // The original ledger's physical body/backings are DATA via Inputs;
-        // its still-required live growth is a SEPARATE peak allowance.
-        let original_growth = original.original_live_growth_allowance()?;
-        let inputs = Inputs {
+        let construction = Inputs {
             rows: self,
             preparation,
             editor,
             resources: bank,
             previous,
             original,
+        }
+        .inspect(transforms, reservation)?;
+        self.construct_original_sampler(editor, bank, previous, transforms, construction)
+    }
+    fn construct_original_sampler(
+        &mut self,
+        editor: &hex_project::Editor,
+        bank: &DeviceResourceBank,
+        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+        transforms: &AudioTransformPreparation,
+        construction: Construction,
+    ) -> Result<(), AudioStorageError> {
+        let resources = DeviceResourcePreparation {
+            bank,
+            max_scope_metadata_bytes: 65_536,
         };
-        transforms.with_pcm_inventory_on_control(|inventory| {
-            let cache = inventory.original_only_storage_cost()?;
-            let retained_extra = add(
-                add(construction.retained, ledger_bytes)?,
-                add(arithmetic_inline, cache.transaction_new_backing_bytes)?,
-            )?;
-            let peak_extra = add(
-                add(construction.peak, ledger_bytes)?,
-                add(
-                    add(arithmetic_inline, cache.transaction_new_backing_bytes)?,
-                    original_growth,
-                )?,
-            )?;
-            let retained_data = reservation
-                .max_retained_bytes
-                .checked_sub(retained_extra)
-                .ok_or(AudioStorageError::ReservationExceeded)?;
-            let peak_data = reservation
-                .max_construction_peak_bytes
-                .checked_sub(peak_extra)
-                .ok_or(AudioStorageError::ReservationExceeded)?;
-            AudioRootStorageLedger::arithmetic_cost_for_limits(
-                reservation,
-                retained_data,
-                peak_data,
-                |ledger| inputs.visit(inventory, ledger),
-            )?;
-            // Allocate only AFTER both bound checks. This normal pass MUST NOT
-            // be omitted even when cheap arithmetic fitted without replay.
-            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
-            inputs.visit(inventory, &mut ledger)?;
-            ledger.validate_selected_shared_handles_on_control()?;
-            let actual = ledger.summary()?;
-            if ledger.metadata_capacity_bytes() != Some(ledger_bytes)
-                || add(actual.data_bytes, retained_extra)? > reservation.max_retained_bytes
-                || add(
-                    add(
-                        actual.data_bytes,
-                        actual
-                            .construction_peak_bytes
-                            .checked_sub(actual.retained_bytes)
-                            .ok_or(AudioStorageError::Overflow)?,
-                    )?,
-                    peak_extra,
-                )? > reservation.max_construction_peak_bytes
-            {
-                return Err(AudioStorageError::ReservationExceeded);
-            }
-            // Scoped ledger and borrowed records die WITHIN the three guards.
-            Ok(())
-        })?;
         // No arbitrary caller callback, exported quote or field mutation
         // intervenes before this same operation uses its persistent fields.
         if transforms.cancellation_requested_on_control() {
@@ -276,6 +233,162 @@ impl ArrangementClips {
             eprintln!("closed sampler constructor error: {error:?}");
         }
         result.map_err(|_| AudioStorageError::UnsupportedGraph)
+    }
+}
+
+impl Inputs<'_> {
+    fn inspect(
+        &self,
+        transforms: &AudioTransformPreparation,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<Construction, AudioStorageError> {
+        if transforms.cancellation_requested_on_control() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let editor = self.editor;
+        let original = self.original;
+        let resources = DeviceResourcePreparation {
+            bank: self.resources,
+            max_scope_metadata_bytes: 65_536,
+        };
+        let construction = self
+            .rows
+            .sampler_construction(editor.project(), resources)?;
+        let ledger_bytes = AudioRootStorageLedger::requested_metadata_bytes(reservation)?;
+        let arithmetic_inline = size_of::<AudioRootStorageLedger<'_>>();
+        // The original ledger's physical body/backings are DATA via Inputs;
+        // its still-required live growth is a SEPARATE peak allowance.
+        let original_growth = original.original_live_growth_allowance()?;
+        transforms.with_pcm_inventory_on_control(|inventory| {
+            let cache = inventory.original_only_storage_cost()?;
+            let retained_extra = add(
+                add(construction.retained, ledger_bytes)?,
+                add(arithmetic_inline, cache.transaction_new_backing_bytes)?,
+            )?;
+            let peak_extra = add(
+                add(construction.peak, ledger_bytes)?,
+                add(
+                    add(arithmetic_inline, cache.transaction_new_backing_bytes)?,
+                    original_growth,
+                )?,
+            )?;
+            let retained_data = reservation
+                .max_retained_bytes
+                .checked_sub(retained_extra)
+                .ok_or(AudioStorageError::ReservationExceeded)?;
+            let peak_data = reservation
+                .max_construction_peak_bytes
+                .checked_sub(peak_extra)
+                .ok_or(AudioStorageError::ReservationExceeded)?;
+            AudioRootStorageLedger::arithmetic_cost_for_limits(
+                reservation,
+                retained_data,
+                peak_data,
+                |ledger| self.visit(inventory, ledger),
+            )?;
+            // Allocate only AFTER both bound checks. This normal pass MUST NOT
+            // be omitted even when cheap arithmetic fitted without replay.
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
+            self.visit(inventory, &mut ledger)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            let actual = ledger.summary()?;
+            if ledger.metadata_capacity_bytes() != Some(ledger_bytes)
+                || add(actual.data_bytes, retained_extra)? > reservation.max_retained_bytes
+                || add(
+                    add(
+                        actual.data_bytes,
+                        actual
+                            .construction_peak_bytes
+                            .checked_sub(actual.retained_bytes)
+                            .ok_or(AudioStorageError::Overflow)?,
+                    )?,
+                    peak_extra,
+                )? > reservation.max_construction_peak_bytes
+            {
+                return Err(AudioStorageError::ReservationExceeded);
+            }
+            // Scoped ledger and borrowed records die WITHIN the three guards.
+            Ok(())
+        })?;
+        Ok(construction)
+    }
+}
+impl crate::AudioPreparationCustody {
+    /// Construction-local only. Every new owner is installed directly into
+    /// this SAME parent; immutable whole-parent inventory ends before mutation.
+    #[cfg_attr(not(test), expect(dead_code, reason = "awaits Service integration"))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "actual borrowed compiler inputs, no approval token"
+    )]
+    pub(crate) fn compile_original_sampler_on_control(
+        &mut self,
+        editor: &hex_project::Editor,
+        bank: &DeviceResourceBank,
+        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+        original: &AudioRootStorageLedger<'_>,
+        transforms: &AudioTransformPreparation,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<(), AudioStorageError> {
+        self.inspect_sampler_destination()?;
+        let construction = Inputs {
+            rows: &self.arrangement_clips,
+            preparation: self,
+            editor,
+            resources: bank,
+            previous,
+            original,
+        }
+        .inspect(transforms, reservation)?;
+        // No exported approval or callback intervenes. Safe disjoint borrowing
+        // retains the parent and all of its source/cleanup destinations in place.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.arrangement_clips.construct_original_sampler(
+                editor,
+                bank,
+                previous,
+                transforms,
+                construction,
+            )
+        })) {
+            Ok(result) => result,
+            Err(payload) => {
+                // The constructor unwound with owners still in THIS parent.
+                // Retire once through its existing ordered cleanup. The first
+                // payload stays owned locally during cleanup, then is installed
+                // before any secondary cleanup payload can be dropped.
+                self.phase = AudioPreparationPhase::Cleaning;
+                self.cleanup_on_control();
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                let secondary = self.first_panic.replace(payload);
+                drop(secondary);
+                Err(AudioStorageError::UnknownStorage)
+            }
+        }
+    }
+    fn inspect_sampler_destination(&self) -> Result<(), AudioStorageError> {
+        if !matches!(
+            self.phase,
+            AudioPreparationPhase::Vacant
+                | AudioPreparationPhase::ArrangementSources
+                | AudioPreparationPhase::ArrangementAndSessionSources
+        ) || self.first_panic.is_some()
+            || self.original_resources_drop_pending
+            || self
+                .slots
+                .iter()
+                .any(|slot| slot.disposal == Disposal::Pending)
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        // Actual restoration destinations and pending owners are validated by
+        // the mandatory whole-parent visitor, not by Vacant or scalar summary.
+        self.arrangement_clips.root.preflight_restore(
+            &self.arrangement_clips.tracks,
+            &self.arrangement_clips.returns,
+            &self.shared,
+        )?;
+        Ok(())
     }
 }
 

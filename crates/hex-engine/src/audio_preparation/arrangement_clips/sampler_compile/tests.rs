@@ -769,3 +769,5 @@ pub(in crate::audio_preparation::arrangement_clips) fn compiled_root_owned_rows(
     // persistent compiler destinations and their real resource leases remain.
     rows
 }
+
+mod parent_bound;
