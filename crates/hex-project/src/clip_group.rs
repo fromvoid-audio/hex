@@ -180,8 +180,8 @@ pub(crate) fn apply(
     }
     // Protect ALL moving originals before carving any destination. Sequential
     // single-clip overwrite commands could erase a later selected member.
+    let selected = ids.into_iter().collect::<BTreeSet<_>>();
     if !copy {
-        let selected = ids.into_iter().collect::<BTreeSet<_>>();
         for row in &mut project.tracks {
             row.content
                 .audio_clips
@@ -191,6 +191,9 @@ pub(crate) fn apply(
                 .retain(|c| !selected.contains(&c.id()));
         }
     }
+    // Copies keep selected originals physically present for capacity/ID checks.
+    // Protect both victim kinds while still carving unselected destinations.
+    let protected = |id| copy && selected.contains(&id);
     // Clear old destination content first; incoming members may overlap each
     // other in an existing valid project and must never erase one another.
     for member in &planned {
@@ -200,19 +203,19 @@ pub(crate) fn apply(
                     .start()
                     .checked_add(c.duration())
                     .ok_or(Invalid("group audio end overflow"))?;
-                crate::edit::overwrite_audio_interval(
+                crate::edit::overwrite_audio_interval_excluding(
                     project,
                     member.track,
                     c.start(),
                     end,
-                    ClipId(0),
+                    protected,
                 )?;
-                crate::midi::overwrite_midi_in_frames(
+                crate::midi::overwrite_midi_in_frames_excluding(
                     project,
                     member.track,
                     c.start(),
                     end,
-                    ClipId(0),
+                    protected,
                 )?;
             }
             ClipGroupContent::Midi(c) => {
@@ -222,19 +225,19 @@ pub(crate) fn apply(
                         .checked_add(c.length().raw())
                         .ok_or(Invalid("group midi end overflow"))?,
                 );
-                crate::edit::overwrite_audio_in_beats(
+                crate::edit::overwrite_audio_in_beats_excluding(
                     project,
                     member.track,
                     c.start(),
                     end,
-                    ClipId(0),
+                    protected,
                 )?;
-                crate::midi::overwrite_midi_interval(
+                crate::midi::overwrite_midi_interval_excluding(
                     project,
                     member.track,
                     c.start(),
                     end,
-                    ClipId(0),
+                    protected,
                 )?;
             }
         }

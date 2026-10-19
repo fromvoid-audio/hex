@@ -1,3 +1,21 @@
+## selected group drag review return — pulse2803 / PR409, 19 october2026
+
+Original22bc source implemented whole-selection Audio/MIDI drag with one prepared
+edit/Undo and received12 focused Mac positives; those receipts did not cover the
+later copy-overlap or stale-preview findings. New canonical tests reproduced
+selected-original loss for Audio/MIDI/mixed copies. Actual GPUI pointer tests
+reproduced stale row previews outside lanes and after vertical autoscroll.
+The bounded repair protects selected IDs in existing overwrite bodies without
+removing originals, and retires all invalid group previews before repaint.
+Single-clip conversion, capacity/refusal, subframe and history laws stay intact.
+Source checks and immutable raw failure/green receipts are recorded in Pulse2803;
+Undo comparisons explicitly retain canonical allocator high-water. No new native
+run, final combined-tree full CI, physical acceptance or merge is implied here.
+The repeated preview allocation/scan finding remains open pending the root's
+bounded capture/freshness contract; no persistent cache/public API was added.
+See docs/group-clip-drag.md. Sole merger owns final integration/qualification;
+root owns serial native/delivery and user-present group/waveform/capture testing.
+
 ## prepared-batch final routing validation — pulse2790 / PR396, 18 october2026
 
 Public regressions reproduced two invalid commits before repair: adding a send

@@ -985,6 +985,16 @@ pub(crate) fn overwrite_midi_in_frames(
     end_frame: u64,
     excluded: ClipId,
 ) -> Result<(), Invalid> {
+    overwrite_midi_in_frames_excluding(project, track, start_frame, end_frame, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_midi_in_frames_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start_frame: u64,
+    end_frame: u64,
+    excluded: impl Fn(ClipId) -> bool,
+) -> Result<(), Invalid> {
     if start_frame >= end_frame {
         return Ok(());
     }
@@ -998,7 +1008,7 @@ pub(crate) fn overwrite_midi_in_frames(
     let right_raw = tempo
         .beat_lower_bound_for_frame(end_frame)?
         .min(u128::from(u64::MAX)) as u64;
-    overwrite_midi_interval(
+    overwrite_midi_interval_excluding(
         project,
         track,
         BeatTime::from_raw(left_raw),
@@ -1013,6 +1023,16 @@ pub(crate) fn overwrite_midi_interval(
     start: BeatTime,
     end: BeatTime,
     excluded: ClipId,
+) -> Result<(), Invalid> {
+    overwrite_midi_interval_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_midi_interval_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: BeatTime,
+    end: BeatTime,
+    excluded: impl Fn(ClipId) -> bool,
 ) -> Result<(), Invalid> {
     if start >= end {
         return Ok(());
@@ -1033,7 +1053,7 @@ pub(crate) fn overwrite_midi_interval(
         .map_err(|_| Invalid("could not reserve midi overwrite fragment storage"))?;
     let mut occurrence_bound = 0_usize;
     for clip in snapshot {
-        if clip.id == excluded {
+        if excluded(clip.id) {
             continue;
         }
         let clip_end_raw = clip

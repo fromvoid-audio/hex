@@ -53,3 +53,27 @@ window/capture loss, one Undo/Redo and save/reopen with unchanged clip content.
 Verify no accidental body painting, resize or subset movement. Sole merger owns
 final actual candidate full checks/integration/merge; no app operations belong
 to this source lane.
+
+## review return: protected copies and invalid preview retirement
+
+Review found that copy-mode destination carving could erase a selected original.
+Three independent Audio/MIDI/mixed canonical regressions reproduced that loss.
+Group copies now keep selected originals physically present and exclude their
+stable IDs in both existing overwrite victim paths. Single-clip wrappers retain
+their original exclusion and frame/beat conversions. Unselected destination
+material is still carved; final capacity, prepared admission and one Undo/Redo
+remain canonical. Undo restores content while retaining the allocator high-water.
+
+Actual GPUI pointer tests also reproduced populated group previews after leaving
+all lanes and after a real vertical UniformList scroll invalidated row geometry.
+Every unsuccessful candidate and no-target/insertion lookup now invalidates the
+whole group projection; vertical scroll clears it before repaint alongside the
+primary destination. Valid planning repopulates it. The painter and original
+visibility therefore agree without giving outside release commit authority.
+
+The separate review of repeated preview construction remains OPEN. Its measured
+bounded allocation/scan costs and a proposed capture/reuse direction are recorded
+in Pulse2803; no persistent cache or new public capture API is implemented here.
+Original22bc source/Mac12 receipts, new red/green checks, merger final combined
+full CI and physical optimized acceptance are separate evidence. This bounded
+repair is not a claim that every PR409 review finding is closed or merge-ready.

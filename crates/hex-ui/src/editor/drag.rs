@@ -611,43 +611,51 @@ impl super::EditorView {
         pointer_x: f32,
         lane: LaneBounds,
     ) -> Option<DropPreview> {
-        if !self.drag_start_is_current(drag) {
-            return None;
-        }
-        let state = self.state.as_ref()?;
-        let position =
-            candidate_position(&state.project, drag, Some(target_track), pointer_x, lane)?;
-        if drag.group.borrow().ids.len() > 1 {
-            let group = state.project.preview_clip_group_move(
-                &drag.group.borrow().ids,
-                drag.clip,
-                target_track,
-                group_position(position),
-            );
-            match group {
-                Ok(previews) => drag.group.borrow_mut().previews = previews,
-                Err(_) => {
-                    drag.group.borrow_mut().previews.clear();
-                    return None;
+        // Every unsuccessful projection invalidates ALL row destinations,
+        // including early stale/no-state/position failures and final bounds.
+        let preview = (|| {
+            if !self.drag_start_is_current(drag) {
+                return None;
+            }
+            let state = self.state.as_ref()?;
+            let position =
+                candidate_position(&state.project, drag, Some(target_track), pointer_x, lane)?;
+            if drag.group.borrow().ids.len() > 1 {
+                let group = state.project.preview_clip_group_move(
+                    &drag.group.borrow().ids,
+                    drag.clip,
+                    target_track,
+                    group_position(position),
+                );
+                match group {
+                    Ok(previews) => drag.group.borrow_mut().previews = previews,
+                    Err(_) => {
+                        drag.group.borrow_mut().previews.clear();
+                        return None;
+                    }
                 }
             }
+            let position = if drag.group.borrow().ids.len() > 1 {
+                let group = drag.group.borrow();
+                match &group.previews.iter().find(|p| p.id() == drag.clip)?.content {
+                    hex_project::ClipGroupContent::Audio(c) => ClipPosition::Audio {
+                        start: c.start(),
+                        duration: c.duration(),
+                    },
+                    hex_project::ClipGroupContent::Midi(c) => ClipPosition::Midi {
+                        start: c.start(),
+                        length: c.length(),
+                    },
+                }
+            } else {
+                position
+            };
+            preview_for(&state.project, target_track, position)
+        })();
+        if preview.is_none() {
+            drag.group.borrow_mut().previews.clear();
         }
-        let position = if drag.group.borrow().ids.len() > 1 {
-            let group = drag.group.borrow();
-            match &group.previews.iter().find(|p| p.id() == drag.clip)?.content {
-                hex_project::ClipGroupContent::Audio(c) => ClipPosition::Audio {
-                    start: c.start(),
-                    duration: c.duration(),
-                },
-                hex_project::ClipGroupContent::Midi(c) => ClipPosition::Midi {
-                    start: c.start(),
-                    length: c.length(),
-                },
-            }
-        } else {
-            position
-        };
-        preview_for(&state.project, target_track, position)
+        preview
     }
 
     pub(super) fn clip_drag_drop_position(
@@ -656,6 +664,7 @@ impl super::EditorView {
         pointer_x: f32,
         pointer_y: f32,
     ) -> (Option<DropPreview>, bool) {
+        drag.group.borrow_mut().previews.clear();
         if !self.drag_start_is_current(drag) {
             drag.destination.set(None);
             drag.insertion_line_y.set(None);

@@ -1099,6 +1099,16 @@ pub(crate) fn overwrite_audio_interval(
     end: u64,
     excluded: ClipId,
 ) -> Result<(), Invalid> {
+    overwrite_audio_interval_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_audio_interval_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: u64,
+    end: u64,
+    excluded: impl Fn(ClipId) -> bool,
+) -> Result<(), Invalid> {
     if start >= end {
         return Err(Invalid("overwrite interval must be positive"));
     }
@@ -1116,7 +1126,7 @@ pub(crate) fn overwrite_audio_interval(
         .try_reserve_exact(snapshot.len())
         .map_err(|_| Invalid("could not reserve overwrite fragment storage"))?;
     for victim in snapshot {
-        if victim.id == excluded {
+        if excluded(victim.id) {
             continue;
         }
         let victim_end = victim
@@ -1216,10 +1226,20 @@ pub(crate) fn overwrite_audio_in_beats(
     end: crate::BeatTime,
     excluded: ClipId,
 ) -> Result<(), Invalid> {
+    overwrite_audio_in_beats_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_audio_in_beats_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: crate::BeatTime,
+    end: crate::BeatTime,
+    excluded: impl Fn(ClipId) -> bool,
+) -> Result<(), Invalid> {
     let start_frame = project.tempo_map().beat_to_frame(start)?;
     let end_frame = project.tempo_map().beat_to_frame(end)?;
     if start_frame < end_frame {
-        overwrite_audio_interval(project, track, start_frame, end_frame, excluded)?;
+        overwrite_audio_interval_excluding(project, track, start_frame, end_frame, excluded)?;
     }
     Ok(())
 }

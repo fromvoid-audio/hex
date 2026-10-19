@@ -453,3 +453,145 @@ fn canonical_subframe_midi_member_is_retained_in_whole_group_move() {
     assert!(f.editor.undo());
     assert_eq!(f.editor.project(), &before);
 }
+
+fn copied_group_preserves_overlapped_selected_originals(kind: u8) {
+    let mut f = fixture();
+    let track = f.tracks[0];
+    let (a, b, victim, destination) = match kind {
+        0 => {
+            let Created::Clip(b) = f
+                .editor
+                .execute(Command::CopyClipTo {
+                    clip: f.audio,
+                    track,
+                    start: 144_000,
+                })
+                .unwrap()
+            else {
+                panic!("copy")
+            };
+            let Created::Clip(victim) = f
+                .editor
+                .execute(Command::CopyClipTo {
+                    clip: f.audio,
+                    track,
+                    start: 240_000,
+                })
+                .unwrap()
+            else {
+                panic!("victim")
+            };
+            (f.audio, b, victim, ClipGroupPosition::Audio(144_000))
+        }
+        1 => {
+            let track = f.tracks[1];
+            let Created::Clip(b) = f
+                .editor
+                .execute(Command::CopyMidiClipTo {
+                    clip: f.midi,
+                    track,
+                    start: BeatTime::from_quarters(10).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("copy")
+            };
+            let Created::Clip(victim) = f
+                .editor
+                .execute(Command::CopyMidiClipTo {
+                    clip: f.midi,
+                    track,
+                    start: BeatTime::from_quarters(12).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("victim")
+            };
+            (
+                f.midi,
+                b,
+                victim,
+                ClipGroupPosition::Midi(BeatTime::from_quarters(10).unwrap()),
+            )
+        }
+        _ => {
+            f.editor
+                .execute(Command::MoveMidiClip {
+                    clip: f.midi,
+                    track,
+                    start: BeatTime::from_quarters(6).unwrap(),
+                })
+                .unwrap();
+            let asset = f.editor.project().clip(f.audio).unwrap().asset();
+            let Created::Clip(victim) = f
+                .editor
+                .execute(Command::PlaceClip {
+                    track,
+                    asset,
+                    start: 240_000,
+                    duration: 48_000,
+                    source_offset: 0,
+                    source_length: 48_000,
+                    looping: false,
+                })
+                .unwrap()
+            else {
+                panic!("victim")
+            };
+            (f.audio, f.midi, victim, ClipGroupPosition::Audio(144_000))
+        }
+    };
+    let track = if kind == 1 { f.tracks[1] } else { track };
+    let before = f.editor.project().clone();
+    f.editor
+        .execute(Command::MoveClipsWithOverwrite {
+            clips: vec![a, b],
+            anchor: a,
+            track,
+            position: destination,
+            copy: true,
+        })
+        .unwrap();
+    for id in [a, b] {
+        assert_eq!(
+            f.editor.project().clip(id),
+            before.clip(id),
+            "selected audio original must retain exact metadata/ID: kind={kind} id={id:?}"
+        );
+        assert_eq!(
+            f.editor.project().midi_clip(id),
+            before.midi_clip(id),
+            "selected MIDI original must retain exact metadata/ID: kind={kind} id={id:?}"
+        );
+    }
+    assert!(
+        f.editor.project().clip(victim).is_none() && f.editor.project().midi_clip(victim).is_none(),
+        "unselected destination is still overwritten"
+    );
+    let after = f.editor.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(after.clone()).unwrap().snapshot(),
+        after
+    );
+    assert!(f.editor.undo());
+    // Undo restores content/IDs, but canonical allocation high-water never
+    // rolls back newly allocated copy/note identities.
+    let mut restored = before.snapshot();
+    assert!(after.next_id > restored.next_id);
+    restored.next_id = after.next_id;
+    assert_eq!(f.editor.project().snapshot(), restored);
+    assert!(f.editor.redo());
+    assert_eq!(f.editor.project().snapshot(), after);
+}
+#[test]
+fn copy_overlap_preserves_audio_selected_originals() {
+    copied_group_preserves_overlapped_selected_originals(0);
+}
+#[test]
+fn copy_overlap_preserves_midi_selected_originals() {
+    copied_group_preserves_overlapped_selected_originals(1);
+}
+#[test]
+fn copy_overlap_preserves_mixed_selected_originals() {
+    copied_group_preserves_overlapped_selected_originals(2);
+}

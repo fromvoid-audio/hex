@@ -494,3 +494,119 @@ fn mixed_audio_midi_group_uses_real_track_offsets_or_refuses_whole_vertical_move
         }
     }
 }
+
+#[gpui::test]
+fn group_outside_lane_clears_all_previews_and_restores_originals(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let target = begin_group(&mut visual, &clips);
+    visual.run_until_parked();
+    for id in &clips {
+        let selector = Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "valid landing preview actually painted"
+        );
+    }
+    // A real pointer move left of every painted timeline lane, as the ordinary
+    // single-clip drag fixture does; no fabricated planner error.
+    let outside = point(px(200.0), target.y);
+    visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let drag = v.active_clip_drag.as_ref().unwrap();
+        assert!(drag.preview.get().is_none());
+        assert!(drag.destination.get().is_none());
+        assert!(
+            drag.group.borrow().previews.is_empty(),
+            "outside lane must invalidate all group destinations"
+        );
+    });
+    for id in &clips {
+        let preview = Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
+        let original = Box::leak(format!("clip-name-{}", id.value()).into_boxed_str());
+        assert!(
+            visual.debug_bounds(preview).is_none(),
+            "stale group overlay hidden"
+        );
+        assert!(
+            visual.debug_bounds(original).is_some(),
+            "original reappears outside lane"
+        );
+    }
+    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(
+            v.last_enqueued_edit.is_none(),
+            "outside release cannot commit old landing"
+        );
+    });
+}
+
+#[gpui::test]
+fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for index in 0..24 {
+        editor.update(&mut visual, |v, _cx| {
+            v.enqueue(Request::Edit(Command::AddTrack {
+                name: format!("scroll {index}"),
+            }))
+        });
+        pump(&editor, &mut visual);
+    }
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    begin_group(&mut visual, &clips);
+    visual.run_until_parked();
+    let target = editor.read_with(&visual, |v, _| {
+        let body = v.arrangement_bounds.unwrap();
+        point(
+            px(body.left + body.width * 0.6),
+            px(body.top + body.height - 5.0),
+        )
+    });
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, cx| {
+        assert_eq!(
+            v.active_clip_drag
+                .as_ref()
+                .unwrap()
+                .group
+                .borrow()
+                .previews
+                .len(),
+            3
+        );
+        let offset = v.track_scroll.offset().y;
+        let generation = v.drag_layout_generation;
+        let now = Instant::now();
+        v.tick_clip_gesture_autoscroll(now, cx);
+        if v.track_scroll.offset().y == offset {
+            assert!(v.tick_clip_gesture_autoscroll(now + Duration::from_millis(50), cx));
+        }
+        assert!(
+            v.track_scroll.offset().y < offset,
+            "actual UniformList scroll occurred"
+        );
+        assert!(v.drag_layout_generation > generation);
+        assert_ne!(v.arrangement_bounds_epoch, v.drag_layout_generation);
+        let drag = v.active_clip_drag.as_ref().unwrap();
+        assert!(drag.preview.get().is_none());
+        assert!(drag.destination.get().is_none());
+        assert!(
+            drag.group.borrow().previews.is_empty(),
+            "vertical autoscroll invalidates every group destination before repaint"
+        );
+    });
+    // No repaint may turn the stale row into authority for this release.
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+}
