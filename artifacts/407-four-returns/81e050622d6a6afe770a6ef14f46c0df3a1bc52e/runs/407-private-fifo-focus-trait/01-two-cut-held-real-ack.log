@@ -1,0 +1,14 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.86s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+before releasing actual first ACK: None
+two-cut slopes before=[0, 0] after=[1, 1]
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 978 filtered out; finished in 1.20s
+

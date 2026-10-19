@@ -1,0 +1,24 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.83s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_blurred_queue_cannot_readmit_a_late_old_begin' (186678) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:2069:5:
+assertion `left == right` failed
+  left: (1, true)
+ right: (0, true)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_blurred_queue_cannot_readmit_a_late_old_begin ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_blurred_queue_cannot_readmit_a_late_old_begin
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 987 filtered out; finished in 0.95s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

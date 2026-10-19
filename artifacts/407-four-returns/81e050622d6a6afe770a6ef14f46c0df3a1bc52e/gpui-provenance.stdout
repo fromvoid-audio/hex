@@ -1,0 +1,30 @@
+{
+  "baseline_source": "0bd10829f16c9de92aafb9082373dc154c92aa3e",
+  "archive_sha256_unchanged": "979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707",
+  "original_source_hashes_verified": 21,
+  "cumulative_patched_and_added_bytes_verified": 24,
+  "changed_existing_files": {
+    "src/interactive.rs": {
+      "before_sha256": "e72427052aa9bdf43015f24612d1f721816f372ddcfade4ec9ee3168353158ee",
+      "after_sha256": "968030ec8155161c2fc9b9430bb5a8c293c6ea45a59e49b728fc83ff65e8596b"
+    },
+    "src/platform/linux/wayland/client.rs": {
+      "before_sha256": "c94fc25769223c54d6982e9a6d2d56362f9c1d47fde02127650ed58a1d67748a",
+      "after_sha256": "40ad7e00a72de7cdac632864f83e3333731c4832f53535b219aa109c2d42329b"
+    },
+    "src/platform/linux/x11/client.rs": {
+      "before_sha256": "3f6efcec64214b23a1964ea785c664a3a2b0da1294e786a29b1a57f1fad5a1dc",
+      "after_sha256": "df5110245cfaec8dcf9df3eec2c11b10d36c9ba365be6f46e238912d27f46ae8"
+    },
+    "src/platform/mac/events.rs": {
+      "before_sha256": "8da5851e315c6f6c381f30c0095a185d2e8f4821984cb7e0f7d1797c4896b506",
+      "after_sha256": "e4f972d4353c7352d106aa396754206c6891448685a766ab750687b601070f07"
+    },
+    "src/platform/windows/events.rs": {
+      "before_sha256": "210c35d596cf4838cdc99f8fe5bc969a8ba24a918c02474a92e4de14c74fe47d",
+      "after_sha256": "57ec8c2a9b6ceda1e25d88ce45334423feec499b995919f3fa92a60e265adf15"
+    }
+  },
+  "unchanged_patch_blocks_retained": true,
+  "guards_unchanged": true
+}

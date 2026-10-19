@@ -1,0 +1,27 @@
+[1/13] all-node-gestures: running
+[1/13] all-node-gestures: passed
+[2/13] all-widgets: running
+[2/13] all-widgets: passed
+[3/13] operator-tab-cycles: running
+[3/13] operator-tab-cycles: passed
+[4/13] ui-default-strict: running
+[4/13] ui-default-strict: passed
+[5/13] ui-feature-strict: running
+[5/13] ui-feature-strict: passed
+[6/13] widget-strict: running
+[6/13] widget-strict: passed
+[7/13] architecture: running
+[7/13] architecture: passed
+[8/13] gpui-patch: running
+[8/13] gpui-patch: passed
+[9/13] dependency-patches: running
+[9/13] dependency-patches: passed
+[10/13] ui-style: running
+[10/13] ui-style: passed
+[11/13] device-layout: running
+[11/13] device-layout: passed
+[12/13] format: running
+[12/13] format: passed
+[13/13] diff: running
+[13/13] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-407-four-final/summary.json

@@ -1,0 +1,97 @@
+{
+  "crates/hex-ui/src/editor/controller.rs": {
+    "before_sha256": "545365d61899512c7a6f98c06363702f9b2f5e83366a5e2342f49f524ebde2ec",
+    "after_sha256": "f463dec67e5b6c9e865e80b5ae8f2e354851d2210f9495638e44b361189449cd",
+    "bytes": 183320
+  },
+  "crates/hex-ui/src/editor/device_panel.rs": {
+    "before_sha256": "e96491159210c6c3fabb453c98292388e72bf0fabba7695911f89993b5fc89b7",
+    "after_sha256": "f330bf940bb1f42cc6ee00a8a5ef7e0efc275c874d84e8f4aba02d660be56dc3",
+    "bytes": 92339
+  },
+  "crates/hex-ui/src/editor/device_panel/eq_panel.rs": {
+    "before_sha256": "25ab54657adc6491cc5ed3ebaa0b67e58b4949f247c3bca9345e2a5a3cf6473b",
+    "after_sha256": "6b40fb86d60ef8ef2f53dd94e4d8c928e2c726ce114cbd29183828f34909fc30",
+    "bytes": 38459
+  },
+  "crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs": {
+    "before_sha256": "2136ae1a539fe8c967a64085c09cbaacccdc95e646f02f5c6dbc2ade611aaba8",
+    "after_sha256": "caadc37208f2f68214aa55e4f8bed590dba6575c61ed43a64de4f0e75a6272fc",
+    "bytes": 11963
+  },
+  "crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs": {
+    "before_sha256": null,
+    "after_sha256": "d5d4aec810f5dfda8bc16e2b9bd98cfed57254f4ec7454aebf46417460c5641c",
+    "bytes": 9807
+  },
+  "crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs": {
+    "before_sha256": "d27d7cb3657ae6a40b59ff3b3162c1e331fea02cdc150afdb2f4302ae349a685",
+    "after_sha256": "88001b2d5b2de9450a140a27312f06518d5fc283becdfc76e0623743d7d9d5ab",
+    "bytes": 15250
+  },
+  "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+    "before_sha256": "a9ad25a84d7269a0348aaf3679cbf9ac971c80b6d9f6c39968d72f82ddd48ad6",
+    "after_sha256": "d6e34f3153a5ca8ec57a770fab7b377f4efe6a3d3ccc42a957003b4f491e7d7b",
+    "bytes": 77575
+  },
+  "crates/hex-widgets/src/response_graph.rs": {
+    "before_sha256": "057bc2d6ec7a59f9dcc3416beff2eaca7a2d7688c7aff304578fd50be1a6478b",
+    "after_sha256": "4fd10ac9e5aed5e1504566b27d3215117f03f6768c619b535c5aa34fb437e1f7",
+    "bytes": 45780
+  },
+  "crates/hex-widgets/src/response_graph/scroll.rs": {
+    "before_sha256": "0dd4d8cbc4dd35a87dc61e0c99508fd40326217a2d3ad777c9a996790f523aba",
+    "after_sha256": "ed5ca8a37b14fd7946adc1d9b5122dc15f2c6c53d236d1e0d321327abf284d4c",
+    "bytes": 11462
+  },
+  "crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs": {
+    "before_sha256": "6a4704d57c99389c4587b6ceb78896bf2433bc31b200e7e844137fe61be679a0",
+    "after_sha256": "8c85361addf48db57e5c3b436679c6a66c3a262038a3ad9e917afdcba6b3fbb4",
+    "bytes": 17635
+  },
+  "docs/eq-node-gestures.md": {
+    "before_sha256": "889e6aa7a882bf7f998c40d9dd5dbea5b4eb1e602641d84e6ccff55d7453af1b",
+    "after_sha256": "209ab1178e80ae927d8217ae156150d87e0f4b4f53aff3d80eed6da8e19ac484",
+    "bytes": 10434
+  },
+  "third_party/gpui/HEX-PATCHES.md": {
+    "before_sha256": "0c0539f8982abe784190d6f37bf986f272105fdbb3f0f8533714e7b98eb22a66",
+    "after_sha256": "3ff94893769419d077092ee1ffe933d4a9b99cf47214d2fc9606b18b7d5c4693",
+    "bytes": 15175
+  },
+  "third_party/gpui/hex-patches.diff": {
+    "before_sha256": "665dfd3b74c4a5e3b63376ba2ab5da259b4b557e98732a07a4d454fde13405dd",
+    "after_sha256": "00ff31909452f4eaf4e989d22adf7313bc1c1beec147de499b7f94a8f8d9ccb7",
+    "bytes": 131407
+  },
+  "third_party/gpui/hex-provenance.json": {
+    "before_sha256": "5e876eea074af221da57eb11928405df2294dead62ed4677f65f98e4e7e887dc",
+    "after_sha256": "56d712268b82e3a4e7f9e432a950397bd07247000edf9e9e5970fda2510c7b15",
+    "bytes": 21156
+  },
+  "third_party/gpui/src/interactive.rs": {
+    "before_sha256": "e72427052aa9bdf43015f24612d1f721816f372ddcfade4ec9ee3168353158ee",
+    "after_sha256": "968030ec8155161c2fc9b9430bb5a8c293c6ea45a59e49b728fc83ff65e8596b",
+    "bytes": 21686
+  },
+  "third_party/gpui/src/platform/linux/wayland/client.rs": {
+    "before_sha256": "c94fc25769223c54d6982e9a6d2d56362f9c1d47fde02127650ed58a1d67748a",
+    "after_sha256": "40ad7e00a72de7cdac632864f83e3333731c4832f53535b219aa109c2d42329b",
+    "bytes": 82480
+  },
+  "third_party/gpui/src/platform/linux/x11/client.rs": {
+    "before_sha256": "3f6efcec64214b23a1964ea785c664a3a2b0da1294e786a29b1a57f1fad5a1dc",
+    "after_sha256": "df5110245cfaec8dcf9df3eec2c11b10d36c9ba365be6f46e238912d27f46ae8",
+    "bytes": 95102
+  },
+  "third_party/gpui/src/platform/mac/events.rs": {
+    "before_sha256": "8da5851e315c6f6c381f30c0095a185d2e8f4821984cb7e0f7d1797c4896b506",
+    "after_sha256": "e4f972d4353c7352d106aa396754206c6891448685a766ab750687b601070f07",
+    "bytes": 23756
+  },
+  "third_party/gpui/src/platform/windows/events.rs": {
+    "before_sha256": "210c35d596cf4838cdc99f8fe5bc969a8ba24a918c02474a92e4de14c74fe47d",
+    "after_sha256": "57ec8c2a9b6ceda1e25d88ce45334423feec499b995919f3fa92a60e265adf15",
+    "bytes": 57581
+  }
+}

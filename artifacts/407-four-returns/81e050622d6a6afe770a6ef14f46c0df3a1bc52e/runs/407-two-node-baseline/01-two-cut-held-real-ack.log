@@ -1,0 +1,19 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+error[E0609]: no field `device_gesture_ack` on type `hex_session::service::Event`
+    --> crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:1337:14
+     |
+1337 |         held.device_gesture_ack
+     |              ^^^^^^^^^^^^^^^^^^ unknown field
+     |
+help: a field with a similar name exists
+     |
+1337 -         held.device_gesture_ack
+1337 +         held.tuning_gesture_ack
+     |
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `hex-ui` (lib test) due to 1 previous error

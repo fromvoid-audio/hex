@@ -1,0 +1,63 @@
+commit 81e050622d6a6afe770a6ef14f46c0df3a1bc52e
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:43:08 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:43:08 2026 +0000
+
+    fix(eq): preserve stream watermark when revoking queued intent
+
+commit 5bca3c7074ae3e26e67a39bcee5a8794ed184adc
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:43:01 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:43:01 2026 +0000
+
+    test(eq): expose stale Begin readmission after queue cancellation
+
+commit 216de5abd8d758a8f3dd5dcca1535d5607ab3276
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:36:30 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:36:30 2026 +0000
+
+    fix(eq): guard queued streams by current identity and record input provenance
+
+commit 47d77685f764d6ad79c2f157ec2db67c0843426e
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:33:15 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:33:15 2026 +0000
+
+    checkpoint(eq): retain pending node streams and expose stale cancellation
+
+commit 4ef79db2bec55f81c9d9e5a15c0011b93ace6456
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:13:37 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:13:37 2026 +0000
+
+    fix(gpui): keep known detents beside Wayland pixel deltas
+
+commit ce87728b7a6bf044a93c00d0f335eb61cfc906b9
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:11:56 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:11:56 2026 +0000
+
+    fix(widgets): retain cancelled phases and physical wheel tick intent
+
+commit 8e100d3b1afaf527098eb6c67c32d3e43e05df85
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:09:58 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:09:58 2026 +0000
+
+    fix(widgets): retire unfocused unbegun wheel metadata on end
+
+commit 91c633d32d5118cd0bf3e7f3421f672159498ec3
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 10:08:19 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 10:08:19 2026 +0000
+
+    test(eq): reproduce four scroll phase and ownership review returns

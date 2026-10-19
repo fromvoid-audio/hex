@@ -1,0 +1,29 @@
+diff --git a/crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs b/crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs
+index b3b5a77e..8ad6cffc 100644
+--- a/crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs
++++ b/crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs
+@@ -34,7 +34,8 @@ struct Stream {
+ pub(super) fn cancel_queued(view: &mut EditorView, device: DeviceId) {
+     if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+         panel.scroll_queue.streams.clear();
+-        panel.scroll_queue.latest_input = None;
++        // The graph's stream counter survives cancellation. Keep its watermark
++        // so delayed old Begin/Cancel deliveries cannot restore revoked intent.
+     }
+ }
+ 
+diff --git a/docs/eq-node-gestures.md b/docs/eq-node-gestures.md
+index 977a59ed..6d0bf8d8 100644
+--- a/docs/eq-node-gestures.md
++++ b/docs/eq-node-gestures.md
+@@ -135,7 +135,9 @@ begins through the same generic gesture client only after its predecessor's real
+ matching successful Commit ACK and canonical installation. Generation, owner,
+ variant, exact provider-patched state and revision must match. Stale deliveries,
+ failed/cancelled/context-changed streams and later graph blur cannot replay edits
+-against another context. A full FIFO visibly refuses a whole new stream without
++against another context. Cancellation clears intent while retaining the graph's
++monotonic stream watermark, so a delayed old Begin cannot restore revoked work.
++A full FIFO visibly refuses a whole new stream without
+ replacing an earlier one; Escape on that refused stream cancels queued intent
+ while preserving already-submitted commits. No generic client, worker, Session,
+ Engine or audio callback owner is added or reset early.

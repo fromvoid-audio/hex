@@ -1,0 +1,19 @@
+{
+  "source": "81e050622d6a6afe770a6ef14f46c0df3a1bc52e",
+  "tree": "e01339fb5c0674a8d2bb8f6e296d0a0d39f69ed1",
+  "parent": "5bca3c7074ae3e26e67a39bcee5a8794ed184adc",
+  "patch_base": "0bd10829f16c9de92aafb9082373dc154c92aa3e",
+  "final_clean_steps": 10,
+  "final_clean_node_cases": 29,
+  "final_clean_ignored": 0,
+  "duration_seconds": 102.73,
+  "final_source_content_sha256": "41f100b37d33289cffd89ccbad0b82dfd6aa23b50e60786afd8d9b4209c6b421",
+  "final_summary_sha256": "3c83d3179b943d4a1d6a60e24a19f99bfcbf3e02023b7aed550b981d6473846a",
+  "prior_source": "216de5abd8d758a8f3dd5dcca1535d5607ab3276",
+  "prior_clean_steps": 13,
+  "prior_duration_seconds": 182.64,
+  "prior_unique_cases": 108,
+  "prior_source_content_sha256": "c1e1802e95c026e3314d759ae7fb28988a7e329edac68c13254b410847e9af3c",
+  "prior_summary_sha256": "4aaf41a1f564d80ae0b39b5df259855cb8aa4ddcd10db132c7ea1ccdbed3d3da",
+  "changed_scope": "four407 review returns; source-only component handoff, not full21/native/merge"
+}

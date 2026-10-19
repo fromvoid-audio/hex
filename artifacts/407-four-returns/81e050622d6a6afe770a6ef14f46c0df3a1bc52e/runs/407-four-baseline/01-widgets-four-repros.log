@@ -1,0 +1,35 @@
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.25s
+     Running unittests src/lib.rs (target/debug/deps/hex_widgets-ba49dcf5db2a657f)
+
+running 3 tests
+mapped cancellation: active=true commits=0 events=[ResponseGraphScrollEvent { phase: Begin, node_id: 1, gesture_id: 1, steps: 0 }, ResponseGraphScrollEvent { phase: Change, node_id: 1, gesture_id: 1, steps: 1 }]
+
+thread 'response_graph::scroll::terminal_tests::four_review_mac_cancelled_mapped_as_moved_cannot_deliver_terminal' (182738) panicked at crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs:383:5:
+a cancelled native stream needs a terminal representation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+fractional outside Ended: active=true phased=true
+
+thread 'response_graph::scroll::terminal_tests::four_review_unfocused_fractional_end_retires_metadata_before_unphased_input' (182739) panicked at crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs:352:5:
+unbegun token must retire without taking focus
+one physical tick's adapter output: [ResponseGraphScrollEvent { phase: Begin, node_id: 1, gesture_id: 1, steps: 0 }, ResponseGraphScrollEvent { phase: Change, node_id: 1, gesture_id: 1, steps: 3 }, ResponseGraphScrollEvent { phase: Commit, node_id: 1, gesture_id: 1, steps: 3 }]
+
+thread 'response_graph::scroll::terminal_tests::four_review_linux_discrete_content_lines_are_not_one_parameter_step' (182737) panicked at crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs:405:5:
+assertion `left == right` failed: one physical detent should advance one slope choice, independent of content-line preference
+  left: 3
+ right: 1
+test response_graph::scroll::terminal_tests::four_review_unfocused_fractional_end_retires_metadata_before_unphased_input ... FAILED
+test response_graph::scroll::terminal_tests::four_review_linux_discrete_content_lines_are_not_one_parameter_step ... FAILED
+test response_graph::scroll::terminal_tests::four_review_mac_cancelled_mapped_as_moved_cannot_deliver_terminal ... FAILED
+
+failures:
+
+failures:
+    response_graph::scroll::terminal_tests::four_review_linux_discrete_content_lines_are_not_one_parameter_step
+    response_graph::scroll::terminal_tests::four_review_mac_cancelled_mapped_as_moved_cannot_deliver_terminal
+    response_graph::scroll::terminal_tests::four_review_unfocused_fractional_end_retires_metadata_before_unphased_input
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 75 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p hex-widgets --lib`

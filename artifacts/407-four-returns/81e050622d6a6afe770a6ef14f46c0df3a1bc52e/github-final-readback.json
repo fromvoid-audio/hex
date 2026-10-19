@@ -1,0 +1,86 @@
+{
+  "pr": {
+    "url": "https://github.com/PORTALSURFER/hex/pull/407",
+    "number": 407,
+    "state": "open",
+    "merged": false,
+    "mergeable": false,
+    "draft": false,
+    "body": "EQ slope-wheel and relative Option-Q node editing preserves raw-radius hits, physical stream history and existing parameter/Undo ownership.\n\nCurrent exact source `0bd10829f16c9de92aafb9082373dc154c92aa3e`, tree `c8b9d8850fa59889d040da1c229d0c0afd4a81ff`: canonical8724 plus complete67dea\u219230cd\u21928bb\u2192baf16 repairs, ordinarily composed with qualified main420f920. Preserves merged457 removal of EQ-local automation,406 axes/analyzer status and436 spectrum painter. Mechanical composition drops only obsolete automation/preview guard references, retaining editing/creation refusal and all tests.\n\nRequired exact FULL21 **PASSED**,886.655s,clean unchanged/start=end/stale=false/exit0. UI **975passed,0failed,3existingignored**,263.17s; all19node cases, widget terminal cases, allocationprobes/allstrict/desktop passed. Summary SHA256 `29a40ce8fa8fa11f716d9ea5b15fb26661effad39694d1cb495f342870ea6a01`.\n\n**Fresh review blocked, not merged:** exact review6264274560/receipt5569750313 returned four new P2s: macOS canceled-phase retirement4312426494; unfocused fractional outsideEnded4312426501; node replacement before prior terminalACK4312426513; physical-detent vs content-lines scaling4312426524. Source-backed hypotheses await actual owner reproduction/disproof/bounded proposals. Preserve the actual active-window8bb blurCommit failure/fixed existingCancel; blanket removal of focus predicate would regress it. Oldseven source-specific threads resolved from actual current cases. No unchanged retry or merge clearance.\n\nImmutable evidence only `evidence/hex407-0bd10829-review-blocked-20261019` @ `abb852e5b1de2801fc467e7aedc52016b50f8317`, `hex407-0bd10829-review-blocked-evidence.tar.gz`,1363668B,SHA256 `7ba9ce5e14c9fc3ea2780b284ced9485eb27e0972a305f749bfefddc6e5099c5`;225safe/224verified payloads. Includes all source-owner histories, actual full logs, staleGPUI metadata failure/cache fingerprints/targeted gpui-only cleanup/rebuild, actual obsolete-field compile failure/correctedcompile, current source/provenance and reviews. Never build or merge evidence refs. Root2857 cache followup is independent, not a new gate.\n\nNo native physical trackpad/font/pixels/listening/installed acceptance claim. Historical8724full21 and9389native6 remain source-scoped. Installed2eef unchanged.",
+    "title": "Pulse task #2801: Adjust EQ cut slope with node scrolling and bell Q with Option-drag",
+    "base": "main",
+    "base_sha": "f9201561eb409bea2a111d7337b7e7a73e4832b1",
+    "head": "pulse/task-2801-g1-90c40b6db3f9",
+    "head_sha": "0bd10829f16c9de92aafb9082373dc154c92aa3e",
+    "head_repo_id": 1411367674,
+    "head_repo_full_name": "PORTALSURFER/hex",
+    "merge_commit_sha": "638dd9d99f8325ddae803bdc101a21eb6dcac477",
+    "user": {
+      "login": "pulse-iocore-portalsurfer[bot]",
+      "name": "pulse-iocore-portalsurfer[bot]",
+      "email": null,
+      "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+      "id": 340736319
+    },
+    "requested_reviewers": [
+      {
+        "login": "PORTALSURFER",
+        "name": "PORTALSURFER",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 41680373
+      }
+    ],
+    "requested_team_reviewers": null,
+    "diff": null,
+    "comments": null,
+    "created_at": "2026-10-18T15:29:04Z",
+    "updated_at": "2026-10-19T09:56:56Z",
+    "closed_at": null,
+    "merged_at": null,
+    "commits": 12,
+    "changed_files": 18,
+    "additions": 2642,
+    "deletions": 97,
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/407",
+    "display_title": "Pulse task #2801: Adjust EQ cut slope with node scrolling and bell Q with Option-drag"
+  },
+  "issue": {
+    "issue": {
+      "url": "https://github.com/PORTALSURFER/hex/pull/407",
+      "title": "Pulse task #2801: Adjust EQ cut slope with node scrolling and bell Q with Option-drag",
+      "issue_number": 407,
+      "body": "EQ slope-wheel and relative Option-Q node editing preserves raw-radius hits, physical stream history and existing parameter/Undo ownership.\n\nCurrent exact source `0bd10829f16c9de92aafb9082373dc154c92aa3e`, tree `c8b9d8850fa59889d040da1c229d0c0afd4a81ff`: canonical8724 plus complete67dea\u219230cd\u21928bb\u2192baf16 repairs, ordinarily composed with qualified main420f920. Preserves merged457 removal of EQ-local automation,406 axes/analyzer status and436 spectrum painter. Mechanical composition drops only obsolete automation/preview guard references, retaining editing/creation refusal and all tests.\n\nRequired exact FULL21 **PASSED**,886.655s,clean unchanged/start=end/stale=false/exit0. UI **975passed,0failed,3existingignored**,263.17s; all19node cases, widget terminal cases, allocationprobes/allstrict/desktop passed. Summary SHA256 `29a40ce8fa8fa11f716d9ea5b15fb26661effad39694d1cb495f342870ea6a01`.\n\n**Fresh review blocked, not merged:** exact review6264274560/receipt5569750313 returned four new P2s: macOS canceled-phase retirement4312426494; unfocused fractional outsideEnded4312426501; node replacement before prior terminalACK4312426513; physical-detent vs content-lines scaling4312426524. Source-backed hypotheses await actual owner reproduction/disproof/bounded proposals. Preserve the actual active-window8bb blurCommit failure/fixed existingCancel; blanket removal of focus predicate would regress it. Oldseven source-specific threads resolved from actual current cases. No unchanged retry or merge clearance.\n\nImmutable evidence only `evidence/hex407-0bd10829-review-blocked-20261019` @ `abb852e5b1de2801fc467e7aedc52016b50f8317`, `hex407-0bd10829-review-blocked-evidence.tar.gz`,1363668B,SHA256 `7ba9ce5e14c9fc3ea2780b284ced9485eb27e0972a305f749bfefddc6e5099c5`;225safe/224verified payloads. Includes all source-owner histories, actual full logs, staleGPUI metadata failure/cache fingerprints/targeted gpui-only cleanup/rebuild, actual obsolete-field compile failure/correctedcompile, current source/provenance and reviews. Never build or merge evidence refs. Root2857 cache followup is independent, not a new gate.\n\nNo native physical trackpad/font/pixels/listening/installed acceptance claim. Historical8724full21 and9389native6 remain source-scoped. Installed2eef unchanged.",
+      "state": "open",
+      "user": {
+        "login": "pulse-iocore-portalsurfer[bot]",
+        "name": "pulse-iocore-portalsurfer[bot]",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 340736319
+      },
+      "assignees": [
+        {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 41680373
+        }
+      ],
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": 5,
+      "created_at": "2026-10-18T15:29:04Z",
+      "updated_at": "2026-10-19T09:56:56Z",
+      "closed_at": null,
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/407",
+      "display_title": "Pulse task #2801: Adjust EQ cut slope with node scrolling and bell Q with Option-drag"
+    },
+    "url": "https://github.com/PORTALSURFER/hex/pull/407",
+    "title": "Pulse task #2801: Adjust EQ cut slope with node scrolling and bell Q with Option-drag",
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/407",
+    "display_title": "Pulse task #2801: Adjust EQ cut slope with node scrolling and bell Q with Option-drag"
+  }
+}

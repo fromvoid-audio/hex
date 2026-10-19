@@ -1,0 +1,33 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.31s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 4 tests
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+before releasing actual first ACK: None
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+two-cut slopes before=[0, 0] after=[1, 1]
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_three_cut_fifo_and_return_to_a_use_installed_state_and_four_undos' (184819) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:1440:5:
+assertion `left == right` failed
+  left: (2, true)
+ right: (3, true)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_three_cut_fifo_and_return_to_a_use_installed_state_and_four_undos ... FAILED
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held ... ok
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_queued_saturation_keeps_reversal_before_and_after_replay ... ok
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_cancel_and_later_blur_retire_queued_streams_without_committing_them ... ok
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_three_cut_fifo_and_return_to_a_use_installed_state_and_four_undos
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 978 filtered out; finished in 2.74s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

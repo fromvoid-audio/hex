@@ -1,0 +1,9 @@
+[1/4] all-widgets: running
+[1/4] all-widgets: passed
+[2/4] strict-widgets: running
+[2/4] strict-widgets: passed
+[3/4] format: running
+[3/4] format: passed
+[4/4] diff: running
+[4/4] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-407-platform-widget-corrected/summary.json

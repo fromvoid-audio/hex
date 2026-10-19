@@ -1,0 +1,41 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.02s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 6 tests
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+actual worker terminal refusal remove: None
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_queued_saturation_keeps_reversal_before_and_after_replay ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_noop_predecessor_preserves_successor_and_does_not_add_history ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+actual worker terminal refusal project: None
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_cancel_and_later_blur_retire_queued_streams_without_committing_them ... ok
+before releasing actual first ACK: None
+two-cut slopes before=[0, 0] after=[1, 1]
+
+thread 'editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue' (185017) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs:1696:9:
+assertion failed: refused.gesture_ack.as_ref().is_some_and(|ack|
+        !ack.accepted &&
+            ack.phase == hex_session::device_gesture::GesturePhase::Commit)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue ... FAILED
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held ... ok
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_three_cut_fifo_and_return_to_a_use_installed_state_and_four_undos ... ok
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::node_gesture_tests::four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 978 filtered out; finished in 4.34s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

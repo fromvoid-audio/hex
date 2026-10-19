@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running unittests src/lib.rs (target/debug/deps/hex_widgets-ba49dcf5db2a657f)
+
+running 3 tests
+deferred_terminal_invalidation action=Cancel commits=0 active_token=None
+test response_graph::scroll::terminal_tests::terminal_observer_zero_start_and_momentum_keep_existing_history_laws ... ok
+deferred_terminal_invalidation action=Missing commits=0 active_token=None
+test response_graph::scroll::terminal_tests::terminal_observer_preserves_inside_consumption_and_outside_panel_delivery ... ok
+deferred_terminal_invalidation action=NewToken commits=0 active_token=Some(2)
+deferred_terminal_invalidation action=Blur commits=0 active_token=None
+test response_graph::scroll::terminal_tests::terminal_observer_does_not_late_commit_cancel_blur_missing_or_new_token ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 75 filtered out; finished in 0.01s
+

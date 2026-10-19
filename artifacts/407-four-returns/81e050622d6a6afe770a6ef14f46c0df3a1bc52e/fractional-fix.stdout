@@ -1,0 +1,11 @@
+[1/5] unfocused-fractional-regression: running
+[1/5] unfocused-fractional-regression: passed
+[2/5] existing-terminal-lifecycle: running
+[2/5] existing-terminal-lifecycle: passed
+[3/5] strict-widgets: running
+[3/5] strict-widgets: passed
+[4/5] format: running
+[4/5] format: passed
+[5/5] diff: running
+[5/5] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-407-fractional-owner-fix/summary.json

@@ -1,0 +1,1881 @@
+diff --git a/crates/hex-ui/src/editor/controller.rs b/crates/hex-ui/src/editor/controller.rs
+index 9fbf6735..e8b0f373 100644
+--- a/crates/hex-ui/src/editor/controller.rs
++++ b/crates/hex-ui/src/editor/controller.rs
+@@ -2117,10 +2117,13 @@ impl EditorView {
+         if let Some(result) = event.tuning_library.as_ref() {
+             self.tuning_library_complete(result);
+         }
++        let mut matched_scroll_ack = None;
+         if event.gesture_protocol_ack
+             && let Some(ack) = event.gesture_ack.as_ref()
+         {
+-            self.acknowledge_device_gesture(ack);
++            if self.acknowledge_device_gesture(ack) {
++                matched_scroll_ack = Some(ack);
++            }
+         } else if let Some(reason) = event
+             .gesture_ack
+             .as_ref()
+@@ -2151,6 +2154,11 @@ impl EditorView {
+                 event.project_replaced,
+             );
+         }
++        super::device_panel::eq_scroll_after_worker_event(
++            self,
++            matched_scroll_ack,
++            event.project_replaced,
++        );
+         let playback_capability =
+             event
+                 .playback
+diff --git a/crates/hex-ui/src/editor/device_panel.rs b/crates/hex-ui/src/editor/device_panel.rs
+index be797481..cb7a0181 100644
+--- a/crates/hex-ui/src/editor/device_panel.rs
++++ b/crates/hex-ui/src/editor/device_panel.rs
+@@ -39,6 +39,7 @@ mod chain_window;
+ mod compressor_panel;
+ mod eq8_panel;
+ mod eq_panel;
++pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
+ pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
+ mod gain_meters;
+ mod gate_panel;
+diff --git a/crates/hex-ui/src/editor/device_panel/eq_panel.rs b/crates/hex-ui/src/editor/device_panel/eq_panel.rs
+index 016805fa..4e2fd602 100644
+--- a/crates/hex-ui/src/editor/device_panel/eq_panel.rs
++++ b/crates/hex-ui/src/editor/device_panel/eq_panel.rs
+@@ -11,6 +11,8 @@ use hex_widgets::{
+ 
+ mod axes;
+ mod gestures;
++mod scroll_queue;
++pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
+ mod response;
+ mod spectrum;
+ pub(super) use spectrum::SpectrumSelection;
+@@ -49,6 +51,8 @@ pub(super) struct Panel {
+     focus_subscription: Option<Subscription>,
+     pair_drag: Option<gestures::PairDrag>,
+     slope_scroll: Option<gestures::SlopeScroll>,
++    scroll_queue: scroll_queue::Queue,
++    scroll_blur_subscription: Option<Subscription>,
+     bank: u8,
+     creation: Option<Creation>,
+     creation_selection: Option<CreationSelection>,
+@@ -142,6 +146,8 @@ pub(super) fn render_body(
+                 focus_subscription: None,
+                 pair_drag: None,
+                 slope_scroll: None,
++                scroll_queue: Default::default(),
++                scroll_blur_subscription: None,
+                 bank: 0,
+                 creation: None,
+                 creation_selection: None,
+@@ -1074,6 +1080,11 @@ pub(super) fn spectrum_intent_for_test(view: &EditorView, device: DeviceId) -> (
+     )
+ }
+ 
++#[cfg(all(test, feature = "ui-test-support"))]
++pub(super) fn queued_scrolls_for_test(view: &EditorView, device: DeviceId) -> (usize, bool) {
++    scroll_queue::counts(view, device)
++}
++
+ #[cfg(all(test, feature = "ui-test-support"))]
+ pub(super) fn graph_for_test(view: &EditorView, device: DeviceId) -> Entity<ResponseGraph> {
+     view.device_panel.eq_panels[&device].entity.clone()
+diff --git a/crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs b/crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs
+index 110668f6..b49854a4 100644
+--- a/crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs
++++ b/crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs
+@@ -157,12 +157,12 @@ fn option_q(initial: f32, displacement: f32) -> f32 {
+ 
+ #[derive(Clone, Copy)]
+ pub(super) struct SlopeScroll {
+-    key: GestureKey,
+-    stream: u64,
+-    node: NodeId,
+-    parameter: ParameterId,
+-    value: u32,
+-    last_steps: i32,
++    pub(super) key: GestureKey,
++    pub(super) stream: u64,
++    pub(super) node: NodeId,
++    pub(super) parameter: ParameterId,
++    pub(super) value: u32,
++    pub(super) last_steps: i32,
+ }
+ 
+ pub(super) fn scroll_nodes(
+@@ -193,6 +193,28 @@ pub(super) fn scroll_event(
+     device: DeviceId,
+     generation: u64,
+     event: hex_widgets::ResponseGraphScrollEvent,
++) {
++    if generation != view.project_generation || event.gesture_id == 0 {
++        return;
++    }
++    if event.phase == hex_widgets::ResponseGraphScrollPhase::Begin
++        && !current(view, device)
++            .and_then(|s| EqState::decode(&s).ok())
++            .is_some_and(|state| scroll_nodes(view, device, &state, cx).contains(&event.node_id))
++    {
++        return;
++    }
++    if !scroll_queue::intercept(view, device, event) {
++        scroll_event_core(view, device, generation, event);
++    }
++    cx.notify();
++}
++
++pub(super) fn scroll_event_core(
++    view: &mut EditorView,
++    device: DeviceId,
++    generation: u64,
++    event: hex_widgets::ResponseGraphScrollEvent,
+ ) {
+     use hex_widgets::ResponseGraphScrollPhase as Phase;
+     if generation != view.project_generation || event.gesture_id == 0 {
+@@ -212,7 +234,7 @@ pub(super) fn scroll_event(
+             return;
+         };
+         let Ok(node) = state.node(id) else { return };
+-        if !scroll_nodes(view, device, &state, cx).contains(&event.node_id)
++        if !matches!(node.kind, eq::NodeKind::LowCut | eq::NodeKind::HighCut)
+             || !view
+                 .device_panel
+                 .eq_panels
+@@ -252,7 +274,6 @@ pub(super) fn scroll_event(
+             panel.slope_scroll = Some(scroll);
+             panel.selected = Some(id);
+         }
+-        cx.notify();
+         return;
+     }
+     let Some(mut scroll) = view
+@@ -281,7 +302,6 @@ pub(super) fn scroll_event(
+         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+             panel.slope_scroll = None;
+         }
+-        cx.notify();
+         return;
+     }
+     if !current(view, device)
+@@ -312,6 +332,9 @@ pub(super) fn scroll_event(
+     if let Err(error) = result {
+         view.device_panel.message = Some(error.into());
+     } else {
++        if event.phase == Phase::Commit {
++            scroll_queue::retiring(view, device, scroll);
++        }
+         view.device_panel.pending_values.insert(
+             ParameterKey {
+                 device,
+@@ -320,8 +343,6 @@ pub(super) fn scroll_event(
+             value,
+         );
+     }
+-
+-    cx.notify();
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs b/crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs
+new file mode 100644
+index 00000000..8ad6cffc
+--- /dev/null
++++ b/crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs
+@@ -0,0 +1,283 @@
++//! One bounded FIFO of physical node streams, never a second worker gesture.
++use super::*;
++use hex_session::device_gesture::{GestureAck, GestureKey, GesturePhase};
++use hex_widgets::{ResponseGraphScrollEvent as Event, ResponseGraphScrollPhase as Phase};
++use std::collections::VecDeque;
++
++#[derive(Default)]
++pub(super) struct Queue {
++    waiting: Option<Retiring>,
++    streams: VecDeque<Stream>,
++    latest_input: Option<(u64, u32)>,
++}
++
++struct Retiring {
++    key: GestureKey,
++    owner: Option<DevicePanelOwner>,
++    variant: hex_project::DeviceVariant,
++    before: NativeDeviceState,
++    expected: NativeDeviceState,
++    revision: u64,
++    expected_revision: u64,
++}
++
++struct Stream {
++    id: u64,
++    node: u32,
++    steps: i32,
++    // Compose the four possible initial choices. This retains saturation and
++    // immediate reversal without storing one event per wheel delta.
++    choices: [u32; 4],
++    ended: bool,
++}
++
++pub(super) fn cancel_queued(view: &mut EditorView, device: DeviceId) {
++    if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
++        panel.scroll_queue.streams.clear();
++        // The graph's stream counter survives cancellation. Keep its watermark
++        // so delayed old Begin/Cancel deliveries cannot restore revoked intent.
++    }
++}
++
++pub(super) fn intercept(view: &mut EditorView, device: DeviceId, event: Event) -> bool {
++    if event.phase == Phase::Cancel {
++        let queued = view.device_panel.eq_panels.get(&device).is_some_and(|p| {
++            p.scroll_queue
++                .streams
++                .iter()
++                .any(|s| s.id == event.gesture_id && s.node == event.node_id)
++        });
++        let owns_context = view.device_panel.eq_panels.get(&device).is_some_and(|p| {
++            p.scroll_queue.latest_input == Some((event.gesture_id, event.node_id))
++        });
++        if owns_context {
++            cancel_queued(view, device);
++        }
++        return owns_context && queued;
++    }
++    let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
++        return false;
++    };
++    let queue = &mut panel.scroll_queue;
++    if event.phase == Phase::Begin && queue.waiting.is_some() {
++        if queue
++            .latest_input
++            .is_some_and(|(id, _)| event.gesture_id <= id)
++        {
++            return true;
++        }
++        // Retain refused-stream identity too: its real Escape/Cancel still
++        // cancels this queued context, while an older token cannot clear it.
++        queue.latest_input = Some((event.gesture_id, event.node_id));
++        if queue.streams.len() >= super::super::super::UI_REQUEST_CAPACITY
++            || queue.streams.try_reserve(1).is_err()
++        {
++            view.device_panel.message =
++                Some("too many pending node edits; wait, then retry".into());
++            return true;
++        }
++        queue.streams.push_back(Stream {
++            id: event.gesture_id,
++            node: event.node_id,
++            steps: 0,
++            choices: [0, 1, 2, 3],
++            ended: false,
++        });
++        return true;
++    }
++    let Some(stream) = queue
++        .streams
++        .back_mut()
++        .filter(|s| s.id == event.gesture_id && s.node == event.node_id && !s.ended)
++    else {
++        return false;
++    };
++    let delta = event.steps.saturating_sub(stream.steps);
++    for choice in &mut stream.choices {
++        *choice = (i64::from(*choice) + i64::from(delta)).clamp(0, 3) as u32;
++    }
++    stream.steps = event.steps;
++    stream.ended = event.phase == Phase::Commit;
++    true
++}
++
++pub(super) fn retiring(view: &mut EditorView, device: DeviceId, scroll: gestures::SlopeScroll) {
++    let Some(state) = view.state.as_ref() else {
++        return;
++    };
++    let Some(entry) = state.project.device(device) else {
++        return;
++    };
++    let before = entry.state().clone();
++    let Ok(expected) = hex_engine::patch_native_device_parameter(
++        &before,
++        scroll.parameter,
++        ParameterValue::Choice(scroll.value),
++    ) else {
++        return;
++    };
++    // Match the existing Service revision law, including its saturated limit.
++    let expected_revision = state.revision.saturating_add(u64::from(expected != before));
++    let waiting = Retiring {
++        key: scroll.key,
++        owner: view.device_panel.owner,
++        variant: entry.active_variant(),
++        before,
++        expected,
++        revision: state.revision,
++        expected_revision,
++    };
++    if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
++        panel.scroll_queue.waiting = Some(waiting);
++    }
++}
++
++/// Called once after canonical installation and the existing generic ACK match.
++/// Only an accepted, matching predecessor Commit can admit the next stream.
++pub(in crate::editor) fn after_worker_event(
++    view: &mut EditorView,
++    matched: Option<&GestureAck>,
++    project_replaced: bool,
++) {
++    // UI event path only, bounded by the actual existing panel inventory.
++    let devices: Vec<_> = view
++        .device_panel
++        .eq_panels
++        .iter()
++        .filter(|(_, p)| p.scroll_queue.waiting.is_some())
++        .map(|(id, _)| *id)
++        .collect();
++    for device in devices {
++        let Some(waiting) = view
++            .device_panel
++            .eq_panels
++            .get_mut(&device)
++            .and_then(|p| p.scroll_queue.waiting.take())
++        else {
++            continue;
++        };
++        let context_valid = !project_replaced
++            && waiting.key.generation == view.project_generation
++            && waiting.owner == view.device_panel.owner
++            && view.state.as_ref().is_some_and(|state| {
++                state
++                    .project
++                    .device(device)
++                    .is_some_and(|entry| entry.active_variant() == waiting.variant)
++            });
++        let terminal = matched.filter(|ack| {
++            ack.key == waiting.key
++                && matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel)
++        });
++        let canonical_valid = view.state.as_ref().is_some_and(|state| {
++            let Some(entry) = state.project.device(device) else {
++                return false;
++            };
++            if terminal.is_some() {
++                state.revision == waiting.expected_revision && entry.state() == &waiting.expected
++            } else {
++                state.revision == waiting.revision && entry.state() == &waiting.before
++            }
++        });
++        if !context_valid
++            || !canonical_valid
++            || terminal.is_some_and(|ack| !ack.accepted || ack.phase != GesturePhase::Commit)
++            || (terminal.is_none()
++                && !view
++                    .device_gesture
++                    .snapshot()
++                    .is_some_and(|s| s.key == waiting.key))
++        {
++            cancel_queued(view, device);
++            continue;
++        }
++        if terminal.is_none() {
++            if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
++                panel.scroll_queue.waiting = Some(waiting);
++            }
++            continue;
++        }
++        if view.worker_requests_pending != 0
++            || !view.pending_requests.is_empty()
++            || !view.device_gesture_barriers.is_empty()
++            || view.device_gesture.snapshot().is_some()
++        {
++            cancel_queued(view, device);
++            view.device_panel.message =
++                Some("node edit context changed; retry the pending edit".into());
++            continue;
++        }
++        let Some(stream) = view
++            .device_panel
++            .eq_panels
++            .get_mut(&device)
++            .and_then(|p| p.scroll_queue.streams.pop_front())
++        else {
++            continue;
++        };
++        // Canonical data was installed before this notification. Synchronize the
++        // private authored mirror, never a speculative snapshot or old preview.
++        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
++            panel.authored_state = waiting.expected;
++        }
++        let generation = view.project_generation;
++        let event = Event {
++            phase: Phase::Begin,
++            node_id: stream.node,
++            gesture_id: stream.id,
++            steps: 0,
++        };
++        gestures::scroll_event_core(view, device, generation, event);
++        let Some(scroll) = view
++            .device_panel
++            .eq_panels
++            .get(&device)
++            .and_then(|p| p.slope_scroll)
++            .filter(|s| s.stream == stream.id)
++        else {
++            cancel_queued(view, device);
++            continue;
++        };
++        let Some(value) = stream.choices.get(scroll.value as usize).copied() else {
++            cancel_queued(view, device);
++            let _ = view.cancel_device_gesture();
++            continue;
++        };
++        gestures::scroll_event_core(
++            view,
++            device,
++            generation,
++            Event {
++                phase: Phase::Change,
++                steps: value as i32 - scroll.value as i32,
++                ..event
++            },
++        );
++        if let Some(scroll) = view
++            .device_panel
++            .eq_panels
++            .get_mut(&device)
++            .and_then(|p| p.slope_scroll.as_mut())
++        {
++            scroll.last_steps = stream.steps;
++        }
++        if stream.ended {
++            gestures::scroll_event_core(
++                view,
++                device,
++                generation,
++                Event {
++                    phase: Phase::Commit,
++                    steps: stream.steps,
++                    ..event
++                },
++            );
++        }
++    }
++}
++
++#[cfg(all(test, feature = "ui-test-support"))]
++pub(super) fn counts(view: &EditorView, device: DeviceId) -> (usize, bool) {
++    let queue = &view.device_panel.eq_panels[&device].scroll_queue;
++    (queue.streams.len(), queue.waiting.is_some())
++}
+diff --git a/crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs b/crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs
+index 5eb96c99..ee447066 100644
+--- a/crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs
++++ b/crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs
+@@ -1,5 +1,6 @@
+ //! View-local analyzer intent; the existing audio client still owns the sole tap.
+ use super::*;
++use gpui::Focusable;
+ use hex_audio::spectrum_target::{SpectrumTarget, TargetError};
+ 
+ const WAITING: &str = "spectrum waits for available current project audio";
+@@ -384,8 +385,18 @@ pub(super) fn focus_listener(
+                     cx.defer_in(window, |_, _, cx| cx.notify());
+                 }
+             });
++            let graph_focus = view.device_panel.eq_panels[&device]
++                .entity
++                .read(cx)
++                .focus_handle(cx);
++            let blur = cx.on_blur(&graph_focus, window, move |view, _, _| {
++                if view.project_generation == generation {
++                    super::scroll_queue::cancel_queued(view, device);
++                }
++            });
+             if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+                 panel.focus_subscription = Some(subscription);
++                panel.scroll_blur_subscription = Some(blur);
+             }
+         });
+     }
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
+index d75b8485..388efa70 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
+@@ -1305,3 +1305,777 @@ fn eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_s
+         });
+     }
+ }
++
++#[gpui::test]
++fn four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.run_until_parked();
++    let right = plot(&mut visual, device, 0.98, 0.5);
++    visual.simulate_click(right, Modifiers::default());
++    pump_until(&editor, cx, |view| {
++        settled(view) && read(view, device).nodes.len() == 2
++    });
++    let before = editor.read_with(cx, |view, _| read(view, device));
++    let left = plot(&mut visual, device, 0.02, 0.5);
++    let right = plot(&mut visual, device, 0.98, 0.5);
++    wheel(
++        &mut visual,
++        left,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    // Submit the actual first-node Begin to the real Service; retain its actual
++    // acknowledgement instead of calling tick/receive. Virtual time is unadvanced.
++    editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
++    let held = editor.read_with(cx, |view, _| receive_service_event(&view.service));
++    assert!(held.error.is_none());
++    assert!(held.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
++    assert!(editor.read_with(cx, |view, _| view.worker_requests_pending > 0));
++    wheel(
++        &mut visual,
++        right,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Moved,
++        false,
++    );
++    end_wheel(&mut visual, right);
++    eprintln!(
++        "before releasing actual first ACK: {:?}",
++        editor.read_with(cx, |view, _| view.device_panel.message.clone())
++    );
++    editor.update(cx, |view, _| {
++        view.receive(held);
++    });
++    pump_until(&editor, cx, settled);
++    let after = editor.read_with(cx, |view, _| read(view, device));
++    eprintln!(
++        "two-cut slopes before={:?} after={:?}",
++        before.nodes.iter().map(|n| n.slope).collect::<Vec<_>>(),
++        after.nodes.iter().map(|n| n.slope).collect::<Vec<_>>()
++    );
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 1;
++    expected.nodes[1].slope = 1;
++    assert_eq!(
++        after, expected,
++        "a consumed second-node burst must reach its own canonical parameter"
++    );
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++    pump_until(&editor, cx, |view| {
++        settled(view) && read(view, device).nodes[1].slope == 0
++    });
++    assert_eq!(
++        editor.read_with(cx, |view, _| read(view, device).nodes[0].slope),
++        1
++    );
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++    pump_until(&editor, cx, |view| {
++        settled(view) && read(view, device) == before
++    });
++}
++
++fn held_real_scroll_begin(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) -> Event {
++    editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
++    let event = editor.read_with(cx, |view, _| receive_service_event(&view.service));
++    assert!(event.error.is_none());
++    assert!(event.gesture_ack.as_ref().is_some_and(
++        |ack| ack.accepted && ack.phase == hex_session::device_gesture::GesturePhase::Begin
++    ));
++    event
++}
++
++#[gpui::test]
++fn four_review_three_cut_fifo_and_return_to_a_use_installed_state_and_four_undos(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    for (x, count) in [(0.98, 2), (0.5, 3)] {
++        let p = plot(&mut visual, device, x, 0.5);
++        visual.simulate_click(p, Modifiers::default());
++        pump_until(&editor, cx, |v| {
++            settled(v) && read(v, device).nodes.len() == count
++        });
++    }
++    let third = editor.read_with(cx, |v, _| read(v, device).nodes[2].id);
++    editor.update(cx, |v, _| {
++        assert!(
++            v.enqueue(Request::SetDeviceParameter {
++                device,
++                parameter: third
++                    .parameter(hex_engine::eq::NodeParameter::Kind)
++                    .unwrap(),
++                value: ParameterValue::Choice(hex_engine::eq::NodeKind::LowCut as u32),
++            })
++        )
++    });
++    pump_until(&editor, cx, settled);
++    visual.run_until_parked();
++    let before = editor.read_with(cx, |v, _| read(v, device));
++    let a = plot(&mut visual, device, 0.02, 0.5);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    let c_y = (before.nodes[2].q / 0.1).ln() / (18.0_f32 / 0.1).ln();
++    let c = plot(&mut visual, device, 0.5, c_y);
++    wheel(
++        &mut visual,
++        a,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    let held = held_real_scroll_begin(&editor, cx);
++    for p in [b, c, a] {
++        wheel(
++            &mut visual,
++            p,
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Moved,
++            false,
++        );
++    }
++    end_wheel(&mut visual, a);
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (3, true)
++    );
++    assert_eq!(editor.read_with(cx, |v, _| read(v, device)), before);
++    editor.update(cx, |v, _| {
++        v.receive(held);
++    });
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 2;
++    expected.nodes[1].slope = 1;
++    expected.nodes[2].slope = 1;
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (0, false)
++    );
++    let after = expected.clone();
++    for index in [0, 2, 1, 0] {
++        expected.nodes[index].slope -= 1;
++        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    }
++    assert_eq!(expected, before);
++    for _ in 0..4 {
++        editor.update(cx, |v, _| assert!(v.enqueue(Request::Redo)));
++        pump_until(&editor, cx, settled);
++    }
++    assert_eq!(editor.read_with(cx, |v, _| read(v, device)), after);
++}
++
++#[gpui::test]
++fn four_review_queued_saturation_keeps_reversal_before_and_after_replay(cx: &mut TestAppContext) {
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    visual.simulate_click(b, Modifiers::default());
++    pump_until(&editor, cx, |v| {
++        settled(v) && read(v, device).nodes.len() == 2
++    });
++    visual.run_until_parked();
++    let before = editor.read_with(cx, |v, _| read(v, device));
++    let a = plot(&mut visual, device, 0.02, 0.5);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    wheel(
++        &mut visual,
++        a,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    let held = held_real_scroll_begin(&editor, cx);
++    wheel(
++        &mut visual,
++        b,
++        gpui::ScrollDelta::Lines(point(0.0, 10.0)),
++        gpui::TouchPhase::Moved,
++        false,
++    );
++    wheel(
++        &mut visual,
++        b,
++        gpui::ScrollDelta::Lines(point(0.0, -1.0)),
++        gpui::TouchPhase::Moved,
++        false,
++    );
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (1, true)
++    );
++    editor.update(cx, |v, _| {
++        v.receive(held);
++    });
++    // Do not end physical B yet: replay must continue the SAME stream and
++    // preserve its original cumulative steps when subsequent input arrives.
++    pump_until(&editor, cx, |v| {
++        v.worker_requests_pending == 0
++            && v.device_gesture
++                .snapshot()
++                .is_some_and(|s| s.value == ParameterValue::Choice(2))
++    });
++    wheel(
++        &mut visual,
++        b,
++        gpui::ScrollDelta::Lines(point(0.0, -1.0)),
++        gpui::TouchPhase::Moved,
++        false,
++    );
++    end_wheel(&mut visual, b);
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 1;
++    expected.nodes[1].slope = 1;
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    for index in [1, 0] {
++        expected.nodes[index].slope = 0;
++        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    }
++    assert_eq!(expected, before);
++}
++
++#[gpui::test]
++fn four_review_cancel_and_later_blur_retire_queued_streams_without_committing_them(
++    cx: &mut TestAppContext,
++) {
++    for blur_after_end in [false, true] {
++        let cx = &mut cx.new_app();
++        let (handle, editor, _root, device) = node_window(cx, 0.02);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        let b = plot(&mut visual, device, 0.98, 0.5);
++        visual.simulate_click(b, Modifiers::default());
++        pump_until(&editor, cx, |v| {
++            settled(v) && read(v, device).nodes.len() == 2
++        });
++        visual.run_until_parked();
++        let before = editor.read_with(cx, |v, _| read(v, device));
++        let a = plot(&mut visual, device, 0.02, 0.5);
++        let b = plot(&mut visual, device, 0.98, 0.5);
++        wheel(
++            &mut visual,
++            a,
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Started,
++            false,
++        );
++        let held = held_real_scroll_begin(&editor, cx);
++        wheel(
++            &mut visual,
++            b,
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Moved,
++            false,
++        );
++        if blur_after_end {
++            end_wheel(&mut visual, b);
++            assert_eq!(
++                editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++                (1, true)
++            );
++            visual.update(|window, _| window.blur());
++        } else {
++            visual.simulate_keystrokes("escape");
++        }
++        visual.run_until_parked();
++        assert_eq!(
++            editor
++                .read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device))
++                .0,
++            0
++        );
++        editor.update(cx, |v, _| {
++            v.receive(held);
++        });
++        let mut expected = before.clone();
++        expected.nodes[0].slope = 1;
++        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++        assert_eq!(
++            editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++            (0, false)
++        );
++        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
++    }
++}
++
++#[gpui::test]
++fn four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue(
++    cx: &mut TestAppContext,
++) {
++    for mode in ["remove", "project", "variant", "source"] {
++        let cx = &mut cx.new_app();
++        let (handle, editor, _root, device) = node_window(cx, 0.02);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        let b = plot(&mut visual, device, 0.98, 0.5);
++        visual.simulate_click(b, Modifiers::default());
++        pump_until(&editor, cx, |v| {
++            settled(v) && read(v, device).nodes.len() == 2
++        });
++        visual.run_until_parked();
++        let before = editor.read_with(cx, |v, _| read(v, device));
++        let a = plot(&mut visual, device, 0.02, 0.5);
++        let b = plot(&mut visual, device, 0.98, 0.5);
++        wheel(
++            &mut visual,
++            a,
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Started,
++            false,
++        );
++        let held = held_real_scroll_begin(&editor, cx);
++        wheel(
++            &mut visual,
++            b,
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Moved,
++            false,
++        );
++        end_wheel(&mut visual, b);
++        assert_eq!(
++            editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++            (1, true)
++        );
++        let request = match mode {
++            "remove" => Request::Edit(Command::RemoveDevice(device)),
++            "project" => Request::NewWithAudioMode {
++                mode: hex_session::DocumentAudioMode::Resident,
++                reservation: None,
++            },
++            "variant" => editor.read_with(cx, |v, _| Request::CompareDevice {
++                owner: hex_session::service::preset::Owner {
++                    project_generation: v.project_generation,
++                    revision: v.state.as_ref().unwrap().revision,
++                    device,
++                    class: NativeDeviceClass::Effect,
++                    type_id: hex_engine::eq::EQ_TYPE_ID,
++                },
++                expected: hex_project::DeviceVariant::A,
++                action: hex_project::DeviceComparisonAction::Switch,
++            }),
++            "source" => Request::SetDeviceParameter {
++                device,
++                parameter: before.nodes[1]
++                    .id
++                    .parameter(hex_engine::eq::NodeParameter::Frequency)
++                    .unwrap(),
++                value: ParameterValue::Float(1000.0),
++            },
++            _ => unreachable!(),
++        };
++        // Actual external control-plane race: the real Service processes this
++        // context change BEFORE the UI's now-released predecessor Commit.
++        // No synthetic Event, ACK, preview, or canonical project is installed.
++        editor.update(cx, |v, _| {
++            v.service.submit(request).unwrap();
++            v.receive(held);
++            assert!(v.pump_device_gesture());
++        });
++        let changed = editor.read_with(cx, |v, _| receive_service_event(&v.service));
++        assert!(
++            changed.error.is_none(),
++            "context {mode}: {:?}",
++            changed.error
++        );
++        let mut expected = changed.state.project.clone();
++        let mut expected_revision = changed.state.revision;
++        match mode {
++            "remove" => assert!(expected.device(device).is_none()),
++            "project" => assert_eq!(expected.tracks().len(), 0),
++            "variant" => assert_eq!(
++                expected.device(device).unwrap().active_variant(),
++                hex_project::DeviceVariant::B
++            ),
++            "source" => {
++                let current = EqState::decode(expected.device(device).unwrap().state()).unwrap();
++                assert_eq!(current.nodes[1].frequency_hz, 1000.0);
++                assert_eq!(current.nodes[1].slope, 0);
++            }
++            _ => unreachable!(),
++        }
++        let refused = editor.read_with(cx, |v, _| receive_service_event(&v.service));
++        assert!(refused.gesture_request);
++        let ack = refused.gesture_ack.as_ref().unwrap();
++        assert_eq!(ack.phase, hex_session::device_gesture::GesturePhase::Commit);
++        eprintln!(
++            "actual worker terminal {mode}: accepted={} reason={:?}",
++            ack.accepted, ack.reason
++        );
++        if mode == "source" {
++            // An unrelated parameter edit need not cancel the already-captured
++            // A command. It MUST invalidate queued B, preserving both real
++            // authored edits in their actual order without retargeting A.
++            assert!(ack.accepted && ack.reason.is_none());
++            let mut state = EqState::decode(expected.device(device).unwrap().state()).unwrap();
++            state.nodes[0].slope = 1;
++            let mut oracle = Editor::new(expected.as_ref().clone(), 2).unwrap();
++            oracle
++                .execute(Command::ReplaceDeviceState {
++                    device,
++                    state: state
++                        .encode()
++                        .unwrap()
++                        .with_host_metadata_from(expected.device(device).unwrap().state())
++                        .unwrap(),
++                })
++                .unwrap();
++            expected = Arc::new(oracle.project().clone());
++            expected_revision += 1;
++        } else {
++            assert!(!ack.accepted && ack.reason.is_some());
++        }
++        assert_eq!(refused.state.project, expected);
++        assert_eq!(refused.state.revision, expected_revision);
++        editor.update(cx, |v, _| {
++            v.receive(changed);
++            v.receive(refused);
++        });
++        visual.run_until_parked();
++        pump_until(&editor, cx, settled);
++        editor.read_with(cx, |v, _| {
++            assert_eq!(
++                v.state.as_ref().unwrap().project,
++                expected,
++                "no stale successor authored for {mode}"
++            );
++            assert_eq!(v.state.as_ref().unwrap().revision, expected_revision);
++            assert!(v.device_gesture.snapshot().is_none());
++            if v.state.as_ref().unwrap().project.device(device).is_some() {
++                assert_eq!(eq_panel::queued_scrolls_for_test(v, device), (0, false));
++                assert_eq!(read(v, device).nodes[1].slope, 0);
++            }
++        });
++    }
++}
++
++#[gpui::test]
++fn four_review_noop_predecessor_preserves_successor_and_does_not_add_history(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    visual.simulate_click(b, Modifiers::default());
++    pump_until(&editor, cx, |v| {
++        settled(v) && read(v, device).nodes.len() == 2
++    });
++    visual.run_until_parked();
++    let before = editor.read_with(cx, |v, _| read(v, device));
++    let a = plot(&mut visual, device, 0.02, 0.5);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    wheel(
++        &mut visual,
++        a,
++        gpui::ScrollDelta::Lines(point(0.0, 3.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    let held = held_real_scroll_begin(&editor, cx);
++    for p in [b, a, b] {
++        wheel(
++            &mut visual,
++            p,
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Moved,
++            false,
++        );
++    }
++    end_wheel(&mut visual, b);
++    editor.update(cx, |v, _| {
++        v.receive(held);
++    });
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 3;
++    expected.nodes[1].slope = 2;
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    for (index, slope) in [(1, 1), (1, 0), (0, 0)] {
++        expected.nodes[index].slope = slope;
++        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    }
++    assert_eq!(
++        expected, before,
++        "the saturated A→A no-op must not add an extra history item"
++    );
++}
++
++#[gpui::test]
++fn four_review_stream_capacity_refuses_whole_new_burst_and_preserves_accepted_history(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    visual.simulate_click(b, Modifiers::default());
++    pump_until(&editor, cx, |v| {
++        settled(v) && read(v, device).nodes.len() == 2
++    });
++    visual.run_until_parked();
++    let before = editor.read_with(cx, |v, _| read(v, device));
++    let a = plot(&mut visual, device, 0.02, 0.5);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    wheel(
++        &mut visual,
++        a,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    let held = held_real_scroll_begin(&editor, cx);
++    for index in 0..crate::editor::UI_REQUEST_CAPACITY {
++        wheel(
++            &mut visual,
++            if index % 2 == 0 { b } else { a },
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Moved,
++            false,
++        );
++    }
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (crate::editor::UI_REQUEST_CAPACITY, true)
++    );
++    // A new negative B stream would measurably undo its saturated value if it
++    // were partially admitted. Capacity must refuse it, not replace an older B.
++    wheel(
++        &mut visual,
++        b,
++        gpui::ScrollDelta::Lines(point(0.0, -1.0)),
++        gpui::TouchPhase::Moved,
++        false,
++    );
++    end_wheel(&mut visual, b);
++    assert!(editor.read_with(cx, |v, _| {
++        v.device_panel
++            .message
++            .as_deref()
++            .is_some_and(|s| s.contains("too many pending node edits"))
++    }));
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (crate::editor::UI_REQUEST_CAPACITY, true)
++    );
++    assert_eq!(editor.read_with(cx, |v, _| read(v, device)), before);
++    editor.update(cx, |v, _| {
++        v.receive(held);
++    });
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 3;
++    expected.nodes[1].slope = 3;
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (0, false)
++    );
++    for index in [1, 0, 1, 0, 1, 0] {
++        expected.nodes[index].slope -= 1;
++        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    }
++    assert_eq!(
++        expected, before,
++        "only the six actual value changes add history"
++    );
++}
++
++#[gpui::test]
++fn four_review_stale_cancel_cannot_discard_a_newer_queued_stream(cx: &mut TestAppContext) {
++    use hex_widgets::{ResponseGraphScrollEvent as Event, ResponseGraphScrollPhase as Phase};
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    visual.simulate_click(b, Modifiers::default());
++    pump_until(&editor, cx, |v| {
++        settled(v) && read(v, device).nodes.len() == 2
++    });
++    visual.run_until_parked();
++    let before = editor.read_with(cx, |v, _| read(v, device));
++    let graph = editor.read_with(cx, |v, _| eq_panel::graph_for_test(v, device));
++    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Event>::new()));
++    let captured = events.clone();
++    let _subscription = graph.update(cx, |_, cx| {
++        cx.subscribe(&graph, move |_, _, e: &Event, _| {
++            captured.borrow_mut().push(*e)
++        })
++    });
++    let a = plot(&mut visual, device, 0.02, 0.5);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    wheel(
++        &mut visual,
++        a,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    let old = events
++        .borrow()
++        .iter()
++        .find(|e| e.phase == Phase::Change)
++        .copied()
++        .unwrap();
++    let held = held_real_scroll_begin(&editor, cx);
++    wheel(
++        &mut visual,
++        b,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Moved,
++        false,
++    );
++    end_wheel(&mut visual, b);
++    // Controlled stale typed graph delivery, as in the existing stale-stream
++    // regression. No worker acknowledgement is fabricated or replaced.
++    graph.update(cx, |_, cx| {
++        cx.emit(Event {
++            phase: Phase::Cancel,
++            ..old
++        });
++        cx.emit(Event {
++            phase: Phase::Begin,
++            steps: 0,
++            ..old
++        });
++    });
++    visual.run_until_parked();
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (1, true)
++    );
++    editor.update(cx, |v, _| {
++        v.receive(held);
++    });
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 1;
++    expected.nodes[1].slope = 1;
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    for index in [1, 0] {
++        expected.nodes[index].slope = 0;
++        editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    }
++}
++
++#[gpui::test]
++fn four_review_escape_on_refused_overflow_stream_cancels_only_queued_context(
++    cx: &mut TestAppContext,
++) {
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    visual.simulate_click(b, Modifiers::default());
++    pump_until(&editor, cx, |v| {
++        settled(v) && read(v, device).nodes.len() == 2
++    });
++    visual.run_until_parked();
++    let before = editor.read_with(cx, |v, _| read(v, device));
++    let a = plot(&mut visual, device, 0.02, 0.5);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    wheel(
++        &mut visual,
++        a,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    let held = held_real_scroll_begin(&editor, cx);
++    for index in 0..=crate::editor::UI_REQUEST_CAPACITY {
++        wheel(
++            &mut visual,
++            if index % 2 == 0 { b } else { a },
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Moved,
++            false,
++        );
++    }
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (crate::editor::UI_REQUEST_CAPACITY, true)
++    );
++    visual.simulate_keystrokes("escape");
++    visual.run_until_parked();
++    assert_eq!(
++        editor
++            .read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device))
++            .0,
++        0
++    );
++    editor.update(cx, |v, _| {
++        v.receive(held);
++    });
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 1;
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
++}
++
++#[gpui::test]
++fn four_review_blurred_queue_cannot_readmit_a_late_old_begin(cx: &mut TestAppContext) {
++    use hex_widgets::{ResponseGraphScrollEvent as Event, ResponseGraphScrollPhase as Phase};
++    let (handle, editor, _root, device) = node_window(cx, 0.02);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    visual.simulate_click(b, Modifiers::default());
++    pump_until(&editor, cx, |v| {
++        settled(v) && read(v, device).nodes.len() == 2
++    });
++    visual.run_until_parked();
++    let before = editor.read_with(cx, |v, _| read(v, device));
++    let graph = editor.read_with(cx, |v, _| eq_panel::graph_for_test(v, device));
++    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Event>::new()));
++    let captured = events.clone();
++    let _subscription = graph.update(cx, |_, cx| {
++        cx.subscribe(&graph, move |_, _, e: &Event, _| {
++            captured.borrow_mut().push(*e)
++        })
++    });
++    let a = plot(&mut visual, device, 0.02, 0.5);
++    let b = plot(&mut visual, device, 0.98, 0.5);
++    wheel(
++        &mut visual,
++        a,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Started,
++        false,
++    );
++    let old = events
++        .borrow()
++        .iter()
++        .find(|e| e.phase == Phase::Begin)
++        .copied()
++        .unwrap();
++    let held = held_real_scroll_begin(&editor, cx);
++    wheel(
++        &mut visual,
++        b,
++        gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++        gpui::TouchPhase::Moved,
++        false,
++    );
++    end_wheel(&mut visual, b);
++    visual.update(|window, _| window.blur());
++    visual.run_until_parked();
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (0, true)
++    );
++    // Controlled stale typed delivery after the real blur, using the actual old
++    // graph identity. Clearing intent must not reset its monotonic watermark.
++    graph.update(cx, |_, cx| cx.emit(old));
++    visual.run_until_parked();
++    assert_eq!(
++        editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
++        (0, true)
++    );
++    editor.update(cx, |v, _| {
++        v.receive(held);
++    });
++    let mut expected = before.clone();
++    expected.nodes[0].slope = 1;
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
++    editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
++    pump_until(&editor, cx, |v| settled(v) && read(v, device) == before);
++}
+diff --git a/crates/hex-widgets/src/response_graph.rs b/crates/hex-widgets/src/response_graph.rs
+index e8cc624b..d146ac4e 100644
+--- a/crates/hex-widgets/src/response_graph.rs
++++ b/crates/hex-widgets/src/response_graph.rs
+@@ -1126,11 +1126,20 @@ impl Element for ResponseGraphCaptureElement {
+         window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+             if phase.capture()
+                 && !event.is_momentum
+-                && matches!(event.touch_phase, gpui::TouchPhase::Ended)
++                && matches!(
++                    event.touch_phase,
++                    gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled
++                )
+             {
+                 // Observe only the terminal. Normal hit-tested bubble routing
+                 // retains first refusal and other panels still receive Ended.
+-                entity.update(cx, |graph, cx| graph.observe_scroll_end(window, cx));
++                entity.update(cx, |graph, cx| {
++                    graph.observe_scroll_end(
++                        matches!(event.touch_phase, gpui::TouchPhase::Cancelled),
++                        window,
++                        cx,
++                    )
++                });
+             }
+         });
+     }
+diff --git a/crates/hex-widgets/src/response_graph/scroll.rs b/crates/hex-widgets/src/response_graph/scroll.rs
+index 59a89bc4..88330d5c 100644
+--- a/crates/hex-widgets/src/response_graph/scroll.rs
++++ b/crates/hex-widgets/src/response_graph/scroll.rs
+@@ -102,20 +102,24 @@ impl ResponseGraph {
+ 
+     /// Capture can see Ended outside the graph. Defer ownership retirement so
+     /// ordinary inside bubble handling keeps its existing consumption priority.
+-    pub(super) fn observe_scroll_end(&mut self, window: &Window, cx: &mut Context<Self>) {
++    pub(super) fn observe_scroll_end(
++        &mut self,
++        cancel: bool,
++        window: &Window,
++        cx: &mut Context<Self>,
++    ) {
+         let Some(token) = self.scroll.gesture.map(|gesture| gesture.token) else {
+             // A zero-delta Started may own phase metadata without any edit.
+             self.scroll.phased = false;
+             return;
+         };
+         cx.defer_in(window, move |graph, window, cx| {
+-            if graph
+-                .scroll
+-                .gesture
+-                .is_some_and(|gesture| gesture.token == token)
+-                && graph.focus.is_focused(window)
+-            {
+-                graph.finish_scroll(false, cx);
++            // Fractional intent has not taken focus or begun an edit; its phase
++            // metadata can retire without focus. Begun edits retain the guard.
++            if graph.scroll.gesture.is_some_and(|gesture| {
++                gesture.token == token && (!gesture.begun || graph.focus.is_focused(window))
++            }) {
++                graph.finish_scroll(cancel, cx);
+             }
+         });
+     }
+@@ -126,10 +130,12 @@ impl ResponseGraph {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
+-        if !event.is_momentum && matches!(event.touch_phase, TouchPhase::Ended) {
++        if !event.is_momentum
++            && matches!(event.touch_phase, TouchPhase::Ended | TouchPhase::Cancelled)
++        {
+             self.scroll.phased = false;
+             if self.scroll.active() {
+-                self.finish_scroll(false, cx);
++                self.finish_scroll(matches!(event.touch_phase, TouchPhase::Cancelled), cx);
+                 cx.stop_propagation();
+             }
+             return;
+@@ -171,7 +177,10 @@ impl ResponseGraph {
+         }
+         // This is a parameter wheel, not content scrolling. Undo the platform's
+         // preference inversion exactly once so physical up means increasing.
+-        let units = f32::from(event.physical_delta().pixel_delta(px(24.0)).y) / 24.0;
++        let units = event.physical_wheel_ticks().map_or_else(
++            || f32::from(event.physical_delta().pixel_delta(px(24.0)).y) / 24.0,
++            |ticks| ticks.y,
++        );
+         if !units.is_finite() {
+             return;
+         }
+diff --git a/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs b/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs
+index 27771944..015dea08 100644
+--- a/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs
++++ b/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs
+@@ -326,3 +326,138 @@ fn terminal_observer_does_not_late_commit_cancel_blur_missing_or_new_token(
+         f.graph.update(cx, |g, cx| g.cancel(cx));
+     }
+ }
++
++#[gpui::test]
++fn four_review_unfocused_fractional_end_retires_metadata_before_unphased_input(
++    cx: &mut TestAppContext,
++) {
++    let (handle, f) = fixture(cx);
++    let mut v = VisualTestContext::from_window(handle, cx);
++    v.run_until_parked();
++    let inside = v.debug_bounds("terminal-graph").unwrap().center();
++    let other = v.debug_bounds("terminal-other").unwrap().center();
++    v.update(|window, app| assert!(!f.graph.read(app).focus.is_focused(window)));
++    send(&mut v, inside, TouchPhase::Started, 0.25, false);
++    assert!(f.events.borrow().is_empty());
++    assert!(
++        f.graph
++            .read_with(cx, |g, _| g.scroll.gesture.is_some_and(|s| !s.begun))
++    );
++    send(&mut v, other, TouchPhase::Ended, 0.0, false);
++    eprintln!(
++        "fractional outside Ended: active={} phased={}",
++        f.graph.read_with(cx, |g, _| g.scroll.active()),
++        f.graph.read_with(cx, |g, _| g.scroll.phased)
++    );
++    assert!(
++        !f.graph.read_with(cx, |g, _| g.scroll.active()),
++        "unbegun token must retire without taking focus"
++    );
++    assert!(!f.graph.read_with(cx, |g, _| g.scroll.phased));
++    assert!(f.events.borrow().is_empty());
++    send(&mut v, inside, TouchPhase::Moved, 1.0, false);
++    cx.executor().advance_clock(Duration::from_millis(300));
++    v.run_until_parked();
++    assert_eq!(commits(&f), 1);
++    assert!(!f.graph.read_with(cx, |g, _| g.scroll.active()));
++}
++
++#[gpui::test]
++fn four_review_mac_cancelled_terminal_cancels_inside_and_outside_once(cx: &mut TestAppContext) {
++    for outside in [false, true] {
++        for units in [0.0, 0.25, 1.0] {
++            let cx = &mut cx.new_app();
++            let (handle, f) = fixture(cx);
++            let mut v = VisualTestContext::from_window(handle, cx);
++            v.run_until_parked();
++            let inside = v.debug_bounds("terminal-graph").unwrap().center();
++            let other = v.debug_bounds("terminal-other").unwrap().center();
++            send(&mut v, inside, TouchPhase::Started, units, false);
++            // Explicit adapter output, not a claim of native Mac execution.
++            send(
++                &mut v,
++                if outside { other } else { inside },
++                TouchPhase::Cancelled,
++                8.0,
++                false,
++            );
++            cx.executor().advance_clock(Duration::from_secs(1));
++            v.run_until_parked();
++            assert!(
++                !f.graph
++                    .read_with(cx, |g, _| g.scroll.active() || g.scroll.phased)
++            );
++            assert_eq!(commits(&f), 0);
++            assert_eq!(
++                f.events
++                    .borrow()
++                    .iter()
++                    .filter(|e| e.phase == ResponseGraphScrollPhase::Cancel)
++                    .count(),
++                usize::from(units == 1.0)
++            );
++            if outside {
++                assert!(matches!(
++                    f.outside.borrow().as_slice(),
++                    [TouchPhase::Cancelled]
++                ));
++                let parent = f.parent.borrow();
++                if units == 0.0 {
++                    // A zero start deliberately bubbles before the terminal.
++                    assert!(matches!(
++                        parent.as_slice(),
++                        [TouchPhase::Started, TouchPhase::Cancelled]
++                    ));
++                } else {
++                    assert!(matches!(parent.as_slice(), [TouchPhase::Cancelled]));
++                }
++            }
++        }
++    }
++}
++
++#[gpui::test]
++fn four_review_physical_ticks_ignore_content_preference_and_invert_once(cx: &mut TestAppContext) {
++    for inverted in [false, true] {
++        for (ticks, events, lines_per_tick, expected) in [
++            (0.25, 4, 3.0, 1),
++            (-1.0, 1, 7.0, -1),
++            (30.0, 1, 3.0, 16),
++            (-30.0, 1, 0.0, -16),
++            (1.0, 1, 0.0, 1),
++        ] {
++            let cx = &mut cx.new_app();
++            let (handle, f) = fixture(cx);
++            let mut v = VisualTestContext::from_window(handle, cx);
++            v.run_until_parked();
++            let inside = v.debug_bounds("terminal-graph").unwrap().center();
++            for _ in 0..events {
++                let native_ticks = if inverted { -ticks } else { ticks };
++                let event = ScrollWheelEvent {
++                    position: inside,
++                    delta: gpui::ScrollDelta::Lines(point(0.0, native_ticks * lines_per_tick)),
++                    wheel_ticks: Some(point(0.0, native_ticks)),
++                    direction_inverted_from_device: inverted,
++                    touch_phase: TouchPhase::Moved,
++                    ..Default::default()
++                };
++                // Opt-in helpers must never rewrite raw content-scroll input.
++                assert!(
++                    matches!(event.delta, gpui::ScrollDelta::Lines(d) if d.y == native_ticks * lines_per_tick)
++                );
++                assert_eq!(event.physical_wheel_ticks().unwrap().y, ticks);
++                assert_eq!(
++                    f32::from(event.physical_delta().pixel_delta(px(24.0)).y),
++                    ticks * lines_per_tick * 24.0
++                );
++                v.simulate_mouse_move(inside, None, Modifiers::default());
++                v.simulate_event(event);
++                v.run_until_parked();
++            }
++            cx.executor().advance_clock(Duration::from_millis(300));
++            v.run_until_parked();
++            assert_eq!(commits(&f), 1);
++            assert_eq!(f.events.borrow().last().unwrap().steps, expected);
++        }
++    }
++}
+diff --git a/docs/eq-node-gestures.md b/docs/eq-node-gestures.md
+index ceaacfb2..6d0bf8d8 100644
+--- a/docs/eq-node-gestures.md
++++ b/docs/eq-node-gestures.md
+@@ -105,3 +105,50 @@ User-present optimized acceptance must check physical inertial vertical bursts
+ produce one Undo, horizontal inertia navigates the chain, immediate deliberate
+ wheel input works, and Option-Q at both gain boundaries reaches both Q limits
+ with cancel/Shift/capture intact. No repeat unchanged old native11 is requested.
++
++## phased terminals, physical wheel ticks and pending node streams
++
++Physical Cancelled is now a distinct GPUI touch phase. The existing macOS input
++adapter preserves NSEventPhaseCancelled; the opted-in graph cancels rather than
++commits that edit, including terminals delivered outside the plot. Cancellation
++never adds a late history item. Fractional input that has not begun an edit may
++retire its phase metadata without acquiring focus; an actual begun edit still
++requires the existing focused-owner check, preserving blur cancellation.
++
++Optional wheel_ticks metadata carries known physical increments independently of
++content-line preferences. X11 normalizes its existing device increments, Wayland
++retains discrete/value120 information even alongside pixel deltas, and Windows
++retains WHEEL_DELTA fractions before configured line/character multipliers.
++Ordinary content scrolling continues to use the unchanged raw delta. Parameter
++input undoes preference inversion once. Unknown sources, macOS and continuous
++input without known ticks retain the existing Lines/24-pixel fractional fallback;
++there is no guessed universal divisor or changed content-scroll sensitivity.
++Apple's Cocoa Event Handling Guide documents ended/cancelled phases and separate
++scroll momentum; this source implementation is not native platform observation.
++
++When moving between cut nodes before a predecessor's terminal acknowledgement,
++the private EQ panel retains a FIFO of gesture streams under the existing UI
++request capacity (32). It stores a constant four-choice transformation and
++cumulative step identity per stream, preserving saturation and reversal without
++storing every delta or assuming the next node's initial value. Each successor
++begins through the same generic gesture client only after its predecessor's real
++matching successful Commit ACK and canonical installation. Generation, owner,
++variant, exact provider-patched state and revision must match. Stale deliveries,
++failed/cancelled/context-changed streams and later graph blur cannot replay edits
++against another context. Cancellation clears intent while retaining the graph's
++monotonic stream watermark, so a delayed old Begin cannot restore revoked work.
++A full FIFO visibly refuses a whole new stream without
++replacing an earlier one; Escape on that refused stream cancels queued intent
++while preserving already-submitted commits. No generic client, worker, Session,
++Engine or audio callback owner is added or reset early.
++
++Real Service/headless GPUI coverage includes held acknowledgements, A/B/C/A
++ordering, installed-state replay, before/after replay reversal, no-op history,
++whole-stream capacity refusal, active-window blur after physical Ended, stale
++stream delivery, removal/project/variant refusal and an accepted predecessor
++preserving another source edit while invalidating its queued successor. Synthetic
++adapter output and headless font metrics do not qualify AppKit, physical wheels,
++Windows, GPU pixels or user acceptance. The coordinator must qualify native
++compilation and changed event fixtures, then physical cancelled gestures, fine
++wheel steps and cross-node bursts in a delivered build; no app actions are
++performed by these source checks.
+diff --git a/third_party/gpui/HEX-PATCHES.md b/third_party/gpui/HEX-PATCHES.md
+index 08e621a6..2fdcf2b6 100644
+--- a/third_party/gpui/HEX-PATCHES.md
++++ b/third_party/gpui/HEX-PATCHES.md
+@@ -208,3 +208,17 @@ remain unchanged. Only owner-opted-in parameter graph scrolling uses this bit to
+ refuse inertial parameter steps/new history gestures after physical Ended. No new
+ FFI, framework, timer, scroll system or production test-context change. Existing
+ published baseline hashes verified; unrelated cumulative patch blocks preserved.
++
++19 October EQ terminal/tick metadata: preserve NSEventPhaseCancelled as an
++additive TouchPhase::Cancelled. Add optional wheel_ticks and an opt-in physical
++helper; retain X11 increments, Wayland discrete/value120 information (including
++frames also carrying pixel deltas), and Windows WHEEL_DELTA fractions before
++content-line preferences. Raw delta, content scrolling and unknown/Pixels
++fallback remain unchanged; macOS tick metadata stays None rather than guessing
++an undocumented tick law. Existing constructors/matches are audited together.
++Only the opted-in parameter graph uses this metadata; no native framework,
++FFI, callback owner, clock, timeout or general scrolling policy is introduced.
++Original archive/file hashes and unrelated cumulative patch blocks are retained;
++the cumulative patch is regenerated against hash-verified original source and
++applied back to verify every changed/added byte. Linux synthetic checks do not
++claim macOS/Windows compilation or physical device acceptance.
+diff --git a/third_party/gpui/hex-patches.diff b/third_party/gpui/hex-patches.diff
+index 6a5fbd75..2bef7e02 100644
+--- a/third_party/gpui/hex-patches.diff
++++ b/third_party/gpui/hex-patches.diff
+@@ -521,7 +521,10 @@ diff --git a/src/gpui.rs b/src/gpui.rs
+ diff --git a/src/interactive.rs b/src/interactive.rs
+ --- a/src/interactive.rs
+ +++ b/src/interactive.rs
+-@@ -363,0 +364,8 @@
++@@ -88,0 +89,2 @@
+++    /// The platform cancelled the physical gesture.
+++    Cancelled,
++@@ -363,0 +366,14 @@
+ +    /// True when the platform inverted device scroll direction for user preferences.
+ +    /// Raw `delta` remains suitable for ordinary content scrolling.
+ +    pub direction_inverted_from_device: bool,
+@@ -530,10 +533,27 @@ diff --git a/src/interactive.rs b/src/interactive.rs
+ +    /// Neutral by default. Ordinary content scrolling keeps using raw `delta`.
+ +    pub is_momentum: bool,
+ +
+-@@ -374,0 +383,14 @@
+++    /// Physical wheel increments, when the platform knows them independently
+++    /// of content-line preferences. Fractional increments are retained. Uses
+++    /// the same preference-direction convention as `delta`; content scrolling
+++    /// must continue using `delta`, not this optional parameter-input metadata.
+++    pub wheel_ticks: Option<Point<f32>>,
+++
++@@ -374,0 +391,25 @@
+ +}
+ +
+ +impl ScrollWheelEvent {
+++    /// Opt-in physical detents, with user-preference inversion undone once.
+++    pub fn physical_wheel_ticks(&self) -> Option<Point<f32>> {
+++        self.wheel_ticks.map(|ticks| {
+++            if self.direction_inverted_from_device {
+++                point(-ticks.x, -ticks.y)
+++            } else {
+++                ticks
+++            }
+++        })
+++    }
+++
+ +    /// Device-direction delta before the platform's user-preference inversion.
+ +    /// This is opt-in: ordinary scrolling should continue using `delta`.
+ +    pub fn physical_delta(&self) -> ScrollDelta {
+@@ -904,15 +924,21 @@ diff --git a/src/platform/linux/wayland/client.rs b/src/platform/linux/wayland/c
+ @@ -1790,0 +1791,2 @@
+ +                                direction_inverted_from_device: false,
+ +                                is_momentum: false,
+-@@ -1802,0 +1805,2 @@
++@@ -1792,0 +1795 @@
+++                                wheel_ticks: discrete.map(|ticks| ticks.map(|lines| lines / SCROLL_LINES)),
++@@ -1802,0 +1806,2 @@
+ +                            direction_inverted_from_device: false,
+ +                            is_momentum: false,
++@@ -1804,0 +1810 @@
+++                            wheel_ticks: Some(discrete.map(|lines| lines / SCROLL_LINES)),
+ diff --git a/src/platform/linux/x11/client.rs b/src/platform/linux/x11/client.rs
+ --- a/src/platform/linux/x11/client.rs
+ +++ b/src/platform/linux/x11/client.rs
+ @@ -2217,0 +2218,2 @@
+ +        direction_inverted_from_device: false,
+ +        is_momentum: false,
++@@ -2219,0 +2222 @@
+++        wheel_ticks: Some(delta.map(|lines| lines / SCROLL_LINES)),
+ diff --git a/src/platform/mac/accessibility.rs b/src/platform/mac/accessibility.rs
+ new file mode 100644
+ --- /dev/null
+@@ -1921,12 +1947,15 @@ new file mode 100644
+ diff --git a/src/platform/mac/events.rs b/src/platform/mac/events.rs
+ --- a/src/platform/mac/events.rs
+ +++ b/src/platform/mac/events.rs
+-@@ -235,0 +236,2 @@
++@@ -221,0 +222 @@
+++                        NSEventPhase::NSEventPhaseCancelled => TouchPhase::Cancelled,
++@@ -235,0 +237,2 @@
+ +                    let direction_inverted: cocoa::base::BOOL =
+ +                        msg_send![native_event, isDirectionInvertedFromDevice];
+-@@ -236,0 +239,2 @@
++@@ -236,0 +240,3 @@
+ +                        direction_inverted_from_device: direction_inverted == YES,
+ +                        is_momentum: native_event.momentumPhase() != NSEventPhase::NSEventPhaseNone,
+++                        wheel_ticks: None,
+ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
+ --- a/src/platform/mac/platform.rs
+ +++ b/src/platform/mac/platform.rs
+@@ -2330,12 +2359,30 @@ diff --git a/src/platform/test/platform.rs b/src/platform/test/platform.rs
+ diff --git a/src/platform/windows/events.rs b/src/platform/windows/events.rs
+ --- a/src/platform/windows/events.rs
+ +++ b/src/platform/windows/events.rs
++@@ -548,2 +548,2 @@
++-        let wheel_distance =
++-            (wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_amount as f32;
+++        let wheel_ticks = wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
+++        let wheel_distance = wheel_ticks * wheel_scroll_amount as f32;
+ @@ -555,0 +556,2 @@
+ +            direction_inverted_from_device: false,
+ +            is_momentum: false,
+-@@ -601,0 +604,2 @@
++@@ -566,0 +569,5 @@
+++            wheel_ticks: Some(if modifiers.shift {
+++                Point { x: wheel_ticks, y: 0.0 }
+++            } else {
+++                Point { x: 0.0, y: wheel_ticks }
+++            }),
++@@ -594,2 +601,2 @@
++-        let wheel_distance =
++-            (-wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_chars as f32;
+++        let wheel_ticks = -wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
+++        let wheel_distance = wheel_ticks * wheel_scroll_chars as f32;
++@@ -601,0 +609,2 @@
+ +            direction_inverted_from_device: false,
+ +            is_momentum: false,
++@@ -606,0 +616 @@
+++            wheel_ticks: Some(Point { x: wheel_ticks, y: 0.0 }),
+ diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
+ --- a/src/platform/windows/util.rs
+ +++ b/src/platform/windows/util.rs
+diff --git a/third_party/gpui/hex-provenance.json b/third_party/gpui/hex-provenance.json
+index 0a59c9d0..61be6aa0 100644
+--- a/third_party/gpui/hex-provenance.json
++++ b/third_party/gpui/hex-provenance.json
+@@ -199,17 +199,17 @@
+     "src/bounds_tree.rs": "084f0084e9cee9eb75d0b3f8592cd8e8477adb8d969f1426e99367a4b79cf226",
+     "src/elements/div.rs": "d9d7cebcc439e61eefc47869ea16c7f0d3794b6359959414f85e5f712fd9a1f9",
+     "src/gpui.rs": "b26a450e27b580824e68b48cbceb200e39fa03ea8f8c39599d30e41784adc2f8",
+-    "src/interactive.rs": "e72427052aa9bdf43015f24612d1f721816f372ddcfade4ec9ee3168353158ee",
++    "src/interactive.rs": "968030ec8155161c2fc9b9430bb5a8c293c6ea45a59e49b728fc83ff65e8596b",
+     "src/platform.rs": "e036c1fdedf1271ce2e98c62a2c7abedaeb37eb84d892636aef4e97d9e1e1588",
+     "src/platform/linux/platform.rs": "7a12e238b597bd9df4581a7764c0265aa43d2c8d9116bff263fcac3a398e39ba",
+     "src/platform/linux/wayland.rs": "0af6da105a6fdda79c3d9cc133ae822ad4f25f306744607f44b5fd8d1b9dd99e",
+-    "src/platform/linux/wayland/client.rs": "c94fc25769223c54d6982e9a6d2d56362f9c1d47fde02127650ed58a1d67748a",
+-    "src/platform/linux/x11/client.rs": "3f6efcec64214b23a1964ea785c664a3a2b0da1294e786a29b1a57f1fad5a1dc",
+-    "src/platform/mac/events.rs": "8da5851e315c6f6c381f30c0095a185d2e8f4821984cb7e0f7d1797c4896b506",
++    "src/platform/linux/wayland/client.rs": "40ad7e00a72de7cdac632864f83e3333731c4832f53535b219aa109c2d42329b",
++    "src/platform/linux/x11/client.rs": "df5110245cfaec8dcf9df3eec2c11b10d36c9ba365be6f46e238912d27f46ae8",
++    "src/platform/mac/events.rs": "e4f972d4353c7352d106aa396754206c6891448685a766ab750687b601070f07",
+     "src/platform/mac/platform.rs": "10b0a64560f49219807cb46ca47c0a6666f7903d7e0af7671d67e7863af4801c",
+     "src/platform/mac/window.rs": "93f86e8a31f7753c3363921eacb9addda72e2bf16ae989898dd51f8ff048f598",
+     "src/platform/test/platform.rs": "c297f4f1f4c77c77c708bcdc19be8d5be7c72e5c38129ee11a9e0af70dfe0daf",
+-    "src/platform/windows/events.rs": "210c35d596cf4838cdc99f8fe5bc969a8ba24a918c02474a92e4de14c74fe47d",
++    "src/platform/windows/events.rs": "57ec8c2a9b6ceda1e25d88ce45334423feec499b995919f3fa92a60e265adf15",
+     "src/platform/windows/util.rs": "00f650fd09cfef7b8eb48a3c8583018377174355c7f8d67feeff727db7888bc2",
+     "src/scene.rs": "7b613087da31c10785f3fcd16b147a6251e76a3418801e86377e03f5ba757632",
+     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
+diff --git a/third_party/gpui/src/interactive.rs b/third_party/gpui/src/interactive.rs
+index b22d121e..10659608 100644
+--- a/third_party/gpui/src/interactive.rs
++++ b/third_party/gpui/src/interactive.rs
+@@ -86,6 +86,8 @@ pub enum TouchPhase {
+     Moved,
+     /// The touch phase has ended
+     Ended,
++    /// The platform cancelled the physical gesture.
++    Cancelled,
+ }
+ 
+ /// A mouse down event from the platform
+@@ -369,6 +371,12 @@ pub struct ScrollWheelEvent {
+     /// Neutral by default. Ordinary content scrolling keeps using raw `delta`.
+     pub is_momentum: bool,
+ 
++    /// Physical wheel increments, when the platform knows them independently
++    /// of content-line preferences. Fractional increments are retained. Uses
++    /// the same preference-direction convention as `delta`; content scrolling
++    /// must continue using `delta`, not this optional parameter-input metadata.
++    pub wheel_ticks: Option<Point<f32>>,
++
+     /// The position of the mouse on the window.
+     pub position: Point<Pixels>,
+ 
+@@ -383,6 +391,17 @@ pub struct ScrollWheelEvent {
+ }
+ 
+ impl ScrollWheelEvent {
++    /// Opt-in physical detents, with user-preference inversion undone once.
++    pub fn physical_wheel_ticks(&self) -> Option<Point<f32>> {
++        self.wheel_ticks.map(|ticks| {
++            if self.direction_inverted_from_device {
++                point(-ticks.x, -ticks.y)
++            } else {
++                ticks
++            }
++        })
++    }
++
+     /// Device-direction delta before the platform's user-preference inversion.
+     /// This is opt-in: ordinary scrolling should continue using `delta`.
+     pub fn physical_delta(&self) -> ScrollDelta {
+diff --git a/third_party/gpui/src/platform/linux/wayland/client.rs b/third_party/gpui/src/platform/linux/wayland/client.rs
+index caed3219..56275a8c 100644
+--- a/third_party/gpui/src/platform/linux/wayland/client.rs
++++ b/third_party/gpui/src/platform/linux/wayland/client.rs
+@@ -1792,6 +1792,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
+                                 is_momentum: false,
+                                 position: state.mouse_location.unwrap(),
+                                 delta: ScrollDelta::Pixels(continuous),
++                                wheel_ticks: discrete.map(|ticks| ticks.map(|lines| lines / SCROLL_LINES)),
+                                 modifiers: state.modifiers,
+                                 touch_phase: TouchPhase::Moved,
+                             });
+@@ -1806,6 +1807,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
+                             is_momentum: false,
+                             position: state.mouse_location.unwrap(),
+                             delta: ScrollDelta::Lines(discrete),
++                            wheel_ticks: Some(discrete.map(|lines| lines / SCROLL_LINES)),
+                             modifiers: state.modifiers,
+                             touch_phase: TouchPhase::Moved,
+                         });
+diff --git a/third_party/gpui/src/platform/linux/x11/client.rs b/third_party/gpui/src/platform/linux/x11/client.rs
+index 3b3fb5c5..e7252ada 100644
+--- a/third_party/gpui/src/platform/linux/x11/client.rs
++++ b/third_party/gpui/src/platform/linux/x11/client.rs
+@@ -2219,6 +2219,7 @@ fn make_scroll_wheel_event(
+         is_momentum: false,
+         position,
+         delta: ScrollDelta::Lines(delta),
++        wheel_ticks: Some(delta.map(|lines| lines / SCROLL_LINES)),
+         modifiers,
+         touch_phase: TouchPhase::default(),
+     }
+diff --git a/third_party/gpui/src/platform/mac/events.rs b/third_party/gpui/src/platform/mac/events.rs
+index 6a66e253..d4db4a62 100644
+--- a/third_party/gpui/src/platform/mac/events.rs
++++ b/third_party/gpui/src/platform/mac/events.rs
+@@ -219,6 +219,7 @@ impl PlatformInput {
+                             TouchPhase::Started
+                         }
+                         NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
++                        NSEventPhase::NSEventPhaseCancelled => TouchPhase::Cancelled,
+                         _ => TouchPhase::Moved,
+                     };
+ 
+@@ -238,6 +239,7 @@ impl PlatformInput {
+                     Self::ScrollWheel(ScrollWheelEvent {
+                         direction_inverted_from_device: direction_inverted == YES,
+                         is_momentum: native_event.momentumPhase() != NSEventPhase::NSEventPhaseNone,
++                        wheel_ticks: None,
+                         position: point(
+                             px(native_event.locationInWindow().x as f32),
+                             window_height - px(native_event.locationInWindow().y as f32),
+diff --git a/third_party/gpui/src/platform/windows/events.rs b/third_party/gpui/src/platform/windows/events.rs
+index 4cd4fafb..57a344a8 100644
+--- a/third_party/gpui/src/platform/windows/events.rs
++++ b/third_party/gpui/src/platform/windows/events.rs
+@@ -545,8 +545,8 @@ impl WindowsWindowInner {
+         };
+         drop(lock);
+ 
+-        let wheel_distance =
+-            (wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_amount as f32;
++        let wheel_ticks = wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
++        let wheel_distance = wheel_ticks * wheel_scroll_amount as f32;
+         let mut cursor_point = POINT {
+             x: lparam.signed_loword().into(),
+             y: lparam.signed_hiword().into(),
+@@ -566,6 +566,11 @@ impl WindowsWindowInner {
+                     x: 0.0,
+                 },
+             }),
++            wheel_ticks: Some(if modifiers.shift {
++                Point { x: wheel_ticks, y: 0.0 }
++            } else {
++                Point { x: 0.0, y: wheel_ticks }
++            }),
+             modifiers,
+             touch_phase: TouchPhase::Moved,
+         });
+@@ -593,8 +598,8 @@ impl WindowsWindowInner {
+             .wheel_scroll_chars;
+         drop(lock);
+ 
+-        let wheel_distance =
+-            (-wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_chars as f32;
++        let wheel_ticks = -wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
++        let wheel_distance = wheel_ticks * wheel_scroll_chars as f32;
+         let mut cursor_point = POINT {
+             x: lparam.signed_loword().into(),
+             y: lparam.signed_hiword().into(),
+@@ -608,6 +613,7 @@ impl WindowsWindowInner {
+                 x: wheel_distance,
+                 y: 0.0,
+             }),
++            wheel_ticks: Some(Point { x: wheel_ticks, y: 0.0 }),
+             modifiers: current_modifiers(),
+             touch_phase: TouchPhase::Moved,
+         });

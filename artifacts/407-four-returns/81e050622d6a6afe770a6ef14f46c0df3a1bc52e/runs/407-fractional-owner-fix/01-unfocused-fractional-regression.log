@@ -1,0 +1,10 @@
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.08s
+     Running unittests src/lib.rs (target/debug/deps/hex_widgets-ba49dcf5db2a657f)
+
+running 1 test
+fractional outside Ended: active=false phased=false
+test response_graph::scroll::terminal_tests::four_review_unfocused_fractional_end_retires_metadata_before_unphased_input ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.01s
+
