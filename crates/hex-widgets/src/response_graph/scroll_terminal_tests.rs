@@ -363,48 +363,95 @@ fn four_review_unfocused_fractional_end_retires_metadata_before_unphased_input(
 }
 
 #[gpui::test]
-fn four_review_mac_cancelled_mapped_as_moved_cannot_deliver_terminal(cx: &mut TestAppContext) {
-    let (handle, f) = fixture(cx);
-    let mut v = VisualTestContext::from_window(handle, cx);
-    v.run_until_parked();
-    let inside = v.debug_bounds("terminal-graph").unwrap().center();
-    send(&mut v, inside, TouchPhase::Started, 1.0, false);
-    // Exact current Mac adapter representation of NSEventPhaseCancelled.
-    // This is a source-backed adapter-output simulation, NOT native Mac input.
-    send(&mut v, inside, TouchPhase::Moved, 0.0, false);
-    cx.executor().advance_clock(Duration::from_secs(1));
-    v.run_until_parked();
-    eprintln!(
-        "mapped cancellation: active={} commits={} events={:?}",
-        f.graph.read_with(cx, |g, _| g.scroll.active()),
-        commits(&f),
-        f.events.borrow()
-    );
-    assert!(
-        !f.graph.read_with(cx, |g, _| g.scroll.active()),
-        "a cancelled native stream needs a terminal representation"
-    );
+fn four_review_mac_cancelled_terminal_cancels_inside_and_outside_once(cx: &mut TestAppContext) {
+    for outside in [false, true] {
+        for units in [0.0, 0.25, 1.0] {
+            let cx = &mut cx.new_app();
+            let (handle, f) = fixture(cx);
+            let mut v = VisualTestContext::from_window(handle, cx);
+            v.run_until_parked();
+            let inside = v.debug_bounds("terminal-graph").unwrap().center();
+            let other = v.debug_bounds("terminal-other").unwrap().center();
+            send(&mut v, inside, TouchPhase::Started, units, false);
+            // Explicit adapter output, not a claim of native Mac execution.
+            send(
+                &mut v,
+                if outside { other } else { inside },
+                TouchPhase::Cancelled,
+                8.0,
+                false,
+            );
+            cx.executor().advance_clock(Duration::from_secs(1));
+            v.run_until_parked();
+            assert!(
+                !f.graph
+                    .read_with(cx, |g, _| g.scroll.active() || g.scroll.phased)
+            );
+            assert_eq!(commits(&f), 0);
+            assert_eq!(
+                f.events
+                    .borrow()
+                    .iter()
+                    .filter(|e| e.phase == ResponseGraphScrollPhase::Cancel)
+                    .count(),
+                usize::from(units == 1.0)
+            );
+            if outside {
+                assert!(matches!(
+                    f.outside.borrow().as_slice(),
+                    [TouchPhase::Cancelled]
+                ));
+                assert!(matches!(
+                    f.parent.borrow().as_slice(),
+                    [TouchPhase::Cancelled]
+                ));
+            }
+        }
+    }
 }
 
 #[gpui::test]
-fn four_review_linux_discrete_content_lines_are_not_one_parameter_step(cx: &mut TestAppContext) {
-    let (handle, f) = fixture(cx);
-    let mut v = VisualTestContext::from_window(handle, cx);
-    v.run_until_parked();
-    let inside = v.debug_bounds("terminal-graph").unwrap().center();
-    // Current Wayland axis_discrete=1 and X11 Up produce SCROLL_LINES=3.
-    // Windows WHEEL_DELTA with wheel_scroll_lines=3 has the same output.
-    send(&mut v, inside, TouchPhase::Moved, 3.0, false);
-    cx.executor().advance_clock(Duration::from_millis(300));
-    v.run_until_parked();
-    assert_eq!(commits(&f), 1);
-    eprintln!(
-        "one physical tick's adapter output: {:?}",
-        f.events.borrow()
-    );
-    assert_eq!(
-        f.events.borrow().last().unwrap().steps,
-        1,
-        "one physical detent should advance one slope choice, independent of content-line preference"
-    );
+fn four_review_physical_ticks_ignore_content_preference_and_invert_once(cx: &mut TestAppContext) {
+    for inverted in [false, true] {
+        for (ticks, events, lines_per_tick, expected) in [
+            (0.25, 4, 3.0, 1),
+            (-1.0, 1, 7.0, -1),
+            (30.0, 1, 3.0, 16),
+            (-30.0, 1, 0.0, -16),
+            (1.0, 1, 0.0, 1),
+        ] {
+            let cx = &mut cx.new_app();
+            let (handle, f) = fixture(cx);
+            let mut v = VisualTestContext::from_window(handle, cx);
+            v.run_until_parked();
+            let inside = v.debug_bounds("terminal-graph").unwrap().center();
+            for _ in 0..events {
+                let native_ticks = if inverted { -ticks } else { ticks };
+                let event = ScrollWheelEvent {
+                    position: inside,
+                    delta: gpui::ScrollDelta::Lines(point(0.0, native_ticks * lines_per_tick)),
+                    wheel_ticks: Some(point(0.0, native_ticks)),
+                    direction_inverted_from_device: inverted,
+                    touch_phase: TouchPhase::Moved,
+                    ..Default::default()
+                };
+                // Opt-in helpers must never rewrite raw content-scroll input.
+                assert!(
+                    matches!(event.delta, gpui::ScrollDelta::Lines(d) if d.y == native_ticks * lines_per_tick)
+                );
+                assert_eq!(event.physical_wheel_ticks().unwrap().y, ticks);
+                assert_eq!(
+                    f32::from(event.physical_delta().pixel_delta(px(24.0)).y),
+                    ticks * lines_per_tick * 24.0
+                );
+                v.simulate_mouse_move(inside, None, Modifiers::default());
+                v.simulate_event(event);
+                v.run_until_parked();
+            }
+            cx.executor().advance_clock(Duration::from_millis(300));
+            v.run_until_parked();
+            assert_eq!(commits(&f), 1);
+            assert_eq!(f.events.borrow().last().unwrap().steps, expected);
+        }
+    }
 }

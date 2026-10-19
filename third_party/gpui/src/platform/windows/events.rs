@@ -545,8 +545,8 @@ impl WindowsWindowInner {
         };
         drop(lock);
 
-        let wheel_distance =
-            (wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_amount as f32;
+        let wheel_ticks = wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
+        let wheel_distance = wheel_ticks * wheel_scroll_amount as f32;
         let mut cursor_point = POINT {
             x: lparam.signed_loword().into(),
             y: lparam.signed_hiword().into(),
@@ -565,6 +565,11 @@ impl WindowsWindowInner {
                     y: wheel_distance,
                     x: 0.0,
                 },
+            }),
+            wheel_ticks: Some(if modifiers.shift {
+                Point { x: wheel_ticks, y: 0.0 }
+            } else {
+                Point { x: 0.0, y: wheel_ticks }
             }),
             modifiers,
             touch_phase: TouchPhase::Moved,
@@ -593,8 +598,8 @@ impl WindowsWindowInner {
             .wheel_scroll_chars;
         drop(lock);
 
-        let wheel_distance =
-            (-wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_chars as f32;
+        let wheel_ticks = -wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
+        let wheel_distance = wheel_ticks * wheel_scroll_chars as f32;
         let mut cursor_point = POINT {
             x: lparam.signed_loword().into(),
             y: lparam.signed_hiword().into(),
@@ -608,6 +613,7 @@ impl WindowsWindowInner {
                 x: wheel_distance,
                 y: 0.0,
             }),
+            wheel_ticks: Some(Point { x: wheel_ticks, y: 0.0 }),
             modifiers: current_modifiers(),
             touch_phase: TouchPhase::Moved,
         });

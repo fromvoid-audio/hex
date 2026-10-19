@@ -1126,11 +1126,20 @@ impl Element for ResponseGraphCaptureElement {
         window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
             if phase.capture()
                 && !event.is_momentum
-                && matches!(event.touch_phase, gpui::TouchPhase::Ended)
+                && matches!(
+                    event.touch_phase,
+                    gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled
+                )
             {
                 // Observe only the terminal. Normal hit-tested bubble routing
                 // retains first refusal and other panels still receive Ended.
-                entity.update(cx, |graph, cx| graph.observe_scroll_end(window, cx));
+                entity.update(cx, |graph, cx| {
+                    graph.observe_scroll_end(
+                        matches!(event.touch_phase, gpui::TouchPhase::Cancelled),
+                        window,
+                        cx,
+                    )
+                });
             }
         });
     }

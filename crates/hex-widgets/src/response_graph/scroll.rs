@@ -102,7 +102,12 @@ impl ResponseGraph {
 
     /// Capture can see Ended outside the graph. Defer ownership retirement so
     /// ordinary inside bubble handling keeps its existing consumption priority.
-    pub(super) fn observe_scroll_end(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(super) fn observe_scroll_end(
+        &mut self,
+        cancel: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(token) = self.scroll.gesture.map(|gesture| gesture.token) else {
             // A zero-delta Started may own phase metadata without any edit.
             self.scroll.phased = false;
@@ -115,7 +120,7 @@ impl ResponseGraph {
                         // edit; its phase metadata can retire without focus.
                         && (!gesture.begun || graph.focus.is_focused(window))
             }) {
-                graph.finish_scroll(false, cx);
+                graph.finish_scroll(cancel, cx);
             }
         });
     }
@@ -126,10 +131,12 @@ impl ResponseGraph {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !event.is_momentum && matches!(event.touch_phase, TouchPhase::Ended) {
+        if !event.is_momentum
+            && matches!(event.touch_phase, TouchPhase::Ended | TouchPhase::Cancelled)
+        {
             self.scroll.phased = false;
             if self.scroll.active() {
-                self.finish_scroll(false, cx);
+                self.finish_scroll(matches!(event.touch_phase, TouchPhase::Cancelled), cx);
                 cx.stop_propagation();
             }
             return;
@@ -171,7 +178,10 @@ impl ResponseGraph {
         }
         // This is a parameter wheel, not content scrolling. Undo the platform's
         // preference inversion exactly once so physical up means increasing.
-        let units = f32::from(event.physical_delta().pixel_delta(px(24.0)).y) / 24.0;
+        let units = event.physical_wheel_ticks().map_or_else(
+            || f32::from(event.physical_delta().pixel_delta(px(24.0)).y) / 24.0,
+            |ticks| ticks.y,
+        );
         if !units.is_finite() {
             return;
         }

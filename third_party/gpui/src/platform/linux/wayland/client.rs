@@ -1792,6 +1792,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                                 is_momentum: false,
                                 position: state.mouse_location.unwrap(),
                                 delta: ScrollDelta::Pixels(continuous),
+                                wheel_ticks: None,
                                 modifiers: state.modifiers,
                                 touch_phase: TouchPhase::Moved,
                             });
@@ -1806,6 +1807,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                             is_momentum: false,
                             position: state.mouse_location.unwrap(),
                             delta: ScrollDelta::Lines(discrete),
+                            wheel_ticks: Some(discrete.map(|lines| lines / SCROLL_LINES)),
                             modifiers: state.modifiers,
                             touch_phase: TouchPhase::Moved,
                         });

@@ -86,6 +86,8 @@ pub enum TouchPhase {
     Moved,
     /// The touch phase has ended
     Ended,
+    /// The platform cancelled the physical gesture.
+    Cancelled,
 }
 
 /// A mouse down event from the platform
@@ -369,6 +371,12 @@ pub struct ScrollWheelEvent {
     /// Neutral by default. Ordinary content scrolling keeps using raw `delta`.
     pub is_momentum: bool,
 
+    /// Physical wheel increments, when the platform knows them independently
+    /// of content-line preferences. Fractional increments are retained. Uses
+    /// the same preference-direction convention as `delta`; content scrolling
+    /// must continue using `delta`, not this optional parameter-input metadata.
+    pub wheel_ticks: Option<Point<f32>>,
+
     /// The position of the mouse on the window.
     pub position: Point<Pixels>,
 
@@ -383,6 +391,17 @@ pub struct ScrollWheelEvent {
 }
 
 impl ScrollWheelEvent {
+    /// Opt-in physical detents, with user-preference inversion undone once.
+    pub fn physical_wheel_ticks(&self) -> Option<Point<f32>> {
+        self.wheel_ticks.map(|ticks| {
+            if self.direction_inverted_from_device {
+                point(-ticks.x, -ticks.y)
+            } else {
+                ticks
+            }
+        })
+    }
+
     /// Device-direction delta before the platform's user-preference inversion.
     /// This is opt-in: ordinary scrolling should continue using `delta`.
     pub fn physical_delta(&self) -> ScrollDelta {
