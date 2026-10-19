@@ -391,6 +391,7 @@ impl Render for EditorView {
             )
             .child(workspace_content.flex_1().min_w_0());
         let modifier_entity = cx.entity();
+        let console_drag_entity = cx.entity();
         div()
             .size_full()
             .relative()
@@ -422,6 +423,22 @@ impl Render for EditorView {
                 "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
+            })
+            .on_drag_move::<super::drag::BrowserAudioDrag>(move |_, _, cx| {
+                console_drag_entity.update(cx, |view, cx| {
+                    if view.mode == super::EditorMode::Session
+                        && let Some(drag) = view.active_browser_audio_drag.as_ref()
+                        && matches!(
+                            drag.destination.get(),
+                            Some(super::drag::BrowserDropDestination::Console(_))
+                        )
+                    {
+                        // Capture runs before child receivers: hover is rebuilt
+                        // from this event's actual hit surfaces, never old selection.
+                        drag.destination.set(None);
+                        cx.notify();
+                    }
+                });
             })
             .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
                 super::device_panel::capture_navigation_pointer_down(view, event, cx);

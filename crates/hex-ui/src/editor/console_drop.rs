@@ -4,7 +4,7 @@ use super::{
     drag::{BrowserAudioDrag, BrowserDropDestination, ClipDrag, ClipPosition},
 };
 use crate::theme;
-use gpui::{Context, Div, Stateful, Window, prelude::*, rgb};
+use gpui::{Context, Div, Stateful, prelude::*, rgb};
 use hex_project::{Command, SceneId, SessionCellContent};
 use hex_session::{
     import_batch::{AudioBatchDestination, ConsoleDestination},

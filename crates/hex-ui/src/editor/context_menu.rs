@@ -2,7 +2,7 @@ use super::{EditorView, ViewState, device_panel};
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Div, Pixels, Point, Window};
 use hex_lattice_contract::{ParameterId, ParameterValue};
-use hex_project::{ClipFlavor, ClipId, Command, DeviceId, ElementColor, TrackId};
+use hex_project::{ClipFlavor, ClipId, Command, DeviceId, ElementColor, SceneId, TrackId};
 use hex_session::service::Request;
 
 #[derive(Clone)]
@@ -26,6 +26,11 @@ pub(super) enum EditorContextAction {
         id: Option<&'static str>,
     },
     InsertTrack(InsertTrackAction),
+    InsertScene {
+        generation: u64,
+        revision: u64,
+        before: Option<SceneId>,
+    },
     UtilityMode(UtilityModeAction),
     TrackColor {
         generation: u64,
@@ -41,6 +46,52 @@ pub(super) enum EditorContextAction {
 }
 
 impl EditorView {
+    pub(super) fn open_console_scene_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        before: Option<SceneId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != super::EditorMode::Session
+            || self.edit_pending()
+            || !device_panel::finalize_controls(self, cx)
+        {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if before.is_some_and(|id| !state.project.scenes().iter().any(|scene| scene.id() == id)) {
+            return;
+        }
+        let revision = state.revision;
+        let previous_focus = self
+            .context_menu
+            .take()
+            .and_then(|menu| menu.previous_focus)
+            .or_else(|| window.focused(cx));
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        self.context_menu = Some(PopupMenu {
+            icon_grid: None,
+            position,
+            selected: 0,
+            focus,
+            previous_focus,
+            items: vec![MenuItem {
+                label: "add scene",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::InsertScene {
+                    generation: self.project_generation,
+                    revision,
+                    before,
+                },
+            }],
+        });
+        cx.notify();
+    }
     pub(super) fn open_track_context_menu(
         &mut self,
         position: Point<Pixels>,
@@ -266,6 +317,13 @@ impl EditorView {
                     self.enqueue(Request::Edit(Command::SetClipFlavor { clip, flavor }));
                     cx.notify();
                 }
+            }
+            EditorContextAction::InsertScene {
+                generation,
+                revision,
+                before,
+            } => {
+                self.insert_console_scene(before, generation, revision, cx);
             }
             EditorContextAction::InsertTrack(action) => {
                 if action.generation != self.project_generation {
