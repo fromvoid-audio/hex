@@ -5414,3 +5414,9 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Composed complete owner1ce through e80 with actualtest-only owner15c99 A/B supplement and qualified main457/399/325/447; original53 plus supplement16 evidence payloads verified, exact source hashes retained. Onlyappendtodo conflict retains both histories. Current32 comparison/assets/tuning and no-local-EQ mode preserved; no RMS455/AutoPan454/Sampler395 import.
 - Stable Compressor ID7 mix, originalinput/postmakeupwet linear blend and finite5ms history ramp remain owner code. Actual Track/Return genericSwitch/bothCopy directions/UndoRedo/current-project andpresetSaveOpen distinct25/75 mixes/globaltrims are finite ownercomponent evidence, not providerclone proof or finalfullCI.
 - Focused affectedtesttarget compile precedes new required actualfull21/freshreview; no native/listening/physical/installed/useracceptance claim.
+
+### 2026-10-19 — PR413 complete restart repair-chain integration
+
+- Composed canonical be596 through ordered65aa compiler,143 configured filesystem identity andff89 portable-case fixture repairs with qualified main4531bc9. Git merged without conflicts, retaining changelog preparation/history/package handling and current default no-test launch.
+- Verified all34 identity and24 fixture payloads plus prior12 compiler payloads; complete chain and unchanged Python/Swift hashes checked. Root reports exactff89 systemPython3.9 suites89 and compiled ABSENT-only helper probes passed; this is attested component evidence, not cloud access to raw Mac files or running AppKit lifecycle acceptance.
+- Opt-in force restart retains exact bundle/executable/PID/start identity, locks/CAS/recovery/refusal and separate120scompile/15soperation limits. Required new exact prospective full21 and fresh review remain pending; no app/control/native/build/install action by merger.
