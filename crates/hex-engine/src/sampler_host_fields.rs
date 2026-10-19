@@ -26,3 +26,6 @@ pub use family::{
     FamilyCompiledFields, FamilyCompiledRecordFields, FamilyFields, FamilyRequestFields,
     FamilyRequestPayload, FamilyRequestRecords, FamilySnapshotFields,
 };
+
+mod worker;
+pub use worker::SamplerWorkerFields;

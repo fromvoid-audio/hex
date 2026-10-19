@@ -1872,3 +1872,19 @@ slot. Two queued equal-content Copy/Cut allocations remain distinct, repeated
 observations dedup, foreign fields refuse, and actual retained/peak exact and
 individual-minus-one limits are checked. These are request-storage component
 checks, not complete Service admission or playable/native Sampler acceptance.
+
+#### Actual dispatch-local borrowed schema (19 October 2026)
+
+The existing WorkerRootChildInventory selected-child consumer now constructs
+Engine's finite SamplerWorkerFields directly from its actual same-dispatch
+references. Exhaustive WorkerDispatchState/Event/preview/export patterns keep
+current/Event/device-preview/tuning-preview views distinct, with actual MIDI
+and media/recovery/export/completion path fields. Engine drives every named
+child visit without an allocated projection list or a ledger callback. Actual
+Session/cache/transform/cancellation visits still precede this selected walk;
+the separate unqualified-parent refusal is unchanged. A pending-Event fixture
+compares all four distinct views and path buffers against explicit actual-field
+visits, demonstrates four omission negatives and repeated-field dedup. This
+record cannot outlive its source borrows. It is not complete worker inventory,
+legacy outer Arc qualification, a whole-constructor quote or publication proof.
+The native same-parent facade and complete Service admission remain open.

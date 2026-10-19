@@ -107,6 +107,107 @@ impl<'a> WorkerRootView<'a> {
                 .as_ref()
                 .is_some_and(|current| current.shares_owner_with(source))
     }
+    /// Concrete references from these actual dispatch fields, not cloned views
+    /// or substituted current/history snapshots. Unsupported parents remain in
+    /// require_complete_root_storage_on_control's explicit refusal below.
+    fn sampler_fields_on_control(
+        &self,
+    ) -> hex_engine::sampler_host_fields::SamplerWorkerFields<'_> {
+        use hex_engine::sampler_host_fields::{SamplerWorkerFields, SnapshotViewPayload};
+        let WorkerDispatchState {
+            session: _,
+            current,
+            compiled: _,
+            midi_preview,
+            generation: _,
+            revision: _,
+            control: _,
+            clipboard: _,
+            media_base,
+            recovery,
+            document: _,
+            journal: _,
+            keyboard: _,
+            keyboard_hint: _,
+            audition: _,
+            expression: _,
+            device_gesture: _,
+            tuning_gesture: _,
+            export_job,
+            export_completion,
+        } = self.state;
+        let (event, device_preview, tuning_preview) =
+            self.event.map_or((None, None, None), |event| {
+                let Event {
+                    state,
+                    snapshot_reads: _,
+                    playback: _,
+                    status: _,
+                    error: _,
+                    audio_batch_failure: _,
+                    request_complete: _,
+                    computer_keyboard_complete: _,
+                    tuning_audition_complete: _,
+                    live_expression_complete: _,
+                    audio_batch_complete: _,
+                    save_complete: _,
+                    open_complete: _,
+                    project_replaced: _,
+                    stopped_playback_restore_complete: _,
+                    created: _,
+                    duplicate_complete: _,
+                    restore_complete: _,
+                    device_preview,
+                    gesture_ack: _,
+                    gesture_protocol_ack: _,
+                    gesture_request: _,
+                    active_device_gesture: _,
+                    tuning_preview,
+                    tuning_gesture_ack: _,
+                    tuning_gesture_request: _,
+                    active_tuning_gesture: _,
+                    tuning_library: _,
+                } = event;
+                (
+                    Some(state.as_ref() as &dyn SnapshotViewPayload),
+                    device_preview
+                        .as_ref()
+                        .map(|DevicePreview { identity: _, state }| {
+                            state.as_ref() as &dyn SnapshotViewPayload
+                        }),
+                    tuning_preview
+                        .as_ref()
+                        .map(|TuningPreview { identity: _, state }| {
+                            state.as_ref() as &dyn SnapshotViewPayload
+                        }),
+                )
+            });
+        SamplerWorkerFields {
+            current: current.as_ref(),
+            event,
+            device_preview,
+            tuning_preview,
+            midi_preview,
+            media_base: media_base.as_ref(),
+            recovery: recovery.as_ref(),
+            export_path: export_job.map(
+                |ExportJob {
+                     revision: _,
+                     path,
+                     prepared: _,
+                     frames: _,
+                     controlled: _,
+                 }| path,
+            ),
+            export_completion_path: export_completion.map(
+                |ExportEvent {
+                     revision: _,
+                     path,
+                     result: _,
+                 }| path,
+            ),
+        }
+    }
     /// Acquire actual Session/cache guards AFTER the caller's outer/inner family
     /// guards, BEFORE the ledger and native barrier. All guards/borrows must stay
     /// through final recheck+commit; no result of this callback is a saved permit.
@@ -144,41 +245,7 @@ impl WorkerRootChildInventory<'_> {
         if let Some(control) = self.roots.state.control {
             control.visit_cancellation_storage_on_control(ledger)?;
         }
-        self.roots
-            .state
-            .current
-            .visit_children_selected_storage_on_control(ledger)?;
-        hex_engine::visit_shared_midi_preview_storage_on_control(
-            self.roots.state.midi_preview,
-            ledger,
-        )?;
-        if let Some(event) = self.roots.event {
-            event
-                .state
-                .visit_children_selected_storage_on_control(ledger)?;
-            if let Some(preview) = &event.device_preview {
-                preview
-                    .state
-                    .visit_children_selected_storage_on_control(ledger)?;
-            }
-            if let Some(preview) = &event.tuning_preview {
-                preview
-                    .state
-                    .visit_children_selected_storage_on_control(ledger)?;
-            }
-        }
-        for path in [self.roots.state.media_base, self.roots.state.recovery]
-            .into_iter()
-            .flatten()
-        {
-            ledger.borrow_metadata_path_backing_on_control(path)?;
-        }
-        if let Some(job) = self.roots.state.export_job {
-            ledger.borrow_metadata_path_backing_on_control(&job.path)?;
-        }
-        if let Some(completion) = self.roots.state.export_completion {
-            ledger.borrow_metadata_path_backing_on_control(&completion.path)?;
-        }
+        ledger.borrow_sampler_worker_fields_on_control(&self.roots.sampler_fields_on_control())?;
         Ok(())
     }
     /// Explicitly refuse unqualified physical parents, prepared/gesture/input
@@ -242,6 +309,162 @@ mod tests {
             max_construction_peak_bytes: 4_000_000,
         }
     }
+    #[test]
+    fn actual_worker_fields_include_all_event_previews_and_distinct_path_buffers() {
+        if !hex_engine::audio_storage_constructor_layout_supported()
+            || !hex_engine::canonical_midi_storage_layout_supported()
+            || !hex_engine::canonical_native_state_storage_layout_supported()
+        {
+            eprintln!("unsupported worker child constructors; no positive proof");
+            return;
+        }
+        let session = Session::new(48_000, 8, 0).unwrap();
+        let midi = hex_engine::empty_midi_preview_on_control();
+        let paths: Vec<_> = (0..6)
+            .map(|n| {
+                let mut path = PathBuf::with_capacity(128 + n * 17);
+                path.push(format!("actual-worker-{n}"));
+                path
+            })
+            .collect();
+        let current = view_state(&session, midi.clone(), 1, 3, false, Some(&paths[0]));
+        let event = Event {
+            state: view_state(&session, midi.clone(), 2, 3, false, Some(&paths[1])),
+            snapshot_reads: Default::default(),
+            playback: None,
+            status: None,
+            error: None,
+            audio_batch_failure: None,
+            request_complete: false,
+            computer_keyboard_complete: None,
+            tuning_audition_complete: None,
+            live_expression_complete: None,
+            audio_batch_complete: None,
+            save_complete: false,
+            open_complete: false,
+            project_replaced: false,
+            stopped_playback_restore_complete: false,
+            created: None,
+            duplicate_complete: false,
+            restore_complete: None,
+            device_preview: Some(DevicePreview {
+                identity: DevicePreviewIdentity {
+                    project_generation: 3,
+                    key: crate::device_gesture::GestureKey {
+                        generation: 3,
+                        token: 1,
+                    },
+                    sequence: 1,
+                    canonical_revision: 2,
+                },
+                state: view_state(&session, midi.clone(), 3, 3, false, Some(&paths[2])),
+            }),
+            gesture_ack: None,
+            gesture_protocol_ack: false,
+            gesture_request: false,
+            active_device_gesture: None,
+            tuning_preview: Some(TuningPreview {
+                identity: TuningPreviewIdentity {
+                    project_generation: 3,
+                    key: crate::tuning_gesture::TuningGestureKey {
+                        generation: 3,
+                        token: 2,
+                    },
+                    sequence: 1,
+                    canonical_revision: 2,
+                },
+                state: view_state(&session, midi.clone(), 4, 3, false, Some(&paths[3])),
+            }),
+            tuning_gesture_ack: None,
+            tuning_gesture_request: false,
+            active_tuning_gesture: None,
+            tuning_library: None,
+        };
+        let media_base = Some(paths[4].clone());
+        let recovery = Some(paths[5].clone());
+        let gesture = GestureMachine::default();
+        let tuning = TuningGestureMachine::default();
+        let cancellation = SessionCancellation::Unqualified(Arc::new(AtomicBool::new(false)));
+        let state = WorkerDispatchState {
+            session: &session,
+            current: &current,
+            compiled: &None,
+            midi_preview: &midi,
+            generation: 3,
+            revision: 2,
+            control: None,
+            clipboard: &None,
+            media_base: &media_base,
+            recovery: &recovery,
+            document: &None,
+            journal: &None,
+            keyboard: &None,
+            keyboard_hint: &None,
+            audition: &None,
+            expression: &None,
+            device_gesture: &gesture,
+            tuning_gesture: &tuning,
+            export_job: None,
+            export_completion: None,
+        };
+        let roots = WorkerRootView::new(
+            &state,
+            &cancellation,
+            Some(&event),
+            WorkerRootDispatch::PendingEvent,
+        );
+        let explicit = |omit: Option<usize>| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(budget()).unwrap();
+            for (index, view) in [
+                &current,
+                &event.state,
+                &event.device_preview.as_ref().unwrap().state,
+                &event.tuning_preview.as_ref().unwrap().state,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if omit != Some(index) {
+                    view.visit_children_selected_storage_on_control(&mut ledger)
+                        .unwrap();
+                }
+            }
+            hex_engine::visit_shared_midi_preview_storage_on_control(&midi, &mut ledger).unwrap();
+            for path in [&media_base, &recovery].into_iter().flatten() {
+                ledger
+                    .borrow_metadata_path_backing_on_control(path)
+                    .unwrap();
+            }
+            ledger.summary().unwrap()
+        };
+        let expected = explicit(None);
+        let fields = roots.sampler_fields_on_control();
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(budget()).unwrap();
+        ledger
+            .borrow_sampler_worker_fields_on_control(&fields)
+            .unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert_eq!(ledger.summary().unwrap(), expected);
+        ledger
+            .borrow_sampler_worker_fields_on_control(&fields)
+            .unwrap();
+        assert_eq!(ledger.summary().unwrap(), expected);
+        for index in 0..4 {
+            assert!(
+                explicit(Some(index)).data_bytes < expected.data_bytes,
+                "actual distinct current/event/device/tuning view{index} cannot be omitted"
+            );
+        }
+        assert_eq!(event.state.revision, 2);
+        assert_eq!(event.device_preview.as_ref().unwrap().state.revision, 3);
+        assert_eq!(event.tuning_preview.as_ref().unwrap().state.revision, 4);
+        eprintln!(
+            "SUPPORTED actual pending Event + both independent preview views + current, four omission negatives, distinct path capacity, same physical handle dedup; legacy parent still unqualified"
+        );
+    }
+
     #[test]
     fn actual_worker_root_children_detect_omitted_midi_field_and_pending_export_path_capacity() {
         if !hex_engine::audio_storage_constructor_layout_supported()

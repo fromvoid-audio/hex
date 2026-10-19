@@ -7,6 +7,7 @@ finite schema. This check preserves the independent Cargo dependency checks.
 import re
 
 EXACT = {
+    'crates/hex-session/src/service/worker_roots.rs',
     'crates/hex-project/src/time_range.rs',
     'crates/hex-engine/src/lib.rs',
     'crates/hex-engine/src/midi_preview.rs',
@@ -29,7 +30,7 @@ EXACT = {
 # Whole subtrees are restricted to the new Engine schema itself, not arbitrary
 # modules in an approved crate. New production producers require explicit review.
 PREFIXES = ('crates/hex-engine/src/sampler_host_fields/',)
-NAMES = re.compile(r'\b(?:track_buffer_on_control|FamilySnapshotFields|FamilyCompiledRecordFields|FamilyCompiledFields|FamilyRequestPayload|FamilyRequestFields|FamilyRequestRecords|borrow_sampler_family_fields_on_control|borrow_sampler_family_requests_on_control|borrow_sampler_family_compiled_on_control|SnapshotViewFields|SnapshotViewPayload|CapturedSourcePayload|borrow_sampler_snapshot_children_fields_on_control|borrow_sampler_snapshot_view_fields_on_control|WaveformFields|WaveformPayload|WaveformLevelsRef|WaveformSamples|borrow_sampler_waveform_fields_on_control|sampler_host_fields|BodyRef|VecRef|SharedMetadataRef|SamplerWorkerFields|CapturedSourceFields|FamilyFields|FileSlotsFields|NativeFields|sampler_fields_on_control|borrow_sampler_file_slots_fields_on_control|borrow_sampler_captured_source_fields_on_control)\b')
+NAMES = re.compile(r'\b(?:borrow_sampler_worker_fields_on_control|track_buffer_on_control|FamilySnapshotFields|FamilyCompiledRecordFields|FamilyCompiledFields|FamilyRequestPayload|FamilyRequestFields|FamilyRequestRecords|borrow_sampler_family_fields_on_control|borrow_sampler_family_requests_on_control|borrow_sampler_family_compiled_on_control|SnapshotViewFields|SnapshotViewPayload|CapturedSourcePayload|borrow_sampler_snapshot_children_fields_on_control|borrow_sampler_snapshot_view_fields_on_control|WaveformFields|WaveformPayload|WaveformLevelsRef|WaveformSamples|borrow_sampler_waveform_fields_on_control|sampler_host_fields|BodyRef|VecRef|SharedMetadataRef|SamplerWorkerFields|CapturedSourceFields|FamilyFields|FileSlotsFields|NativeFields|sampler_fields_on_control|borrow_sampler_file_slots_fields_on_control|borrow_sampler_captured_source_fields_on_control)\b')
 
 
 def violations(path: str, source: str) -> list[str]:
