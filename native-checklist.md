@@ -1,0 +1,3 @@
+Root only, no job dispatched. Exact changed-case command on source1d38161a:
+cargo test -p hex-ui --features ui-test-support --locked --lib -- --nocapture workspace_review_tab_preserves_selected_open_confirmation_until_cancel workspace_review_tab_preserves_held_ruler_until_release_or_cancel
+Expected exactly2uniquePASS/0ignored; retained valid-file confirmation transition plus held ruler release/refusal AND Escape. Private RAII fixture paths before constructor workers; offline no OSbackend. Optional complete focused command substitutes workspace_view_ui_test operator_tab_cycle, exactly11unique (9+2); no unchanged native repeat requested. Component only, no physical keyboard/prompt/display/audio/GPU/listening acceptance. No app build/install/launch/quit or user files.

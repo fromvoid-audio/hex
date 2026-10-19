@@ -1,0 +1,72 @@
+[
+  {
+    "run": "20261019T061553Z-7676e5ab",
+    "mode": "quick",
+    "status": "failed",
+    "exit_code": 1,
+    "duration_seconds": 69.05,
+    "summary_sha256": "a7b23ab2cc1bee8e9c59cd0ac4eadfd1c50bd01bb3c89993551a2d4a2c18db06",
+    "steps": [
+      {
+        "step_id": "open-scrub-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T061736Z-75c08a0d",
+    "mode": "quick",
+    "status": "partial",
+    "exit_code": 0,
+    "duration_seconds": 63.939,
+    "summary_sha256": "b365c794cb287e020733e4f7681aa1ad8a43e137d028f93b09f7ac20b7c3c2e8",
+    "steps": [
+      {
+        "step_id": "open-scrub-focused",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T061949Z-11cca186",
+    "mode": "quick",
+    "status": "partial",
+    "exit_code": 0,
+    "duration_seconds": 39.038,
+    "summary_sha256": "c9b7eff265ac8eb1dbd4fd97fd11114a623eca09d03366733e0a723541814f94",
+    "steps": [
+      {
+        "step_id": "strict-ui",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "architecture",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "ui-style",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "gpui-patch",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "touched-fmt",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "diff-check",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  }
+]
