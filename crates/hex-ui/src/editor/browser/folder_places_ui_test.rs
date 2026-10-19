@@ -38,7 +38,7 @@ fn fixture(
     let samples = environment.root().join("samples");
     std::fs::create_dir_all(samples.join("outer/nested")).unwrap();
     // A real small WAV exists before any startup/catalog/preview worker.
-    let data = vec![0_u8; 48];
+    let data = [0_u8; 48];
     let mut wav = Vec::new();
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&(36_u32 + data.len() as u32).to_le_bytes());

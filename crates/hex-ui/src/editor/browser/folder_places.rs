@@ -23,7 +23,7 @@ impl gpui::Render for FolderGhost {
             .whitespace_nowrap()
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(&format!("folder · {}", self.0)))
+            .child(theme::text(format!("folder · {}", self.0)))
     }
 }
 
