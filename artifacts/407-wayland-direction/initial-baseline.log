@@ -1,0 +1,39 @@
+
+running 5 tests
+test v9_mixed_axis_directions_are_independent ... FAILED
+test pre_v9_unknown_retains_current_fractional_content_and_empty_frames ... ok
+test v9_continuous_plus_fractional_ticks_preserves_content ... FAILED
+test v9_inverted_wheel_ticks_follow_device ... FAILED
+test v9_shift_follows_original_axis_direction_after_swap ... FAILED
+
+failures:
+
+failures:
+    v9_continuous_plus_fractional_ticks_preserves_content
+    v9_inverted_wheel_ticks_follow_device
+    v9_mixed_axis_directions_are_independent
+    v9_shift_follows_original_axis_direction_after_swap
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+thread 'v9_continuous_plus_fractional_ticks_preserves_content' (193254) panicked at /workspace/hex/artifacts/407-wayland-direction/source-extracted-axis-baseline.rs:227:279:
+assertion `left == right` failed
+  left: Some(Point { x: 0.0, y: -0.25 })
+ right: Some(Point { x: 0.0, y: 0.25 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'v9_mixed_axis_directions_are_independent' (193256) panicked at /workspace/hex/artifacts/407-wayland-direction/source-extracted-axis-baseline.rs:226:301:
+assertion `left == right` failed
+  left: Some(Point { x: -1.0, y: -1.0 })
+ right: Some(Point { x: -1.0, y: 1.0 })
+
+thread 'v9_inverted_wheel_ticks_follow_device' (193255) panicked at /workspace/hex/artifacts/407-wayland-direction/source-extracted-axis-baseline.rs:225:230:
+assertion `left == right` failed
+  left: Some(Point { x: 0.0, y: -1.0 })
+ right: Some(Point { x: 0.0, y: 1.0 })
+
+thread 'v9_shift_follows_original_axis_direction_after_swap' (193257) panicked at /workspace/hex/artifacts/407-wayland-direction/source-extracted-axis-baseline.rs:228:267:
+assertion `left == right` failed
+  left: Some(Point { x: -1.0, y: 0.0 })
+ right: Some(Point { x: 1.0, y: 0.0 })

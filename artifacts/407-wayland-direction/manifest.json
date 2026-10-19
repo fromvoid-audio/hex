@@ -1,0 +1,87 @@
+{
+  "source": "0134de5a06f2bc80baaa24475b1fd221b7ed22f5",
+  "source_tree": "9f93e06b878df795d4f234741ab7dde7beaaebda",
+  "kind": "read-only proposal; no shipping patch; source-extracted stub-carrier diagnostic",
+  "payloads": {
+    "PROPOSAL.md": {
+      "bytes": 8575,
+      "sha256": "46ae25196333f992cb5a72aae46d653833c58fd6874fea023ae6680affebf004"
+    },
+    "axis-arms-exact.txt": {
+      "bytes": 6014,
+      "sha256": "9e676fe1aac7194089bec3baf6a5aed07bfa668dec6a9c4ad49c1f6d23ff08d4"
+    },
+    "baseline.log": {
+      "bytes": 1867,
+      "sha256": "54acb5a2d2edba15d8a8bc500f509b2e66c5cb8e306e742d4cc8a8f829e7aa80"
+    },
+    "before-sha256.txt": {
+      "bytes": 420,
+      "sha256": "00079a86f648d6cb8f6d918b9a0d013699e3908ea55c7ae2006aa497a4171712"
+    },
+    "compile-edition2021.log": {
+      "bytes": 666,
+      "sha256": "8d808bd2fa37aeb8891a55457abc066e889c87d51ec4c8c7f159725d64ad2965"
+    },
+    "compile.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "generate-source-arm-repro.py": {
+      "bytes": 6557,
+      "sha256": "2b0f7e92f9f6caccb92a6808048ff9c966e253b4fd987217fe016ceb52b0ac44"
+    },
+    "initial-baseline.log": {
+      "bytes": 1867,
+      "sha256": "14a39946bce6a617a3748ca4d5335f558a1254259e00b7a1eae5346d2500bfe8"
+    },
+    "initial-provenance.json": {
+      "bytes": 564,
+      "sha256": "1b1dfe7d113e16fa05aba917e4a90a1c4492ad3c0dc753d15e025a1232c29e4e"
+    },
+    "initial-source-extracted-axis-baseline.rs": {
+      "bytes": 12431,
+      "sha256": "f527ddcad9b873c0157049984622cd969d59ac745e4680e29a00da5c85cbcb1e"
+    },
+    "official-fetch-error.txt": {
+      "bytes": 56,
+      "sha256": "f7f470148e1b345e9b3bc681aaa9bbdf23efb65cd1c473df670bb14d80b389f8"
+    },
+    "original-wayland.xml": {
+      "bytes": 168656,
+      "sha256": "cc860987e54f8d85c940e97fa1270c69b6e4ad31fbcf5a7f00107ce1157f5e07"
+    },
+    "pinned-wayland-pointer-contract.xml": {
+      "bytes": 9899,
+      "sha256": "c2d2cf6996057e474dceaa8f4ed330b30c17d0dcf898519c22e7227860b80591"
+    },
+    "provenance.json": {
+      "bytes": 564,
+      "sha256": "482b97928f100a1304d03f0f9bb2f7848947e6edc8caffc40ca99e162c406a8c"
+    },
+    "repro-edition2021.stdout": {
+      "bytes": 15,
+      "sha256": "909d48bb71d53ecfe03df69f848fd2c51d21576e2fe9f53d07ee6a450ee12898"
+    },
+    "repro.stdout": {
+      "bytes": 1897,
+      "sha256": "991cd072965d1f8cc308088b4ba260821c2b1e2eebe47fdc83ddc6df61aca6f5"
+    },
+    "source/Cargo.lock": {
+      "bytes": 193925,
+      "sha256": "18f8428da3e4c344a332ad68fc7061294b952353027fd7171e0858d040282304"
+    },
+    "source/third_party/gpui/src/interactive.rs": {
+      "bytes": 21686,
+      "sha256": "968030ec8155161c2fc9b9430bb5a8c293c6ea45a59e49b728fc83ff65e8596b"
+    },
+    "source/third_party/gpui/src/platform/linux/wayland/client.rs": {
+      "bytes": 82480,
+      "sha256": "40ad7e00a72de7cdac632864f83e3333731c4832f53535b219aa109c2d42329b"
+    },
+    "source-extracted-axis-baseline.rs": {
+      "bytes": 12475,
+      "sha256": "2cf07dd525bb820bf79dada9ed97bf9a0e52b8d6b345aebb7cea0112fdfc08cd"
+    }
+  }
+}
