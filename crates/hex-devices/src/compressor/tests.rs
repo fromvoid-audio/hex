@@ -1059,7 +1059,7 @@ fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
     let mut failures = Vec::new();
     let mut cases = 0;
     for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
-        for impulse in [false, true] {
+        for stimulus in ["dc", "impulse", "tone"] {
             for path in 0..8 {
                 let initial_mode = u32::from(matches!(path, 1 | 3 | 5 | 6));
                 let mut state = mode(
@@ -1071,8 +1071,13 @@ fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
                 }
                 let mut actual = runtime(&state, rate);
                 let mut prime = [[0.5, -0.25]; 257];
-                if impulse {
+                if stimulus == "impulse" {
                     prime[1..].fill([0.0; 2]);
+                } else if stimulus == "tone" {
+                    for (index, frame) in prime.iter_mut().enumerate() {
+                        let phase = std::f64::consts::TAU * index as f64 / 48.0;
+                        *frame = [(0.5 * phase.sin()) as f32, (0.25 * phase.cos()) as f32];
+                    }
                 }
                 actual.process_block(&mut prime, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 assert!(
@@ -1109,13 +1114,13 @@ fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
                 actual.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 let later = history(actual.as_ref()).energy;
                 println!(
-                    "RMS_SILENCE rate={rate} impulse={impulse} path={path} energy={energy:?} subnormal={:?} persistent_nonzero={}",
+                    "RMS_SILENCE rate={rate} stimulus={stimulus} path={path} energy={energy:?} subnormal={:?} persistent_nonzero={}",
                     energy.map(f64::is_subnormal),
                     energy == later && energy != [0.0; 2]
                 );
                 assert!(energy.iter().all(|value| value.is_finite()));
                 if energy != [0.0; 2] || later != [0.0; 2] {
-                    failures.push((rate, impulse, path, energy, later));
+                    failures.push((rate, stimulus, path, energy, later));
                 }
                 cases += 1;
             }

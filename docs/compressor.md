@@ -186,7 +186,7 @@ paths. The original recurrence above the floor, Peak arithmetic fast path,
 Subfloor input increments are discarded; this is a local numerical floor,
 not a noise gate, new control, global floating-point mode or codec change.
 
-Real provider tone/impulse-to-silence tests cover six rates and eight processing
+Real provider dc/impulse/tone-to-silence tests cover six rates and eight processing
 paths; independent exponential crossing, history/partition/reset and calibrated
 allocation checks accompany the original PCM/analytic/persistence/A-B controls.
 Observed subnormal persistence is source/runtime evidence, not proof of a native
