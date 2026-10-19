@@ -1,0 +1,134 @@
+test_cargo_metadata_resolves_and_pins_exact_target_and_source_identity (test_local_ci.LocalCiRunnerTests.test_cargo_metadata_resolves_and_pins_exact_target_and_source_identity) ... [1/1] build: running
+[1/1] build: passed
+ok
+test_dependency_guard_runs_without_python311_tomllib (test_local_ci.LocalCiRunnerTests.test_dependency_guard_runs_without_python311_tomllib) ... ok
+test_disk_probe_failure_retains_report_without_running_checks (test_local_ci.LocalCiRunnerTests.test_disk_probe_failure_retains_report_without_running_checks) ... could not inspect disk headroom for workspace: unavailable volume
+ok
+test_explicit_adoption_cleans_only_dev_workspace_packages (test_local_ci.LocalCiRunnerTests.test_explicit_adoption_cleans_only_dev_workspace_packages) ... [1/1] build: running
+[1/1] build: passed
+ok
+test_explicit_target_mount_is_probed_separately (test_local_ci.LocalCiRunnerTests.test_explicit_target_mount_is_probed_separately) ... target has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+ok
+test_failed_handoff_clean_keeps_previous_owner_and_skips_build (test_local_ci.LocalCiRunnerTests.test_failed_handoff_clean_keeps_previous_owner_and_skips_build) ... [1/1] build: running
+[1/1] build: passed
+workspace dev-artifact cleanup failed; previous owner was preserved
+ok
+test_failure_stops_pipeline_and_marks_remaining_step_not_run (test_local_ci.LocalCiRunnerTests.test_failure_stops_pipeline_and_marks_remaining_step_not_run) ... [1/2] bad: running
+[1/2] bad: failed
+ok
+test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper (test_local_ci.LocalCiRunnerTests.test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper) ... [1/21] runner-tests: running
+[1/21] runner-tests: passed
+[2/21] changelog: running
+[2/21] changelog: passed
+[3/21] architecture: running
+[3/21] architecture: passed
+[4/21] gpui-patch: running
+[4/21] gpui-patch: passed
+[5/21] dependency-patches: running
+[5/21] dependency-patches: passed
+[6/21] ui-style: running
+[6/21] ui-style: passed
+[7/21] device-layout: running
+[7/21] device-layout: passed
+[8/21] format: running
+[8/21] format: passed
+[9/21] dependency-future-lints: running
+[9/21] dependency-future-lints: passed
+[10/21] workspace-tests: running
+[10/21] workspace-tests: passed
+[11/21] prepared-export-instrument-tests: running
+[11/21] prepared-export-instrument-tests: passed
+[12/21] ui-feature-tests: running
+[12/21] ui-feature-tests: passed
+[13/21] device-gallery-tests: running
+[13/21] device-gallery-tests: passed
+[14/21] audio-allocation-probe: running
+[14/21] audio-allocation-probe: passed
+[15/21] stream-allocation-probe: running
+[15/21] stream-allocation-probe: passed
+[16/21] workspace-clippy: running
+[16/21] workspace-clippy: passed
+[17/21] prepared-export-instrument-clippy: running
+[17/21] prepared-export-instrument-clippy: passed
+[18/21] ui-feature-clippy: running
+[18/21] ui-feature-clippy: passed
+[19/21] audio-feature-clippy: running
+[19/21] audio-feature-clippy: passed
+[20/21] stream-feature-clippy: running
+[20/21] stream-feature-clippy: passed
+[21/21] desktop-build: running
+[21/21] desktop-build: passed
+ok
+test_headroom_is_rechecked_before_heavy_steps (test_local_ci.LocalCiRunnerTests.test_headroom_is_rechecked_before_heavy_steps) ... [1/2] first: running
+[1/2] first: passed
+workspace has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+ok
+test_interruption_records_exit_time_and_skipped_steps (test_local_ci.LocalCiRunnerTests.test_interruption_records_exit_time_and_skipped_steps) ... [1/2] interrupt: running
+ok
+test_lock_failures_release_the_file_and_preserve_useful_errors (test_local_ci.LocalCiRunnerTests.test_lock_failures_release_the_file_and_preserve_useful_errors) ... could not record Cargo target lock holder: runner holder write denied
+[1/1] build: running
+[1/1] build: passed
+ok
+test_low_space_stops_before_tools_and_preserves_files (test_local_ci.LocalCiRunnerTests.test_low_space_stops_before_tools_and_preserves_files) ... workspace has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+ok
+test_malformed_owner_marker_fails_closed_without_adoption (test_local_ci.LocalCiRunnerTests.test_malformed_owner_marker_fails_closed_without_adoption) ... Cargo target ownership marker is malformed at /tmp/tmpq21zrbkl/target-ownership/62275aac6a8a8ddddb63201de5cd04f6da51f3ee6d349a6eb07ff36f4568214f.owner.json; use a fresh target or explicitly adopt it after checking ownership
+ok
+test_metadata_failure_is_recorded_and_blocks_build (test_local_ci.LocalCiRunnerTests.test_metadata_failure_is_recorded_and_blocks_build) ... {'exit_code': 9, 'stderr': 'metadata unavailable'}
+ok
+test_missing_executable_is_logged_as_failure (test_local_ci.LocalCiRunnerTests.test_missing_executable_is_logged_as_failure) ... [1/1] missing: running
+[1/1] missing: failed
+ok
+test_quick_format_does_not_claim_or_clean_unknown_cargo_target (test_local_ci.LocalCiRunnerTests.test_quick_format_does_not_claim_or_clean_unknown_cargo_target) ... [1/1] format: running
+[1/1] format: passed
+ok
+test_quick_headroom_floor_and_invalid_configuration (test_local_ci.LocalCiRunnerTests.test_quick_headroom_floor_and_invalid_configuration) ... [1/1] first: running
+[1/1] first: passed
+ok
+test_quick_success_records_commit_commands_and_per_step_logs_as_partial (test_local_ci.LocalCiRunnerTests.test_quick_success_records_commit_commands_and_per_step_logs_as_partial) ... [1/2] first: running
+[1/2] first: passed
+[2/2] second: running
+[2/2] second: passed
+ok
+test_real_cargo_worktree_handoff_cleans_only_workspace_dev_artifacts (test_local_ci.LocalCiRunnerTests.test_real_cargo_worktree_handoff_cleans_only_workspace_dev_artifacts)
+Exercise the API-mismatch handoff against Cargo in an isolated temporary target. ... [1/2] debug-build: running
+[1/2] debug-build: passed
+[2/2] release-build: running
+[2/2] release-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: passed
+real cargo handoff: workspace dev outputs rebuilt; external path dependency and release binary preserved (target=/tmp/tmpl1oqn9_l/isolated-cargo-target)
+ok
+test_release_ancestor_alias_accepts_but_target_symlinks_and_escape_refuse (test_local_ci.LocalCiRunnerTests.test_release_ancestor_alias_accepts_but_target_symlinks_and_escape_refuse) ... ok
+test_release_and_dev_contend_on_same_lock_and_summary_failure_unlocks (test_local_ci.LocalCiRunnerTests.test_release_and_dev_contend_on_same_lock_and_summary_failure_unlocks) ... Cargo target is already in use by another local CI run; current holder: {"active_holder": {"commit": "deadbeef", "profile": "release", "run_id": "holder", "target_directory": "/tmp/tmpm105sg1q/repo/cargo-target", "workspace_root": "/tmp/tmpm105sg1q/repo"}}
+ok
+test_release_artifact_mutation_and_consumer_failure_stay_pending (test_local_ci.LocalCiRunnerTests.test_release_artifact_mutation_and_consumer_failure_stay_pending) ... ok
+test_release_cleanup_failure_and_interruption_keep_pending (test_local_ci.LocalCiRunnerTests.test_release_cleanup_failure_and_interruption_keep_pending) ... ok
+test_release_external_name_collision_refuses_before_marker_or_cleanup (test_local_ci.LocalCiRunnerTests.test_release_external_name_collision_refuses_before_marker_or_cleanup) ... ok
+test_release_malformed_recreated_target_and_changed_source_refuse (test_local_ci.LocalCiRunnerTests.test_release_malformed_recreated_target_and_changed_source_refuse) ... ok
+test_release_unknown_pending_and_explicit_recovery (test_local_ci.LocalCiRunnerTests.test_release_unknown_pending_and_explicit_recovery) ... ok
+test_replaced_target_fails_closed_before_cross_worktree_cleanup (test_local_ci.LocalCiRunnerTests.test_replaced_target_fails_closed_before_cross_worktree_cleanup) ... [1/1] build: running
+[1/1] build: passed
+Cargo target directory identity changed; choose a fresh target or pass --adopt-target
+ok
+test_same_worktree_reuses_target_without_cleanup (test_local_ci.LocalCiRunnerTests.test_same_worktree_reuses_target_without_cleanup) ... [1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+ok
+test_source_change_during_run_marks_evidence_stale (test_local_ci.LocalCiRunnerTests.test_source_change_during_run_marks_evidence_stale) ... [1/1] mutate: running
+[1/1] mutate: passed
+ok
+test_target_lock_contention_refuses_before_cargo_build (test_local_ci.LocalCiRunnerTests.test_target_lock_contention_refuses_before_cargo_build) ... Cargo target is already in use by another local CI run; current holder: {"active_holder": {"run_id": "holder", "target_directory": "/tmp/tmpklli3knv/repo/cargo-target", "workspace_root": "/tmp/tmpklli3knv/repo"}}
+ok
+test_unknown_nonempty_target_fails_closed_without_removing_or_using_it (test_local_ci.LocalCiRunnerTests.test_unknown_nonempty_target_fails_closed_without_removing_or_using_it) ... Cargo target ownership is unknown at /tmp/tmps8f2_doo/repo/cargo-target; choose an empty target or pass --adopt-target
+ok
+test_worktree_handoff_cleans_every_workspace_member (test_local_ci.LocalCiRunnerTests.test_worktree_handoff_cleans_every_workspace_member) ... [1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+ok
+
+----------------------------------------------------------------------
+Ran 32 tests in 1.245s
+
+OK

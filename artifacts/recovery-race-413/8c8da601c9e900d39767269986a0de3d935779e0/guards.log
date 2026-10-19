@@ -1,0 +1,14 @@
+Python3.9 grammar PASS scripts/local-ci.py
+Python3.9 grammar PASS scripts/tests/test_launch_restart.py
+CHECK ['python3', 'scripts/check-architecture.py']
+architecture policy passed: 25 crates with explicit purposes and boundaries
+CHECK ['python3', 'scripts/check-gpui-patch.py']
+GPUI patch passed: verified baseline, input/cursor/titlebar, cache epochs/replay, test support and bounded accessibility, excluded native dependency
+CHECK ['python3', 'scripts/check-dependency-patches.py']
+dependency patches passed: pinned baselines, exact opaque-marker/visibility deltas, excluded native dependencies
+CHECK ['python3', 'scripts/check-ui-style.py']
+UI style passed: centralized lowercase text, Ioskeley Mono, lowercase bundle name
+CHECK ['python3', 'scripts/check-device-layout.py']
+device composition boundary passed (production, Track/Return, fallback and gallery)
+CHECK ['cargo', 'fmt', '--all', '--check']
+CHECK ['git', 'diff', '--check']

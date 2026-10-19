@@ -1,0 +1,50 @@
+test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash (test_launch_restart.OwnershipTests.test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash) ... 
+  test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash (test_launch_restart.OwnershipTests.test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash) (field='workspace_root') ... FAIL
+  test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash (test_launch_restart.OwnershipTests.test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash) (field='git_common_dir') ... FAIL
+test_owner_cas_refuses_missing_target_with_unchanged_marker (test_launch_restart.OwnershipTests.test_owner_cas_refuses_missing_target_with_unchanged_marker) ... FAIL
+test_owner_cas_refuses_replaced_target_with_unchanged_marker (test_launch_restart.OwnershipTests.test_owner_cas_refuses_replaced_target_with_unchanged_marker) ... FAIL
+
+======================================================================
+FAIL: test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash (test_launch_restart.OwnershipTests.test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash) (field='workspace_root')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 419, in test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash
+    self.assert_recovery_refuses_without_mutation(hashlib.sha256(raw).hexdigest(), raw)
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 388, in assert_recovery_refuses_without_mutation
+    self.fail('automatic recovery entered mutation after identity changed')
+AssertionError: automatic recovery entered mutation after identity changed
+
+======================================================================
+FAIL: test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash (test_launch_restart.OwnershipTests.test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash) (field='git_common_dir')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 419, in test_owner_cas_refuses_foreign_workspace_even_with_matching_marker_hash
+    self.assert_recovery_refuses_without_mutation(hashlib.sha256(raw).hexdigest(), raw)
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 388, in assert_recovery_refuses_without_mutation
+    self.fail('automatic recovery entered mutation after identity changed')
+AssertionError: automatic recovery entered mutation after identity changed
+
+======================================================================
+FAIL: test_owner_cas_refuses_missing_target_with_unchanged_marker (test_launch_restart.OwnershipTests.test_owner_cas_refuses_missing_target_with_unchanged_marker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 409, in test_owner_cas_refuses_missing_target_with_unchanged_marker
+    self.assert_recovery_refuses_without_mutation(expected, raw)
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 388, in assert_recovery_refuses_without_mutation
+    self.fail('automatic recovery entered mutation after identity changed')
+AssertionError: automatic recovery entered mutation after identity changed
+
+======================================================================
+FAIL: test_owner_cas_refuses_replaced_target_with_unchanged_marker (test_launch_restart.OwnershipTests.test_owner_cas_refuses_replaced_target_with_unchanged_marker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 402, in test_owner_cas_refuses_replaced_target_with_unchanged_marker
+    self.assert_recovery_refuses_without_mutation(expected, raw)
+  File "/workspace/hex/scripts/tests/test_launch_restart.py", line 388, in assert_recovery_refuses_without_mutation
+    self.fail('automatic recovery entered mutation after identity changed')
+AssertionError: automatic recovery entered mutation after identity changed
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.068s
+
+FAILED (failures=4)

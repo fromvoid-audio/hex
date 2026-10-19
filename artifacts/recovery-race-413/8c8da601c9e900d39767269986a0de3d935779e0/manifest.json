@@ -1,0 +1,48 @@
+{
+  "source": "8c8da601c9e900d39767269986a0de3d935779e0",
+  "tree": "365db889b474b257183eb612a31b1d257208c4c1",
+  "parent": "97003abf259c801c48acf2368005cbb6a0cc4384",
+  "kind": "evidence-only-never-build-merge",
+  "payloads": {
+    "HANDOFF.md": {
+      "bytes": 3448,
+      "sha256": "8042ab652f81a000778545a51061e1437834045cd75b7da2763e02305d8cbcb4"
+    },
+    "baseline-red.log": {
+      "bytes": 4472,
+      "sha256": "46727e533c332790baa8dabecf9a060d4f5b1ce119f2584e88e808d9459585d9"
+    },
+    "file-hashes.json": {
+      "bytes": 488,
+      "sha256": "717ad23969ddd928f6860ec7b2d7df8d4a82be3410f03ad20031c67c1bf5a3f8"
+    },
+    "guards.log": {
+      "bytes": 939,
+      "sha256": "53b616be4e5198271e76db024678eb0addbed8828ad74fc4353d7c7117f88557"
+    },
+    "local-ci-green.log": {
+      "bytes": 9673,
+      "sha256": "ee8e76d40dbf4b3b1c331e8a6a3085bbb4480d6ab021aa245b34fa02c60f5a09"
+    },
+    "owner.patch": {
+      "bytes": 3988,
+      "sha256": "7ffea72a026c5b513da59a67cda80a6ba21473f818a72a65613d177802b305d8"
+    },
+    "python-all.log": {
+      "bytes": 6248,
+      "sha256": "c751f7c6291575ba48b1fc667cc32bc7dd3d8a43539c2fad20b42a5830b1855a"
+    },
+    "restart-green.log": {
+      "bytes": 6606,
+      "sha256": "eb1a9b7c8e3a152e8c448ae9631efa31047b4553efb2aad0e2751c7d810d2c2c"
+    },
+    "source/scripts/local-ci.py": {
+      "bytes": 60200,
+      "sha256": "864bf57008c9f4d333db395e374557bb5cf52218eda4cf34ac087867120f7587"
+    },
+    "source/scripts/tests/test_launch_restart.py": {
+      "bytes": 33578,
+      "sha256": "d2a542856015da54235755a3f2e093739b26a79ac9942a6e3810923a2cd94b42"
+    }
+  }
+}

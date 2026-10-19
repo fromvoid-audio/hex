@@ -1,0 +1,149 @@
+.....changelog refused: changelog continuation must start at the previous covered source
+changelog refused: changelog continuation must start at the previous covered source
+...................................................................................ssbuilding optimized hex...
+building optimized hex...
+building optimized hex...
+building optimized hex...
+building optimized hex...
+/tmp/hex-changelog-test-r8h0vrx9/second-packet
+/tmp/hex-changelog-test-r8h0vrx9/repeated-second-packet
+real release A -> B -> A: APIs, additive dependency output, cache preservation, and removed/renamed/version refusal verified
+....fetching latest main...
+..fetching latest main...
+.fetching latest main...
+.fetching latest main...
+.fetching latest main...
+verifying installed hex...
+fetching latest main...
+verifying installed hex...
+.fetching latest main...
+verifying installed hex...
+..verifying installed hex...
+.fetching latest main...
+verifying installed hex...
+.verifying installed hex...
+verifying installed hex...
+verifying installed hex...
+verifying installed hex...
+.fetching latest main...
+.fetching latest main...
+.fetching latest main...
+.fetching latest main...
+fetching latest main...
+fetching latest main...
+..fetching latest main...
+..fetching latest main...
+fetching latest main...
+fetching latest main...
+.fetching latest main...
+verifying installed hex...
+.fetching latest main...
+verifying installed hex...
+.fetching latest main...
+....................................................................opened /tmp/tmp02kmwdcw/artifacts/hex.app
+opened /tmp/tmp02kmwdcw/artifacts/hex.app
+opened /tmp/tmpwqcxzycc/artifacts/hex.app
+opened /tmp/tmpfxq63sft/artifacts/hex.app
+opened /tmp/tmpnan_3j53/artifacts/hex.app
+opened /tmp/tmp0f5yf8h7/artifacts/hex.app
+[1/1] build: running
+[1/1] build: passed
+..could not inspect disk headroom for workspace: unavailable volume
+.[1/1] build: running
+[1/1] build: passed
+.target has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.[1/1] build: running
+[1/1] build: passed
+workspace dev-artifact cleanup failed; previous owner was preserved
+.[1/2] bad: running
+[1/2] bad: failed
+.[1/21] runner-tests: running
+[1/21] runner-tests: passed
+[2/21] changelog: running
+[2/21] changelog: passed
+[3/21] architecture: running
+[3/21] architecture: passed
+[4/21] gpui-patch: running
+[4/21] gpui-patch: passed
+[5/21] dependency-patches: running
+[5/21] dependency-patches: passed
+[6/21] ui-style: running
+[6/21] ui-style: passed
+[7/21] device-layout: running
+[7/21] device-layout: passed
+[8/21] format: running
+[8/21] format: passed
+[9/21] dependency-future-lints: running
+[9/21] dependency-future-lints: passed
+[10/21] workspace-tests: running
+[10/21] workspace-tests: passed
+[11/21] prepared-export-instrument-tests: running
+[11/21] prepared-export-instrument-tests: passed
+[12/21] ui-feature-tests: running
+[12/21] ui-feature-tests: passed
+[13/21] device-gallery-tests: running
+[13/21] device-gallery-tests: passed
+[14/21] audio-allocation-probe: running
+[14/21] audio-allocation-probe: passed
+[15/21] stream-allocation-probe: running
+[15/21] stream-allocation-probe: passed
+[16/21] workspace-clippy: running
+[16/21] workspace-clippy: passed
+[17/21] prepared-export-instrument-clippy: running
+[17/21] prepared-export-instrument-clippy: passed
+[18/21] ui-feature-clippy: running
+[18/21] ui-feature-clippy: passed
+[19/21] audio-feature-clippy: running
+[19/21] audio-feature-clippy: passed
+[20/21] stream-feature-clippy: running
+[20/21] stream-feature-clippy: passed
+[21/21] desktop-build: running
+[21/21] desktop-build: passed
+.[1/2] first: running
+[1/2] first: passed
+workspace has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.[1/2] interrupt: running
+.could not record Cargo target lock holder: runner holder write denied
+[1/1] build: running
+[1/1] build: passed
+.workspace has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.Cargo target ownership marker is malformed at /tmp/tmp7afgqf6w/target-ownership/e46920a86a500fab66d89ef24762f030b1fa730a775ffa9b3d7a3ead45b8a91f.owner.json; use a fresh target or explicitly adopt it after checking ownership
+.{'exit_code': 9, 'stderr': 'metadata unavailable'}
+.[1/1] missing: running
+[1/1] missing: failed
+.[1/1] format: running
+[1/1] format: passed
+.[1/1] first: running
+[1/1] first: passed
+.[1/2] first: running
+[1/2] first: passed
+[2/2] second: running
+[2/2] second: passed
+.[1/2] debug-build: running
+[1/2] debug-build: passed
+[2/2] release-build: running
+[2/2] release-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: passed
+real cargo handoff: workspace dev outputs rebuilt; external path dependency and release binary preserved (target=/tmp/tmpyiddve20/isolated-cargo-target)
+..Cargo target is already in use by another local CI run; current holder: {"active_holder": {"commit": "deadbeef", "profile": "release", "run_id": "holder", "target_directory": "/tmp/tmpw_gelviy/repo/cargo-target", "workspace_root": "/tmp/tmpw_gelviy/repo"}}
+......[1/1] build: running
+[1/1] build: passed
+Cargo target directory identity changed; choose a fresh target or pass --adopt-target
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.[1/1] mutate: running
+[1/1] mutate: passed
+.Cargo target is already in use by another local CI run; current holder: {"active_holder": {"run_id": "holder", "target_directory": "/tmp/tmpcjrzx5q4/repo/cargo-target", "workspace_root": "/tmp/tmpcjrzx5q4/repo"}}
+.Cargo target ownership is unknown at /tmp/tmp0qsl4vr4/repo/cargo-target; choose an empty target or pass --adopt-target
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.......
+----------------------------------------------------------------------
+Ran 221 tests in 13.287s
+
+OK (skipped=2)
