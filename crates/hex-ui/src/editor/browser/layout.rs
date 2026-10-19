@@ -476,6 +476,10 @@ impl EditorView {
                 );
             }
         }
+        sidebar.child(self.browser_places(compact, cx))
+    }
+
+    fn browser_places(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let drop_entity = cx.entity();
         let mut places = div()
             .id("browser-places-drop")
@@ -607,8 +611,7 @@ impl EditorView {
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx)),
             );
         }
-        sidebar = sidebar.child(places);
-        sidebar
+        places
     }
 
     pub(super) fn browser_sidebar_resize(
