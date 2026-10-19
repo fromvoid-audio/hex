@@ -1,0 +1,110 @@
+{
+  "base": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+  "source": "134caf9083616493d2872c8f61a2fd6bcf8fab87",
+  "tree": "9c7f5a2a7ba126c9374f88e39bee2d6c913ed9df",
+  "files": [
+    "crates/hex-ui/src/editor/musical_audio_controls/sample_bpm.rs",
+    "crates/hex-ui/src/editor/tempo_input.rs",
+    "crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs",
+    "crates/hex-widgets/src/numeric_control.rs",
+    "docs/project-tempo-input.md",
+    "todo.md"
+  ],
+  "objects": [
+    {
+      "label": "before",
+      "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+      "path": "crates/hex-ui/src/editor/musical_audio_controls/sample_bpm.rs",
+      "blob": "0cd7e52528eee1f334ee694ea506e38f77d93684",
+      "sha256": "ecbe1ab3b39c94cff1a27e8f0fd56a01a2a7c4b4fbe341632e9af1ac3c55c435",
+      "bytes": 8750
+    },
+    {
+      "label": "after",
+      "commit": "134caf9083616493d2872c8f61a2fd6bcf8fab87",
+      "path": "crates/hex-ui/src/editor/musical_audio_controls/sample_bpm.rs",
+      "blob": "11aa11993050fce37e58e0e4654d8e97d519b53d",
+      "sha256": "34a207a79356e92efdef1fa3697a152aa41b689e49820b0237e5593701f34aac",
+      "bytes": 8873
+    },
+    {
+      "label": "before",
+      "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+      "path": "crates/hex-ui/src/editor/tempo_input.rs",
+      "blob": "7926ed28442ede33a5dd64062c1c40504a8dcc1f",
+      "sha256": "e3b0efcd3e091a57981216f196186a4252eb38796dd42c5ae5d5301411eea139",
+      "bytes": 6590
+    },
+    {
+      "label": "after",
+      "commit": "134caf9083616493d2872c8f61a2fd6bcf8fab87",
+      "path": "crates/hex-ui/src/editor/tempo_input.rs",
+      "blob": "96d5bd15e096d60bcc4b50eced8958766527c5f1",
+      "sha256": "b666265ef85c57fb6d85b1b14f1ccd17388800a776514ca77066ecdef7aaadd3",
+      "bytes": 6803
+    },
+    {
+      "label": "after",
+      "commit": "134caf9083616493d2872c8f61a2fd6bcf8fab87",
+      "path": "crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs",
+      "blob": "45bd7f40a64925f9640780ea5a68facd6fee5875",
+      "sha256": "de9580cc145cc23706eacea59b242611f1e3defcf0e7aa0f704245870e74130c",
+      "bytes": 11291
+    },
+    {
+      "label": "before",
+      "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+      "path": "crates/hex-widgets/src/numeric_control.rs",
+      "blob": "109b5f4a3035f711ea91b219c87cf3c48a653bcd",
+      "sha256": "af47f9416c6b74dc139000163bfa2de14d2f9fd78ed9464f193c32dcb2897a74",
+      "bytes": 62896
+    },
+    {
+      "label": "after",
+      "commit": "134caf9083616493d2872c8f61a2fd6bcf8fab87",
+      "path": "crates/hex-widgets/src/numeric_control.rs",
+      "blob": "38d93d07a474b0a03bb9904cec8647600278c860",
+      "sha256": "290eba8ea708e26fd9a2c7668f54d8537ca7f88e252ac81c36ea4420cf4a1597",
+      "bytes": 65035
+    },
+    {
+      "label": "before",
+      "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+      "path": "docs/project-tempo-input.md",
+      "blob": "76f32dfb43755a84438de599ce9c82728e5054dd",
+      "sha256": "d161a98a9fc8f57de3384d63bd5ab94d9dcdb652330b9eab4606a0434f66bebc",
+      "bytes": 4718
+    },
+    {
+      "label": "after",
+      "commit": "134caf9083616493d2872c8f61a2fd6bcf8fab87",
+      "path": "docs/project-tempo-input.md",
+      "blob": "8390ec00b5d7fc1bc48b54a1981efb5eead0c05e",
+      "sha256": "0d901a7401e285437b2d9db250a0a740b05572e44ab101999752887901cfaa61",
+      "bytes": 6587
+    },
+    {
+      "label": "before",
+      "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+      "path": "todo.md",
+      "blob": "0d13bff7677c6f9ce1d4ec6f2f0aee044690b01d",
+      "sha256": "db87f5e600cf19ad051025c6f83371a15a73b1d0a374fcec39641eb8d0c71654",
+      "bytes": 404654
+    },
+    {
+      "label": "after",
+      "commit": "134caf9083616493d2872c8f61a2fd6bcf8fab87",
+      "path": "todo.md",
+      "blob": "eac355e065ff8b48a3c71435fd5c95451262127d",
+      "sha256": "bad281b466fd93b99f04da1123fc420b097f60cc0441f9101a8a66192bb54f5c",
+      "bytes": 405754
+    }
+  ],
+  "absent": [
+    {
+      "label": "before",
+      "path": "crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs"
+    }
+  ],
+  "archived_git_source_bytes": 0
+}

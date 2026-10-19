@@ -1,0 +1,106 @@
+{
+  "2879-baseline.py": {
+    "bytes": 1074,
+    "sha256": "5b497a528f9153efe627e3f1fc7ac3e0007dc74334bee89b3ede003c945866ad"
+  },
+  "2879-final.py": {
+    "bytes": 1738,
+    "sha256": "26bcfe71b66f291c1d73767329afdb6ee69f228b4b08bbe878a7fbf444483e55"
+  },
+  "2879-handoff.md": {
+    "bytes": 2856,
+    "sha256": "d4fef77ddb450904c8f4091fa1bea9918dbe1f99ac777db3519093c952ed520e"
+  },
+  "GIT-OBJECTS.json": {
+    "bytes": 4104,
+    "sha256": "ee5b1ec309bb57952f43d01a0e88512af190291d06dc41875bd4d07d5f86bcfb"
+  },
+  "checks/01-architecture.log": {
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  "checks/02-UI style.log": {
+    "bytes": 82,
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+  },
+  "checks/03-GPUI patch.log": {
+    "bytes": 149,
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+  },
+  "checks/04-dependency provenance.log": {
+    "bytes": 119,
+    "sha256": "9c0c3fd09b9b22707639566251a286248f3daf5eda36c9145e10c1f7cee736eb"
+  },
+  "checks/05-device layout.log": {
+    "bytes": 84,
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+  },
+  "checks/06-format.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/07-diff.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "checks/08-BPM tempo sample and text lifecycle controls.log": {
+    "bytes": 2300,
+    "sha256": "f58ca84e4369c6f599e8a5bb3012cf0060615c9ab63fda6cb0b76250643bd2f1"
+  },
+  "checks/09-shared widget controls.log": {
+    "bytes": 8584,
+    "sha256": "659974ff89c5b88cdc6001f83518d34fa354af099877931abd0f5fa529abf1a3"
+  },
+  "checks/10-strict UI default.log": {
+    "bytes": 317,
+    "sha256": "a51b05f9fd8942f0ca10465043b3ed503a259840f511acff8455db70e884f468"
+  },
+  "checks/11-strict UI feature.log": {
+    "bytes": 317,
+    "sha256": "6033090821496cf8dcd411a127e406a41af404acd896ce73dd09efa5d16ba75a"
+  },
+  "checks/12-strict widgets.log": {
+    "bytes": 128,
+    "sha256": "c19ebb3a7886414a1c4c609fd44bc3f887fb02a4c3306d33b3ebeb5f7ae6f0ea"
+  },
+  "checks/summary.json": {
+    "bytes": 17238,
+    "sha256": "e042dc2cc8ea8727037aafad5f5f890044c8851b79f7290c5bc11ca20d345736"
+  },
+  "diagnostics/2879-bpm-keyboard-baseline/08-focused BPM arrow baseline.log": {
+    "bytes": 1134,
+    "sha256": "c2adcec8f97f647b78bdbca394186f266eceb70a1ecc30004ecb6ad64b435d96"
+  },
+  "diagnostics/2879-bpm-keyboard-baseline/summary.json": {
+    "bytes": 15531,
+    "sha256": "0febf6a6da9db763717381724e622926a03b2d2a00c5b4c3fdccc659f1e6e97b"
+  },
+  "diagnostics/2879-bpm-keyboard-expanded/08-focused BPM arrow baseline.log": {
+    "bytes": 1297,
+    "sha256": "58886846b9236ecedda278b5b3f8ae0723478ce407c89e46771da54b2f15b21f"
+  },
+  "diagnostics/2879-bpm-keyboard-expanded/summary.json": {
+    "bytes": 16039,
+    "sha256": "400c1649c5f763b7dd27061746c8f83908c0489a9bd0857d7621a82d3dd56a25"
+  },
+  "diagnostics/2879-bpm-keyboard-expanded-v2/08-focused BPM arrow baseline.log": {
+    "bytes": 795,
+    "sha256": "34912b7c986aeca10edcf01abdb6ca76bfd7e3a832c8f709aef1d710d3928a7f"
+  },
+  "diagnostics/2879-bpm-keyboard-expanded-v2/summary.json": {
+    "bytes": 15588,
+    "sha256": "32cae5f0dd863778b7eb538a9a43301c9fc8eac8e17800e97c23f86fe5e7018b"
+  },
+  "diagnostics/2879-bpm-keyboard-first-green/08-focused BPM arrow baseline.log": {
+    "bytes": 630,
+    "sha256": "2db74f9949977594d5105c4402e76a44c882d119ade51bbcd9586f264b606b47"
+  },
+  "diagnostics/2879-bpm-keyboard-first-green/summary.json": {
+    "bytes": 15801,
+    "sha256": "066fb07d33a1fe48f05cbdf73c9e2d0f5cafb847d48c8ce3065772aef1af38a8"
+  },
+  "metadata.json": {
+    "bytes": 1096,
+    "sha256": "ee219d35fb7bea86325af2a9f22b9b29cb0cab7492c7668f6a109466207696e8"
+  }
+}

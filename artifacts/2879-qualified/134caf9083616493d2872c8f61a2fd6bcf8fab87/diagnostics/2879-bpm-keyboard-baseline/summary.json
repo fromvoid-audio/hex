@@ -1,0 +1,497 @@
+{
+  "cargo_identity": {
+    "configured_target_value": null,
+    "lock_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.lock",
+    "manifest_path": "/workspace/hex/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/workspace/hex/Cargo.toml"
+    ],
+    "owner_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.owner.json",
+    "target_directory": "/workspace/hex/target",
+    "target_source": "cargo metadata/config/default",
+    "workspace_packages": [
+      {
+        "id": "path+file:///workspace/hex/crates/hex-mts#0.1.0",
+        "name": "hex-mts",
+        "spec": "path+file:///workspace/hex/crates/hex-mts#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-tuning#0.1.0",
+        "name": "hex-tuning",
+        "spec": "path+file:///workspace/hex/crates/hex-tuning#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-dsp#0.1.0",
+        "name": "hex-dsp",
+        "spec": "path+file:///workspace/hex/crates/hex-dsp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-midi#0.1.0",
+        "name": "hex-midi",
+        "spec": "path+file:///workspace/hex/crates/hex-midi#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-clap-scan#0.1.0",
+        "name": "hex-clap-scan",
+        "spec": "path+file:///workspace/hex/crates/hex-clap-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0",
+        "name": "hex-plugin-scan",
+        "spec": "path+file:///workspace/hex/crates/hex-plugin-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-warp#0.1.0",
+        "name": "hex-warp",
+        "spec": "path+file:///workspace/hex/crates/hex-warp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-diagnostics#0.1.0",
+        "name": "hex-diagnostics",
+        "spec": "path+file:///workspace/hex/crates/hex-diagnostics#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-session#0.1.0",
+        "name": "hex-session",
+        "spec": "path+file:///workspace/hex/crates/hex-session#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-engine#0.1.0",
+        "name": "hex-engine",
+        "spec": "path+file:///workspace/hex/crates/hex-engine#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-devices#0.1.0",
+        "name": "hex-devices",
+        "spec": "path+file:///workspace/hex/crates/hex-devices#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-lattice#0.1.0",
+        "name": "hex-lattice",
+        "spec": "path+file:///workspace/hex/crates/hex-lattice#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0",
+        "name": "hex-lattice-contract",
+        "spec": "path+file:///workspace/hex/crates/hex-lattice-contract#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-project#0.1.0",
+        "name": "hex-project",
+        "spec": "path+file:///workspace/hex/crates/hex-project#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-export#0.1.0",
+        "name": "hex-export",
+        "spec": "path+file:///workspace/hex/crates/hex-export#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-media#0.1.0",
+        "name": "hex-media",
+        "spec": "path+file:///workspace/hex/crates/hex-media#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-storage#0.1.0",
+        "name": "hex-storage",
+        "spec": "path+file:///workspace/hex/crates/hex-storage#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-stream#0.1.0",
+        "name": "hex-stream",
+        "spec": "path+file:///workspace/hex/crates/hex-stream#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-library#0.1.0",
+        "name": "hex-library",
+        "spec": "path+file:///workspace/hex/crates/hex-library#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-cli#0.1.0",
+        "name": "hex-cli",
+        "spec": "path+file:///workspace/hex/crates/hex-cli#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-desktop#0.1.0",
+        "name": "hex-desktop",
+        "spec": "path+file:///workspace/hex/crates/hex-desktop#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-audio#0.1.0",
+        "name": "hex-audio",
+        "spec": "path+file:///workspace/hex/crates/hex-audio#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-ui#0.1.0",
+        "name": "hex-ui",
+        "spec": "path+file:///workspace/hex/crates/hex-ui#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-preferences#0.1.0",
+        "name": "hex-preferences",
+        "spec": "path+file:///workspace/hex/crates/hex-preferences#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex/crates/hex-widgets#0.1.0",
+        "name": "hex-widgets",
+        "spec": "path+file:///workspace/hex/crates/hex-widgets#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/workspace/hex"
+  },
+  "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+  "dirty": true,
+  "dirty_files": [
+    " M crates/hex-ui/src/editor/tempo_input.rs",
+    "?? crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs"
+  ],
+  "disk_headroom": {
+    "checked_at": "2026-10-19T19:41:49Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 14638927872,
+        "probed_path": "/workspace/hex",
+        "requested_path": "/workspace/hex",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 14638927872,
+        "probed_path": "/workspace/hex/target",
+        "requested_path": "/workspace/hex/target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 43.749,
+  "end_path_dependencies": {
+    "third_party/block#block@0.1.6": {
+      "bytes": 18715,
+      "files": 7,
+      "sha256": "36302661d25fe703420496bf9ff93e9c46ccbc62abb51b238fbc6248a5f97f95"
+    },
+    "third_party/gpui#gpui@0.2.2": {
+      "bytes": 8286042,
+      "files": 189,
+      "sha256": "3adb3e9a2284b0d9b295a378781a77ae9afef17a906d2d055f51902780a05182"
+    },
+    "third_party/mts-esp-master#mts-esp-master-adapter@0.1.0": {
+      "bytes": 31208,
+      "files": 6,
+      "sha256": "625a4f0eb54eb61c8802debd8361d57da505e28fece8e9509b9972808742f9a5"
+    },
+    "third_party/proc-macro-error2#proc-macro-error2@2.0.1": {
+      "bytes": 91854,
+      "files": 50,
+      "sha256": "3dbbc703b5e0f82440f9aa79c521b375540d5b6c1cec50709ee48fd329d7921f"
+    },
+    "third_party/xattr#xattr@0.2.3": {
+      "bytes": 50972,
+      "files": 22,
+      "sha256": "8dee25ed99f7418010b9c07611d44ffb60e8c525bf2a6b4507eabbad0e1ba31c"
+    }
+  },
+  "end_tree": {
+    "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+    "content_sha256": "4707fd9487403d4060fe0eaed2e73cbd32d0eca255dbc84e479894fdda507184",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/tempo_input.rs",
+      "?? crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs"
+    ]
+  },
+  "ended_at": "2026-10-19T19:42:33Z",
+  "exit_code": 1,
+  "invocation_argv": [
+    "/tmp/2879-baseline.py",
+    "2879-bpm-keyboard-baseline"
+  ],
+  "mode": "component",
+  "path_dependencies": [
+    {
+      "bytes": 18715,
+      "files": 7,
+      "key": "third_party/block#block@0.1.6",
+      "name": "block",
+      "root": "/workspace/hex/third_party/block",
+      "sha256": "36302661d25fe703420496bf9ff93e9c46ccbc62abb51b238fbc6248a5f97f95",
+      "spec": "path+file:///workspace/hex/third_party/block#0.1.6"
+    },
+    {
+      "bytes": 8286042,
+      "files": 189,
+      "key": "third_party/gpui#gpui@0.2.2",
+      "name": "gpui",
+      "root": "/workspace/hex/third_party/gpui",
+      "sha256": "3adb3e9a2284b0d9b295a378781a77ae9afef17a906d2d055f51902780a05182",
+      "spec": "path+file:///workspace/hex/third_party/gpui#0.2.2"
+    },
+    {
+      "bytes": 31208,
+      "files": 6,
+      "key": "third_party/mts-esp-master#mts-esp-master-adapter@0.1.0",
+      "name": "mts-esp-master-adapter",
+      "root": "/workspace/hex/third_party/mts-esp-master",
+      "sha256": "625a4f0eb54eb61c8802debd8361d57da505e28fece8e9509b9972808742f9a5",
+      "spec": "path+file:///workspace/hex/third_party/mts-esp-master#mts-esp-master-adapter@0.1.0"
+    },
+    {
+      "bytes": 91854,
+      "files": 50,
+      "key": "third_party/proc-macro-error2#proc-macro-error2@2.0.1",
+      "name": "proc-macro-error2",
+      "root": "/workspace/hex/third_party/proc-macro-error2",
+      "sha256": "3dbbc703b5e0f82440f9aa79c521b375540d5b6c1cec50709ee48fd329d7921f",
+      "spec": "path+file:///workspace/hex/third_party/proc-macro-error2#2.0.1"
+    },
+    {
+      "bytes": 50972,
+      "files": 22,
+      "key": "third_party/xattr#xattr@0.2.3",
+      "name": "xattr",
+      "root": "/workspace/hex/third_party/xattr",
+      "sha256": "8dee25ed99f7418010b9c07611d44ffb60e8c525bf2a6b4507eabbad0e1ba31c",
+      "spec": "path+file:///workspace/hex/third_party/xattr#0.2.3"
+    }
+  ],
+  "path_dependency_identity_seconds": 0.471999,
+  "path_dependency_metadata_command": [
+    "cargo",
+    "metadata",
+    "--format-version",
+    "1",
+    "--locked",
+    "--manifest-path",
+    "/workspace/hex/Cargo.toml"
+  ],
+  "repo_root": "/workspace/hex",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "2879-bpm-keyboard-baseline",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+    "content_sha256": "4707fd9487403d4060fe0eaed2e73cbd32d0eca255dbc84e479894fdda507184",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/tempo_input.rs",
+      "?? crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs"
+    ],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+    "content_sha256": "4707fd9487403d4060fe0eaed2e73cbd32d0eca255dbc84e479894fdda507184",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/tempo_input.rs",
+      "?? crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs"
+    ]
+  },
+  "started_at": "2026-10-19T19:41:49Z",
+  "status": "failed",
+  "steps": [
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": "2026-10-19T19:41:49Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2879-bpm-keyboard-baseline/01-architecture.log",
+      "started_at": "2026-10-19T19:41:49Z",
+      "status": "passed",
+      "step_id": "architecture"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": "2026-10-19T19:41:49Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2879-bpm-keyboard-baseline/02-UI style.log",
+      "started_at": "2026-10-19T19:41:49Z",
+      "status": "passed",
+      "step_id": "UI style"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": "2026-10-19T19:41:49Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2879-bpm-keyboard-baseline/03-GPUI patch.log",
+      "started_at": "2026-10-19T19:41:49Z",
+      "status": "passed",
+      "step_id": "GPUI patch"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "ended_at": "2026-10-19T19:41:50Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2879-bpm-keyboard-baseline/04-dependency provenance.log",
+      "started_at": "2026-10-19T19:41:49Z",
+      "status": "passed",
+      "step_id": "dependency provenance"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "ended_at": "2026-10-19T19:41:50Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2879-bpm-keyboard-baseline/05-device layout.log",
+      "started_at": "2026-10-19T19:41:50Z",
+      "status": "passed",
+      "step_id": "device layout"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-19T19:41:56Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2879-bpm-keyboard-baseline/06-format.log",
+      "started_at": "2026-10-19T19:41:50Z",
+      "status": "passed",
+      "step_id": "format"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "ended_at": "2026-10-19T19:41:56Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2879-bpm-keyboard-baseline/07-diff.log",
+      "started_at": "2026-10-19T19:41:56Z",
+      "status": "passed",
+      "step_id": "diff"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "--",
+        "editor::tempo_input::keyboard_tests::",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-19T19:42:33Z",
+      "error": null,
+      "exit_code": 101,
+      "log": "artifacts/local-ci/2879-bpm-keyboard-baseline/08-focused BPM arrow baseline.log",
+      "started_at": "2026-10-19T19:41:57Z",
+      "status": "failed",
+      "step_id": "focused BPM arrow baseline"
+    }
+  ],
+  "target_cache": {
+    "action": "reuse",
+    "changed_path_dependencies": [],
+    "cleanup_argv": null,
+    "cleanup_status": "not_needed",
+    "current_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/hex-local-ci-targets/6f2dced6b3665536547260e8e9cebc8d5fb9005aef3ae1ee11a0a5eb7c3e6d7e.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex"
+    },
+    "target_identity_before": {
+      "device": 27,
+      "inode": 9223372036855999389
+    }
+  },
+  "verification_status": "failed"
+}

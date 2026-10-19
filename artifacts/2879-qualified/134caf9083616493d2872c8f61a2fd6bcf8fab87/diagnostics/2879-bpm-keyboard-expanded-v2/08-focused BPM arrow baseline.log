@@ -1,0 +1,13 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 38.76s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+test editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm ... ok
+test editor::tempo_input::keyboard_tests::sample_bpm_uses_same_arrow_policy_and_actual_canonical_history ... ok
+test editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 8.46s
+

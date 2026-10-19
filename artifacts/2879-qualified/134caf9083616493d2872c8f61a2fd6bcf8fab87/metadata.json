@@ -1,0 +1,26 @@
+{
+  "source": "134caf9083616493d2872c8f61a2fd6bcf8fab87",
+  "tree": "9c7f5a2a7ba126c9374f88e39bee2d6c913ed9df",
+  "base": "e67e18813c8b32c30a6b122f6dd56172653011ee",
+  "summary_sha256": "e042dc2cc8ea8727037aafad5f5f890044c8851b79f7290c5bc11ca20d345736",
+  "duration_seconds": 105.587,
+  "counts": [
+    [
+      "16",
+      "0"
+    ],
+    [
+      "78",
+      "0"
+    ]
+  ],
+  "runtime_executions": 94,
+  "emitted_names": 94,
+  "runtime_unique_names": 94,
+  "steps": 12,
+  "native_acceptance": false,
+  "full21": false,
+  "confirmed_scope": "Focused project/sample BPM UpDown1 and CommandUpDown0.1, local draft until commit, generic Shift-fine preserved.",
+  "remaining": "Native Command input/listening and prospective current-main required qualification/review/merge remain separate.",
+  "negative_receipt_limit": "Executed Up120 stayed120 dirtyplan test bytes committed8f3e763d. Expanded sample Undo unwrapNone was fixture-only, source d14bd8e835dfd25ecead3160490fc8fe42252b2b retained. Incorrect Pulse30355 source pin corrected30356. Final clean receipt independently binds shipping source."
+}

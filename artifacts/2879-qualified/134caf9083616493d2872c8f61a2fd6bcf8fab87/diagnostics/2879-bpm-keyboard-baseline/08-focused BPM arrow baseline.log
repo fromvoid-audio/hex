@@ -1,0 +1,23 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 35.45s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 1 test
+
+thread 'editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm' (336317) panicked at crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs:67:9:
+assertion `left == right` failed: Up changes the focused BPM draft by one
+  left: "120"
+ right: "121"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm ... FAILED
+
+failures:
+
+failures:
+    editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 0.43s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

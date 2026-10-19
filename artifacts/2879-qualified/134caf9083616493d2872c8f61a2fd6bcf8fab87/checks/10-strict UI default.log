@@ -1,0 +1,5 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+    Checking hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Checking hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `dev` profile [unoptimized] target(s) in 13.49s

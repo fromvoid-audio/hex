@@ -1,0 +1,26 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 35.94s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 16 tests
+test editor::device_panel::tests::shortcut_text_tests::plain_and_shift_s_still_solo_outside_numeric_text_edit ... ok
+test editor::device_panel::tests::shortcut_text_tests::numeric_text_owns_uppercase_space_and_direct_solo_actions ... ok
+test editor::musical_audio_controls::sample_bpm::tests::bpm_uses_current_bounds_and_rejects_nonfinite_before_integer_conversion ... ok
+test editor::device_panel::tests::shortcut_text_tests::typed_units_do_not_mutate_canonical_solo_or_history ... ok
+test editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm ... ok
+test editor::musical_audio_controls::sample_bpm::ui_tests::sample_bpm_actual_text_input_commits_once_and_escape_cancels ... ok
+test editor::device_panel::tests::shortcut_text_tests::typed_units_keep_every_character_without_editor_shortcuts ... ok
+test editor::tempo_input::tests::project_tempo_range_and_micro_bpm_precision ... ok
+test editor::device_panel::tests::shortcut_text_tests::numeric_clipboard_cancel_commit_and_single_undo_preserve_owner ... ok
+test editor::tempo_input::keyboard_tests::sample_bpm_uses_same_arrow_policy_and_actual_canonical_history ... ok
+test editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft ... ok
+test editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts ... ok
+test editor::tempo_input_ui_test::project_tempo_layout_is_first_compact_and_keeps_neighbors_at_supported_widths ... ok
+test editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts ... ok
+test editor::tempo_input_ui_test::project_tempo_direct_input_validation_cancel_focus_and_canonical_commit ... ok
+test editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 1052 filtered out; finished in 12.62s
+
