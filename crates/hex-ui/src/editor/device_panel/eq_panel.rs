@@ -14,6 +14,7 @@ mod gestures;
 mod response;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
+pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
 
 const WINDOW_BEATS: u64 = 16;
 // Outer five percent of the inset logarithmic plot; existing node hits win.
