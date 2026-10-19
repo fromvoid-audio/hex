@@ -5336,3 +5336,26 @@ source handoff is separate from final integration/full CI/merge and delivery.
   and final review remain pending; previous1f085full21 and4737native51 are scoped
   history, not this repair's qualification. Actual OS chooser, physical save/open
   and installation acceptance remain open.
+
+## audio placement review repair — pulse2854 / PR456, 19 october2026
+
+Loaded existing audio/MIDI overlaps exposed full-result overwrite on unchanged,
+shortened and grown outer bounds. The model now overwrites only newly occupied
+growth after the old endpoint, preserving original-region material, no-op IDs and
+Redo, one Undo/Redo and atomic preparation refusal. The existing Arrangement
+Looping control separates retained-source looping from optional Once/Repeat mode;
+only the loop control follows placement, while PlayStart/source phase and source
+range behavior keep the raw flag. Freshness checks both states. No new handle,
+widget, Engine or source-loop reinterpretation is introduced.
+
+Two actual visible-control reds now pass; controlled mode-only captured-state
+freshness plus a newly rendered valid click, source-phase discrimination and
+three unchanged ordinary tests yield seven UI positives/zero ignored. Separately
+22 model +4 current-format codec +5 Session binding +6 actual return workflows
+pass (37 positives/zero ignored). The return test changes only stale version31
+expectation to current32; all PCM/routing/device/history/save-load assertions stay.
+Strict touched-component checks and immutable evidence are reported in Pulse.
+Original reds, invalid offscreen click and own test-compilation/freshness-fixture
+failures are preserved, not relabeled. Owner patch is isolated from canonical2918
+until sole-merger composition/fresh full21/review; source passing is not native,
+worker-acknowledgement, audible full445, installed-app or user acceptance.

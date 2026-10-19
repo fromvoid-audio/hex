@@ -5,6 +5,143 @@ use hex_project::{
     TrimEdge, preview_audio_view_resize, preview_view_resize,
 };
 const Q: u64 = 1 << 32;
+
+fn review_overlap_fixture() -> (Editor, ClipId, ClipId, ClipId) {
+    let (mut editor, clip) = frame_fixture(AudioViewMode::Repeat);
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    let Created::Clip(audio) = editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 12_000,
+            duration: 60_000,
+            source_offset: 2_000,
+            source_length: 120_000,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("audio")
+    };
+    let Created::Clip(midi) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: beat(Q / 2),
+            length: beat(5 * Q / 2),
+        })
+        .unwrap()
+    else {
+        panic!("midi")
+    };
+    // Current-format load accepts these existing same-track overlaps.
+    let loaded = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    (Editor::new(loaded, 8).unwrap(), clip, audio, midi)
+}
+
+#[test]
+fn review_outer_noop_preserves_existing_overlap_ids_and_redo() {
+    let (mut editor, clip, _, _) = review_overlap_fixture();
+    editor
+        .execute(Command::SetAudioClipGain { clip, millidb: 100 })
+        .unwrap();
+    let future = editor.project().snapshot();
+    assert!(editor.undo());
+    let before = editor.project().snapshot();
+    assert!(!editor.can_undo());
+    assert!(editor.can_redo());
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::OuterEnd {
+                project_frame: 48_000,
+            },
+        })
+        .unwrap();
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(!editor.can_undo());
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), future);
+}
+
+#[test]
+fn review_outer_shrink_preserves_existing_audio_midi_overlap_and_one_history_step() {
+    let (mut editor, clip, audio, midi) = review_overlap_fixture();
+    let before = editor.project().snapshot();
+    let old_audio = editor.project().clip(audio).unwrap().clone();
+    let old_midi = editor.project().midi_clip(midi).unwrap().clone();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::OuterEnd {
+                project_frame: 36_000,
+            },
+        })
+        .unwrap();
+    assert_eq!(editor.project().clip(audio), Some(&old_audio));
+    assert_eq!(editor.project().midi_clip(midi), Some(&old_midi));
+    assert_eq!(editor.project().snapshot().next_id, before.next_id);
+    assert_eq!(editor.project().clip(clip).unwrap().duration(), 36_000);
+    let after = editor.project().snapshot();
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(!editor.undo());
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
+#[test]
+fn review_outer_growth_cuts_only_new_tail_and_prepare_refusal_is_atomic() {
+    let (mut editor, clip, audio, midi) = review_overlap_fixture();
+    let before = editor.project().snapshot();
+    let command = Command::ResizeAudioClipView {
+        clip,
+        operation: AudioViewResizeOperation::OuterEnd {
+            project_frame: 84_000,
+        },
+    };
+    let check = |candidate: &Project| {
+        let left = candidate.clip(audio).unwrap();
+        assert_eq!(
+            (left.start(), left.duration(), left.source_offset()),
+            (12_000, 36_000, 2_000)
+        );
+        let left = candidate.midi_clip(midi).unwrap();
+        assert_eq!(left.start(), beat(Q / 2));
+        assert_eq!(
+            candidate
+                .tempo_map()
+                .beat_to_frame(beat(
+                    left.start().raw().checked_add(left.length().raw()).unwrap()
+                ))
+                .unwrap(),
+            48_000
+        );
+        assert_eq!(candidate.snapshot().next_id, before.next_id);
+    };
+    assert!(
+        editor
+            .execute_prepared(command.clone(), |candidate| {
+                check(candidate);
+                Err::<(), _>(hex_project::Invalid("injected prepare refusal"))
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(!editor.can_undo());
+    editor
+        .execute_prepared(command, |candidate| {
+            check(candidate);
+            Ok::<_, hex_project::Invalid>(())
+        })
+        .unwrap();
+    let after = editor.project().snapshot();
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
 fn beat(raw: u64) -> BeatTime {
     BeatTime::from_raw(raw)
 }
