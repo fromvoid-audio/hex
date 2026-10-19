@@ -198,3 +198,41 @@ beneath live windows; it creates no OS window, registers no system font and adds
 no FFI or unsafe code. EQ tests still require the real embedded Ioskeley family;
 this corrects their otherwise impossible native assertion against NoopTextSystem.
 Native shaping is not evidence of GPU pixels, audio or physical interaction.
+
+18 October EQ wheel momentum metadata: additive `ScrollWheelEvent::is_momentum`
+(default false) retains the platform-reported inertial continuation independently
+of physical touch phases. macOS reads the existing `NSEvent::momentumPhase`
+inside the existing native input boundary; other platform constructors initialize
+false. Raw delta, physical_delta, phase mapping and ordinary content consumers
+remain unchanged. Only owner-opted-in parameter graph scrolling uses this bit to
+refuse inertial parameter steps/new history gestures after physical Ended. No new
+FFI, framework, timer, scroll system or production test-context change. Existing
+published baseline hashes verified; unrelated cumulative patch blocks preserved.
+
+19 October EQ terminal/tick metadata: preserve NSEventPhaseCancelled as an
+additive TouchPhase::Cancelled. Add optional wheel_ticks and an opt-in physical
+helper; retain X11 increments, Wayland discrete/value120 information (including
+frames also carrying pixel deltas), and Windows WHEEL_DELTA fractions before
+content-line preferences. Raw delta, content scrolling and unknown/Pixels
+fallback remain unchanged; macOS tick metadata stays None rather than guessing
+an undocumented tick law. Existing constructors/matches are audited together.
+Only the opted-in parameter graph uses this metadata; no native framework,
+FFI, callback owner, clock, timeout or general scrolling policy is introduced.
+Original archive/file hashes and unrelated cumulative patch blocks are retained;
+the cumulative patch is regenerated against hash-verified original source and
+applied back to verify every changed/added byte. Linux synthetic checks do not
+claim macOS/Windows compilation or physical device acceptance.
+
+19 October Wayland v9 per-axis wheel direction: the existing pointer-frame
+fold retains raw content accumulation and source/Shift routing. Optional
+parameter tick metadata is normalized per original protocol axis before routing
+collapse, with frame-local constant-size bookkeeping. Conflicting/unknown axis
+direction reports fall back to the old sign for that axis only; other known axes
+remain independent. Every Frame drains metadata before any window delivery,
+including empty or unfocused frames. The event-wide inversion flag stays false;
+physical_delta, the physical tick getter and other platforms are unchanged.
+Continuous-only frames do not invent detents. Typed protocol-event unit tests
+exercise the production-used fold; they are not compositor/hardware validation.
+Original source hashes, license and unrelated cumulative patch blocks remain;
+only changed-source provenance hashes are updated and the patch is reapplied
+against verified originals to compare every patched/added byte.
