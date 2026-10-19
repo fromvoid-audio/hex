@@ -778,7 +778,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             encoding="utf-8",
         )
         cargo_wrapper.chmod(0o755)
-        env["PATH"] = f"{wrapper_dir}{os.pathsep}{env.get("PATH", "")}"
+        env["PATH"] = f"{wrapper_dir}{os.pathsep}{env.get('PATH', '')}"
         run_a = local_ci.LocalCiRunner(
             root, run_id="real-a", env=env, steps=steps, min_free_bytes=0, target_state_dir=state
         )
