@@ -1,0 +1,27 @@
+test_hardlinked_compiler_reuses_one_binary_for_snapshot_quit_force (test_launch_restart_compile.CompiledHelperTests.test_hardlinked_compiler_reuses_one_binary_for_snapshot_quit_force) ... ERROR
+
+======================================================================
+ERROR: test_hardlinked_compiler_reuses_one_binary_for_snapshot_quit_force (test_launch_restart_compile.CompiledHelperTests.test_hardlinked_compiler_reuses_one_binary_for_snapshot_quit_force)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/hex/scripts/tests/test_launch_restart_compile.py", line 86, in test_hardlinked_compiler_reuses_one_binary_for_snapshot_quit_force
+    self.test_snapshot_quit_force_all_use_same_binary_and_repeat_installed_seal_after_compile()
+  File "/workspace/hex/scripts/tests/test_launch_restart_compile.py", line 261, in test_snapshot_quit_force_all_use_same_binary_and_repeat_installed_seal_after_compile
+    self.controller.snapshot()
+  File "/workspace/hex/scripts/launch-restart.py", line 269, in snapshot
+    values = self.call("snapshot")
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/launch-restart.py", line 247, in call
+    binary = self._prepare_helper()
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/launch-restart.py", line 181, in _prepare_helper
+    compiler_identity = self._file_identity(Path(SWIFTC), executable=True, owned=False)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/hex/scripts/launch-restart.py", line 83, in _file_identity
+    raise RestartError("native helper file identity is ambiguous; app control stopped")
+hex_launch_restart.RestartError: native helper file identity is ambiguous; app control stopped
+
+----------------------------------------------------------------------
+Ran 1 test in 0.002s
+
+FAILED (errors=1)

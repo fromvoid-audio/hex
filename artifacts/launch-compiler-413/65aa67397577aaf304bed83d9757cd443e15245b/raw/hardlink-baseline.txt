@@ -1,0 +1,5 @@
+single-link fixture identity PASS {"nlink": 1, "digest": "4a2bb6049d2ff4f4d57b0147c1ad57cb01d9b6e839b8c98a72cbf17438e32757"}
+REPRODUCED current compiler nlink=78 refusal: native helper file identity is ambiguous; app control stopped
+PASS: no workspace/compiler/native operation created; fixture-only Linux inode, not Mac execution
+PASS: same hardlinked inode remains rejected under private-owned policy
+All bounded baseline assertions PASS; desired compiler behavior remains blocked in unchanged production

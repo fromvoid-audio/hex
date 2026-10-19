@@ -1,0 +1,100 @@
+{
+  "source": {
+    "base": "be596d5dbbdc05a3ce8aedbc0f05d90e4920a647",
+    "base_tree": "338a8e6c671de3f15af348b28d898ab908ef0457",
+    "head": "65aa67397577aaf304bed83d9757cd443e15245b",
+    "tree": "35fdad1d960f52fa71d97add42bbcdc743bf20f1",
+    "files": {
+      "scripts/launch-restart.py": {
+        "before_blob": "7c4a1cbe129d6ea1c114fea228d7e0cab091c301",
+        "after_blob": "d4f9f7879571cb067dd7ad74efb4baf23d6e53f3",
+        "before_sha256": "3509dc476f9d8986907d0657e5ef89dcc42b97ec4455aaaa7292cbe09b55b142",
+        "after_sha256": "e1054fe3262371d50edf26c1d58a0b768b90bd6c6bbe817f0630729a22c76595"
+      },
+      "scripts/tests/test_launch_restart_compile.py": {
+        "before_blob": "0b0364d57024e4cb4daced6a7a68c7a224aaab1c",
+        "after_blob": "59a28349ceff495d5f096ff34fe5b52121f6a1a4",
+        "before_sha256": "905369600f52d20086f3c608c8344047cf152dbab18045c14bf66d4d10db8276",
+        "after_sha256": "60656bddb2efffaddfadb072b91ed9be467d077dc1061727ad550de5ecdffb25"
+      }
+    },
+    "swift_sha256": "5e1cf00760ca6d73f91f0131ce86cf61012a2db46dccc35c99180c69f41d79d0",
+    "tests": {
+      "total": 75,
+      "unique": 75,
+      "skipped": 0,
+      "result": "PASS",
+      "seconds": 3.2,
+      "modules": {
+        "test_launch": 20,
+        "test_launch_restart": 25,
+        "test_launch_restart_compile": 30
+      }
+    },
+    "other_checks": [
+      "Python3.9 AST grammar both changed files",
+      "git diff --check",
+      "architecture",
+      "ui-style",
+      "gpui-patch",
+      "device-layout"
+    ],
+    "limits": [
+      "Linux Python3.12 fixture tests; Python3.9 runtime not executed in cloud",
+      "No actual Swift/compiler/native app calls; only fixture-owned compiler/helper subprocesses",
+      "No full21/integration/review/merge claim; sole merger owns prospective candidate",
+      "Actual Mac compiler nlink78 metadata and earlier67MacPASS relayed by root, not independently recovered",
+      "Private-source/copy/output guards remain strict; canonical413 unchanged"
+    ]
+  },
+  "payloads": {
+    "HANDOFF.md": {
+      "bytes": 3596,
+      "sha256": "46c53f2db7e2bd606ec1843c210cb5df1832917b6e83de560701f2575e521c15"
+    },
+    "owner.patch": {
+      "bytes": 12434,
+      "sha256": "4909a1819f3ac3935991430d386b4b868cd62a89e903e5a5662b4d41e1ffde7b"
+    },
+    "raw/all-launcher-tests.txt": {
+      "bytes": 22416,
+      "sha256": "005ce4fc9da371e94c08954c656214d14dc4bd83082cfdd38cba5555f2be1027"
+    },
+    "raw/architecture.txt": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "raw/compile-tests-green.txt": {
+      "bytes": 5614,
+      "sha256": "bb525c955b75ccd7ebc5f7117ee091bf32c8fb4915a579d6868bdd74460d9492"
+    },
+    "raw/desired-behavior-red.txt": {
+      "bytes": 1920,
+      "sha256": "3cd280d4b33726568bde138370d358fb1785512d5eeda7716ea382bd2a48f175"
+    },
+    "raw/device-layout.txt": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "raw/gpui-patch.txt": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "raw/grammar-diff.txt": {
+      "bytes": 143,
+      "sha256": "34cdf458f49e5d160157ee666f58f02477f3a30147e42297d37d028adff0fa88"
+    },
+    "raw/hardlink-baseline.txt": {
+      "bytes": 507,
+      "sha256": "08300a86b6f4ca5a34a00ded364aac3f56dce8ff56e7e1b63257167a7c3e40ee"
+    },
+    "raw/ui-style.txt": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "source-and-results.json": {
+      "bytes": 1925,
+      "sha256": "3bbec6216a7faa8709b87db4b654cdf8718dee2dfcc3c63fa97879b8a1c64680"
+    }
+  }
+}

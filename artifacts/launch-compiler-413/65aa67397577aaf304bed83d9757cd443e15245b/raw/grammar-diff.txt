@@ -1,0 +1,3 @@
+Python 3.9 grammar PASS: scripts/launch-restart.py
+Python 3.9 grammar PASS: scripts/tests/test_launch_restart_compile.py
+git diff --check PASS
