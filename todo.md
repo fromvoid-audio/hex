@@ -5347,3 +5347,10 @@ source handoff is separate from final integration/full CI/merge and delivery.
   ordinarily integrated qualified main, preserving both append-only todo sides.
   New exact FULL21/final review remain pending; old e66 failure stays negative,
   original owner native2 stays scoped, and physical palette/delivery remain open.
+
+### 2026-10-19 — PR399 legacy-storage fixture return
+
+- Integrated owner4490a0d2 on preserved3fdc history: only the named legacy gain-touch storage fixture explicitly authors Gray before old-schema encoding; all original assertions and current31 expectations remain.
+- Verified all28 immutable owner payloads and exact11-line insertion; production random color assignment, strict older-writer loss refusal and shared fixtures remain unchanged.
+- Original Session-equivalence failures/fixes and later storage failure remain separate negative evidence. Previous full21 stages do not qualify this changed candidate.
+- New exact prospective full21 and fresh review pending; no merge, installation or physical palette acceptance claim. Unqualified456 placement schema32 is not imported.
