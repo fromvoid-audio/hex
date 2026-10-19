@@ -102,6 +102,44 @@ fn ordered_clips(project: &Project, track: TrackId) -> Vec<ClipId> {
     clips.into_iter().map(|(_, id)| id).collect()
 }
 impl EditorView {
+    /// Select only actual committed copy births, never the integer ID range.
+    pub(super) fn select_copied_group(&mut self, first: ClipId, last: ClipId, count: usize) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let mut members = BTreeSet::new();
+        let mut primary = None;
+        for track in state.project.tracks() {
+            for id in track
+                .clips()
+                .iter()
+                .map(|c| c.id())
+                .chain(track.midi_clips().iter().map(|c| c.id()))
+                .filter(|id| *id >= first && *id <= last)
+            {
+                members.insert(id);
+                if id == first {
+                    primary = Some((track.id(), id));
+                }
+            }
+        }
+        if members.len() != count || !members.contains(&last) {
+            return;
+        }
+        let Some((track, clip)) = primary else {
+            return;
+        };
+        self.clip_selection.apply_members(members);
+        self.clip_selection.anchor = Some((track, clip));
+        self.clip_selection.scope = Some((self.project_generation, state.revision));
+        self.selected_track = Some(track);
+        self.selected_clip = Some(clip);
+        self.midi_selection.clear();
+        self.midi_note_gesture = None;
+        self.midi_group_gesture = None;
+        self.piano_beat_start = hex_project::BeatTime::ZERO;
+        self.midi_hit_cycle = None;
+    }
     pub(super) fn reconcile_clip_selection(&mut self) {
         // A lane/header focus change clears the visible clip selection. A later
         // additive click must not resurrect those now invisible members.

@@ -1,6 +1,9 @@
 //! Deterministic, sample-rate-locked stereo arrangement rendering.
 //! This is an original prototype, not a verified Live-compatible engine.
 pub use hex_devices::SineTable;
+pub use hex_devices::auto_pan::{
+    AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
+};
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };

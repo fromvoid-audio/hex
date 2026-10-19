@@ -46,6 +46,20 @@ fn fixture(
     ClipId,
     super::super::external_audio_drop_ui_test::BatchFiles,
 ) {
+    fixture_with_streamed_source(cx, midi, viewport, false)
+}
+fn fixture_with_streamed_source(
+    cx: &mut TestAppContext,
+    midi: bool,
+    viewport: Option<Viewport>,
+    streamed_source: bool,
+) -> (
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    TrackId,
+    ClipId,
+    super::super::external_audio_drop_ui_test::BatchFiles,
+) {
     cx.update(super::super::bind_editor_keys);
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
     let browser_marker = files.wav("bounded-browser.wav", 48_000, 48);
@@ -53,6 +67,33 @@ fn fixture(
     std::fs::create_dir(directory.join("samples")).unwrap();
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
+    let replacement = if streamed_source {
+        assert!(!midi);
+        service
+            .submit(Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+                reservation: Some(hex_session::SourcePlanReservation {
+                    reader: hex_media::VerifiedWavReaderLimits {
+                        reader: hex_media::WavReaderLimits {
+                            max_file_bytes: 64 * 1024 * 1024,
+                            max_source_frames: 8_000_000,
+                            max_header_count: 32,
+                            max_window_frames: 4096,
+                        },
+                        max_manifest_bytes: 1024 * 1024,
+                    },
+                    max_retained_sources: 1,
+                    max_path_bytes: 1024 * 1024,
+                    max_manifest_bytes: 4 * 1024 * 1024,
+                }),
+            })
+            .unwrap();
+        let event = next(&service);
+        assert!(event.project_replaced);
+        Some(event)
+    } else {
+        None
+    };
     let (event, track, clip) = if midi {
         service
             .submit(Request::Edit(Command::AddMidiTrack {
@@ -116,6 +157,9 @@ fn fixture(
             editor.update(cx, |v, cx| {
                 assert_eq!(v.browser.directory, directory.join("samples"));
                 assert_eq!(v.browser.places, vec![directory.join("samples")]);
+                if let Some(replacement) = replacement {
+                    v.receive(replacement);
+                }
                 v.state = Some(event.state);
                 v.viewport = viewport;
                 v.snap_grid = SnapGrid::default().with_platform_modifier(true);
@@ -621,11 +665,14 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
             assert!(d.preview.borrow().as_ref().unwrap().length().raw() > 0);
         } else {
             let d = v.active_trim_drag.as_ref().unwrap();
-            assert_eq!(
-                d.preview.borrow().as_ref().unwrap().clip.duration(),
-                1,
-                "last legal positive stretch interval"
-            );
+            let preview = d.preview.borrow();
+            let preview = preview.as_ref().unwrap();
+            assert!(preview.clip.duration() > 0);
+            hex_engine::audio_transform::validate_clip_warp_preview(
+                &preview.clip,
+                v.state.as_ref().unwrap().project.tempo_map(),
+            )
+            .expect("last displayed extent is admitted, not merely model-positive");
         }
         after
     });
@@ -655,11 +702,23 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
         edge
     };
     let desired = editor.read_with(&visual, |v, _| {
-        v.active_trim_drag
-            .as_ref()
-            .and_then(|d| d.preview.borrow().as_ref().map(|p| p.clip.clone()))
+        v.active_trim_drag.as_ref().and_then(|d| {
+            d.preview
+                .borrow()
+                .as_ref()
+                .map(|p| (p.clip.clone(), p.command_frame_for_test()))
+        })
     });
     visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
+    if let Some((_, frame)) = &desired {
+        editor.read_with(&visual, |v, _| {
+            let expected_edge = if left { hex_project::TrimEdge::Left } else { hex_project::TrimEdge::Right };
+            assert!(matches!(v.last_enqueued_edit.as_ref(),
+                Some(Command::StretchAudioClipEdge { clip: submitted, edge, frame: submitted_frame })
+                if *submitted == clip && *edge == expected_edge && *submitted_frame == *frame
+            ), "release must submit the exact retained command frame: {:?}", v.last_enqueued_edit);
+        });
+    }
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         eprintln!("inward release midi={midi} left={left} supported={supported} error={:?} submitted={:?}", v.error, v.last_enqueued_edit);
@@ -668,18 +727,16 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
         if midi {
             assert!(v.error.is_none(), "{:?}", v.error);
             assert!(p.midi_clip(clip).unwrap().length().raw() > 0);
-        } else if supported {
-            assert!(v.error.is_none(), "{:?}", v.error);
-            assert_eq!(p.clip(clip), desired.as_ref());
-            assert!((12_000..=96_000).contains(&p.clip(clip).unwrap().duration()));
         } else {
-            // Model-positive is not a waiver of the separate prepared warp
-            // capability. A 96000:1 transform must refuse atomically, visibly.
-            assert!(v.error.as_ref().is_some_and(|e| e.contains("warp stretch including pitch compensation must be within 1/8..8")));
-            assert_eq!(p.snapshot(), before_project);
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert_eq!(p.clip(clip), desired.as_ref().map(|(clip, _)| clip));
+            hex_engine::audio_transform::validate_clip_warp_preview(
+                p.clip(clip).unwrap(), p.tempo_map(),
+            ).expect("real worker accepted the displayed supported extent");
+            assert!(v.pending_trim.is_none());
         }
     });
-    if supported {
+    if !midi {
         let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
@@ -709,10 +766,22 @@ fn accepted_edge_short_of_view_end_does_not_reveal_raw_pan_on_later_growth(
     }
 }
 fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse: bool) {
-    let (handle, editor, track, clip, _files) = fixture(cx, midi, None);
+    // Verified streamed originals deliberately lack resident transform PCM.
+    // Geometry admission is valid; the real worker must refuse preparation.
+    let (handle, editor, track, clip, _files) =
+        fixture_with_streamed_source(cx, midi, None, refuse);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let before_history = editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        (
+            state.revision,
+            state.can_undo,
+            state.can_redo,
+            state.unsaved,
+        )
+    });
     let down = capture(&mut visual, clip, midi, false);
     let edge = editor.read_with(&visual, |v, _| {
         let lane = v.drag_lanes[&track];
@@ -739,18 +808,15 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
                 && viewport.end().unwrap() > v.state.as_ref().unwrap().timeline_frames
         );
         if refuse {
-            assert!(
-                v.active_trim_drag
-                    .as_ref()
-                    .unwrap()
-                    .preview
-                    .borrow()
-                    .as_ref()
-                    .unwrap()
-                    .clip
-                    .duration()
-                    > 96_000 * 8
-            );
+            let drag = v.active_trim_drag.as_ref().unwrap();
+            let preview = drag.preview.borrow();
+            let preview = preview.as_ref().unwrap();
+            assert!(preview.clip.duration() > 0);
+            hex_engine::audio_transform::validate_clip_warp_preview(
+                &preview.clip,
+                v.state.as_ref().unwrap().project.tempo_map(),
+            )
+            .expect("refusal fixture must display supported Warp geometry");
         }
         viewport
     });
@@ -773,7 +839,27 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
         visual.run_until_parked();
         inside
     };
+    let retained_command_frame = refuse.then(|| {
+        editor.read_with(&visual, |v, _| {
+            let drag = v.active_trim_drag.as_ref().unwrap();
+            drag.preview
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .command_frame_for_test()
+        })
+    });
     visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
+    if let Some(frame) = retained_command_frame {
+        editor.read_with(&visual, |v, _| {
+            assert!(matches!(v.last_enqueued_edit.as_ref(),
+                Some(Command::StretchAudioClipEdge { clip: submitted, edge: hex_project::TrimEdge::Right, frame: submitted_frame })
+                if *submitted == clip && *submitted_frame == frame
+            ));
+            assert!(v.pending_trim.is_some(), "own accepted command retains PendingTrim until its actual worker terminal");
+            assert_eq!(v.worker_requests_pending, 1, "actual own FIFO submission");
+        });
+    }
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(
@@ -784,7 +870,7 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
     pump(&editor, &mut visual);
     let settled = editor.read_with(&visual, |v,_| {
         let state=v.state.as_ref().unwrap();
-        if refuse { assert!(v.error.is_some(), "real worker must refuse unsupported transform");assert_eq!(state.project.snapshot(),before); }
+        if refuse { assert!(v.error.as_ref().is_some_and(|error| error.contains("preparation currently require resident audio; streamed source changes were not committed")), "actual streamed preparation refusal, not range validation: {:?}", v.error);assert_eq!(state.project.snapshot(),before);assert_eq!((state.revision, state.can_undo, state.can_redo, state.unsaved),before_history);assert!(v.pending_trim.is_none()); }
         else { assert!(v.error.is_none(),"{:?}",v.error);assert_ne!(state.project.snapshot(),before); }
         assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
         let visible=v.visible_viewport(state.timeline_frames);
@@ -1092,4 +1178,265 @@ fn audio_event_outside_release_only_owns_focus_during_its_actual_gesture(cx: &mu
         );
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
+}
+
+#[gpui::test]
+fn resize_edge_pan_stops_after_original_audio_handle_leaves_view(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, false, false, false, false);
+}
+#[gpui::test]
+fn resize_edge_pan_stops_after_original_midi_handle_leaves_view(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, true, false, false, false);
+}
+#[gpui::test]
+fn resize_edge_pan_stops_after_original_shift_handle_leaves_view(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, false, true, false, false);
+}
+#[gpui::test]
+fn resize_edge_pan_stops_after_original_warp_handle_leaves_view(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, false, false, true, false);
+}
+fn check_edge_pan_after_original_handle_leaves_view(
+    cx: &mut TestAppContext,
+    midi: bool,
+    stretch: bool,
+    enabled_warp: bool,
+    outside_release: bool,
+) {
+    for left in [false, true] {
+        let viewport = Viewport {
+            start: if left { 90_000 } else { 174_000 },
+            length: 24_000,
+        };
+        let (handle, editor, track, clip, _files) = fixture(cx, midi, Some(viewport));
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        if enabled_warp {
+            let settings = editor.read_with(&visual, |v, _| {
+                let p = &v.state.as_ref().unwrap().project;
+                hex_project::default_audio_warp(
+                    p.clip(clip).unwrap(),
+                    p.tempo_map(),
+                    hex_project::WarpMode::Beats {
+                        preserve: hex_project::BeatsPreserve::Transients,
+                        tail: hex_project::BeatsTail::Forward,
+                        decay: 100,
+                    },
+                )
+                .unwrap()
+            });
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings)
+                })))
+            });
+            pump(&editor, &mut visual);
+        }
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let down = capture(&mut visual, clip, midi, left);
+        // Enabled Warp has a finite retained root: exercise its valid inward
+        // crop, not an unsupported extension beyond that root.
+        let pan_left = left != enabled_warp;
+        let modifiers = Modifiers {
+            shift: stretch,
+            ..Modifiers::default()
+        };
+        visual.simulate_modifiers_change(modifiers);
+        visual.run_until_parked();
+        let edge = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            point(
+                px(if pan_left {
+                    lane.left + 3.0
+                } else {
+                    lane.left + lane.width - 3.0
+                }),
+                down.y,
+            )
+        });
+        visual.simulate_mouse_move(edge, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let now = Instant::now();
+        let selector = Box::leak(
+            format!(
+                "{}clip-trim-{}-{}",
+                if midi { "midi-" } else { "" },
+                if left { "left" } else { "right" },
+                clip.value()
+            )
+            .into_boxed_str(),
+        );
+        for step in 0..24 {
+            held_tick(&editor, &mut visual, now + Duration::from_millis(step * 50));
+            if visual.debug_bounds(selector).is_none() {
+                break;
+            }
+        }
+        if visual.debug_bounds(selector).is_some() {
+            editor.read_with(&visual, |v, _| {
+                let state = v.state.as_ref().unwrap();
+                let active = v.active_trim_drag.as_ref();
+                println!("HANDLE_RETAINED_TRACE midi={midi} left={left} stretch={stretch} enabled_warp={enabled_warp} view={:?} audio_active={} midi_active={} pointer={:?} preview={:?} canonical={:?} error={:?}", v.visible_viewport(state.timeline_frames), active.is_some(), v.active_midi_trim_drag.is_some(), active.and_then(|drag| drag.last_pointer_x.get()), active.and_then(|drag| drag.preview.borrow().as_ref().map(|preview| preview.clip.clone())), state.project.clip(clip), v.error);
+            });
+        }
+        assert!(
+            visual.debug_bounds(selector).is_none(),
+            "actual original handle must have left the rendered viewport"
+        );
+        let (edge_view, center) = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            (
+                v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+                point(px(lane.left + lane.width / 2.0), down.y),
+            )
+        });
+        visual.simulate_mouse_move(center, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        held_tick(&editor, &mut visual, now + Duration::from_secs(2));
+        let stopped = editor.read_with(&visual, |v, _| {
+            let recorded = if midi { v.active_midi_trim_drag.as_ref().unwrap().last_pointer_x.get() } else { v.active_trim_drag.as_ref().unwrap().last_pointer_x.get() };
+            let view = v.visible_viewport(v.state.as_ref().unwrap().timeline_frames);
+            println!("REAL_RESIZE_INTERIOR midi={midi} left={left} original_handle_absent=true actual_pointer={} recorded={recorded:?} viewport={edge_view:?}->{view:?}", f32::from(center.x));
+            view
+        });
+        assert_eq!(
+            stopped, edge_view,
+            "held pointer moved to safe interior after source handle unmounted; edge panning must stop"
+        );
+        assert!(
+            editor.read_with(&visual, |v, _| if midi {
+                v.active_midi_trim_drag.is_some()
+            } else {
+                v.active_trim_drag.is_some()
+            }),
+            "resize remains captured while panning stops"
+        );
+        // Resume the same edge, cross directly to the opposite edge, then
+        // return to the interior again without losing capture or creating history.
+        visual.simulate_mouse_move(edge, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        held_tick(&editor, &mut visual, now + Duration::from_secs(3));
+        let resumed = editor.read_with(&visual, |v, _| {
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames)
+        });
+        assert!(
+            if pan_left {
+                resumed.start < stopped.start
+            } else {
+                resumed.start > stopped.start
+            },
+            "same edge resumes after interior stop"
+        );
+        let opposite = editor.read_with(&visual, |v, _| {
+            let lane = v.drag_lanes[&track];
+            point(
+                px(if pan_left {
+                    lane.left + lane.width - 3.0
+                } else {
+                    lane.left + 3.0
+                }),
+                down.y,
+            )
+        });
+        visual.simulate_mouse_move(opposite, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        held_tick(&editor, &mut visual, now + Duration::from_secs(4));
+        let reversed = editor.read_with(&visual, |v, _| {
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames)
+        });
+        assert!(
+            if pan_left {
+                reversed.start > resumed.start
+            } else {
+                reversed.start < resumed.start
+            },
+            "opposite edge reverses immediately"
+        );
+        visual.simulate_mouse_move(center, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        held_tick(&editor, &mut visual, now + Duration::from_secs(5));
+        let (expected_audio, expected_midi) = editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+                reversed,
+                "second interior entry stops ticks again"
+            );
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before,
+                "held preview does not edit canonical state"
+            );
+            (
+                v.active_trim_drag.as_ref().and_then(|drag| {
+                    drag.preview
+                        .borrow()
+                        .as_ref()
+                        .map(|preview| preview.clip.clone())
+                }),
+                v.active_midi_trim_drag
+                    .as_ref()
+                    .and_then(|drag| *drag.preview.borrow()),
+            )
+        });
+        let release = if outside_release {
+            let ruler = visual
+                .debug_bounds("arrangement-loop-rail-row")
+                .expect("actual ruler receiver");
+            let release = point(center.x, ruler.center().y);
+            visual.simulate_mouse_move(release, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            release
+        } else {
+            center
+        };
+        visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+            let project = &v.state.as_ref().unwrap().project;
+            if let Some(expected) = expected_audio.as_ref() {
+                assert_eq!(
+                    project.clip(clip),
+                    Some(expected),
+                    "real worker commits last displayed audio extent"
+                );
+            }
+            if let Some(expected) = expected_midi {
+                let actual = project.midi_clip(clip).unwrap();
+                assert_eq!(
+                    (actual.start(), actual.length(), actual.source_start()),
+                    (expected.start(), expected.length(), expected.source_start()),
+                    "real worker commits last displayed MIDI extent"
+                );
+            }
+            project.snapshot()
+        });
+        assert_ne!(after, before);
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
+
+#[gpui::test]
+fn resize_edge_pan_interior_stop_then_outside_audio_release_commits(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, false, false, false, true);
+}
+#[gpui::test]
+fn resize_edge_pan_interior_stop_then_outside_midi_release_commits(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, true, false, false, true);
+}
+#[gpui::test]
+fn resize_edge_pan_interior_stop_then_outside_shift_release_commits(cx: &mut TestAppContext) {
+    check_edge_pan_after_original_handle_leaves_view(cx, false, true, false, true);
 }

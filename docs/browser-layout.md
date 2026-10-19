@@ -259,3 +259,22 @@ actual resizing, and keeps paint thin through hover/active/release at normal/23p
 picker widths with the editor closed/open. All original PR324 gesture/color cases
 are retained, targeting the line's paint instead of the now-transparent container.
 Physical native pixels/hover/cursor acceptance remains root-owned and open.
+
+## Stationary tag-editor toggles — Pulse2709 / PR325
+
+The rail and original browser body share one fixed base-width column. The optional
+editor is a sibling to that whole column, beginning at the rail's top and spanning
+the browser height. It borrows space to the right using the existing editor-width
+and outer-resize law; it neither overlays the base browser nor stretches the rail.
+Top and mini-strip controls both toggle, so a second click at the same coordinates
+closes the editor. Its dedicated close control remains available.
+
+Rendered input regressions reproduce the original rail expanding from480to624px
+and the mini-strip's open-only callback. They verify repeated stationary clicks at
+124px and23px picker widths, all rail/control bounds, results/preview/waveform and
+source geometry, top/right/bottom column alignment and return of the outer edge.
+An actually selected private WAV retains its loaded metadata owner without new
+preparation/audition requests. Existing browser source menus, heading/minimum snap,
+selection, drag/import, audition and history contracts remain separate and intact.
+This is layout/toggle behavior only; persistent tag editing remains Pulse2667.
+Optimized native pointer/GPU/tooltip acceptance remains root-owned and open.

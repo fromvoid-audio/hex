@@ -16,7 +16,10 @@ impl Project {
     /// Resolve identities only; this performs no file access or PCM admission.
     pub fn validate_device_asset_references(&self) -> Result<(), Invalid> {
         for device in self.asset_devices() {
-            for reference in device.state().asset_references() {
+            for reference in device
+                .authored_states()
+                .flat_map(|state| state.asset_references())
+            {
                 if self.asset(AssetId(reference.asset.value())).is_none() {
                     return Err(Invalid("device references missing project media"));
                 }
@@ -28,9 +31,8 @@ impl Project {
     pub(crate) fn device_uses_asset(&self, asset: AssetId) -> bool {
         self.asset_devices().any(|device| {
             device
-                .state()
-                .asset_references()
-                .iter()
+                .authored_states()
+                .flat_map(|state| state.asset_references())
                 .any(|reference| reference.asset.value() == asset.value())
         })
     }

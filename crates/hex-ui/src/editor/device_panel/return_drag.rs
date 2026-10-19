@@ -52,6 +52,15 @@ pub(super) fn render_chain(
             let rendered =
                 super::return_view::render_return_effect(view, window, cx, owner, device)
                     .track_focus(&focus);
+            let rendered = keyboard::card(view, cx, device.id(), focus.clone(), rendered);
+            let rendered = super::super::device_comparison::card(
+                view,
+                cx,
+                device.id(),
+                NativeDeviceClass::Effect,
+                focus,
+                rendered,
+            );
             chain = chain.child(render_return_drop_target(
                 view,
                 cx,

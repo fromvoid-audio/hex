@@ -106,3 +106,115 @@ Its outside handler now changes focus only when it actually retires its own
 audio-event gesture. Active outside cancellation still retains event focus,
 clears its preview and submits no edit. Deliberate foreign-focus trim cancellation
 remains unchanged.
+
+## Pointer delivery after the original handle leaves view
+
+Edge-pan can move the original canonical clip completely outside the viewport
+while its prospective resize remains visible. Pointer updates belong to that
+captured resize payload, not to the original handle's rendered lifetime. The
+existing typed audio/MIDI move handlers now live on the stable editor root;
+original handle listeners are removed to avoid duplicate updates. Current-owner,
+stale/cancel, modifiers, canonical preview and valid-position checks are retained.
+The timer and its edge-band calculation are unchanged.
+
+Real rendered regressions first pan until the original handle is absent, then
+move the held pointer into the interior: further ticks must leave the viewport
+fixed while capture continues. Re-entering either edge resumes only its current
+direction; a second interior entry stops again. Normal audio, MIDI, temporary
+Shift stretch and enabled Warp cover both edges, exact displayed-to-worker
+extent and one Undo/Redo. Existing Escape/stale/release/pending-horizon cases
+remain separate controls. Track-height resizing is not a timeline-pan gesture.
+These headless results do not claim native physical input acceptance.
+
+
+## Clip-local resize styling (Pulse2860 / PR462)
+
+Clip resize feedback belongs to the clip. The source lane keeps its ordinary
+border during normal audio trimming, Shift stretching and MIDI resizing; it does
+not acquire a transient full-track accent outline. The existing clip preview
+border, handles, waveform, actual selection, track hue strip and header styling
+remain unchanged. This removes only the audio TrimDrag lane drag-over styling;
+its drop receiver and every capture/command/timer/terminal path are retained.
+This explicit resize exception supersedes the older general selected-track
+outline request in Pulse2711; do not restore the resize outline through that work.
+
+Completed GPUI scene tests retain the original two audio accent-border failures
+and already-correct MIDI control. Both edges, selected/other-selected track
+origins, clip-local feedback, actual Service commit/Undo/Redo and logical cancellation
+are checked. A mistaken header-center fixture hit the controls row and stopped
+selection propagation; its diagnostic is retained separately from paint failure.
+Corrected tests click the actual track-name area. Optimized native colors,
+waveform appearance and pointer acceptance remain Root-owned, not established by
+headless scene quads. The separate inherited MIDI focus-cancel preview-paint
+failure remains open as Pulse2871/PR473; this change does not repair or claim
+preview disappearance after that cancellation. Track-height/header resizing and other drag hover styles
+are separate behaviors.
+
+
+## Captured release outside the source track (Pulse2867 / PR469)
+
+A captured Arrangement trim has one source clip and track. Moving vertically into
+another track, a header, ruler, blank region, browser or another panel does not
+retarget or cancel that owner when the same window delivers its left-button
+release. The existing root release path now finalizes against the captured source
+track. Horizontal positions within its timeline use the same final-pointer and
+modifier resolver; foreign horizontal positions retain the existing valid
+timeline point. Model/source/Warp admission, pending FIFO custody and canonical
+worker completion remain authoritative. There is no new release/timer owner.
+
+Real GPUI input and Service completion checks cover both edges for audio, MIDI,
+Shift stretching and enabled Warp, exact displayed/committed geometry, untouched
+other tracks, and one full-snapshot Undo/Redo. Controlled pan tests also unmount
+the original handle, stop on interior entry, and release over the actual ruler.
+The former other-track/outside cancellation tests are intentionally updated for
+this new user requirement. Escape, stale generation, lost focus and actual worker
+refusal retain their separate cancellation/retirement controls.
+
+Preserved diagnostics distinguish two actual other-track failures and the
+corrected changed-extent generic-outside failure from an earlier no-op fixture
+assertion and an initial test-only private-field compile error. Physical OS
+outside-window delivery, optimized waveform appearance and native capture remain
+Root-owned acceptance; cloud input does not establish platform-wide capture.
+
+### upper-rail legacy oracle correction — pulse2867 / pr469
+
+The previous `rendered_audio_trim_release_outside_cancels_without_edit` case
+asserted the obsolete cancellation law at a point proven outside the browser,
+Arrangement body and hovered row. It now tests captured-source acceptance on the
+same upper rail. This case uses a real disposable WAV/Service project and actual
+worker events, retains the region proofs, and verifies exact ClipId/left edge/
+release modifier/command frame, unchanged canonical state before ACK, pending
+preview ownership, exact accepted clip and untouched other track, and one
+Undo/Redo of the complete canonical snapshot. No production behavior changed.
+
+The fixture's raw command point is 192000 while the ordinary trim model projects
+that point to the valid one-frame extent 95999..96000. It intentionally retains
+the exact command, rather than reconstructing it from displayed geometry. A
+first test-only equality assumption between these distinct values failed and is
+retained as diagnostic evidence; it was not a new production failure. The
+original required full-run failure remains failed/historical until the merger
+qualifies a fresh combined candidate. Native captured-release acceptance remains
+separate, as do the inherited focus-cancel paint issue and warning-cleanup PR474.
+
+The PR469 upper-rail regression fixture now creates one existing test Environment
+before Service/import/startup and injects that same Arc into the editor. Its WAV,
+samples, four preferences and derived catalog all belong to that root. The
+existing pre-ACK retention pattern disarms only on the actual matching successful
+Import response (48kHz, 96k frames). A paused real catalog save proves the root
+survives view/caller retirement until filesystem completion, then cleans up;
+a real missing-import refusal preserves evidence without leaking an Arc. This
+is fixture custody, not a Service join or new production release behavior. The
+original pointer/geometry/typed192000/pre-ACK/worker/UndoRedo assertion block is
+byte-identical. Earlier 56-case evidence remains tied to its original source.
+
+The four captured-release matrices retain all 40 mode/edge/destination cases,
+but now construct one real Service/import/window fixture per mode instead of
+one per case. Every case still proves the exact accepted command and complete
+Undo/Redo snapshots, then performs another real Undo, waits for the worker,
+and verifies the baseline and retired pending/drag state before reuse. These
+fixtures are local to each test; no global project or fake worker is shared.
+The same four selectors measured 54.12s before and 20.15s after in Rust test
+runtime, with four actual fixture markers and all 40 release markers. Cargo
+time changed from 170.40s to 41.74s across different source/tooling revisions;
+that also includes PR487's build-identity improvement, not fixture reuse alone.
+These measurements are component evidence, not full or native acceptance.
