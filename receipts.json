@@ -1,0 +1,55 @@
+[
+  {
+    "run": "20261019T061036Z-84fdd5d7",
+    "mode": "quick",
+    "status": "partial",
+    "duration_seconds": 97.507,
+    "summary_sha256": "59a50ece360633b9ef5d94e26a27694e6cbca43d732bfe091d9516311914139c",
+    "steps": [
+      {
+        "step_id": "compressor-generic-ab",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T061226Z-250c96b1",
+    "mode": "quick",
+    "status": "partial",
+    "duration_seconds": 40.298,
+    "summary_sha256": "999dfd5caa68aebf55a73488495adfb8a155d9dcad85dd66033923c6286cf117",
+    "steps": [
+      {
+        "step_id": "strict-ui",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "architecture",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "ui-style",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "gpui-patch",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "touched-fmt",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "diff-check",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  }
+]

@@ -1,0 +1,2 @@
+Root-only optional changed-component selector, if native evidence is needed on this exact source: cargo test -p hex-ui --lib --features ui-test-support --locked compressor_generic_ab_ -- --nocapture
+Expected exactly2 unique tests/0ignored, two diagnostic rows return=false/true; no OS audio/device or app actions. Current-format project/preset files and browser paths are disposable RAII-owned. This is component-only, not physical or listening acceptance. No new native job dispatched.
