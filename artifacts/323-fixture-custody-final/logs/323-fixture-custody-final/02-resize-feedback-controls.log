@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized] target(s) in 0.29s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 4 tests
+test editor::browser::ui_test::resize_feedback::browser_resize_feedback_close_cancels_both_existing_gestures ... ok
+test editor::browser::ui_test::resize_feedback::browser_resize_feedback_lost_left_button_cancels_without_stale_capture ... ok
+test editor::browser::ui_test::resize_feedback::browser_resize_feedback_stays_cyan_outside_moving_hit_bounds ... ok
+test editor::browser::ui_test::resize_feedback::browser_resize_feedback_open_editor_and_compact_picker_keep_gesture_paint ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1090 filtered out; finished in 1.18s
+

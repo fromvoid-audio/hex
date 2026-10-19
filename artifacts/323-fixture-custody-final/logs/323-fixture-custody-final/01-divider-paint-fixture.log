@@ -1,0 +1,25 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+    Finished `test` profile [unoptimized] target(s) in 1m 02s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 3 tests
+divider_fixture SAME owner/Music/WAV/fourprefs/database, held real save, retired view and caller, cleaned root verified
+test editor::browser::ui_test::divider_paint::browser_divider_fixture_catalog_retains_same_music_and_preferences_until_job_finishes ... ok
+test editor::browser::ui_test::divider_paint::browser_divider_paint_is_thin_without_shrinking_capture_bounds ... ok
+test editor::browser::ui_test::divider_paint::browser_divider_paint_padding_and_line_both_resize_with_thin_hover_and_drag ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1091 filtered out; finished in 2.29s
+

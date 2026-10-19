@@ -1,0 +1,26 @@
+{
+  "source": "7aebb103e690115788f8b112d211caf89c1d07fc",
+  "tree": "70b0ceaa9cef4b16b8a226b6e29a0ecd0a44d548",
+  "canonical": "87f19cf54ff7807ea872a25b727eb352024ff32b",
+  "qualification_composition_base": "ce2ae23bb4be6394fa8d0b1f60653c977c2aebe1",
+  "ordinary_main_parent": "57acc3717eefaab8b22848287e131d62fd37abfc",
+  "owner_delta_files": [
+    {
+      "path": "crates/hex-ui/src/editor/browser_divider_paint_ui_test.rs",
+      "before_blob": "6299e5dfc6fa9b688ef49e7131c71cf0c51a8a6e",
+      "after_blob": "51554b967a157b781350c043120c25f395173099",
+      "sha256": "397339a5f0a663c7025c0a5b61ec0a9df246eb0290ed9ba4a68cc77a1348da07"
+    }
+  ],
+  "unchanged_paint_input_and_helper_suffix": {
+    "bytes": 6570,
+    "sha256": "23f3ebf6daa538ab51a70d7354343a20281fc641b918866104766ed89299dd95"
+  },
+  "unchanged_four_feedback_file": {
+    "path": "crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs",
+    "blob": "b53cdbd6d14efb49174f747acf81113d9c4b0512",
+    "sha256": "ec6e52a45a506f2fcec8403244c265147e40878f9187d42637bb66df06370a95"
+  },
+  "tested_dirty_parent": "ce2ae23bb4be6394fa8d0b1f60653c977c2aebe1",
+  "tested_content_sha256": "473ec56e8a4dbca24a13b0c57f8832dc64e781b2a8ad7219a80e528e44ff0029"
+}
