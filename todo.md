@@ -5320,6 +5320,23 @@ sole merger owns prospective fullCI/merge, root optimized native acceptance.
   labels, open settings and repeated capture/expansion. Sole merger owns final full
   candidate checks/merge; native physical interaction and delivery remain open.
 
+## console arrangement midi stop-cell admission — pulse2814 / pr420, 19 october2026
+
+The focused return on frozen44adc reproduces a real UI/model mismatch: an actual
+Arrangement MIDI drag released onto Console Stop queued a copy, then the Service
+refused the occupied cell. MIDI admission now matches Audio and the existing
+canonical empty-cell contract. Stop refuses locally, preserves the complete model
+and history, clears the ghost and queues nothing; browser sample replacement keeps
+its separate atomic contract. No Project/Session/queue/capture semantics changed.
+
+Two real GPUI/Service regressions cover Stop refusal and empty-cell copying with
+fresh IDs, full MIDI source/note payload preservation, one Undo/Redo, and occupied
+MIDI/prepared Audio protection. Baseline1pass1fail becomes2pass; the full focused
+Console set passes11/0ignored. Tests capture the real Arrangement pointer drag,
+use the existing production mode setter, and release over the real Console cell;
+the pinned source predates419's Tab binding. Exact-source strict checks/evidence
+are recorded in Pulse. Full prospective CI/merge belongs to the sole merger;
+changed native/physical acceptance and delivery remain coordinator-owned.
 - 19 October2026 — Pulse2847 / PR449: fixed Preserve groups now retain their
   native-relative first pass, selected inverse-map anchors and physical/FIR
   exclusions, with explicit compression omission and zero-duration-group tests.
@@ -5470,3 +5487,27 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Composed complete owner1ce through e80 with actualtest-only owner15c99 A/B supplement and qualified main457/399/325/447; original53 plus supplement16 evidence payloads verified, exact source hashes retained. Onlyappendtodo conflict retains both histories. Current32 comparison/assets/tuning and no-local-EQ mode preserved; no RMS455/AutoPan454/Sampler395 import.
 - Stable Compressor ID7 mix, originalinput/postmakeupwet linear blend and finite5ms history ramp remain owner code. Actual Track/Return genericSwitch/bothCopy directions/UndoRedo/current-project andpresetSaveOpen distinct25/75 mixes/globaltrims are finite ownercomponent evidence, not providerclone proof or finalfullCI.
 - Focused affectedtesttarget compile precedes new required actualfull21/freshreview; no native/listening/physical/installed/useracceptance claim.
+
+### 2026-10-19 — PR422 supported Warp preview and exact release integration
+
+- Composed shipping owner eb47d9b7 with qualified main453/457/399/325/447 through an ordinary conflict-free merge; canonical53cf history retained. All69 immutable payloads and ten source before/after hashes verified; all ten owning files remain byte-identical to the shipping source. Superseded interval research30e3 is excluded.
+- Requested valid endpoints are admitted directly, including disconnected valid islands. Unsupported requests retain a validated clip and its exact command frame; optional refinement has at most8 probes and a1ms start budget. Preview and release share the resolver; ordinary trim/MIDI, capture/cancel, worker/FIFO and source freshness remain distinct.
+- Original owner5UI,29release controls and measured metadata-cost evidence remain component-scoped. New actual prospective full21/fresh review required; no native optimized pointer deadline, physical release, listening, installed or whole-general-resize acceptance claim.
+### 2026-10-19 — PR413 complete restart repair-chain integration
+
+- Composed canonical be596 through ordered65aa compiler,143 configured filesystem identity andff89 portable-case fixture repairs with qualified main4531bc9. Git merged without conflicts, retaining changelog preparation/history/package handling and current default no-test launch.
+- Verified all34 identity and24 fixture payloads plus prior12 compiler payloads; complete chain and unchanged Python/Swift hashes checked. Root reports exactff89 systemPython3.9 suites89 and compiled ABSENT-only helper probes passed; this is attested component evidence, not cloud access to raw Mac files or running AppKit lifecycle acceptance.
+- Opt-in force restart retains exact bundle/executable/PID/start identity, locks/CAS/recovery/refusal and separate120scompile/15soperation limits. Required new exact prospective full21 and fresh review remain pending; no app/control/native/build/install action by merger.
+
+### 2026-10-19 — PR420 Console drop and Stop-cell return integration
+
+- Composed frozen44adc plus focusedf8f5 return with qualifiedmain422b3aba, preserving canonical history and both appended todo sides. Original53 and return25 immutable payloads were verified; actual Stop refusal and empty-cell copy evidence remains source-bound.
+- Browser receiver runs before deferred root cleanup; existing capture, trim/resize, Open, private test constructor, comparison state and qualified changelog/launcher remain preserved by ordinary hunks. No unready409/419/456/395 import.
+- Focused compile then fresh exact prospective full21/review required; no native physical Console gesture, listening, installed or user acceptance claim.
+
+### 2026-10-19 — PR419 and PR458 coherent workspace/header cohort
+
+- Composed actual419 owner1d381 and dependent458 minimal1c682 header delta, retaining both canonical4192df/45820f histories and qualifiedConsolemainf920. Verified25 and30 owner evidence payloads; original workspace/Open/scrub/paint/resize reds, toolbar-focus disproof and status-zero/first46px negatives remain source-bound.
+- Cohort needs one exact shared source candidate: workspace names expose the known compact-toolbar width failure, so no unchanged419-only full21 retry. Publish the same coherent candidate to both canonical PRs and independently read back their review/merge outcomes; checks bind the exact candidate, never a different head.
+- Mode conflict preserves current Browser cancellation and conditional active time-gesture cancellation; completed time selections survive as owner contract requires. Current comparison/Open/constructor/Console/deferred-release/Warp/launcher/changelog source retained. Group409 diagnostic/semantic repair and draftSampler395 are not imported.
+- Focused affected compile then fresh exact full21/review required, no native physical keyboard/IME/toolbar pixels/delivery acceptance claim.

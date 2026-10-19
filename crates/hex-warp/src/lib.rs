@@ -185,6 +185,32 @@ impl TimeMap {
         }
         Ok(Self { segments })
     }
+    /// Validate the renderer's exact per-segment stretch and pitch capability.
+    /// Metadata only; the existing map constructor owns extent/segment validity.
+    /// This does not admit PCM, algorithm settings, scratch or render work.
+    pub fn validate_stretch(&self, mode: Mode, pitch_cents: i16) -> Result<(), Error> {
+        if !(-4_800..=4_800).contains(&pitch_cents) {
+            return Err(Error::Invalid("invalid audio transform extent or pitch"));
+        }
+        let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
+        if !matches!(mode, Mode::Resample) {
+            for segment in self.segments() {
+                let ratio = (segment.output_end - segment.output_start) as f64 * Q32 as f64
+                    / (segment.source_end_q32 - segment.source_start_q32) as f64;
+                let compensated = if matches!(mode, Mode::RePitch) {
+                    ratio
+                } else {
+                    ratio * pitch
+                };
+                if !(0.125 - 1e-9..=8.0 + 1e-9).contains(&compensated) {
+                    return Err(Error::Invalid(
+                        "warp stretch including pitch compensation must be within 1/8..8",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn segments(&self) -> &[MapSegment] {
         &self.segments
     }
@@ -378,23 +404,10 @@ pub fn render(request: &Request<'_>, cancel: &mut dyn FnMut() -> bool) -> Result
     {
         return Err(Error::Invalid("invalid audio transform extent or pitch"));
     }
+    request
+        .map
+        .validate_stretch(request.mode, request.pitch_cents)?;
     let pitch = 2.0_f64.powf(f64::from(request.pitch_cents) / 1_200.0);
-    if !matches!(request.mode, Mode::Resample) {
-        for segment in request.map.segments() {
-            let ratio = (segment.output_end - segment.output_start) as f64 * Q32 as f64
-                / (segment.source_end_q32 - segment.source_start_q32) as f64;
-            let compensated = if matches!(request.mode, Mode::RePitch) {
-                ratio
-            } else {
-                ratio * pitch
-            };
-            if !(0.125 - 1e-9..=8.0 + 1e-9).contains(&compensated) {
-                return Err(Error::Invalid(
-                    "warp stretch including pitch compensation must be within 1/8..8",
-                ));
-            }
-        }
-    }
     let base_scratch = request.map.segments.len() * std::mem::size_of::<MapSegment>()
         + std::mem::size_of_val(request.input.envelope)
         + std::mem::size_of_val(request.attacks);

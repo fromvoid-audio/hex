@@ -1166,3 +1166,145 @@ fn browser_release_review_original_labeled_outside_point_commits_audio_and_midi(
         });
     }
 }
+
+#[gpui::test]
+fn release_audit_fast_audio_mouseup_uses_final_position_and_reverse(cx: &mut TestAppContext) {
+    audit_fast_mouseup(cx, false, false, false);
+}
+#[gpui::test]
+fn release_audit_fast_shift_mouseup_uses_final_position_and_reverse(cx: &mut TestAppContext) {
+    audit_fast_mouseup(cx, true, false, false);
+}
+#[gpui::test]
+fn release_audit_fast_midi_mouseup_uses_final_position_and_reverse(cx: &mut TestAppContext) {
+    audit_fast_mouseup(cx, false, true, false);
+}
+#[gpui::test]
+fn release_audit_fast_enabled_warp_trim_uses_final_position_and_reverse(cx: &mut TestAppContext) {
+    audit_fast_mouseup(cx, false, false, true);
+}
+fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enabled_warp: bool) {
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        let (_files, handle, editor, audio) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let clip = if midi {
+            review_midi_clip(&editor, &mut visual)
+        } else {
+            audio
+        };
+        if enabled_warp {
+            let settings = editor.read_with(&visual, |v, _| {
+                let p = &v.state.as_ref().unwrap().project;
+                hex_project::default_audio_warp(
+                    p.clip(clip).unwrap(),
+                    p.tempo_map(),
+                    hex_project::WarpMode::Beats {
+                        preserve: hex_project::BeatsPreserve::Transients,
+                        tail: hex_project::BeatsTail::Forward,
+                        decay: 100,
+                    },
+                )
+                .unwrap()
+            });
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings),
+                })))
+            });
+            pump(&editor, &mut visual);
+        }
+        visual.run_until_parked();
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let selector = format!(
+            "{}clip-trim-{}-{}",
+            if midi { "midi-" } else { "" },
+            if edge == TrimEdge::Left {
+                "left"
+            } else {
+                "right"
+            },
+            clip.value()
+        );
+        let down = visual
+            .debug_bounds(Box::leak(selector.into_boxed_str()))
+            .unwrap()
+            .center();
+        let modifiers = Modifiers {
+            shift: stretch,
+            ..Modifiers::default()
+        };
+        let direction = if edge == TrimEdge::Left { 1.0 } else { -1.0 };
+        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0 * direction), down.y),
+            MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        let moved = point(down.x + px(55.0 * direction), down.y);
+        visual.simulate_mouse_move(moved, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        // Reverse at release WITHOUT another mouse-move or modifiers event.
+        // Projection oracle uses the existing model; event routing must deliver
+        // this new coordinate instead of committing the cached move coordinate.
+        let released = point(down.x + px(35.0 * direction), down.y);
+        let (expected_audio, expected_midi) = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            let viewport = v.visible_viewport(v.state.as_ref().unwrap().timeline_frames);
+            if midi {
+                let drag = v.active_midi_trim_drag.as_ref().expect("real MIDI capture");
+                assert_eq!(drag.last_pointer_x.get(), Some(f32::from(moved.x)));
+                let lane = v.drag_lanes[&drag.source_track];
+                let beat =
+                    super::snapped_midi_edge_beat(drag, p, f32::from(released.x), lane, viewport)
+                        .unwrap();
+                let expected = drag.clip.preview_edge_trim(drag.edge, beat).unwrap();
+                assert_ne!(Some(expected), *drag.preview.borrow());
+                (None, Some(expected))
+            } else {
+                let drag = v.active_trim_drag.as_ref().expect("real audio capture");
+                assert_eq!(drag.last_pointer_x.get(), Some(f32::from(moved.x)));
+                let lane = v.drag_lanes[&drag.source_track];
+                let frame =
+                    super::snapped_edge_frame(drag, p, f32::from(released.x), lane, viewport)
+                        .unwrap();
+                let expected = super::preview_clip(drag, p, frame).unwrap();
+                assert_ne!(expected, drag.preview.borrow().as_ref().unwrap().clip);
+                (Some(expected), None)
+            }
+        });
+        visual.simulate_mouse_up(released, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+            assert!(v.pending_trim.is_none());
+            let p = &v.state.as_ref().unwrap().project;
+            if let Some(expected) = &expected_audio {
+                assert_eq!(p.clip(clip), Some(expected));
+            }
+            if let Some(expected) = expected_midi {
+                let actual = p.midi_clip(clip).unwrap();
+                assert_eq!(actual.start(), expected.start());
+                assert_eq!(actual.length(), expected.length());
+                assert_eq!(actual.source_start(), expected.source_start());
+            }
+            p.snapshot()
+        });
+        assert_ne!(before, after);
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
