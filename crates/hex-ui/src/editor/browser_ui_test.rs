@@ -4258,7 +4258,7 @@ fn review_unhighlighted_row_action(
             visual.simulate_keystrokes("right");
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!(v.browser.tree.expanded.contains(&samples.join("a")))
+                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"))
             });
         }
         visual.simulate_keystrokes("escape");
@@ -4273,14 +4273,14 @@ fn review_unhighlighted_row_action(
     let before = editor.read_with(&visual, |v, _| {
         (
             v.browser.playback_generation,
-            v.browser.tree.expanded.clone(),
+            v.browser.tree.icon(&samples.join("a")),
             v.browser.tree.requests_started,
         )
     });
     visual.simulate_keystrokes(if left { "left" } else { "right" });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        let after = (v.browser.playback_generation, v.browser.tree.expanded.clone(), v.browser.tree.requests_started);
+        let after = (v.browser.playback_generation, v.browser.tree.icon(&samples.join("a")), v.browser.tree.requests_started);
         eprintln!("ACTUAL_UNHIGHLIGHTED_ROW sample={sample} escape={escape} left={left} before={before:?} after={after:?}");
         assert_eq!(after, before, "unhighlighted navigation must not dispatch a row action");
         assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
@@ -4334,13 +4334,13 @@ fn review_unhighlighted_row_selected_controls(cx: &mut TestAppContext) {
             if sample {
                 assert!(v.browser.playback_generation > before);
             } else {
-                assert!(v.browser.tree.expanded.contains(&samples.join("a")));
+                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"));
             }
         });
         if !sample {
             visual.simulate_keystrokes("left");
             editor.read_with(&visual, |v, _| {
-                assert!(!v.browser.tree.expanded.contains(&samples.join("a")))
+                assert!(!(v.browser.tree.icon(&samples.join("a")) == "▾"))
             });
         }
     }
