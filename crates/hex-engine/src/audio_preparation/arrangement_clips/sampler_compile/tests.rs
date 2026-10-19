@@ -139,6 +139,7 @@ fn normal_bounds(
     f.transforms
         .with_pcm_inventory_on_control(|inventory| {
             let inputs = Inputs {
+                producer: None,
                 rows,
                 preparation: &f.preparation,
                 editor: &f.editor,

@@ -1,6 +1,7 @@
 use super::*;
 use crate::native_device_resources::{OriginalResourceInput, ResourceCatalogReservation};
 use std::sync::atomic::{AtomicUsize, Ordering};
+mod runtime;
 struct Query {
     calls: AtomicUsize,
     cancel: bool,

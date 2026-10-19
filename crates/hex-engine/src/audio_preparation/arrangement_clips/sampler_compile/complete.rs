@@ -49,12 +49,37 @@ impl crate::AudioPreparationCustody {
         transforms: &AudioTransformPreparation,
         reservation: AudioStorageLedgerReservation,
     ) -> Result<crate::AudioPreparationToken, AudioStorageError> {
+        self.compile_original_sampler_revision_with_producer_on_control(
+            target,
+            None,
+            editor,
+            previous,
+            original,
+            transforms,
+            reservation,
+        )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "closed actual captured and producer input operation"
+    )]
+    pub(crate) fn compile_original_sampler_revision_with_producer_on_control(
+        &mut self,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
+        editor: &hex_project::Editor,
+        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+        original: &AudioRootStorageLedger<'_>,
+        transforms: &AudioTransformPreparation,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<crate::AudioPreparationToken, AudioStorageError> {
         self.inspect_sampler_destination()?;
         let next = self
             .incarnation
             .checked_add(1)
             .ok_or(AudioStorageError::Overflow)?;
         let construction = Inputs {
+            producer,
             rows: &self.arrangement_clips,
             preparation: self,
             editor,

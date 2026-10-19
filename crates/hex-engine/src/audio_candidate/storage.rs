@@ -137,13 +137,14 @@ impl AudioCandidateOwner {
     /// Engine-private fixed actual-input traversal, consumed by the same closed
     /// preparation operation that constructed this target. This grants no
     /// Service/native source association or whole-host completion authority.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "same-operation preparation consumer in progress")
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "closed actual captured and producer input operation"
     )]
     pub(crate) fn seal_sampler_constructor_on_control(
         &mut self,
         target: &crate::SharedMetadata<hex_project::Project>,
+        producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
         editor: &hex_project::Editor,
         previous: Option<
             &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
@@ -170,6 +171,7 @@ impl AudioCandidateOwner {
             ledger.root(self, crate::AudioStorageRole::Current)?;
             self.inner.custody.visit_sampler_candidate_inputs(
                 target,
+                producer,
                 editor,
                 previous,
                 original,

@@ -91,6 +91,42 @@ pub struct OriginalResourceBankPlan<'a> {
     entries: &'a Vec<OriginalResourceInput<'a>>,
 }
 impl<'a> OriginalResourceBankPlan<'a> {
+    pub(crate) fn visit_storage_on_control<'scope>(
+        &self,
+        ledger: &mut crate::AudioRootStorageLedger<'scope>,
+    ) -> Result<(), AudioStorageError>
+    where
+        'a: 'scope,
+    {
+        use crate::audio_storage::{Location, Owner};
+        ledger.vec(self.entries)?;
+        ledger.bytes(
+            Owner::exclusive_vec(self.entries),
+            Location("original-resource-input-vec-inline", 0),
+            size_of_val(self.entries),
+        )?;
+        for entry in self.entries {
+            match &entry.source {
+                Source::Native(source) => {
+                    if !ledger.skip_observed_root(*source) {
+                        ledger.borrow_native_source_on_control(
+                            source,
+                            crate::AudioStorageRole::Caller,
+                        )?;
+                    }
+                }
+                Source::Stereo(source) => {
+                    if !ledger.skip_observed_root(*source) {
+                        ledger.borrow_native_audio_on_control(
+                            source,
+                            crate::AudioStorageRole::Caller,
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn borrow(entries: &'a Vec<OriginalResourceInput<'a>>) -> Self {
         Self { entries }
     }

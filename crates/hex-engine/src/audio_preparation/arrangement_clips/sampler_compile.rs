@@ -83,6 +83,7 @@ impl ArrangementClips {
     }
 }
 struct Inputs<'a> {
+    producer: Option<&'a crate::native_device_resources::OriginalResourceBankPlan<'a>>,
     rows: &'a ArrangementClips,
     preparation: &'a crate::AudioPreparationCustody,
     editor: &'a hex_project::Editor,
@@ -151,6 +152,9 @@ impl<'a> Inputs<'a> {
             ledger.root(self.resources, AudioStorageRole::Caller)?;
         }
         self.resources.visit_storage_on_control(ledger)?;
+        if let Some(producer) = self.producer {
+            producer.visit_storage_on_control(ledger)?;
+        }
         if let Some(target) = self.target {
             // This exact paired captured Project remains a distinct physical
             // input even after current authoring/history has discarded it.
@@ -192,6 +196,7 @@ impl ArrangementClips {
         reservation: AudioStorageLedgerReservation,
     ) -> Result<(), AudioStorageError> {
         let construction = Inputs {
+            producer: None,
             rows: self,
             preparation,
             editor,
@@ -397,9 +402,14 @@ impl Inputs<'_> {
     }
 }
 impl crate::AudioPreparationCustody {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "closed mandatory actual-input visitor"
+    )]
     pub(crate) fn visit_sampler_candidate_inputs<'scope>(
         &'scope self,
         target: &'scope crate::SharedMetadata<hex_project::Project>,
+        producer: Option<&'scope crate::native_device_resources::OriginalResourceBankPlan<'scope>>,
         editor: &'scope hex_project::Editor,
         previous: Option<&'scope OwnedShared<SharedAnalyticContextTable>>,
         original: &'scope AudioRootStorageLedger<'scope>,
@@ -407,6 +417,7 @@ impl crate::AudioPreparationCustody {
         ledger: &mut AudioRootStorageLedger<'scope>,
     ) -> Result<(), AudioStorageError> {
         let inputs = Inputs {
+            producer,
             rows: &self.arrangement_clips,
             preparation: self,
             editor,
@@ -437,6 +448,7 @@ impl crate::AudioPreparationCustody {
     ) -> Result<(), AudioStorageError> {
         self.inspect_sampler_destination()?;
         let construction = Inputs {
+            producer: None,
             rows: &self.arrangement_clips,
             preparation: self,
             editor,
@@ -490,6 +502,7 @@ impl crate::AudioPreparationCustody {
     ) -> Result<(), AudioStorageError> {
         self.inspect_sampler_destination()?;
         let construction = Inputs {
+            producer: None,
             rows: &self.arrangement_clips,
             preparation: self,
             editor,

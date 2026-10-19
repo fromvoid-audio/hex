@@ -100,7 +100,9 @@ impl<'a> Owner<'a> {
             },
         }
     }
-    fn exclusive_vec<T>(value: &'a Vec<T>) -> Self {
+    // Actual lifetime-bound Vec field identity only, including borrowed-element
+    // metadata vectors. This grants no source origin or retirement authority.
+    pub(crate) fn exclusive_vec<T>(value: &'a Vec<T>) -> Self {
         Self {
             domain: OwnerDomain::ExclusiveVec,
             vec_field: Some(value), // the REAL lifetime-bound Vec field

@@ -1,5 +1,73 @@
 use super::*;
 use std::sync::atomic::AtomicBool;
+
+#[test]
+fn original_plan_inspection_covers_actual_input_backing_aliases_without_births() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    let ids = crate::native_device_resources::tests::ids();
+    let source = OwnedAudioSource::try_resident_mono(44100, vec![0.25; 4])
+        .ok()
+        .unwrap();
+    let mut entries = Vec::with_capacity(7);
+    entries.push(OriginalResourceInput::native(ids[0], &source));
+    entries.push(OriginalResourceInput::native(ids[1], &source));
+    let plan = OriginalResourceBankPlan::borrow(&entries);
+    let reservation = AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 16,
+        root_rows: 8,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger
+        .borrow_native_source_on_control(&source, AudioStorageRole::Caller)
+        .unwrap();
+    let before = ledger.summary().unwrap().data_bytes;
+    crate::owned_shared::reset_birth_count();
+    crate::owned_shared::reset_clone_count();
+    let ids_before = crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get());
+    let measured = allocation_counter::measure(|| {
+        plan.visit_storage_on_control(&mut ledger).unwrap();
+        plan.visit_storage_on_control(&mut ledger).unwrap();
+    });
+    assert_eq!(measured.count_total, 0);
+    assert_eq!(crate::owned_shared::birth_count(), 0);
+    assert_eq!(crate::owned_shared::clone_count(), 0);
+    assert_eq!(
+        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
+        ids_before
+    );
+    assert_eq!(
+        ledger.summary().unwrap().data_bytes - before,
+        size_of_val(&entries) + entries.capacity() * size_of::<OriginalResourceInput<'_>>()
+    );
+    ledger.validate_closed_shared_handles().unwrap();
+    let measured = allocation_counter::measure(|| {
+        AudioRootStorageLedger::arithmetic_cost_for_limits(
+            reservation,
+            usize::MAX,
+            usize::MAX,
+            |ledger| plan.visit_storage_on_control(ledger),
+        )
+        .unwrap();
+    });
+    assert_eq!(measured.count_total, 0);
+    assert_eq!(
+        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
+        ids_before
+    );
+    let raw = crate::Audio::new(44100, vec![[0.0; 2]; 4]).unwrap();
+    let raw_entries = vec![OriginalResourceInput::stereo(ids[0], &raw)];
+    let raw_plan = OriginalResourceBankPlan::borrow(&raw_entries);
+    let mut refused = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    assert_eq!(
+        raw_plan.visit_storage_on_control(&mut refused),
+        Err(AudioStorageError::UnknownStorage)
+    );
+    assert_eq!(refused.summary(), Err(AudioStorageError::UnknownStorage));
+}
+
 fn limits() -> OriginalResourcePlanReservation {
     OriginalResourcePlanReservation {
         inputs: crate::AudioStorageReservation {

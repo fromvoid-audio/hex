@@ -205,6 +205,7 @@ fn captured_sampler_complete_revision_is_registered_at_birth_and_retires_in_same
         .with_pcm_inventory_on_control(|inventory| {
             let mut ledger = AudioRootStorageLedger::try_new_on_control(limits())?;
             let inputs = Inputs {
+                producer: None,
                 rows: &preparation.arrangement_clips,
                 preparation: &preparation,
                 editor: &editor,
@@ -270,6 +271,7 @@ fn captured_complete_revision_exact_and_minus_one_refuse_before_constructor_birt
         let (retained, peak) = transforms
             .with_pcm_inventory_on_control(|inventory| {
                 let inputs = Inputs {
+                    producer: None,
                     rows: &preparation.arrangement_clips,
                     preparation: &preparation,
                     editor: &editor,
@@ -546,6 +548,7 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
         assert_eq!(
             prepared_owner.seal_sampler_constructor_on_control(
                 &unrelated_target,
+                None,
                 &editor,
                 None,
                 &original,
@@ -561,6 +564,7 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
         assert_eq!(
             prepared_owner.seal_sampler_constructor_on_control(
                 &target,
+                None,
                 &unrelated_editor,
                 None,
                 &original,
@@ -574,6 +578,7 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
         assert_eq!(
             prepared_owner.seal_sampler_constructor_on_control(
                 &target,
+                None,
                 &editor,
                 None,
                 &original,
@@ -586,6 +591,7 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
         drop(omitted_state);
         let result = prepared_owner.seal_sampler_constructor_on_control(
             &target,
+            None,
             &editor,
             None,
             &original,

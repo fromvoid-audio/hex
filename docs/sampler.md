@@ -1621,3 +1621,28 @@ native backend/ACK, export or musical acceptance. The persistent preparation
 consumer still needs a combined before-birth reservation and one captured-target
 loan through compilation and sealing; final Service live-union and source
 association must not be inferred from this private constructor seal.
+
+The Engine-private persistent preparation consumer now holds that single target
+loan across complete compilation, actual draft/runtime construction, fixed owner
+installation and bound-input sealing. Its before-compiler quote separately
+reserves the unchanged runtime ceiling, finite group/archive/journal/split
+metadata and still-live host collection storage. Both ceilings and the normal
+mandatory input/row checks remain required before compiler births.
+
+A real original-rate Mono/Stereo producer fixture keeps its original source
+alive through this operation. This exposed a genuine missing producer-input
+root: the original ledger's source field was absent from mandatory inputs.
+The private traversal now borrows the actual producer plan and visits its Vec
+body/backing and concrete source fields before original-ledger import. The
+original `SourceMismatch` is retained as negative evidence; original-root binding
+was not relaxed. Repeated inspection allocates/clones/mints no IDs, deduplicates
+the same real field and continues to refuse raw/unknown source origin. The
+existing lifetime-bound Vec identity constructor is crate-visible solely to
+charge that actual borrowed Vec body; its identity/provenance semantics and
+public ledger APIs are unchanged.
+
+The fixture verifies persistent candidate ownership and reader-delayed cleanup,
+plus retained/peak/row-shortage refusal before compiler owner births or clones.
+It does not create a scalar SourceContext to impersonate Service association.
+Actual Service/native construction, post-preroll ControlWork, source freshness,
+full live-union admission and all broader musical coverage remain open.
