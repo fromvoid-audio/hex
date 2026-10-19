@@ -1,0 +1,74 @@
+{
+  "source": "07e3b5d47a24e4b0d2775a0763ac6de811f58888",
+  "tree": "13a88065f7e3faff0bfd676c0bb9f687170d3a10",
+  "scope": "component only; no full prospective CI/native/platform/Service readiness",
+  "checks": [
+    {
+      "name": "affected-candidate",
+      "passed": 20,
+      "ignored": 0,
+      "failed": 0,
+      "log": "history/hex395-runtime-affected-candidate.log",
+      "unique_names": [
+        "audio_candidate::draft::tests::borrowed_draft_finishes_same_runtime_and_recovers_exact_original_bank",
+        "audio_candidate::claimed::tests::split_keeps_actual_runtime_box_and_original_custodian_until_normal_bound_disposal",
+        "audio_candidate::draft::tests::draft_construction_and_actual_runtime_destructor_panics_are_sticky",
+        "audio_candidate::claimed::tests::preallocated_split_drop_and_transfer_preserve_actual_cell_and_allocation_ownership",
+        "audio_candidate::preparation::original_resources::tests::affine_original_install_query_unwind_latches_actual_cell_and_refuses_retry_cleanup",
+        "audio_candidate::preparation::original_resources::tests::affine_original_install_reported_cancel_prevents_second_producer_and_allows_cleanup",
+        "audio_candidate::draft::tests::ordinary_draft_refusal_retains_runtime_until_explicit_control_cleanup",
+        "audio_candidate::claimed::tests::constructor_metering_setup_preserves_pcm_storage_and_actual_device_peaks",
+        "audio_candidate::preparation::original_resources::tests::affine_original_install_validates_before_producer_retains_once_and_cleans_on_control",
+        "audio_candidate::preparation::tests::collection_and_completed_owner_cancel_clean_but_failed_runtime_is_retained_once",
+        "audio_candidate::reservation::tests::quote_refuses_unsupported_class_and_checked_arithmetic_overflow",
+        "audio_candidate::preparation::tests::persistent_collection_refusal_retry_and_original_owner_cleanup_are_control_side",
+        "audio_candidate::tests::actual_candidate_normal_disposal_recovers_original_bank_without_freeing_its_pcm",
+        "audio_candidate::storage::tests::actual_constructor_data_refuses_external_root_handle_and_preserves_bank_on_caps",
+        "audio_candidate::tests::actual_unsupported_tail_population_pins_original_runtime_without_false_group_closure",
+        "audio_candidate::tests::actual_nested_destructor_panic_retains_remaining_roots_first_payload_and_never_retries",
+        "audio_candidate::tests::foreign_token_and_changed_owner_book_refuse_without_taking_original_owner",
+        "audio_candidate::groups::tests::real_utility_chains_fan_out_by_actual_tail_lifetime_not_history_copy",
+        "audio_candidate::tests::dormant_constructor_handles_and_vacant_locations_survive_supported_play_pause_stop",
+        "audio_candidate::reservation::tests::conservative_quote_covers_actual_empty_and_hundred_track_utility_constructors"
+      ]
+    },
+    {
+      "name": "compensation-suite",
+      "passed": 11,
+      "ignored": 0,
+      "failed": 0,
+      "log": "history/hex395-runtime-compensation-suite.log",
+      "unique_names": [
+        "compensation::tests::planner_sums_serial_latency_and_aligns_each_reconvergence",
+        "compensation::tests::impulses_align_through_serial_processors_and_parallel_runtime_edges",
+        "compensation::tests::invalid_calls_refuse_before_mutating_ring_state",
+        "compensation::tests::runtime_rejects_combined_ring_storage_exceeding_its_policy",
+        "compensation::tests::runtime_storage_visitor_covers_real_delay_pairs_without_allocation",
+        "compensation::tests::planner_rejects_unknown_duplicate_missing_cyclic_and_overlimit_graphs",
+        "compensation::tests::silence_advances_pending_impulse_and_epoch_reset_removes_old_content",
+        "compensation::tests::storage_counts_actual_twin_capacities_and_enforces_exact_budget",
+        "compensation::tests::transport_origins_preserve_loop_identity_and_rollback_long_requests",
+        "compensation::tests::stereo_delay_matches_fifo_oracle_over_partitions_and_repeated_transactions",
+        "compensation::tests::rollback_after_prior_chunks_restores_partial_wrapped_and_full_rings"
+      ]
+    },
+    {
+      "name": "captured-target-suite",
+      "passed": 6,
+      "ignored": 0,
+      "failed": 0,
+      "log": "history/hex395-runtime-captured-target-suite.log",
+      "unique_names": [
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_sampler_complete_revision_is_registered_at_birth_and_retires_in_same_parent",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_sampler_target_survives_current_editor_history_pruning",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_target_alias_and_unrelated_bank_refuse_before_compiler_birth",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_complete_revision_partial_session_and_revision_failure_retain_same_parent_cleanup",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_sampler_complete_revision_enters_actual_candidate_runtime",
+        "audio_preparation::arrangement_clips::sampler_compile::tests::captured_target::captured_complete_revision_exact_and_minus_one_refuse_before_constructor_birth"
+      ]
+    }
+  ],
+  "strict": "cargo clippy -p hex-engine --all-targets --locked -- -D warnings: exit0",
+  "quick": "six guards PASS; PARTIAL; clean start=end; original summary/logs retained",
+  "historical_negatives": "history preserves UnsupportedGraph runtime, reentrant local-ledger failure, compiler-only 16MiB refusal, legacy project quote refusal, missing physical aliases and diagnostic compile failure. Earlier positives are exploratory source-bound, not relabeled final source."
+}
