@@ -574,7 +574,10 @@ fn console_actual_verified_worker_drop_uses_typed_session_clip_and_file_source(
             source.audio_mode(),
             hex_session::DocumentAudioMode::VerifiedStreaming
         );
-        assert!(source.verified_file(clip.asset()).is_some());
+        assert!(matches!(
+            source.sources().get(&clip.asset()),
+            Some(hex_session::AudioSourceBinding::VerifiedFile(_))
+        ));
     });
     history(&editor, cx, Request::Undo);
     restored(&project(&editor, cx), &before, after.next_identity());
