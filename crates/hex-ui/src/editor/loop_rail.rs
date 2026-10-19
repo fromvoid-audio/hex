@@ -8,6 +8,15 @@ use gpui::{
 use hex_project::{Command, LoopRegion};
 use hex_session::service::Request;
 
+mod pending;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PendingLoop {
+    generation: u64,
+    region: LoopRegion,
+    remaining: Option<usize>,
+}
+
 const RAIL_HEIGHT: f32 = 18.0;
 const BAR_INSET: f32 = 4.0;
 const EDGE_HIT_PIXELS: f32 = 6.0;
@@ -229,11 +238,7 @@ impl EditorView {
             self.error = Some("loop region needs a non-empty time range".into());
             return true;
         };
-        let _ = self.enqueue(Request::Edit(Command::SetLoopRegion {
-            start: region.start(),
-            end: region.end(),
-            enabled: region.enabled(),
-        }));
+        self.submit_loop_preview(gesture.generation, region);
         true
     }
 
@@ -285,6 +290,7 @@ pub(super) fn view(
     });
     let shown_region = gesture
         .and_then(|gesture| gesture.preview)
+        .or_else(|| view.pending_loop_region())
         .or(current_region);
     let entity = cx.entity();
     let rail = div()
