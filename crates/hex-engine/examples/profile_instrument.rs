@@ -96,17 +96,20 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: vec![
                 DeviceSnapshot {
+                    comparison: None,
                     id: prefix_id,
                     bypassed: false,
                     state: utility_state.clone(),
                 },
                 DeviceSnapshot {
+                    comparison: None,
                     id: suffix_id,
                     bypassed: false,
                     state: utility_state,
                 },
             ],
             instrument: Some(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: if workload.operator {

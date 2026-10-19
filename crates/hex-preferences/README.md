@@ -29,3 +29,8 @@ independent background saves cannot overwrite one another.
 Theme colors use a separate versioned `theme.json` document. Channels are bounded
 eight-bit values; contrast and live preview belong to the UI. Malformed/future
 settings are preserved and refused rather than overwritten.
+
+Browser Places also retain optional icon IDs keyed by exact native Place paths.
+At most one bounded, nonempty, control-free ID (64 UTF-8 bytes) is accepted per
+additional Place. Unknown IDs roundtrip unchanged; glyph inventory, defaults and
+fallback presentation belong to the UI. Orphan/duplicate icon records are refused.

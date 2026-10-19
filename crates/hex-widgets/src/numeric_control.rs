@@ -79,8 +79,13 @@ pub enum NumericControlAppearance {
     MicroDial,
     WideMicroDial,
     InlineValue,
+    /// A rail and editable readout for a compact mixer/header row.
+    CompactSlider,
     DeviceMeters,
 }
+
+#[cfg(test)]
+mod compact_slider_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericEventPhase {
@@ -196,6 +201,7 @@ pub struct NumericControl {
     press: Option<Press>,
     pub(crate) style: ControlStyle,
     meter_readout: crate::DeviceMeterReadout,
+    inline_value_width: Option<f32>,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
     tab_navigation: bool,
@@ -290,11 +296,29 @@ impl NumericControl {
             appearance,
             dial_layout,
             meter_readout: Default::default(),
+            inline_value_width: None,
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
         }
+    }
+
+    /// Size a compact numeric field without changing its codec or input protocol.
+    /// Existing owners retain the forty-six-pixel default.
+    pub fn set_inline_value_width(
+        &mut self,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> Result<(), NumericError> {
+        if !width.is_finite() || !(24.0..=256.0).contains(&width) {
+            return Err(NumericError::InvalidStyle);
+        }
+        if self.inline_value_width != Some(width) {
+            self.inline_value_width = Some(width);
+            cx.notify();
+        }
+        Ok(())
     }
 
     pub fn set_meter_readout(
@@ -312,7 +336,7 @@ impl NumericControl {
         self.value
     }
 
-    /// Text currently shown in the editable value field.
+    /// Original editable draft, preserving parser and clipboard semantics.
     pub fn display_text(&self) -> &str {
         &self.text
     }
@@ -1029,9 +1053,11 @@ impl NumericControl {
 
     pub(crate) fn value_string(&self) -> String {
         if self.editing {
-            self.text.clone()
+            self.style.text_case.present(&self.text)
         } else {
-            self.spec.format(self.draft).unwrap_or_default()
+            self.style
+                .text_case
+                .present(&self.spec.format(self.draft).unwrap_or_default())
         }
     }
 
@@ -1274,7 +1300,7 @@ impl gpui::Render for NumericControl {
             (NumericControlKind::HorizontalSlider, NumericControlAppearance::InlineValue) => div()
                 .id(self.id.clone())
                 .flex()
-                .w(px(46.0))
+                .w(px(self.inline_value_width.unwrap_or(46.0)))
                 .h(px(14.0))
                 .items_center()
                 .track_focus(&self.focus)
@@ -1287,7 +1313,7 @@ impl gpui::Render for NumericControl {
                         editing: self.editing,
                         enabled,
                         style,
-                        width: px(46.0),
+                        width: px(self.inline_value_width.map_or(46.0, |width| width - 2.0)),
                         height: px(14.0),
                     },
                     self.value_mouse_down_listener(cx),
@@ -1324,6 +1350,40 @@ impl gpui::Render for NumericControl {
                     style,
                     self.value_mouse_down_listener(cx),
                 )),
+            (NumericControlKind::HorizontalSlider, NumericControlAppearance::CompactSlider) => {
+                div()
+                    .id(self.id.clone())
+                    .flex()
+                    .w_full()
+                    .min_w(px(86.0))
+                    .h(px(21.0))
+                    .gap(px(2.0))
+                    .items_center()
+                    .track_focus(&self.focus)
+                    .key_context(key_context)
+                    .child(slider_track(
+                        self.id.clone(),
+                        value,
+                        false,
+                        enabled,
+                        style,
+                        true,
+                        self.control_mouse_down_listener(cx),
+                    ))
+                    .child(value_field_sized(
+                        self.id.clone(),
+                        value_text,
+                        ValueFieldPresentation {
+                            invalid: self.invalid_text,
+                            editing: self.editing,
+                            enabled,
+                            style,
+                            width: px(46.0),
+                            height: px(18.0),
+                        },
+                        self.value_mouse_down_listener(cx),
+                    ))
+            }
             (NumericControlKind::HorizontalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1348,6 +1408,7 @@ impl gpui::Render for NumericControl {
                     false,
                     enabled,
                     style,
+                    false,
                     self.control_mouse_down_listener(cx),
                 ))
                 .child(value_field(
@@ -1385,6 +1446,7 @@ impl gpui::Render for NumericControl {
                     true,
                     enabled,
                     style,
+                    false,
                     self.control_mouse_down_listener(cx),
                 ))
                 .child(value_field(
@@ -1706,10 +1768,13 @@ fn slider_track(
     vertical: bool,
     enabled: bool,
     style: ControlStyle,
+    contain_thumb: bool,
     on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let fill_color = if enabled { style.accent } else { style.muted };
+    let thumb_selector = format!("{id}-slider-thumb");
     let thumb = div()
+        .debug_selector(move || thumb_selector.clone())
         .absolute()
         .size(if vertical { px(12.0) } else { px(10.0) })
         .rounded(px(crate::CONTROL_CORNER_RADIUS))
@@ -1786,6 +1851,10 @@ fn slider_track(
                     .rounded_full()
                     .bg(rgb(fill_color)),
             )
-            .child(thumb.left(relative(normalized)))
+            .child(
+                thumb
+                    .left(relative(normalized))
+                    .when(contain_thumb, |thumb| thumb.ml(px(-10.0 * normalized))),
+            )
     }
 }
