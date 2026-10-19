@@ -1,0 +1,76 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 37.38s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 57 tests
+test editor::device_panel::tests::bindings_tests::numeric_binding_lease_cannot_adopt_a_newer_same_parameter_gesture ... ok
+test editor::device_panel::tests::bindings_tests::late_numeric_phases_cannot_change_finish_or_cancel_another_parameter_gesture ... ok
+test editor::device_panel::tests::bindings_tests::retired_numeric_emitter_cannot_address_a_replacement_binding ... ok
+test editor::device_panel::tests::bindings_tests::retiring_numeric_control_does_not_cancel_an_unowned_same_parameter_gesture ... ok
+test editor::device_panel::tests::bindings_tests::owner_finalization_retires_a_draft_from_an_old_project_generation ... ok
+test editor::device_panel::tests::bindings_tests::synchronous_numeric_owner_finish_does_not_reopen_queued_noop_drag ... ok
+test editor::device_panel::tests::chain_window_tests::return_chain_type_change_retires_old_identity_and_metadata ... ok
+test editor::device_panel::tests::chain_window_tests::short_chain_window_does_not_add_scroll_extent ... ok
+test editor::device_panel::tests::chain_window_tests::host_gain_entity_and_capture_survive_windowed_reconciliation ... ok
+auto pan generic A/B: return=true; actual ID4 shapes1/4, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::auto_pan_generic_ab_return_shapes_banks_copy_and_persistence ... ok
+test editor::device_panel::tests::chain_window_tests::return_chain_window_preserves_focus_drafts_gestures_and_history ... ok
+test editor::device_panel::tests::chain_window_tests::track_chain_window_preserves_focus_drafts_gestures_and_history ... ok
+compressor generic A/B: return=true; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::compressor_generic_ab_return_mix_banks_copy_and_persistence ... ok
+auto pan generic A/B: return=false; actual ID4 shapes1/4, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::auto_pan_generic_ab_track_shapes_banks_copy_and_persistence ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_click_title_p_menu_copy_and_real_undo_are_one_shared_route ... ok
+compressor RMS generic A/B: return=true; actual ID8 Peak/RMS plus ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::compressor_generic_ab_return_rms_mix_banks_copy_and_persistence ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_recovery_error_preserves_real_pending_and_applied_correlation ... ok
+compressor generic A/B: return=false; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::compressor_generic_ab_track_mix_banks_copy_and_persistence ... ok
+compressor RMS generic A/B: return=false; actual ID8 Peak/RMS plus ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::compressor_generic_ab_track_rms_mix_banks_copy_and_persistence ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_numeric_draft_and_eq_graph_own_p ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_p_respects_browser_ime_musical_and_modal_focus ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_pending_press_does_not_apply_after_worker_completion ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_review_dismiss_nonselected_menu_keeps_p_on_target ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_review_enqueue_cancels_published_seek_before_callback ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_right_click_nonselected_badge_switches_only_its_target ... ok
+stale menu trace before undo: root_focus=true any_focus=true can_undo=true worker=0 error=None
+stale menu trace after key: root_focus=true any_focus=true worker=1 queued=0 error=None
+test editor::device_panel::tests::device_comparison_tests::device_comparison_stale_menu_removal_preserves_real_keyboard_undo ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_real_numeric_edits_keep_independent_slots_and_copy_is_one_undo ... ok
+test editor::device_panel::tests::device_comparison_tests::device_comparison_title_click_and_p_in_one_dispatch_frame_targets_clicked_card ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_backspace_keeps_eq_graph_removal_local ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_backspace_preserves_invalid_numeric_draft_and_device ... ok
+test editor::device_panel::tests::device_reorder_tests::device_titles_move_between_left_and_right_without_editing_on_hover ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_backspace_refuses_pending_stale_and_empty_selection_without_falling_through ... ok
+test editor::device_panel::tests::device_reorder_tests::return_titles_reorder_with_undo_and_cancel_or_noop_without_history ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_backspace_preserves_numeric_and_browser_text_focus ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_delete_release_does_not_rearm_old_card_after_selection_changes ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_delete_release_preserves_new_text_focus ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_delete_review_pointer_return_keeps_keyboard ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_delete_review_pointer_instrument_keeps_keyboard ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_delete_review_pointer_track_effect_keeps_keyboard ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_delete_review_refused_press_cannot_turn_into_held_removal ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_header_backspace_finalizes_valid_draft_before_removal ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_header_backspace_keeps_real_keyboard_undo_redo_and_focus_after_reconcile ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_header_backspace_removes_instrument_without_touching_effect_or_track ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_header_backspace_removes_return_effect_with_one_undo ... ok
+test editor::device_panel::tests::keyboard_delete_tests::device_header_backspace_repeat_does_not_delete_a_selected_clip_or_another_device ... ok
+test editor::device_panel::tests::main_chain_ui_tests::main_header_add_effect_uses_actual_main_chain_and_history ... ok
+actual rendered A/B catalog role cases: 15
+test editor::device_panel::tests::device_comparison_tests::device_comparison_every_available_catalog_header_and_return_uses_actual_p ... ok
+test editor::device_panel::tests::navigation_ui_tests::device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe ... ok
+test editor::device_panel::tests::navigation_ui_tests::device_chain_navigation_pan_overview_release_escape_and_resize ... ok
+test editor::device_panel::tests::main_chain_ui_tests::console_main_parameter_banks_presets_and_project_roundtrip ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_adb3_returns_removed_last_track_menu_does_not_own_tab ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_adb3_returns_gain_point_drag_keeps_tab_until_release_or_escape ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_four_returns_hidden_add_menu_does_not_block_tab ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_menu_from_root_or_track_focus ... ok
+test editor::device_panel::tests::navigation_ui_tests::workspace_three_returns_device_navigation_preserves_capture ... ok
+
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 1010 filtered out; finished in 27.17s
+

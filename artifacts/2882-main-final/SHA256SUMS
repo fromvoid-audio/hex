@@ -1,0 +1,42 @@
+85f93268d0c3341bec01ef36f15b2dbf1c68798bd19c4092a4e8da27b4cde178  HANDOFF.md
+53547aa565b1df8cde7b871c8e03d2a015c81cc57a59b54bd42bfb2fc8fb69a9  acceptance.json
+7e32b8e5fbb4139a49cfecde1249afd24e739c726fdf690a5ee685215af103d9  canonical-chain-index.json
+12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b  logs/2882-main-final-component/01-architecture.log
+6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80  logs/2882-main-final-component/02-UI style.log
+838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a  logs/2882-main-final-component/03-GPUI patch.log
+9c0c3fd09b9b22707639566251a286248f3daf5eda36c9145e10c1f7cee736eb  logs/2882-main-final-component/04-dependency provenance.log
+7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9  logs/2882-main-final-component/05-device layout.log
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  logs/2882-main-final-component/06-format.log
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  logs/2882-main-final-component/07-diff.log
+e01e3c0676ab9768d46dbf59675a5efd1f811093a8c1bb866e00809739386e35  logs/2882-main-final-component/summary.json
+ab1644ffabd6d0b840c9d8d82f3e824bff83547fdcf5e97e0f5f4a0b180cbffb  logs/2882-main-final-functional-strict/01-Main backend lifecycle and existing transport routes.log
+6c23ef4077f37221227f116b2456b77f17a23a6d05efa650b12b19dc6893d582  logs/2882-main-final-functional-strict/02-Session device gesture comparison preset controls.log
+234d2cbf1d132da310fb71a1fd1b53d6645aef30decc149d8597c5a15161df6d  logs/2882-main-final-functional-strict/03-Main export and existing Return export.log
+746cf7933858f5ae68a7d5b4bcd562232c89c45c2695ebd0bfb661d289ff6488  logs/2882-main-final-functional-strict/04-Main and shared Track Return UI.log
+5d61446f975afd744ecfa2173f3714cef7b8d5d4cae2aa78b3483297c3b73c1f  logs/2882-main-final-functional-strict/05-Main callback allocation and existing routed controls.log
+39f1c1e76056d4358fe7fc7f3ae35061c20b420e755166a0517fb4aba218b957  logs/2882-main-final-functional-strict/06-Engine strict.log
+89e01df4b38713898618b94277a495d32676dc0adbc8cd7cc837b51ed8e297e4  logs/2882-main-final-functional-strict/07-Session strict.log
+f8c62d8a898be26414467828f40da56ec664ca98de3c6b86a456266f6725d5f5  logs/2882-main-final-functional-strict/08-Export strict.log
+8324aac5c43e73f93f65ee73786b430e684bb2510b6bcdd1372a7c47e71719d1  logs/2882-main-final-functional-strict/09-Audio allocation strict.log
+39c3302cc2eed6408792cdcbb9fb4d7350037f5b61b885a0bd33f8affd30696b  logs/2882-main-final-functional-strict/10-UI default strict.log
+1b13a0187b0b9e13c24fd572e7857d081265ecd99c3e9a91a0198766e5e404be  logs/2882-main-final-functional-strict/11-UI feature strict.log
+ec920df53d6e70469b2d1e47b07a62d7a22d87f4e343e69a95704b23b31269f7  logs/2882-main-final-functional-strict/summary.json
+2e8019f826dcd668df10d77221f71427eb09f2c6dd92c828581c90f33dcdceea  negatives/2882-main-budget-baseline-v2/08-Stateful Main normal fast history.log
+a92c492957b5c46bd00018f59babbe15d056cb6f8a243c728fec5fddbccca11a  negatives/2882-main-budget-baseline-v2/summary.json
+9689b261149618857255442697a687ea8e2047cae96c01e6fa0f90cd33a2be91  negatives/2882-main-budget-baseline/08-Stateful Main normal fast history.log
+8d742326a89a12b134ce46bb3a2f7fa76711884098488f2a0b8508770df74b96  negatives/2882-main-budget-baseline/summary.json
+0cbeb9df12c891da6766793f7b36b1c9cba28c86eda1704589fab0fe843cbc4a  negatives/2882-main-console-banks-v2/08-Actual Main header baseline.log
+2758b092abb31a870106c2c9b0df0392e51249f9ad4b47e4534aef8fe7218162  negatives/2882-main-console-banks-v2/summary.json
+5293bfd73f8da69fed6ec1223792f9dc44d7985de84796e5ba52e8d50175ee36  negatives/2882-main-console-banks/08-Actual Main header baseline.log
+e8023d7dacf6e58f5105841579bafee1d581fe558539b29a085352a28ade6eea  negatives/2882-main-console-banks/summary.json
+1cca439ab17dd634db0e9fb7b41d0b476fdc22ff6dfd289a3fab29afe8d9e7c8  negatives/2882-main-console-callback-green/08-Actual Main header baseline.log
+ddfd3a47342684779e631e01fa6a93178c7aee2664568873bdea1c04b5745d37  negatives/2882-main-console-callback-green/summary.json
+48058108502c983d950a785019f0adee487a00314675b2d5c315b7e8ac6b69e9  negatives/2882-main-export-pcm/08-Main actual render export capture.log
+fdf6ab952a538747896e3bd8e5ed14e1521e00bfb027551b08de51d34965bd89  negatives/2882-main-export-pcm/summary.json
+7a6a153c1f94daab21b44934fdc73affdc784591108fed7da61251fa3c9c0ee1  negatives/2882-main-history-baseline/08-Stateful Main normal fast history.log
+745772552b27c8de01e9d6e55c69203eaf2e9385290ab16d8c90afb7f257fd9b  negatives/2882-main-history-baseline/summary.json
+ad38e08cf2ef890be851f3b581f36932310ebc8bfa6823cbf4032807b9d1a34b  negatives/2882-main-meter-fallback-baseline-v2/08-Stateful Main normal fast history.log
+eb811ab55e7288a91de22a1c784763739c1de6dd1646e1b906f897beca7f1963  negatives/2882-main-meter-fallback-baseline-v2/summary.json
+3bf38d70ceef72e13ecfc700eec021715722051ffc8e8ecad0619e9eaf5ccb53  negatives/2882-main-meter-fallback-baseline/08-Stateful Main normal fast history.log
+9a1b7ef387c44a33e35178258ab948d1c1f25f7e761445e6db59dd07df421e64  negatives/2882-main-meter-fallback-baseline/summary.json
+74164b45a1241e99fe882cc43096bc8d736f9883dee52b27244ed1274fc4efac  source-index.json

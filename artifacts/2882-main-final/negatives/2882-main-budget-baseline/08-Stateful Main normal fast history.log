@@ -1,0 +1,19 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized] target(s) in 0.38s
+     Running tests/main_chain.rs (target/debug/deps/main_chain-58b160ab30476cbb)
+
+running 1 test
+
+thread 'main_effects_count_against_the_combined_native_runtime_budget' (346702) panicked at crates/hex-engine/tests/main_chain.rs:177:10:
+called `Result::unwrap()` on an `Err` value: Invalid("instrument slot is already occupied")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test main_effects_count_against_the_combined_native_runtime_budget ... FAILED
+
+failures:
+
+failures:
+    main_effects_count_against_the_combined_native_runtime_budget
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p hex-engine --test main_chain`

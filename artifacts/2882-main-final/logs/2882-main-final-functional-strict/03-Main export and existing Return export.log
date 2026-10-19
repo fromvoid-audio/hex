@@ -1,0 +1,22 @@
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+    Finished `test` profile [unoptimized] target(s) in 0.54s
+     Running tests/main_chain.rs (target/debug/deps/main_chain-41af45d9b04dcdc0)
+
+running 4 tests
+test main_bypass_and_remove_restore_raw_sum_with_exact_undo_redo ... ok
+test nonlinear_main_runs_once_after_track_return_sum_before_master_and_observer ... ok
+test controlled_range_export_reconstructs_stateful_main_history_from_zero ... ok
+test actual_linear_prepared_wav_and_stems_preserve_main_boundary ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/return_routes.rs (target/debug/deps/return_routes-89b3e3cfd9ffba27)
+
+running 4 tests
+test prepared_export_applies_gain_automation_with_return_feed_and_zero_base_once ... ok
+test prepared_export_renders_effectful_return_before_master_once ... ok
+test prepared_export_includes_authored_additive_return_feed_before_master_once ... ok
+test transformed_warp_root_gain_lane_and_playable_routing_match_native_linear_and_export ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+

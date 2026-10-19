@@ -1,0 +1,21 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0425]: cannot find type `Point` in this scope
+   --> crates/hex-ui/src/editor/device_panel/tests/main_chain_ui_tests.rs:169:82
+    |
+169 | fn card_point(visual: &mut VisualTestContext, device: DeviceId, prefix: &str) -> Point<Pixels> {
+    |                                                                                  ^^^^^ not found in this scope
+    |
+    = note: struct `crate::editor::project_spectrum::tests::Point` exists but is inaccessible
+help: consider importing this struct
+    |
+  2 + use gpui::Point;
+    |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `hex-ui` (lib test) due to 1 previous error

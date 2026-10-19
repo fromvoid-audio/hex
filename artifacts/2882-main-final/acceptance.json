@@ -1,0 +1,290 @@
+{
+  "checks": "cheap7 then remaining11 on exact same content; not a clean-HEAD test rerun",
+  "source": "26300395343e74ad19fb09247167b4fa44ae4b49",
+  "tree": "0662a01892876c3df2aa3762ee37ed5eeaf09ec6",
+  "runtime_results": [
+    {
+      "log": "01-Main backend lifecycle and existing transport routes.log",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "log": "01-Main backend lifecycle and existing transport routes.log",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "log": "01-Main backend lifecycle and existing transport routes.log",
+      "passed": 32,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "log": "02-Session device gesture comparison preset controls.log",
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "log": "03-Main export and existing Return export.log",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "log": "03-Main export and existing Return export.log",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "log": "04-Main and shared Track Return UI.log",
+      "passed": 57,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "log": "05-Main callback allocation and existing routed controls.log",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "log": "05-Main callback allocation and existing routed controls.log",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "runtime_passed": 151,
+  "strict_checks": [
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-engine",
+        "--lib",
+        "--test",
+        "main_chain",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T21:06:22Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-functional-strict/06-Engine strict.log",
+      "started_at": "2026-10-19T21:06:14Z",
+      "status": "passed",
+      "step_id": "Engine strict"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-session",
+        "--lib",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T21:06:28Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-functional-strict/07-Session strict.log",
+      "started_at": "2026-10-19T21:06:22Z",
+      "status": "passed",
+      "step_id": "Session strict"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-export",
+        "--test",
+        "main_chain",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T21:06:29Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-functional-strict/08-Export strict.log",
+      "started_at": "2026-10-19T21:06:28Z",
+      "status": "passed",
+      "step_id": "Export strict"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-audio",
+        "--features",
+        "allocation-probe",
+        "--test",
+        "main_chain_allocations",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T21:06:36Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-functional-strict/09-Audio allocation strict.log",
+      "started_at": "2026-10-19T21:06:29Z",
+      "status": "passed",
+      "step_id": "Audio allocation strict"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--lib",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T21:06:47Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-functional-strict/10-UI default strict.log",
+      "started_at": "2026-10-19T21:06:36Z",
+      "status": "passed",
+      "step_id": "UI default strict"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--lib",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-19T21:06:57Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-functional-strict/11-UI feature strict.log",
+      "started_at": "2026-10-19T21:06:47Z",
+      "status": "passed",
+      "step_id": "UI feature strict"
+    }
+  ],
+  "cheap_preflight": [
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": "2026-10-19T21:04:24Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-component/01-architecture.log",
+      "started_at": "2026-10-19T21:04:24Z",
+      "status": "passed",
+      "step_id": "architecture"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": "2026-10-19T21:04:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-component/02-UI style.log",
+      "started_at": "2026-10-19T21:04:24Z",
+      "status": "passed",
+      "step_id": "UI style"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": "2026-10-19T21:04:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-component/03-GPUI patch.log",
+      "started_at": "2026-10-19T21:04:25Z",
+      "status": "passed",
+      "step_id": "GPUI patch"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "ended_at": "2026-10-19T21:04:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-component/04-dependency provenance.log",
+      "started_at": "2026-10-19T21:04:25Z",
+      "status": "passed",
+      "step_id": "dependency provenance"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "ended_at": "2026-10-19T21:04:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-component/05-device layout.log",
+      "started_at": "2026-10-19T21:04:25Z",
+      "status": "passed",
+      "step_id": "device layout"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-19T21:04:31Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-component/06-format.log",
+      "started_at": "2026-10-19T21:04:25Z",
+      "status": "passed",
+      "step_id": "format"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "ended_at": "2026-10-19T21:04:31Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/2882-main-final-component/07-diff.log",
+      "started_at": "2026-10-19T21:04:31Z",
+      "status": "passed",
+      "step_id": "diff"
+    }
+  ],
+  "full_integration": false,
+  "native_acceptance": false
+}

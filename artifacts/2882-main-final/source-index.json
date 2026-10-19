@@ -1,0 +1,75 @@
+{
+  "source": "26300395343e74ad19fb09247167b4fa44ae4b49",
+  "tree": "0662a01892876c3df2aa3762ee37ed5eeaf09ec6",
+  "parent": "ba212d7b02f898aaf683947f3a5d3d52ee2c6bb8",
+  "tested_content_sha256": "1a1d152efb8881f2b94fcc8111f1554e3ba0cf9fa71513d03f7feb2b96e55a1f",
+  "tested_dirty_parent": "ba212d7b02f898aaf683947f3a5d3d52ee2c6bb8",
+  "files": [
+    {
+      "path": "crates/hex-audio/tests/main_chain_allocations.rs",
+      "before_git_blob": null,
+      "after_git_blob": "a3f0d8e74e174986194b5cb92aad7ce2614f1e29",
+      "sha256": "20011d2e652f9f2a003e35294770b5b4b9a0f45cdbb6ab265c8216b8e4521ee9"
+    },
+    {
+      "path": "crates/hex-engine/src/lib.rs",
+      "before_git_blob": "8b601196762b390afebc6dd87c0d774a5d82f15b",
+      "after_git_blob": "2b3d5b041643ca24bdf1e2fe88a74140675d6f17",
+      "sha256": "7a8cc4ab34cf5601169126f56b0744159a8f1c10683c2003b5426edfd8e68fd0"
+    },
+    {
+      "path": "crates/hex-engine/src/mutable_instrument.rs",
+      "before_git_blob": "b7d0f6e4c10994c86b8e12953a78e2e1ef89c7d7",
+      "after_git_blob": "95e1a77e082819ac00d7d5e7109846476a2b538f",
+      "sha256": "d943894d9d90f97fe5e20505d5d74a3423197107c3e55888d2cc2fd973b2c3c1"
+    },
+    {
+      "path": "crates/hex-engine/src/playback.rs",
+      "before_git_blob": "8ef09a4a74a7748332c5833e770b72de36ad1475",
+      "after_git_blob": "956edc0a14c28a5599823731a41c36a9b00cb1a4",
+      "sha256": "22e325fcdaf1bd1be29f934ce126ea09f42e30e2411de68b38556f8e4f953661"
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/handoff.rs",
+      "before_git_blob": "1dda409cd813f2bf16ae62015b8f5b2df69168f7",
+      "after_git_blob": "f9979e09058fe492b6e4bb5ddce8872ec18ec70f",
+      "sha256": "08f6faa7c1f6899ab7ecb926253ac8455df6661adb2270373089b396e0c41cb7"
+    },
+    {
+      "path": "crates/hex-engine/tests/main_chain.rs",
+      "before_git_blob": null,
+      "after_git_blob": "8fd7852118b4c034727189471d14c98b7cca7b40",
+      "sha256": "c397044abcdddeaaca66dca97bf3d30894e9e2ae81f882466ccfa940f652d1af"
+    },
+    {
+      "path": "crates/hex-export/tests/main_chain.rs",
+      "before_git_blob": null,
+      "after_git_blob": "9becd1984971808712720c33680e2092a6a1b502",
+      "sha256": "d3ffe12d200b1607257ef721bf5c3ffebfd7cf951dc5be8db6e9d73071fa8b54"
+    },
+    {
+      "path": "crates/hex-session/src/lib.rs",
+      "before_git_blob": "7f4ee8d016d5cd231f4028a6ee8bef8c0ec22ab5",
+      "after_git_blob": "6532182bd2c6ea7d3886b53132d6d8d7b3279f14",
+      "sha256": "3e6e96ec0f411b90b44e785595018e5710334599a274a182174cd88bc2fdcb0a"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/main_chain_ui_tests.rs",
+      "before_git_blob": "00e2e6407da44b6213e853d1a94758a8c97fb5d9",
+      "after_git_blob": "49de5e1e65dd642bb13eca1c8e3b211de94a8916",
+      "sha256": "2c725ccbbe4d33f81ee821b86e00ec8090a985567699e29b236d04ba68a254a3"
+    },
+    {
+      "path": "docs/main-track.md",
+      "before_git_blob": "8c3b0286bef9302077ab08e630797d8382db69b5",
+      "after_git_blob": "2cec543c1932fcdfb67250075d61b58a03893a11",
+      "sha256": "2a908376a1d44d762bfd1339d84883debdd7097d389fa3b4f846be2c05b91637"
+    },
+    {
+      "path": "todo.md",
+      "before_git_blob": "0d13bff7677c6f9ce1d4ec6f2f0aee044690b01d",
+      "after_git_blob": "023fd7f52e4d2977cb49d3e793faeae58fa09fd8",
+      "sha256": "9e404994e07f7d3035f66e15e9cc255047ec5343bfbadf0dfa474553f3806d80"
+    }
+  ]
+}

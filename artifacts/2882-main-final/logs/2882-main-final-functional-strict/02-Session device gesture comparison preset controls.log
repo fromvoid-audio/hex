@@ -1,0 +1,37 @@
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Finished `test` profile [unoptimized] target(s) in 4.57s
+     Running unittests src/lib.rs (target/debug/deps/hex_session-a2853afe6b1991eb)
+
+running 25 tests
+test device_gesture::client_tests::coalesces_changes_and_preserves_final_value_until_terminal_ack ... ok
+test device_gesture::client_tests::admitted_terminal_cannot_be_replaced_before_its_ack ... ok
+test device_gesture::client_tests::paired_client_coalesces_two_values_as_one_terminal_command ... ok
+test device_comparison::metadata_tests::comparison_metadata_classification_refuses_audio_changes_arbitrary_bank_edits_and_malformed_payloads ... ok
+test device_gesture::client_tests::queue_full_retry_keeps_exact_reserved_request_and_ignores_stale_ack ... ok
+test device_gesture::snapshot_tests::snapshot_coalesces_and_retries_queue_refusal_without_losing_terminal ... ok
+test device_gesture::client_tests::paired_commit_is_atomic_and_undoes_as_one_state_change ... ok
+test device_gesture::snapshot_tests::snapshot_atomic_preview_commit_cancel_noop_and_history ... ok
+test device_gesture::snapshot_tests::snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values ... ok
+test device_gesture::snapshot_tests::snapshot_stale_domain_and_parameter_refusal_preserves_overlay ... ok
+parameterless provider still exercises A/B ownership/history/codec: DeviceTypeId { bytes: [104, 101, 120, 46, 105, 110, 115, 116, 114, 117, 109, 101, 110, 116, 46, 115, 105, 110, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], length: 19, valid: true }
+test device_gesture::snapshot_tests::snapshot_save_finalization_rebases_latest_unrelated_state ... ok
+test service::device_comparison::tests::metadata_tests::comparison_metadata_both_modes_save_status_history_keep_exact_preparation_source ... ok
+test service::device_comparison::tests::metadata_tests::comparison_metadata_event_backpressure_keeps_native_source_and_order_without_extra_preparation ... ok
+test service::device_comparison::tests::review_2845_public_reserved_edit_cannot_retarget_an_identical_slot_switch ... ok
+snapshot=772 request=800 overlay=840 client=4056 service_request=800 queue_slots=32 queue_payload_bytes=25600 coalesce100k_ns=154535651
+test device_gesture::snapshot_tests::snapshot_control_storage_and_coalescing_are_finitely_bounded ... ok
+test service::device_comparison::tests::stale_comparison_does_not_finalize_an_unrelated_live_draft ... ok
+test service::device_comparison::tests::typed_comparison_copy_noop_switch_undo_redo_and_stale_owner_are_atomic ... ok
+test service::preset::tests::device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors ... ok
+test service::preset::tests::device_preset_refusals_preserve_revision_history_and_audio ... ok
+test service::preset::tests::device_preset_valid_native_state_can_fail_live_admission_without_mutation ... ok
+test service::service_tests::device_gesture_preview_is_noncanonical_and_commit_is_one_undo_step ... ok
+test service::service_tests::operator_device_gesture_retargets_a_playing_feedback_note_and_commits_once ... ok
+test device_gesture::snapshot_tests::actual_harmonic_stroke_is_one_history_edit_and_hidden_partials_survive_reopen ... ok
+actual available registered device-role cases: 15
+test service::device_comparison::tests::every_available_catalog_device_uses_shared_pair_on_track_and_return ... ok
+test service::preset::tests::comparison_preset_roundtrip_restores_both_variants_but_not_global_trims_or_bypass ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 115 filtered out; finished in 4.95s
+

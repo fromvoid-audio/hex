@@ -1,0 +1,51 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+error[E0433]: failed to resolve: could not find `Playback` in `hex_engine`
+   --> crates/hex-engine/tests/main_chain.rs:210:36
+    |
+210 |     let mut playback = hex_engine::Playback::try_from_prepared_with_session(prepared).unwrap();
+    |                                    ^^^^^^^^ could not find `Playback` in `hex_engine`
+    |
+help: consider importing this struct
+    |
+  2 + use hex_engine::playback::Playback;
+    |
+help: if you import `Playback`, refer to it directly
+    |
+210 -     let mut playback = hex_engine::Playback::try_from_prepared_with_session(prepared).unwrap();
+210 +     let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+    |
+
+error[E0433]: failed to resolve: could not find `Playback` in `hex_engine`
+   --> crates/hex-engine/tests/main_chain.rs:239:35
+    |
+239 |     let error = match hex_engine::Playback::try_from_prepared_with_session(Arc::clone(&prepared)) {
+    |                                   ^^^^^^^^ could not find `Playback` in `hex_engine`
+    |
+help: consider importing this struct
+    |
+  2 + use hex_engine::playback::Playback;
+    |
+help: if you import `Playback`, refer to it directly
+    |
+239 -     let error = match hex_engine::Playback::try_from_prepared_with_session(Arc::clone(&prepared)) {
+239 +     let error = match Playback::try_from_prepared_with_session(Arc::clone(&prepared)) {
+    |
+
+error[E0433]: failed to resolve: could not find `Playback` in `hex_engine`
+   --> crates/hex-engine/tests/main_chain.rs:244:21
+    |
+244 |         hex_engine::Playback::from_prepared_with_session_unavailable(prepared, error);
+    |                     ^^^^^^^^ could not find `Playback` in `hex_engine`
+    |
+help: consider importing this struct
+    |
+  2 + use hex_engine::playback::Playback;
+    |
+help: if you import `Playback`, refer to it directly
+    |
+244 -         hex_engine::Playback::from_prepared_with_session_unavailable(prepared, error);
+244 +         Playback::from_prepared_with_session_unavailable(prepared, error);
+    |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `hex-engine` (test "main_chain") due to 3 previous errors

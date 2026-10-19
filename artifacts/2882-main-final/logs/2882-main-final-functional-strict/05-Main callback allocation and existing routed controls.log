@@ -1,0 +1,18 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 2.70s
+     Running tests/main_chain_allocations.rs (target/debug/deps/main_chain_allocations-a0b4bdf973491932)
+
+running 1 test
+test main_history_publication_render_and_shutdown_have_no_callback_allocations_or_drops ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/return_feed_allocations.rs (target/debug/deps/return_feed_allocations-5691b3a5ff0460d3)
+
+running 2 tests
+test authored_feed_render_observation_handoff_and_retirement_have_no_callback_allocation_or_drop ... ok
+test gain_automation_feed_render_observation_handoff_and_retirement_have_no_callback_allocation_or_drop ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

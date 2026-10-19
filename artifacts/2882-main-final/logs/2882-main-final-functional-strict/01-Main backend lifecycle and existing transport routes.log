@@ -1,0 +1,78 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized] target(s) in 0.66s
+     Running tests/main_chain.rs (target/debug/deps/main_chain-58b160ab30476cbb)
+
+running 7 tests
+test main_only_unavailable_session_cannot_adopt_an_unowned_fallback ... ok
+test launched_session_audio_passes_through_main_effect_and_master_once ... ok
+test main_meter_resolves_the_actual_rendered_device_tap ... ok
+test warmed_legacy_main_history_cannot_be_silently_captured_as_fresh ... ok
+test stopped_compensated_fast_handoff_allows_authored_main_chain_edits ... ok
+test warmed_main_filter_history_survives_normal_session_handoff_bitwise ... ok
+test main_effects_count_against_the_combined_native_runtime_budget ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s
+
+     Running tests/return_routes.rs (target/debug/deps/return_routes-6ccb7553ef553a35)
+
+running 19 tests
+test arrangement_send_is_post_track_fader_and_master_gain_applies_once ... ok
+test empty_return_projects_still_compile_and_unregistered_effects_refuse ... ok
+test compatible_return_filter_history_survives_prepared_revision_handoff ... ok
+test authored_backward_feed_is_post_chain_gain_mute_and_pre_destination_chain ... ok
+test diamond_and_route_record_permutation_keep_pinned_main_sum_and_deterministic_inputs ... ok
+test main_observation_is_post_master_asymmetric_and_pcm_identical ... ok
+test main_observer_none_pause_empty_and_overflow_keep_existing_render_law ... ok
+test feed_filter_history_is_block_partition_invariant_and_pause_seek_stop_are_truthful ... ok
+test removed_return_keeps_zero_fed_filter_residual_at_revision_boundary ... ok
+test feed_gain_edit_retains_return_history_and_zero_removal_restores_legacy_pcm ... ok
+test return_gain_and_mute_only_affect_the_return_contribution ... ok
+test removed_source_tail_is_main_only_and_never_replays_its_old_feed ... ok
+test feed_removal_keeps_destination_history_and_changed_source_tail_cannot_feed_destination ... ok
+test session_audio_clip_uses_the_same_post_fader_return_path ... ok
+test session_playback_routes_arrangement_audio_through_return_and_resets_on_seek_and_stop ... ok
+test utility_filter_return_runs_when_sources_are_silent_and_is_partition_invariant ... ok
+test session_return_filter_history_continues_across_arrangement_loop_wrap ... ok
+test zero_send_return_preserves_the_existing_arrangement_pcm_exactly ... ok
+test return_feed_transport_wrap_keeps_history_and_linear_export_ignores_transport_loop ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/session_playback.rs (target/debug/deps/session_playback-f6259f81c60e248b)
+
+running 32 tests
+test exhausted_legacy_clock_keeps_finite_playback_but_refuses_session_promotion ... ok
+test a_late_chunk_failure_rolls_back_a_due_pending_route_and_zeros_earlier_audio ... ok
+test arrangement_loop_cursor_wraps_while_session_performance_frame_is_monotonic ... ok
+test four_quarter_launch_quantization_uses_the_repeated_tempo_across_a_seam ... ok
+test held_voice_release_uses_the_original_phase_after_a_route_cut ... ok
+test late_chunk_midi_domain_refusal_zeros_output_and_rolls_back_runtime_state ... ok
+test four_quarter_launch_replaces_pending_action_per_track_and_exact_boundary_is_immediate ... ok
+test legacy_promotion_does_not_fence_an_already_disabled_instrument ... ok
+test legacy_promotion_refuses_uncaptured_arrangement_voices_and_can_retry_after_stop ... ok
+test legacy_promotion_validates_session_time_before_render_or_launch ... ok
+test offset_one_frame_arrangement_loop_prepares_and_renders_session_source ... ok
+test one_hybrid_track_switches_audio_midi_audio_and_releases_the_midi_tail ... ok
+test outgoing_voice_order_remains_partition_exact_after_repeated_same_track_cuts ... ok
+test pause_empty_render_stop_all_and_seek_have_distinct_transport_effects ... ok
+test mixed_audio_session_midi_and_explicit_silence_match_independent_source_composition ... ok
+test play_from_updates_legacy_arrangement_position_before_starting ... ok
+test play_from_seeks_and_starts_as_one_transport_action ... ok
+test rejected_play_from_does_not_start_or_partially_seek_session ... ok
+test release_capacity_reports_the_shared_preallocated_bank ... ok
+test inherited_tail_occupancy_does_not_block_another_tracks_pending_transition ... ok
+test routes_switch_sources_without_releasing_an_unchanged_arrangement_voice ... ok
+test session_audio_and_midi_routes_use_the_prepared_track_device_matrix ... ok
+test session_demotion_refuses_arrangement_voices_and_carried_releases ... ok
+test replacing_an_already_releasing_voice_preserves_its_original_end_frame ... ok
+test sparse_scene_absence_is_noop_while_an_explicit_stop_cell_silences ... ok
+test transport_stop_keeps_owner_and_reanchors_session_for_resume ... ok
+test unavailable_instrument_candidate_cannot_retire_a_renderable_session_graph ... ok
+test unavailable_session_capability_refuses_instrument_render_and_session_actions ... ok
+test unrepresentable_session_loop_does_not_reject_arrangement_revision ... ok
+test session_render_matches_irregular_partitions_across_loop_wraps ... ok
+test changing_tempo_with_enabled_loop_uses_periodic_session_clock ... ok
+test prepared_session_capability_matches_finite_arrangement_pcm_across_loops_and_partitions ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.63s
+

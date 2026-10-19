@@ -1,0 +1,34 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Finished `test` profile [unoptimized] target(s) in 0.38s
+     Running tests/main_chain.rs (target/debug/deps/main_chain-58b160ab30476cbb)
+
+running 6 tests
+
+thread 'main_meter_resolves_the_actual_rendered_device_tap' (347411) panicked at crates/hex-engine/tests/main_chain.rs:208:14:
+Main device tap
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test main_meter_resolves_the_actual_rendered_device_tap ... FAILED
+
+thread 'main_only_unavailable_session_cannot_adopt_an_unowned_fallback' (347412) panicked at crates/hex-engine/tests/main_chain.rs:250:5:
+Main cannot silently enter the unowned native fallback
+test main_only_unavailable_session_cannot_adopt_an_unowned_fallback ... FAILED
+
+thread 'warmed_legacy_main_history_cannot_be_silently_captured_as_fresh' (347414) panicked at crates/hex-engine/tests/main_chain.rs:269:5:
+assertion `left == right` failed
+  left: Ok(())
+ right: Err(ArrangementStateCannotBeCaptured)
+test warmed_legacy_main_history_cannot_be_silently_captured_as_fresh ... FAILED
+test stopped_compensated_fast_handoff_allows_authored_main_chain_edits ... ok
+test warmed_main_filter_history_survives_normal_session_handoff_bitwise ... ok
+test main_effects_count_against_the_combined_native_runtime_budget ... ok
+
+failures:
+
+failures:
+    main_meter_resolves_the_actual_rendered_device_tap
+    main_only_unavailable_session_cannot_adopt_an_unowned_fallback
+    warmed_legacy_main_history_cannot_be_silently_captured_as_fresh
+
+test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+error: test failed, to rerun pass `-p hex-engine --test main_chain`
