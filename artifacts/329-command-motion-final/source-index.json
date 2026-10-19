@@ -1,0 +1,25 @@
+{
+  "source": "06cbfd9803b4c4fbd1148b654c34ad6d31772bae",
+  "tree": "b06afa2c48e61154a0eb863d8ebaf2bd8ea05d58",
+  "base": "1ce76812dfbcfdf5bde045e84b2c3d6b874dcf16",
+  "diagnostic_parent": "97a7cd8c3a8cc42b0d9115100f3b0147a671e6e5",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/loop_bar_ui_tests.rs",
+      "before_blob": "375bebe05b1a78f52fbd29801f7b7bb39f29d774",
+      "after_blob": "a9984c3fa5171575efde77f97dada96b96bbb0a7",
+      "sha256": "664b263a660bb46cc7060c48de08ac64e755350dd2912ae8758b9b3d7013ad05"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail.rs",
+      "before_blob": "7ef60c9ac1223bb880dcd5d93e04d9c7af4b265d",
+      "after_blob": "a9dcc6df8c20709c02809d11679b1acca360c19b",
+      "sha256": "622a8bbc72ee0c272cb5c662d02f29c8db34b5a1c1f50c22cf4bbd387974bbd6"
+    }
+  ],
+  "tested_dirty_parent": "97a7cd8c3a8cc42b0d9115100f3b0147a671e6e5",
+  "tested_content_sha256": "851ef994d4b65c3482be25471050db9c09e0d60aeadc0cc202e2b2b5aeb8d07d",
+  "original_test_prefix_bytes": 24311,
+  "original_test_prefix_sha256": "c7490ee7056f0f7ddcead10625ea10da0cdda99281b872a2624de71d668fa4c7",
+  "move_shift_snap_edge_preview_math_sha256": "981925f8ea642686b98313414803568e7caa32a51bf4e54e588b261b88fef1d6"
+}
