@@ -1,0 +1,159 @@
+[
+  {
+    "run": "20261019T005450Z-3e2a77ab",
+    "status": "failed",
+    "duration_seconds": 4.464,
+    "stale": false,
+    "summary_sha256": "2f7a7d30065cc4487d21499bf8066e8849b3cfc451671722b544f1dac7eba90f",
+    "steps": [
+      {
+        "step_id": "overlap-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T005542Z-9650d012",
+    "status": "failed",
+    "duration_seconds": 254.347,
+    "stale": false,
+    "summary_sha256": "67d216ec4c88d039fa45256644498e589a6eb3634e08ab1872ae0419e80f4bc7",
+    "steps": [
+      {
+        "step_id": "placed-control-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T010024Z-3a93e46e",
+    "status": "failed",
+    "duration_seconds": 21.512,
+    "stale": false,
+    "summary_sha256": "8e4822a8e6c3ba2b01579c27d5070df8caacafb1c4f9946d5a31eadc1944271e",
+    "steps": [
+      {
+        "step_id": "placed-control-visible-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T010051Z-46933536",
+    "status": "failed",
+    "duration_seconds": 50.548,
+    "stale": false,
+    "summary_sha256": "1aec75213a48406a168ea6c3a4a68b9ab4d6555d5f96acf4d45d5e50af4a176e",
+    "steps": [
+      {
+        "step_id": "placed-control-visible-baseline",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261019T010220Z-598fb48c",
+    "status": "failed",
+    "duration_seconds": 3.99,
+    "stale": false,
+    "summary_sha256": "e65e660ada9a874e5713248c9c3df64c0a9e2f81d7c5d39ab74f93b1bfaae133",
+    "steps": [
+      {
+        "step_id": "audio-model",
+        "status": "failed",
+        "exit_code": 101
+      },
+      {
+        "step_id": "current-audio-codec",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "session-binding",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "actual-returns",
+        "status": "not_run",
+        "exit_code": null
+      }
+    ]
+  },
+  {
+    "run": "20261019T010253Z-9d850a43",
+    "status": "partial",
+    "duration_seconds": 34.416,
+    "stale": false,
+    "summary_sha256": "4e402b82c0a103691d0770617d59565e23b06fc7e583a71a1814c4c021b34abf",
+    "steps": [
+      {
+        "step_id": "audio-model",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "current-audio-codec",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "session-binding",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "actual-returns",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T010348Z-4acdc09d",
+    "status": "partial",
+    "duration_seconds": 14.457,
+    "stale": false,
+    "summary_sha256": "6018582c41f9e2b61b2082b95225ac06d8e0b876404b2202fad2649a3f7df4b2",
+    "steps": [
+      {
+        "step_id": "strict-model",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261019T010434Z-4a935468",
+    "status": "partial",
+    "duration_seconds": 0.67,
+    "stale": false,
+    "summary_sha256": "2071681f9f0287daaceb7dc4be2a0624dd27e1185d027c08e59c44a9c983ed69",
+    "steps": [
+      {
+        "step_id": "architecture",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "ui-style",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "touched-fmt",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "diff-check",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  }
+]

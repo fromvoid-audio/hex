@@ -1,0 +1,28 @@
+{
+  "phase": "partial repair + UI reproduction/proposal; NOT ready",
+  "base": "2918cc495c1f6d1ec43e9b99b93ee0e759a5ec4c",
+  "base_tree": "e23feb116d526cb9754eb5fd37ec443d39e0110b",
+  "canonical_pr": 456,
+  "pulse": 2854,
+  "unpublished_files": {
+    "crates/hex-project/src/audio_edit/view.rs": {
+      "before_sha256": "a6e8d4b1f0ab5ff0b7ca86618c74237b755c149ff333b3e71f084580b5f2f709",
+      "after_sha256": "862f9caaf3f6e8f5a5e4f6a0ef2692a5fffa86ebb5ccdefa1de181c3f3da342a"
+    },
+    "crates/hex-project/tests/audio_view.rs": {
+      "before_sha256": "40018436d81cff5f510840cbcb6c170157b06dd66704d955c67b7ba73973064b",
+      "after_sha256": "5cd3116aee576d2af7bcd6d38e8f037fbc992884cfe5341b9464dd4b8f235880"
+    },
+    "crates/hex-session/tests/returns.rs": {
+      "before_sha256": "67a67de19a7670b02388e674ea2bc830231213f11c073e40ae7bb509f8f2b021",
+      "after_sha256": "3c2fa1b2e19a011a6e266bc986909c020ee7fb9e596e4fd92e018ba116a69709"
+    },
+    "crates/hex-ui/src/editor/arrangement_audio_panel.rs": {
+      "before_sha256": "21f52a0b7698f318721a326d3d2ea6b468e980d010bcec815cab782be4609b7b",
+      "after_sha256": "3e1172a973cd69730e902a82e05dc723e584aaabfdf5108b1d22c9ef717539ab"
+    }
+  },
+  "ui_production_prefix_unchanged": true,
+  "source_commit": "none; detached isolated owner patch; canonical/frozen source untouched",
+  "native_full21": "none; not qualified"
+}
