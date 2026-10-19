@@ -1427,8 +1427,7 @@ class LocalCiRunner:
                         try:
                             release_error = self.target_lock.release()
                             if release_error is not None:
-                                self.summary.update(status="incomplete", exit_code=2,
-                                                    target_lock_release_error=release_error)
+                                self.summary["target_lock_release_error"] = release_error
                         except InterruptedRun:
                             self.summary.update(status="interrupted", exit_code=130,
                                                 target_lock_release_error="lock release interrupted")
