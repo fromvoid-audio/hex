@@ -1,0 +1,30 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.37s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+FOCUS_CANCEL_PHASE held logical_pending_rootfocus_windowactive_gpuidrag=(true, false, true, true, true) bounds=Some(Bounds { origin: Point { x: 604.5px, y: 278px }, size: Size { 273px × 44px } }) border=Some((Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 }, Edges { top: 2px (scaled), right: 2px (scaled), bottom: 2px (scaled), left: 2px (scaled) }, Bounds { origin: Point { x: 1209px (scaled), y: 558px (scaled) }, size: Size { 2px (scaled) × 84px (scaled) } })) fill=Some(Solid(Hsla { h: 0.92460316, s: 0.19266059, l: 0.57254905, a: 1.0 }))
+FOCUS_CANCEL_PHASE after-mounted-search-focus-before-release logical_pending_rootfocus_windowactive_gpuidrag=(false, false, false, true, false) bounds=Some(Bounds { origin: Point { x: 604.5px, y: 278px }, size: Size { 273px × 44px } }) border=Some((Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 }, Edges { top: 2px (scaled), right: 2px (scaled), bottom: 2px (scaled), left: 2px (scaled) }, Bounds { origin: Point { x: 1209px (scaled), y: 558px (scaled) }, size: Size { 2px (scaled) × 84px (scaled) } })) fill=Some(Solid(Hsla { h: 0.92460316, s: 0.19266059, l: 0.57254905, a: 1.0 }))
+FOCUS_CANCEL_PHASE after-actual-release logical_pending_rootfocus_windowactive_gpuidrag=(false, false, false, true, false) bounds=Some(Bounds { origin: Point { x: 604.5px, y: 278px }, size: Size { 273px × 44px } }) border=Some((Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 }, Edges { top: 2px (scaled), right: 2px (scaled), bottom: 2px (scaled), left: 2px (scaled) }, Bounds { origin: Point { x: 1209px (scaled), y: 558px (scaled) }, size: Size { 2px (scaled) × 84px (scaled) } })) fill=Some(Solid(Hsla { h: 0.92460316, s: 0.19266059, l: 0.57254905, a: 1.0 }))
+
+thread 'editor::trim::resize_release_tests::focus_cancel_removes_midi_resize_completed_paint_without_another_input' (267402) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1409:5:
+actual completed preview paint must retire after focus cancellation, without another input or forced refresh
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::trim::resize_release_tests::focus_cancel_removes_midi_resize_completed_paint_without_another_input ... FAILED
+
+failures:
+
+failures:
+    editor::trim::resize_release_tests::focus_cancel_removes_midi_resize_completed_paint_without_another_input
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1057 filtered out; finished in 0.85s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

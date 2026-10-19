@@ -1308,3 +1308,106 @@ fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enable
         });
     }
 }
+
+#[gpui::test]
+fn focus_cancel_removes_midi_resize_completed_paint_without_another_input(cx: &mut TestAppContext) {
+    let (_files, handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    let clip = review_midi_clip(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddTrack {
+            name: "focus probe other".into()
+        })))
+    });
+    pump(&editor, &mut visual);
+    let track = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|t| t.midi_clips().iter().any(|c| c.id() == clip))
+            .unwrap()
+            .id()
+    });
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("track-name-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = visual
+        .debug_bounds(Box::leak(
+            format!("midi-clip-trim-left-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let target = point(down.x + px(42.0), down.y);
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let observe = |stage: &str, visual: &mut VisualTestContext| {
+        let state = visual.update(|window, cx| {
+            editor.read_with(cx, |v, _| {
+                (
+                    v.active_midi_trim_drag.is_some(),
+                    v.pending_trim.is_some(),
+                    v.focus.is_focused(window),
+                    window.is_window_active(),
+                    cx.has_active_drag(),
+                )
+            })
+        });
+        let border = visual.rendered_border("midi-trim-live-preview");
+        let fill = visual.rendered_background("midi-trim-live-preview");
+        eprintln!(
+            "FOCUS_CANCEL_PHASE {stage} logical_pending_rootfocus_windowactive_gpuidrag={state:?} bounds={:?} border={border:?} fill={fill:?}",
+            visual.debug_bounds("midi-trim-live-preview")
+        );
+        (state, border, fill)
+    };
+    let held = observe("held", &mut visual);
+    assert!(held.0.0 && held.0.2 && held.0.3 && held.0.4);
+    assert!(held.1.is_some() && held.2.is_some());
+    visual.update(|window, cx| editor.read(cx).browser.search.read(cx).focus(window));
+    visual.run_until_parked();
+    let after_focus = observe("after-mounted-search-focus-before-release", &mut visual);
+    assert!(
+        !after_focus.0.0
+            && !after_focus.0.1
+            && !after_focus.0.2
+            && after_focus.0.3
+            && !after_focus.0.4
+    );
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    let after_release = observe("after-actual-release", &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(
+            v.active_trim_drag.is_none()
+                && v.active_midi_trim_drag.is_none()
+                && v.pending_trim.is_none()
+        );
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty() && v.last_enqueued_edit.is_none());
+    });
+    assert!(!after_release.0.4);
+    assert!(
+        after_release.1.is_none() && after_release.2.is_none(),
+        "actual completed preview paint must retire after focus cancellation, without another input or forced refresh"
+    );
+}
