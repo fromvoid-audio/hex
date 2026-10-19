@@ -39,6 +39,7 @@ mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
 mod gate_panel;

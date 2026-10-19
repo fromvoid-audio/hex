@@ -10,6 +10,9 @@ use hex_widgets::{
 };
 
 mod axes;
+mod gestures;
+mod scroll_queue;
+pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
@@ -39,12 +42,17 @@ fn text_action_button(
 pub(super) struct Panel {
     entity: Entity<ResponseGraph>,
     _subscription: Subscription,
+    _scroll_subscription: Subscription,
     generation: u64,
     authored_state: NativeDeviceState,
     selected: Option<NodeId>,
     armed: bool,
     show_input: bool,
     focus_subscription: Option<Subscription>,
+    pair_drag: Option<gestures::PairDrag>,
+    slope_scroll: Option<gestures::SlopeScroll>,
+    scroll_queue: scroll_queue::Queue,
+    scroll_blur_subscription: Option<Subscription>,
     bank: u8,
     creation: Option<Creation>,
     creation_selection: Option<CreationSelection>,
@@ -118,17 +126,28 @@ pub(super) fn render_body(
         let subscription = cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
             handle_event(view, cx, device, generation, *event);
         });
+        let scroll_subscription = cx.subscribe(
+            &entity,
+            move |view, _, event: &hex_widgets::ResponseGraphScrollEvent, cx| {
+                gestures::scroll_event(view, cx, device, generation, *event);
+            },
+        );
         view.device_panel.eq_panels.insert(
             device,
             Panel {
                 entity,
                 _subscription: subscription,
+                _scroll_subscription: scroll_subscription,
                 generation,
                 authored_state: canonical.clone(),
                 selected: state.nodes.first().map(|n| n.id),
                 armed: false,
                 show_input: true,
                 focus_subscription: None,
+                pair_drag: None,
+                slope_scroll: None,
+                scroll_queue: Default::default(),
+                scroll_blur_subscription: None,
                 bank: 0,
                 creation: None,
                 creation_selection: None,
@@ -193,11 +212,20 @@ pub(super) fn render_body(
         (bank, selected),
         owner,
     );
+    let scroll_nodes = gestures::scroll_nodes(view, device, &displayed, cx);
+    let relative_option_y_nodes = displayed
+        .nodes
+        .iter()
+        .filter(|node| node.kind == eq::NodeKind::Bell)
+        .map(|node| node.id.value())
+        .collect();
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(true);
             let _ = graph.set_axes(Some(axes::frequency_axes(sample_rate)), cx);
             let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
+            let _ = graph.set_scroll_nodes(scroll_nodes, cx);
+            let _ = graph.set_relative_option_y_nodes(relative_option_y_nodes, cx);
             let _ = graph.set_model(
                 model,
                 theme::device_style(theme::DeviceStyleRole::Display),
@@ -1004,22 +1032,6 @@ fn handle_event(
     let Ok(node) = state.node(id) else {
         return;
     };
-    let first = match id.parameter(NodeParameter::Frequency) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    let q_drag = matches!(
-        node.kind,
-        eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
-    );
-    let second = match id.parameter(if q_drag {
-        NodeParameter::Q
-    } else {
-        NodeParameter::Gain
-    }) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
     match event.phase {
         ResponseGraphPhase::Press => {
             if view
@@ -1048,66 +1060,11 @@ fn handle_event(
                 }
             }
         }
-        ResponseGraphPhase::Begin => {
-            if let Err(error) = view.begin_device_pair_gesture(
-                device,
-                first,
-                second,
-                ParameterPairValue {
-                    first: ParameterValue::Float(node.frequency_hz),
-                    second: ParameterValue::Float(if q_drag { node.q } else { node.gain_db }),
-                },
-            ) {
-                view.device_panel.message = Some(error.into());
-            }
-        }
-        ResponseGraphPhase::Change | ResponseGraphPhase::Commit => {
-            if !view.device_gesture.snapshot().is_some_and(|s|matches!(s.target,GestureTarget::DeviceParameterPair{device:d,first:f,second:s}if d==device&&f==first&&s==second)){return;}
-            let rate = view
-                .state
-                .as_ref()
-                .map_or(48000, |s| s.project.sample_rate());
-            let values = ParameterPairValue {
-                first: ParameterValue::Float(frequency_from_x(event.position[0], rate)),
-                second: ParameterValue::Float(if q_drag {
-                    (0.1 * ((18.0_f32 / 0.1).ln() * event.position[1]).exp()).clamp(0.1, 18.0)
-                } else {
-                    event.position[1] * 48.0 - 24.0
-                }),
-            };
-            view.device_panel.pending_values.insert(
-                ParameterKey {
-                    device,
-                    parameter: first,
-                },
-                values.first,
-            );
-            view.device_panel.pending_values.insert(
-                ParameterKey {
-                    device,
-                    parameter: second,
-                },
-                values.second,
-            );
-            let result = if event.phase == ResponseGraphPhase::Commit {
-                view.finish_device_pair_gesture(values)
-            } else {
-                view.change_device_pair_gesture(values).map(|_| ())
-            };
-            if let Err(error) = result {
-                view.device_panel.message = Some(error.into());
-            }
-        }
-        ResponseGraphPhase::Cancel => {
-            let _ = view.cancel_device_gesture();
-            view.device_panel.pending_values.remove(&ParameterKey {
-                device,
-                parameter: first,
-            });
-            view.device_panel.pending_values.remove(&ParameterKey {
-                device,
-                parameter: second,
-            });
+        ResponseGraphPhase::Begin
+        | ResponseGraphPhase::Change
+        | ResponseGraphPhase::Commit
+        | ResponseGraphPhase::Cancel => {
+            gestures::paired_event(view, device, *node, event);
         }
         _ => {}
     }
@@ -1121,6 +1078,11 @@ pub(super) fn spectrum_intent_for_test(view: &EditorView, device: DeviceId) -> (
         view.device_panel.eq_spectrum.enabled(device),
         panel.show_input,
     )
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn queued_scrolls_for_test(view: &EditorView, device: DeviceId) -> (usize, bool) {
+    scroll_queue::counts(view, device)
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
