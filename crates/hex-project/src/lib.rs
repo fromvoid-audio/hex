@@ -8,8 +8,9 @@ mod clip_name;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
     BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
-    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
-    audio_projection_frame, default_audio_warp, preview_audio_clip_stretch,
+    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings,
+    audio_anchor_beat_offset, audio_projection_beat, audio_projection_frame, audio_retime_scale,
+    default_audio_warp, preview_audio_clip_stretch,
 };
 mod appearance;
 mod clip_conversion;

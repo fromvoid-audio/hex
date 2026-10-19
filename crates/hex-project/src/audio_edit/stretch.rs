@@ -2,7 +2,9 @@
 use super::*;
 use crate::{BeatsPreserve, BeatsTail, WarpMode};
 
-fn scale(value: u64, numerator: u64, denominator: u64) -> Result<u64, Invalid> {
+/// Exact positive-interval retime scalar, shared with metadata certification.
+/// Rounds by adding floor(denominator / 2), exactly as canonical retiming.
+pub fn audio_retime_scale(value: u64, numerator: u64, denominator: u64) -> Result<u64, Invalid> {
     if numerator == 0 || denominator == 0 {
         return Err(Invalid("stretch must retain a positive interval"));
     }
@@ -12,6 +14,8 @@ fn scale(value: u64, numerator: u64, denominator: u64) -> Result<u64, Invalid> {
     )
     .map_err(|_| Invalid("stretch exceeds time range"))
 }
+
+use audio_retime_scale as scale;
 
 pub(super) fn retime(
     edit: &mut AudioClipEdit,

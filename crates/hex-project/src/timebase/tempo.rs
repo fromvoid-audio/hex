@@ -90,6 +90,31 @@ impl TempoMap {
         })
     }
 
+    /// Outward integer-frame bounds for a positive raw-beat difference.
+    /// Both endpoints must lie in the SAME constant-tempo segment at `tempo`.
+    /// The fixed prefix cancels: differences of rounded affine projections lie
+    /// between floor(delta * slope) and ceil(delta * slope), for every prefix.
+    /// This does not establish segment membership or Warp/model admission.
+    pub fn same_tempo_frame_span_bounds(
+        &self,
+        tempo: Tempo,
+        beat_delta_low: u64,
+        beat_delta_high: u64,
+    ) -> Result<(u64, u64), Invalid> {
+        if beat_delta_low > beat_delta_high {
+            return Err(Invalid("inverted beat difference bounds"));
+        }
+        let factor = u128::from(self.sample_rate) * FRAME_FACTOR_NUMERATOR;
+        let denominator = u128::from(tempo.micro_bpm()) << FRAME_FRACTION_BITS;
+        let low = u128::from(beat_delta_low) * factor / denominator;
+        let high_numerator = u128::from(beat_delta_high) * factor;
+        let high = high_numerator / denominator + u128::from(high_numerator % denominator != 0);
+        Ok((
+            u64::try_from(low).map_err(|_| Invalid("frame difference exceeds time range"))?,
+            u64::try_from(high).map_err(|_| Invalid("frame difference exceeds time range"))?,
+        ))
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }

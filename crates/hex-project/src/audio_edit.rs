@@ -241,6 +241,20 @@ pub fn audio_projection_frame(tempo: &TempoMap, beat_raw: i128) -> Result<i128, 
         u128::from(tempo.tempo_at(BeatTime::ZERO).micro_bpm()) << 32,
     )
 }
+/// Exact frame-domain anchoring scalar used by canonical audio anchoring.
+/// The retained root may begin before frame zero; signed projection is preserved.
+pub fn audio_anchor_beat_offset(
+    tempo: &TempoMap,
+    origin_frame: i128,
+    frame: u64,
+) -> Result<u64, Invalid> {
+    u64::try_from(
+        audio_projection_beat(tempo, origin_frame + i128::from(frame))?
+            - audio_projection_beat(tempo, origin_frame)?,
+    )
+    .map_err(|_| Invalid("musical audio domain projection overflow"))
+}
+
 pub fn audio_projection_beat(tempo: &TempoMap, frame: i128) -> Result<i128, Invalid> {
     if frame >= 0 {
         return tempo
@@ -508,12 +522,7 @@ impl AudioClipEdit {
         }
         let origin_frame = i128::from(clip_start) - i128::from(self.view_start);
         let origin_beat = audio_projection_beat(tempo, origin_frame)?;
-        let beat_at = |frame: u64| -> Result<u64, Invalid> {
-            u64::try_from(
-                audio_projection_beat(tempo, origin_frame + i128::from(frame))? - origin_beat,
-            )
-            .map_err(|_| Invalid("musical audio domain projection overflow"))
-        };
+        let beat_at = |frame| audio_anchor_beat_offset(tempo, origin_frame, frame);
         let length = beat_at(self.domain.clock.length())?;
         let start = beat_at(self.view_start)?;
         let end = beat_at(self.view_end)?;
@@ -601,6 +610,9 @@ pub(crate) use commands::{
 };
 
 mod stretch;
-pub use stretch::preview_audio_clip_stretch;
+pub use stretch::{audio_retime_scale, preview_audio_clip_stretch};
 
 mod warp_projection;
+
+#[cfg(test)]
+mod scalar_certification_tests;

@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod resize_path;
 use super::*;
 use hex_project::{AudioDomainClock, BeatsPreserve, audio_projection_frame};
 const Q32: i128 = 1_i128 << 32;
