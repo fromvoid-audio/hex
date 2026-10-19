@@ -1,0 +1,110 @@
+[
+  {
+    "status": "fulfilled",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Action completed."
+        }
+      ],
+      "structuredContent": {
+        "url": "https://github.com/PORTALSURFER/hex/pull/455",
+        "number": 455,
+        "state": "open",
+        "merged": false,
+        "mergeable": false,
+        "draft": false,
+        "body": "Compressor now offers a provider-owned Peak/RMS detector selector. Peak remains the default with unchanged PCM; RMS uses independent 10ms exponential channel mean-square histories, then sqrt of the larger averaged energy. A finite 5ms detector-input transition preserves warm history during mode changes, dry output and bypass. The existing 326px panel retains all controls and adds the shared selector with a truthful static detector-level caption.\n\nExplicit dependency: PR453 frozen `1ce92988bcef49f606ab8e54f47772733bd7a6b0` supplies Dry/Wet ID7. This PR adds Choice ID8 and codec3/32bytes, preserving that work. Dependency merge `2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86` contains intake main47315049 plus453; only the final commit is this issue's own delta (six files, 774 insertions/16 deletions). Unsupported alpha1/2 formats are refused; no migration or user-file conversion.\n\nValidation: 24 provider tests (original Peak/DryWet goldens plus independent analytic energy, PCM, stereo, transition and lifecycle cases), five rendered Track/Return UI tests, two Engine cases, storage and registry conformance passed. A calibrated allocation probe passed 36 rate/mode/mix cases. Strict all-target Clippy for affected devices/UI/Storage and architecture/GPUI/style/layout/fmt/diff checks passed. Raw red tests and the corrected test-only mutability diagnostic are preserved.\n\nFrozen source `b8f3b4cd00bdf6c48b790af97161749a19f90d28`, tree `0144e9edefac75bbf4ff1f6ece73a554cc0fb8d7`. [Immutable evidence manifest](https://github.com/PORTALSURFER/hex/blob/2689ec6b9e400fd04e30922027bfbe35b60e0df7/artifacts/compressor-rms/b8f3b4cd00bdf6c48b790af97161749a19f90d28/manifest.json), SHA256 `6c01ced6910334665b11c656a5c86b0119c227217c02caca451aa15aa7babf96`. Evidence branch is orphan/NEVER MERGE.\n\nThis implements the original Hex law accepted in Pulse2683 note26410, not measured Live numeric parity or full Compressor/W12 completion. Sole merger owns prospective full required local CI/review/merge. Actual combined447 A/B and native appearance/listening acceptance remain open. Pulse2853 stays In Progress until authenticated merge.\n\n<!-- pulse-operation:5e6e97b7c57ae0aef5a570d31fefdb7a -->",
+        "title": "Add Compressor Peak/RMS detector selection with continuous history",
+        "base": "main",
+        "base_sha": "473150490c7cf7719f42970c699c29c06261fcbe",
+        "head": "pulse/task-2853-g1-5e6e97b7c57a",
+        "head_sha": "b8f3b4cd00bdf6c48b790af97161749a19f90d28",
+        "head_repo_id": 1411367674,
+        "head_repo_full_name": "PORTALSURFER/hex",
+        "merge_commit_sha": null,
+        "user": {
+          "login": "pulse-iocore-portalsurfer[bot]",
+          "name": "pulse-iocore-portalsurfer[bot]",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 340736319
+        },
+        "requested_reviewers": [
+          {
+            "login": "PORTALSURFER",
+            "name": "PORTALSURFER",
+            "email": null,
+            "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+            "id": 41680373
+          }
+        ],
+        "requested_team_reviewers": null,
+        "diff": null,
+        "comments": null,
+        "created_at": "2026-10-18T23:21:45Z",
+        "updated_at": "2026-10-18T23:53:01Z",
+        "closed_at": null,
+        "merged_at": null,
+        "commits": 5,
+        "changed_files": 6,
+        "additions": 1365,
+        "deletions": 44,
+        "display_url": "https://github.com/PORTALSURFER/hex/pull/455",
+        "display_title": "Add Compressor Peak/RMS detector selection with continuous history"
+      },
+      "isError": false
+    }
+  },
+  {
+    "status": "fulfilled",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Action completed."
+        }
+      ],
+      "structuredContent": {
+        "issue": {
+          "url": "https://github.com/PORTALSURFER/hex/pull/455",
+          "title": "Add Compressor Peak/RMS detector selection with continuous history",
+          "issue_number": 455,
+          "body": "Compressor now offers a provider-owned Peak/RMS detector selector. Peak remains the default with unchanged PCM; RMS uses independent 10ms exponential channel mean-square histories, then sqrt of the larger averaged energy. A finite 5ms detector-input transition preserves warm history during mode changes, dry output and bypass. The existing 326px panel retains all controls and adds the shared selector with a truthful static detector-level caption.\n\nExplicit dependency: PR453 frozen `1ce92988bcef49f606ab8e54f47772733bd7a6b0` supplies Dry/Wet ID7. This PR adds Choice ID8 and codec3/32bytes, preserving that work. Dependency merge `2734f489ce5fe1d31ae5aaf621ee5e0a360f2b86` contains intake main47315049 plus453; only the final commit is this issue's own delta (six files, 774 insertions/16 deletions). Unsupported alpha1/2 formats are refused; no migration or user-file conversion.\n\nValidation: 24 provider tests (original Peak/DryWet goldens plus independent analytic energy, PCM, stereo, transition and lifecycle cases), five rendered Track/Return UI tests, two Engine cases, storage and registry conformance passed. A calibrated allocation probe passed 36 rate/mode/mix cases. Strict all-target Clippy for affected devices/UI/Storage and architecture/GPUI/style/layout/fmt/diff checks passed. Raw red tests and the corrected test-only mutability diagnostic are preserved.\n\nFrozen source `b8f3b4cd00bdf6c48b790af97161749a19f90d28`, tree `0144e9edefac75bbf4ff1f6ece73a554cc0fb8d7`. [Immutable evidence manifest](https://github.com/PORTALSURFER/hex/blob/2689ec6b9e400fd04e30922027bfbe35b60e0df7/artifacts/compressor-rms/b8f3b4cd00bdf6c48b790af97161749a19f90d28/manifest.json), SHA256 `6c01ced6910334665b11c656a5c86b0119c227217c02caca451aa15aa7babf96`. Evidence branch is orphan/NEVER MERGE.\n\nThis implements the original Hex law accepted in Pulse2683 note26410, not measured Live numeric parity or full Compressor/W12 completion. Sole merger owns prospective full required local CI/review/merge. Actual combined447 A/B and native appearance/listening acceptance remain open. Pulse2853 stays In Progress until authenticated merge.\n\n<!-- pulse-operation:5e6e97b7c57ae0aef5a570d31fefdb7a -->",
+          "state": "open",
+          "user": {
+            "login": "pulse-iocore-portalsurfer[bot]",
+            "name": "pulse-iocore-portalsurfer[bot]",
+            "email": null,
+            "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+            "id": 340736319
+          },
+          "assignees": [
+            {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+              "id": 41680373
+            }
+          ],
+          "labels": null,
+          "milestone": null,
+          "state_reason": null,
+          "comments": 1,
+          "created_at": "2026-10-18T23:21:45Z",
+          "updated_at": "2026-10-18T23:53:01Z",
+          "closed_at": null,
+          "display_url": "https://github.com/PORTALSURFER/hex/pull/455",
+          "display_title": "Add Compressor Peak/RMS detector selection with continuous history"
+        },
+        "url": "https://github.com/PORTALSURFER/hex/pull/455",
+        "title": "Add Compressor Peak/RMS detector selection with continuous history",
+        "display_url": "https://github.com/PORTALSURFER/hex/pull/455",
+        "display_title": "Add Compressor Peak/RMS detector selection with continuous history"
+      },
+      "isError": false
+    }
+  }
+]

@@ -1,0 +1,22 @@
+{
+  "crates/hex-devices/src/compressor.rs": {
+    "unchanged_original_b8f3": true,
+    "sha256": "effb9e916a1fb5ec1e8d2e48a277649b4aead1b474b008942a65b7754d329456"
+  },
+  "crates/hex-devices/src/compressor/tests.rs": {
+    "unchanged_original_b8f3": true,
+    "sha256": "d2e4dd7b637bf032f94281e2c5fe44dd32f137548462def9c96ad4b3a242ab67"
+  },
+  "crates/hex-ui/src/editor/device_panel/compressor_panel.rs": {
+    "unchanged_original_b8f3": true,
+    "sha256": "36b85e762d0fe276c1ec21bf972f626b8f25ae314ce3cf5b9990fae9c08a96a7"
+  },
+  "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs": {
+    "unchanged_original_b8f3": true,
+    "sha256": "7cd8095234a56200b1d9ec9e81e2bcc8e8a1059de440e0cfa9f25d9da1e9b34e"
+  },
+  "crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs": {
+    "original_all_test_bodies_byte_prefix": true,
+    "before_sha256": "4f2bc3d46873bf35a195bc0b31699762721f1622dcc3f0a2dc0691861c365ff5"
+  }
+}

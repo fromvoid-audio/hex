@@ -1,0 +1,16 @@
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-compressor-rms-allocation-fixture v0.0.0 (/tmp/hex-compressor-rms-allocation-455)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.74s
+     Running unittests probe.rs (target/debug/deps/hex_compressor_rms_allocation_fixture-9f59c89ba0eed017)
+
+running 1 test
+test tests::rms_and_mix_processing_bypass_reset_history_transfer_allocate_and_free_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Doc-tests hex_compressor_rms_allocation_fixture
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,25 @@
+[1/12] compressor-ui: running
+[1/12] compressor-ui: passed
+[2/12] provider: running
+[2/12] provider: passed
+[3/12] allocation-36: running
+[3/12] allocation-36: passed
+[4/12] ui-strict-feature: running
+[4/12] ui-strict-feature: passed
+[5/12] ui-strict-default: running
+[5/12] ui-strict-default: passed
+[6/12] architecture: running
+[6/12] architecture: passed
+[7/12] gpui-patch: running
+[7/12] gpui-patch: passed
+[8/12] dependency-patches: running
+[8/12] dependency-patches: passed
+[9/12] ui-style: running
+[9/12] ui-style: passed
+[10/12] device-layout: running
+[10/12] device-layout: passed
+[11/12] fmt: running
+[11/12] fmt: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-455-ab-final/summary.json

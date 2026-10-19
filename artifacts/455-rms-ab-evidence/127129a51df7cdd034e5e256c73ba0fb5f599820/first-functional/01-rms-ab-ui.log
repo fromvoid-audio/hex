@@ -1,0 +1,29 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 4 tests
+compressor generic A/B: return=true; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::compressor_generic_ab_return_mix_banks_copy_and_persistence ... ok
+compressor generic A/B: return=false; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::compressor_generic_ab_track_mix_banks_copy_and_persistence ... ok
+compressor RMS generic A/B: return=true; actual ID8 Peak/RMS plus ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::compressor_generic_ab_return_rms_mix_banks_copy_and_persistence ... ok
+compressor RMS generic A/B: return=false; actual ID8 Peak/RMS plus ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::compressor_generic_ab_track_rms_mix_banks_copy_and_persistence ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1014 filtered out; finished in 7.15s
+

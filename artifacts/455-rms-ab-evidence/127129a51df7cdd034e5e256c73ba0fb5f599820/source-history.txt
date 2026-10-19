@@ -1,0 +1,7 @@
+commit 127129a51df7cdd034e5e256c73ba0fb5f599820
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 12:54:51 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 12:54:51 2026 +0000
+
+    test(compressor): verify Peak/RMS and mix across actual A/B banks

@@ -1,0 +1,58 @@
+fn rms_bank_values(state: &hex_lattice_contract::NativeDeviceState) -> (u32, f32) {
+    let ParameterValue::Choice(mode) = hex_engine::native_device_parameter_for_class(
+        NativeDeviceClass::Effect, state, hex_lattice_contract::ParameterId::from_static(8),
+    ).unwrap() else { panic!("actual detector choice") };
+    (mode, compressor_mix(state))
+}
+
+fn assert_rms_banks(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    cx: &TestAppContext,
+    device: DeviceId,
+    active: DeviceVariant,
+    pair: [(u32, f32); 2],
+) {
+    visual.run_until_parked();
+    let mode = if pair[0].0 == 1 { "rms" } else { "peak" };
+    let other = if pair[0].0 == 1 { "peak" } else { "rms" };
+    assert!(visual.debug_bounds(Box::leak(format!("compressor-{mode}-detector-{}",device.value()).into_boxed_str())).is_some(), "actual selected-bank caption");
+    assert!(visual.debug_bounds(Box::leak(format!("compressor-{other}-detector-{}",device.value()).into_boxed_str())).is_none(), "no stale opposite-bank caption");
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let entry = view.state.as_ref().unwrap().project.device(device).unwrap();
+        assert_eq!(entry.active_variant(), active);
+        let inactive = entry.comparison().unwrap().inactive();
+        assert_eq!(rms_bank_values(entry.state()), pair[0]);
+        assert_eq!(rms_bank_values(inactive), pair[1]);
+        assert_eq!(compressor_panel::cached_curve(view, device).unwrap(),
+            &hex_engine::native_compressor_transfer_curve(entry.state()).unwrap(),
+            "actual rendered cached transfer follows the selected bank and mix");
+        if pair[0].1 != pair[1].1 {
+            assert_ne!(hex_engine::native_compressor_transfer_curve(entry.state()).unwrap(),
+                hex_engine::native_compressor_transfer_curve(inactive).unwrap(),
+                "distinct mix makes stale-bank curve an observable discriminator");
+        }
+        for state in [entry.state(), inactive] {
+            assert_eq!(state.input_gain_millidb(), -1234);
+            assert_eq!(state.output_gain_millidb(), 4321);
+        }
+    });
+}
+
+fn choose_compressor_detector(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    cx: &mut TestAppContext,
+    device: DeviceId,
+    mode: u32,
+) {
+    let chooser = visual.debug_bounds(Box::leak(format!("device-{}-parameter-8", device.value()).into_boxed_str())).expect("actual detector selector");
+    visual.simulate_click(chooser.center(), Modifiers::default());
+    visual.run_until_parked();
+    let option = visual.debug_bounds(Box::leak(format!("device-{}-parameter-8-option-{mode}",device.value()).into_boxed_str())).expect("actual detector option");
+    visual.simulate_click(option.center(), Modifiers::default());
+    pump_until(editor, cx, settled);
+    visual.run_until_parked();
+}
+
