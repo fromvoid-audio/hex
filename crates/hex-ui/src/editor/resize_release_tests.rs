@@ -1308,3 +1308,148 @@ fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enable
         });
     }
 }
+
+#[gpui::test]
+fn resize_paint_keeps_normal_audio_feedback_local_to_the_clip(cx: &mut TestAppContext) {
+    check_resize_lane_paint(cx, false, false);
+}
+#[gpui::test]
+fn resize_paint_keeps_shift_audio_feedback_local_to_the_clip(cx: &mut TestAppContext) {
+    check_resize_lane_paint(cx, false, true);
+}
+#[gpui::test]
+fn resize_paint_keeps_midi_feedback_local_to_the_clip(cx: &mut TestAppContext) {
+    check_resize_lane_paint(cx, true, false);
+}
+fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool) {
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        let (_files, handle, editor, audio) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        let clip = if midi {
+            review_midi_clip(&editor, &mut visual)
+        } else {
+            audio
+        };
+        visual.run_until_parked();
+        let (track, before) = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            let track = p
+                .tracks()
+                .iter()
+                .find(|t| {
+                    t.clips().iter().any(|c| c.id() == clip)
+                        || t.midi_clips().iter().any(|c| c.id() == clip)
+                })
+                .unwrap()
+                .id();
+            (track, p.snapshot())
+        });
+        let lane = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+        let baseline = visual
+            .rendered_border(lane)
+            .expect("actual normal lane border");
+        let down = visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "{}clip-trim-{}-{}",
+                    if midi { "midi-" } else { "" },
+                    if edge == TrimEdge::Left {
+                        "left"
+                    } else {
+                        "right"
+                    },
+                    clip.value()
+                )
+                .into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        let modifiers = Modifiers {
+            shift: stretch,
+            ..Modifiers::default()
+        };
+        let direction = if edge == TrimEdge::Left { 1.0 } else { -1.0 };
+        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0 * direction), down.y),
+            MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        let target = point(down.x + px(42.0 * direction), down.y);
+        visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let painted = visual
+            .rendered_border(lane)
+            .expect("actual held lane border");
+        eprintln!(
+            "RESIZE_LANE_SCENE midi={midi} shift={stretch} edge={edge:?} before={baseline:?} held={painted:?}"
+        );
+        assert_eq!(
+            painted.0, baseline.0,
+            "resize must not replace whole-lane border color"
+        );
+        assert_eq!(
+            painted.1, baseline.1,
+            "resize must not add whole-lane border widths"
+        );
+        let preview = if midi {
+            "midi-trim-live-preview"
+        } else {
+            "trim-live-preview"
+        };
+        assert_eq!(
+            visual
+                .rendered_border(preview)
+                .expect("actual clip-local feedback")
+                .0,
+            gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Primary)).into()
+        );
+        let desired = editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            (
+                v.active_trim_drag
+                    .as_ref()
+                    .and_then(|d| d.preview.borrow().as_ref().map(|p| p.clip.clone())),
+                v.active_midi_trim_drag
+                    .as_ref()
+                    .and_then(|d| *d.preview.borrow()),
+            )
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert!(
+                v.active_trim_drag.is_none()
+                    && v.active_midi_trim_drag.is_none()
+                    && v.pending_trim.is_none()
+            );
+            let p = &v.state.as_ref().unwrap().project;
+            if let Some(expected) = &desired.0 {
+                assert_eq!(p.clip(clip), Some(expected));
+            }
+            if let Some(expected) = desired.1 {
+                let c = p.midi_clip(clip).unwrap();
+                assert_eq!(
+                    (c.start(), c.length(), c.source_start()),
+                    (expected.start(), expected.length(), expected.source_start())
+                );
+            }
+            p.snapshot()
+        });
+        assert_eq!(visual.rendered_border(lane).unwrap().0, baseline.0);
+        assert!(visual.debug_bounds(preview).is_none());
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
