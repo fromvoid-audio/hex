@@ -5165,3 +5165,19 @@ are recorded in the immutable repair handoff. Prior source/native six-case
 evidence remains historical. This source repair is unmerged; final combined full
 qualification and merge belong to the sole merger, with physical input/IME,
 display and delivered-app acceptance still open. No Mac/app operations occurred.
+
+## workspace paint-capture Tab guard — pulse2813 / PR419, 19 october2026
+
+A real held double-click clip-paint drag followed by Tab reproduced switching to
+Console during capture on preserved7b5. Add only the missing clip_paint_gesture
+refusal to workspace Tab. The owning regression preserves the rendered preview
+and capture, tests normal release with one canonical paint command/Undo/Redo and
+Escape plus release with no edit, then verifies ordinary Tab after either end.
+The previous track-resize guard, post-header toolbar fixture, text/numeric/modal
+focus and Operator traversal tests remain unchanged. All nine focused cases pass
+with zero failures/ignored (7 workspace +2 Operator); strict UI/guards and exact
+immutable source evidence are recorded in Pulse. The baseline failure is retained.
+No paint production, layout, selection, Console or global focus rewrite. This is
+headless pointer/key and canonical-command proof, not actual worker-acknowledgement,
+physical input, installed delivery or user acceptance. Sole merger owns final
+prospective full21/review/composition/merge; Pulse remains In Progress while unmerged.

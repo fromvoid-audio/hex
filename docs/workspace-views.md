@@ -12,7 +12,7 @@ the next Tab reciprocal when the prior header has left the rendered tree. The
 handler bubbles; it is neither a global binding nor a capture listener. Modified
 Tab and held-key repeats do not switch. Focused text/rename/search, numeric
 controls, device/Operator controls and detail editors retain their own Tab
-handling. Modal/popup/draft state and active track-resize/clip/time/loop gestures refuse the
+handling. Modal/popup/draft state and active track-resize/clip-paint/clip/time/loop gestures refuse the
 switch even if the workspace still retains focus. Musical typing does not claim
 Tab.
 
@@ -61,6 +61,17 @@ they do not verify this later resize guard. Strict checks and the immutable
 repair packet are recorded with the source handoff. Final prospective-tree full
 qualification, merge and user acceptance remain separate.
 
+A further actual held-double-click paint regression reproduced Tab switching to
+Console while the paint capture and preview were active. One additional existing
+guard now preserves that capture and its exact rendered preview. Normal release
+still submits one canonical paint command with one model Undo/Redo; Escape then
+release submits no edit. Tab switches normally after either capture ends. This
+case runs both outcomes and preserves all earlier assertions: **9 unique focused
+tests pass, zero failed/ignored** (7 workspace and 2 unchanged Operator cases).
+The real pointer/key routing and canonical command application are automated
+component evidence; they do not claim a real worker acknowledgement or physical
+mouse/keyboard acceptance. The failing baseline is retained separately.
+
 ## Finite native request and user checklist
 
 Root's sole Mac lane may run this exact source once with:
@@ -70,8 +81,8 @@ cargo test -p hex-ui --features ui-test-support --locked --lib -- \
   --nocapture workspace_view_ui_test operator_tab_cycle
 ```
 
-Expected on the repaired source: **8 unique positive tests**, zero failures/ignored
-(6 workspace cases and 2 unchanged Operator traversal cases). The previous exact
+Expected on the repaired source: **9 unique positive tests**, zero failures/ignored
+(7 workspace cases and 2 unchanged Operator traversal cases). The previous exact
 six-case native run remains historical; this checklist does not request its
 automatic repetition or dispatch a new native job. Preserve the actual case list,
 exit status, source/tree, raw log/hash and bounded fixture startup evidence; a
@@ -89,3 +100,8 @@ switch, and transport/project history remain
 unchanged. Check the compact label and neighboring toolbar controls at supported
 small and large window widths. Root coordinates this separately; source passing
 or merging does not mark it complete.
+
+Also hold a double-click body-paint drag and press Tab: keep Arrange and the paint
+preview. Release to paint once, or Escape then release to cancel, then verify Tab
+switches normally. This checklist does not dispatch a native job or create a new
+verification gate.

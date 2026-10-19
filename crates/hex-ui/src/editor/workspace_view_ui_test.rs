@@ -17,6 +17,85 @@ fn next(service: &Service) -> Event {
 use std::time::{Duration, Instant};
 
 #[gpui::test]
+fn workspace_review_tab_preserves_held_clip_paint_until_release_or_escape(cx: &mut TestAppContext) {
+    for cancel in [false, true] {
+        let (_files, handle, editor) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (track, project) = editor.read_with(&visual, |v, _| {
+            (
+                v.selected_track.unwrap(),
+                (*v.state.as_ref().unwrap().project).clone(),
+            )
+        });
+        let selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+        let lane = visual.debug_bounds(selector).unwrap();
+        let start = gpui::point(
+            lane.origin.x + lane.size.width * 0.25,
+            lane.origin.y + gpui::px(22.0),
+        );
+        let end = gpui::point(lane.origin.x + lane.size.width * 0.5, start.y);
+        visual.simulate_click(start, Modifiers::default());
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: start,
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: Modifiers::default(),
+            first_mouse: false,
+        });
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let preview = visual.debug_bounds("clip-paint-preview").unwrap();
+        editor.read_with(&visual, |v, _| {
+            assert!(v.clip_paint_gesture.is_some());
+            assert!(v.time_selection_gesture.is_none());
+            assert!(v.last_enqueued_edit.is_none());
+        });
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, EditorMode::Arrangement);
+            assert!(v.clip_paint_gesture.is_some());
+            assert!(v.last_enqueued_edit.is_none());
+            assert_eq!(v.worker_requests_pending, 0);
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("clip-paint-preview"), Some(preview));
+        if cancel {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |v, _| {
+            assert!(v.clip_paint_gesture.is_none());
+            if cancel {
+                assert!(v.last_enqueued_edit.is_none());
+                assert_eq!(v.worker_requests_pending, 0);
+            } else {
+                let command = v.last_enqueued_edit.clone().unwrap();
+                assert!(
+                    matches!(command, hex_project::Command::PlaceMidiClipWithOverwrite {
+                    track: target, length, ..
+                } if target == track && length.raw() > 0)
+                );
+                let mut canonical = hex_project::Editor::new(project.clone(), 8).unwrap();
+                let hex_project::Created::Clip(clip) = canonical.execute(command).unwrap() else {
+                    panic!("painted clip")
+                };
+                assert!(canonical.project().midi_clip(clip).is_some());
+                assert!(canonical.undo());
+                assert!(canonical.project().midi_clip(clip).is_none());
+                assert!(!canonical.undo());
+                assert!(canonical.redo());
+                assert!(canonical.project().midi_clip(clip).is_some());
+            }
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("clip-paint-preview").is_none());
+        visual.simulate_keystrokes("tab");
+        editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
+    }
+}
+
+#[gpui::test]
 fn workspace_review_tab_preserves_active_track_resize(cx: &mut TestAppContext) {
     let (_files, handle, editor) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
