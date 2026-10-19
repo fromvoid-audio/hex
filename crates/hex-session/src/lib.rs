@@ -26,6 +26,7 @@ use audio_sources::MediaBank;
 pub use audio_sources::{
     AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
 };
+mod comparison_transition;
 mod device_comparison;
 pub mod device_gesture;
 mod device_snapshot;

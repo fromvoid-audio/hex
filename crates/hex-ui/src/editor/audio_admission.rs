@@ -89,6 +89,28 @@ impl AudioAdmissionStatus {
         }
     }
 
+    /// Sealed comparison authoring proof changes correlation, not audio status.
+    /// Applied requires the caller's actual current candidate/output association.
+    pub(super) fn comparison_revision(
+        &mut self,
+        previous: ProjectRevision,
+        next: ProjectRevision,
+        applied_is_current: bool,
+    ) {
+        if let Some(current) = self.current.as_mut()
+            && current.project == previous
+            && (current.state != AdmissionState::Applied || applied_is_current)
+        {
+            current.project = next;
+        }
+        if applied_is_current
+            && let Some(audible) = self.last_audible.as_mut()
+            && audible.project == previous
+        {
+            audible.project = next;
+        }
+    }
+
     pub(super) fn published(&mut self, project: ProjectRevision, audio_revision: u64) -> bool {
         if let Some(current) = self.current.as_mut()
             && current.project == project

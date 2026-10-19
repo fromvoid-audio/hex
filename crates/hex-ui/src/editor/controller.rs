@@ -129,6 +129,103 @@ fn publication_observation_disposition(
 }
 
 impl EditorView {
+    /// Consume only the worker's ordered comparison proof. Runtime/source owners,
+    /// output identity, publication tickets and audio revision never change here.
+    fn reconcile_comparison_authoring(&mut self, next: &Arc<ViewState>) {
+        let Some(previous) = self.state.as_ref() else {
+            return;
+        };
+        let Some(proof) = next.comparison_audio.as_ref() else {
+            return;
+        };
+        if !proof.follows(previous, next, self.project_generation) {
+            return;
+        }
+        let previous_revision = previous.revision;
+        let matches = |state: &Arc<ViewState>, generation: u64| {
+            generation == self.project_generation
+                && state.revision == previous_revision
+                && state
+                    .canonical_audio_source
+                    .as_ref()
+                    .zip(next.canonical_audio_source.as_ref())
+                    .is_some_and(|(old, retained)| Arc::ptr_eq(old, retained))
+        };
+        let canonical = |candidate: &PlaybackCandidate| {
+            candidate.seek_request_id.is_none()
+                && candidate.device_preview_identity.is_none()
+                && candidate.tuning_preview_identity.is_none()
+        };
+        let resident_applied = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audible_playback.as_ref().is_some_and(|candidate| {
+                canonical(candidate)
+                    && matches(&candidate.state, candidate.project_generation)
+                    && self.audio.as_ref().is_some_and(|audio| {
+                        audio.control.status().is_some_and(|status| {
+                            status.applied_revision.load(Acquire) == candidate.audio_revision
+                        })
+                    })
+            });
+        let verified_applied = self.document_audio_mode
+            == hex_session::DocumentAudioMode::VerifiedStreaming
+            && self.audio.as_ref().is_some_and(|audio| {
+                audio
+                    .control
+                    .status()
+                    .and_then(|status| status.applied_audio_source())
+                    .is_some_and(|source| {
+                        audio.control.output_identity() == Some(source.output_identity)
+                            && source.context.project_generation == self.project_generation
+                            && previous.audio_authoring_revision(source.context)
+                                == Some(previous_revision)
+                    })
+            });
+        let applied_is_current = resident_applied || verified_applied;
+        if let Some(pending) = self.pending_playback.as_mut()
+            && pending.seek_request_id.is_none()
+            && pending.device_preview_identity.is_none()
+            && pending.tuning_preview_identity.is_none()
+            && matches(&pending.state, pending.project_generation)
+        {
+            pending.state = Arc::clone(next);
+            pending.project_revision = next.revision;
+        }
+        if let Some(pending) = self.pending_resident_publication.as_mut()
+            && pending.seek_request_id.is_none()
+            && pending.device_preview_identity.is_none()
+            && pending.tuning_preview_identity.is_none()
+            && matches(&pending.state, pending.project_generation)
+        {
+            pending.state = Arc::clone(next);
+            pending.project_revision = next.revision;
+        }
+        for candidate in &mut self.playback_candidates {
+            if canonical(candidate) && matches(&candidate.state, candidate.project_generation) {
+                candidate.state = Arc::clone(next);
+            }
+        }
+        if let Some(candidate) = self.audible_playback.as_mut()
+            && canonical(candidate)
+            && matches(&candidate.state, candidate.project_generation)
+        {
+            candidate.state = Arc::clone(next);
+        }
+        self.audio_admission.comparison_revision(
+            super::audio_admission::ProjectRevision {
+                generation: self.project_generation,
+                revision: previous_revision,
+            },
+            super::audio_admission::ProjectRevision {
+                generation: self.project_generation,
+                revision: next.revision,
+            },
+            applied_is_current,
+        );
+        if applied_is_current && self.applied_project_revision == Some(previous_revision) {
+            self.applied_project_revision = Some(next.revision);
+        }
+    }
+
     pub(super) fn restart_audio_for_current_document(&mut self) -> bool {
         let Some(request_id) = self.restart_request_id.checked_add(1) else {
             self.error = Some("audio restart request id exhausted".into());
@@ -210,7 +307,7 @@ impl EditorView {
             .map(|snapshot| snapshot.context());
         if publication_observation_disposition(
             self.project_generation,
-            self.state.as_ref().map(|state| state.revision),
+            current_context.map(|context| context.editor_revision),
             current_context,
             self.audio
                 .as_ref()
@@ -247,7 +344,7 @@ impl EditorView {
             .map(|snapshot| snapshot.context());
         let disposition = publication_observation_disposition(
             self.project_generation,
-            self.state.as_ref().map(|state| state.revision),
+            current_context.map(|context| context.editor_revision),
             current_context,
             self.audio
                 .as_ref()
@@ -275,6 +372,13 @@ impl EditorView {
         context: hex_engine::AudioSourceContext,
         state: crate::EditorPublicationState,
     ) {
+        let Some(authoring_revision) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.audio_authoring_revision(context))
+        else {
+            return;
+        };
         match state {
             crate::EditorPublicationState::Preparing => {
                 self.status = "preparing streamed audio".into()
@@ -286,7 +390,7 @@ impl EditorView {
                 if let Some(state) = self
                     .state
                     .as_ref()
-                    .filter(|state| state.revision == context.editor_revision)
+                    .filter(|state| state.audio_authoring_revision(context) == Some(state.revision))
                     .cloned()
                     && !self.playback_candidates.iter().any(|candidate| {
                         candidate.audio_revision == audio_revision
@@ -307,7 +411,7 @@ impl EditorView {
                 self.audio_admission.published(
                     super::audio_admission::ProjectRevision {
                         generation: context.project_generation,
-                        revision: context.editor_revision,
+                        revision: authoring_revision,
                     },
                     audio_revision,
                 );
@@ -323,7 +427,7 @@ impl EditorView {
                 self.audio_admission.unpublished_refusal(
                     super::audio_admission::ProjectRevision {
                         generation: context.project_generation,
-                        revision: context.editor_revision,
+                        revision: authoring_revision,
                     },
                     "audio publication refused",
                 );
@@ -917,17 +1021,35 @@ impl EditorView {
             .control
             .status()
             .map_or(0, |status| status.applied_revision.load(Acquire));
+        let actual_source = audio
+            .control
+            .status()
+            .and_then(|status| status.applied_audio_source());
+        let current_source = actual_source.filter(|source| {
+            self.state.as_ref().is_some_and(|state| {
+                state.audio_authoring_revision(source.context) == Some(state.revision)
+            })
+        });
         let (reconciled, current_applied) = reconcile_verified_applied_source(
             &mut self.audio_admission,
             self.document_audio_mode,
             audio.control.output_identity(),
             self.project_generation,
-            self.state.as_ref().map(|state| state.revision),
-            audio
-                .control
-                .status()
-                .and_then(|status| status.applied_audio_source()),
+            // Preserve the helper's exact source-context test, never a general older revision allowance.
+            current_source.map(|source| source.context.editor_revision),
+            actual_source,
         );
+        if let Some(source) = current_applied
+            && let Some(state) = self.state.as_ref()
+        {
+            self.audio_admission.applied(
+                super::audio_admission::ProjectRevision {
+                    generation: self.project_generation,
+                    revision: state.revision,
+                },
+                source.audio_revision,
+            );
+        }
         visible_change |= reconciled;
 
         if let Some((project, audio_revision)) = latest_applied_canonical_candidate(
@@ -993,12 +1115,10 @@ impl EditorView {
             // Actual ACK can arrive after Submitted metadata was coalesced.
             // Reconstruct only nonowning canonical view metadata, never an
             // audio owner or a state for an older, unavailable Project snapshot.
-            if let Some(state) = self
-                .state
-                .as_ref()
-                .filter(|state| state.revision == source.context.editor_revision)
-            {
-                self.applied_project_revision = Some(source.context.editor_revision);
+            if let Some(state) = self.state.as_ref().filter(|state| {
+                state.audio_authoring_revision(source.context) == Some(state.revision)
+            }) {
+                self.applied_project_revision = Some(state.revision);
                 if self.audible_playback.as_ref().is_none_or(|candidate| {
                     candidate.audio_revision != source.audio_revision
                         || candidate.project_generation != source.context.project_generation
@@ -1546,6 +1666,9 @@ impl EditorView {
             };
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
+        if !event.project_replaced && event.error.is_none() {
+            self.reconcile_comparison_authoring(&event_state);
+        }
         if event.project_replaced
             || self
                 .state
@@ -3806,6 +3929,7 @@ mod tests {
             project_generation: generation,
             state: Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project,
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
