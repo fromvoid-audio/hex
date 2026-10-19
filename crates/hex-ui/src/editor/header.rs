@@ -472,4 +472,131 @@ mod ui_tests {
             }
         }
     }
+    #[gpui::test]
+    fn compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::{EditorMode, EditorView};
+        use gpui::AppContext;
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                window.replace_root(cx, |window, cx| {
+                    EditorView::new(
+                        window,
+                        cx,
+                        hex_session::service::Service::new(48_000, 32, 8_000_000).unwrap(),
+                        Err("offline startup test".into()),
+                    )
+                })
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        // This is the real constructor's initial phase. The virtual 16ms poll
+        // timer is not advanced; no synthetic None ViewState is installed.
+        editor.read_with(&visual, |v, _| {
+            assert!(v.state.is_none());
+            assert!(v.browser.directory.starts_with(v.test_environment.root()));
+        });
+        let mut ready: Option<Arc<hex_session::service::ViewState>> = None;
+        for loading in [true, false] {
+            if !loading {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    let installed = editor.update(&mut visual, |v, cx| {
+                        if v.tick(cx) {
+                            cx.notify();
+                        }
+                        v.state.clone()
+                    });
+                    if installed.is_some() {
+                        ready = installed;
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "actual Service init timed out"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+            for mode in [EditorMode::Arrangement, EditorMode::Session] {
+                editor.update(&mut visual, |v, cx| {
+                    v.set_mode(mode);
+                    cx.notify();
+                });
+                for width in [880.0, 881.0, 960.0, 1440.0, 880.0] {
+                    visual.simulate_resize(size(px(width), px(540.0)));
+                    visual.run_until_parked();
+                    let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+                    let name = visual
+                        .debug_bounds(match mode {
+                            EditorMode::Arrangement => "arrange view",
+                            EditorMode::Session => "console view",
+                        })
+                        .unwrap();
+                    let status = visual.debug_bounds("audio output status").unwrap();
+                    let restart = visual
+                        .debug_bounds("restart default audio output · stays stopped")
+                        .unwrap();
+                    editor.read_with(&visual, |v, _| assert_eq!(v.state.is_none(), loading));
+                    eprintln!(
+                        "actual startup loading={loading} width={width} mode={mode:?} status={status:?} name={name:?} restart={restart:?}"
+                    );
+                    let seven_chars = name.size.width * (7.0 / 12.0);
+                    assert!(
+                        status.size.width >= seven_chars,
+                        "both project loading and full offline status must remain visible: {width} {mode:?} loading={loading} status={status:?}"
+                    );
+                    let readout = visual.debug_bounds("project position").unwrap();
+                    assert!(readout.size.width >= seven_chars);
+                    assert!(readout.right() <= restart.left());
+                    assert!(name.right() <= readout.left());
+                    assert!(restart.right() <= status.left());
+                    assert!(status.right() <= toolbar.right() - px(8.0));
+                    assert!(status.size.height <= toolbar.size.height);
+                    assert!(name.size.width >= px(80.0));
+                    // The real None branch omits the bound tempo field; the
+                    // appended loading label does not compete with a loaded row.
+                    let tempo = visual.debug_bounds("project-tempo-field");
+                    if loading {
+                        assert!(tempo.is_none());
+                        let indicator = visual.debug_bounds("project loading").unwrap();
+                        eprintln!("actual loading indicator={indicator:?} position={readout:?}");
+                        assert!(indicator.size.width >= seven_chars + px(16.0));
+                        assert!(indicator.size.height <= toolbar.size.height);
+                        assert!(indicator.left() >= status.right());
+                        assert!(indicator.right() <= toolbar.right() - px(8.0));
+                    } else {
+                        assert!(tempo.is_some_and(|bounds| bounds.size.width > px(0.0)));
+                        assert!(visual.debug_bounds("project loading").is_none());
+                    }
+                    for selector in [
+                        "import audio · cmd+i",
+                        "show arrange view · tab",
+                        "show console view · tab",
+                        "restart default audio output · stays stopped",
+                    ] {
+                        let control = visual.debug_bounds(selector).unwrap();
+                        assert_eq!(
+                            control.size,
+                            size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
+                        );
+                        assert!(
+                            control.left() >= toolbar.left() && control.right() <= toolbar.right()
+                        );
+                    }
+                    editor.read_with(&visual, |v, _| {
+                        assert_eq!(v.audio_label(), None);
+                        assert_eq!(v.worker_requests_pending, 0);
+                        assert!(v.pending_requests.is_empty());
+                        if let Some(ready) = &ready {
+                            assert_eq!(v.state.as_ref().unwrap().project, ready.project);
+                            assert_eq!(v.state.as_ref().unwrap().revision, ready.revision);
+                        }
+                    });
+                }
+            }
+        }
+    }
 }

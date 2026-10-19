@@ -185,6 +185,7 @@ impl EditorView {
             )
             .child(
                 div()
+                    .debug_selector(|| "project position".into())
                     // Size the short readout to its text; retain the existing
                     // upper bound for unusually long project positions.
                     .max_w(px(82.0))
@@ -231,6 +232,7 @@ impl EditorView {
         if self.state().is_none() {
             row = row.child(
                 div()
+                    .debug_selector(|| "project loading".into())
                     .px_2()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
