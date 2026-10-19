@@ -170,3 +170,103 @@ fn console_browser_drop_real_empty_cell_retires_ghost_and_imports_audio(cx: &mut
         assert!(state.waveforms.contains_key(&clip.asset()));
     });
 }
+
+fn bounds(visual: &mut VisualTestContext, name: String) -> gpui::Bounds<gpui::Pixels> {
+    visual
+        .debug_bounds(Box::leak(name.into_boxed_str()))
+        .expect("actual Console hit surface")
+}
+fn begin_browser(
+    visual: &mut VisualTestContext,
+    editor: &gpui::Entity<EditorView>,
+) -> super::super::drag::BrowserAudioDrag {
+    visual.run_until_parked();
+    let source = visual.debug_bounds("browser-entry-0").unwrap().center();
+    visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(source.x + px(14.0), source.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(visual, |view, _| {
+        view.active_browser_audio_drag
+            .clone()
+            .expect("real browser payload")
+    })
+}
+fn release(visual: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+    visual.simulate_mouse_move(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+}
+fn project(
+    editor: &gpui::Entity<EditorView>,
+    cx: &TestAppContext,
+) -> std::sync::Arc<hex_project::Project> {
+    editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone())
+}
+fn assert_retired(drag: &super::super::drag::BrowserAudioDrag) {
+    assert!(drag.destination.get().is_none());
+    assert!(drag.preview.get().is_none());
+    assert!(drag.insertion_line_y.get().is_none());
+    assert!(drag.last_pointer.get().is_none());
+    assert!(!drag.lane_hovered.get());
+    assert!(drag.scroll.get().viewport.is_none());
+}
+fn history(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, request: Request) {
+    editor.update(cx, |view, _| assert!(view.enqueue(request)));
+    receive_worker(editor, cx);
+}
+
+#[gpui::test]
+fn console_browser_between_and_bottom_are_actual_atomic_scene_targets(cx: &mut TestAppContext) {
+    let (handle, editor, track, scene, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = project(&editor, cx);
+    let at = bounds(
+        &mut visual,
+        format!("console-insert-before-{}-{}", track.value(), scene.value()),
+    )
+    .center();
+    let drag = begin_browser(&mut visual, &editor);
+    release(&mut visual, at);
+    assert_retired(&drag);
+    receive_worker(&editor, cx);
+    let inserted = project(&editor, cx);
+    assert_eq!(inserted.scenes().len(), 2);
+    assert_eq!(inserted.scenes()[1].id(), scene);
+    assert!(matches!(
+        inserted.session_cell(track, inserted.scenes()[0].id()),
+        Some(hex_project::SessionCellContent::Audio(_))
+    ));
+    history(&editor, cx, Request::Undo);
+    assert_eq!(
+        *project(&editor, cx),
+        *before,
+        "ONE Undo includes scene and media clip"
+    );
+    history(&editor, cx, Request::Redo);
+    assert_eq!(*project(&editor, cx), *inserted);
+    visual.run_until_parked();
+    let at = bounds(
+        &mut visual,
+        format!("console-append-track-{}", track.value()),
+    )
+    .center();
+    let drag = begin_browser(&mut visual, &editor);
+    release(&mut visual, at);
+    assert_retired(&drag);
+    receive_worker(&editor, cx);
+    let bottom = project(&editor, cx);
+    assert_eq!(bottom.scenes().len(), 3);
+    assert_eq!(&bottom.scenes()[..2], inserted.scenes());
+    assert!(matches!(
+        bottom.session_cell(track, bottom.scenes()[2].id()),
+        Some(hex_project::SessionCellContent::Audio(_))
+    ));
+    history(&editor, cx, Request::Undo);
+    assert_eq!(*project(&editor, cx), *inserted);
+    history(&editor, cx, Request::Redo);
+    assert_eq!(*project(&editor, cx), *bottom);
+}
