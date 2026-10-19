@@ -27,7 +27,9 @@ impl EditorView {
             || self.theme_settings.open
             || self.controller_input_is_open()
             || self.context_menu.is_some()
-            || self.device_panel.add_menu_is_open()
+            || (self.clip_view_open
+                && self.device_panel_active
+                && self.device_panel.add_menu_is_open())
             || self.send_menu_track.is_some()
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)

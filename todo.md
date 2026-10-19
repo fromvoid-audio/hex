@@ -5580,3 +5580,27 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Preserve the original e934 owner history and compose actual qualified main a2d47. Both dividers paint their own active cyan state, retain normal idle hover, and publish release/lost-Left retirement. Original owner actual twoREDs and final90browser controls remain historical component evidence.
 - Resolve only the overlapping sidebar transitions around the current444 THREE-field pointer/width/locked tuple and existing snap hysteresis; preserve325 stationary tag-column geometry,414 private constructor/FS leases, Console/group receiver and all current main source outside the six owning files. Keep all appended test registrations/docs/history.
 - Verified all original payload and source hashes; exact new guarded focused and required full21/fresh review remain pending. Native physical hover/capture-loss/GPU flicker and delivery remain separate. Thin divider323 is not imported.
+
+
+### 2026-10-19 — PR419/458 auxiliary guards, keyed click and periodic state repair
+
+- Preserve the historical held-pan record above. Its later d9b owner supplement
+  adds the four existing-owner Tab guards: held pre-drag pointer, visible device
+  add-menu, spectrum resize and device-chain navigation. Matching clip click
+  cleanup uses the original generation/ClipId/None-edge key before selection and
+  propagation stop; delayed foreign generation/clip/edge capture stays protected.
+- On exact joint c385, two actual GPUI regressions reproduce a completed range
+  collapsing on a Console controller tick and an add-menu blocking Tab after the
+  real bottom-panel hide. Restrict non-Arrangement cancellation to active range
+  gestures while retaining stale-source/generation/cursor validation; gate the
+  existing menu guard by actual panel visibility. No model/worker/focus/framework
+  change, no hidden cursor pulse and no blanket cancellation/keyboard bypass.
+- Preserve the original 13 workspace-module cases, both Operator traversal cases,
+  navigation/drag/paint/capture/selection and compact status oracles. The new two
+  workspace cases plus separate navigation case make the documented native union
+  18, not the stale 11. Real input and Service/controller tests, invalid-context
+  controls, strict/guard checks and exact source evidence precede source handoff.
+- Old d9b/38c3/c385 positives do not qualify this changed source. Both canonical
+  PRs require separate authenticated merge readbacks after new combined required
+  CI and fresh review; source readiness remains In Progress. Physical keyboard,
+  IME, native fonts/pixels/audio and installed/user acceptance remain open.

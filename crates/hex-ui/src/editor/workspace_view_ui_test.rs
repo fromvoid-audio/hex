@@ -786,3 +786,66 @@ fn workspace_four_returns_completed_range_survives_console_controller_ticks(
         assert_eq!(v.time_selection, Some(before.0));
     });
 }
+
+#[gpui::test]
+fn workspace_four_returns_console_still_retires_active_or_invalid_range(cx: &mut TestAppContext) {
+    // These deliberately injected invalid view contexts exercise validation;
+    // they are not fabricated worker events or accepted project edits.
+    for invalid in 0..4 {
+        let cx = &mut cx.new_app();
+        let (_files, handle, editor) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.read(cx).focus.focus(window);
+        });
+        visual.run_until_parked();
+        let track = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
+        let selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+        let lane = visual.debug_bounds(selector).unwrap();
+        let start = lane.origin + gpui::point(lane.size.width * 0.25, gpui::px(22.0));
+        let end = lane.origin + gpui::point(lane.size.width * 0.5, gpui::px(22.0));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        if invalid != 3 {
+            visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        }
+        editor.update(&mut visual, |v, cx| {
+            assert!(
+                v.time_selection
+                    .is_some_and(|s| s.anchor_frame != s.end_frame)
+            );
+            v.mode = EditorMode::Session;
+            match invalid {
+                0 => v.project_generation = v.project_generation.wrapping_add(1),
+                1 => v.state = None,
+                2 => v.edit_cursor = None,
+                _ => assert!(v.time_selection_gesture.is_some()),
+            }
+            v.tick(cx);
+            assert!(
+                v.normalized_time_selection().is_none(),
+                "invalid context {invalid}"
+            );
+            if invalid < 3 {
+                assert!(
+                    v.time_selection.is_none(),
+                    "invalid selection retired {invalid}"
+                );
+            }
+            if invalid < 2 {
+                assert!(v.edit_cursor.is_none(), "stale cursor retired {invalid}");
+            }
+            eprintln!(
+                "Console invalid context {invalid}: selection={:?}, active={}, queued={}",
+                v.time_selection,
+                v.time_selection_gesture.is_some(),
+                v.worker_requests_pending
+            );
+            assert!(v.time_selection_gesture.is_none());
+            assert!(v.time_range_move_gesture.is_none());
+            assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+    }
+}

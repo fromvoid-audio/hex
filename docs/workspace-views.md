@@ -102,11 +102,14 @@ Root's sole Mac lane may run this exact source once with:
 
 ```sh
 cargo test -p hex-ui --features ui-test-support --locked --lib -- \
-  --nocapture workspace_view_ui_test operator_tab_cycle
+  --nocapture workspace_view_ui_test operator_tab_cycle workspace_four_returns_
 ```
 
-Expected on the repaired source: **11 unique positive tests**, zero failures/ignored
-(9 workspace cases and 2 unchanged Operator traversal cases). The previous exact
+Expected on the current repaired source: **18 unique positive tests**, zero
+failures/ignored (15 workspace-module cases, 2 unchanged Operator traversal cases,
+and the separate hidden-device-menu case). Rust test filters form a union: the
+`workspace_four_returns_` filter repeats two workspace cases without executing
+them twice. The historical 11-case receipt above remains bound to its old source. The previous exact
 six-case native run remains historical; this checklist does not request its
 automatic repetition or dispatch a new native job. Preserve the actual case list,
 exit status, source/tree, raw log/hash and bounded fixture startup evidence; a
@@ -168,3 +171,27 @@ and allow switching again after the existing release/cancel/close path.
 Headless pointer/key evidence is not physical/native acceptance. The immutable
 handoff retains all original review failures and the separate fixture focus
 assumption failures. Final prospective-tree qualification remains merger-owned.
+
+
+## 19 October follow-up: completed ranges and hidden device menu
+
+A released, valid Arrangement range survives entering Console, actual periodic
+controller ticks, and returning to Arrange. Active selection/move gestures still
+cancel on a mode change; missing source/state/cursor and stale generation still
+retire invalid ranges. Console does not animate a hidden point cursor. The actual
+pointer regression retains canonical project/revision and selection identity.
+
+The device add-menu blocks workspace Tab only while its existing detail panel is
+visible (`clip_view_open && device_panel_active`). Hiding through the real bottom
+button keeps the panel's retained state, but cannot leave an invisible keyboard
+barrier. Reopening restores the visible menu and its refusal; closing the menu
+restores Tab. No device insertion, source/track retargeting or new focus operation
+is introduced. The ordinary menu-toggle and native-entry close handlers remain
+unchanged; existing device/navigation controls retain their behavior.
+
+The checklist command above enumerates the current 18-case union; the evidence
+packet records every fully qualified match and actual result. The original two
+runtime REDs and every historical receipt remain source-bound. Required combined
+full CI and fresh reviews of both canonical PRs remain merger-owned; physical
+keyboard/IME, native typography/pixels and installed acceptance remain open.
+This document does not dispatch a native job or claim delivery.
